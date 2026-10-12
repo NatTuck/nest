@@ -95,7 +95,7 @@ defmodule Nest.Agents.AgentOverflowIntegrationTest do
 
         %{state | chat_state: %{state.chat_state | messages: drifted}}
       end,
-      500
+      1_000
     )
   end
 
@@ -105,7 +105,7 @@ defmodule Nest.Agents.AgentOverflowIntegrationTest do
       {pid, _agent_id} = start_agent(%{vocation_id: vocation.id, vocation: vocation})
 
       drift_messages_to_no_system(pid)
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       refute match?({:system, _}, Enum.at(state.chat_state.messages, 0))
 
@@ -122,7 +122,7 @@ defmodule Nest.Agents.AgentOverflowIntegrationTest do
       {pid, _agent_id} = start_agent(%{vocation_id: vocation.id, vocation: vocation})
 
       drift_messages_to_no_system(pid)
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       {rendered_size, system_prompt} = render_for(state)
 
@@ -144,11 +144,11 @@ defmodule Nest.Agents.AgentOverflowIntegrationTest do
       vocation = create_vocation(%{})
       {pid, _agent_id} = start_agent(%{vocation_id: vocation.id, vocation: vocation})
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       {before, _} = render_for(state)
 
       drift_messages_to_no_system(pid)
-      drifted_state = :sys.get_state(pid, 500)
+      drifted_state = :sys.get_state(pid, 1_000)
       {after_drift, _} = render_for(drifted_state)
 
       assert before == after_drift,

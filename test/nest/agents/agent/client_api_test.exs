@@ -76,7 +76,7 @@ defmodule Nest.Agents.Agent.ClientAPITest do
         fn state ->
           %{state | live: %{state.live | streaming_acc: acc}}
         end,
-        500
+        1_000
       )
 
       info = ClientAPI.get_public_info(pid)

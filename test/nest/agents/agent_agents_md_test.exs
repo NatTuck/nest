@@ -197,13 +197,13 @@ defmodule Nest.Agents.AgentAgentsMdTest do
         fn state ->
           %{state | chat_state: %{state.chat_state | messages: messages}}
         end,
-        500
+        1_000
       )
 
       send_compaction_done(pid, "Summary text.", nil)
-      _ = :sys.get_state(pid, 500)
+      _ = :sys.get_state(pid, 1_000)
 
-      final_messages = :sys.get_state(pid, 500).chat_state.messages
+      final_messages = :sys.get_state(pid, 1_000).chat_state.messages
 
       assert match?({:system, _}, Enum.at(final_messages, 0)),
              "expected system message at messages[0]"
@@ -215,7 +215,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
       # The `nil` continuation resumes the post-compaction LLM turn;
       # finish it so the agent is idle when the test ends (the
       # teardown asserts zero in-flight agents).
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 end

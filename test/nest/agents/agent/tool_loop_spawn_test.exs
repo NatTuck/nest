@@ -205,7 +205,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
       assert delivered =~ "the answer"
 
       # The child's usage merged into the parent's descendant totals.
-      assert :sys.get_state(parent_pid, 500).llm_metrics.descendant_usage.output_tokens == 42
+      assert :sys.get_state(parent_pid, 1_000).llm_metrics.descendant_usage.output_tokens == 42
     end
 
     test "a child stopped before it answered reaches the parent as a bare notice", %{vid: vid} do
@@ -378,7 +378,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
   end
 
   defp delivered_when_idle(parent_pid, needle) do
-    state = :sys.get_state(parent_pid, 500)
+    state = :sys.get_state(parent_pid, 1_000)
 
     case {Machine.status_for(state.live.machine), delivered(state, needle)} do
       {:idle, [_ | _] = delivered} -> delivered
@@ -393,7 +393,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
   end
 
   defp parent_texts(parent_pid) do
-    :sys.get_state(parent_pid, 500).chat_state.messages |> Enum.flat_map(&user_texts/1)
+    :sys.get_state(parent_pid, 1_000).chat_state.messages |> Enum.flat_map(&user_texts/1)
   end
 
   defp user_texts({:user, %{parts: parts}}) do

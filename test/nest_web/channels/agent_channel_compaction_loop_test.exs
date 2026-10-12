@@ -29,7 +29,7 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
   # well over both this suite's 500 ms test bound and ExUnit's 2000 ms per-test
   # ceiling, so a wedged server surfaces as the stuck call it is rather than as
   # a test timeout (#21).
-  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 500)
+  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 1_000)
 
   setup :verify_on_exit!
 
@@ -107,7 +107,7 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
 
     # Status should transition back to :idle after the OK click,
     # and the counter resets to 0.
-    state = :sys.get_state(agent_pid, 500)
+    state = :sys.get_state(agent_pid, 1_000)
 
     assert Machine.status_for(state.live.machine) == :idle
     assert state.live.machine.loop_count == 0

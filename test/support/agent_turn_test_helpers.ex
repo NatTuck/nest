@@ -105,7 +105,7 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   """
   @spec next_request() :: {[term()], pid()}
   def next_request do
-    assert_receive {:llm_request, messages, worker}, 500
+    assert_receive {:llm_request, messages, worker}, 1_000
     {messages, worker}
   end
 

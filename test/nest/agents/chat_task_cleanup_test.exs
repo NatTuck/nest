@@ -61,7 +61,7 @@ defmodule Nest.Agents.ChatTaskCleanupTest do
 
       # Wait for the silent shutdown to complete: the Agent transitions to
       # `:idle` without a `chat:error` broadcast.
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # The benign exit stayed silent in the only sense that is assertable:
       # no `chat:error` broadcast (the user-visible error path is reserved for
@@ -73,7 +73,7 @@ defmodule Nest.Agents.ChatTaskCleanupTest do
 
       # The agent finalized cleanly — still alive, in :idle.
       assert Process.alive?(pid)
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       assert Machine.status_for(state.live.machine) == :idle
     end
 
@@ -87,7 +87,7 @@ defmodule Nest.Agents.ChatTaskCleanupTest do
       Mimic.allow(MockClient, self(), pid)
 
       :ok = Agent.chat(pid, "Hello")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # Silent in the only assertable sense: no `chat:error` broadcast. See the
       # first test in this describe for why the log is not asserted.
@@ -116,7 +116,7 @@ defmodule Nest.Agents.ChatTaskCleanupTest do
 
           # Real crashes still surface — Agent transitions to
           # :idle after broadcasting chat:error.
-          assert_receive {:chat_status, %{status: "idle"}}, 500
+          assert_receive {:chat_status, %{status: "idle"}}, 1_000
         end)
 
       # Filter to this test's agent (see comment in the

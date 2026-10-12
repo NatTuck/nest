@@ -22,7 +22,7 @@ defmodule NestWeb.AgentChannelChatTest do
   # well over both this suite's 500 ms test bound and ExUnit's 2000 ms per-test
   # ceiling, so a wedged server surfaces as the stuck call it is rather than as
   # a test timeout (#21).
-  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 500)
+  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 1_000)
 
   # Force the agent's observable status (test-only; see `Machine.status_to_machine/2`).
   defp force_status(pid, status) do
@@ -118,7 +118,7 @@ defmodule NestWeb.AgentChannelChatTest do
 
       assert partial == nil
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "returns the live partial when streaming", %{
@@ -249,7 +249,7 @@ defmodule NestWeb.AgentChannelChatTest do
       assert last_index >= 0
       assert status == "idle"
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "returns streaming status during LLM response", %{socket: socket} do
@@ -268,7 +268,7 @@ defmodule NestWeb.AgentChannelChatTest do
       ref_status = push(socket, "chat:status", %{"lastIndex" => -1})
       assert_reply ref_status, :ok, %{"status" => "idle"}
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "returns error when agent not found", %{socket: _socket} do
@@ -310,7 +310,7 @@ defmodule NestWeb.AgentChannelChatTest do
       assert messages == []
       assert last_complete_index < 999
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "sync response includes messageCount field", %{socket: socket} do
@@ -344,7 +344,7 @@ defmodule NestWeb.AgentChannelChatTest do
       assert length(messages) >= 2
       assert last_complete_index >= 1
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 
@@ -465,7 +465,7 @@ defmodule NestWeb.AgentChannelChatTest do
       # channel no longer rejects `:compacting`.
       assert_reply ref, :ok, %{}
 
-      state = :sys.get_state(agent_pid, 500)
+      state = :sys.get_state(agent_pid, 1_000)
       assert [%{content: "during compaction", kind: :user}] = state.live.inbox
       assert Machine.status_for(state.live.machine) == :compacting
 
@@ -524,7 +524,7 @@ defmodule NestWeb.AgentChannelChatTest do
       assert_reply ref, :ok, %{}
       assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 
@@ -568,17 +568,17 @@ defmodule NestWeb.AgentChannelChatTest do
 
         assert_reply ref, :ok, %{}
 
-        assert_receive {:chat_status, %{status: "compacting"}}, 500
+        assert_receive {:chat_status, %{status: "compacting"}}, 1_000
 
         # Finish the retried compaction so the agent is idle at test
         # end (the teardown asserts zero in-flight agents).
-        assert_receive {:chat_status, %{status: "idle"}}, 500
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
       # The held user message was appended after the compaction summary
       # (wire role `user`); the bridge inserted an assistant ack so the
       # resumed list is wire-valid and the turn actually ran.
-      messages = :sys.get_state(agent_pid, 500).chat_state.messages
+      messages = :sys.get_state(agent_pid, 1_000).chat_state.messages
 
       assert :ok = Preflight.validate(messages)
 
@@ -626,8 +626,8 @@ defmodule NestWeb.AgentChannelChatTest do
 
           assert_reply ref, :ok, %{}
 
-          assert_receive {:chat_status, %{status: "compacting"}}, 500
-          assert_receive {:chat_status, %{status: "compaction_failed"}}, 500
+          assert_receive {:chat_status, %{status: "compacting"}}, 1_000
+          assert_receive {:chat_status, %{status: "compaction_failed"}}, 1_000
         end)
 
       assert log =~ "Compaction failed"
@@ -635,14 +635,14 @@ defmodule NestWeb.AgentChannelChatTest do
       # The channel read `payload["focus"]` and threaded it through
       # `Agents.compact/3` → `Agent.compact/2` onto the machine's working
       # set synchronously (before the reply).
-      assert :sys.get_state(agent_pid, 500).live.machine.work.focus == "keep the API decisions"
+      assert :sys.get_state(agent_pid, 1_000).live.machine.work.focus == "keep the API decisions"
 
       # Retrying re-renders the same focus; the compactor completes
       # (MockClient's random-text fallback) and the agent returns to idle.
       retry_ref = push(socket, "chat:retry-compaction", %{})
 
       assert_reply retry_ref, :ok, %{}
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "rejects a compaction while the agent is busy", %{

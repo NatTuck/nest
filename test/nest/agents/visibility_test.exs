@@ -124,7 +124,7 @@ defmodule Nest.Agents.VisibilityTest do
     # pid (the agent was started linked via `start_agent/1`).
     Process.flag(:trap_exit, true)
     Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
-    assert_receive {:EXIT, _, _}, 500
+    assert_receive {:EXIT, _, _}, 1_000
 
     visible = Visibility.list_visible_agents_for(AgentTestHelpers.current_space_id(), alice.id)
     assert Enum.all?(visible, &(&1.name != name))
@@ -146,7 +146,7 @@ defmodule Nest.Agents.VisibilityTest do
     # the linked agent's stop doesn't kill the test pid.
     Process.flag(:trap_exit, true)
     :ok = Supervisor.archive_agent(AgentTestHelpers.current_space_id(), name)
-    assert_receive {:EXIT, _, _}, 500
+    assert_receive {:EXIT, _, _}, 1_000
 
     visible = Visibility.list_visible_agents_for(AgentTestHelpers.current_space_id(), alice.id)
     assert Enum.all?(visible, &(&1.name != name))

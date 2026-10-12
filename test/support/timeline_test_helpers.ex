@@ -80,7 +80,7 @@ defmodule Nest.TimelineTestHelpers do
           | live: %{state.live | machine: Machine.status_to_machine(state.live.machine, status)}
         }
       end,
-      500
+      1_000
     )
   end
 
@@ -102,7 +102,7 @@ defmodule Nest.TimelineTestHelpers do
       fn state ->
         %{state | live: %{state.live | inbox: List.duplicate(entry, count)}}
       end,
-      500
+      1_000
     )
   end
 

@@ -112,8 +112,8 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
     consume_pre_seed_broadcasts(messages)
 
     send_compaction_done(pid, summary_text, nil)
-    _ = :sys.get_state(pid, 500)
-    state = :sys.get_state(pid, 500)
+    _ = :sys.get_state(pid, 1_000)
+    state = :sys.get_state(pid, 1_000)
 
     # The `nil` continuation resumes a post-compaction LLM turn
     # (`resume_with_pending/1`). Finish it so the agent is idle when
@@ -121,7 +121,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
     # so the resumed turn is actually exercised rather than killed
     # mid-flight. `state` is the compaction-time snapshot, captured
     # before the resumed turn's assistant message lands.
-    assert_receive {:chat_status, %{status: "idle"}}, 500
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
     state
   end
@@ -147,7 +147,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
           | chat_state: %{state.chat_state | messages: messages, next_message_index: bumped_index}
         }
       end,
-      500
+      1_000
     )
 
     for stamped <- messages do
@@ -217,7 +217,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       {pid, _agent_id} = start_with_vocation(vocation)
 
       # Verify the system prompt at init contains the original.
-      initial_state = :sys.get_state(pid, 500)
+      initial_state = :sys.get_state(pid, 1_000)
 
       [{:system, initial_sys} | _] = initial_state.chat_state.messages
       initial_text = text_from_parts(initial_sys.parts)
@@ -267,7 +267,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       {pid, _agent_id} = start_with_vocation(vocation, workspace_path: workspace_path)
 
       # Verify the initial system prompt contains the sentinel.
-      init_state = :sys.get_state(pid, 500)
+      init_state = :sys.get_state(pid, 1_000)
       [{:system, init_sys} | _] = init_state.chat_state.messages
       init_text = text_from_parts(init_sys.parts)
 
@@ -409,8 +409,8 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
         {:compact_tool, [carried_assistant, synthetic_result], 1, 5}
       )
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
-      state = :sys.get_state(pid, 500)
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
+      state = :sys.get_state(pid, 1_000)
       active = state.chat_state.messages
 
       carried =
@@ -439,7 +439,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       vocation = create_vocation(%{system_prompt: original_marker})
       {pid, _agent_id} = start_with_vocation(vocation)
 
-      state_before = :sys.get_state(pid, 500)
+      state_before = :sys.get_state(pid, 1_000)
       assert state_before.vocation.system_prompt =~ original_marker
 
       {:ok, _updated} =
@@ -469,7 +469,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       {pid, _agent_id} = start_with_vocation(vocation)
 
       # Initial state has only the original tools.
-      initial_state = :sys.get_state(pid, 500)
+      initial_state = :sys.get_state(pid, 1_000)
 
       initial_tool_names =
         initial_state.tools

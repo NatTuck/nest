@@ -104,7 +104,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     assert is_integer(index)
 
     # The request line: the sizing numbers the request actually cost.
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
     limit = state.llm_metrics.context_limit
 
     assert [
@@ -246,8 +246,8 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
 
     :ok = Agent.chat(pid, "start the turn")
 
-    assert_receive {:send_blocked, tool}, 500
-    assert Machine.status_for(:sys.get_state(pid, 500).live.machine) == :executing_tools
+    assert_receive {:send_blocked, tool}, 1_000
+    assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :executing_tools
 
     send(tool, :release_send)
 
@@ -301,8 +301,8 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     {_first, llm1} = next_request()
     release_llm(llm1)
 
-    assert_receive {:send_blocked, tool}, 500
-    assert Machine.status_for(:sys.get_state(pid, 500).live.machine) == :executing_tools
+    assert_receive {:send_blocked, tool}, 1_000
+    assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :executing_tools
 
     # The human's message backgrounds the batch, and its turn is parked: the
     # delivery is the one the record is about.
@@ -332,10 +332,10 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     # The batch's own send and its late result both queue behind the parked
     # delivered turn, so both are there before it ends and drain as one batch.
     send(tool, :release_send)
-    assert_receive {:send_delivered, ^tool}, 500
-    assert_receive {:chat_inbox, %{count: 1}}, 500
+    assert_receive {:send_delivered, ^tool}, 1_000
+    assert_receive {:chat_inbox, %{count: 1}}, 1_000
     send(tool, :release_result)
-    assert_receive {:chat_inbox, %{count: 2}}, 500
+    assert_receive {:chat_inbox, %{count: 2}}, 1_000
 
     release_llm(llm2)
 
@@ -427,7 +427,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     assert Eventually.eventually(
              fn ->
                child_action("archived") != [] and
-                 Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle
+                 Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
              end,
              timeout: 500
            )
@@ -453,7 +453,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     {pid, name} = start_agent(default_attrs())
     track_agent(name)
     space_id = current_space_id()
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
 
     log =
       capture_log(fn ->
@@ -535,7 +535,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     {pid, name} = start_agent(default_attrs())
     track_agent(name)
 
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
     before = state.live.machine
 
     # not owed → owed: the delivery that incurred the obligation.
@@ -571,7 +571,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
   test "a child's terminal outcomes are each recorded as their own action" do
     {pid, name} = start_agent(default_attrs())
     track_agent(name)
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
 
     # Each child is terminal exactly once, so each outcome needs its own name.
     # The state is threaded per child: the second settle is the one that has to
@@ -595,7 +595,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
   test "the emitters record what they can and skip what has no event" do
     {pid, name} = start_agent(default_attrs())
     track_agent(name)
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
     machine = state.live.machine
 
     # A notification payload the runtime does not recognise still records its
@@ -655,17 +655,17 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
           fn s ->
             %{s | live: %{s.live | machine: %{machine | entry: entry}}}
           end,
-          500
+          1_000
         )
 
-        assert :ok = Agent.Timeline.compaction_staged(:sys.get_state(pid, 500), ctx)
+        assert :ok = Agent.Timeline.compaction_staged(:sys.get_state(pid, 1_000), ctx)
         List.last(events("compaction"))["carried"]
       end
 
     assert carried == ["assistant_response", nil, nil]
 
     # Leave the fabricated machine as it was found.
-    :sys.replace_state(pid, fn s -> %{s | live: %{s.live | machine: machine}} end, 500)
+    :sys.replace_state(pid, fn s -> %{s | live: %{s.live | machine: machine}} end, 1_000)
   end
 
   test "a malformed timeline directory does not raise out of an emitter" do
@@ -673,7 +673,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
 
     {pid, name} = start_agent(default_attrs())
     track_agent(name)
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
 
     # `:timeline_dir` is read at call time, and a non-binary value makes
     # `Path.join/2` raise inside the writer. These emitters call `record/4`

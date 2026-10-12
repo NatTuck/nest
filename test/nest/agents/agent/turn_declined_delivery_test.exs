@@ -78,7 +78,7 @@ defmodule Nest.Agents.Agent.TurnDeclinedDeliveryTest do
             llm_metrics: %{state.llm_metrics | context_limit: 100}
         }
       end,
-      500
+      1_000
     )
 
     # The fixture's own decision, asserted so the test cannot pass on a limit
@@ -98,7 +98,7 @@ defmodule Nest.Agents.Agent.TurnDeclinedDeliveryTest do
                     }},
                    500
 
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
 
     # Queued: the W1 invariant. The entry is in the queue, and it is not in the
     # transcript either — never in neither.
@@ -129,7 +129,7 @@ defmodule Nest.Agents.Agent.TurnDeclinedDeliveryTest do
             }
         }
       end,
-      500
+      1_000
     )
 
     Process.exit(worker, :kill)

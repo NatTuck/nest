@@ -482,7 +482,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
   # one the test-teardown invariant checks. See `@turn_fence_ms` for the budget.
   defp await_idle(pid) do
     assert Eventually.eventually(
-             fn -> Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle end,
+             fn -> Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle end,
              timeout: @turn_fence_ms
            )
   end

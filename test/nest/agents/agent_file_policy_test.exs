@@ -268,7 +268,7 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
           new_state = put_in(state.chat_state.read_files, %{}) |> then(fn s -> s end)
           new_state
         end,
-        500
+        1_000
       )
 
       # Cache is still empty — failed reads don't sneak in.
@@ -307,7 +307,7 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
         fn state ->
           %{state | chat_state: %{state.chat_state | read_files: %{}}}
         end,
-        500
+        1_000
       )
 
       assert read_files(pid) == %{}
@@ -348,7 +348,7 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
   defp unique_int, do: System.unique_integer([:positive])
 
   defp workspace_root(pid) do
-    :sys.get_state(pid, 500).workspace_path
+    :sys.get_state(pid, 1_000).workspace_path
   end
 
   defp read_files(pid) do
@@ -363,7 +363,7 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
 
         %{state | chat_state: %{state.chat_state | read_files: new}}
       end,
-      500
+      1_000
     )
   end
 

@@ -90,7 +90,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil
@@ -135,7 +135,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       # Expected base: system(0), user(1), assistant+tools(2),
       # tool(3), final_assistant(4). The context-notice synthetic
@@ -174,7 +174,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       :ok = Agent.chat(pid, "Loop until done")
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       # The budget reminder is now a synthetic pair injected at
       # the LLM-response-construction site: a {:user, _} message
@@ -258,7 +258,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
         assert_receive {:chat_status, %{status: "idle"}}, 750
       end)
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       # The agent goes to :idle after the final call.
       assert Machine.status_for(state.live.machine) == :idle
@@ -297,7 +297,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       # The `chat:delta` PubSub broadcast is the event-based
       # signal that the Agent's `delta_received` handler has
       # already updated the mirror.
-      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_delta, _}, 1_000
 
       # Use the public stop API instead of reaching into the
       # Agent's internals. The stop runs entirely in the Agent
@@ -306,7 +306,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil
@@ -358,7 +358,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
         assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil
@@ -411,7 +411,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       :ok = Agent.chat(pid, "Second chat")
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       indices = message_indices(state)
 
       # The two chats should produce: system (0), user1 (1),

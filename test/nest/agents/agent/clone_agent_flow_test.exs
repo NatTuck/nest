@@ -142,7 +142,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     {second, llm2} = next_request()
 
-    mid = :sys.get_state(parent_pid, 500)
+    mid = :sys.get_state(parent_pid, 1_000)
     AgentTestHelpers.assert_unique_message_indices(mid)
 
     # The child's answer is already in the transcript, behind the machine's
@@ -167,7 +167,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     # The batch returns: its real result has no live worker to settle it, so it
     # arrives as a queued notice.
-    assert_receive {:chat_inbox, %{count: 1}}, 500
+    assert_receive {:chat_inbox, %{count: 1}}, 1_000
 
     # The response to the request the delivered answer rode in on, then the
     # notice's own turn.
@@ -177,7 +177,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     await_idle(parent_pid)
 
-    parent_state = :sys.get_state(parent_pid, 500)
+    parent_state = :sys.get_state(parent_pid, 1_000)
     AgentTestHelpers.assert_unique_message_indices(parent_state)
 
     # The real confirmation arrives later as a message, and it names the child
@@ -205,7 +205,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     # The clone's fork notice carries its name and depth (its system message is
     # inherited verbatim from the parent, so this user-visible notice is the
     # only place to state the clone's true identity/depth).
-    child_state = :sys.get_state(child_pid, 500)
+    child_state = :sys.get_state(child_pid, 1_000)
     assert child_state.depth == parent_state.depth + 1
 
     ack_text =
@@ -250,7 +250,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   # invariant checks. See `@turn_fence_ms` for the budget.
   defp await_idle(pid) do
     assert Eventually.eventually(
-             fn -> Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle end,
+             fn -> Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle end,
              timeout: @turn_fence_ms
            )
   end

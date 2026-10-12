@@ -54,7 +54,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     {:ok, parent_name, parent_pid, parent_id} = start_parent(vid)
     Mimic.allow(MockClient, self(), parent_pid)
     Mimic.allow(Nest.Agents, self(), parent_pid)
-    :sys.replace_state(parent_pid, &swap_to_mock/1, 500)
+    :sys.replace_state(parent_pid, &swap_to_mock/1, 1_000)
     MockClient.start_link(parent_pid)
 
     # The worker is the test process. The agent should
@@ -91,7 +91,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     {:ok, parent_name, parent_pid, _parent_id} = start_parent(vid)
     Mimic.allow(MockClient, self(), parent_pid)
     Mimic.allow(Nest.Agents, self(), parent_pid)
-    :sys.replace_state(parent_pid, &swap_to_mock/1, 500)
+    :sys.replace_state(parent_pid, &swap_to_mock/1, 1_000)
     MockClient.start_link(parent_pid)
 
     {:ok, child_name} =
@@ -115,14 +115,14 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     space_id = AgentTestHelpers.current_space_id()
     Mimic.allow(MockClient, self(), parent_pid)
     Mimic.allow(Nest.Agents, self(), parent_pid)
-    :sys.replace_state(parent_pid, &swap_to_mock/1, 500)
+    :sys.replace_state(parent_pid, &swap_to_mock/1, 1_000)
     MockClient.start_link(parent_pid)
 
     # Force the parent to max depth — a clone at max depth still
     # has `agents-spawn` in its (inherited) tool list, so the
     # spawn must be rejected at runtime.
     max = Config.configured_max_depth()
-    :sys.replace_state(parent_pid, &%{&1 | depth: max}, 500)
+    :sys.replace_state(parent_pid, &%{&1 | depth: max}, 1_000)
 
     assert {:error, :max_depth_reached} =
              GenServer.call(

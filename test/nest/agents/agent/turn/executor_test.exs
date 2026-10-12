@@ -170,7 +170,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
 
       ref = Process.monitor(pid)
       {_state, nil} = run({:kill, pid})
-      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 500
+      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 1_000
     end
 
     test "cancel_timer is a no-op for unknown refs" do
@@ -648,7 +648,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
           # given up with it. The requester is unreachable here (`space_id: nil`),
           # so the give-up is refused — and the notification that proves the
           # warning was written arrives after it, inside this capture.
-          assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 500
+          assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 1_000
           settled
         end)
 

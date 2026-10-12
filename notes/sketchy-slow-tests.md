@@ -286,3 +286,50 @@ the 6 failures in the merged run (4 Mimic, 1 supervisor); the sixth was DB
 contention. With the ceiling back at 5000 ms the suite is green, so neither point
 is *currently* a failure — they are latent and load-dependent, and they are what
 make a 2000 ms ceiling unworkable rather than merely tight.
+
+## 11. The 1000/250/3000 split, and two recorded defects
+
+**Bounds, as they now stand** (`issue-21-timeout-sweep`):
+
+| bound | value | why |
+|---|---|---|
+| fences (`assert_receive`/`refute_receive`/`assert_push`/`refute_push`) | **1000 ms** | the ruling: raise every 500 to 1 s. Must stay well below the per-test deadline so a missed fence reports as a fence, not as `ExUnit.TimeoutError`. |
+| `:sys.get_state`/`:replace_state` bounds | **1000 ms** | free on a healthy process; buys headroom under load. |
+| `AgentTestLifecycle`'s teardown probe | **250 ms** | the one exception, and it goes **down**. It is a *measurement*, not a failure bound: `stop_test_agents/0` probes every owned agent synchronously, so a long bound costs N x bound per teardown (500 ms x N is what blew a 2000 ms deadline). |
+| `refute_receive ..., 0` | **0** | a deliberate non-wait, not a fence. |
+| per-test deadline (`ExUnit.configure`) | **3000 ms** | a failure bound, deliberately above the fences. |
+| `max_cases` | **physical cores** | `Nest.Test.MaxCases.real_cpus/0`; measured 8 cases -> 0 failures, 16 -> 2, 24 -> 12. **No ceiling**: a 32-core/64-thread host gets 32. |
+
+**Probe bound sizing, honestly.** A synthetic saturation probe could not size the
+250 ms: 32 yield-loops, and then 16 blocked + 16 allocating workers, each starved a
+*parked* process past a 5 s bound, so neither shape is the suite's. 250 ms is
+chosen for what the bound is *for* (cap teardown at 250 ms per unresponsive agent,
+catch a wedged or mid-turn one), not from a distribution. Follow-up: log the real
+probe-latency distribution from a 16-way run and revisit with data.
+
+**Behaviour change, recorded deliberately.** `agent_status/1` used to fail *open*:
+a busy agent did not answer in time, `:exit, _ -> nil`, and `nil` is not in
+`@in_flight_statuses`, so `assert_zero_remaining!` **passed** — the check silently
+missed exactly the case it exists to detect. It now returns `:unresponsive` (in
+flight) when the process is alive but does not answer, and `nil` only when the
+reason says the pid is gone (`:noproc`/`:normal`/`:shutdown`). A starved-but-healthy
+agent therefore fails the test instead of passing silently. That is the intended
+direction.
+
+**Recorded, not fixed here — `DBConnection.ConnectionError` (test isolation).**
+A run logged a real connection error through `Agent.Persistence.append_message/3`:
+a spawned agent was still appending when its owning test process exited, so the
+sandbox connection was invalidated mid-query (`owner #PID<…> exited` / `Client … is
+still using a connection from owner`). This is a genuine isolation defect and is
+probably the mechanism behind agents that do not die in teardown. Its own change.
+
+**Recorded, not fixed here — `stop_pid/2`'s `timeout \\ 2_000`.** A second per-agent
+N x multiplier in the same teardown path. It only bites on a genuinely wedged
+agent, but when it does the failure is a `TimeoutError` rather than
+`assert_zero_remaining!`'s informative message. Lower priority than the probe,
+same shape.
+
+**Result at the new defaults** (`issue-21-timeout-sweep`, seed 200905, `max_cases:
+16`, per-test 3000): **2372 tests, 0 failures**, ExUnit 7.4 s, wall 8.20 s, load
+2.81 before / 4.75 after. For comparison at the same 2000 ms deadline: 8 cases ->
+0 failures, 16 -> 2, 24 -> 12.

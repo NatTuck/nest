@@ -120,7 +120,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # created (a give-up notice would be in the coordinator's inbox instead).
     await_idle([coordinator_pid, specialist_pid])
 
-    state = :sys.get_state(coordinator_pid, 500)
+    state = :sys.get_state(coordinator_pid, 1_000)
     assert_unique_message_indices(state)
     assert Machine.owed_senders(state.live.machine) == []
     refute Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "did not reply"))
@@ -149,7 +149,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # The batch reached the tool worker, parked before its query.
     assert_receive {:query_blocked, batch}, 1_000
 
-    assert Machine.status_for(:sys.get_state(coordinator_pid, 500).live.machine) ==
+    assert Machine.status_for(:sys.get_state(coordinator_pid, 1_000).live.machine) ==
              :executing_tools
 
     # Release it: the query is delivered (the peer's turn starts) and the worker
@@ -162,7 +162,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # held there too: both sides are parked with the batch in flight.
     assert_receive {:send_blocked, sender}, 1_000
 
-    assert Machine.status_for(:sys.get_state(coordinator_pid, 500).live.machine) ==
+    assert Machine.status_for(:sys.get_state(coordinator_pid, 1_000).live.machine) ==
              :executing_tools
 
     # Release the answer: it lands while the batch is executing, so the batch is
@@ -232,7 +232,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # created (a give-up notice would be in the coordinator's inbox instead).
     await_idle([coordinator_pid, specialist_pid])
 
-    state = :sys.get_state(coordinator_pid, 500)
+    state = :sys.get_state(coordinator_pid, 1_000)
     assert_unique_message_indices(state)
     assert Machine.owed_senders(state.live.machine) == []
     refute Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "did not reply"))

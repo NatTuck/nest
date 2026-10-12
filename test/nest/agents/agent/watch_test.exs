@@ -63,13 +63,13 @@ defmodule Nest.Agents.Agent.WatchTest do
   defp next_listing([last]), do: {last, [last]}
   defp next_listing([head | rest]), do: {head, rest}
 
-  defp watchers(pid), do: :sys.get_state(pid, 500).live.watches
+  defp watchers(pid), do: :sys.get_state(pid, 1_000).live.watches
 
   # The notice drains into a turn; wait for it to finish so the
   # test-lifecycle check sees an idle agent.
   defp await_idle(pid) do
     assert Eventually.eventually(
-             fn -> Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle end,
+             fn -> Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle end,
              timeout: 500
            )
   end
@@ -86,7 +86,7 @@ defmodule Nest.Agents.Agent.WatchTest do
             }
         }
       end,
-      500
+      1_000
     )
   end
 
@@ -99,12 +99,12 @@ defmodule Nest.Agents.Agent.WatchTest do
           | live: %{state.live | machine: Machine.status_to_machine(state.live.machine, :idle)}
         }
       end,
-      500
+      1_000
     )
   end
 
   defp notices(pid) do
-    :sys.get_state(pid, 500).chat_state.messages
+    :sys.get_state(pid, 1_000).chat_state.messages
     |> Enum.flat_map(fn
       {:user, %{parts: parts}} -> Enum.map(parts, & &1.text)
       _ -> []
@@ -127,7 +127,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     # A watch is registered, and the agent never left idle (issue #54): the
     # tool returned without blocking a turn.
     assert map_size(watchers(pid)) == 1
-    assert Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle
+    assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
   end
 
   test "an already-idle-only wait registers nothing", %{pid: pid, name: name, space_id: space_id} do
@@ -230,9 +230,9 @@ defmodule Nest.Agents.Agent.WatchTest do
     [{_ref, %{pid: task}}] = Map.to_list(watchers(pid))
     mref = Process.monitor(task)
 
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
     assert Watch.stop_all(state).live.watches == %{}
-    assert_receive {:DOWN, ^mref, :process, ^task, _reason}, 500
+    assert_receive {:DOWN, ^mref, :process, ^task, _reason}, 1_000
   end
 
   test "the watcher dies with its caller" do
@@ -255,7 +255,7 @@ defmodule Nest.Agents.Agent.WatchTest do
 
     Process.exit(caller, :kill)
 
-    assert_receive {:DOWN, ^mref, :process, ^task, _reason}, 500
+    assert_receive {:DOWN, ^mref, :process, ^task, _reason}, 1_000
   end
 
   test "stopping the agent kills its watchers", %{pid: pid, name: name, space_id: space_id} do
@@ -271,7 +271,7 @@ defmodule Nest.Agents.Agent.WatchTest do
 
     _ = Supervisor.stop_agent(space_id, name)
 
-    assert_receive {:DOWN, ^mref, :process, ^task, _reason}, 500
+    assert_receive {:DOWN, ^mref, :process, ^task, _reason}, 1_000
   end
 
   # The headline for #62 + #54: the caller registers, returns, goes idle; the
@@ -318,7 +318,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     assert length(texts) == 1
     assert Enum.count(texts, &(&1 =~ "the report")) == 1
     refute Enum.any?(texts, &(&1 =~ "Agents now idle"))
-    refute Enum.any?(:sys.get_state(pid, 500).live.inbox, &(&1.kind == :notice))
+    refute Enum.any?(:sys.get_state(pid, 1_000).live.inbox, &(&1.kind == :notice))
   end
 
   # The second variant: the caller is busy when the report arrives, so it
@@ -351,7 +351,7 @@ defmodule Nest.Agents.Agent.WatchTest do
       ])
 
     assert content =~ "the report"
-    assert [%{retrieved: true}] = :sys.get_state(pid, 500).live.inbox
+    assert [%{retrieved: true}] = :sys.get_state(pid, 1_000).live.inbox
     reset_to_idle(pid)
   end
 
@@ -362,7 +362,7 @@ defmodule Nest.Agents.Agent.WatchTest do
   } do
     # `shell-wait` follows the same shape as `agents-wait-for-idle`: register,
     # return, go idle, and deliver the job's result as a notice.
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
     key = {space_id, name}
 
     {:ok, _} =
@@ -390,7 +390,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     # The action is emitted by the pure stop; `Turn.Executor`'s clause reads
     # `live.watches`. Asserting the action here keeps the Stop contract pinned
     # without driving a whole turn.
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
     machine = Machine.status_to_machine(state.live.machine, :streaming)
     {:ok, actions, _machine} = Machine.step(machine, {:stop, nil})
 

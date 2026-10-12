@@ -43,16 +43,16 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       # User messages no longer carry request api_logs after finalization
       # (they're rebuilt on demand when the user expands the API logs widget).
-      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 500
+      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 1_000
       assert user_api_logs == [], "User message should have empty api_logs"
 
-      assert_receive {:chat_status, %{status: "streaming"}}, 500
-      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_status, %{status: "streaming"}}, 1_000
+      assert_receive {:chat_delta, _}, 1_000
 
       # The assistant message is stored complete: the response log is
       # attached before it is appended, so the single broadcast carries it.
-      assert_receive {:chat_message, {:assistant, %{api_logs: [assistant_response]}}}, 500
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_message, {:assistant, %{api_logs: [assistant_response]}}}, 1_000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       assert assistant_response.type == :response, "Assistant message should have response log"
 
@@ -68,7 +68,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
         })
 
       :ok = Agent.chat(pid, "Hello")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # Read back through the DB, not the live agent, to prove the
       # response log was stored with the message rather than only
@@ -100,17 +100,17 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       :ok = Agent.chat(pid, "Run a command")
 
-      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 500
+      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 1_000
       assert user_api_logs == [], "User message should have empty api_logs"
 
-      assert_receive {:chat_status, %{status: "streaming"}}, 500
-      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_status, %{status: "streaming"}}, 1_000
+      assert_receive {:chat_delta, _}, 1_000
 
       # The tool-call assistant is stored complete with its response log.
-      assert_receive {:chat_message, {:assistant, %{api_logs: [asst1_log]}}}, 500
+      assert_receive {:chat_message, {:assistant, %{api_logs: [asst1_log]}}}, 1_000
       assert asst1_log.type == :response
 
-      assert_receive {:chat_message, {:tool, %{api_logs: tool_api_logs}}}, 500
+      assert_receive {:chat_message, {:tool, %{api_logs: tool_api_logs}}}, 1_000
       assert tool_api_logs == [], "Tool message should have empty api_logs"
 
       # Wait for the final assistant with a response log
@@ -118,7 +118,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
       assert asst2 != nil
       [asst2_log] = asst2
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       assert asst2_log.type == :response, "Final assistant message should have response log"
 
@@ -143,11 +143,11 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       :ok = Agent.chat(pid, "List files")
 
-      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 500
+      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 1_000
       assert user_api_logs == [], "User message should have empty api_logs"
 
-      assert_receive {:chat_status, %{status: "streaming"}}, 500
-      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_status, %{status: "streaming"}}, 1_000
+      assert_receive {:chat_delta, _}, 1_000
 
       # Drain to the first assistant (tool-call). Match by
       # content; the synthetic "Context?" assistant may
@@ -156,14 +156,14 @@ defmodule Nest.Agents.AgentObservabilityTest do
       assert asst1 != nil
       [asst1_log] = asst1.api_logs
 
-      assert_receive {:chat_message, {:tool, %{api_logs: tool_api_logs}}}, 500
+      assert_receive {:chat_message, {:tool, %{api_logs: tool_api_logs}}}, 1_000
       assert tool_api_logs == [], "Tool message should have empty api_logs"
 
       asst2 = wait_for_final_assistant_api_logs(2_000)
       assert asst2 != nil
       [asst2_log] = asst2
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # The api_log id is `<message_index>.<sequence>`. At this low
       # usage no context-notice pair fires, so the tool-call
@@ -199,7 +199,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
     ref = Process.monitor(pid)
     Agent.terminate(pid)
 
-    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
+    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
   end
 
   describe "context limit (configured)" do
@@ -234,7 +234,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
       # directly; the init push carries it as a wire string. The
       # internal atom is only observable via state — kept as
       # legitimate :sys.get_state use.
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       assert state.llm_metrics.context_limit == 512_000
       assert state.llm_metrics.context_limit_source == :config
 
@@ -302,7 +302,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
         })
 
       :ok = Agent.chat(pid, "First")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # usage is exposed via the public API as a GenServer call.
       info1 = Agent.get_public_info(pid)
@@ -311,7 +311,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
       assert info1.usage.last_output == 50
 
       :ok = Agent.chat(pid, "Second")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       info2 = Agent.get_public_info(pid)
       assert info2.usage.output_tokens == 150
@@ -354,7 +354,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
       log =
         capture_log(fn ->
           :ok = Agent.chat(pid, "Run a command")
-          assert_receive {:chat_status, %{status: "idle"}}, 500
+          assert_receive {:chat_status, %{status: "idle"}}, 1_000
         end)
 
       info = Agent.get_public_info(pid)
@@ -392,14 +392,14 @@ defmodule Nest.Agents.AgentObservabilityTest do
         })
 
       :ok = Agent.chat(pid, "First")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       info1 = Agent.get_public_info(pid)
       assert info1.usage.output_tokens == 25
       assert info1.usage.input_tokens == 50
 
       :ok = Agent.chat(pid, "Second")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       info2 = Agent.get_public_info(pid)
       assert info2.usage.output_tokens == 25

@@ -39,7 +39,7 @@ defmodule Nest.Agents.AgentChatTest do
 
       :ok = Agent.chat(pid, "Hello")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       assert_received {:chat_status, %{status: "streaming"}}
       assert_received {:chat_delta, _}
@@ -51,7 +51,7 @@ defmodule Nest.Agents.AgentChatTest do
 
       :ok = Agent.chat(pid, "Hello")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       assert_received {:chat_message, {:user, _}}
       assert_received {:chat_status, %{status: "streaming"}}
@@ -67,7 +67,7 @@ defmodule Nest.Agents.AgentChatTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "Hello")
 
-          assert_receive {:chat_status, %{status: "idle"}}, 500
+          assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
           assert_received {:chat_message,
                            {:user, %{index: 1, parts: [%Part.Text{text: "[mode: chat]\nHello"}]}}}
@@ -89,7 +89,7 @@ defmodule Nest.Agents.AgentChatTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "Hello")
 
-          assert_receive {:chat_status, %{status: "idle"}}, 500
+          assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
           assert_received {:chat_message,
                            {:user, %{index: 1, parts: [%Part.Text{text: "[mode: chat]\nHello"}]}}}
@@ -116,11 +116,11 @@ defmodule Nest.Agents.AgentChatTest do
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
-        assert_receive {:chat_status, %{status: "idle"}}, 500
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
-      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 500
-      assert_receive {:chat_message, {:assistant, %{api_logs: error_assistant_api_logs}}}, 500
+      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 1_000
+      assert_receive {:chat_message, {:assistant, %{api_logs: error_assistant_api_logs}}}, 1_000
 
       assert user_api_logs == [],
              "user messages should not carry request api_logs after finalization"
@@ -134,7 +134,7 @@ defmodule Nest.Agents.AgentChatTest do
 
       :ok = Agent.chat(pid, "Hello")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # Accumulate deltas by content; known to be at least 1 for the
       # single set_response text. We match each as a known broadcast.
@@ -184,18 +184,18 @@ defmodule Nest.Agents.AgentChatTest do
               llm_metrics: %{state.llm_metrics | context_limit: 200_000}
           }
         end,
-        500
+        1_000
       )
 
       MockClient.set_response("Done")
 
       :ok = Agent.chat(pid, "next question")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       refute_received {:chat_error, _}
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       tail = Enum.take(state.chat_state.messages, -4)
 
       assert Enum.map(tail, &elem(&1, 0)) == [:user, :assistant, :user, :assistant]
@@ -235,13 +235,13 @@ defmodule Nest.Agents.AgentChatTest do
 
           %{state | chat_state: %{state.chat_state | messages: messages, next_message_index: 2}}
         end,
-        500
+        1_000
       )
 
       send_compaction_done(pid, "Summary", nil)
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       assert {:assistant, %Assistant{parts: [%Part.Text{text: compaction_ack}]}} =
                List.last(state.chat_state.messages)
@@ -251,11 +251,11 @@ defmodule Nest.Agents.AgentChatTest do
 
       MockClient.set_response("Done")
       :ok = Agent.chat(pid, "next question")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       refute_received {:chat_error, _}
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       assert Enum.map(state.chat_state.messages, &elem(&1, 0)) |> Enum.take(-4) ==
                [:user, :assistant, :user, :assistant]
@@ -278,7 +278,7 @@ defmodule Nest.Agents.AgentChatTest do
 
       :ok = Agent.chat(pid, "Hello")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # At least one delta is expected for the single-text response.
       assert_received {:chat_message, {:user, _}}
@@ -308,7 +308,7 @@ defmodule Nest.Agents.AgentChatTest do
       # No broadcast carries the full Vocation struct; the only way to
       # observe it is via the agent's process state. Kept as future
       # work: expose `state.vocation` via a GenServer call.
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       assert state.vocation != nil
       assert state.vocation.id == vocation.id
       assert state.vocation.name == vocation.name

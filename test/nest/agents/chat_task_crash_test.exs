@@ -93,7 +93,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # threads via `:persistent_term` (see `Nest.Tokens.Tokenizer`). Once
         # the fence passes, every earlier message in the chat pipeline has
         # already arrived in the test's mailbox.
-        assert_receive {:chat_status, %{status: "idle"}}, 500
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
         # The user message is broadcast first (the agent builds
         # it before the turn starts).
@@ -124,7 +124,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # Agent is the single source. refute_receive can't be
         # converted to refute_received (which checks the current
         # mailbox snapshot), so it stays as a timed wait.
-        refute_receive {:chat_error, _}, 500
+        refute_receive {:chat_error, _}, 1_000
       end)
     end
 
@@ -173,7 +173,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
 
-        assert_receive {:chat_error, %{content: content}}, 500
+        assert_receive {:chat_error, %{content: content}}, 1_000
 
         # The original exception message is at the top.
         assert content =~ "unique_pin_marker_12345"
@@ -212,7 +212,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # Fence on idle (see comment in the test above for
         # the 500ms rationale — preflight + crash recovery
         # under concurrent test load).
-        assert_receive {:chat_status, %{status: "idle"}}, 500
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
         # Wait for the user message first.
         assert_received {:chat_message, {:user, %{index: 1}}}
@@ -260,10 +260,10 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
 
-        assert_receive :worker_blocked, 500
+        assert_receive :worker_blocked, 1_000
 
         worker =
-          eventually(fn -> :sys.get_state(pid, 500).live.machine.work.active_worker end,
+          eventually(fn -> :sys.get_state(pid, 1_000).live.machine.work.active_worker end,
             timeout: 500
           )
 
@@ -273,12 +273,12 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # otherwise the turn hangs in `:streaming` forever.
         Process.exit(worker, :boom)
 
-        assert_receive {:chat_status, %{status: "idle"}}, 500
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
         assert_received {:chat_error, %{content: content}}
         assert content =~ "boom"
       end)
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil
     end
@@ -298,7 +298,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         assert content =~ "no content"
       end)
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       # No message in the list is empty.
       refute Enum.any?(state.chat_state.messages, fn

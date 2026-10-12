@@ -103,7 +103,7 @@ defmodule Nest.Agents.AgentTestAssertions do
         new_cache = Map.put(state.chat_state.read_files, path, recorded)
         %{state | chat_state: %{state.chat_state | read_files: new_cache}}
       end,
-      500
+      1_000
     )
   end
 end

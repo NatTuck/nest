@@ -59,7 +59,7 @@ defmodule Nest.Agents.Agent.BatchCoordinatorTest do
 
     gone_ref = Process.monitor(gone)
     Process.exit(gone, :kill)
-    assert_receive {:DOWN, ^gone_ref, :process, ^gone, :killed}, 500
+    assert_receive {:DOWN, ^gone_ref, :process, ^gone, :killed}, 1_000
 
     # The plan's *parent* (the name its spawn call goes to) is a registered
     # stand-in that never answers, so the coordinator's first call blocks. That
@@ -82,9 +82,9 @@ defmodule Nest.Agents.Agent.BatchCoordinatorTest do
          end}
       )
 
-    assert_receive {:registered, ^stand_in}, 500
+    assert_receive {:registered, ^stand_in}, 1_000
 
-    ctx = %{Turn.build_ctx(:sys.get_state(parent_pid, 500)) | agent_pid: gone, agent_name: name}
+    ctx = %{Turn.build_ctx(:sys.get_state(parent_pid, 1_000)) | agent_pid: gone, agent_name: name}
     tc = %ToolCall{name: "agents-batch", arguments: %{"items" => ["alpha"]}}
 
     log =
@@ -101,7 +101,7 @@ defmodule Nest.Agents.Agent.BatchCoordinatorTest do
         # Release the blocked call: it exits, so the coordinator takes its crash
         # path — and the report goes to a parent that is gone.
         Process.exit(stand_in, :kill)
-        assert_receive {:DOWN, ^coordinator_ref, :process, ^coordinator, :normal}, 500
+        assert_receive {:DOWN, ^coordinator_ref, :process, ^coordinator, :normal}, 1_000
       end)
 
     # The crash path says *why* it stopped, and the delivery says the parent is

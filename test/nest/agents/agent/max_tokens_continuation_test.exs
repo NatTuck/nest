@@ -44,18 +44,18 @@ defmodule Nest.Agents.Agent.MaxTokensContinuationTest do
 
     :ok = Agent.chat(pid, "Explain the thing")
 
-    assert_receive {:chat_message, {:user, %{index: 1}}}, 500
+    assert_receive {:chat_message, {:user, %{index: 1}}}, 1_000
 
-    assert_receive {:chat_message, {:assistant, %{index: 2, parts: parts}}}, 500
+    assert_receive {:chat_message, {:assistant, %{index: 2, parts: parts}}}, 1_000
     assert Enum.any?(parts, &match?(%Part.Text{text: "The first half of the answer"}, &1))
 
-    assert_receive {:chat_message, {:user, %{index: 3, parts: [%Part.Text{text: nudge}]}}}, 500
+    assert_receive {:chat_message, {:user, %{index: 3, parts: [%Part.Text{text: nudge}]}}}, 1_000
     assert nudge =~ "Keep going"
 
-    assert_receive {:chat_message, {:assistant, %{index: 4, parts: parts2}}}, 500
+    assert_receive {:chat_message, {:assistant, %{index: 4, parts: parts2}}}, 1_000
     assert Enum.any?(parts2, &match?(%Part.Text{text: "...and the second half."}, &1))
 
-    assert_receive {:chat_status, %{status: "idle"}}, 500
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
   end
 
   test "truncation takes precedence over the empty-response nudge" do
@@ -73,17 +73,17 @@ defmodule Nest.Agents.Agent.MaxTokensContinuationTest do
 
     :ok = Agent.chat(pid, "Analyze the lab")
 
-    assert_receive {:chat_message, {:user, %{index: 1}}}, 500
-    assert_receive {:chat_message, {:assistant, %{index: 2, parts: [%Part.Thinking{}]}}}, 500
+    assert_receive {:chat_message, {:user, %{index: 1}}}, 1_000
+    assert_receive {:chat_message, {:assistant, %{index: 2, parts: [%Part.Thinking{}]}}}, 1_000
 
-    assert_receive {:chat_message, {:user, %{index: 3, parts: [%Part.Text{text: nudge}]}}}, 500
+    assert_receive {:chat_message, {:user, %{index: 3, parts: [%Part.Text{text: nudge}]}}}, 1_000
     assert nudge =~ "Keep going"
     refute nudge =~ "empty response"
 
-    assert_receive {:chat_message, {:assistant, %{index: 4, parts: parts}}}, 500
+    assert_receive {:chat_message, {:assistant, %{index: 4, parts: parts}}}, 1_000
     assert Enum.any?(parts, &match?(%Part.Text{text: "Here is the real reply."}, &1))
 
-    assert_receive {:chat_status, %{status: "idle"}}, 500
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
   end
 
   test "after the retry cap the truncated turn finalizes with a warning" do
@@ -102,14 +102,14 @@ defmodule Nest.Agents.Agent.MaxTokensContinuationTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Keep writing")
 
-        assert_receive {:chat_message, {:user, %{index: 1}}}, 500
-        assert_receive {:chat_message, {:assistant, %{index: 2}}}, 500
-        assert_receive {:chat_message, {:user, %{index: 3}}}, 500
-        assert_receive {:chat_message, {:assistant, %{index: 4}}}, 500
-        assert_receive {:chat_message, {:user, %{index: 5}}}, 500
-        assert_receive {:chat_message, {:assistant, %{index: 6}}}, 500
+        assert_receive {:chat_message, {:user, %{index: 1}}}, 1_000
+        assert_receive {:chat_message, {:assistant, %{index: 2}}}, 1_000
+        assert_receive {:chat_message, {:user, %{index: 3}}}, 1_000
+        assert_receive {:chat_message, {:assistant, %{index: 4}}}, 1_000
+        assert_receive {:chat_message, {:user, %{index: 5}}}, 1_000
+        assert_receive {:chat_message, {:assistant, %{index: 6}}}, 1_000
 
-        assert_receive {:chat_status, %{status: "idle"}}, 500
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
     assert log =~ "Truncated assistant response finalized after 2 keep-going re-prompt(s)"

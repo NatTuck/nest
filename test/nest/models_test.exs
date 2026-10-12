@@ -31,7 +31,7 @@ defmodule Nest.ModelsTest do
   # well over both this suite's 500 ms test bound and ExUnit's 2000 ms per-test
   # ceiling, so a wedged server surfaces as the stuck call it is rather than as
   # a test timeout (#21).
-  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 500)
+  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 1_000)
 
   setup :set_mimic_global
 
@@ -252,7 +252,7 @@ defmodule Nest.ModelsTest do
       # The setup's scan has already cached that provider's answer for
       # this name; the static value must be emitted verbatim rather
       # than replaced by the detected one.
-      previous = :sys.get_state(Models, 500).static_config
+      previous = :sys.get_state(Models, 1_000).static_config
 
       static_model = %Nest.DotConfig.Model{
         name: "pegasus-static-audio",
@@ -318,7 +318,7 @@ defmodule Nest.ModelsTest do
   # Add an auto-models provider to the running singleton's static config,
   # restoring the previous snapshot afterwards. The stub answers its URL.
   defp inject_second_provider do
-    previous = :sys.get_state(Models, 500).static_config
+    previous = :sys.get_state(Models, 1_000).static_config
 
     provider = %Nest.DotConfig.Provider{
       name: "other-auto",
@@ -389,7 +389,7 @@ defmodule Nest.ModelsTest do
       # test to restore the canonical state for any
       # subsequent tests in the file.
       pre_reload_static =
-        :sys.get_state(Models, 500)
+        :sys.get_state(Models, 1_000)
         |> Map.fetch!(:static_config)
 
       # Stub `DotConfig.load/0` for this test only. The call

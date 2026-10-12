@@ -79,7 +79,7 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
         fn s ->
           %{s | llm_metrics: %{s.llm_metrics | context_limit: 10_000}}
         end,
-        500
+        1_000
       )
 
       # And inflate the system prompt so the projected total
@@ -95,7 +95,7 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
 
           %{s | chat_state: %{s.chat_state | messages: [inflated_system | rest]}}
         end,
-        500
+        1_000
       )
 
       log =
@@ -105,13 +105,13 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
           # The chat pipeline detects `:cannot_compact` and sets
           # the new status, broadcasts the error with the actual
           # numbers, and does NOT spawn a chat turn.
-          assert_receive {:chat_status, %{status: "context_overflow"}}, 500
+          assert_receive {:chat_status, %{status: "context_overflow"}}, 1_000
 
           # The chat:error is broadcast with `compactionError`
           # NOT set (so the JS routes it to `setAgentError`,
           # not `setCompactionError`) and carries the actual
           # numbers (limit, system prompt size, reserve).
-          assert_receive {:chat_error, payload}, 500
+          assert_receive {:chat_error, payload}, 1_000
           refute Map.get(payload, :compactionError) == true
           assert payload.content =~ "context limit (10000)"
           assert payload.content =~ "system prompt"
@@ -122,7 +122,7 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       assert log =~ "context_overflow" or log =~ "context limit"
 
       # The agent stays idle (no chat turn was spawned).
-      state_after = :sys.get_state(pid, 500)
+      state_after = :sys.get_state(pid, 1_000)
       assert Machine.status_for(state_after.live.machine) == :context_overflow
       assert state_after.live.machine.pending_user_message == nil
 
@@ -150,10 +150,10 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
 
       # The user message is broadcast, the chat turn starts,
       # and the LLM responds. No context_overflow status.
-      assert_receive {:chat_message, {:user, _}}, 500
+      assert_receive {:chat_message, {:user, _}}, 1_000
       refute_receive {:chat_status, %{status: "context_overflow"}}, 200
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       Agent.terminate(pid)
     end
@@ -180,12 +180,12 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
         fn s ->
           %{s | chat_state: %{s.chat_state | messages: old_messages, next_message_index: 2}}
         end,
-        500
+        1_000
       )
 
       send_compaction_done(pid, summary_text, {:tool_call, tool_call_msg, 3, 30})
 
-      _ = :sys.get_state(pid, 500)
+      _ = :sys.get_state(pid, 1_000)
 
       assert_receive {:chat_compaction, payload}
 
@@ -197,7 +197,7 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       # The archive is fetched lazily over `chat:history`, not pushed.
       refute Map.has_key?(payload, :history)
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 

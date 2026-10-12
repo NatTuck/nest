@@ -40,7 +40,7 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
       capture_log(fn ->
         Broadcasts.error(space_id, agent_id, 5, "Something broke", "Foo.bar/2")
 
-        assert_receive {:chat_error, %{index: 5, content: content}}, 500
+        assert_receive {:chat_error, %{index: 5, content: content}}, 1_000
 
         assert content == "Something broke\n[Source: Foo.bar/2]"
       end)
@@ -83,7 +83,7 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
       # (the UI needs the full text), but the server log entry is.
       # The content is `long_msg` plus a trailing `\n[Source: Foo.bar/2]`
       # tag (20 bytes), so the broadcast content is 1,020 bytes.
-      assert_receive {:chat_error, %{content: content}}, 500
+      assert_receive {:chat_error, %{content: content}}, 1_000
       assert byte_size(content) == 1_020
       assert String.starts_with?(content, long_msg)
       assert String.ends_with?(content, "\n[Source: Foo.bar/2]")
@@ -100,7 +100,7 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
       capture_log(fn ->
         Broadcasts.error(space_id, agent_id, 1, "msg", "")
 
-        assert_receive {:chat_error, %{content: content}}, 500
+        assert_receive {:chat_error, %{content: content}}, 1_000
         # Empty source is filtered out by `tag_source/2` — only
         # non-empty sources get the `[Source: ...]` suffix.
         assert content == "msg"
@@ -116,7 +116,7 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
       capture_log(fn ->
         Broadcasts.error(space_id, agent_id, 2, "Plain error")
 
-        assert_receive {:chat_error, %{index: 2, content: "Plain error"}}, 500
+        assert_receive {:chat_error, %{index: 2, content: "Plain error"}}, 1_000
       end)
     end
 

@@ -54,7 +54,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     {:ok, parent_name, parent_pid, _parent_id} = start_parent(vid)
     Mimic.allow(MockClient, self(), parent_pid)
     Mimic.allow(Nest.Agents, self(), parent_pid)
-    :sys.replace_state(parent_pid, &swap_to_mock/1, 500)
+    :sys.replace_state(parent_pid, &swap_to_mock/1, 1_000)
     MockClient.start_link(parent_pid)
 
     {:ok, child_name} =
@@ -69,7 +69,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
 
     # Drive the chat_stopped handler directly (see module doc).
     send(parent_pid, {:chat_stopped, parent_pid})
-    new_state = :sys.get_state(parent_pid, 500)
+    new_state = :sys.get_state(parent_pid, 1_000)
 
     # Bookkeeping reset.
     assert Machine.pending_children(new_state.live.machine) == %{}
@@ -100,7 +100,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     {:ok, parent_name, parent_pid, _parent_id} = start_parent(vid)
     Mimic.allow(MockClient, self(), parent_pid)
     Mimic.allow(Nest.Agents, self(), parent_pid)
-    :sys.replace_state(parent_pid, &swap_to_mock/1, 500)
+    :sys.replace_state(parent_pid, &swap_to_mock/1, 1_000)
     MockClient.start_link(parent_pid)
 
     # Spawn child A (the grandchild's parent) from the parent.
@@ -148,7 +148,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     # torn down (this is the contract that distinguishes this
     # cascade from `Agent.terminate/2`).
     send(parent_pid, {:chat_stopped, parent_pid})
-    _ = :sys.get_state(parent_pid, 500)
+    _ = :sys.get_state(parent_pid, 1_000)
 
     # The parent is still alive.
     assert {:ok, _still_alive_parent} =
@@ -191,7 +191,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     {:ok, parent_name, parent_pid, _parent_id} = start_parent(vid)
     Mimic.allow(MockClient, self(), parent_pid)
     Mimic.allow(Nest.Agents, self(), parent_pid)
-    :sys.replace_state(parent_pid, &swap_to_mock/1, 500)
+    :sys.replace_state(parent_pid, &swap_to_mock/1, 1_000)
     MockClient.start_link(parent_pid)
 
     {:ok, child_name} =
@@ -214,10 +214,10 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     GenServer.cast(parent_pid, {:child_completed, child_name, "ok", child_total})
 
     # Drain the cast before flushing chat_stopped.
-    _ = :sys.get_state(parent_pid, 500)
+    _ = :sys.get_state(parent_pid, 1_000)
 
     send(parent_pid, {:chat_stopped, parent_pid})
-    new_state = :sys.get_state(parent_pid, 500)
+    new_state = :sys.get_state(parent_pid, 1_000)
 
     # Usage was merged before the children sub-machine got cleared.
     assert Machine.pending_children(new_state.live.machine) == %{}

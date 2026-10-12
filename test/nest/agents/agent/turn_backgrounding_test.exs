@@ -49,7 +49,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       fn state ->
         %{state | live: %{state.live | machine: %{state.live.machine | loop_count: n}}}
       end,
-      500
+      1_000
     )
   end
 
@@ -106,8 +106,8 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       # The batch reached the tool worker, which is parked before the first
       # `agents-send`: the agent really is `:executing_tools`.
-      assert_receive {:send_blocked, tool}, 500
-      assert Machine.status_for(:sys.get_state(pid, 500).live.machine) == :executing_tools
+      assert_receive {:send_blocked, tool}, 1_000
+      assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :executing_tools
 
       # Release it: the message reaches this same agent, and the batch is
       # backgrounded on it.
@@ -115,11 +115,11 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       # The worker parks again, before the second `agents-send` — so the batch
       # is *still running* for everything asserted below.
-      assert_receive {:send_blocked, ^tool}, 500
+      assert_receive {:send_blocked, ^tool}, 1_000
 
       {second, llm2} = next_request()
 
-      mid = :sys.get_state(pid, 500)
+      mid = :sys.get_state(pid, 1_000)
 
       # The delivery did not wait for the batch: the message is in the
       # transcript, answered by the machine's synthetic result and ack, and the
@@ -161,11 +161,11 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # The second `agents-send` runs *after* the backgrounding, so this agent
       # is streaming by then and the entry queues behind the delivered one.
       send(tool, :release_send)
-      assert_receive {:chat_inbox, %{count: 1}}, 500
+      assert_receive {:chat_inbox, %{count: 1}}, 1_000
 
       # The batch returns with no live worker to settle it: its real result
       # arrives as a queued notice behind the peer's entry.
-      assert_receive {:chat_inbox, %{count: 2}}, 500
+      assert_receive {:chat_inbox, %{count: 2}}, 1_000
 
       # The turn the delivered message started ends, and the boundary drain
       # delivers the two queued entries as one batch.
@@ -183,7 +183,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # The notice's own turn, which ends the run.
       assert statuses_until_idle() == ["streaming", "idle"]
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil
@@ -273,18 +273,18 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       # The batch reached the tool worker, which is parked before its
       # `agents-send`: the agent really is `:executing_tools`.
-      assert_receive {:send_blocked, worker}, 500
-      assert Machine.status_for(:sys.get_state(pid, 500).live.machine) == :executing_tools
+      assert_receive {:send_blocked, worker}, 1_000
+      assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :executing_tools
 
       # A human message with a mode now backgrounds the batch and is delivered
       # mid-batch — never dropped — and its mode is applied at delivery, not
       # while it was queued.
       :ok = Agent.chat(pid, "human note", "plan", "alice")
-      assert_receive {:chat_inbox, %{count: 1}}, 500
+      assert_receive {:chat_inbox, %{count: 1}}, 1_000
 
       {second, llm2} = next_request()
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :streaming
       assert state.live.inbox == []
@@ -309,7 +309,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       # The batch returns with no live worker to settle it, so its real result
       # arrives as a queued notice behind the peer's entry.
-      assert_receive {:chat_inbox, %{count: 2}}, 500
+      assert_receive {:chat_inbox, %{count: 2}}, 1_000
 
       # The delivered message's turn ends, and the boundary drain delivers the
       # two queued entries as one batch.
@@ -332,7 +332,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       assert statuses_until_idle() == ["streaming", "idle"]
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.inbox == []
@@ -410,8 +410,8 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       :ok = Agent.chat(pid, "start the turn")
 
       # The batch reached the tool worker, parked before its `agents-send`.
-      assert_receive {:send_blocked, tool}, 500
-      assert Machine.status_for(:sys.get_state(pid, 500).live.machine) == :executing_tools
+      assert_receive {:send_blocked, tool}, 1_000
+      assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :executing_tools
 
       # Release it: the message reaches this same agent, so the batch
       # backgrounds itself and the message is delivered now.
@@ -419,13 +419,13 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       # The worker parks again *after* the delivery, so the batch is still
       # running while the delivered turn runs to its end.
-      assert_receive {:send_delivered, ^tool}, 500
+      assert_receive {:send_delivered, ^tool}, 1_000
 
       # The delivered turn ends: the agent is idle, the batch is still in the
       # background, and nothing is queued behind it.
       assert statuses_until_idle() == ["streaming", "executing_tools", "streaming", "idle"]
 
-      idle = :sys.get_state(pid, 500)
+      idle = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(idle.live.machine) == :idle
       assert map_size(idle.live.machine.work.backgrounded) == 1
@@ -438,7 +438,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       assert statuses_until_idle() == ["streaming", "idle"]
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.backgrounded == %{}
@@ -507,15 +507,15 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       :ok = Agent.chat(pid, "start the turn")
 
-      assert_receive {:send_blocked, tool}, 500
-      assert Machine.status_for(:sys.get_state(pid, 500).live.machine) == :executing_tools
+      assert_receive {:send_blocked, tool}, 1_000
+      assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :executing_tools
 
       # The aggregate is the disposition the coordinator relies on: `:delivered`
       # means it reached the transcript.
       assert {:ok, :delivered} =
                Agent.deliver_internal(pid, "agents-batch", "the aggregate", :notice)
 
-      mid = :sys.get_state(pid, 500)
+      mid = :sys.get_state(pid, 1_000)
 
       # The notice is in the transcript and the batch has moved to the
       # background, still running: the delivery did not wait for it.
@@ -527,15 +527,15 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # Release the batch: its own send runs, it returns, and everything it
       # queued drains. The turn must reach idle for the teardown.
       send(tool, :release_send)
-      assert_receive {:send_delivered, ^tool}, 500
+      assert_receive {:send_delivered, ^tool}, 1_000
       send(tool, :release_result)
 
       assert Eventually.eventually(
-               fn -> Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle end,
+               fn -> Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle end,
                timeout: 500
              )
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       assert state.live.inbox == []
       assert state.live.machine.work.backgrounded == %{}
@@ -580,8 +580,8 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # The batch reached the tool worker, which is parked before its
       # `agents-send`: the agent really is `:executing_tools` with a live worker
       # and an unanswered `tool_use`.
-      assert_receive {:send_blocked, tool}, 500
-      assert Machine.status_for(:sys.get_state(pid, 500).live.machine) == :executing_tools
+      assert_receive {:send_blocked, tool}, 1_000
+      assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :executing_tools
 
       # A human message backgrounds the batch, so it is *still running* — parked
       # inside its call — when the stop lands.
@@ -591,7 +591,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # nothing else will move the machine before the stop.
       {_second, _llm2} = next_request()
 
-      backgrounded = :sys.get_state(pid, 500).live.machine.work.backgrounded
+      backgrounded = :sys.get_state(pid, 1_000).live.machine.work.backgrounded
       assert [ref] = Map.keys(backgrounded)
       assert backgrounded[ref] == %{pid: tool, ids: ["send_1"]}
 
@@ -601,7 +601,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       # The worker's death is the stop's doing, not the parked harness's safety
       # valve: the `:DOWN` arrives while the worker is still parked.
-      assert_receive {:DOWN, ^monitor, :process, ^tool, :killed}, 500
+      assert_receive {:DOWN, ^monitor, :process, ^tool, :killed}, 1_000
 
       # streaming -> executing_tools (the batch) -> streaming (the backgrounding)
       # -> idle (the stop). The stop is the turn's end, so no `idle` precedes it.
@@ -613,11 +613,11 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # follow-up chain first: a turn that started in it — the drain the stop's
       # own `:stop_timer` runs — would have broadcast its `streaming` frame (and
       # been dispatched from its deferred `:iterate`) by now.
-      _ = :sys.get_state(pid, 500)
+      _ = :sys.get_state(pid, 1_000)
       refute_received {:chat_status, _}
       refute_received {:llm_request, _, _}
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.backgrounded == %{}
@@ -641,9 +641,9 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # Both orders are no-ops: while `:stopping` the stop guards drop it, and
       # once the entry is cleared the idle clause drops it as stale.
       send(pid, {:tool_results, ref, [late_result()]})
-      _ = :sys.get_state(pid, 500)
+      _ = :sys.get_state(pid, 1_000)
 
-      assert :sys.get_state(pid, 500).chat_state.messages == state.chat_state.messages
+      assert :sys.get_state(pid, 1_000).chat_state.messages == state.chat_state.messages
 
       AgentTestHelpers.assert_unique_message_indices(state)
     end

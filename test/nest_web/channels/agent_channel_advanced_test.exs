@@ -20,7 +20,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
   # well over both this suite's 500 ms test bound and ExUnit's 2000 ms per-test
   # ceiling, so a wedged server surfaces as the stuck call it is rather than as
   # a test timeout (#21).
-  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 500)
+  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 1_000)
 
   setup :verify_on_exit!
 
@@ -41,10 +41,10 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user", "origin" => "human"}, 500
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user", "origin" => "human"}, 1_000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # Sync verifies state via the channel's sync handler (a sync
       # GenServer.call). The reply includes the agent's messages.
@@ -58,7 +58,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       channel_pid = socket.channel_pid
       mon = Process.monitor(channel_pid)
       GenServer.stop(channel_pid, :normal)
-      assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 500
+      assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 1_000
 
       {:ok, new_conn} =
         connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
@@ -84,15 +84,15 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       ref1 = push(socket, "chat:message", %{"content" => "Message 1"})
       assert_reply ref1, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       channel_pid = socket.channel_pid
       mon = Process.monitor(channel_pid)
       GenServer.stop(channel_pid, :normal)
-      assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 500
+      assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 1_000
 
       {:ok, socket2_conn} =
         connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
@@ -109,7 +109,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       channel_pid = socket2.channel_pid
       mon = Process.monitor(channel_pid)
       GenServer.stop(channel_pid, :normal)
-      assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 500
+      assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 1_000
 
       {:ok, socket3_conn} =
         connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
@@ -171,7 +171,10 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       # User messages no longer carry request api_logs after finalization
       # (they're rebuilt on demand when the user expands the API logs widget).
-      assert_push "chat:message", %{"index" => 1, "role" => "user", "apiLogs" => user1_logs}, 500
+      assert_push "chat:message",
+                  %{"index" => 1, "role" => "user", "apiLogs" => user1_logs},
+                  1_000
+
       assert user1_logs == []
 
       # The assistant message is stored complete: the single broadcast
@@ -187,13 +190,16 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       # Fence round 1 on its own `idle` before starting round 2, so the
       # round-2 fence below can't match a stale round-1 idle (which would
       # let the test exit mid-round-2).
-      assert_push "chat:status", %{status: "idle"}, 500
+      assert_push "chat:status", %{status: "idle"}, 1_000
 
       # === Round 2 ===
       ref2 = push(socket, "chat:message", %{"content" => "How are you?"})
       assert_reply ref2, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 3, "role" => "user", "apiLogs" => user2_logs}, 500
+      assert_push "chat:message",
+                  %{"index" => 3, "role" => "user", "apiLogs" => user2_logs},
+                  1_000
+
       assert user2_logs == []
 
       assert_push "chat:message",
@@ -203,7 +209,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       assert asst2_log["type"] == "response"
       assert asst2_log["id"] == "004.000"
 
-      assert_push "chat:status", %{status: "idle"}, 500
+      assert_push "chat:status", %{status: "idle"}, 1_000
     end
 
     test "assistant message carries exactly one response log (no request/history payload)",
@@ -211,7 +217,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       ref = push(socket, "chat:message", %{"content" => "First message"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user", "apiLogs" => user_logs}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user", "apiLogs" => user_logs}, 1_000
       assert user_logs == []
 
       assert_push "chat:message",
@@ -228,7 +234,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       refute Map.has_key?(asst_resp["payload"], "messages"),
              "response log payload must not contain the request message history"
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "tool messages have empty api_logs; assistant messages carry response logs", %{
@@ -271,7 +277,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       MockClient.clear()
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 
@@ -280,9 +286,9 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       logs_ref = push(socket, "chat:api-logs", %{"index" => 2})
       assert_reply logs_ref, :ok, %{"apiLogs" => [log]}
@@ -296,8 +302,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user", "apiLogs" => []}, 500
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user", "apiLogs" => []}, 1_000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       logs_ref = push(socket, "chat:api-logs", %{"index" => 1})
       assert_reply logs_ref, :ok, %{"apiLogs" => [log]}
@@ -342,7 +348,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       send(socket.channel_pid, {:chat_message, tool_result_message})
 
-      assert_push "chat:message", payload, 500
+      assert_push "chat:message", payload, 1_000
 
       assert payload["index"] == 2
       assert payload["role"] == "tool"
@@ -368,8 +374,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
 
       tool_result_message =
         {:tool,
@@ -414,7 +420,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       assert part["content"] == "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 ."
       assert part["arguments"] == %{"command" => "ls -la"}
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "chat:sync handles messages with ToolResult structs in api_logs", %{
@@ -425,8 +431,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
 
       message_with_api_logs =
         {:assistant,
@@ -487,7 +493,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       assert tool_result["tool_call_id"] == "call_456"
       assert tool_result["content"] == "output"
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 end

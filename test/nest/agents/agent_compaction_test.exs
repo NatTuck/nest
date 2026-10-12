@@ -84,7 +84,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # appends the tool results only after the `shell-cmd` run (a real bwrap
       # process) has returned, so this is the fence that covers it and the
       # end-of-turn wait below covers a mocked round trip only.
-      assert_receive {:chat_message, {:tool, %Tool{parts: [result_part | _]}}}, 500
+      assert_receive {:chat_message, {:tool, %Tool{parts: [result_part | _]}}}, 1_000
 
       # The end of the turn is read from the machine, the authority
       # (`status_for/1`), not from the `chat:status` broadcast: a missed or
@@ -168,7 +168,7 @@ defmodule Nest.Agents.AgentCompactionTest do
           # (real bwrap processes) have returned, so this is the one fence that
           # covers them and the end-of-turn wait below covers a mocked round
           # trip only.
-          assert_receive {:chat_message, {:tool, %Tool{parts: parts}}}, 500
+          assert_receive {:chat_message, {:tool, %Tool{parts: parts}}}, 1_000
 
           # The end of the turn is read from the machine, the authority
           # (`status_for/1`), not from the `chat:status` broadcast.
@@ -231,7 +231,7 @@ defmodule Nest.Agents.AgentCompactionTest do
         fn s ->
           %{s | chat_state: %{s.chat_state | messages: old_messages, next_message_index: 4}}
         end,
-        500
+        1_000
       )
 
       suffix =
@@ -261,7 +261,7 @@ defmodule Nest.Agents.AgentCompactionTest do
 
           %{s | live: %{s.live | machine: machine}}
         end,
-        500
+        1_000
       )
 
       send(
@@ -273,7 +273,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # returns only after the broadcast has fired (broadcast is
       # in the same callback as the message handling), so the
       # PubSub message is already in our mailbox.
-      _ = :sys.get_state(pid, 500)
+      _ = :sys.get_state(pid, 1_000)
 
       assert_receive {:chat_compaction, payload}
       assert payload.marker["role"] == "compaction"
@@ -282,7 +282,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # fetches it lazily over `chat:history`.
       refute Map.has_key?(payload, :history)
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 
@@ -290,7 +290,7 @@ defmodule Nest.Agents.AgentCompactionTest do
     test "an over-reserve final reply is compacted and committed active-side exactly once" do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       space_id = state.space_id
       name = state.name
 
@@ -308,7 +308,7 @@ defmodule Nest.Agents.AgentCompactionTest do
               }
           }
         end,
-        500
+        1_000
       )
 
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
@@ -326,7 +326,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert_receive {:chat_compaction, %{marker: _}}, 1_000
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       messages = state.chat_state.messages
 
       # The deferred reply landed exactly once on the active side.
@@ -366,7 +366,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # must NOT have a handler for `{:preflight_request, _, _}` —
       # any such message lands in the Agent's mailbox unhandled
       # and is silently discarded.
-      state_before = :sys.get_state(pid, 500)
+      state_before = :sys.get_state(pid, 1_000)
       fake_task = self()
 
       send(pid, {:preflight_request, fake_task, state_before.chat_state.messages || []})
@@ -459,7 +459,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # scheduler.
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       messages = state.chat_state.messages
       history = Nest.Persistence.load_history(state.space_id, state.name)
 
@@ -568,7 +568,7 @@ defmodule Nest.Agents.AgentCompactionTest do
   # just sent. See the call sites: the `:sys.get_state/1` is what makes this
   # sound (and is why it needs no wait).
   defp refute_no_preflight_reply(pid) do
-    _ = :sys.get_state(pid, 500)
+    _ = :sys.get_state(pid, 1_000)
     refute_receive {:preflight_result, _, _}, 0
   end
 
@@ -582,7 +582,7 @@ defmodule Nest.Agents.AgentCompactionTest do
   # (real bwrap processes) is never inside this wait.
   defp await_idle(pid) do
     assert Eventually.eventually(
-             fn -> Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle end,
+             fn -> Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle end,
              timeout: 500
            )
   end

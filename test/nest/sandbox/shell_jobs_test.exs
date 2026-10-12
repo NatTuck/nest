@@ -39,7 +39,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
   # The manager owns the waiter list, so read it directly instead of
   # racing an OS kill against a fixed receive timeout.
-  defp waiters(id), do: Map.get(:sys.get_state(ShellJobs, 500).waiters, id, [])
+  defp waiters(id), do: Map.get(:sys.get_state(ShellJobs, 1_000).waiters, id, [])
 
   test "starts a job running, lists it, and kills it", %{key: key, tmp: tmp} do
     id = start_running!("sleep 30", tmp, key)
@@ -47,7 +47,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     assert :ok = ShellJobs.kill(key, id)
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, _code}, 500
+    assert_receive {:shell_job_exit, ^id, _code}, 1_000
     assert [%{id: ^id, status: :exited, killed: true}] = ShellJobs.list(key)
   end
 
@@ -87,8 +87,8 @@ defmodule Nest.Sandbox.ShellJobsTest do
     # Wait for the job to exit, then synchronize with the manager so its
     # `finish_job/3` (which removes the host script) has run to completion.
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, 0}, 500
-    _ = :sys.get_state(ShellJobs, 500)
+    assert_receive {:shell_job_exit, ^id, 0}, 1_000
+    _ = :sys.get_state(ShellJobs, 1_000)
 
     assert Path.wildcard(Path.join(tmp, ".nest-cmd-*.sh"), match_dot: true) == []
   end
@@ -101,7 +101,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     assert :ok = ShellJobs.kill(key, id)
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, _code}, 500
+    assert_receive {:shell_job_exit, ^id, _code}, 1_000
 
     assert {:ok, _} = start_background("sleep 30", tmp, key)
   end
@@ -115,7 +115,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
     id = start_running!("sleep 0.2; echo late", tmp, key)
 
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, 0}, 500
+    assert_receive {:shell_job_exit, ^id, 0}, 1_000
     assert {:ok, "late\n"} = ShellJobs.output(key, id)
   end
 
@@ -149,7 +149,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     ref = Process.monitor(agent)
     Process.exit(agent, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^agent, :killed}, 500
+    assert_receive {:DOWN, ^ref, :process, ^agent, :killed}, 1_000
 
     assert eventually(fn -> ShellJobs.list(key) == [] end, timeout: 500)
   end
@@ -219,9 +219,9 @@ defmodule Nest.Sandbox.ShellJobsTest do
     Phoenix.PubSub.subscribe(Nest.PubSub, "agent:7:#{name}")
 
     id = start_running!("sleep 30", tmp, key)
-    assert_receive {:shell_jobs, %{jobs: [%{id: ^id}]}}, 500
+    assert_receive {:shell_jobs, %{jobs: [%{id: ^id}]}}, 1_000
 
     assert :ok = ShellJobs.kill(key, id)
-    assert_receive {:shell_jobs, %{jobs: [%{id: ^id, killed: true}]}}, 500
+    assert_receive {:shell_jobs, %{jobs: [%{id: ^id, killed: true}]}}, 1_000
   end
 end
