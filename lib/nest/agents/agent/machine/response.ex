@@ -311,13 +311,29 @@ defmodule Nest.Agents.Agent.Machine.Response do
 
   defp notice_plan(m, response) do
     messages = m.work.ctx.messages
-    specs = collect_specs(m, response, messages)
+    # One projection per response, shared by the notice spec and the threshold
+    # bookkeeping below. Each projection batches a `stat` of every `file-read`
+    # target (issue #48), so deriving it twice would double that cost for the
+    # same answer.
+    projected = projection_or_nil(m, response, messages)
+    specs = collect_specs(m, projected)
 
     {actions, _msgs} = inject_specs(specs, m, messages)
-    {crossed, projection} = context_bookkeeping(m, response, messages)
+    {crossed, projection} = context_bookkeeping(m, projected)
 
     actions = actions ++ crossed_actions(m, crossed) ++ projection_actions(projection)
     {actions, maybe_clear_pending(m, specs)}
+  end
+
+  # The projection only means something with a usable limit: below it there is
+  # nothing to compare against (and `BatchSizer.preflight/2` has no clause for
+  # a nil or zero limit), so every consumer skips.
+  defp projection_or_nil(m, response, messages) do
+    limit = m.work.ctx.context_limit
+
+    if is_integer(limit) and limit > 0 do
+      projected_tokens_for_response(m, response, messages)
+    end
   end
 
   defp inject_specs(specs, m, messages) do
@@ -355,34 +371,32 @@ defmodule Nest.Agents.Agent.Machine.Response do
       else: m
   end
 
-  defp collect_specs(m, response, messages) do
+  defp collect_specs(m, projected) do
     budget =
       if m.work.pending_notice, do: BudgetReminder.spec_from_pending(m.work.pending_notice)
 
-    context = compute_context_spec(m, response, messages)
+    context = compute_context_spec(m, projected)
 
     [budget, context] |> Enum.reject(&is_nil/1)
   end
 
-  defp compute_context_spec(m, response, messages) do
+  defp compute_context_spec(m, projected) do
     limit = m.work.ctx.context_limit
 
     if not is_integer(limit) or limit <= 0 do
       nil
     else
       crossed = m.work.ctx.crossed_thresholds
-      projected = projected_tokens_for_response(m, response, messages)
       compact? = ContextReminder.compact_available?(m.work.ctx.tools)
       ContextReminder.spec(projected, limit, crossed, compact?)
     end
   end
 
-  defp context_bookkeeping(m, response, messages) do
+  defp context_bookkeeping(m, projected) do
     limit = m.work.ctx.context_limit
 
     if is_integer(limit) and limit > 0 do
       crossed = m.work.ctx.crossed_thresholds
-      projected = projected_tokens_for_response(m, response, messages)
 
       crossed =
         case ContextReminder.highest_unannounced(projected, limit, crossed) do
@@ -419,7 +433,7 @@ defmodule Nest.Agents.Agent.Machine.Response do
 
       tool_calls ->
         case BatchSizer.preflight(tool_calls, ctx) do
-          :fits -> BatchSizer.projected_content_size(tool_calls, ctx)
+          {:fits, projected} -> projected
           {:refuse, _reason} -> ctx.context_limit
         end
     end

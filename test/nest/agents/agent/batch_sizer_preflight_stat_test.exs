@@ -15,6 +15,9 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.BatchSizer.ProjectedSize
   alias Nest.Agents.Agent.BatchSizer.ProjectedSizeOracle
+  alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Machine.Response
+  alias Nest.LLM.RunResponse
   alias Nest.Messages.ToolCall
   alias Nest.Sandbox
 
@@ -248,7 +251,7 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
       # Refusal decisions agree at a limit derived from the oracle's own total:
       # `content` refuses (the reserve is always positive) and a huge limit fits.
       assert {:refuse, _} = BatchSizer.preflight(calls, %{c | context_limit: content})
-      assert :fits = BatchSizer.preflight(calls, %{c | context_limit: 10_000_000})
+      assert {:fits, _} = BatchSizer.preflight(calls, %{c | context_limit: 10_000_000})
     end
 
     test "matches the frozen oracle on the tool clauses it knows" do
@@ -342,7 +345,14 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
       # Three reads of one file project three results even though they share a
       # single stat; a dedupe that collapsed the projection would let an
       # oversized batch through.
-      assert three_content == 3 * one_content
+      #
+      # Pinned as a difference rather than `three_content == 3 * one_content`:
+      # the identity only holds when the per-call projection is an exact
+      # integer multiple of `one_content - Budget.size([])`. A call whose
+      # projection falls back to `summary_baseline_size() * 1.2` is not, and
+      # `ceil/1` in `projected_content_size/2` then breaks it by one token with
+      # no hint as to why.
+      assert three_content - one_content == 2 * (one_content - Budget.size([]))
 
       # `reserve(200_000) == 40_000`, so one read fits and three do not.
       limit = 200_000
@@ -350,8 +360,99 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
 
       assert one_content + reserve <= limit
       assert three_content + reserve > limit
-      assert :fits = BatchSizer.preflight(one, %{c | context_limit: limit})
+      assert {:fits, _} = BatchSizer.preflight(one, %{c | context_limit: limit})
       assert {:refuse, _} = BatchSizer.preflight(three, %{c | context_limit: limit})
     end
+  end
+
+  describe "one batched stat per response (issue #48 follow-up)" do
+    # The response path used to derive the projection twice: `preflight/2`
+    # projected the batch, then the `:fits` arm projected it again to get the
+    # number. Each projection is one `Sandbox.stat_many/4` (which delegates to
+    # `StatBatch.stat_many/4` — Mimic copies `Nest.Sandbox`, not `StatBatch`,
+    # so this counts that call, the file's existing pattern), and the response
+    # also projected once per notice step, so a single LLM response cost four
+    # batched invocations. It must cost one.
+    test "a response with tool calls stats the batch exactly once" do
+      Mimic.expect(Sandbox, :stat_many, 1, fn paths, _c, _w, _t ->
+        assert paths == ["/ws/a.txt"]
+        Map.new(paths, &{&1, {:ok, 100}})
+      end)
+
+      Mimic.reject(Sandbox, :stat, 4)
+
+      calls = [
+        call("c1", "file-read", %{"path" => "/ws/a.txt"}),
+        call("c2", "file-read", %{"path" => "/ws/a.txt"})
+      ]
+
+      assert {:ok, _actions, _machine} = Response.dispatch(machine(), response(calls))
+
+      # A response with no tool calls has nothing to project, so it spends no
+      # batched invocation either — and the expectation above is for one call
+      # in total, so a second one here would fail rather than pass unnoticed.
+      assert {:ok, _actions, _machine} = Response.dispatch(machine(), response([]))
+    end
+  end
+
+  # A `:generating` machine carrying the context shape the response path reads
+  # (the `ctx/2` above is a subset: the BatchSizer only needs tools/caps/limit).
+  defp machine do
+    ctx =
+      response_ctx()
+      |> Map.put(:context_limit, 100_000)
+      |> Map.put(:messages, [system_message()])
+
+    Machine.new(
+      phase: :generating,
+      kind: :chat,
+      work: %Machine.Work{
+        worker_kind: :http,
+        worker_ref: make_ref(),
+        ctx: ctx,
+        max_iterations: 10
+      }
+    )
+  end
+
+  defp response_ctx do
+    %{
+      agent_pid: self(),
+      agent_name: "a",
+      space_id: 1,
+      client_config: %Nest.LLM.ClientConfig{client: Nest.LLM.MockClient, model: "m"},
+      tools: [],
+      tool_choice: :auto,
+      caps: %{"fs" => %{"read" => ["/"], "write" => ["/tmp"]}, "net" => false},
+      context_limit: 100_000,
+      context_limit_source: :default,
+      messages: [],
+      tmp_path: nil,
+      workspace_path: nil,
+      mode: "chat",
+      next_message_index: 1,
+      crossed_thresholds: MapSet.new(),
+      context_projection: nil,
+      api_log_sequences: %{},
+      vocation: nil,
+      depth: 0
+    }
+  end
+
+  defp system_message do
+    {:system,
+     %Nest.Messages.System{index: 0, parts: [%Nest.Messages.Part.Text{text: "sys"}], api_logs: []}}
+  end
+
+  defp response(tool_calls) do
+    %RunResponse{
+      text: "",
+      thinking: nil,
+      tool_calls: tool_calls,
+      refusal: nil,
+      stop_reason: :end_turn,
+      model: "m",
+      usage: %{}
+    }
   end
 end

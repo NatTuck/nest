@@ -79,9 +79,12 @@ defmodule Nest.Sandbox.StatBatchTest do
                  Map.new(paths, &{&1, {:error, :sandbox_setup_failed}})
       end)
 
-    # One line per chunk, not one per path. `capture_log` is global, so this
-    # asserts inclusion only (SMELLS.md).
+    # One line per chunk, not one per path — and the line stands for the whole
+    # chunk rather than naming one path as if it were the only failure. The
+    # first chunk carries 100 of the 101 paths.
+    # `capture_log` is global, so this asserts inclusion only (SMELLS.md).
     assert log =~ "Nest.Sandbox.stat: sandbox_setup_failed"
+    assert log =~ "(+99 more)"
   end
 
   test "stats a path containing a newline individually", ctx do
@@ -155,5 +158,71 @@ defmodule Nest.Sandbox.StatBatchTest do
 
     assert StatBatch.stat_many(paths, ctx.caps, ctx.workspace, nil) ==
              Map.new(paths, &{&1, {:error, "No workspace configured for this agent"}})
+  end
+
+  describe "equivalence with per-path stat/4" do
+    # The batch's entire job is to answer what `stat/4` would have answered,
+    # path for path. These are the awkward paths: the framing trick the module
+    # doc advertises (`%n` last, so a `|` in a path cannot break the line) has
+    # no other test, and a symlink / a directory / a name that is not valid
+    # UTF-8 each exercise a different part of the parse and the fallback.
+    test "agrees on pipes, symlinks, directories and non-UTF8 names", ctx do
+      pipe = Path.join(ctx.workspace, "a|b|c.txt")
+      File.write!(pipe, String.duplicate("x", 11))
+
+      target = Path.join(ctx.workspace, "target.txt")
+      File.write!(target, String.duplicate("y", 13))
+      link = Path.join(ctx.workspace, "link.txt")
+      File.ln_s!(target, link)
+
+      dir = Path.join(ctx.workspace, "subdir")
+      File.mkdir_p!(dir)
+
+      # Byte-wise concatenation: `Path.join/2` is not asked to validate it.
+      non_utf8 = ctx.workspace <> "/bad-" <> <<0xFF, 0xFE>> <> ".txt"
+      File.write!(non_utf8, String.duplicate("z", 17))
+
+      paths = [pipe, link, dir, non_utf8]
+
+      # The `|` path reports its real size, not a size parsed out of the path:
+      # this is the assertion the framing claim in the moduledoc was missing.
+      assert StatBatch.stat_many([pipe], ctx.caps, ctx.workspace, nil) ==
+               %{pipe => {:ok, 11}}
+
+      assert StatBatch.stat_many(paths, ctx.caps, ctx.workspace, nil) ==
+               per_path_stat(paths, ctx.caps, ctx.workspace)
+    end
+
+    test "agrees on a path the sandbox denies", ctx do
+      denied_dir = Path.join(ctx.workspace, "denied")
+      File.mkdir_p!(denied_dir)
+      denied = Path.join(denied_dir, "secret.txt")
+      File.write!(denied, "s")
+      File.chmod!(denied_dir, 0o000)
+
+      # `on_exit` runs LIFO, so this restores the mode before the setup's
+      # `rm_rf!` walks the workspace.
+      on_exit(fn -> File.chmod!(denied_dir, 0o755) end)
+
+      # Pin the fixture itself: if the sandbox could read through the mode the
+      # equivalence below would hold vacuously (both sides `{:ok, _}`).
+      assert per_path_stat([denied], ctx.caps, ctx.workspace) ==
+               %{denied => {:error, :read_permission_denied}}
+
+      assert StatBatch.stat_many([denied], ctx.caps, ctx.workspace, nil) ==
+               per_path_stat([denied], ctx.caps, ctx.workspace)
+    end
+  end
+
+  # The per-path answer `Sandbox.stat/4` gives, in `stat_many/4`'s shape
+  # (`{:ok, size}` rather than a `%File.Stat{}`), so the two can be compared
+  # byte for byte — `:ok`/`:error` shape and reason included.
+  defp per_path_stat(paths, caps, workspace) do
+    Map.new(paths, fn path ->
+      case Sandbox.stat(path, caps, workspace, nil) do
+        {:ok, %File.Stat{size: size}} -> {path, {:ok, size}}
+        {:error, reason} -> {path, {:error, reason}}
+      end
+    end)
   end
 end

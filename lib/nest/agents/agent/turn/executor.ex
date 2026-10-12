@@ -181,7 +181,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   defp execute({:preflight, ctx, calls, _continuation}, state) do
     decision =
       case BatchSizer.preflight(calls, ctx) do
-        :fits -> :fits
+        {:fits, _projected} -> :fits
         {:refuse, reason} -> {:refuse, reason}
       end
 
