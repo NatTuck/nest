@@ -74,19 +74,36 @@ What changed:
   on the caller's own deadline — so a wake-up that is not an event *is* the
   expiry, and the expiry is still reported as an ordinary timeout result.
 * the caller's own earlier read is still the reference for what `any` waits for
-  ("a target that was busy when the call was made and is idle now"), so the
-  tool's observable semantics are unchanged; only *which read is the authority*
-  moved.
+  ("a target that was busy when the call was made and is idle now").
+
+**One behaviour change, and it is deliberate.** Everything else — the immediate
+decision, and the partition the caller is handed — now comes from the
+authoritative read rather than the caller's earlier one. On `main` the
+immediate decision used the caller's read, so `all: true` could return
+`Idle: bob, carol` while the fresh read had bob running; now it blocks until
+every target is genuinely idle. That was a lie about a running target, so it is
+a fix, not a regression, and it is pinned by *"the immediate decision is the
+authoritative read's, not the caller's"* in `wait_for_idle_test.exs` (which
+fails on `main`: the frames have the caller's read all-idle and the authority
+read with bob running, and the test asserts the timeout partition, not
+`Idle: bob, carol`). `any` is unaffected in the case that matters: with nothing
+busy at the caller's read there is nothing to wait for, so it returns at once
+with the fresh partition — which is honest even then, because the text it
+reports comes from that read.
 * `@max_after_ms` mirrors `ShellCmd`'s ceiling: `:timeout` has no upper limit but
   `after` does, so a wait longer than `after` accepts re-arms rather than
   reporting an expiry it has not reached. (Without the slice this would
   otherwise have become a new crash path for an absurd `timeout` argument.)
 
-`lib/nest/agents/agent/watch.ex` loses its own pre-read for the same reason: it
-was a second read taken before the subscription, i.e. part of the race.
+`lib/nest/agents/agent/watch.ex` keeps its own pre-read, deliberately. It is not
+the authority — `await/6` re-reads after subscribing, and that read is what
+decides — it is only the *reference* read that fixes which targets `any` is
+waiting on. An earlier draft of this note claimed the pre-read was removed; that
+was wrong, and the comment on the call site says why it is there.
 
-Tests: `wait_for_idle_test.exs` and `watch_test.exs` are green. Three sites in
-them had to stop relying on the poll (see "Test findings" below).
+Tests: `wait_for_idle_test.exs` and `watch_test.exs` are green. Four sites in
+them had to stop relying on the poll (two in each file; see "Test findings"
+below).
 
 ## Design decision 1 — the 2 s `:stop_timer` (not implemented)
 
@@ -229,8 +246,8 @@ cross-process state read with a timeout.
 
 ## Test findings — tests that were relying on the poll
 
-Three sites in the wait tests were driving their scenario *with the poll* rather
-than with an event, and had to change. No assertion was weakened; each now drives
+Four sites in the wait tests were driving their scenario *with the poll* rather
+than with an event, and had to change (two in each file). No assertion was weakened; each now drives
 the real event, which is strictly stronger than waiting for a tick.
 
 1. `test/nest/agents/agent/watch_test.exs` — "the target's delivery wakes the
@@ -407,3 +424,63 @@ than as success).
   result) rather than a synchronization primitive. I left it, but it is the one
   remaining place where elapsed time selects which of two honest answers the
   caller gets, and a reviewer may reasonably want it named as such.
+
+## Review round 1 — what changed, and what the review found
+
+The first cut of the `WaitForIdle` change installed one monitor per target that
+the *initial* read called busy, and nothing after that. The review found the
+hole that leaves: a process that takes a target's name *after* that read is
+never watched, and its death broadcasts nothing, so the wait would fall back to
+the deadline — a narrowing relative to `main`'s 250 ms re-read, which is the one
+thing this change must not do. (The reviewer also confirmed the read/subscribe
+ordering argument itself against `phoenix_pubsub` and `Registry` internals.)
+
+The fix, now in the code:
+
+* monitors are a `%{pid => ref}` map, and `monitor_targets/3` adds one for every
+  target with a live process, keyed by pid so a *replacement* process is
+  monitored rather than mistaken for one already held. A `{:via, Registry, …}`
+  tuple would not do: it resolves the name once, at monitor time.
+* it runs on **every** read — the first one and each event-driven re-read — and
+  it runs **before** the read, so the process the read is about is already
+  watched whenever the read can see it. A name cannot be busy while the process
+  answering for it goes unwatched: if the process changed, its predecessor's
+  death delivered a `:DOWN` and its own start a status frame, so either way the
+  next read re-runs this.
+* the loop wakes on *any* target status frame, not only `idle`. A target that
+  goes busy after the read is a target worth watching, and its own busy frame is
+  the only notice that it is.
+* the caller's deadline is still the only `receive ... after` value.
+
+**Coverage, and why it needed a purpose-built test.** Every existing wait test
+stubs the listing and names targets (`bob`, `carol`, `db-only`) with no process
+registered under any of them, so `Registry.lookup` always missed and the monitor
+code never ran. A test with a *real* agent as the target does not fix that: with
+the real listing, the wait's own read reported the target **idle** while the
+target was still alive and registered (`Process.alive?` true, `Registry.lookup`
+`{:ok, pid}` on both sides of the wait, measured), so the wait fired on its first
+check and the monitor was never involved. That observation is unexplained and
+looks like a `Visibility`/registry artifact rather than anything this change
+touches — it deserves its own look, because a listing read that reports a live
+busy agent as idle is exactly the transient-idle class of bug the moduledoc
+warns about. It is **not** fixed here and no test depends on it.
+
+What the monitor is pinned by instead is a deterministic test
+(*"a target's death wakes the wait when no frame can"*): a real process
+registered under the target's name, a stubbed listing, and a stub that kills
+that process on the read *after* the one that installs the monitor — so the
+ordering is the wait's own read order, not a timer, and the only thing that can
+wake it is the `:DOWN`. Verified: with `monitor_targets/3` stubbed out the test
+fails; with it in place it passes. The real-agent variant was deleted rather
+than left passing for the wrong reason.
+
+## Precommit timing (recorded, not chased)
+
+`scripts/precommit-test.sh` wraps `mix test` in `timeout 5`, and the suite
+measured **7.2–7.7 s** on this host during the audit. That is not attributable
+to this change: the reworked tests finish on an event the test broadcasts
+instead of waiting out a tick, so the wait files went from 5.1 s to 0.9 s, and
+the project's own note (`notes/faster-tests.md`) records 4.70–4.75 s on a quiet
+host. Several agents were running suites against one shared Postgres at the
+time. Recording it here so the next reader does not re-derive it, and not
+touching the suite's total time in this change.

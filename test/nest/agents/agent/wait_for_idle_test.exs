@@ -61,13 +61,44 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
   # target from busy to idle (or drop it from the space entirely). This is
   # the only status source the wait reads — `Nest.Agents.get_info/2` is never
   # called, which is what keeps the wait read-only.
-  defp stub_listing(frames) do
+  # `on_read` runs on the n-th read, before the frame for that read is popped.
+  # A test that needs something to happen *between* two reads (rather than
+  # between two events) uses it, so the ordering is the wait's own read order
+  # and not a timer.
+  defp stub_listing(frames, opts \\ []) do
     id = {:wait_listing, System.unique_integer([:positive])}
-    queue = start_supervised!({Agent, fn -> frames end}, id: id)
+    queue = start_supervised!({Elixir.Agent, fn -> frames end}, id: id)
+    on_read = Keyword.get(opts, :on_read, fn _read -> :ok end)
+    reads = :counters.new(1, [])
 
     Mimic.stub(Nest.Agents, :list_agents_info_for_space, fn _space_id ->
-      Agent.get_and_update(queue, &next_listing/1)
+      :counters.add(reads, 1, 1)
+      on_read.(:counters.get(reads, 1))
+      Elixir.Agent.get_and_update(queue, &next_listing/1)
     end)
+  end
+
+  # A real process registered under `{space_id, name}`: all `monitor_targets/3`
+  # needs from a target is a pid from the registry, and the statuses the wait
+  # reads come from the stubbed listing. Killed at the end of the test (or by
+  # the test itself) so nothing is left registered under a name the other tests
+  # in this file use.
+  defp register_target(space_id, name) do
+    test_pid = self()
+
+    pid =
+      spawn(fn ->
+        {:ok, _} = Registry.register(Nest.Agents.Registry, {space_id, name}, nil)
+        send(test_pid, {:registered, self()})
+
+        receive do
+          :never -> :ok
+        end
+      end)
+
+    assert_receive {:registered, ^pid}
+    on_exit(fn -> Process.exit(pid, :kill) end)
+    pid
   end
 
   defp next_listing([last]), do: {last, [last]}
@@ -124,7 +155,7 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
     ])
 
     send(self(), {:chat_status, %{status: "idle"}})
-    {result, _log} = run(%{"names" => ["bob", "carol"]})
+    {result, _log} = run(%{"names" => ["bob", "carol"], "timeout" => 500})
 
     assert %ToolResult{is_error: false, content: content} = result
     assert content == "Idle: bob. Still busy: carol."
@@ -134,7 +165,7 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
     stub_listing([[agent("bob", :streaming)], [agent("bob", :streaming)], []])
 
     send(self(), {:chat_status, %{status: "idle"}})
-    {gone, _log} = run(%{"names" => ["bob"]})
+    {gone, _log} = run(%{"names" => ["bob"], "timeout" => 500})
 
     assert %ToolResult{is_error: false, content: content} = gone
     assert content == "Idle: (none). Still busy: (none). No longer running: bob."
@@ -151,10 +182,61 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
     ])
 
     send(self(), {:chat_status, %{status: "idle"}})
-    {result, _log} = run(%{"names" => ["bob", "carol"], "all" => true})
+    {result, _log} = run(%{"names" => ["bob", "carol"], "all" => true, "timeout" => 500})
 
     assert %ToolResult{is_error: false, content: content} = result
     assert content == "Idle: bob, carol. Still busy: (none)."
+  end
+
+  # The monitor is the event a dying target cannot broadcast: a stopped,
+  # archived or crashed agent emits no status frame at all, so its `:DOWN` is
+  # the only thing that can wake a wait that is watching it.
+  #
+  # This drives exactly that, with the ordering the wait itself establishes: a
+  # real process registered under the target's name, and a listing whose
+  # *second* read kills it. The wait installs its monitors before each read, so
+  # the kill lands after the monitor is in place and before the wait parks —
+  # and the third read, the one that reports the target idle, is reachable only
+  # through the `:DOWN`. With no monitor there is nothing to wake it, and the
+  # wait reports the timeout instead (which is what the assertion below
+  # refuses).
+  test "a target's death wakes the wait when no frame can" do
+    target = register_target(1, "bob")
+
+    stub_listing(
+      [
+        [agent("bob", :streaming)],
+        [agent("bob", :streaming)],
+        [agent("bob", :idle)]
+      ],
+      on_read: fn
+        2 -> Process.exit(target, :kill)
+        _read -> :ok
+      end
+    )
+
+    {result, _log} = run(%{"names" => ["bob"], "timeout" => 1_000})
+
+    assert %ToolResult{is_error: false, content: content} = result
+    assert content == "Idle: bob. Still busy: (none)."
+  end
+
+  test "the immediate decision is the authoritative read's, not the caller's" do
+    # The caller's own read sees both targets idle; by the authoritative read
+    # (taken after the subscription) bob is running. `all: true` must keep
+    # waiting: returning "Idle: bob, carol" for a target that is running is a
+    # lie. This is the one behaviour change from the poll, where the immediate
+    # decision used the caller's read, and it is deliberate.
+    stub_listing([
+      [agent("bob", :idle), agent("carol", :idle)],
+      [agent("bob", :streaming), agent("carol", :idle)]
+    ])
+
+    {result, log} = run(%{"names" => ["bob", "carol"], "all" => true, "timeout" => 1})
+
+    assert %ToolResult{is_error: false, content: content} = result
+    assert content == "Timed out after 1ms. Idle: carol. Still busy: bob."
+    assert log =~ "agents-wait-for-idle: no target changed within 1ms"
   end
 
   test "reaching the timeout is a normal result, not an error" do
