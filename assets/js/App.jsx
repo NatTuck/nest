@@ -102,7 +102,7 @@ function RootGate() {
   }, [isConnected, navigate]);
 
   return (
-    <div className="flex h-screen items-center justify-center bg-gray-50">
+    <div className="flex h-full items-center justify-center bg-gray-50">
       <div className="text-sm text-gray-500">Loading…</div>
     </div>
   );
@@ -136,7 +136,7 @@ function Layout() {
   }, []);
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="flex h-full bg-gray-50">
       <Sidebar />
       <main className="flex-1 overflow-auto p-6">
         <Outlet />

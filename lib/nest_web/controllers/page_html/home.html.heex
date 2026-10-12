@@ -1,1 +1,15 @@
-<div id="root" class="h-screen"></div>
+<%!--
+  The React mount point, and the one place the document's height is pinned.
+
+  `h-full` chains up through `body` and `html` (both `h-full` in
+  `layouts/root.html.heex`) to the viewport, and `overflow-hidden` means
+  nothing rendered inside the app can grow the document past it. The app
+  owns all scrolling: the sidebar's nav and the conversation pane are the
+  scroll regions, and there is no page-level scrollbar.
+
+  Heights are percentages of the viewport rather than `100vh` so that
+  browser chrome which makes `vh` taller than the *visible* viewport
+  cannot reintroduce an overflow either.
+--%>
+<div id="root" class="h-full overflow-hidden"></div>
+

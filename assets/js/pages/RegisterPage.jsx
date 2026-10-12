@@ -53,7 +53,7 @@ export function RegisterPage() {
   const usingBootstrap = token === "first-user";
 
   return (
-    <div className="flex h-screen items-center justify-center bg-gray-50">
+    <div className="flex h-full items-center justify-center bg-gray-50">
       <form
         onSubmit={handleSubmit}
         className="w-full max-w-sm rounded-lg bg-white p-6 shadow-md"

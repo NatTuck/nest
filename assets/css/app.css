@@ -22,4 +22,26 @@
 /* Make LiveView wrapper divs transparent for layout */
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
+/* ## The app shell owns all scrolling
+   There is no page-level scrollbar. The document height is pinned to the
+   viewport by a chain of percentage heights, and nothing rendered inside
+   the app can grow past it:
+       html (h-full) -> body (h-full) -> #root (h-full overflow-hidden)
+       -> the app shell (h-full) -> <main> / the conversation pane
+   Each link is a Tailwind `h-full` in markup, so the chain is visible
+   where the layout is defined: `layouts/root.html.heex` for `html` and
+   `body`, `page_html/home.html.heex` for `#root`, and `js/App.jsx` for
+   the shell.
+
+   Percentages are used rather than `100vh` deliberately. `vh` is the
+   viewport *including* browser chrome, so on a device where the chrome
+   shrinks the visible area, a `100vh` shell is taller than what you can
+   see: the document grows, a page scrollbar appears, and the strip below
+   the first screen is blank. Percentage heights resolve against the
+   visible viewport, so that cannot happen.
+
+   Scroll regions are therefore only the ones that opt in: the sidebar's
+   `nav` (`overflow-y-auto`), `<main>` on the static pages, and the
+   conversation pane. `js/appShellLayout.test.jsx` pins this. */
+
 /* This file is for your main application CSS */
