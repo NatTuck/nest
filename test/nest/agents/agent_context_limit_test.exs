@@ -47,9 +47,13 @@ defmodule Nest.Agents.AgentContextLimitTest do
     # the stub applies globally (see `set_mimic_global` in
     # `setup`) so the agent's `init/1` sees it without an
     # explicit `Mimic.allow/3`.
-    :sys.replace_state(pid, fn state ->
-      %{state | client_config: %{state.client_config | client: MockClient}}
-    end)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        %{state | client_config: %{state.client_config | client: MockClient}}
+      end,
+      500
+    )
 
     MockClient.start_link(pid)
 
@@ -74,7 +78,7 @@ defmodule Nest.Agents.AgentContextLimitTest do
         model: %{name: "claude-3-opus-20240229"}
       })
 
-    state = :sys.get_state(pid)
+    state = :sys.get_state(pid, 500)
     assert state.llm_metrics.context_limit == 200_000
     assert state.llm_metrics.context_limit_source == :openrouter
     assert_received {:cache_lookup, "claude-3-opus-20240229"}
@@ -93,7 +97,7 @@ defmodule Nest.Agents.AgentContextLimitTest do
         model: %{name: "claude-3-opus-20240229"}
       })
 
-    state = :sys.get_state(pid)
+    state = :sys.get_state(pid, 500)
     assert state.llm_metrics.context_limit == 128_000
     assert state.llm_metrics.context_limit_source == :default
 
@@ -117,7 +121,7 @@ defmodule Nest.Agents.AgentContextLimitTest do
         model: %{name: "pegasus-default-only", provider: "pegasus"}
       })
 
-    state = :sys.get_state(pid)
+    state = :sys.get_state(pid, 500)
     assert state.llm_metrics.context_limit == 512_000
     assert state.llm_metrics.context_limit_source == :provider_default
 
@@ -141,7 +145,7 @@ defmodule Nest.Agents.AgentContextLimitTest do
         model: %{name: "pegasus-per-model-test", provider: "pegasus"}
       })
 
-    state = :sys.get_state(pid)
+    state = :sys.get_state(pid, 500)
     assert state.llm_metrics.context_limit == 32_000
     assert state.llm_metrics.context_limit_source == :config
 
@@ -188,7 +192,7 @@ defmodule Nest.Agents.AgentContextLimitTest do
         model: %{name: "Qwen/Qwen3.6-27B-FP8", provider: "typhon"}
       })
 
-    state = :sys.get_state(pid)
+    state = :sys.get_state(pid, 500)
     assert state.llm_metrics.context_limit == 224_000
     assert state.llm_metrics.context_limit_source == :olla
     assert_received {:cache_lookup, "typhon"}

@@ -165,23 +165,27 @@ defmodule Nest.Agents.AgentChatTest do
 
       # High `context_limit` so no context notice fires: the only possible
       # source of the bridge is the sequence repair, not a threshold.
-      :sys.replace_state(pid, fn state ->
-        messages = [
-          {:system,
-           %Nest.Messages.System{
-             index: 0,
-             parts: [%Part.Text{text: "Test system prompt."}],
-             api_logs: []
-           }},
-          {:user, %User{index: 1, parts: [%Part.Text{text: "previous question"}], api_logs: []}}
-        ]
+      :sys.replace_state(
+        pid,
+        fn state ->
+          messages = [
+            {:system,
+             %Nest.Messages.System{
+               index: 0,
+               parts: [%Part.Text{text: "Test system prompt."}],
+               api_logs: []
+             }},
+            {:user, %User{index: 1, parts: [%Part.Text{text: "previous question"}], api_logs: []}}
+          ]
 
-        %{
-          state
-          | chat_state: %{state.chat_state | messages: messages, next_message_index: 2},
-            llm_metrics: %{state.llm_metrics | context_limit: 200_000}
-        }
-      end)
+          %{
+            state
+            | chat_state: %{state.chat_state | messages: messages, next_message_index: 2},
+              llm_metrics: %{state.llm_metrics | context_limit: 200_000}
+          }
+        end,
+        500
+      )
 
       MockClient.set_response("Done")
 
@@ -191,7 +195,7 @@ defmodule Nest.Agents.AgentChatTest do
 
       refute_received {:chat_error, _}
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       tail = Enum.take(state.chat_state.messages, -4)
 
       assert Enum.map(tail, &elem(&1, 0)) == [:user, :assistant, :user, :assistant]
@@ -216,24 +220,28 @@ defmodule Nest.Agents.AgentChatTest do
       # message": the alternation bridge's text must never appear.
       {pid, _agent_id} = start_agent()
 
-      :sys.replace_state(pid, fn state ->
-        messages = [
-          {:system,
-           %Nest.Messages.System{
-             index: 0,
-             parts: [%Part.Text{text: "Test system prompt."}],
-             api_logs: []
-           }},
-          {:user, %User{index: 1, parts: [%Part.Text{text: "previous question"}], api_logs: []}}
-        ]
+      :sys.replace_state(
+        pid,
+        fn state ->
+          messages = [
+            {:system,
+             %Nest.Messages.System{
+               index: 0,
+               parts: [%Part.Text{text: "Test system prompt."}],
+               api_logs: []
+             }},
+            {:user, %User{index: 1, parts: [%Part.Text{text: "previous question"}], api_logs: []}}
+          ]
 
-        %{state | chat_state: %{state.chat_state | messages: messages, next_message_index: 2}}
-      end)
+          %{state | chat_state: %{state.chat_state | messages: messages, next_message_index: 2}}
+        end,
+        500
+      )
 
       send_compaction_done(pid, "Summary", nil)
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
 
       assert {:assistant, %Assistant{parts: [%Part.Text{text: compaction_ack}]}} =
                List.last(state.chat_state.messages)
@@ -247,7 +255,7 @@ defmodule Nest.Agents.AgentChatTest do
 
       refute_received {:chat_error, _}
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
 
       assert Enum.map(state.chat_state.messages, &elem(&1, 0)) |> Enum.take(-4) ==
                [:user, :assistant, :user, :assistant]
@@ -300,7 +308,7 @@ defmodule Nest.Agents.AgentChatTest do
       # No broadcast carries the full Vocation struct; the only way to
       # observe it is via the agent's process state. Kept as future
       # work: expose `state.vocation` via a GenServer call.
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       assert state.vocation != nil
       assert state.vocation.id == vocation.id
       assert state.vocation.name == vocation.name

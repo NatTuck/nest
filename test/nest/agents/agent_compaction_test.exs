@@ -226,9 +226,13 @@ defmodule Nest.Agents.AgentCompactionTest do
       # Replace the active list and point the counter past the in-memory
       # indices so the commit's appends don't collide with the persisted
       # system row.
-      :sys.replace_state(pid, fn s ->
-        %{s | chat_state: %{s.chat_state | messages: old_messages, next_message_index: 4}}
-      end)
+      :sys.replace_state(
+        pid,
+        fn s ->
+          %{s | chat_state: %{s.chat_state | messages: old_messages, next_message_index: 4}}
+        end,
+        500
+      )
 
       suffix =
         {:user,
@@ -237,24 +241,28 @@ defmodule Nest.Agents.AgentCompactionTest do
       carried_entry = {:tool_call, tool_call_msg, 3, 30}
       ref = make_ref()
 
-      :sys.replace_state(pid, fn s ->
-        machine = s.live.machine
+      :sys.replace_state(
+        pid,
+        fn s ->
+          machine = s.live.machine
 
-        machine = %{
-          machine
-          | kind: :compaction,
-            phase: :generating,
-            entry: {:compaction, [suffix], carried_entry},
-            work: %{
-              machine.work
-              | worker_kind: :http,
-                worker_ref: ref,
-                active_message_index: s.chat_state.next_message_index
-            }
-        }
+          machine = %{
+            machine
+            | kind: :compaction,
+              phase: :generating,
+              entry: {:compaction, [suffix], carried_entry},
+              work: %{
+                machine.work
+                | worker_kind: :http,
+                  worker_ref: ref,
+                  active_message_index: s.chat_state.next_message_index
+              }
+          }
 
-        %{s | live: %{s.live | machine: machine}}
-      end)
+          %{s | live: %{s.live | machine: machine}}
+        end,
+        500
+      )
 
       send(
         pid,
@@ -265,7 +273,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # returns only after the broadcast has fired (broadcast is
       # in the same callback as the message handling), so the
       # PubSub message is already in our mailbox.
-      _ = :sys.get_state(pid)
+      _ = :sys.get_state(pid, 500)
 
       assert_receive {:chat_compaction, payload}
       assert payload.marker["role"] == "compaction"
@@ -282,22 +290,26 @@ defmodule Nest.Agents.AgentCompactionTest do
     test "an over-reserve final reply is compacted and committed active-side exactly once" do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       space_id = state.space_id
       name = state.name
 
       # A small effective window: the reply's reported usage (85k) plus the
       # reserve (20k) exceeds 100k, while the pre-reply context fits.
-      :sys.replace_state(pid, fn state ->
-        %{
-          state
-          | llm_metrics: %{
-              state.llm_metrics
-              | context_limit: 100_000,
-                context_limit_source: :config
-            }
-        }
-      end)
+      :sys.replace_state(
+        pid,
+        fn state ->
+          %{
+            state
+            | llm_metrics: %{
+                state.llm_metrics
+                | context_limit: 100_000,
+                  context_limit_source: :config
+              }
+          }
+        end,
+        500
+      )
 
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
 
@@ -311,10 +323,10 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       :ok = Agent.chat(pid, "answer this")
 
-      assert_receive {:chat_compaction, %{marker: _}}, 5_000
-      assert_receive {:chat_status, %{status: "idle"}}, 5_000
+      assert_receive {:chat_compaction, %{marker: _}}, 2_000
+      assert_receive {:chat_status, %{status: "idle"}}, 2_000
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       messages = state.chat_state.messages
 
       # The deferred reply landed exactly once on the active side.
@@ -354,7 +366,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # must NOT have a handler for `{:preflight_request, _, _}` —
       # any such message lands in the Agent's mailbox unhandled
       # and is silently discarded.
-      state_before = :sys.get_state(pid)
+      state_before = :sys.get_state(pid, 500)
       fake_task = self()
 
       send(pid, {:preflight_request, fake_task, state_before.chat_state.messages || []})
@@ -445,9 +457,9 @@ defmodule Nest.Agents.AgentCompactionTest do
       # Single deterministic fence: `:chat_status "idle"` fires once
       # at the end. Read intermediate broadcasts races the BEAM
       # scheduler.
-      assert_receive {:chat_status, %{status: "idle"}}, 5_000
+      assert_receive {:chat_status, %{status: "idle"}}, 2_000
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       messages = state.chat_state.messages
       history = Nest.Persistence.load_history(state.space_id, state.name)
 
@@ -556,7 +568,7 @@ defmodule Nest.Agents.AgentCompactionTest do
   # just sent. See the call sites: the `:sys.get_state/1` is what makes this
   # sound (and is why it needs no wait).
   defp refute_no_preflight_reply(pid) do
-    _ = :sys.get_state(pid)
+    _ = :sys.get_state(pid, 500)
     refute_receive {:preflight_result, _, _}, 0
   end
 
@@ -570,7 +582,7 @@ defmodule Nest.Agents.AgentCompactionTest do
   # (real bwrap processes) is never inside this wait.
   defp await_idle(pid) do
     assert Eventually.eventually(
-             fn -> Machine.status_for(:sys.get_state(pid).live.machine) == :idle end,
+             fn -> Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle end,
              timeout: 500
            )
   end

@@ -73,7 +73,7 @@ defmodule Nest.Agents.ChatTaskCleanupTest do
 
       # The agent finalized cleanly — still alive, in :idle.
       assert Process.alive?(pid)
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       assert Machine.status_for(state.live.machine) == :idle
     end
 

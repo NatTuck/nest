@@ -130,7 +130,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
       {:ok, child_name} = Supervisor.start_agent_with_parent(parent_state, "do it", override)
 
-      child_state = :sys.get_state(via_registry(child_name))
+      child_state = :sys.get_state(via_registry(child_name), 500)
       assert child_state.model == override
 
       space_id = AgentTestHelpers.current_space_id()
@@ -143,7 +143,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
       {:ok, child_name} = Supervisor.start_agent_with_parent(parent_state, "do it")
 
-      child_state = :sys.get_state(via_registry(child_name))
+      child_state = :sys.get_state(via_registry(child_name), 500)
       assert child_state.model == parent_state.model
 
       space_id = AgentTestHelpers.current_space_id()
@@ -270,7 +270,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
         parent_pid = pid
 
         Mimic.allow(Nest.LLM.MockClient, self(), parent_pid)
-        :sys.replace_state(parent_pid, &swap_to_mock/1)
+        :sys.replace_state(parent_pid, &swap_to_mock/1, 500)
 
         # Parent cleanup: register the same DOWN-blocking
         # teardown that `AgentTestHelpers.start_agent/1` uses.

@@ -178,7 +178,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
     end
 
     test "arm_timer produces a timer_armed follow-up" do
-      {_state, follow} = run({:arm_timer, 5_000, :stop_timer})
+      {_state, follow} = run({:arm_timer, 2_000, :stop_timer})
       assert {:timer_armed, :stop_timer, ref} = follow
       Process.cancel_timer(ref)
     end

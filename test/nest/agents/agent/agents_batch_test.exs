@@ -79,7 +79,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert child_names == ["alpha", "beta", "gamma"]
 
     # The tool result is the confirmation, not the aggregate: nothing waited.
-    confirmation = batch_tool_result(:sys.get_state(parent_pid)).content
+    confirmation = batch_tool_result(:sys.get_state(parent_pid, 500)).content
     assert confirmation =~ "Fanned 3 item(s)"
     assert confirmation =~ "alpha, beta, gamma"
     assert confirmation =~ "aggregate"
@@ -94,7 +94,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert ["alpha-done", "beta-done", "gamma-done"] =
              await_aggregate(parent_pid, ~s(["alpha-done))
 
-    parent_state = :sys.get_state(parent_pid)
+    parent_state = :sys.get_state(parent_pid, 500)
     AgentTestHelpers.assert_unique_message_indices(parent_state)
 
     # The children report to the coordinator, so the parent reads the batch
@@ -143,7 +143,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert String.starts_with?(first, "[error:")
     assert first =~ "without producing any text"
 
-    assert Machine.pending_children(:sys.get_state(parent_pid).live.machine) == %{}
+    assert Machine.pending_children(:sys.get_state(parent_pid, 500).live.machine) == %{}
   end
 
   test "a child that dies before responding fails its slot and is not archived", %{vid: vid} do
@@ -176,7 +176,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert String.starts_with?(first, "[error:")
     assert first =~ "stopped before it answered"
 
-    assert Machine.pending_children(:sys.get_state(parent_pid).live.machine) == %{}
+    assert Machine.pending_children(:sys.get_state(parent_pid, 500).live.machine) == %{}
 
     # A failed child is never auto-archived (unlike a completed one).
     {:ok, failed_row} = Nest.Persistence.fetch_agent(space_id, child0)
@@ -198,7 +198,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert [first, second] = await_aggregate(parent_pid, "timed out after")
     assert first =~ "timed out after 1ms"
     assert second =~ "timed out after 1ms"
-    assert Machine.pending_children(:sys.get_state(parent_pid).live.machine) == %{}
+    assert Machine.pending_children(:sys.get_state(parent_pid, 500).live.machine) == %{}
   end
 
   test "a timed-out item under fail_fast stops the rest and reports it", %{vid: vid} do
@@ -216,7 +216,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
 
     # The confirmation promises exactly what fail_fast does, before anything
     # fails: it stops at the first failure and reports the slots it filled.
-    confirmation = batch_tool_result(:sys.get_state(parent_pid)).content
+    confirmation = batch_tool_result(:sys.get_state(parent_pid, 500)).content
     assert confirmation =~ "stops at the first failure"
     assert confirmation =~ "reports the slots it filled before it stopped"
 
@@ -225,7 +225,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert [report] = await_message(parent_pid, "stopped:")
     assert report =~ "Batch of 2 stopped: an item timed out after 1ms"
 
-    assert Machine.pending_children(:sys.get_state(parent_pid).live.machine) == %{}
+    assert Machine.pending_children(:sys.get_state(parent_pid, 500).live.machine) == %{}
   end
 
   test "a batch whose coordinator dies falls back to per-child messages", %{vid: vid} do
@@ -297,7 +297,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert second =~ "timed out after 1ms"
     assert third =~ "timed out after 1ms"
 
-    assert Machine.pending_children(:sys.get_state(parent_pid).live.machine) == %{}
+    assert Machine.pending_children(:sys.get_state(parent_pid, 500).live.machine) == %{}
   end
 
   test "a fail_fast stop reports the slots the batch filled before it", %{vid: vid} do
@@ -327,7 +327,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert report =~ "stopped before it answered"
 
     # The rest were stopped, not left running.
-    assert Machine.pending_children(:sys.get_state(parent_pid).live.machine) == %{}
+    assert Machine.pending_children(:sys.get_state(parent_pid, 500).live.machine) == %{}
 
     # The already-filled slot goes with the notice — a child's answer is not
     # discarded along with the batch — and the slot the stop never reached says
@@ -460,7 +460,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     aggregate =
       Eventually.eventually(
         fn ->
-          :sys.get_state(parent_pid).live.inbox
+          :sys.get_state(parent_pid, 500).live.inbox
           |> Enum.find_value(fn entry ->
             if entry.content =~ "alpha-done", do: entry.content
           end)
@@ -472,7 +472,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
 
     # It is queued, not refused and not lost: the parent's transcript does not
     # have it yet, and it sits behind the 100 peers in the queue.
-    state = :sys.get_state(parent_pid)
+    state = :sys.get_state(parent_pid, 500)
     assert List.last(state.live.inbox).content == aggregate
     assert delivered_texts(state, "alpha-done") == []
 
@@ -491,7 +491,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   end
 
   defp batch_target(parent_pid, child_name) do
-    Children.target(:sys.get_state(parent_pid).live.machine.children, child_name)
+    Children.target(:sys.get_state(parent_pid, 500).live.machine.children, child_name)
   end
 
   # Start a parent agent whose `Agents.chat/3` is stubbed (children don't run a
@@ -527,7 +527,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   defp await_message(parent_pid, needle) do
     Eventually.eventually(
       fn ->
-        state = :sys.get_state(parent_pid)
+        state = :sys.get_state(parent_pid, 500)
 
         case {Machine.status_for(state.live.machine), delivered_texts(state, needle)} do
           {:idle, [_ | _] = texts} -> texts
@@ -543,7 +543,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   defp await_idle(parent_pid) do
     Eventually.eventually(
       fn ->
-        state = :sys.get_state(parent_pid)
+        state = :sys.get_state(parent_pid, 500)
         if Machine.status_for(state.live.machine) == :idle, do: state
       end,
       timeout: 1_000
@@ -554,29 +554,17 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   # machine cannot be driven to. `status_to_machine/2` is the test-support
   # mapping the inbox tests use.
   defp set_status(pid, status) do
-    :sys.replace_state(pid, fn state ->
-      %{
-        state
-        | live: %{
-            state.live
-            | machine: Machine.status_to_machine(state.live.machine, status)
-          }
-      }
+    replace_state(pid, fn state ->
+      put_in(state.live.machine, Machine.status_to_machine(state.live.machine, status))
     end)
   end
 
   # Undo a fabricated busy status and the queue a test filled, so the agent is
   # idle (and empty) for the teardown.
   defp reset_to_idle(pid) do
-    :sys.replace_state(pid, fn state ->
-      %{
-        state
-        | live: %{
-            state.live
-            | inbox: [],
-              machine: Machine.status_to_machine(state.live.machine, :idle)
-          }
-      }
+    replace_state(pid, fn state ->
+      state = put_in(state.live.inbox, [])
+      put_in(state.live.machine, Machine.status_to_machine(state.live.machine, :idle))
     end)
   end
 
@@ -697,4 +685,9 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
 
     vid
   end
+
+  # `:sys.replace_state/3` with the suite's explicit 500 ms timeout, kept as a
+  # helper so the call stays on one line (the three-argument form pushes
+  # these files past the 700-line cap once `mix format` expands it).
+  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 500)
 end

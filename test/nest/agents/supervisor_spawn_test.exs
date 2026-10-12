@@ -58,7 +58,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
     AgentTestHelpers.ensure_cleanup(name)
 
     {:ok, pid} = Supervisor.get_agent(space_id, name)
-    :sys.get_state(pid)
+    :sys.get_state(pid, 500)
   end
 
   defp test_model, do: %{name: "qwen3.5-plus", provider: "model-studio"}
@@ -176,7 +176,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
 
       {:ok, pid} = Supervisor.get_agent(space_id, name)
-      child_state = :sys.get_state(pid)
+      child_state = :sys.get_state(pid, 500)
       assert child_state.model == override
     end
 
@@ -190,7 +190,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
 
       {:ok, pid} = Supervisor.get_agent(space_id, name)
-      child_state = :sys.get_state(pid)
+      child_state = :sys.get_state(pid, 500)
       assert child_state.model == state.model
     end
 
@@ -207,7 +207,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
 
       {:ok, pid} = Supervisor.get_agent(space_id, name)
-      child_state = :sys.get_state(pid)
+      child_state = :sys.get_state(pid, 500)
       assert child_state.depth == max + 1
       refute Enum.any?(child_state.tools, &(&1.name == "agents-spawn"))
     end
@@ -300,7 +300,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       on_exit(fn -> _ = Supervisor.stop_agent(space.id, name) end)
 
       {:ok, pid} = Supervisor.get_agent(space.id, name)
-      child_state = :sys.get_state(pid)
+      child_state = :sys.get_state(pid, 500)
       assert child_state.vocation_id == allowed.id
     end
 

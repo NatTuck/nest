@@ -119,13 +119,13 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
 
           await_idle(pid)
 
-          msg1 = wait_for_assistant_with_tool_use(5_000)
+          msg1 = wait_for_assistant_with_tool_use(2_000)
           assert msg1 != nil
 
           assert Enum.any?(msg1.parts, &match?(%Part.ToolUse{}, &1)),
                  "expected first turn assistant to have a Part.ToolUse"
 
-          msg2 = wait_for_assistant_with_text_and_thinking(5_000)
+          msg2 = wait_for_assistant_with_text_and_thinking(2_000)
           assert msg2 != nil
 
           text = only_text(msg2.parts)
@@ -309,7 +309,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "Run it")
 
-          logs = wait_for_final_assistant_api_logs(5_000)
+          logs = wait_for_final_assistant_api_logs(2_000)
           assert logs != nil and logs != []
 
           response_log = Enum.find(logs, fn log -> log.type == :response end)
@@ -379,7 +379,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
           # Drain to find the assistant with the expected thinking
           # content. The context-notice synthetic pair may shift the
           # exact index, so match by content.
-          thinking_msg = wait_for_assistant_with_thinking("The user wants a count.", 5_000)
+          thinking_msg = wait_for_assistant_with_thinking("The user wants a count.", 2_000)
 
           assert thinking_msg != nil
           assert Enum.any?(thinking_msg.parts, &match?(%Part.Thinking{}, &1))
@@ -455,7 +455,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "List the files")
 
-          tool_assistant = wait_for_assistant_with_tool_use(5_000)
+          tool_assistant = wait_for_assistant_with_tool_use(2_000)
           assert tool_assistant != nil
           parts = tool_assistant.parts
 
@@ -482,7 +482,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
   # one the test-teardown invariant checks. See `@turn_fence_ms` for the budget.
   defp await_idle(pid) do
     assert Eventually.eventually(
-             fn -> Machine.status_for(:sys.get_state(pid).live.machine) == :idle end,
+             fn -> Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle end,
              timeout: @turn_fence_ms
            )
   end
