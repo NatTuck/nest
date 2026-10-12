@@ -27,6 +27,11 @@ defmodule Nest.ModelsTest do
   alias Nest.Models
   alias Nest.Test.ModelsTestHelpers
 
+  # `:sys.replace_state/3` with an explicit timeout: OTP's default is 5000 ms,
+  # which is ExUnit's own per-test ceiling, so a wedged server would surface as
+  # a test timeout rather than as the stuck call it is (#21).
+  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 500)
+
   setup :set_mimic_global
 
   setup do
@@ -246,7 +251,7 @@ defmodule Nest.ModelsTest do
       # The setup's scan has already cached that provider's answer for
       # this name; the static value must be emitted verbatim rather
       # than replaced by the detected one.
-      previous = :sys.get_state(Models).static_config
+      previous = :sys.get_state(Models, 500).static_config
 
       static_model = %Nest.DotConfig.Model{
         name: "pegasus-static-audio",
@@ -254,7 +259,7 @@ defmodule Nest.ModelsTest do
         multi_modal: %{"input" => ["audio"]}
       }
 
-      :sys.replace_state(Models, fn state ->
+      replace_state(Models, fn state ->
         static_config = %{
           previous
           | models: Map.put(previous.models, "pegasus-static-audio", static_model)
@@ -264,7 +269,7 @@ defmodule Nest.ModelsTest do
       end)
 
       on_exit(fn ->
-        :sys.replace_state(Models, fn state -> %{state | static_config: previous} end)
+        replace_state(Models, fn state -> %{state | static_config: previous} end)
       end)
 
       model = Enum.find(Models.list(), fn m -> m["name"] == "pegasus-static-audio" end)
@@ -309,7 +314,7 @@ defmodule Nest.ModelsTest do
   # Add an auto-models provider to the running singleton's static config,
   # restoring the previous snapshot afterwards. The stub answers its URL.
   defp inject_second_provider do
-    previous = :sys.get_state(Models).static_config
+    previous = :sys.get_state(Models, 500).static_config
 
     provider = %Nest.DotConfig.Provider{
       name: "other-auto",
@@ -321,7 +326,7 @@ defmodule Nest.ModelsTest do
       models: []
     }
 
-    :sys.replace_state(Models, fn state ->
+    replace_state(Models, fn state ->
       static_config = %{
         previous
         | providers: Map.put(previous.providers, "other-auto", provider)
@@ -331,7 +336,7 @@ defmodule Nest.ModelsTest do
     end)
 
     on_exit(fn ->
-      :sys.replace_state(Models, fn state -> %{state | static_config: previous} end)
+      replace_state(Models, fn state -> %{state | static_config: previous} end)
     end)
   end
 
@@ -377,7 +382,7 @@ defmodule Nest.ModelsTest do
       # test to restore the canonical state for any
       # subsequent tests in the file.
       pre_reload_static =
-        :sys.get_state(Models)
+        :sys.get_state(Models, 500)
         |> Map.fetch!(:static_config)
 
       # Stub `DotConfig.load/0` for this test only. The call
@@ -432,7 +437,7 @@ defmodule Nest.ModelsTest do
       # Restore the snapshot taken before this test so the
       # next test sees the canonical catalog (the reload
       # stub above wiped the real `static_config`).
-      :sys.replace_state(Models, fn state ->
+      replace_state(Models, fn state ->
         %{state | static_config: pre_reload_static}
       end)
     end

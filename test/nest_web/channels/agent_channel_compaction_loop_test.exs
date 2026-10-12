@@ -25,6 +25,11 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
   alias Nest.Agents.Agent
   alias Nest.Agents.Supervisor
 
+  # `:sys.replace_state/3` with an explicit timeout: OTP's default is 5000 ms,
+  # which is ExUnit's own per-test ceiling, so a wedged server would surface as
+  # a test timeout rather than as the stuck call it is (#21).
+  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 500)
+
   setup :verify_on_exit!
 
   test "channel pushes chat:compaction-loop to the socket on a chat_compaction_loop broadcast", %{
@@ -56,7 +61,7 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
   } do
     {:ok, agent_pid} = Supervisor.get_agent(space_id, agent_id)
 
-    :sys.replace_state(agent_pid, fn %Agent{live: cs} = state ->
+    replace_state(agent_pid, fn %Agent{live: cs} = state ->
       %{
         state
         | live: %{
@@ -83,7 +88,7 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
        } do
     {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
-    :sys.replace_state(agent_pid, fn %Agent{live: cs} = state ->
+    replace_state(agent_pid, fn %Agent{live: cs} = state ->
       %{
         state
         | live: %{
@@ -101,7 +106,7 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
 
     # Status should transition back to :idle after the OK click,
     # and the counter resets to 0.
-    state = :sys.get_state(agent_pid)
+    state = :sys.get_state(agent_pid, 500)
 
     assert Machine.status_for(state.live.machine) == :idle
     assert state.live.machine.loop_count == 0
