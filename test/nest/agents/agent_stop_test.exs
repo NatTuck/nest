@@ -47,9 +47,9 @@ defmodule Nest.Agents.AgentStopTest do
 
       :ok = Agent.chat(pid, "Tell me a story")
 
-      assert_receive {:chat_message, {:user, %{index: 1}}}, 500
-      assert_receive {:chat_status, %{status: "streaming"}}, 500
-      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_message, {:user, %{index: 1}}}, 1_000
+      assert_receive {:chat_status, %{status: "streaming"}}, 1_000
+      assert_receive {:chat_delta, _}, 1_000
 
       Agent.stop_chat(pid, self())
 
@@ -62,7 +62,7 @@ defmodule Nest.Agents.AgentStopTest do
       assert content != ""
       assert String.starts_with?(content, "x")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 
@@ -94,8 +94,8 @@ defmodule Nest.Agents.AgentStopTest do
 
       :ok = Agent.chat(pid, "Start")
 
-      assert_receive {:chat_message, {:user, _}}, 500
-      assert_receive {:chat_status, %{status: "streaming"}}, 500
+      assert_receive {:chat_message, {:user, _}}, 1_000
+      assert_receive {:chat_status, %{status: "streaming"}}, 1_000
 
       Agent.stop_chat(pid, self())
 
@@ -103,9 +103,9 @@ defmodule Nest.Agents.AgentStopTest do
                       {:assistant, %Assistant{metadata: %{"stopped_by_user" => true}}}},
                      500
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       # No message in the list is empty.
       refute Enum.any?(state.chat_state.messages, fn
@@ -145,7 +145,7 @@ defmodule Nest.Agents.AgentStopTest do
 
       :ok = Agent.chat(pid, "compact please")
 
-      assert_receive {:chat_message, {:user, _}}, 500
+      assert_receive {:chat_message, {:user, _}}, 1_000
       # Drain to find the assistant carrying the tool call (a
       # context-notice synthetic pair may precede it).
       tool_assistant = wait_for_assistant_with_tool_use(2_000)
@@ -155,7 +155,7 @@ defmodule Nest.Agents.AgentStopTest do
       # `context-compact` is the sole tool call, so the turn hands off to
       # the compactor (there is no tool worker to execute); sync on the
       # resulting `:compacting` status.
-      assert_receive {:chat_status, %{status: "compacting"}}, 500
+      assert_receive {:chat_status, %{status: "compacting"}}, 1_000
 
       # The context-compact hand-off completes quickly; the compactor
       # may already have run by the time we get here. Use the public
@@ -177,8 +177,8 @@ defmodule Nest.Agents.AgentStopTest do
 
       :ok = Agent.chat(pid, "Start")
 
-      assert_receive {:chat_message, {:user, _}}, 500
-      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_message, {:user, _}}, 1_000
+      assert_receive {:chat_delta, _}, 1_000
 
       Agent.stop_chat(pid, self())
       Agent.stop_chat(pid, self())
@@ -196,8 +196,8 @@ defmodule Nest.Agents.AgentStopTest do
       # could otherwise match the second turn's assertions
       # in a flaky way.
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
-      assert_receive {:chat_message, {:user, %{index: 3}}}, 500
-      assert_receive {:chat_message, {:assistant, _}}, 500
+      assert_receive {:chat_message, {:user, %{index: 3}}}, 1_000
+      assert_receive {:chat_message, {:assistant, _}}, 1_000
     end
   end
 
@@ -211,8 +211,8 @@ defmodule Nest.Agents.AgentStopTest do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       :ok = Agent.chat(pid, "First turn")
-      assert_receive {:chat_message, {:user, _}}, 500
-      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_message, {:user, _}}, 1_000
+      assert_receive {:chat_delta, _}, 1_000
 
       Agent.stop_chat(pid, self())
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
@@ -233,7 +233,7 @@ defmodule Nest.Agents.AgentStopTest do
       # first turn's stale messages pollute the test
       # process's mailbox.
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
-      assert_receive {:chat_message, {:user, %{index: 3}}}, 500
+      assert_receive {:chat_message, {:user, %{index: 3}}}, 1_000
 
       assert_receive {:chat_message,
                       {:assistant, %{parts: [%Part.Text{text: "Second turn response"}]}}},
@@ -262,8 +262,8 @@ defmodule Nest.Agents.AgentStopTest do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       :ok = Agent.chat(pid, "First turn")
-      assert_receive {:chat_message, {:user, _}}, 500
-      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_message, {:user, _}}, 1_000
+      assert_receive {:chat_delta, _}, 1_000
 
       Agent.stop_chat(pid, self())
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
@@ -275,7 +275,7 @@ defmodule Nest.Agents.AgentStopTest do
       :ok = Agent.chat(pid, "Second turn")
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
-      assert_receive {:chat_message, {:user, %{index: 3}}}, 500
+      assert_receive {:chat_message, {:user, %{index: 3}}}, 1_000
 
       # Reaching the second response proves the Agent GenServer survived
       # (the original bug crashed it with FunctionClauseError).
@@ -299,14 +299,14 @@ defmodule Nest.Agents.AgentStopTest do
 
       :ok = Agent.chat(pid, "Start")
 
-      assert_receive {:chat_message, {:user, _}}, 500
-      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_message, {:user, _}}, 1_000
+      assert_receive {:chat_delta, _}, 1_000
 
       assert :ok = Agent.stop_chat(pid, self())
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil
       assert state.live.cancelled == false
@@ -335,13 +335,13 @@ defmodule Nest.Agents.AgentStopTest do
               }
           }
         end,
-        500
+        1_000
       )
 
       assert :ok = Agent.stop_chat(pid, self())
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
-      assert Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
+      assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
     end
   end
 

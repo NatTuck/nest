@@ -25,7 +25,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
   # well over both this suite's 500 ms test bound and ExUnit's 2000 ms per-test
   # ceiling, so a wedged server surfaces as the stuck call it is rather than as
   # a test timeout (#21).
-  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 500)
+  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 1_000)
 
   setup :verify_on_exit!
 
@@ -49,7 +49,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
         ref = push(socket, "chat:message", %{"content" => content, "mode" => "plan"})
         assert_reply ref, :ok, %{}
 
-        state = :sys.get_state(agent_pid, 500)
+        state = :sys.get_state(agent_pid, 1_000)
 
         assert length(state.live.inbox) == n
         assert Machine.status_for(state.live.machine) == status
@@ -88,13 +88,13 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       assert_reply ref, :ok, %{"pendingMessageCount" => 2}
 
       # A broken status still refuses the message and queues nothing new.
-      before = :sys.get_state(agent_pid, 500).live.inbox
+      before = :sys.get_state(agent_pid, 1_000).live.inbox
       set_status(agent_pid, :needs_repair)
 
       ref = push(socket, "chat:message", %{"content" => "too late", "mode" => "plan"})
       assert_reply ref, :error, %{"reason" => "agent_status_needs_repair"}
 
-      assert :sys.get_state(agent_pid, 500).live.inbox == before
+      assert :sys.get_state(agent_pid, 1_000).live.inbox == before
     end
   end
 
@@ -117,14 +117,14 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       ref = push(socket, "chat:message", %{"mode" => "plan"})
       assert_reply ref, :error, %{"reason" => "invalid_content"}
 
-      assert :sys.get_state(agent_pid, 500).live.inbox == []
+      assert :sys.get_state(agent_pid, 1_000).live.inbox == []
 
       # A non-binary mode is normalized to nil, so the wire contract stays
       # string-or-null.
       ref = push(socket, "chat:message", %{"content" => "hello", "mode" => 123})
       assert_reply ref, :ok, %{}
 
-      state = :sys.get_state(agent_pid, 500)
+      state = :sys.get_state(agent_pid, 1_000)
       assert [%{content: "hello", kind: :user, mode: nil}] = state.live.inbox
 
       reset_to_idle(agent_pid)
@@ -194,7 +194,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       {_first, llm1} = next_request()
       release_llm(llm1)
 
-      assert_receive {:tool_batch_blocked, worker}, 500
+      assert_receive {:tool_batch_blocked, worker}, 1_000
 
       # The human push: accepted while busy, and delivered *now* — the batch is
       # moved to the background for it.
@@ -220,7 +220,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       assert synthetic["content"] =~ "moved to the background"
       assert synthetic["isError"] == false
 
-      assert_push "chat:message", %{"role" => "assistant", "parts" => [%{"text" => ack}]}, 500
+      assert_push "chat:message", %{"role" => "assistant", "parts" => [%{"text" => ack}]}, 1_000
       assert ack =~ "running in the background"
 
       # Then the human's message, delivered ALONE — it never merges with the
@@ -239,7 +239,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # The backgrounding left `:executing_tools` for the delivered turn, and no
       # idle went out with it: an idle here would resolve an idle-based
       # `agents-wait-for-idle` with the pre-delivery answer.
-      assert_push "chat:status", %{status: "streaming", pendingMessageCount: 0}, 500
+      assert_push "chat:status", %{status: "streaming", pendingMessageCount: 0}, 1_000
       refute_push "chat:status", %{status: "idle"}, 100
 
       # The request the delivered message rides in on.
@@ -251,8 +251,8 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # arrives as a queued notice.
       send(worker, :release_tools)
 
-      assert_push "chat:inbox", %{count: 1}, 500
-      assert_push "chat:inbox", %{count: 2}, 500
+      assert_push "chat:inbox", %{count: 1}, 1_000
+      assert_push "chat:inbox", %{count: 2}, 1_000
 
       # The delivered message's turn ends, and the boundary drain delivers the
       # two queued entries as one batch: the peer's entry keeps the agent label
@@ -271,7 +271,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       assert rest =~ "#{name}\"]\npeer note"
       assert rest =~ "Message queued for #{name} (busy)"
 
-      assert_push "chat:status", %{status: "idle"}, 500
+      assert_push "chat:status", %{status: "idle"}, 1_000
 
       # The transcript is: the turn-opening user message, the tool call and the
       # synthetic result the backgrounding appended, the backgrounding ack, the
@@ -279,7 +279,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # the batch's late result), and its response.
       assert Eventually.eventually(
                fn ->
-                 :sys.get_state(agent_pid, 500).chat_state.messages
+                 :sys.get_state(agent_pid, 1_000).chat_state.messages
                  |> Enum.map(&elem(&1, 0)) ==
                    [
                      :system,
@@ -296,7 +296,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
                timeout: 500
              )
 
-      state = :sys.get_state(agent_pid, 500)
+      state = :sys.get_state(agent_pid, 1_000)
       messages = state.chat_state.messages
 
       tool_index = Enum.find_index(messages, &match?({:tool, _}, &1))
@@ -371,7 +371,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
 
       ref = push(socket, "chat:message", %{"content" => "start the turn"})
       assert_reply ref, :ok, %{}
-      assert_receive {:compactor_blocked, compactor}, 500
+      assert_receive {:compactor_blocked, compactor}, 1_000
 
       # The human push queues while the agent is compacting. Nothing consumes it
       # — the compaction's resume is what delivers it — so the count stays at 1
@@ -379,10 +379,10 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       ref = push(socket, "chat:message", %{"content" => "human note", "mode" => "plan"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:inbox", %{count: 1}, 500
+      assert_push "chat:inbox", %{count: 1}, 1_000
       refute_push "chat:inbox", %{count: 0}, 100
 
-      state = :sys.get_state(agent_pid, 500)
+      state = :sys.get_state(agent_pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :compacting
       assert [%{content: "human note", kind: :user, mode: "plan"}] = state.live.inbox
@@ -393,7 +393,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # this test is that consume.
       send(compactor, :release_compactor)
 
-      assert_push "chat:inbox", %{count: 0, messages: []}, 500
+      assert_push "chat:inbox", %{count: 0, messages: []}, 1_000
 
       assert_push "chat:message",
                   %{"role" => "user", "mode" => "plan", "parts" => [%{"text" => text}]},
@@ -402,9 +402,9 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       assert text == "[mode: plan]\nhuman note"
 
       # The turn the delivered message started runs to completion.
-      assert_push "chat:status", %{status: "idle"}, 500
+      assert_push "chat:status", %{status: "idle"}, 1_000
 
-      state = :sys.get_state(agent_pid, 500)
+      state = :sys.get_state(agent_pid, 1_000)
 
       assert state.live.inbox == []
       assert Machine.status_for(state.live.machine) == :idle

@@ -45,7 +45,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       first = hd(state.chat_state.messages)
 
       assert match?({:system, %SystemMsg{}}, first)
@@ -93,7 +93,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
         assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       # The budget reminder is a {:user, _} message containing
       # the notice text, preceded by a {:assistant, _} attention
@@ -151,7 +151,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
         assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       # The final assistant has a different index from the
       # budget-reminder user message (regression: dual-counter
@@ -234,13 +234,13 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
               llm_metrics: %{st.llm_metrics | context_limit: 10_000}
           }
         end,
-        500
+        1_000
       )
 
       :ok = Agent.chat(pid, "Loop until done")
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       # With context_limit: 10_000, the 4000-char user body
       # (~643 tokens) crosses 25% (working budget ~1808 / 4

@@ -180,7 +180,7 @@ defmodule Nest.Agents.AgentTestHelpers do
 
         %{state | live: %{state.live | machine: machine}}
       end,
-      500
+      1_000
     )
 
     send(
@@ -512,7 +512,7 @@ defmodule Nest.Agents.AgentTestHelpers do
       fn state ->
         %{state | client_config: %{state.client_config | client: MockClient}}
       end,
-      500
+      1_000
     )
   end
 

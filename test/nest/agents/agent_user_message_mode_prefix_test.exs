@@ -74,6 +74,6 @@ defmodule Nest.Agents.AgentUserMessageModePrefixTest do
                      }}},
                    500
 
-    assert_receive {:chat_status, %{status: "idle"}}, 500
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
   end
 end

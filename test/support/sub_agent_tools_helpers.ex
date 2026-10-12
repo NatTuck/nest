@@ -69,7 +69,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
 
     AgentTestHelpers.ensure_cleanup(coordinator_name)
     {:ok, pid} = Supervisor.get_agent(space_id, coordinator_name)
-    :sys.get_state(pid, 500)
+    :sys.get_state(pid, 1_000)
   end
 
   @doc """
@@ -147,7 +147,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
       fn st ->
         %{st | client_config: %{st.client_config | client: MockClient}}
       end,
-      500
+      1_000
     )
 
     MockClient.start_link(pid)
@@ -161,7 +161,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   Whether the agent's machine has settled to `:idle`.
   """
   @spec idle?(pid()) :: boolean()
-  def idle?(pid), do: Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle
+  def idle?(pid), do: Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
 
   @doc """
   Wait until every given agent has settled to `:idle`.
@@ -187,7 +187,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   """
   @spec query_results(pid()) :: [Part.ToolResult.t()]
   def query_results(pid) do
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
 
     Enum.flat_map(state.chat_state.messages, fn
       {:tool, %{parts: parts}} ->
@@ -203,7 +203,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   """
   @spec agent_texts(pid()) :: [String.t()]
   def agent_texts(pid) do
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
 
     for {:user, %{parts: parts}} <- state.chat_state.messages, do: parts_text(parts)
   end

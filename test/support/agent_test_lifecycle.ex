@@ -48,7 +48,28 @@ defmodule Nest.Agents.AgentTestLifecycle do
   # `:context_overflow`, `:compaction_failed`,
   # `:compaction_loop_detected`) is a terminal/frozen state where no
   # turn is in flight, so the agent cannot write to the DB anymore.
-  @in_flight_statuses [:streaming, :executing_tools, :compacting]
+  @in_flight_statuses [:streaming, :executing_tools, :compacting, :unresponsive]
+
+  # The teardown probe's bound is a *measurement*, not a failure bound, and it is
+  # the single documented exception to the 1000 ms the ruling sets for fences: it
+  # goes DOWN, not up. An idle agent answers `:sys.get_state/2` in microseconds, so
+  # the bound costs nothing on the happy path — but `stop_test_agents/0` probes
+  # every owned agent synchronously, so a long bound makes teardown cost N x bound
+  # and blows the per-test deadline. That is the bug this replaces (500 ms x N).
+  #
+  # Sizing, honestly: a synthetic saturation probe was not usable. 32 yield-loops,
+  # and then 16 blocked + 16 allocating workers, both starved a *parked* process
+  # past a 5 s bound, so neither shape is the suite's and neither can size this.
+  # 250 ms is therefore chosen for what the bound is FOR, not from a distribution:
+  # it caps teardown at 250 ms per agent that cannot answer, and an agent that
+  # cannot answer in 250 ms while idle is either wedged or mid-turn — the two cases
+  # this check exists to catch. A starved-but-healthy agent now reads as in flight
+  # and fails the test; that is the intended direction (see `agent_status/1`) and is
+  # recorded in `notes/sketchy-slow-tests.md`.
+  #
+  # Follow-up: log the real probe-latency distribution from a suite run (16-way)
+  # and revisit this number with data. Do NOT "fix" it to 1000.
+  @agent_probe_ms 250
 
   @doc """
   Send `:shutdown` to the agent pid and wait for its
@@ -194,18 +215,39 @@ defmodule Nest.Agents.AgentTestLifecycle do
     end
   end
 
-  # Synchronous, loop-free read of the agent's live status. A pid
-  # that died between listing and reading is treated as down (`nil`),
-  # and a non-Agent process registered in the agents Registry (some
-  # unit tests register a fake parent) is treated as not-in-flight.
+  # Synchronous, loop-free read of the agent's live status, with the in-flight
+  # signal **inverted**: an agent that does not answer is busy, which is exactly
+  # what "in flight" means. Three outcomes, distinguished by the exit reason:
+  #
+  #   * answers with a state      -> its status (`Machine.status_for/1`);
+  #   * answers with anything else -> `:not_an_agent` (a unit test registered a
+  #     stand-in in the agents Registry; that must NOT read as in-flight);
+  #   * dead pid (`:noproc`)       -> `nil` — down, not in flight (already
+  #     reported by `still_alive`);
+  #   * alive but did not answer   -> `:unresponsive` — in flight.
+  #
+  # The last one is a deliberate behaviour change: a starved-but-healthy agent now
+  # *fails* the test instead of passing silently, because the old `:exit, _ -> nil`
+  # made the check miss precisely the case it exists to detect ("the test finished
+  # while a turn was still running"). Recorded in `notes/sketchy-slow-tests.md`.
   defp agent_status(pid) do
-    case :sys.get_state(pid, 500) do
+    case :sys.get_state(pid, @agent_probe_ms) do
       %{live: %{machine: machine}} -> Machine.status_for(machine)
       _ -> :not_an_agent
     end
   catch
-    :exit, _ -> nil
+    :exit, reason -> if agent_gone?(reason), do: nil, else: :unresponsive
   end
+
+  # `:sys.get_state/2` exits with the bare atom `:timeout` when the process does
+  # not answer in time; a pid that is already dead gives `:noproc`.
+  defp agent_gone?(:noproc), do: true
+  defp agent_gone?(:normal), do: true
+  defp agent_gone?(:shutdown), do: true
+  defp agent_gone?({:noproc, _}), do: true
+  defp agent_gone?({:normal, _}), do: true
+  defp agent_gone?({:shutdown, _}), do: true
+  defp agent_gone?(_), do: false
 
   defp stop_pid(pid, timeout \\ 2_000) do
     # Unlink first: test-started agents are linked to the test pid so

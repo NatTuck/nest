@@ -63,10 +63,10 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
             | live: %{state.live | machine: Machine.owe_replies(state.live.machine, ["peer"])}
           }
         end,
-        500
+        1_000
       )
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       assert Machine.owed_senders(state.live.machine) == ["peer"]
 
       # Invisible to the model: the turn context (what the request is built
@@ -77,11 +77,11 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       AgentTestHelpers.send_compaction_done(pid, "a summary", carried_reply())
 
       assert Eventually.eventually(
-               fn -> Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle end,
+               fn -> Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle end,
                timeout: 500
              )
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       # The commit really ran (the summary landed) and the debt is gone.
       assert Enum.any?(texts(state), &(&1 =~ "a summary"))
@@ -93,7 +93,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
                timeout: 500
              )
 
-      assert Machine.owed_senders(:sys.get_state(peer, 500).live.machine) == []
+      assert Machine.owed_senders(:sys.get_state(peer, 1_000).live.machine) == []
       wait_idle(peer)
     end
 
@@ -122,13 +122,13 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       assert {:ok, :delivered} =
                Agents.send_message(current_space_id(), "peer", name, "please summarize", :query)
 
-      assert Machine.owed_senders(:sys.get_state(pid, 500).live.machine) == ["peer"]
+      assert Machine.owed_senders(:sys.get_state(pid, 1_000).live.machine) == ["peer"]
 
       # The tool batch is its own status, and the settle is the first idle: no
       # reminder and no give-up came in between.
       assert statuses_until_idle() == ["streaming", "executing_tools", "streaming", "idle"]
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       refute Enum.any?(agent_user_texts(state), &(&1 =~ "have not answered"))
       assert Machine.owed_senders(state.live.machine) == []
@@ -182,7 +182,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       assert log =~ "BatchSizer produced is_error=true tool result"
       assert log =~ "ghost"
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       # The gate reminded once, naming the still-unanswered peer, and the
       # budget's end gave the reply up (which the peer is told about).
@@ -220,8 +220,8 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
                Agents.send_message(current_space_id(), "peer", name, "please summarize", :query)
 
       # The debt is set at delivery and rides the status broadcast (decision 15).
-      assert Machine.owed_senders(:sys.get_state(pid, 500).live.machine) == ["peer"]
-      assert_receive {:chat_status, %{status: "streaming", owedReplies: ["peer"]}}, 500
+      assert Machine.owed_senders(:sys.get_state(pid, 1_000).live.machine) == ["peer"]
+      assert_receive {:chat_status, %{status: "streaming", owedReplies: ["peer"]}}, 1_000
 
       # The model's first request carries the query and nothing about the debt:
       # the obligation is invisible until the gate reminds.
@@ -238,7 +238,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # `:generating`), so the next frame is the give-up's idle.
       assert statuses_until_idle() == ["idle"]
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       assert length(Enum.filter(agent_user_texts(state), &(&1 =~ "have not answered"))) == 1
       assert Machine.owed_senders(state.live.machine) == []
@@ -258,7 +258,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
                timeout: 500
              )
 
-      assert Machine.owed_senders(:sys.get_state(peer, 500).live.machine) == []
+      assert Machine.owed_senders(:sys.get_state(peer, 1_000).live.machine) == []
       wait_idle(peer)
     end
   end
@@ -283,13 +283,13 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
             | live: %{state.live | machine: Machine.owe_replies(state.live.machine, ["peer"])}
           }
         end,
-        500
+        1_000
       )
 
       log =
         capture_log(fn ->
           AgentTestHelpers.send_compaction_done(pid, "a summary", carried_reply())
-          assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 500
+          assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 1_000
         end)
 
       # The carried reply reminds first (the gate), so the give-up that gets
@@ -299,7 +299,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       assert log =~ "needs_repair"
 
       # The debt is discharged regardless: the runtime gave up on it.
-      assert Machine.owed_senders(:sys.get_state(pid, 500).live.machine) == []
+      assert Machine.owed_senders(:sys.get_state(pid, 1_000).live.machine) == []
     end
   end
 
@@ -327,7 +327,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
             | live: %{state.live | machine: Machine.owe_replies(state.live.machine, ["peer"])}
           }
         end,
-        500
+        1_000
       )
 
       # The debt was discharged on the way out, so the peer is told before the
@@ -371,7 +371,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
             | live: %{state.live | machine: Machine.owe_replies(state.live.machine, ["peer"])}
           }
         end,
-        500
+        1_000
       )
 
       log = capture_log(fn -> GenServer.stop(pid) end)
@@ -424,7 +424,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       fn st ->
         %{st | client_config: %{st.client_config | client: MockClient}}
       end,
-      500
+      1_000
     )
 
     MockClient.start_link(pid)
@@ -438,7 +438,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
   # agent left in flight, so wait for it to settle.
   defp wait_idle(pid) do
     assert Eventually.eventually(
-             fn -> Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle end,
+             fn -> Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle end,
              timeout: 500
            )
   end
@@ -455,7 +455,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
           | live: %{state.live | machine: Machine.status_to_machine(state.live.machine, status)}
         }
       end,
-      500
+      1_000
     )
   end
 
@@ -485,7 +485,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
     |> Enum.reject(&(&1 == ""))
   end
 
-  defp peer_texts(pid), do: texts(:sys.get_state(pid, 500))
+  defp peer_texts(pid), do: texts(:sys.get_state(pid, 1_000))
 
   defp parts_text(parts) do
     Enum.map_join(parts || [], "", fn

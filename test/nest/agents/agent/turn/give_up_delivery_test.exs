@@ -35,7 +35,7 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
       fn state ->
         %{state | live: %{state.live | inbox: List.duplicate(entry(), 100)}}
       end,
-      500
+      1_000
     )
 
     giver = giver(space_id)
@@ -71,7 +71,7 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
     log =
       capture_log(fn ->
         assert :ok = GiveUpDelivery.deliver(giver, ["peer"], :stopped)
-        assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 500
+        assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 1_000
       end)
 
     assert log =~ "reply give-up (stopped) could not reach peer"
@@ -93,7 +93,7 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
 
     # The peer is persisted but stopped: its row stays, its process goes.
     assert :ok = Nest.Agents.Supervisor.stop_agent(space_id, peer_name)
-    assert_receive {:EXIT, ^peer_pid, :shutdown}, 500
+    assert_receive {:EXIT, ^peer_pid, :shutdown}, 1_000
 
     # `stop_agent/2` is synchronous and we have its `:EXIT`, so the process is
     # provably dead. `get_running_agent/2` checks `Process.alive?/1`, so it is
@@ -148,8 +148,8 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
     log =
       capture_log(fn ->
         assert :ok = GiveUpDelivery.deliver(giver, ["peer-a", "peer-b"], :stopped)
-        assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 500
-        assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 500
+        assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 1_000
+        assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 1_000
       end)
 
     # One refusal per requester, each named: a comma-joined target list would
@@ -177,7 +177,7 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
               | live: %{state.live | machine: Machine.owe_replies(state.live.machine, ["late"])}
             }
           end,
-          500
+          1_000
         )
 
         {:error, :not_found}
@@ -192,7 +192,7 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
 
       # The sender that was told is gone; the one that arrived in the window is
       # still owed.
-      assert Machine.owed_senders(:sys.get_state(pid, 500).live.machine) == ["late"]
+      assert Machine.owed_senders(:sys.get_state(pid, 1_000).live.machine) == ["late"]
 
       # ...and the debt asserted above is cleared before the test ends, so the
       # agent's own teardown does not log a loss this test has already proved.
@@ -211,10 +211,10 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
           assert :ok = GiveUpDelivery.give_up_before_stop(self(), :stopped)
           state
         end,
-        500
+        1_000
       )
 
-      assert Machine.owed_senders(:sys.get_state(pid, 500).live.machine) == ["peer"]
+      assert Machine.owed_senders(:sys.get_state(pid, 1_000).live.machine) == ["peer"]
       clear_debt(pid)
     end
 
@@ -254,7 +254,7 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
       fn state ->
         %{state | live: %{state.live | machine: Machine.owe_replies(state.live.machine, senders)}}
       end,
-      500
+      1_000
     )
 
     {pid, name}
@@ -268,7 +268,7 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
       fn state ->
         %{state | live: %{state.live | machine: Machine.discharge_all(state.live.machine)}}
       end,
-      500
+      1_000
     )
   end
 

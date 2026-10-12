@@ -59,8 +59,8 @@ defmodule Nest.Agents.AgentToolsTest do
                        %{index: 1, parts: [%Part.Text{text: "[mode: chat]\nList the files"}]}}},
                      500
 
-      assert_receive {:chat_status, %{status: "streaming"}}, 500
-      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_status, %{status: "streaming"}}, 1_000
+      assert_receive {:chat_delta, _}, 1_000
 
       # drain loop killed with fire, it can *NEVER EVER* come back.
       # Precise single-message pattern: the first assistant's first
@@ -82,12 +82,12 @@ defmodule Nest.Agents.AgentToolsTest do
       assert tool_call.id == "call_123"
       assert tool_call.name == "shell-cmd"
 
-      assert_receive {:chat_status, %{status: "executing_tools"}}, 500
-      assert_receive {:chat_message, {:tool, tool_msg}}, 500
+      assert_receive {:chat_status, %{status: "executing_tools"}}, 1_000
+      assert_receive {:chat_message, {:tool, tool_msg}}, 1_000
       assert [%Part.ToolResult{}] = tool_msg.parts
 
-      assert_receive {:chat_status, %{status: "streaming"}}, 500
-      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_status, %{status: "streaming"}}, 1_000
+      assert_receive {:chat_delta, _}, 1_000
 
       # drain loop killed with fire, it can *NEVER EVER* come back.
       # Precise single-message pattern: the final assistant's first
@@ -100,7 +100,7 @@ defmodule Nest.Agents.AgentToolsTest do
                        %{parts: [%Part.Text{text: "Here are the directory contents"} | _]}}},
                      500
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       [tool_result] = tool_msg.parts
       assert tool_result.tool_call_id == "call_123"
@@ -129,10 +129,10 @@ defmodule Nest.Agents.AgentToolsTest do
       :ok = Agent.chat(pid, "Run a command")
 
       # Each transition is a known broadcast in known order.
-      assert_receive {:chat_status, %{status: "streaming"}}, 500
-      assert_receive {:chat_status, %{status: "executing_tools"}}, 500
-      assert_receive {:chat_status, %{status: "streaming"}}, 500
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "streaming"}}, 1_000
+      assert_receive {:chat_status, %{status: "executing_tools"}}, 1_000
+      assert_receive {:chat_status, %{status: "streaming"}}, 1_000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       MockClient.clear()
     end
@@ -157,11 +157,11 @@ defmodule Nest.Agents.AgentToolsTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "What is 2+2?")
 
-          assert_receive {:chat_message, {:user, _}}, 500
+          assert_receive {:chat_message, {:user, _}}, 1_000
 
           # drain loop killed with fire, it can *NEVER EVER* come back
 
-          assert_receive {:chat_status, %{status: "idle"}}, 500
+          assert_receive {:chat_status, %{status: "idle"}}, 1_000
         end)
 
       # The tool name `calculator` isn't in the programmer
@@ -195,9 +195,9 @@ defmodule Nest.Agents.AgentToolsTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "What's the weather?")
 
-          assert_receive {:chat_message, {:user, _}}, 500
-          assert_receive {:chat_message, {:tool, %Tool{parts: tool_results}}}, 500
-          assert_receive {:chat_status, %{status: "idle"}}, 500
+          assert_receive {:chat_message, {:user, _}}, 1_000
+          assert_receive {:chat_message, {:tool, %Tool{parts: tool_results}}}, 1_000
+          assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
           assert tool_results != []
         end)
@@ -229,7 +229,7 @@ defmodule Nest.Agents.AgentToolsTest do
         })
 
       :ok = Agent.chat(pid, "List files")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # drain loop killed with fire, it can *NEVER EVER* come back
 
@@ -263,7 +263,7 @@ defmodule Nest.Agents.AgentToolsTest do
                &match?(%Part.Text{text: "Second response received"}, &1)
              )
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       MockClient.clear()
     end
@@ -312,7 +312,7 @@ defmodule Nest.Agents.AgentToolsTest do
                        } = final_msg}},
                      500
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
       final_logs = final_msg.api_logs
 
       assert Enum.any?(first_logs, fn log -> log.type == :response end),

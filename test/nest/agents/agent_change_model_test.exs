@@ -87,7 +87,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
           vocation_id: vid()
         })
 
-      state_before = :sys.get_state(pid, 500)
+      state_before = :sys.get_state(pid, 1_000)
       assert state_before.client_config.client == OpenAIClient
 
       :ok =
@@ -96,7 +96,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
           provider: "anthropic-provider"
         })
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       assert state.client_config.client == AnthropicClient
 
       assert state.model == %{
@@ -122,7 +122,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
       Agent.set_model(pid, %{name: "claude-3-opus-20240229", provider: "anthropic-provider"})
 
-      assert_receive {:chat_status, payload}, 500
+      assert_receive {:chat_status, payload}, 1_000
       assert payload.status == "idle"
 
       assert payload.model == %{
@@ -153,10 +153,10 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
               }
           }
         end,
-        500
+        1_000
       )
 
-      state_before = :sys.get_state(pid, 500)
+      state_before = :sys.get_state(pid, 1_000)
 
       result =
         Agent.set_model(pid, %{
@@ -166,7 +166,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
       assert result == {:error, :agent_busy}
 
-      state_after = :sys.get_state(pid, 500)
+      state_after = :sys.get_state(pid, 1_000)
       assert state_after.client_config.client == state_before.client_config.client
       assert state_after.model == state_before.model
       assert Machine.status_for(state_after.live.machine) == :streaming
@@ -185,7 +185,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
               }
           }
         end,
-        500
+        1_000
       )
     end
 
@@ -197,12 +197,12 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
           vocation_id: vid()
         })
 
-      state_before = :sys.get_state(pid, 500)
+      state_before = :sys.get_state(pid, 1_000)
 
       result = Agent.set_model(pid, %{name: "ghost-model-from-nowhere", provider: "nope"})
       assert {:error, {:invalid_model, %Nest.ChatModel.ModelNotFoundError{}}} = result
 
-      state_after = :sys.get_state(pid, 500)
+      state_after = :sys.get_state(pid, 1_000)
       assert state_after.model == state_before.model
     end
   end
@@ -250,7 +250,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
               vocation_id: vid()
             })
 
-          state = :sys.get_state(pid, 500)
+          state = :sys.get_state(pid, 1_000)
           assert Machine.status_for(state.live.machine) == :model_missing
           assert state.client_config.client == RecoveryClient
 
@@ -261,7 +261,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
               provider: "anthropic-provider"
             })
 
-          state = :sys.get_state(pid, 500)
+          state = :sys.get_state(pid, 1_000)
           assert Machine.status_for(state.live.machine) == :idle
           assert state.client_config.client == AnthropicClient
 
@@ -306,7 +306,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
       # State must not have been mutated. Model is stored as a
       # string-keyed map (jsonb JSON wire format).
-      assert :sys.get_state(pid, 500).model["name"] == "qwen3.5-plus"
+      assert :sys.get_state(pid, 1_000).model["name"] == "qwen3.5-plus"
     end
 
     test "preserves the MapSet invariant on crossed_thresholds" do
@@ -339,7 +339,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
               }
           }
         end,
-        500
+        1_000
       )
 
       :ok =
@@ -348,7 +348,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
           provider: "anthropic-provider"
         })
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       crossed = state.live.crossed_thresholds
 
       assert is_struct(crossed, MapSet),

@@ -27,7 +27,7 @@ defmodule Nest.AgentsTest do
   # well over both this suite's 500 ms test bound and ExUnit's 2000 ms per-test
   # ceiling, so a wedged server surfaces as the stuck call it is rather than as
   # a test timeout (#21).
-  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 500)
+  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 1_000)
 
   setup :verify_on_exit!
 
@@ -402,7 +402,7 @@ defmodule Nest.AgentsTest do
       # transition past it.
       assert eventually(
                fn ->
-                 Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle
+                 Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
                end,
                timeout: 1_000
              )
@@ -513,7 +513,7 @@ defmodule Nest.AgentsTest do
 
       # No compaction was staged: the machine is still the fabricated
       # streaming state, the loop counter and focus are untouched.
-      machine = :sys.get_state(agent_pid, 500).live.machine
+      machine = :sys.get_state(agent_pid, 1_000).live.machine
       assert Machine.status_for(machine) == :streaming
       assert machine.loop_count == 0
       assert machine.work.focus == nil

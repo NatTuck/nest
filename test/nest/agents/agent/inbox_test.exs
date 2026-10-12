@@ -38,14 +38,14 @@ defmodule Nest.Agents.Agent.InboxTest do
   test "delivery to an idle agent starts a turn with the message as a user message", %{pid: pid} do
     assert {:ok, :delivered} = Agent.deliver_message(pid, "peer", "do the thing")
 
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
 
     assert Enum.any?(
              user_texts(state),
              &(&1 =~ "[Message from agent \"peer\"]" and &1 =~ "do the thing")
            )
 
-    assert_receive {:chat_status, %{status: "idle"}}, 500
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
     # The delivery consumed the entry, so the only queue frame due is the
     # consume's own empty one — never an enqueue frame (see the parked-drain
@@ -61,12 +61,12 @@ defmodule Nest.Agents.Agent.InboxTest do
     set_status(pid, :streaming)
 
     assert {:ok, :queued} = Agent.deliver_message(pid, "alice", "first message")
-    assert_receive {:chat_inbox, %{count: 1}}, 500
+    assert_receive {:chat_inbox, %{count: 1}}, 1_000
 
     assert {:ok, :queued} = Agent.deliver_message(pid, "bob", "second message")
-    assert_receive {:chat_inbox, %{count: 2}}, 500
+    assert_receive {:chat_inbox, %{count: 2}}, 1_000
 
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
     assert Enum.map(state.live.inbox, & &1.from) == ["alice", "bob"]
 
     # The in-flight turn ends (preempted here); the resulting idle
@@ -74,14 +74,14 @@ defmodule Nest.Agents.Agent.InboxTest do
     Agent.stop_chat(pid, self())
 
     assert Eventually.eventually(
-             fn -> :sys.get_state(pid, 500).live.inbox == [] end,
+             fn -> :sys.get_state(pid, 1_000).live.inbox == [] end,
              timeout: 500
            )
 
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
 
     assert state.live.inbox == []
-    assert_receive {:chat_inbox, %{count: 0}}, 500
+    assert_receive {:chat_inbox, %{count: 0}}, 1_000
 
     combined =
       Enum.find(user_texts(state), &(&1 =~ "first message" and &1 =~ "second message"))
@@ -98,7 +98,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     # when the target is idle, exactly like a peer delivery.
     assert {:ok, :delivered} = Agent.deliver_internal(pid, "agents-batch", ~s(["done"]), :notice)
 
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
     assert [text] = Enum.filter(user_texts(state), &(&1 =~ ~s(["done"])))
     refute text =~ "Message from agent"
 
@@ -126,7 +126,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     # ...while the runtime's own result queues anyway. Refusing it would lose
     # the batch's whole output (the coordinator has nowhere else to put it).
     assert {:ok, :queued} = Agent.deliver_internal(pid, "agents-batch", ~s(["done"]), :notice)
-    assert List.last(:sys.get_state(pid, 500).live.inbox).content == ~s(["done"])
+    assert List.last(:sys.get_state(pid, 1_000).live.inbox).content == ~s(["done"])
 
     reset_to_idle(pid)
   end
@@ -149,7 +149,7 @@ defmodule Nest.Agents.Agent.InboxTest do
 
     ref = Process.monitor(gone)
     Process.exit(gone, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^gone, :killed}, 500
+    assert_receive {:DOWN, ^ref, :process, ^gone, :killed}, 1_000
 
     assert {:noproc, _reason} =
              catch_exit(Agent.deliver_internal(gone, "agents-batch", "x", :notice))
@@ -167,14 +167,14 @@ defmodule Nest.Agents.Agent.InboxTest do
     assert Eventually.eventually(
              fn ->
                Enum.any?(
-                 user_texts(:sys.get_state(pid, 500)),
+                 user_texts(:sys.get_state(pid, 1_000)),
                  &(&1 =~ "queued message" and &1 =~ "saved to")
                )
              end,
              timeout: 500
            )
 
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
 
     pointer =
       Enum.find(user_texts(state), &(&1 =~ "queued message" and &1 =~ "saved to"))
@@ -196,7 +196,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       assert {:error, {:status, :needs_repair}} =
                Agent.deliver_message(pid, "peer", "hello", kind)
 
-      assert :sys.get_state(pid, 500).live.inbox == []
+      assert :sys.get_state(pid, 1_000).live.inbox == []
     end
   end
 
@@ -220,10 +220,10 @@ defmodule Nest.Agents.Agent.InboxTest do
 
     assert log =~ "cannot fit the system prompt"
 
-    state = :sys.get_state(pid, 500)
+    state = :sys.get_state(pid, 1_000)
 
     assert [%{content: "does not fit", kind: :agent}] = state.live.inbox
-    assert_receive {:chat_inbox, %{count: 1}}, 500
+    assert_receive {:chat_inbox, %{count: 1}}, 1_000
     # Nothing was consumed, so the enqueue frame above is the only one: a
     # consume's empty frame would mean the entry had been delivered.
     refute_received {:chat_inbox, %{count: 0}}
@@ -242,19 +242,19 @@ defmodule Nest.Agents.Agent.InboxTest do
         }
       end
 
-    :sys.replace_state(pid, fn state -> %{state | live: %{state.live | inbox: full}} end, 500)
+    :sys.replace_state(pid, fn state -> %{state | live: %{state.live | inbox: full}} end, 1_000)
 
     for kind <- [:agent, :query, :notice] do
       assert {:error, :inbox_full} = Agent.deliver_message(pid, "peer", "one too many", kind)
     end
 
-    assert length(:sys.get_state(pid, 500).live.inbox) == 100
+    assert length(:sys.get_state(pid, 1_000).live.inbox) == 100
   end
 
   test "self-delivery is allowed", %{pid: pid, name: name} do
     assert {:ok, :delivered} = Agent.deliver_message(pid, name, "note to self")
 
-    assert Enum.any?(user_texts(:sys.get_state(pid, 500)), &(&1 =~ "note to self"))
+    assert Enum.any?(user_texts(:sys.get_state(pid, 1_000)), &(&1 =~ "note to self"))
     wait_idle(pid)
   end
 
@@ -282,7 +282,7 @@ defmodule Nest.Agents.Agent.InboxTest do
         capture_log(fn ->
           assert {:ok, :delivered} = Agent.deliver_message(pid, "peer", "summarize this", :query)
 
-          state = :sys.get_state(pid, 500)
+          state = :sys.get_state(pid, 1_000)
 
           assert Enum.any?(
                    user_texts(state),
@@ -300,9 +300,9 @@ defmodule Nest.Agents.Agent.InboxTest do
           # asserted rather than left to print. The notification is asserted
           # inside the capture because it is broadcast after the warning, which
           # is what proves the warning landed before the block ended.
-          assert_receive {:chat_status, %{status: "streaming", owedReplies: ["peer"]}}, 500
+          assert_receive {:chat_status, %{status: "streaming", owedReplies: ["peer"]}}, 1_000
           wait_idle(pid)
-          assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 500
+          assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 1_000
         end)
 
       assert log =~ "reply give-up (no_reminder) could not reach peer: :not_found"
@@ -318,13 +318,13 @@ defmodule Nest.Agents.Agent.InboxTest do
 
       for {kind, n} <- Enum.with_index(kinds, 1) do
         assert {:ok, :queued} = Agent.deliver_message(pid, "peer", "msg #{n}", kind)
-        assert_receive {:chat_inbox, %{count: ^n, messages: messages}}, 500
+        assert_receive {:chat_inbox, %{count: ^n, messages: messages}}, 1_000
 
         assert Enum.map(messages, & &1["kind"]) ==
                  kinds |> Enum.take(n) |> Enum.map(&Atom.to_string/1)
       end
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       assert Enum.map(state.live.inbox, & &1.kind) == kinds
       assert Enum.map(state.live.inbox, & &1.from) == ["peer", "peer", "peer"]
@@ -346,7 +346,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       set_status(pid, :streaming)
       assert {:ok, :queued} = Agent.deliver_message(pid, "bob", "queued question", :query)
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       assert Machine.owed_senders(state.live.machine) == []
 
       state = %{
@@ -386,15 +386,15 @@ defmodule Nest.Agents.Agent.InboxTest do
 
         assert :ok = Agent.chat(pid, "queued while #{status}", "plan", "alice", true)
 
-        assert_receive {:chat_inbox, %{count: ^n}}, 500
+        assert_receive {:chat_inbox, %{count: ^n}}, 1_000
 
-        state = :sys.get_state(pid, 500)
+        state = :sys.get_state(pid, 1_000)
 
         assert Machine.status_for(state.live.machine) == status
         assert length(state.live.inbox) == n
       end
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       inbox = state.live.inbox
 
       assert Enum.map(inbox, & &1.kind) == [:user, :user, :user]
@@ -421,14 +421,14 @@ defmodule Nest.Agents.Agent.InboxTest do
       Agent.stop_chat(pid, self())
 
       assert Eventually.eventually(
-               fn -> :sys.get_state(pid, 500).live.inbox == [] end,
+               fn -> :sys.get_state(pid, 1_000).live.inbox == [] end,
                timeout: 500
              )
 
       wait_idle(pid)
 
       drained_metadata =
-        :sys.get_state(pid, 500).chat_state.messages
+        :sys.get_state(pid, 1_000).chat_state.messages
         |> Enum.drop(before)
         |> Enum.flat_map(fn
           {:user, %{metadata: metadata}} -> [metadata]
@@ -449,16 +449,16 @@ defmodule Nest.Agents.Agent.InboxTest do
 
       assert :ok = Agent.chat(pid, "hello now", "plan", "alice")
 
-      assert_receive {:chat_status, %{status: "streaming"}}, 500
+      assert_receive {:chat_status, %{status: "streaming"}}, 1_000
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
 
       assert state.live.inbox == []
       assert state.live.mode == "plan"
       assert Enum.any?(user_texts(state), &(&1 =~ "hello now"))
       assert Enum.any?(user_texts(state), &(&1 =~ "[mode: plan]"))
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "a message to a broken agent is dropped and nothing is queued", %{pid: pid} do
@@ -469,12 +469,12 @@ defmodule Nest.Agents.Agent.InboxTest do
         capture_log(fn ->
           for status <- Machine.blocked_phases() do
             set_status(pid, status)
-            before = :sys.get_state(pid, 500).chat_state.messages
+            before = :sys.get_state(pid, 1_000).chat_state.messages
 
             assert :ok = Agent.chat(pid, "too late", "plan", "alice")
-            _ = :sys.get_state(pid, 500)
+            _ = :sys.get_state(pid, 1_000)
 
-            state = :sys.get_state(pid, 500)
+            state = :sys.get_state(pid, 1_000)
 
             assert state.live.inbox == [], "#{status} must queue nothing"
             assert state.chat_state.messages == before, "#{status} must not append"
@@ -510,20 +510,20 @@ defmodule Nest.Agents.Agent.InboxTest do
       ]
 
       for {entries, expected_modes, label} <- cases do
-        before = length(:sys.get_state(pid, 500).chat_state.messages)
+        before = length(:sys.get_state(pid, 1_000).chat_state.messages)
         stage_drain(pid, entries)
 
         Agent.stop_chat(pid, self())
 
         assert Eventually.eventually(
-                 fn -> :sys.get_state(pid, 500).live.inbox == [] end,
+                 fn -> :sys.get_state(pid, 1_000).live.inbox == [] end,
                  timeout: 500
                )
 
         wait_idle(pid)
 
         delivered =
-          :sys.get_state(pid, 500).chat_state.messages
+          :sys.get_state(pid, 1_000).chat_state.messages
           |> Enum.drop(before)
           |> Enum.filter(&match?({:user, _}, &1))
           |> Enum.map(&mode_of/1)
@@ -535,16 +535,16 @@ defmodule Nest.Agents.Agent.InboxTest do
     test "an over-cap human message is offloaded and delivered as a pointer", %{pid: pid} do
       set_status(pid, :streaming)
       assert :ok = Agent.chat(pid, @oversized, "plan", "alice")
-      assert_receive {:chat_inbox, %{count: 1}}, 500
+      assert_receive {:chat_inbox, %{count: 1}}, 1_000
 
       Agent.stop_chat(pid, self())
 
       assert Eventually.eventually(
-               fn -> :sys.get_state(pid, 500).live.inbox == [] end,
+               fn -> :sys.get_state(pid, 1_000).live.inbox == [] end,
                timeout: 500
              )
 
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       pointer = Enum.find(user_texts(state), &(&1 =~ "queued message"))
 
       # The human's mode still rides the delivered message, and the oversized
@@ -574,20 +574,20 @@ defmodule Nest.Agents.Agent.InboxTest do
       # drain) and by the `build_drained_message/3` cases below;
       # `agent_chat_mode_test.exs`'s "tags a human chat but not a spawn-style
       # kickoff" covers only the idle path.
-      before = length(:sys.get_state(pid, 500).chat_state.messages)
+      before = length(:sys.get_state(pid, 1_000).chat_state.messages)
       stage_drain(pid, [entry(:user, "alice", "queued prompt", "plan", true)])
 
       Agent.stop_chat(pid, self())
 
       assert Eventually.eventually(
-               fn -> :sys.get_state(pid, 500).live.inbox == [] end,
+               fn -> :sys.get_state(pid, 1_000).live.inbox == [] end,
                timeout: 500
              )
 
       wait_idle(pid)
 
       appended_user_metadata =
-        :sys.get_state(pid, 500).chat_state.messages
+        :sys.get_state(pid, 1_000).chat_state.messages
         |> Enum.drop(before)
         |> Enum.flat_map(fn
           {:user, %{metadata: metadata}} -> [metadata]
@@ -659,7 +659,7 @@ defmodule Nest.Agents.Agent.InboxTest do
   defp wait_idle(pid) do
     assert Eventually.eventually(
              fn ->
-               Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle
+               Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
              end,
              timeout: 500
            )
@@ -696,5 +696,5 @@ defmodule Nest.Agents.Agent.InboxTest do
   # `:sys.replace_state/3` with the suite's explicit 500 ms timeout, kept as a
   # helper so the call stays on one line (the three-argument form pushes
   # these files past the 700-line cap once `mix format` expands it).
-  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 500)
+  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 1_000)
 end

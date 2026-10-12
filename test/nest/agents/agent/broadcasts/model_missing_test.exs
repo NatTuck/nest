@@ -30,7 +30,7 @@ defmodule Nest.Agents.Agent.Broadcasts.ModelMissingTest do
         :not_found
       )
 
-      assert_receive {:chat_status, payload}, 500
+      assert_receive {:chat_status, payload}, 1_000
       assert payload.status == "model_missing"
       assert payload.model == %{"name" => "ghost-model", "provider" => "qwen"}
       # Reason comes through `inspect/1` so any term serialises.
@@ -42,7 +42,7 @@ defmodule Nest.Agents.Agent.Broadcasts.ModelMissingTest do
 
       ModelMissing.broadcast(space_id, "nil-model", nil, :no_model)
 
-      assert_receive {:chat_status, payload}, 500
+      assert_receive {:chat_status, payload}, 1_000
       assert payload.status == "model_missing"
       assert payload.model == nil
       assert payload.reason =~ "no_model"
@@ -53,7 +53,7 @@ defmodule Nest.Agents.Agent.Broadcasts.ModelMissingTest do
 
       ModelMissing.broadcast(space_id, "weird-model", :just_an_atom, :unknown)
 
-      assert_receive {:chat_status, payload}, 500
+      assert_receive {:chat_status, payload}, 1_000
       assert payload.model == %{"name" => "just_an_atom"}
     end
   end

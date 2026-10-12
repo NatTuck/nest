@@ -49,7 +49,7 @@ defmodule Nest.Agents.Agent.LastMessageTest do
             }
         }
       end,
-      500
+      1_000
     )
   end
 
@@ -66,7 +66,7 @@ defmodule Nest.Agents.Agent.LastMessageTest do
             }
         }
       end,
-      500
+      1_000
     )
   end
 
@@ -78,7 +78,7 @@ defmodule Nest.Agents.Agent.LastMessageTest do
     set_busy(pid)
     assert {:ok, :queued} = Agent.deliver_message(pid, "bob", "the report", :agent)
 
-    [entry] = :sys.get_state(pid, 500).live.inbox
+    [entry] = :sys.get_state(pid, 1_000).live.inbox
     assert entry.retrieved == false
 
     result = fetch(pid, name, space_id, %{"name" => "bob"})
@@ -89,7 +89,7 @@ defmodule Nest.Agents.Agent.LastMessageTest do
     assert content =~ entry.id
 
     # The entry is consumed in place: the drain will skip it.
-    assert [%{retrieved: true, id: id}] = :sys.get_state(pid, 500).live.inbox
+    assert [%{retrieved: true, id: id}] = :sys.get_state(pid, 1_000).live.inbox
     assert id == entry.id
     reset_to_idle(pid)
   end
@@ -116,7 +116,7 @@ defmodule Nest.Agents.Agent.LastMessageTest do
     assert %ToolResult{is_error: false, content: content} = result
     assert content == "No undelivered message from agent bob."
     # The human's entry is untouched.
-    assert [%{kind: :user, retrieved: false}] = :sys.get_state(pid, 500).live.inbox
+    assert [%{kind: :user, retrieved: false}] = :sys.get_state(pid, 1_000).live.inbox
     reset_to_idle(pid)
   end
 
@@ -142,14 +142,14 @@ defmodule Nest.Agents.Agent.LastMessageTest do
       set_busy(pid)
       assert {:ok, :queued} = Agent.deliver_message(pid, "bob", "report #{n}", :agent)
       assert %ToolResult{is_error: false} = fetch(pid, name, space_id, %{"name" => "bob"})
-      assert [%{retrieved: true}] = :sys.get_state(pid, 500).live.inbox
+      assert [%{retrieved: true}] = :sys.get_state(pid, 1_000).live.inbox
 
       # The turn ends: the stop path's drain must prune the retrieved entry
       # rather than leave it queued.
       Agent.stop_chat(pid, self())
 
       assert Eventually.eventually(
-               fn -> :sys.get_state(pid, 500).live.inbox == [] end,
+               fn -> :sys.get_state(pid, 1_000).live.inbox == [] end,
                timeout: 500
              )
     end)

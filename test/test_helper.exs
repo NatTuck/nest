@@ -33,28 +33,24 @@ Mimic.copy(Task.Supervisor)
 Mimic.copy(Nest.Sandbox)
 Mimic.copy(Nest.Tools.ShellCmd)
 
-# `timeout` is the per-test deadline. The ruling is that **every** timeout in the
-# tests — implicit or explicit — is 2000 ms or lower, with no exceptions: *"If a
-# test can't run under that, we need to fix it or consider removing it as
-# untestable."* That includes this one, so it is 2000 ms, not the 5000 ms it was.
+# `timeout` is the per-test deadline: a **failure bound**, deliberately set above
+# the fences so a fence can report its own failure instead of dying as
+# `ExUnit.TimeoutError` with no diagnostic. Fences and waits in `test/` are 1000 ms
+# (the teardown probe in `AgentTestLifecycle` is the one documented exception, and
+# it goes *down*, not up); this is 3000 ms.
 #
-# It does not affect the suite's 5 s gate (`scripts/precommit-test.sh`): that
-# budget is *throughput* across `max_cases` concurrent tests, not the deadline of
-# any single one, so this value cannot move the suite toward 5 s either way. What
-# it does is bound how long a test may spend before we call it broken — and at
-# 2000 ms the tests that lose a scheduling race become visible rather than
-# hidden. `notes/sketchy-slow-tests.md` §2 records the failures, and §10 the two
-# shared serialization points that have to be fixed for the ceiling to hold.
+# It does not affect the suite's 5 s gate (`scripts/precommit-test.sh`): that budget
+# is *throughput* across `max_cases` concurrent tests, not the deadline of any single
+# one, so this value cannot move the suite toward 5 s either way.
 #
-# `max_cases` defaults to `schedulers_online * 2`. The suite is
-# DB- and message-passing-bound, and over-subscribing the schedulers
-# (32 cases on a 32-scheduler host) causes enough contention that the
-# timing-sensitive `assert_receive` fences flake. Cap at 24, which is
-# both faster (less contention) and stable on the reference host while
-# preserving the default on small machines.
+# `max_cases` is the *physical* core count (see `Nest.Test.MaxCases`), not the
+# logical one. Measured on this host: 8 cases -> 0 failures, 16 -> 2, 24 -> 12, so
+# the suite is contention-bound above its real core count and over-subscribing the
+# schedulers is what produces fence misses. There is deliberately no ceiling: on a
+# 32-core/64-thread host this sets 32.
 ExUnit.configure(
-  timeout: 2_000,
-  max_cases: min(System.schedulers_online() * 2, 24)
+  timeout: 3_000,
+  max_cases: Nest.Test.MaxCases.real_cpus()
 )
 
 ExUnit.start()

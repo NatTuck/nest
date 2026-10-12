@@ -194,7 +194,7 @@ defmodule Nest.Agents.AgentChatModeTest do
       # dropdown in sync.
       :ok = Agent.chat(pid, "Plan this", "plan")
 
-      assert_receive {:chat_status, %{status: "idle", currentMode: "plan"}}, 500
+      assert_receive {:chat_status, %{status: "idle", currentMode: "plan"}}, 1_000
 
       assert_received {:chat_message,
                        {:user,
@@ -226,14 +226,14 @@ defmodule Nest.Agents.AgentChatModeTest do
         start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
 
       # Initial state: vocation default (lex-first: "build").
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       assert state.live.mode == "build"
 
       # Send a chat with mode "plan". The agent's state.live.mode
       # should update to "plan".
       :ok = Agent.chat(pid, "Plan this", "plan")
       await_idle(pid)
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       assert state.live.mode == "plan"
 
       # The next chat without an explicit mode arg uses the
@@ -242,7 +242,7 @@ defmodule Nest.Agents.AgentChatModeTest do
       # fallback.
       :ok = Agent.chat(pid, "And another")
       await_idle(pid)
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       assert state.live.mode == "plan"
     end
 
@@ -271,11 +271,11 @@ defmodule Nest.Agents.AgentChatModeTest do
 
       # The fallback (vocation default, lex-first: "build") is
       # written to state.live.mode.
-      state = :sys.get_state(pid, 500)
+      state = :sys.get_state(pid, 1_000)
       assert state.live.mode == "build"
 
       # And reflected in the chat:status broadcast.
-      assert_receive {:chat_status, %{status: "idle", currentMode: "build"}}, 500
+      assert_receive {:chat_status, %{status: "idle", currentMode: "build"}}, 1_000
     end
 
     test "user message metadata falls back to vocation's default mode" do
@@ -344,7 +344,7 @@ defmodule Nest.Agents.AgentChatModeTest do
   # one the test-teardown invariant checks. See `@turn_fence_ms` for the budget.
   defp await_idle(pid) do
     assert Eventually.eventually(
-             fn -> Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle end,
+             fn -> Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle end,
              timeout: @turn_fence_ms
            )
   end
