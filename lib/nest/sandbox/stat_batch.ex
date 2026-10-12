@@ -2,15 +2,15 @@ defmodule Nest.Sandbox.StatBatch do
   @moduledoc """
   Batched `stat` for the BatchSizer preflight (issue #48).
 
-  `Nest.Sandbox.stat/4` is one bwrap spawn per path. The preflight needs only a
-  size per `file-read` target, so `stat_many/4` runs **one** `stat` invocation
+  `Nest.Sandbox.stat/3` is one bwrap spawn per path. The preflight needs only a
+  size per `file-read` target, so `stat_many/3` runs **one** `stat` invocation
   per chunk of paths — far fewer spawns than one per path, and still no
   host-side fast path: the command runs inside bwrap through
-  `Nest.Tools.ShellCmd.execute_raw/5`, and the path mapping stays in
+  `Nest.Tools.ShellCmd.execute_raw/4`, and the bind layout stays in
   `Nest.Sandbox.Paths`.
 
   The one case that does not collapse: a chunk that is mostly *absent* degrades
-  to one `stat/4` per absent path, because each absent path needs its own
+  to one `stat/3` per absent path, because each absent path needs its own
   reason and log line. 150 present + 5 missing paths cost 7 spawns (two chunk
   invocations plus the five fallbacks), not 2 — still bounded by the number of
   absent paths rather than by the batch.
@@ -30,7 +30,7 @@ defmodule Nest.Sandbox.StatBatch do
   ## Failure handling
 
     * Some paths reported, some not — the absent ones are re-statted with
-      `Nest.Sandbox.stat/4`, so each keeps its own `Failure.classify/1` reason
+      `Nest.Sandbox.stat/3`, so each keeps its own `Failure.classify/1` reason
       and its own operator log line.
     * Nothing reported at all — the sandbox itself failed, so the stderr is
       classified once and applied to every path in the chunk, with a single log
@@ -40,7 +40,7 @@ defmodule Nest.Sandbox.StatBatch do
   """
 
   alias Nest.Sandbox
-  alias Nest.Sandbox.Failure
+  alias Nest.Sandbox.{Failure, Mounts}
   alias Nest.Tools.ShellCmd
   alias Nest.Tools.ShellEscape
 
@@ -55,35 +55,35 @@ defmodule Nest.Sandbox.StatBatch do
 
   Returns `%{path => {:ok, size} | {:error, reason}}`.
   """
-  @spec stat_many([String.t()], map(), String.t() | nil, String.t() | nil) ::
+  @spec stat_many([String.t()], map(), Mounts.t()) ::
           %{required(String.t()) => {:ok, non_neg_integer()} | {:error, atom() | term()}}
-  def stat_many(paths, caps, workspace, tmp_path) do
+  def stat_many(paths, caps, mounts) do
     paths
     |> Enum.uniq()
     |> Enum.chunk_every(@chunk)
     |> Enum.reduce(%{}, fn chunk, acc ->
-      Map.merge(acc, stat_chunk(chunk, caps, workspace, tmp_path))
+      Map.merge(acc, stat_chunk(chunk, caps, mounts))
     end)
   end
 
   # One chunk, in one bwrap spawn where possible.
-  defp stat_chunk(chunk, caps, workspace, tmp_path) do
+  defp stat_chunk(chunk, caps, mounts) do
     {batched, unbatched} = Enum.split_with(chunk, &(not String.contains?(&1, "\n")))
 
     batched
-    |> run_batch(caps, workspace, tmp_path)
-    |> Map.merge(per_path_sizes(unbatched, caps, workspace, tmp_path))
+    |> run_batch(caps, mounts)
+    |> Map.merge(per_path_sizes(unbatched, caps, mounts))
   end
 
-  defp run_batch([], _caps, _workspace, _tmp_path), do: %{}
+  defp run_batch([], _caps, _mounts), do: %{}
 
-  defp run_batch(paths, caps, workspace, tmp_path) do
-    case ShellCmd.execute_raw(stat_command(paths), workspace, tmp_path, caps) do
+  defp run_batch(paths, caps, mounts) do
+    case ShellCmd.execute_raw(stat_command(paths), mounts, caps) do
       {:ok, _exit_code, "", stderr} ->
         whole_chunk_failed(paths, stderr)
 
       {:ok, _exit_code, stdout, _stderr} ->
-        partial(paths, stdout, caps, workspace, tmp_path)
+        partial(paths, stdout, caps, mounts)
 
       {:error, reason} ->
         Map.new(paths, &{&1, {:error, reason}})
@@ -115,17 +115,17 @@ defmodule Nest.Sandbox.StatBatch do
   # rejected path keeps its own reason and its own log line. Nothing is absent
   # when `stat` exited 0; this also keeps the "an entry for every path"
   # contract when a line is unparseable.
-  defp partial(paths, stdout, caps, workspace, tmp_path) do
+  defp partial(paths, stdout, caps, mounts) do
     reported = parse(stdout)
     missing = Enum.reject(paths, &Map.has_key?(reported, &1))
-    Map.merge(reported, per_path_sizes(missing, caps, workspace, tmp_path))
+    Map.merge(reported, per_path_sizes(missing, caps, mounts))
   end
 
-  # The per-path fallback: exactly what `Nest.Sandbox.stat/4` does, including
+  # The per-path fallback: exactly what `Nest.Sandbox.stat/3` does, including
   # its reason classification and operator logging.
-  defp per_path_sizes(paths, caps, workspace, tmp_path) do
+  defp per_path_sizes(paths, caps, mounts) do
     Map.new(paths, fn path ->
-      case Sandbox.stat(path, caps, workspace, tmp_path) do
+      case Sandbox.stat(path, caps, mounts) do
         {:ok, %File.Stat{size: size}} -> {path, {:ok, size}}
         {:error, reason} -> {path, {:error, reason}}
       end

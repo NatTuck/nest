@@ -16,11 +16,12 @@ defmodule Nest.ToolsEditTest do
   import Nest.Test.TmpCleanup
 
   alias Nest.LLM.Tool, as: Function
+  alias Nest.Sandbox.Mounts
   alias Nest.Tools
 
   describe "get_function/2" do
     test "returns the edit function", %{tmp: dir} do
-      function = Tools.get_function("file-edit", dir)
+      function = Tools.get_function("file-edit", Mounts.new(dir, nil))
 
       assert %Function{} = function
       assert function.name == "file-edit"
@@ -29,20 +30,21 @@ defmodule Nest.ToolsEditTest do
 
     test "edit struct does not carry a per-tool max_result_tokens field; cap is enforced by BatchSizer",
          %{tmp: dir} do
-      function = Tools.get_function("file-edit", dir)
+      function = Tools.get_function("file-edit", Mounts.new(dir, nil))
       refute Map.has_key?(function, :max_result_tokens)
     end
   end
 
   describe "schema" do
     test "edit's schema requires path, old_text, new_text", %{tmp: dir} do
-      schema = Tools.get_function("file-edit", dir).parameters_schema
+      schema = Tools.get_function("file-edit", Mounts.new(dir, nil)).parameters_schema
       assert schema["required"] == ["path", "old_text", "new_text"]
     end
 
     test "edit's schema documents path, old_text, new_text, replace_all, max_result_tokens",
          %{tmp: dir} do
-      properties = Tools.get_function("file-edit", dir).parameters_schema["properties"]
+      properties =
+        Tools.get_function("file-edit", Mounts.new(dir, nil)).parameters_schema["properties"]
 
       assert Map.has_key?(properties, "path")
       assert Map.has_key?(properties, "old_text")
@@ -53,13 +55,17 @@ defmodule Nest.ToolsEditTest do
 
     test "edit's replace_all defaults to false", %{tmp: dir} do
       property =
-        Tools.get_function("file-edit", dir).parameters_schema["properties"]["replace_all"]
+        Tools.get_function("file-edit", Mounts.new(dir, nil)).parameters_schema["properties"][
+          "replace_all"
+        ]
 
       assert property["default"] == false
     end
 
     test "edit's max_result_tokens is optional (not in required)", %{tmp: dir} do
-      required = Tools.get_function("file-edit", dir).parameters_schema["required"]
+      required =
+        Tools.get_function("file-edit", Mounts.new(dir, nil)).parameters_schema["required"]
+
       refute "max_result_tokens" in required
     end
   end
@@ -69,7 +75,7 @@ defmodule Nest.ToolsEditTest do
       path = Path.join(dir, "foo.txt")
       File.write!(path, "hello world\nbye world\n")
 
-      function = Tools.get_function("file-edit", dir)
+      function = Tools.get_function("file-edit", Mounts.new(dir, nil))
 
       assert {:ok, msg} =
                invoke(function, %{
@@ -86,7 +92,7 @@ defmodule Nest.ToolsEditTest do
       path = Path.join(dir, "foo.txt")
       File.write!(path, "hello world\n")
 
-      function = Tools.get_function("file-edit", dir)
+      function = Tools.get_function("file-edit", Mounts.new(dir, nil))
 
       assert {:error, msg} =
                invoke(function, %{"path" => "foo.txt", "old_text" => "missing", "new_text" => "x"})
@@ -100,7 +106,7 @@ defmodule Nest.ToolsEditTest do
       path = Path.join(dir, "foo.txt")
       File.write!(path, "foo\nfoo\nfoo\n")
 
-      function = Tools.get_function("file-edit", dir)
+      function = Tools.get_function("file-edit", Mounts.new(dir, nil))
 
       assert {:error, msg} =
                invoke(function, %{"path" => "foo.txt", "old_text" => "foo", "new_text" => "bar"})
@@ -114,7 +120,7 @@ defmodule Nest.ToolsEditTest do
       path = Path.join(dir, "foo.txt")
       File.write!(path, "foo\nfoo\nfoo\n")
 
-      function = Tools.get_function("file-edit", dir)
+      function = Tools.get_function("file-edit", Mounts.new(dir, nil))
 
       assert {:ok, msg} =
                invoke(function, %{
@@ -132,7 +138,7 @@ defmodule Nest.ToolsEditTest do
       path = Path.join(dir, "foo.txt")
       File.write!(path, "hello\n")
 
-      function = Tools.get_function("file-edit", dir)
+      function = Tools.get_function("file-edit", Mounts.new(dir, nil))
 
       assert {:error, msg} =
                invoke(function, %{"path" => "foo.txt", "old_text" => "", "new_text" => "x"})
@@ -141,7 +147,7 @@ defmodule Nest.ToolsEditTest do
     end
 
     test "returns error when the file does not exist", %{tmp: dir} do
-      function = Tools.get_function("file-edit", dir)
+      function = Tools.get_function("file-edit", Mounts.new(dir, nil))
 
       # The read is the sandbox's read-only host fast-path (no bwrap),
       # so a missing file surfaces as a clean "File not found".
@@ -159,7 +165,7 @@ defmodule Nest.ToolsEditTest do
       path = Path.join(dir, "foo.txt")
       File.write!(path, "header\ntarget line\nfooter\n")
 
-      function = Tools.get_function("file-edit", dir)
+      function = Tools.get_function("file-edit", Mounts.new(dir, nil))
 
       assert {:ok, _} =
                invoke(function, %{
@@ -174,13 +180,13 @@ defmodule Nest.ToolsEditTest do
 
   describe "edit tool in get_functions/2" do
     test "edit is included when added to a tool list", %{tmp: dir} do
-      functions = Tools.get_functions(["file-edit"], dir)
+      functions = Tools.get_functions(["file-edit"], Mounts.new(dir, nil))
       assert length(functions) == 1
       assert hd(functions).name == "file-edit"
     end
 
     test "edit is filtered out when not in the tool list", %{tmp: dir} do
-      functions = Tools.get_functions(["file-read"], dir)
+      functions = Tools.get_functions(["file-read"], Mounts.new(dir, nil))
       names = Enum.map(functions, & &1.name)
       refute "file-edit" in names
     end

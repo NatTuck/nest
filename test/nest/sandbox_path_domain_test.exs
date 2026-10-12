@@ -1,15 +1,16 @@
-defmodule Nest.SandboxHostPathTest do
+defmodule Nest.SandboxPathDomainTest do
   @moduledoc """
-  Guard: the host scratch spelling must never escape `Nest.Sandbox`.
+  Guard: every path an agent sees is a sandbox path.
 
-  The space dir is bound at `/tmp`, so agents only ever see
-  `/tmp/<agent>/...`. The host backing path
-  (`/tmp/nest-<ospid>/space-<id>/<agent>/...`) is an implementation detail of
-  `Nest.Sandbox`. These tests pin that stat/glob/read resolve the sandbox
-  spelling, that the `/tmp` bind source is exactly the scratch root
-  `Nest.Sandbox.Paths` derives, that no host spelling leaks into a result or a
-  pointer, and that read/stat/glob execute inside bwrap rather than against the
-  host.
+  An agent names exactly one domain of paths. The space scratch dir is bound at
+  `/tmp`, so an agent's own scratch directory is `/tmp/<agent>/...`; the
+  workspace is bound at its own path. The two directories those binds are made
+  from travel in one `Nest.Sandbox.Mounts` value and are read only by
+  `Nest.Sandbox`. These tests pin that stat/glob/read return paths in the
+  agent's domain, that the `/tmp` bind source is exactly the scratch root
+  `Nest.Sandbox.Paths` derives, that a result or a pointer never carries a
+  directory the sandbox binds, and that read/stat/glob execute inside bwrap
+  rather than against the host.
   """
   use ExUnit.Case, async: true
 
@@ -19,72 +20,74 @@ defmodule Nest.SandboxHostPathTest do
 
   alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Sandbox
+  alias Nest.Sandbox.Mounts
 
   setup do
     unique = System.unique_integer([:positive])
 
     # A workspace outside /tmp, so the space bind does not shadow it.
-    workspace = Path.join([File.cwd!(), "_build", "tmp", "nest_host_path_ws_#{unique}"])
+    workspace = Path.join([File.cwd!(), "_build", "tmp", "nest_path_domain_ws_#{unique}"])
     File.mkdir_p!(workspace)
 
-    root = Path.join(System.tmp_dir!(), "nest_host_path_#{unique}")
+    root = Path.join(System.tmp_dir!(), "nest_path_domain_#{unique}")
     agent = "agent-#{unique}"
-    tmp_path = Path.join([root, "space-1", agent])
-    File.mkdir_p!(tmp_path)
+    scratch = Path.join([root, "space-1", agent])
+    File.mkdir_p!(scratch)
 
     on_exit(fn ->
-      if String.contains?(workspace, "nest_host_path_ws"), do: File.rm_rf!(workspace)
-      if String.contains?(root, "nest_host_path"), do: File.rm_rf(root)
+      if String.contains?(workspace, "nest_path_domain_ws"), do: File.rm_rf!(workspace)
+      if String.contains?(root, "nest_path_domain"), do: File.rm_rf(root)
     end)
 
     %{
       workspace: workspace,
       root: root,
       agent: agent,
-      tmp_path: tmp_path,
+      scratch: scratch,
+      mounts: Mounts.new(workspace, scratch),
       caps: Sandbox.default_caps()
     }
   end
 
   test "the /tmp bind source matches the translation root, and stat/glob/read resolve it", ctx do
-    File.write!(Path.join(ctx.tmp_path, "report.txt"), "hello")
+    File.write!(Path.join(ctx.scratch, "report.txt"), "hello")
     sandbox_file = "/tmp/#{ctx.agent}/report.txt"
 
-    # The bind source `Sandbox.build/3` emits for `/tmp` is exactly the scratch
+    # The bind source `Sandbox.build/2` emits for `/tmp` is exactly the scratch
     # root `Nest.Sandbox.Paths` derives — so the bind layout and the reported
-    # spelling cannot drift apart.
-    {:ok, args} = Sandbox.build(ctx.caps, ctx.workspace, ctx.tmp_path)
-    assert bind_source_for(args, "/tmp") == Nest.FSPath.canonical(Path.dirname(ctx.tmp_path))
+    # path cannot drift apart.
+    {:ok, args} = Sandbox.build(ctx.caps, ctx.mounts)
+    assert bind_source_for(args, "/tmp") == Nest.FSPath.canonical(Path.dirname(ctx.scratch))
 
     # glob returns the sandbox spelling only.
     assert {:ok, [^sandbox_file]} =
-             Sandbox.glob("/tmp/#{ctx.agent}/*.txt", ctx.caps, ctx.workspace, ctx.tmp_path)
+             Sandbox.glob("/tmp/#{ctx.agent}/*.txt", ctx.caps, ctx.mounts)
 
     assert {:ok, %{size: 5}} =
-             Sandbox.stat(sandbox_file, ctx.caps, ctx.workspace, ctx.tmp_path)
+             Sandbox.stat(sandbox_file, ctx.caps, ctx.mounts)
 
     assert {:ok, "hello"} =
-             Sandbox.read(sandbox_file, ctx.caps, ctx.workspace, ctx.tmp_path)
+             Sandbox.read(sandbox_file, ctx.caps, ctx.mounts)
   end
 
-  test "glob never returns the host spelling", ctx do
-    File.write!(Path.join(ctx.tmp_path, "a.txt"), "x")
+  test "glob returns only paths in the agent's domain", ctx do
+    File.write!(Path.join(ctx.scratch, "a.txt"), "x")
 
     assert {:ok, files} =
-             Sandbox.glob("/tmp/#{ctx.agent}/*", ctx.caps, ctx.workspace, ctx.tmp_path)
+             Sandbox.glob("/tmp/#{ctx.agent}/*", ctx.caps, ctx.mounts)
 
     assert files == ["/tmp/#{ctx.agent}/a.txt"]
-    refute Enum.any?(files, &String.contains?(&1, ctx.tmp_path))
+    refute Enum.any?(files, &String.contains?(&1, ctx.scratch))
     refute Enum.any?(files, &String.contains?(&1, ctx.root))
   end
 
-  test "Overflow offload pointers use the sandbox spelling", ctx do
-    path = Overflow.write("body", %{tmp_path: ctx.tmp_path}, "probe", "txt")
+  test "Overflow offload pointers name the agent's own path", ctx do
+    path = Overflow.write("body", %{mounts: ctx.mounts}, "probe", "txt")
 
     assert path =~ "/tmp/#{ctx.agent}/"
-    refute path =~ ctx.tmp_path
+    refute path =~ ctx.scratch
     # The bytes really landed at the host backing path.
-    assert File.read!(Path.join(ctx.tmp_path, Path.basename(path))) == "body"
+    assert File.read!(Path.join(ctx.scratch, Path.basename(path))) == "body"
   end
 
   # ---- the review's "configurations": host-vs-bwrap disagreements ----
@@ -94,11 +97,11 @@ defmodule Nest.SandboxHostPathTest do
     # A symlink to `/tmp` in the agent's scratch dir. Inside the sandbox `/tmp`
     # is the scratch bind, so following it must list the scratch root (the
     # space dir); the host `/tmp` must never appear.
-    File.ln_s!("/tmp", Path.join(ctx.tmp_path, "t"))
+    File.ln_s!("/tmp", Path.join(ctx.scratch, "t"))
     File.write!(Path.join([ctx.root, "space-1", "shared.txt"]), "scratch")
 
     assert {:ok, files} =
-             Sandbox.glob("/tmp/#{ctx.agent}/t/*", ctx.caps, ctx.workspace, ctx.tmp_path)
+             Sandbox.glob("/tmp/#{ctx.agent}/t/*", ctx.caps, ctx.mounts)
 
     assert "/tmp/#{ctx.agent}/t/shared.txt" in files
     refute Enum.any?(files, &String.contains?(&1, ctx.root))
@@ -111,9 +114,11 @@ defmodule Nest.SandboxHostPathTest do
 
     target = Path.join(ws, "f.txt")
 
-    assert {:error, stat_msg} = Sandbox.stat(target, ctx.caps, ws, ctx.tmp_path)
-    assert {:error, read_msg} = Sandbox.read(target, ctx.caps, ws, ctx.tmp_path)
-    assert {:error, glob_msg} = Sandbox.glob(Path.join(ws, "*"), ctx.caps, ws, ctx.tmp_path)
+    assert {:error, stat_msg} = Sandbox.stat(target, ctx.caps, Mounts.new(ws, ctx.scratch))
+    assert {:error, read_msg} = Sandbox.read(target, ctx.caps, Mounts.new(ws, ctx.scratch))
+
+    assert {:error, glob_msg} =
+             Sandbox.glob(Path.join(ws, "*"), ctx.caps, Mounts.new(ws, ctx.scratch))
 
     for msg <- [stat_msg, read_msg, glob_msg] do
       assert msg =~ "must not be at or under /tmp"
@@ -130,13 +135,13 @@ defmodule Nest.SandboxHostPathTest do
     log =
       capture_log(fn ->
         assert {:error, :sandbox_setup_failed} =
-                 Sandbox.stat("/etc/hostname", caps, ctx.workspace, ctx.tmp_path)
+                 Sandbox.stat("/etc/hostname", caps, ctx.mounts)
 
         assert {:error, :sandbox_setup_failed} =
-                 Sandbox.glob("/etc/*", caps, ctx.workspace, ctx.tmp_path)
+                 Sandbox.glob("/etc/*", caps, ctx.mounts)
 
         assert {:error, :sandbox_setup_failed} =
-                 Sandbox.read("/etc/hostname", caps, ctx.workspace, ctx.tmp_path)
+                 Sandbox.read("/etc/hostname", caps, ctx.mounts)
       end)
 
     assert log =~ "Nest.Sandbox.stat: sandbox_setup_failed"
@@ -151,10 +156,10 @@ defmodule Nest.SandboxHostPathTest do
     # `--ro-bind` mounts with `nodev`, so the masked char device is unusable:
     # stat sees a device, but opening it is denied (not a silent empty read).
     assert {:ok, %File.Stat{type: :device}} =
-             Sandbox.stat(nest, caps, ctx.workspace, ctx.tmp_path)
+             Sandbox.stat(nest, caps, ctx.mounts)
 
     assert {:error, :read_permission_denied} =
-             Sandbox.read(nest, caps, ctx.workspace, ctx.tmp_path)
+             Sandbox.read(nest, caps, ctx.mounts)
   end
 
   test "reading a directory is :eisdir", ctx do
@@ -166,17 +171,17 @@ defmodule Nest.SandboxHostPathTest do
     # asserted — a `refute` on captured logs is unsound (`capture_log` collects
     # every process's logs) — and the loud half is asserted positively by the
     # sandbox-setup-failure test above.
-    assert {:error, :eisdir} = Sandbox.read(dir, ctx.caps, ctx.workspace, ctx.tmp_path)
+    assert {:error, :eisdir} = Sandbox.read(dir, ctx.caps, ctx.mounts)
   end
 
-  test "a /tmp write with no scratch dir is refused by the mount, not by a host check", ctx do
+  test "a /tmp write with no scratch dir is refused by the mount, not by a Nest check", ctx do
     # `default_caps` grants the symbolic /tmp write, but there is no scratch dir
     # to honor it, so /tmp stays the read-only host /tmp. The refusal comes from
     # the mount: bwrap is the only validator for what a path may do.
     log =
       capture_log(fn ->
         assert {:error, msg} =
-                 Sandbox.write("/tmp/thing.txt", "x", ctx.caps, ctx.workspace, nil)
+                 Sandbox.write("/tmp/thing.txt", "x", ctx.caps, Mounts.new(ctx.workspace, nil))
 
         # The kernel's read-only failure, not a Nest-authored message. Assert
         # the exit code rather than the (locale-dependent) kernel text.
@@ -186,15 +191,20 @@ defmodule Nest.SandboxHostPathTest do
     assert log =~ "bwrap exited non-zero"
 
     assert {:ok, _} =
-             Sandbox.write(Path.join(ctx.workspace, "ok.txt"), "x", ctx.caps, ctx.workspace, nil)
+             Sandbox.write(
+               Path.join(ctx.workspace, "ok.txt"),
+               "x",
+               ctx.caps,
+               Mounts.new(ctx.workspace, nil)
+             )
   end
 
   # The sandbox's filesystem view is bwrap's view: `read`, `stat`, and `glob`
   # must execute inside bwrap, never against the host. A source scan is a weak
   # guard (it cannot see `apply/3`, an aliased `File`, `System.cmd`, or
   # `Port.open`), so this checks the AST for the specific host-read APIs a
-  # fast path would use, rather than a substring a review already defeated by
-  # spelling the call differently.
+  # host-side fast path would use, rather than a substring a review already
+  # defeated by spelling the call differently.
   @sandbox_sources [
     "lib/nest/sandbox.ex",
     "lib/nest/sandbox/glob.ex",
@@ -203,9 +213,9 @@ defmodule Nest.SandboxHostPathTest do
     "lib/nest/tools/shell_cmd.ex"
   ]
 
-  # Host filesystem reads/stats/opens that would bypass bwrap. `File.dir?`,
-  # `File.exists?`, `File.rm`, `File.mkdir_p!`, `File.write!` (staging) and the
-  # `Paths` string helpers stay allowed.
+  # Filesystem reads/stats/opens on the host that would bypass bwrap.
+  # `File.dir?`, `File.exists?`, `File.rm`, `File.mkdir_p!`, `File.write!`
+  # (staging) and the `Paths` string helpers stay allowed.
   @host_read_calls [
     {:file, :read},
     {:file, :read!},
@@ -222,10 +232,10 @@ defmodule Nest.SandboxHostPathTest do
     {:io, :binread}
   ]
 
-  # The only host reads allowed in the scanned files. `Sandbox.ShellJobs` reads
-  # its own job log: a Nest artifact written by Nest and exposed with the same
-  # bytes by the mount, not an agent-visible read, so it is allowlisted
-  # explicitly. A *second* host read in that file still fails the guard.
+  # The only reads on the host allowed in the scanned files. `Sandbox.ShellJobs`
+  # reads its own job log: a Nest artifact written by Nest and exposed with the
+  # same bytes by the mount, not an agent-visible read, so it is allowlisted
+  # explicitly. A *second* such read in that file still fails the guard.
   @allowed_host_reads %{
     "lib/nest/sandbox/shell_jobs.ex" => [{:file, :read}]
   }

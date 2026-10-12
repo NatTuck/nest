@@ -16,6 +16,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
 
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Sandbox.Mounts
   alias Nest.Vocations
 
   setup do
@@ -43,7 +44,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
 
   test "the system prompt has no [Delegation] section", %{vocation: vocation} do
     {prompt, _mode, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, "root", 0)
+      SystemPrompt.compose_vocation_config(vocation, Mounts.new(nil, nil), {nil, nil}, "root", 0)
 
     refute prompt =~ "[Delegation]"
   end
@@ -54,7 +55,13 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
 
     for depth <- [0, max - 1, max, max + 1] do
       {_prompt, _mode, tools, _vocation} =
-        SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, "agent", depth)
+        SystemPrompt.compose_vocation_config(
+          vocation,
+          Mounts.new(nil, nil),
+          {nil, nil},
+          "agent",
+          depth
+        )
 
       assert "agents-spawn" in tools
       assert "context-check" in tools
@@ -66,7 +73,13 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
     max = Config.configured_max_depth()
 
     {prompt, _mode, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, "clever-raven", 2)
+      SystemPrompt.compose_vocation_config(
+        vocation,
+        Mounts.new(nil, nil),
+        {nil, nil},
+        "clever-raven",
+        2
+      )
 
     assert prompt =~ ~s(Your name is "clever-raven")
     assert prompt =~ "at spawn depth 2 of #{max}"
@@ -75,7 +88,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
   test "the identity line carries a caveat that it may change when cloned",
        %{vocation: vocation} do
     {prompt, _mode, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, "bob", 1)
+      SystemPrompt.compose_vocation_config(vocation, Mounts.new(nil, nil), {nil, nil}, "bob", 1)
 
     assert prompt =~ "may change when cloned"
   end
@@ -83,7 +96,13 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
   test "states the agent's own scratch directory in the sandbox spelling",
        %{vocation: vocation} do
     {prompt, _mode, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, "clever-raven", 0)
+      SystemPrompt.compose_vocation_config(
+        vocation,
+        Mounts.new(nil, nil),
+        {nil, nil},
+        "clever-raven",
+        0
+      )
 
     # The space dir is bound at /tmp, so the agent's own dir is
     # /tmp/<name>. Stated here, once, instead of in every path-taking
@@ -98,7 +117,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
 
   test "omits the scratch section when there is no name", %{vocation: vocation} do
     {prompt, _mode, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, "", 0)
+      SystemPrompt.compose_vocation_config(vocation, Mounts.new(nil, nil), {nil, nil}, "", 0)
 
     refute prompt =~ "scratch directory"
   end
@@ -110,7 +129,13 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
     }
 
     {_prompt, _mode, tools, _vocation} =
-      SystemPrompt.compose_vocation_config(tools_vocation, nil, {nil, nil}, "agent", 0)
+      SystemPrompt.compose_vocation_config(
+        tools_vocation,
+        Mounts.new(nil, nil),
+        {nil, nil},
+        "agent",
+        0
+      )
 
     assert "agents-spawn" in tools
     assert "agents-query" in tools

@@ -10,11 +10,12 @@ defmodule Nest.Tools.SchemaTest do
   use ExUnit.Case, async: true
 
   alias Nest.LLM.Tool, as: Function
+  alias Nest.Sandbox.Mounts
   alias Nest.Tools
 
   describe "sub-agent tools" do
     test "models-list resolves to a registered tool" do
-      function = Tools.get_function("models-list", "/tmp")
+      function = Tools.get_function("models-list", Mounts.new("/tmp", nil))
 
       assert %Function{} = function
       assert function.name == "models-list"
@@ -22,7 +23,7 @@ defmodule Nest.Tools.SchemaTest do
     end
 
     test "agents-spawn schema exposes the optional vocation and model arguments" do
-      function = Tools.get_function("agents-spawn", "/tmp")
+      function = Tools.get_function("agents-spawn", Mounts.new("/tmp", nil))
       assert function.name == "agents-spawn"
 
       props = function.parameters_schema["properties"]
@@ -53,7 +54,7 @@ defmodule Nest.Tools.SchemaTest do
     end
 
     test "agents-query schema takes name and prompt and nothing that waits" do
-      function = Tools.get_function("agents-query", "/tmp")
+      function = Tools.get_function("agents-query", Mounts.new("/tmp", nil))
       assert function.name == "agents-query"
 
       props = function.parameters_schema["properties"]
@@ -69,7 +70,7 @@ defmodule Nest.Tools.SchemaTest do
     end
 
     test "agents-batch schema exposes items/glob/template with no required args" do
-      function = Tools.get_function("agents-batch", "/tmp")
+      function = Tools.get_function("agents-batch", Mounts.new("/tmp", nil))
       assert function.name == "agents-batch"
 
       props = function.parameters_schema["properties"]
@@ -93,7 +94,7 @@ defmodule Nest.Tools.SchemaTest do
     end
 
     test "agents-send schema requires name and message" do
-      function = Tools.get_function("agents-send", "/tmp")
+      function = Tools.get_function("agents-send", Mounts.new("/tmp", nil))
       assert function.name == "agents-send"
 
       assert function.parameters_schema["required"] == ["name", "message"]
@@ -110,7 +111,7 @@ defmodule Nest.Tools.SchemaTest do
       # Issue #62: the wait is synchronisation only and the fetch consumes;
       # issue #54: the wait is non-blocking by default with an explicit
       # blocking mode. An empty `names` is meaningful, so nothing is required.
-      wait = Tools.get_function("agents-wait-for-idle", "/tmp")
+      wait = Tools.get_function("agents-wait-for-idle", Mounts.new("/tmp", nil))
       props = wait.parameters_schema["properties"]
       assert wait.name == "agents-wait-for-idle"
       assert props["names"]["type"] == "array"
@@ -130,7 +131,7 @@ defmodule Nest.Tools.SchemaTest do
       assert wait.description =~ "give-up reaches you as a runtime notice"
       assert wait.description =~ "only records the refusal"
 
-      fetch = Tools.get_function("agents-last-message", "/tmp")
+      fetch = Tools.get_function("agents-last-message", Mounts.new("/tmp", nil))
       assert fetch.name == "agents-last-message"
       assert fetch.parameters_schema["properties"]["name"]["type"] == "string"
       assert fetch.parameters_schema["required"] == ["name"]

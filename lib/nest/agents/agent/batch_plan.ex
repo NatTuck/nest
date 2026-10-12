@@ -155,16 +155,10 @@ defmodule Nest.Agents.Agent.BatchPlan do
     do: "`items[#{index}]` is #{inspect(item)}; an item must be a non-blank string or an integer"
 
   defp resolve_glob(glob, ctx) do
-    # `ctx.tmp_path` is a HOST path passed only so `Sandbox.glob/5` can
-    # resolve `/tmp/...` to its host backing path. The returned matches are
-    # translated back to the sandbox spelling; the host spelling never
-    # reaches the LLM.
-    case Sandbox.glob(
-           glob,
-           ctx.caps,
-           Map.get(ctx, :workspace_path),
-           Map.get(ctx, :tmp_path)
-         ) do
+    # `ctx.mounts` is what `Nest.Sandbox` resolves the pattern against and
+    # reads the bind layout out of; the matches come back in the domain the
+    # agent names.
+    case Sandbox.glob(glob, ctx.caps, Map.get(ctx, :mounts)) do
       {:ok, files} when files != [] ->
         {:ok, files}
 

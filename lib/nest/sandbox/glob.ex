@@ -14,8 +14,7 @@ defmodule Nest.Sandbox.Glob do
   terminal `**` is refused: bash would eagerly expand the whole subtree.
   """
 
-  alias Nest.FSPath
-  alias Nest.Sandbox.{Failure, Paths}
+  alias Nest.Sandbox.{Failure, Mounts, Paths}
   alias Nest.Tools.{ShellCmd, ShellEscape}
 
   @glob_limit 1_000
@@ -25,26 +24,26 @@ defmodule Nest.Sandbox.Glob do
   @glob_timeout_ms 30_000
 
   @doc """
-  Expand a resolved-against-`workspace` glob `pattern` inside bwrap.
+  Expand a resolved-against-the-workspace glob `pattern` inside bwrap.
 
   `opts` accepts `limit:` (default `#{@glob_limit}`), the max number of raw
   matches before the call returns `{:error, :glob_too_broad}`.
   """
-  @spec run(String.t(), map(), String.t() | nil, String.t() | nil, keyword()) ::
+  @spec run(String.t(), map(), Mounts.t(), keyword()) ::
           {:ok, [String.t()]} | {:error, atom() | term()}
-  def run(pattern, caps, workspace, tmp_path, opts \\ []) do
+  def run(pattern, caps, mounts, opts \\ []) do
     limit = Keyword.get(opts, :limit, @glob_limit)
 
-    with {:ok, full} <- FSPath.resolve(pattern, workspace),
+    with {:ok, full} <- Mounts.resolve(pattern, mounts),
          :ok <- reject_terminal_double_star(full) do
-      execute(full, caps, workspace, tmp_path, limit)
+      execute(full, caps, mounts, limit)
     end
   end
 
-  defp execute(full, caps, workspace, tmp_path, limit) do
-    script = script(shell_glob(full), shell_glob(Paths.stage_dir_sandbox(tmp_path)), limit)
+  defp execute(full, caps, mounts, limit) do
+    script = script(shell_glob(full), shell_glob(stage_dir_sandbox(mounts)), limit)
 
-    case ShellCmd.execute_raw(script, workspace, tmp_path, caps, timeout: @glob_timeout_ms) do
+    case ShellCmd.execute_raw(script, mounts, caps, timeout: @glob_timeout_ms) do
       {:ok, 0, stdout, _stderr} ->
         {:ok, stdout |> split_nul() |> Enum.sort() |> Enum.uniq()}
 
@@ -61,14 +60,16 @@ defmodule Nest.Sandbox.Glob do
     end
   end
 
-  # `full` is a resolved absolute pattern in the sandbox spelling. Bash resolves
+  defp stage_dir_sandbox(mounts), do: Paths.stage_dir_sandbox(Mounts.scratch(mounts))
+
+  # `full` is a resolved absolute pattern in the sandbox domain. Bash resolves
   # symlinks and the `/tmp` bind exactly as a shell inside the sandbox would.
   #
   # Nest stages command transcripts in `Paths.stage_dir_sandbox/1` (visible
-  # inside at `/tmp/.cmds`, or at its host spelling when there is no scratch
-  # bind). The loop skips that whole directory so Nest's own scripts never
-  # appear in results, while a real file an agent names `.nest-cmd-notes.sh` is
-  # no longer hidden by a basename-prefix check.
+  # inside at `/tmp/.cmds`, or at the same path through the read-only root bind
+  # when there is no scratch bind). The loop skips that whole directory so
+  # Nest's own scripts never appear in results, while a real file an agent
+  # names `.nest-cmd-notes.sh` is no longer hidden by a basename-prefix check.
   defp script(escaped_pattern, escaped_stage_dir, limit) do
     """
     export LC_ALL=C

@@ -43,6 +43,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   alias Nest.Agents.Agent.Watch
   alias Nest.Messages.Streaming
   alias Nest.Messages.ThinkTags
+  alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Compactor, as: TokensCompactor
   alias Nest.Vocations
   alias Nest.Vocations.Vocation
@@ -494,12 +495,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
 
       requested ->
         {resolved, _caps} =
-          ChatPipeline.resolve_mode_and_caps(
-            requested,
-            state.vocation,
-            state.workspace_path,
-            state.tmp_path
-          )
+          ChatPipeline.resolve_mode_and_caps(requested, state.vocation, Mounts.from_agent(state))
 
         resolved
     end
@@ -659,14 +655,14 @@ defmodule Nest.Agents.Agent.Turn.Executor do
     {system_prompt, _mode, tool_names, fresh_vocation} =
       SystemPrompt.compose_vocation_config(
         fresh_vocation,
-        state.workspace_path,
+        Mounts.from_agent(state),
         {state.llm_metrics.context_limit, state.llm_metrics.context_limit_source},
         state.name,
         state.depth
       )
 
     tool_names = ToolFilter.exclude_spawn_at_max_depth(tool_names, state.depth)
-    tools = Nest.Tools.get_functions(tool_names, state.workspace_path, state.tmp_path)
+    tools = Nest.Tools.get_functions(tool_names, Mounts.from_agent(state))
 
     {%{state | vocation: fresh_vocation, tools: tools}, system_prompt}
   end

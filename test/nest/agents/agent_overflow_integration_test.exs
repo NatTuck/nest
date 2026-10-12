@@ -22,6 +22,7 @@ defmodule Nest.Agents.AgentOverflowIntegrationTest do
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
   alias Nest.Messages.User
+  alias Nest.Sandbox.Mounts
   alias Nest.Vocations
 
   # conflicts with our private helper below
@@ -33,7 +34,7 @@ defmodule Nest.Agents.AgentOverflowIntegrationTest do
     {system_prompt, _, _, _} =
       SystemPrompt.compose_vocation_config(
         state.vocation,
-        state.workspace_path,
+        Mounts.new(state.workspace_path, nil),
         {state.llm_metrics.context_limit, state.llm_metrics.context_limit_source},
         state.name,
         state.depth

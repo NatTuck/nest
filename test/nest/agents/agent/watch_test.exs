@@ -21,6 +21,7 @@ defmodule Nest.Agents.Agent.WatchTest do
   alias Nest.LLM.MockClient
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
+  alias Nest.Sandbox.Mounts
   alias Nest.Sandbox.ShellJobs
   alias Nest.Tools.ShellCmd
 
@@ -354,7 +355,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     key = {space_id, name}
 
     {:ok, _} =
-      ShellCmd.execute("echo done", state.workspace_path, state.tmp_path, nil,
+      ShellCmd.execute("echo done", Mounts.new(state.workspace_path, state.tmp_path), nil,
         background: true,
         agent_key: key,
         grace_ms: 0

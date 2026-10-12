@@ -8,15 +8,16 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   `BatchSizer` (regular tools), `BatchPlan` (the `agents-batch` aggregate) and
   `SubAgentResults` (the sub-agent tools' results).
 
-  The scratch dir is `ctx.tmp_path` — the agent's own sub-directory of the
-  space scratch dir (which the sandbox binds read-write at `/tmp`, so the
-  agent sees it at `/tmp/<agent-name>`). Writing on the host directly
-  (rather than through the sandbox gatekeeper) is intentional internal
-  scratch management, mirroring `BatchSizer`. The HOST backing path stays
-  internal: `write/4` returns the sandbox spelling the agent must use, so
-  the host layout never reaches the LLM.
+  The scratch dir comes from `ctx.mounts` — the agent's own sub-directory of
+  the space scratch dir (which the sandbox binds read-write at `/tmp`, so the
+  agent sees it at `/tmp/<agent-name>`). Writing to it directly (rather than
+  through the sandbox gatekeeper) is intentional internal scratch management,
+  mirroring `BatchSizer`. What `write/4` returns is the `/tmp/<agent-name>/...`
+  spelling the agent uses; the directory the bytes land in never reaches the
+  LLM.
   """
 
+  alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Estimator
 
   # UTF-8 encoding of U+FFFD (REPLACEMENT CHARACTER), used by
@@ -24,9 +25,9 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   @replacement_char <<0xEF, 0xBF, 0xBD>>
 
   @doc """
-  Write `content` to a scratch file under `ctx.tmp_path` and return
-  the path, or `nil` when the tmp dir is unavailable or the write
-  fails. `prefix` distinguishes the artifact type in the filename
+  Write `content` to a scratch file under the agent's scratch dir and return
+  the `/tmp/<agent-name>/...` path, or `nil` when there is no scratch dir or
+  the write fails. `prefix` distinguishes the artifact type in the filename
   (e.g. `"exec"` for shell output, `"agents-batch"` for a batch
   aggregate).
 
@@ -38,16 +39,12 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   """
   @spec write(binary(), map(), String.t(), String.t(), String.t() | nil) :: String.t() | nil
   def write(content, ctx, prefix, ext, id \\ nil) do
-    case Map.get(ctx, :tmp_path) do
+    case scratch_dir(ctx) do
       nil ->
         nil
 
       dir ->
         name = "#{prefix}-#{id || token()}.#{ext}"
-        # HOST PATH: `dir` is the agent's host scratch directory, and `path`
-        # is where the bytes are written. Neither is ever returned — the LLM
-        # must only ever see the sandbox spelling (`/tmp/<agent>/...`), which
-        # is what `Nest.Sandbox.sandbox_tmp_path/1` produces below.
         path = Path.join(dir, name)
 
         try do
@@ -56,6 +53,13 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
         rescue
           _ -> nil
         end
+    end
+  end
+
+  defp scratch_dir(ctx) do
+    case Map.get(ctx, :mounts) do
+      %Mounts{} = mounts -> Mounts.scratch(mounts)
+      _ -> nil
     end
   end
 

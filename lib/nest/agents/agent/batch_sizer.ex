@@ -18,7 +18,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   per-call synthetic errors and no tools execute.
 
   Registered tools (those listed in `state.tools`, served via
-  `Nest.Tools.get_function/3`) get a specific `projected_size/2`
+  `Nest.Tools.get_function/2`) get a specific `projected_size/2`
   clause. The catch-all handles hallucinated names the LLM
   invents or typos — it projects off a representative error
   string, since that's what Phase 2's `LLMTools.execute_one/3`
@@ -106,7 +106,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   should use those two directly so the whole batch is cooked once.
 
   The `ctx` map carries `messages`, `context_limit`, `tools`,
-  `caps`, `agent_pid`, `tmp_path` (per-agent temp directory for
+  `caps`, `agent_pid`, `mounts` (the sandbox's bind layout, for
   summarized outputs), and `agent_name`.
   """
   @spec run([ToolCall.t()], map()) :: [ToolResult.t()]
@@ -245,7 +245,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
            agent_pid: Map.get(ctx, :agent_pid),
            agent_name: Map.get(ctx, :agent_name),
            space_id: Map.get(ctx, :space_id),
-           tmp_path: Map.get(ctx, :tmp_path)
+           mounts: Map.get(ctx, :mounts)
          }) do
       {:ok, content} ->
         {tc, :ok, ensure_non_empty(content)}

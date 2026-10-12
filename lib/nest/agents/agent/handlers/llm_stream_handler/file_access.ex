@@ -26,6 +26,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess do
   alias Nest.Agents.Agent
   alias Nest.Messages.Part
   alias Nest.Sandbox
+  alias Nest.Sandbox.Mounts
 
   require Logger
 
@@ -67,11 +68,11 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess do
   """
   @spec record({atom(), map()}, Agent.t()) :: Agent.t()
   def record({:tool, %{parts: parts}}, state) do
-    workspace_path = workspace_root_of(state)
+    mounts = Mounts.from_agent(state)
 
     new_read_files =
       Enum.reduce(parts, state.chat_state.read_files, fn part, acc ->
-        case part_for_tracking(part, workspace_path) do
+        case part_for_tracking(part, mounts) do
           {:ok, full_path} -> record_stat(acc, full_path, state)
           :skip -> acc
         end
@@ -84,54 +85,24 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess do
 
   defp part_for_tracking(
          %Part.ToolResult{name: name, is_error: false, arguments: args},
-         workspace_path
+         mounts
        )
        when name in ["file-read", "file-write"] and is_map(args) do
     raw_path = args["path"]
 
     with true <- is_binary(raw_path) and raw_path != "",
-         {:ok, full_path} <- resolve_path(raw_path, workspace_path) do
+         {:ok, full_path} <- Mounts.resolve(raw_path, mounts) do
       {:ok, full_path}
     else
       _ -> :skip
     end
   end
 
-  defp part_for_tracking(_part, _workspace_path), do: :skip
-
-  # Mirror `Nest.Tools.FileTools.resolve_full_path/2`. We can't
-  # import it (it's a `defp`); duplicating the two-line branch
-  # keeps the read-tracking helper self-contained.
-  defp resolve_path(path, workspace_path) do
-    cond do
-      Path.type(path) == :absolute -> {:ok, path}
-      is_binary(workspace_path) -> {:ok, Path.join(workspace_path, path)}
-      true -> :skip
-    end
-  end
-
-  # Defensive: tests that boot an agent with a stub
-  # `ClientConfig` (no `:workspace_path` field, e.g. the
-  # `MockClient` queue) shouldn't crash here. The
-  # `part_for_tracking/2` clause falls back to `:skip` for
-  # paths it can't resolve, so a `nil` workspace doesn't
-  # lose us any real tool results.
-  defp workspace_root_of(state) do
-    case state do
-      %{workspace_path: root} when is_binary(root) -> root
-      _ -> nil
-    end
-  end
+  defp part_for_tracking(_part, _mounts), do: :skip
 
   defp record_stat(read_files, full_path, state) do
-    # `full_path` is the sandbox-domain path the agent used. `state.tmp_path`
-    # is a HOST path passed only so `Sandbox.stat/4` can resolve that path;
-    # the host spelling must never be recorded or shown to the LLM.
-    case Sandbox.stat(
-           full_path,
-           Agent.resolve_caps(state),
-           Map.get(state, :workspace_path),
-           Map.get(state, :tmp_path),
+    # `full_path` is the path the agent used, in the domain the agent names.
+    case Sandbox.stat(full_path, Agent.resolve_caps(state), Mounts.from_agent(state),
            time: :posix
          ) do
       {:ok, %File.Stat{mtime: mtime, size: size}} when is_integer(mtime) ->

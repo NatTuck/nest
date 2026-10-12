@@ -13,6 +13,7 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
 
   alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Sandbox
+  alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Estimator
 
   setup do
@@ -52,7 +53,7 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
   describe "substitute/5" do
     test "names the scratch file even when the budget leaves no room", %{dir: dir} do
       content = "line one\nline two\n"
-      ctx = %{tmp_path: dir}
+      ctx = %{mounts: Mounts.new(nil, dir)}
 
       # `0` hits the no-budget clause; `1` has a budget but can't fit even
       # the pointer line. Both must name the file rather than return "".
@@ -70,7 +71,7 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
       out =
         Overflow.substitute(
           String.duplicate("a line of content\n", 200),
-          %{tmp_path: dir},
+          %{mounts: Mounts.new(nil, dir)},
           "Command output",
           200,
           "exec"

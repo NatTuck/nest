@@ -1,11 +1,12 @@
 defmodule Nest.ToolsContextCheckTest do
   use ExUnit.Case, async: true
 
+  alias Nest.Sandbox.Mounts
   alias Nest.Tools
 
   describe "context-check tool" do
     test "reports message count, tokens used, limit, percent, and usable remaining" do
-      function = Tools.get_function("context-check", "/tmp")
+      function = Tools.get_function("context-check", Mounts.new("/tmp", nil))
 
       messages = [
         {:system, %Nest.Messages.System{parts: []}},
@@ -29,7 +30,7 @@ defmodule Nest.ToolsContextCheckTest do
     end
 
     test "falls back to message count when the context limit is unknown" do
-      function = Tools.get_function("context-check", "/tmp")
+      function = Tools.get_function("context-check", Mounts.new("/tmp", nil))
 
       messages = [
         {:system, %Nest.Messages.System{parts: []}},
