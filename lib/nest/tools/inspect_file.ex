@@ -17,7 +17,7 @@ defmodule Nest.Tools.InspectFile do
       report with a clear "do not use file-read" hint
     * Empty files -> text with zero stats (no read needed)
 
-  Files larger than 100 MB are rejected; the LLM is told to
+  Files larger than 10 MB are rejected; the LLM is told to
   use `shell-cmd` with `wc -l` or `head` for those.
 
   Extracted from `Nest.Tools` to keep that module under the
@@ -36,7 +36,7 @@ defmodule Nest.Tools.InspectFile do
   alias Nest.Tokens.Estimator
   alias Nest.Tools.ShellEscape
 
-  @max_bytes 100 * 1_000_000
+  @max_bytes 10 * 1_000_000
 
   # A broken sandbox is a Nest configuration problem, not a missing file.
   @sandbox_setup_failed "The sandbox failed to start; this is a Nest configuration problem, not a missing file."
@@ -56,7 +56,7 @@ defmodule Nest.Tools.InspectFile do
           "`shell-cmd` directly on the file (e.g. `head -1 <path>` or " <>
           "`sed -n '1,20p' <path>`) for a partial read; call the tool on " <>
           "the file, never piped into head/tail/grep (shell-cmd refuses " <>
-          "that). Files larger than 100 MB are rejected; use `shell-cmd` " <>
+          "that). Files larger than 10 MB are rejected; use `shell-cmd` " <>
           "with `wc -l <path>` or `head -1 <path>` for those. Metadata is " <>
           "collected inside the " <>
           "sandbox, so only files the sandbox exposes are visible.",

@@ -178,19 +178,19 @@ defmodule Nest.ToolsInspectFileTest do
       assert msg =~ "missing.txt"
     end
 
-    test "file larger than 100 MB is rejected without reading", %{tmp: dir} do
-      # Write a 100 MB + 1 byte file. The size check happens
+    test "file larger than 10 MB is rejected without reading", %{tmp: dir} do
+      # Write a 10 MB + 1 byte file. The size check happens
       # BEFORE the read so the test is fast — we never actually
       # load the content.
       path = Path.join(dir, "huge.bin")
 
       File.open!(path, [:write], fn handle ->
-        # Write 100 MB then 1 extra byte. Using IO.binwrite of a
+        # Write 10 MB then 1 extra byte. Using IO.binwrite of a
         # single 1 MB chunk in a tight loop is faster than building
-        # a 100 MB binary in memory.
+        # a 10 MB binary in memory.
         chunk = :binary.copy(<<0>>, 1024 * 1024)
 
-        for _ <- 1..100, do: IO.binwrite(handle, chunk)
+        for _ <- 1..10, do: IO.binwrite(handle, chunk)
 
         IO.binwrite(handle, <<0>>)
       end)
@@ -198,7 +198,7 @@ defmodule Nest.ToolsInspectFileTest do
       function = Tools.get_function("file-inspect", dir)
       assert {:error, msg} = invoke(function, %{"path" => "huge.bin"})
 
-      assert msg =~ "100 MB"
+      assert msg =~ "10 MB"
       assert msg =~ "wc -l"
       assert msg =~ "huge.bin"
     end
