@@ -166,6 +166,12 @@ aren't essential to a module's external interface, and aren't a functional
 requirement can be removed. Simplifying the code to better match the actual
 current purpose is a good thing.
 
+### Using Github
+
+- Our PR merges are always squashes.
+- That means every concurrent PR will need a merge. Do the merge, don't
+rebase and force push.
+
 ### JavaScript
 
 - Our JS stuff lives in ./assets. If there is a package.json or node_modules
