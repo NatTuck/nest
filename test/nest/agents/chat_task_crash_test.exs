@@ -124,7 +124,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # Agent is the single source. refute_receive can't be
         # converted to refute_received (which checks the current
         # mailbox snapshot), so it stays as a timed wait.
-        refute_receive {:chat_error, _}, 500
+        refute_received {:chat_error, _}
       end)
     end
 

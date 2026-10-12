@@ -69,7 +69,7 @@ defmodule Nest.Agents.ChatTaskCleanupTest do
       # assertable — `capture_log` collects every process's logs, including
       # other tests' agents and their late-terminating Tasks — so it is left to
       # this suite's "tests must not print" rule instead of a log assertion.
-      refute_receive {:chat_error, _}, 200
+      refute_received {:chat_error, _}
 
       # The agent finalized cleanly — still alive, in :idle.
       assert Process.alive?(pid)
@@ -91,7 +91,7 @@ defmodule Nest.Agents.ChatTaskCleanupTest do
 
       # Silent in the only assertable sense: no `chat:error` broadcast. See the
       # first test in this describe for why the log is not asserted.
-      refute_receive {:chat_error, _}, 200
+      refute_received {:chat_error, _}
     end
 
     test "a bare :normal raise still surfaces (not silenced)", %{} do

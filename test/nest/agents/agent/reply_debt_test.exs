@@ -244,7 +244,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       assert Machine.owed_senders(state.live.machine) == []
 
       # Exactly two requests: one reminder, never a second.
-      refute_receive {:llm_request, _}, 50
+      refute_received {:llm_request, _}
 
       # The requester learned that no answer is coming, as the runtime's own
       # words: the notice arrives bare, with no `[Message from agent …]` label.

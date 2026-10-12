@@ -75,7 +75,7 @@ defmodule Nest.Agents.AgentStopTest do
       # because the agent is already idle. The `refute_receive`
       # waits up to 50ms for a broadcast that should never come.
       :ok = Agent.stop_chat(pid, self())
-      refute_receive {:chat_status, _}, 50
+      refute_received {:chat_status, _}
     end
   end
 

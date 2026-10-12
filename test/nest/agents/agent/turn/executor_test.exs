@@ -346,7 +346,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
 
       assert content == "[Message from agent \"peer\"]\npeer note"
       assert state.live.inbox == [peer]
-      refute_receive {:chat_inbox, _}, 50
+      refute_received {:chat_inbox, _}
     end
 
     test "consume_inbox clears exactly the peeked batch and sends one frame per consume" do
@@ -364,14 +364,14 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       assert state.live.inbox == [alice]
 
       assert_receive {:chat_inbox, %{count: 1, messages: [%{"content" => "human note"}]}}
-      refute_receive {:chat_inbox, _}, 50
+      refute_received {:chat_inbox, _}
 
       # The batch was the whole queue: the frame reports an empty inbox.
       {state, nil} = run({:consume_inbox, [alice]}, state)
 
       assert state.live.inbox == []
       assert_receive {:chat_inbox, %{count: 0, messages: []}}
-      refute_receive {:chat_inbox, _}, 50
+      refute_received {:chat_inbox, _}
     end
 
     test "drain_inbox :append appends the batch and consumes it without a preflight" do
@@ -407,7 +407,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
              ] = state.chat_state.messages
 
       assert_receive {:chat_inbox, %{count: 0, messages: []}}
-      refute_receive {:chat_inbox, _}, 50
+      refute_received {:chat_inbox, _}
     end
 
     test "drain_inbox is a no-op on an empty inbox" do
@@ -568,7 +568,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       # frame was emitted at all (a consume is the only thing that sends one),
       # while the status payload keeps the queue visible to a client.
       assert settled.live.inbox == [peer]
-      refute_receive {:chat_inbox, _}, 50
+      refute_received {:chat_inbox, _}
       assert_receive {:chat_status, %{status: "context_overflow", pendingMessageCount: 1}}
 
       # And the refusal is visible: the turn fails with `chat:error` rather

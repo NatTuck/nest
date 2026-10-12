@@ -149,11 +149,13 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       Agent.chat(pid, "Hello")
 
       # The user message is broadcast, the chat turn starts,
-      # and the LLM responds. No context_overflow status.
+      # and the LLM responds. No context_overflow status. The idle
+      # broadcast is emitted last, so it is the fence that proves the turn
+      # (and with it any `context_overflow` frame) is finished.
       assert_receive {:chat_message, {:user, _}}, 500
-      refute_receive {:chat_status, %{status: "context_overflow"}}, 200
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
+      refute_received {:chat_status, %{status: "context_overflow"}}
 
       Agent.terminate(pid)
     end

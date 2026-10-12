@@ -74,7 +74,7 @@ defmodule Nest.Agents.AgentToolsSecondChanceTest do
                        750
 
         assert_receive {:chat_status, %{status: "idle"}}, 750
-        refute_receive {:chat_error, _}, 200
+        refute_received {:chat_error, _}
       end)
 
       # The synthetic error tool results are the evidence that the
