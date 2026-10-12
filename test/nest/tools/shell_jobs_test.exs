@@ -105,7 +105,11 @@ defmodule Nest.Tools.ShellJobsTest do
     refute self() in waiters(id)
   end
 
-  test "shell-wait timeout unsubscribes the caller", %{key: key, tmp: tmp, context: context} do
+  test "shell-wait reports the timeout and a gone job without leaving the caller registered", %{
+    key: key,
+    tmp: tmp,
+    context: context
+  } do
     id = start_job!("sleep 30", tmp, key)
 
     assert {:ok, text} =
@@ -117,6 +121,21 @@ defmodule Nest.Tools.ShellJobsTest do
 
     assert text =~ "Timed out"
     refute self() in waiters(id)
+
+    # The job's agent stopped, so the manager dropped the job and said so
+    # (`ShellJobs.drop_agent/2`). The wait must report that as what it is: a
+    # job that went with its agent, never as an exit (there is no exit code)
+    # and never as a timeout (the job is not "still running").
+    send(self(), {:shell_job_gone, id})
+
+    assert {:ok, text} =
+             invoke(
+               Tools.get_function("shell-wait", Mounts.new(nil, nil)),
+               %{"id" => id, "timeout" => 500, "block" => true},
+               context
+             )
+
+    assert text == "Background job #{id} is gone: the agent that owned it stopped."
   end
 
   test "shell-kill stops a running job", %{key: key, tmp: tmp, context: context} do

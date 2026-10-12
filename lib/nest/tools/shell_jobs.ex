@@ -126,6 +126,14 @@ defmodule Nest.Tools.ShellJobs do
             {:ok, output} = ShellJobs.output(key, id)
             wait_result(id, code, output)
 
+          # The job's agent stopped, so the job went with it (`drop_agent/2`).
+          # Not a timeout and not an exit: there is no exit code, and the job
+          # is no longer tracked. A tool worker is a task under
+          # `Nest.Agents.TaskSupervisor`, not a child of the agent, so it can
+          # outlive the agent that owns the job it is waiting on.
+          {:shell_job_gone, ^id} ->
+            {:ok, ShellJobs.gone_text(id)}
+
           {:stop_chat, _from} ->
             ShellJobs.unsubscribe(key, id, self())
             {:ok, "Stopped waiting; background job #{id} is still running."}

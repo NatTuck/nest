@@ -174,6 +174,18 @@ defmodule Nest.Sandbox.ShellJobs do
   def result_text(id, code, output),
     do: "Background job #{id} exited with code #{code}:\n#{output}"
 
+  @doc """
+  The result text for a job whose agent stopped, shared by the blocking
+  `shell-wait` and the async watcher for the same reason as `result_text/3`.
+
+  Deliberately not `result_text/3`'s shape: the job did not exit, it was
+  dropped with its agent (`drop_agent/2`), so there is no exit code to report
+  and the log may already be gone with the agent's tmp directory. Wording it as
+  an exit would be a lie about what happened.
+  """
+  @spec gone_text(job_id()) :: String.t()
+  def gone_text(id), do: "Background job #{id} is gone: the agent that owned it stopped."
+
   # ---- Server callbacks ----
 
   @impl true
@@ -423,17 +435,51 @@ defmodule Nest.Sandbox.ShellJobs do
       remove_script(job)
     end)
 
+    # Say so before the waiter lists go with the jobs: this is the only path
+    # that ends a job without an exit, and a waiter that outlives its agent
+    # would otherwise wait out its whole timeout and then report the job as
+    # still running. See `notify_gone/2`.
+    notify_gone(state.waiters, jobs)
+
     case Map.get(state.agents, agent_key) do
       %{ref: ref} -> Process.demonitor(ref, [:flush])
       _ -> :ok
     end
 
-    %{
+    state = %{
       state
       | jobs: Map.drop(state.jobs, Enum.map(jobs, & &1.id)),
         agents: Map.delete(state.agents, agent_key),
         waiters: Map.drop(state.waiters, Enum.map(jobs, & &1.id))
     }
+
+    # The agent's jobs are gone, so the frame that says so is this one: every
+    # other state change broadcasts, and a client watching this agent would
+    # otherwise keep rendering jobs that were just killed. A no-op for an
+    # `agent_key` that is not `{space_id, name}`.
+    broadcast(state, agent_key)
+  end
+
+  # Tell every waiter on a dropped job that the job is gone.
+  #
+  # `drop_agent/2` is reached from the agent's `:DOWN` (a crash, an archive, a
+  # supervisor shutdown) and from `stop_all/1` (the agent's own `terminate/2`),
+  # so the agent is always going away — but a waiter need not go with it. The
+  # tool worker behind `shell-wait` with `block: true` is a task under
+  # `Nest.Agents.TaskSupervisor`, a sibling of the agent supervisor, so it
+  # survives its agent: without this it sits in its `receive` for the whole
+  # `timeout` and then reports "Timed out waiting for background job <id>; it is
+  # still running", which is false twice over. (The async watcher is not a
+  # concern: it monitors its caller and exits on the DOWN.)
+  #
+  # Deliberately *not* `{:shell_job_exit, id, code}`: no exit was observed, so
+  # there is no code to report, and `output/2` is `:not_found` for a job this
+  # manager no longer tracks. The distinct tag is what lets a consumer word it
+  # as "the agent that owned this job is gone" rather than as a normal exit.
+  defp notify_gone(waiters, jobs) do
+    Enum.each(jobs, fn job ->
+      Enum.each(Map.get(waiters, job.id, []), &send(&1, {:shell_job_gone, job.id}))
+    end)
   end
 
   # SIGKILL the running external process. Plain `:exec.stop/1` sends
