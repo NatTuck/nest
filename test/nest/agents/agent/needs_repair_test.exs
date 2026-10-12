@@ -201,7 +201,7 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
       log =
         ExUnit.CaptureLog.capture_log(fn ->
           assert {:ok, pid} = Supervisor.start_under_test(attrs)
-          state = :sys.get_state(pid)
+          state = :sys.get_state(pid, 500)
 
           assert Machine.status_for(state.live.machine) == :needs_repair
           assert state.live.repair.violations == attrs.sequence_violations
@@ -211,8 +211,8 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
           # message list is untouched.
           before = state.chat_state.messages
           _ref = Agent.chat(pid, "hello?")
-          _ = :sys.get_state(pid)
-          assert :sys.get_state(pid).chat_state.messages == before
+          _ = :sys.get_state(pid, 500)
+          assert :sys.get_state(pid, 500).chat_state.messages == before
         end)
 
       assert log =~ "invalid active message sequence"

@@ -45,14 +45,14 @@ defmodule NestWeb.AgentChannelChatStopTest do
       ref_msg = push(socket, "chat:message", %{"content" => "Start"})
       assert_reply ref_msg, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
-      assert_push "chat:delta", _, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:delta", _, 1_000
 
       ref_stop = push(socket, "chat:stop", %{})
       assert_reply ref_stop, :ok, %{}
 
       # The interrupted turn finalizes and the agent returns to idle.
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # The channel survived the `:stopped` ack: it still answers.
       ref_probe = push(socket, "chat:status", %{})
@@ -71,9 +71,9 @@ defmodule NestWeb.AgentChannelChatStopTest do
       ref_msg = push(socket, "chat:message", %{"content" => "First"})
       assert_reply ref_msg, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
-      assert_push "chat:status", %{status: "idle"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
+      assert_push "chat:status", %{status: "idle"}, 1_000
 
       # No-op stop on an idle agent.
       ref_stop = push(socket, "chat:stop", %{})
@@ -84,7 +84,7 @@ defmodule NestWeb.AgentChannelChatStopTest do
       ref2 = push(socket, "chat:message", %{"content" => "Second"})
       assert_reply ref2, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 3, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 3, "role" => "user"}, 1_000
 
       assert_push "chat:message",
                   %{"index" => 4, "role" => "assistant", "parts" => parts},
@@ -94,7 +94,7 @@ defmodule NestWeb.AgentChannelChatStopTest do
       assert content == "After the stop"
 
       # Fence the second turn on its own idle before the test exits.
-      assert_push "chat:status", %{status: "idle"}, 2000
+      assert_push "chat:status", %{status: "idle"}, 1_000
 
       # Sanity: agent still queryable after stop.
       assert {:ok, %{name: ^id}} = Agents.get_info(space_id, id)

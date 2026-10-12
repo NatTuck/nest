@@ -23,6 +23,12 @@ defmodule Nest.AgentsTest do
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
 
+  # `:sys.replace_state/3` with an explicit timeout: OTP's default is 5000 ms,
+  # well over both this suite's 500 ms test bound and ExUnit's 2000 ms per-test
+  # ceiling, so a wedged server surfaces as the stuck call it is rather than as
+  # a test timeout (#21).
+  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 500)
+
   setup :verify_on_exit!
 
   setup do
@@ -396,7 +402,7 @@ defmodule Nest.AgentsTest do
       # transition past it.
       assert eventually(
                fn ->
-                 Machine.status_for(:sys.get_state(pid).live.machine) == :idle
+                 Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle
                end,
                timeout: 1_000
              )
@@ -492,7 +498,7 @@ defmodule Nest.AgentsTest do
 
       # Fabricate a streaming agent: `compact/3` must refuse rather than
       # stage a compaction on a turn that is already in flight.
-      :sys.replace_state(agent_pid, fn state ->
+      replace_state(agent_pid, fn state ->
         %{
           state
           | live: %{
@@ -507,13 +513,13 @@ defmodule Nest.AgentsTest do
 
       # No compaction was staged: the machine is still the fabricated
       # streaming state, the loop counter and focus are untouched.
-      machine = :sys.get_state(agent_pid).live.machine
+      machine = :sys.get_state(agent_pid, 500).live.machine
       assert Machine.status_for(machine) == :streaming
       assert machine.loop_count == 0
       assert machine.work.focus == nil
 
       # Restore idle so the teardown's zero-in-flight-agents assertion holds.
-      :sys.replace_state(agent_pid, fn state ->
+      replace_state(agent_pid, fn state ->
         %{
           state
           | live: %{

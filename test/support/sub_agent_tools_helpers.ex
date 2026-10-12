@@ -37,9 +37,10 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   #     500 ms fence outright
   #
   # 2000 ms is ~100x the in-suite median and 4x the 500 ms fence the observed
-  # failure missed, and it stays under ExUnit's 5 s per-test timeout, so a stuck
-  # turn still fails — as a stuck turn, not as a flake.
-  @turn_fence_ms 2_000
+  # failure missed, and it is also the `#21` cap on every test-side timeout (and
+  # so on ExUnit's per-test timeout too), so a stuck turn still fails — as a
+  # stuck turn, not as a flake.
+  @turn_fence_ms 1_000
 
   @doc """
   The turn fence (`#{@turn_fence_ms}` ms) for a test's own `eventually/2`.
@@ -68,7 +69,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
 
     AgentTestHelpers.ensure_cleanup(coordinator_name)
     {:ok, pid} = Supervisor.get_agent(space_id, coordinator_name)
-    :sys.get_state(pid)
+    :sys.get_state(pid, 500)
   end
 
   @doc """
@@ -141,9 +142,13 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
     {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
     Sandbox.allow(Nest.Repo, self(), pid)
 
-    :sys.replace_state(pid, fn st ->
-      %{st | client_config: %{st.client_config | client: MockClient}}
-    end)
+    :sys.replace_state(
+      pid,
+      fn st ->
+        %{st | client_config: %{st.client_config | client: MockClient}}
+      end,
+      500
+    )
 
     MockClient.start_link(pid)
     Enum.each(pending, &MockClient.put_pending(pid, &1))
@@ -156,7 +161,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   Whether the agent's machine has settled to `:idle`.
   """
   @spec idle?(pid()) :: boolean()
-  def idle?(pid), do: Machine.status_for(:sys.get_state(pid).live.machine) == :idle
+  def idle?(pid), do: Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle
 
   @doc """
   Wait until every given agent has settled to `:idle`.
@@ -182,7 +187,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   """
   @spec query_results(pid()) :: [Part.ToolResult.t()]
   def query_results(pid) do
-    state = :sys.get_state(pid)
+    state = :sys.get_state(pid, 500)
 
     Enum.flat_map(state.chat_state.messages, fn
       {:tool, %{parts: parts}} ->
@@ -198,7 +203,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   """
   @spec agent_texts(pid()) :: [String.t()]
   def agent_texts(pid) do
-    state = :sys.get_state(pid)
+    state = :sys.get_state(pid, 500)
 
     for {:user, %{parts: parts}} <- state.chat_state.messages, do: parts_text(parts)
   end

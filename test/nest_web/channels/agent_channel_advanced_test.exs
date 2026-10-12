@@ -16,6 +16,12 @@ defmodule NestWeb.AgentChannelAdvancedTest do
   alias Nest.Messages.Part
   alias Nest.Messages.Tool
 
+  # `:sys.replace_state/3` with an explicit timeout: OTP's default is 5000 ms,
+  # well over both this suite's 500 ms test bound and ExUnit's 2000 ms per-test
+  # ceiling, so a wedged server surfaces as the stuck call it is rather than as
+  # a test timeout (#21).
+  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 500)
+
   setup :verify_on_exit!
 
   describe "agent process isolation" do
@@ -138,7 +144,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       {:ok, pid} = Supervisor.get_agent(space_id, id)
 
-      :sys.replace_state(pid, fn state ->
+      replace_state(pid, fn state ->
         %{
           state
           | live: %{state.live | machine: Machine.owe_replies(state.live.machine, ["peer"])}
@@ -150,7 +156,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       # Discharge the debt before the test ends: the teardown stops the agent,
       # and a stop with an unpaid reply logs the accepted loss of it.
-      :sys.replace_state(pid, fn state ->
+      replace_state(pid, fn state ->
         %{state | live: %{state.live | machine: Machine.discharge_all(state.live.machine)}}
       end)
     end
@@ -384,7 +390,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
-      :sys.replace_state(agent_pid, fn state ->
+      replace_state(agent_pid, fn state ->
         %{
           state
           | chat_state: %{
@@ -453,7 +459,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
-      :sys.replace_state(agent_pid, fn state ->
+      replace_state(agent_pid, fn state ->
         %{
           state
           | chat_state: %{

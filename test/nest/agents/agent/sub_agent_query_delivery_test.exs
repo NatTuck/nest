@@ -76,7 +76,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
 
     # The peer's turn reached the `agents-send` that answers the query and is
     # held there: the query has been delivered, and the answer is still unsent.
-    assert_receive {:send_blocked, sender}, turn_fence_ms()
+    assert_receive {:send_blocked, sender}, 1_000
 
     # The tool result is the delivery confirmation, never the answer: there is no
     # wait to return one from.
@@ -120,7 +120,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # created (a give-up notice would be in the coordinator's inbox instead).
     await_idle([coordinator_pid, specialist_pid])
 
-    state = :sys.get_state(coordinator_pid)
+    state = :sys.get_state(coordinator_pid, 500)
     assert_unique_message_indices(state)
     assert Machine.owed_senders(state.live.machine) == []
     refute Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "did not reply"))
@@ -147,19 +147,23 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     :ok = Agent.chat(coordinator_pid, "ask the specialist")
 
     # The batch reached the tool worker, parked before its query.
-    assert_receive {:query_blocked, batch}, turn_fence_ms()
-    assert Machine.status_for(:sys.get_state(coordinator_pid).live.machine) == :executing_tools
+    assert_receive {:query_blocked, batch}, 1_000
+
+    assert Machine.status_for(:sys.get_state(coordinator_pid, 500).live.machine) ==
+             :executing_tools
 
     # Release it: the query is delivered (the peer's turn starts) and the worker
     # parks again *after* the delivery, so the batch is still running for
     # everything asserted below.
     send(batch, :release_query)
-    assert_receive {:query_delivered, ^batch}, turn_fence_ms()
+    assert_receive {:query_delivered, ^batch}, 1_000
 
     # The peer's turn reached the `agents-send` that answers the query, and is
     # held there too: both sides are parked with the batch in flight.
-    assert_receive {:send_blocked, sender}, turn_fence_ms()
-    assert Machine.status_for(:sys.get_state(coordinator_pid).live.machine) == :executing_tools
+    assert_receive {:send_blocked, sender}, 1_000
+
+    assert Machine.status_for(:sys.get_state(coordinator_pid, 500).live.machine) ==
+             :executing_tools
 
     # Release the answer: it lands while the batch is executing, so the batch is
     # moved to the background and the answer is delivered now.
@@ -170,7 +174,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # outcome (a poll here would put a whole-state `:sys.get_state` in the same
     # mailbox as the delivery, every 10 ms). The worker parks again after the
     # delivery, so the batch is still running; release it at once.
-    assert_receive {:send_delivered, ^sender}, turn_fence_ms()
+    assert_receive {:send_delivered, ^sender}, 1_000
     send(sender, :release_result)
 
     assert Eventually.eventually(
@@ -228,7 +232,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # created (a give-up notice would be in the coordinator's inbox instead).
     await_idle([coordinator_pid, specialist_pid])
 
-    state = :sys.get_state(coordinator_pid)
+    state = :sys.get_state(coordinator_pid, 500)
     assert_unique_message_indices(state)
     assert Machine.owed_senders(state.live.machine) == []
     refute Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "did not reply"))

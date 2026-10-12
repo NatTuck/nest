@@ -58,7 +58,7 @@ defmodule NestWeb.AgentChannelWorkspaceTest do
 
       # Consume the setup agent's `init` first (that agent has no
       # workspace), then assert our new agent's.
-      assert_push "init", _setup_init, 2000
+      assert_push "init", _setup_init, 1_000
       assert_push "init", payload
       assert payload["workspace_path"] == workspace
     end

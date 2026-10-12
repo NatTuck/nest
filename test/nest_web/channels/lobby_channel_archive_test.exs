@@ -398,7 +398,7 @@ defmodule NestWeb.LobbyChannelArchiveTest do
   # mailbox read — is the honest way to await it.
   defp push_and_settle(socket, event, payload) do
     ref = push(socket, event, payload)
-    _ = :sys.get_state(socket.channel_pid)
+    _ = :sys.get_state(socket.channel_pid, 500)
     ref
   end
 end

@@ -85,12 +85,14 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
 
-        # Fence on idle: 500ms accounts for preflight BPE init
-        # (cl100k count_tokens is a DirtyCpu NIF; the
-        # first call on each of BEAM's 32 dirty CPU threads pays
-        # a 200-325ms init cost). Once the fence passes, every
-        # earlier message in the chat pipeline has already
-        # arrived in the test's mailbox.
+        # Fence on idle: 500ms is the project's standard fence for a whole
+        # turn. This comment used to justify the value with a ~200-325ms BPE
+        # vocabulary build paid once per dirty CPU scheduler thread; that
+        # mechanism was DELETED when the project moved from `tiktoken` to
+        # `tokenizers`, which builds the vocabulary once and shares it across
+        # threads via `:persistent_term` (see `Nest.Tokens.Tokenizer`). Once
+        # the fence passes, every earlier message in the chat pipeline has
+        # already arrived in the test's mailbox.
         assert_receive {:chat_status, %{status: "idle"}}, 500
 
         # The user message is broadcast first (the agent builds
@@ -142,11 +144,12 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # Agent's `chat_crashed/3` handler broadcasts
         # `chat:status: idle` after finalizing the partial
         # and transitioning out of `:streaming`.
-        assert_receive {:chat_status, %{status: "idle"}}, 2000
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
-      # The agent is still alive and queryable.
-      assert Process.alive?(pid)
+      # The agent is still alive and queryable. The `get_public_info/1`
+      # call is itself the proof of liveness, so a separate
+      # `Process.alive?/1` would be redundant (and AGENTS.md discourages it).
       assert {:ok, _info} = Agent.get_public_info(pid) |> then(&{:ok, &1})
     end
 
@@ -243,6 +246,12 @@ defmodule Nest.Agents.ChatTaskCrashTest do
 
         receive do
           :never -> :ok
+        after
+          # Safety valve: without this, a failure in either wait below leaves
+          # this stub blocked forever under `TaskSupervisor` for the rest of
+          # the run. Never fires on the passing path (the worker is killed
+          # well before it).
+          2_000 -> :ok
         end
       end)
 
@@ -254,7 +263,9 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         assert_receive :worker_blocked, 500
 
         worker =
-          eventually(fn -> :sys.get_state(pid).live.machine.work.active_worker end, timeout: 500)
+          eventually(fn -> :sys.get_state(pid, 500).live.machine.work.active_worker end,
+            timeout: 500
+          )
 
         # A raw exit signal (not trappable by the worker's own try/catch)
         # kills the worker before it can send a result. The turn's
@@ -267,7 +278,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         assert content =~ "boom"
       end)
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil
     end
@@ -287,7 +298,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         assert content =~ "no content"
       end)
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
 
       # No message in the list is empty.
       refute Enum.any?(state.chat_state.messages, fn

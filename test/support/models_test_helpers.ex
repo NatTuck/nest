@@ -33,7 +33,7 @@ defmodule Nest.Test.ModelsTestHelpers do
       models = Models.list()
   """
   @spec await_models_refresh(pos_integer()) :: :ok | :timeout
-  def await_models_refresh(timeout_ms \\ 5_000) do
+  def await_models_refresh(timeout_ms \\ 2_000) do
     Phoenix.PubSub.subscribe(Nest.PubSub, "models")
     Models.refresh()
 

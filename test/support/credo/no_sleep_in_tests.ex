@@ -11,9 +11,13 @@ defmodule Nest.Credo.Check.NoSleepInTests do
   to sleep. The `lib/nest/test/` directory contains test-mode
   infrastructure, but it's not under the test runner and is exempt.
 
-  Exempted: `test/support/eventually.ex` (the `eventually/2` macro is
-  a general polling primitive used by a small number of tests that
-  wait for state changes which have no PubSub event).
+  Exempted: `test/support/eventually.ex` (the `eventually/2` helper is
+  a general polling primitive. It is no longer "a small number of tests":
+  it has 73 call sites across 30 files, which is why `#21` questioned
+  whether polling should still be the default answer — see
+  `notes/sketchy-slow-tests.md`. Polling remains legitimate where the
+  state being waited on has no PubSub event; where one exists, wait on
+  the event instead.)
   """
   use Credo.Check,
     base_priority: :high,

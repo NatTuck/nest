@@ -192,14 +192,18 @@ defmodule Nest.Agents.AgentAgentsMdTest do
         {:user, %Nest.Messages.User{index: 1, parts: [%Part.Text{text: "hi"}], api_logs: []}}
       ]
 
-      :sys.replace_state(pid, fn state ->
-        %{state | chat_state: %{state.chat_state | messages: messages}}
-      end)
+      :sys.replace_state(
+        pid,
+        fn state ->
+          %{state | chat_state: %{state.chat_state | messages: messages}}
+        end,
+        500
+      )
 
       send_compaction_done(pid, "Summary text.", nil)
-      _ = :sys.get_state(pid)
+      _ = :sys.get_state(pid, 500)
 
-      final_messages = :sys.get_state(pid).chat_state.messages
+      final_messages = :sys.get_state(pid, 500).chat_state.messages
 
       assert match?({:system, _}, Enum.at(final_messages, 0)),
              "expected system message at messages[0]"

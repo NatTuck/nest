@@ -88,9 +88,9 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       :ok = Agent.chat(pid, "Hello")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
 
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil
@@ -133,9 +133,9 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       :ok = Agent.chat(pid, "Run a command")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
 
       # Expected base: system(0), user(1), assistant+tools(2),
       # tool(3), final_assistant(4). The context-notice synthetic
@@ -172,9 +172,9 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
         })
 
       :ok = Agent.chat(pid, "Loop until done")
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
 
       # The budget reminder is now a synthetic pair injected at
       # the LLM-response-construction site: a {:user, _} message
@@ -258,7 +258,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
         assert_receive {:chat_status, %{status: "idle"}}, 750
       end)
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
 
       # The agent goes to :idle after the final call.
       assert Machine.status_for(state.live.machine) == :idle
@@ -290,7 +290,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       # The Agent broadcasts `chat:status: streaming` when the
       # chat turn starts streaming.
-      assert_receive {:chat_status, %{status: "streaming"}}, 2000
+      assert_receive {:chat_status, %{status: "streaming"}}, 1_000
 
       # Wait for at least one delta to be processed so the
       # Agent's `streaming_acc` mirror has content to finalize.
@@ -304,9 +304,9 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       # process.
       Agent.stop_chat(pid, self())
 
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
 
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil
@@ -355,10 +355,10 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
 
-        assert_receive {:chat_status, %{status: "idle"}}, 2000
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
 
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil
@@ -377,13 +377,13 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
         })
 
       :ok = Agent.chat(pid, "First")
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       first_info = Agent.get_public_info(pid)
       first_output = first_info.usage.output_tokens || 0
 
       :ok = Agent.chat(pid, "Second")
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       second_info = Agent.get_public_info(pid)
       second_output = second_info.usage.output_tokens || 0
@@ -406,12 +406,12 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
         })
 
       :ok = Agent.chat(pid, "First chat")
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       :ok = Agent.chat(pid, "Second chat")
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       indices = message_indices(state)
 
       # The two chats should produce: system (0), user1 (1),

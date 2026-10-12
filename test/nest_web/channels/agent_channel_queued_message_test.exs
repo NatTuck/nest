@@ -21,6 +21,12 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
   alias NestWeb.AgentChannel
   alias NestWeb.UserSocket
 
+  # `:sys.replace_state/3` with an explicit timeout: OTP's default is 5000 ms,
+  # well over both this suite's 500 ms test bound and ExUnit's 2000 ms per-test
+  # ceiling, so a wedged server surfaces as the stuck call it is rather than as
+  # a test timeout (#21).
+  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 500)
+
   setup :verify_on_exit!
 
   describe "chat:message dispositions" do
@@ -43,7 +49,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
         ref = push(socket, "chat:message", %{"content" => content, "mode" => "plan"})
         assert_reply ref, :ok, %{}
 
-        state = :sys.get_state(agent_pid)
+        state = :sys.get_state(agent_pid, 500)
 
         assert length(state.live.inbox) == n
         assert Machine.status_for(state.live.machine) == status
@@ -82,13 +88,13 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       assert_reply ref, :ok, %{"pendingMessageCount" => 2}
 
       # A broken status still refuses the message and queues nothing new.
-      before = :sys.get_state(agent_pid).live.inbox
+      before = :sys.get_state(agent_pid, 500).live.inbox
       set_status(agent_pid, :needs_repair)
 
       ref = push(socket, "chat:message", %{"content" => "too late", "mode" => "plan"})
       assert_reply ref, :error, %{"reason" => "agent_status_needs_repair"}
 
-      assert :sys.get_state(agent_pid).live.inbox == before
+      assert :sys.get_state(agent_pid, 500).live.inbox == before
     end
   end
 
@@ -111,14 +117,14 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       ref = push(socket, "chat:message", %{"mode" => "plan"})
       assert_reply ref, :error, %{"reason" => "invalid_content"}
 
-      assert :sys.get_state(agent_pid).live.inbox == []
+      assert :sys.get_state(agent_pid, 500).live.inbox == []
 
       # A non-binary mode is normalized to nil, so the wire contract stays
       # string-or-null.
       ref = push(socket, "chat:message", %{"content" => "hello", "mode" => 123})
       assert_reply ref, :ok, %{}
 
-      state = :sys.get_state(agent_pid)
+      state = :sys.get_state(agent_pid, 500)
       assert [%{content: "hello", kind: :user, mode: nil}] = state.live.inbox
 
       reset_to_idle(agent_pid)
@@ -273,7 +279,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # the batch's late result), and its response.
       assert Eventually.eventually(
                fn ->
-                 :sys.get_state(agent_pid).chat_state.messages
+                 :sys.get_state(agent_pid, 500).chat_state.messages
                  |> Enum.map(&elem(&1, 0)) ==
                    [
                      :system,
@@ -290,7 +296,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
                timeout: 500
              )
 
-      state = :sys.get_state(agent_pid)
+      state = :sys.get_state(agent_pid, 500)
       messages = state.chat_state.messages
 
       tool_index = Enum.find_index(messages, &match?({:tool, _}, &1))
@@ -376,7 +382,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       assert_push "chat:inbox", %{count: 1}, 500
       refute_push "chat:inbox", %{count: 0}, 100
 
-      state = :sys.get_state(agent_pid)
+      state = :sys.get_state(agent_pid, 500)
 
       assert Machine.status_for(state.live.machine) == :compacting
       assert [%{content: "human note", kind: :user, mode: "plan"}] = state.live.inbox
@@ -398,7 +404,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # The turn the delivered message started runs to completion.
       assert_push "chat:status", %{status: "idle"}, 500
 
-      state = :sys.get_state(agent_pid)
+      state = :sys.get_state(agent_pid, 500)
 
       assert state.live.inbox == []
       assert Machine.status_for(state.live.machine) == :idle
@@ -425,7 +431,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
   # test's last probe leaves the agent in a blocked status — never one of the
   # in-flight busy ones — so the teardown's zero-in-flight assertion holds.
   defp set_status(pid, status) do
-    :sys.replace_state(pid, fn state ->
+    replace_state(pid, fn state ->
       %{
         state
         | live: %{
@@ -439,7 +445,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
   # Undo a fabricated status and the queue it collected, so the teardown's
   # zero-in-flight assertion holds.
   defp reset_to_idle(pid) do
-    :sys.replace_state(pid, fn state ->
+    replace_state(pid, fn state ->
       %{
         state
         | live: %{

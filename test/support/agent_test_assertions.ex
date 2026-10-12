@@ -97,9 +97,13 @@ defmodule Nest.Agents.AgentTestAssertions do
       size: Keyword.get(opts, :size, size)
     }
 
-    :sys.replace_state(pid, fn state ->
-      new_cache = Map.put(state.chat_state.read_files, path, recorded)
-      %{state | chat_state: %{state.chat_state | read_files: new_cache}}
-    end)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        new_cache = Map.put(state.chat_state.read_files, path, recorded)
+        %{state | chat_state: %{state.chat_state | read_files: new_cache}}
+      end,
+      500
+    )
   end
 end

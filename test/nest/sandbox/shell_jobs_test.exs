@@ -40,7 +40,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
   # The manager owns the waiter list, so read it directly instead of
   # racing an OS kill against a fixed receive timeout.
-  defp waiters(id), do: Map.get(:sys.get_state(ShellJobs).waiters, id, [])
+  defp waiters(id), do: Map.get(:sys.get_state(ShellJobs, 500).waiters, id, [])
 
   test "starts a job running, lists it, and kills it", %{key: key, tmp: tmp} do
     id = start_running!("sleep 30", tmp, key)
@@ -89,7 +89,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
     # `finish_job/3` (which removes the host script) has run to completion.
     assert :ok = ShellJobs.subscribe(key, id, self())
     assert_receive {:shell_job_exit, ^id, 0}, 500
-    _ = :sys.get_state(ShellJobs)
+    _ = :sys.get_state(ShellJobs, 500)
 
     assert Path.wildcard(Path.join(tmp, ".nest-cmd-*.sh"), match_dot: true) == []
   end

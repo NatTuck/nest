@@ -277,7 +277,7 @@ defmodule NestWeb.LobbyChannelTest do
       # insert can exceed the default `assert_reply` window under the parallel
       # channel-test load; a longer window would only widen the race instead of
       # removing it.
-      _ = :sys.get_state(socket.channel_pid)
+      _ = :sys.get_state(socket.channel_pid, 500)
 
       assert_reply ref, :ok, public
       assert is_integer(public.id)

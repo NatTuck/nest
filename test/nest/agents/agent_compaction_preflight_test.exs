@@ -74,21 +74,29 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       # matches the API log scenario. The default for
       # qwen3.5-plus is much larger, so the system prompt
       # would otherwise fit.
-      :sys.replace_state(pid, fn s ->
-        %{s | llm_metrics: %{s.llm_metrics | context_limit: 10_000}}
-      end)
+      :sys.replace_state(
+        pid,
+        fn s ->
+          %{s | llm_metrics: %{s.llm_metrics | context_limit: 10_000}}
+        end,
+        500
+      )
 
       # And inflate the system prompt so the projected total
       # (system + user + 8192 reserve) exceeds 10k even after
       # the empty-head compaction short-circuit.
-      :sys.replace_state(pid, fn s ->
-        [{:system, sys_struct} | rest] = s.chat_state.messages
+      :sys.replace_state(
+        pid,
+        fn s ->
+          [{:system, sys_struct} | rest] = s.chat_state.messages
 
-        inflated_system =
-          {:system, %{sys_struct | parts: [%Part.Text{text: String.duplicate("z", 7_000)}]}}
+          inflated_system =
+            {:system, %{sys_struct | parts: [%Part.Text{text: String.duplicate("z", 7_000)}]}}
 
-        %{s | chat_state: %{s.chat_state | messages: [inflated_system | rest]}}
-      end)
+          %{s | chat_state: %{s.chat_state | messages: [inflated_system | rest]}}
+        end,
+        500
+      )
 
       log =
         ExUnit.CaptureLog.capture_log(fn ->
@@ -114,7 +122,7 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       assert log =~ "context_overflow" or log =~ "context limit"
 
       # The agent stays idle (no chat turn was spawned).
-      state_after = :sys.get_state(pid)
+      state_after = :sys.get_state(pid, 500)
       assert Machine.status_for(state_after.live.machine) == :context_overflow
       assert state_after.live.machine.pending_user_message == nil
 
@@ -167,13 +175,17 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       # then calls the LLM; finish it so the agent is idle at test end.
       tool_call_msg = compact_tool_call_msg(1)
 
-      :sys.replace_state(pid, fn s ->
-        %{s | chat_state: %{s.chat_state | messages: old_messages, next_message_index: 2}}
-      end)
+      :sys.replace_state(
+        pid,
+        fn s ->
+          %{s | chat_state: %{s.chat_state | messages: old_messages, next_message_index: 2}}
+        end,
+        500
+      )
 
       send_compaction_done(pid, summary_text, {:tool_call, tool_call_msg, 3, 30})
 
-      _ = :sys.get_state(pid)
+      _ = :sys.get_state(pid, 500)
 
       assert_receive {:chat_compaction, payload}
 

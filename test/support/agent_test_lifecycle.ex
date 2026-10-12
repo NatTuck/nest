@@ -69,7 +69,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
   bound (and is then reported by `assert_zero_remaining!/1`).
   """
   @spec wait_for_pid_down(integer(), String.t(), pos_integer()) :: :ok
-  def wait_for_pid_down(space_id, name, timeout \\ 5_000) do
+  def wait_for_pid_down(space_id, name, timeout \\ 2_000) do
     case Registry.lookup(space_id, name) do
       {:ok, pid} ->
         stop_pid(pid, timeout)
@@ -199,7 +199,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
   # and a non-Agent process registered in the agents Registry (some
   # unit tests register a fake parent) is treated as not-in-flight.
   defp agent_status(pid) do
-    case :sys.get_state(pid) do
+    case :sys.get_state(pid, 500) do
       %{live: %{machine: machine}} -> Machine.status_for(machine)
       _ -> :not_an_agent
     end
@@ -207,7 +207,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
     :exit, _ -> nil
   end
 
-  defp stop_pid(pid, timeout \\ 5_000) do
+  defp stop_pid(pid, timeout \\ 2_000) do
     # Unlink first: test-started agents are linked to the test pid so
     # an unexpected crash fails the test. A deliberate `:shutdown`
     # would otherwise propagate to (and kill) the test pid.

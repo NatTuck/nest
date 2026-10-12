@@ -45,25 +45,29 @@ defmodule Nest.Agents.AgentContextWarningTest do
   # keep the LLM round-trip fast and avoid the Ecto Sandbox
   # ownership timeout (default 30 s).
   defp seed_past_25_percent(pid) do
-    :sys.replace_state(pid, fn state ->
-      big_text = String.duplicate("x", 4_000)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        big_text = String.duplicate("x", 4_000)
 
-      messages = [
-        {:system,
-         %Nest.Messages.System{
-           index: 0,
-           parts: [%Part.Text{text: "Test system prompt."}],
-           api_logs: []
-         }},
-        {:user, %User{index: 1, parts: [%Part.Text{text: big_text}], api_logs: []}}
-      ]
+        messages = [
+          {:system,
+           %Nest.Messages.System{
+             index: 0,
+             parts: [%Part.Text{text: "Test system prompt."}],
+             api_logs: []
+           }},
+          {:user, %User{index: 1, parts: [%Part.Text{text: big_text}], api_logs: []}}
+        ]
 
-      %{
-        state
-        | chat_state: %{state.chat_state | messages: messages},
-          llm_metrics: %{state.llm_metrics | context_limit: 10_000}
-      }
-    end)
+        %{
+          state
+          | chat_state: %{state.chat_state | messages: messages},
+            llm_metrics: %{state.llm_metrics | context_limit: 10_000}
+        }
+      end,
+      500
+    )
   end
 
   defp count_reminders(state, text_pattern) do
@@ -92,22 +96,22 @@ defmodule Nest.Agents.AgentContextWarningTest do
     end)
   end
 
-  @tag timeout: 30_000
+  @tag timeout: 2_000
   test "fires :p25 once across multiple user messages past 25%" do
     {pid, _agent_id} = AgentTestHelpers.start_agent(%{})
 
     seed_past_25_percent(pid)
 
     :ok = Agent.chat(pid, "First message")
-    assert_receive {:chat_status, %{status: "idle"}}, 5_000
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
     :ok = Agent.chat(pid, "Second message")
-    assert_receive {:chat_status, %{status: "idle"}}, 5_000
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
     :ok = Agent.chat(pid, "Third message")
-    assert_receive {:chat_status, %{status: "idle"}}, 5_000
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-    state = :sys.get_state(pid)
+    state = :sys.get_state(pid, 500)
 
     assert count_reminders(state, "Context at 25%") == 1,
            "expected exactly one :p25 reminder across three user messages, " <>
@@ -126,7 +130,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
     # The projection is written only by the executor's
     # `:set_context_projection` action; exercise that action directly.
     {pid, _agent_id} = AgentTestHelpers.start_agent(%{})
-    state = :sys.get_state(pid)
+    state = :sys.get_state(pid, 500)
 
     {state, nil} =
       Executor.run_all([{:set_context_projection, 12_345}], state)
@@ -142,16 +146,16 @@ defmodule Nest.Agents.AgentContextWarningTest do
   defp stamped_notice?({_role, %{metadata: %{"context_threshold" => _}}}), do: true
   defp stamped_notice?(_), do: false
 
-  @tag timeout: 30_000
+  @tag timeout: 2_000
   test "the Agent's crossed_thresholds persists the fired atom across turns" do
     {pid, _agent_id} = AgentTestHelpers.start_agent(%{})
 
     seed_past_25_percent(pid)
 
     :ok = Agent.chat(pid, "First message")
-    assert_receive {:chat_status, %{status: "idle"}}, 5_000
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-    state = :sys.get_state(pid)
+    state = :sys.get_state(pid, 500)
 
     assert MapSet.member?(state.live.crossed_thresholds, :p25),
            "expected :p25 to be persisted on the Agent after firing, " <>
@@ -161,27 +165,31 @@ defmodule Nest.Agents.AgentContextWarningTest do
   test "compaction_done clears crossed_thresholds so the next turn can re-fire" do
     {pid, _agent_id} = AgentTestHelpers.start_agent(%{})
 
-    :sys.replace_state(pid, fn state ->
-      # Seeded messages are short enough that any post-compaction
-      # turn will be well under 25% of the working budget,
-      # so the cleared set stays cleared (no reminder fires).
-      messages = [
-        {:system,
-         %Nest.Messages.System{
-           index: 0,
-           parts: [%Part.Text{text: "System"}],
-           api_logs: []
-         }},
-        {:user, %User{index: 1, parts: [%Part.Text{text: "Hi"}], api_logs: []}}
-      ]
+    :sys.replace_state(
+      pid,
+      fn state ->
+        # Seeded messages are short enough that any post-compaction
+        # turn will be well under 25% of the working budget,
+        # so the cleared set stays cleared (no reminder fires).
+        messages = [
+          {:system,
+           %Nest.Messages.System{
+             index: 0,
+             parts: [%Part.Text{text: "System"}],
+             api_logs: []
+           }},
+          {:user, %User{index: 1, parts: [%Part.Text{text: "Hi"}], api_logs: []}}
+        ]
 
-      %{
-        state
-        | chat_state: %{state.chat_state | messages: messages},
-          live: %{state.live | crossed_thresholds: MapSet.new([:p25, :p50, :p75])},
-          llm_metrics: %{state.llm_metrics | context_limit: 200_000}
-      }
-    end)
+        %{
+          state
+          | chat_state: %{state.chat_state | messages: messages},
+            live: %{state.live | crossed_thresholds: MapSet.new([:p25, :p50, :p75])},
+            llm_metrics: %{state.llm_metrics | context_limit: 200_000}
+        }
+      end,
+      500
+    )
 
     AgentTestHelpers.send_compaction_done(pid, "Summary", nil)
 
@@ -191,14 +199,14 @@ defmodule Nest.Agents.AgentContextWarningTest do
     # the field must still be empty (no reminder fires).
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-    state = :sys.get_state(pid)
+    state = :sys.get_state(pid, 500)
 
     assert state.live.crossed_thresholds == %MapSet{},
            "expected crossed_thresholds cleared after compaction, " <>
              "got #{inspect(state.live.crossed_thresholds)}"
   end
 
-  @tag timeout: 30_000
+  @tag timeout: 2_000
   test "does NOT inject context pair when trailing assistant carries a tool_use (in-flight tool)" do
     # Regression for the Anthropic 400 (2013) bug: the
     # `maybe_inject_context_pair` `else` branch used to inject
@@ -214,47 +222,51 @@ defmodule Nest.Agents.AgentContextWarningTest do
     # assistant+tool_use regardless of how the message arrives.
     {pid, _agent_id} = AgentTestHelpers.start_agent(%{})
 
-    :sys.replace_state(pid, fn state ->
-      big_text = String.duplicate("x", 4_000)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        big_text = String.duplicate("x", 4_000)
 
-      tool_use = %Nest.Messages.Part.ToolUse{
-        id: "call_xyz",
-        name: "shell-cmd",
-        arguments: %{"command" => "sleep 10"}
-      }
+        tool_use = %Nest.Messages.Part.ToolUse{
+          id: "call_xyz",
+          name: "shell-cmd",
+          arguments: %{"command" => "sleep 10"}
+        }
 
-      messages = [
-        {:system,
-         %Nest.Messages.System{
-           index: 0,
-           parts: [%Part.Text{text: "Test system prompt."}],
-           api_logs: []
-         }},
-        {:user, %User{index: 1, parts: [%Part.Text{text: big_text}], api_logs: []}},
-        {:assistant,
-         %Nest.Messages.Assistant{
-           index: 2,
-           parts: [
-             %Part.Text{text: "Let me run that command."},
-             tool_use
-           ],
-           api_logs: []
-         }}
-      ]
+        messages = [
+          {:system,
+           %Nest.Messages.System{
+             index: 0,
+             parts: [%Part.Text{text: "Test system prompt."}],
+             api_logs: []
+           }},
+          {:user, %User{index: 1, parts: [%Part.Text{text: big_text}], api_logs: []}},
+          {:assistant,
+           %Nest.Messages.Assistant{
+             index: 2,
+             parts: [
+               %Part.Text{text: "Let me run that command."},
+               tool_use
+             ],
+             api_logs: []
+           }}
+        ]
 
-      %{
-        state
-        | chat_state: %{state.chat_state | messages: messages},
-          llm_metrics: %{state.llm_metrics | context_limit: 10_000}
-      }
-    end)
+        %{
+          state
+          | chat_state: %{state.chat_state | messages: messages},
+            llm_metrics: %{state.llm_metrics | context_limit: 10_000}
+        }
+      end,
+      500
+    )
 
     # Simulate a user message that crosses the threshold by
     # setting the pending user message directly. We bypass
     # `chat_or_queue/4` (which would queue the message while the
     # agent is busy, in a real scenario) so the test exercises the
     # pipeline's injection guard specifically.
-    state = :sys.get_state(pid)
+    state = :sys.get_state(pid, 500)
     state = put_in(state.live.machine.pending_user_message, {"New request", "chat"})
 
     # The pending message is enough tokens to push usage past

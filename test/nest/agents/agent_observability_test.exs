@@ -114,7 +114,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
       assert tool_api_logs == [], "Tool message should have empty api_logs"
 
       # Wait for the final assistant with a response log
-      asst2 = wait_for_final_assistant_api_logs(5_000)
+      asst2 = wait_for_final_assistant_api_logs(2_000)
       assert asst2 != nil
       [asst2_log] = asst2
 
@@ -152,14 +152,14 @@ defmodule Nest.Agents.AgentObservabilityTest do
       # Drain to the first assistant (tool-call). Match by
       # content; the synthetic "Context?" assistant may
       # precede the tool-call assistant.
-      asst1 = wait_for_assistant_with_tool(5_000)
+      asst1 = wait_for_assistant_with_tool(2_000)
       assert asst1 != nil
       [asst1_log] = asst1.api_logs
 
       assert_receive {:chat_message, {:tool, %{api_logs: tool_api_logs}}}, 500
       assert tool_api_logs == [], "Tool message should have empty api_logs"
 
-      asst2 = wait_for_final_assistant_api_logs(5_000)
+      asst2 = wait_for_final_assistant_api_logs(2_000)
       assert asst2 != nil
       [asst2_log] = asst2
 
@@ -234,7 +234,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
       # directly; the init push carries it as a wire string. The
       # internal atom is only observable via state — kept as
       # legitimate :sys.get_state use.
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       assert state.llm_metrics.context_limit == 512_000
       assert state.llm_metrics.context_limit_source == :config
 
