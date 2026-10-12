@@ -35,6 +35,20 @@ defmodule Nest.LLM.MediaEncodingTest do
     }
   end
 
+  # A media part this build cannot send, built directly rather than through
+  # `new_media/1` (which refuses an unknown modality by design). This is the
+  # *restored* shape: a row a build with a wider vocabulary wrote.
+  defp unknown_media(tool_call_id) do
+    %Part.Media{
+      tool_call_id: tool_call_id,
+      modality: "video",
+      media_type: "video/mp4",
+      data: @png,
+      bytes: byte_size(Base.decode64!(@png)),
+      path: "clip.mp4"
+    }
+  end
+
   defp anchor, do: "Read 68 bytes image/png from shot.png; attached below."
 
   defp tool_msg(parts), do: {:tool, %Tool{index: 2, parts: parts, api_logs: []}}
@@ -207,6 +221,42 @@ defmodule Nest.LLM.MediaEncodingTest do
 
       assert [%{"role" => "user", "content" => [%{"content" => "plain"}]}] =
                MockClient.format_request_payload(req, [])["messages"]
+    end
+  end
+
+  describe "a media part this build cannot send" do
+    test "becomes an explicit note on every wire, never a crash and never a drop" do
+      # A restored row from a build with a wider vocabulary. It is still shown
+      # in the panel, so it cannot simply vanish from the request — but it also
+      # cannot be encoded, and raising would brick the turn.
+      req = %RunRequest{
+        model: "some-model",
+        messages: [tool_msg([result_part("call_1", "anchor"), unknown_media("call_1")])]
+      }
+
+      # OpenAI hoists it into the trailing user message as a text note.
+      assert [_tool_wire, %{"role" => "user", "content" => [note]}] =
+               OpenAIClient.format_request_payload(req, [])["messages"]
+
+      assert note["type"] == "text"
+      assert note["text"] =~ "omitted from this request"
+      assert note["text"] =~ "video"
+      refute note["text"] =~ @png
+
+      # Anthropic folds it into the same result block an image would use.
+      assert [%{"role" => "user", "content" => [block]}] =
+               AnthropicClient.format_request_payload(req, [])["messages"]
+
+      assert [%{"type" => "text"}, %{"type" => "text", "text" => text}] = block["content"]
+      assert text =~ "omitted from this request"
+      refute text =~ @png
+
+      # The mock agrees, or the replay harness would be lying.
+      assert [%{"role" => "user", "content" => [mock_block]}] =
+               MockClient.format_request_payload(req, [])["messages"]
+
+      assert [_, %{"type" => "text", "text" => mock_text}] = mock_block["content"]
+      assert mock_text == text
     end
   end
 end

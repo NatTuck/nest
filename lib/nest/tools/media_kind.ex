@@ -91,22 +91,18 @@ defmodule Nest.Tools.MediaKind do
     end
   end
 
-  # `file --mime-type -- <path>` prints "<path>: <type>". The `--` keeps a
-  # path starting with a dash from being read as a flag; `ShellEscape` keeps
-  # the rest of the path from being read as shell.
+  # `file --mime-type --brief -- <path>` prints the type alone, with no
+  # `<path>: ` prefix. That matters: splitting on the first colon would
+  # misparse a path that itself contains one (`/tmp/a:b.png`), which would then
+  # match nothing in `@media_types` and make `detect/4` return `:text` — a
+  # silent misclassification, in the one function whose contract says a caller
+  # must not read a failed check as "not media".
   defp mime_type(full_path, workspace_path, tmp_path, caps) do
-    command = "file --mime-type -- #{ShellEscape.escape(full_path)}"
+    command = "file --mime-type --brief -- #{ShellEscape.escape(full_path)}"
 
     case Sandbox.run(command, workspace_path, tmp_path, caps) do
-      {:ok, output} -> {:ok, parse_mime_type(output)}
+      {:ok, output} -> {:ok, String.trim(output)}
       {:error, reason} -> {:error, "Failed to detect file type: #{inspect(reason)}"}
     end
-  end
-
-  defp parse_mime_type(output) do
-    output
-    |> String.split(":", parts: 2)
-    |> List.last()
-    |> String.trim()
   end
 end

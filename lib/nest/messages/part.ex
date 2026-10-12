@@ -135,14 +135,30 @@ defmodule Nest.Messages.Part do
     message. Both need to know which call it belongs to.
 
     Build one with `Nest.Messages.Part.new_media/1` and nothing else.
+
+    ## Restoring a row this build cannot interpret
+
+    `new_media/1` accepts only the modalities this build can produce, but a
+    *stored* row may name one written by a build with a wider vocabulary.
+    That is not a malformed row — it is data from a build we are not — so
+    `from_json/1` preserves it and carries the name through as the string it
+    holds. Dropping it would make a message silently lose an attachment on
+    restore, which is exactly what the transparency rule forbids. The panel
+    renders an unrecognised modality with an explicit indicator, and an
+    encoder that cannot send it says so on the wire rather than crashing the
+    turn or dropping it quietly.
     """
     defstruct [:tool_call_id, :modality, :media_type, :data, :bytes, :path]
 
     @type modality :: :image
 
+    # What a restored `modality` field may hold: the atom this build uses for
+    # one it knows, or the raw name for one it does not.
+    @type stored_modality :: modality() | String.t()
+
     @type t :: %__MODULE__{
             tool_call_id: String.t(),
-            modality: modality(),
+            modality: stored_modality(),
             media_type: String.t(),
             data: String.t(),
             bytes: non_neg_integer(),
@@ -340,13 +356,18 @@ defmodule Nest.Messages.Part do
     %{
       "kind" => "media",
       "toolCallId" => m.tool_call_id,
-      "modality" => Atom.to_string(m.modality),
+      "modality" => modality_name(m.modality),
       "mediaType" => m.media_type,
       "bytes" => m.bytes,
       "data" => m.data
     }
     |> maybe_put_optional("path", m.path)
   end
+
+  # A modality this build produced is an atom; one it restored from a row it
+  # could not interpret is already the string that row held.
+  defp modality_name(modality) when is_atom(modality), do: Atom.to_string(modality)
+  defp modality_name(modality), do: modality
 
   # A key that is absent and a key whose value is `nil` are the same thing to
   # every reader of this shape, so the key is omitted rather than written as
@@ -385,25 +406,45 @@ defmodule Nest.Messages.Part do
   def from_json(%{"kind" => "refusal", "refusal" => refusal}),
     do: %Refusal{refusal: refusal}
 
-  # A row written by a build whose modality vocabulary is wider than this
-  # one's is unknown here, and `nil` is what this module already returns for a
-  # kind it does not know — the restore path is written to tolerate it.
+  # Two different cases, deliberately handled differently:
+  #
+  #   * A row this build cannot *interpret* — a modality name it does not know,
+  #     written by a build whose vocabulary is wider — is preserved with that
+  #     name intact. It is real data, and dropping it would make a message
+  #     silently lose an attachment on restore.
+  #   * A row that is not a media part at all — no `modality`, or no `data` to
+  #     carry — is rejected, like every other malformed row this function sees.
+  #
+  # The line between them is "does it still describe bytes we can show?".
+  # `mediaType` and `bytes` are deliberately not required: the panel has an
+  # explicit indicator for each of them being absent.
   def from_json(%{"kind" => "media"} = map) do
-    case @modality_names[map["modality"]] do
-      nil ->
-        nil
-
-      modality ->
-        %Media{
-          tool_call_id: map["toolCallId"],
-          modality: modality,
-          media_type: map["mediaType"],
-          data: map["data"],
-          bytes: map["bytes"],
-          path: map["path"]
-        }
+    with {:ok, modality} <- restore_modality(map["modality"]),
+         {:ok, data} <- restore_binary(map["data"]) do
+      %Media{
+        tool_call_id: map["toolCallId"],
+        modality: modality,
+        media_type: map["mediaType"],
+        data: data,
+        bytes: map["bytes"],
+        path: map["path"]
+      }
+    else
+      :error -> nil
     end
   end
 
   def from_json(_), do: nil
+
+  defp restore_modality(name) when is_binary(name) do
+    case @modality_names[name] do
+      nil -> {:ok, name}
+      modality -> {:ok, modality}
+    end
+  end
+
+  defp restore_modality(_other), do: :error
+
+  defp restore_binary(value) when is_binary(value), do: {:ok, value}
+  defp restore_binary(_other), do: :error
 end

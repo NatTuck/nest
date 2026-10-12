@@ -178,8 +178,19 @@ defmodule Nest.LLM.OpenAIClient do
   # trailing user message instead.
   #
   # This is a wire-only translation: the stored message keeps the media as a
-  # sibling of its `tool_result`, and `assistant(tool_calls) -> tool(results)
-  # -> user(images)` is a normal sequence for the API.
+  # sibling of its `tool_result`.
+  #
+  # ASSUMPTION, not a verified fact: that the API accepts
+  # `assistant(tool_calls) -> tool(results) -> user(images)` as a sequence is
+  # read off the spec's per-message content union, and no test here can settle
+  # it — that needs a live call. If a real request is ever rejected for its
+  # message order, this is the first place to look.
+  #
+  # The comprehension filters to `ToolResult` parts, which is deliberate: a
+  # media part is a sibling and must not become a tool message of its own. It
+  # does mean any *other* stray part kind is dropped here where the old
+  # `Enum.map` would have raised — `Media` is the only kind expected to land in
+  # this list, so that trade is the one the media sibling requires.
   defp message_to_wire({:tool, %Tool{parts: parts}}) do
     parts = parts || []
 
@@ -193,6 +204,12 @@ defmodule Nest.LLM.OpenAIClient do
 
   defp media_user_message([]), do: []
 
+  # Every media part rides in ONE trailing user message, ungrouped. That is
+  # deliberate rather than an oversight: an `image_url` part carries no
+  # `tool_call_id`, so this wire has no way to express which result each image
+  # answers — unlike Anthropic, where the image sits inside its own
+  # `tool_result` block and the association is structural. The pairing survives
+  # in the stored part, and in the result-then-media order `BatchSizer` emits.
   defp media_user_message(media) do
     [%{"role" => "user", "content" => Enum.map(media, &media_part_to_wire/1)}]
   end
@@ -200,8 +217,17 @@ defmodule Nest.LLM.OpenAIClient do
   # The image content part, per the spec's
   # `ChatCompletionRequestMessageContentPartImage`. `detail` is omitted, which
   # the API reads as `"auto"`.
-  defp media_part_to_wire(%Part.Media{modality: :image, media_type: media_type, data: data}) do
+  defp media_part_to_wire(%Part.Media{modality: :image, media_type: media_type, data: data})
+       when is_binary(media_type) and is_binary(data) do
     %{"type" => "image_url", "image_url" => %{"url" => "data:#{media_type};base64,#{data}"}}
+  end
+
+  # A restored part this build cannot send: an unknown modality, or one with no
+  # usable type or payload. It is still shown in the panel, so it cannot simply
+  # vanish from the request either — the model is told in text that something it
+  # cannot receive is part of the history.
+  defp media_part_to_wire(%Part.Media{} = media) do
+    %{"type" => "text", "text" => Client.media_omitted_note(media)}
   end
 
   # The provider requires every message to carry a non-empty

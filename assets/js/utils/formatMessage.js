@@ -306,6 +306,12 @@ export const MAX_INLINE_LOG_STRING = 2_048;
 // image reference looks like — `data:image/png;base64,<payload>` — and the
 // run length is what keeps a long prose string (whose spaces break the run)
 // from being mistaken for one.
+//
+// A long non-media base64-ish string (a signed token, a hash) is elided too.
+// That is benign rather than a defect: the replacement is an explicit,
+// length-naming marker rather than a silent omission, so the reader can see
+// that something was there and how big it was. The stored parts are untouched
+// either way — this runs at render and copy time only.
 const BASE64_ONLY_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 const BASE64_RUN_RE = /[A-Za-z0-9+/]{1024,}={0,2}/;
 

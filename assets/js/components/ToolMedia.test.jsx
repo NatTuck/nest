@@ -59,8 +59,10 @@ describe("ToolMedia", () => {
   });
 
   it("names an unknown modality rather than rendering nothing", () => {
-    // A row written by a newer build. Rendering nothing would make it
-    // indistinguishable from a message with no attachment at all.
+    // A row written by a build with a wider vocabulary. The backend preserves
+    // the modality name it does not recognise rather than dropping the part, so
+    // this is a real shape, not a hypothetical one — and rendering nothing
+    // would make it indistinguishable from a message with no attachment.
     render(<ToolMedia media={[imageMedia({ modality: "hologram" })]} />);
 
     expect(
@@ -115,9 +117,9 @@ describe("ToolMedia", () => {
   });
 
   it("renders a player for the audio and video modalities", () => {
-    // Neither is reachable from the wire today — the modality vocabulary is
-    // one entry — but the component's contract is to render whatever it is
-    // given, so both branches are pinned.
+    // Reachable through a restored row: this build cannot *produce* audio or
+    // video, but the backend preserves a modality name a wider build wrote, so
+    // the label and preview arms for both are live rather than dead.
     const audio = render(
       <ToolMedia
         media={[imageMedia({ modality: "audio", mediaType: "audio/mpeg" })]}

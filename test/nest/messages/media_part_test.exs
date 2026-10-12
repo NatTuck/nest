@@ -78,13 +78,34 @@ defmodule Nest.Messages.MediaPartTest do
       assert_wire_encodable!(json, "media part")
     end
 
-    test "restore an unknown modality as nil rather than raising" do
-      # A row written by a build with a wider vocabulary. `from_json/1` already
-      # returns nil for a kind it does not know, and the restore path is
-      # written to tolerate that, so an unknown modality must behave the same.
+    test "preserve a row whose modality a newer build wrote" do
+      # A row written by a build with a wider vocabulary. Dropping it would make
+      # a message silently lose an attachment on restore, which is exactly what
+      # the transparency rule forbids — so the name is carried through and the
+      # part survives the round-trip.
       json = png!() |> Part.to_json() |> Map.put("modality", "video")
+      restored = Part.from_json(json)
 
-      assert Part.from_json(json) == nil
+      assert %Part.Media{modality: "video", media_type: "image/png"} = restored
+      assert restored.data == @png
+      assert restored.bytes == byte_size(Base.decode64!(@png))
+
+      # ...and writing it back produces the row it came from, unchanged.
+      assert Part.to_json(restored) == json
+    end
+
+    test "reject a row that is not a media part at all" do
+      # The line between "data from a newer build" and "malformed" is whether
+      # the row still describes bytes we can show.
+      assert Part.from_json(%{"kind" => "media"}) == nil
+      assert Part.from_json(%{"kind" => "media", "modality" => "video"}) == nil
+      assert Part.from_json(%{"kind" => "media", "modality" => 7, "data" => @png}) == nil
+
+      # `mediaType` and `bytes` are deliberately not required: the panel has an
+      # explicit indicator for each of them being absent, so rejecting such a
+      # row here would make those indicators unreachable.
+      assert %Part.Media{media_type: nil, bytes: nil} =
+               Part.from_json(%{"kind" => "media", "modality" => "image", "data" => @png})
     end
   end
 
@@ -155,6 +176,24 @@ defmodule Nest.Messages.MediaPartTest do
       assert Estimator.estimate_part(png!()) == 4_096
       assert Estimator.estimate_media_ceiling(:image) == 4_096
       assert Estimator.estimate_media(png!()) == 4_096
+    end
+
+    test "prices a restored unknown modality conservatively" do
+      # An unknown modality is not a key of the ceiling map — nothing can
+      # produce it — so it takes a documented conservative constant. Pricing it
+      # at the catch-all's per-message overhead would let an attachment of
+      # unknown size slip past the budget entirely.
+      unknown = %Part.Media{
+        tool_call_id: "c1",
+        modality: "video",
+        media_type: "video/mp4",
+        data: @png,
+        bytes: byte_size(Base.decode64!(@png))
+      }
+
+      assert Estimator.estimate_media(unknown) == 65_536
+      assert Estimator.estimate_part(unknown) == 65_536
+      assert Estimator.estimate_media_ceiling(:image) == 4_096
     end
   end
 end

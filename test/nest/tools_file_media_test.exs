@@ -170,6 +170,19 @@ defmodule Nest.ToolsFileMediaTest do
       assert msg =~ "file-inspect"
     end
 
+    test "attaches a media file whose path contains a colon", %{workspace: workspace} do
+      # `file --mime-type` runs with `--brief` precisely so this cannot be
+      # misparsed: splitting on the first colon would read `a:b.png: image/png`
+      # and match nothing, silently demoting the read to text.
+      File.write!(Path.join(workspace, "a:b.png"), @png)
+      stub_catalog([image_model()])
+
+      function = Tools.get_function("file-read", workspace)
+
+      assert {:ok, {:media, %Part.Media{media_type: "image/png", path: "a:b.png"}}} =
+               function.function.(%{"path" => "a:b.png"}, ctx("vision-model"))
+    end
+
     test "leaves the size cap and missing-file errors alone", %{workspace: workspace} do
       stub_catalog([image_model()])
       function = Tools.get_function("file-read", workspace)

@@ -529,8 +529,12 @@ defmodule Nest.Agents.Agent.BatchSizer do
   # keeps `ToolResult.content` a string — every `is_binary` branch above
   # depends on that — and it tells the model what was attached without
   # repeating a single byte of it.
+  #
+  # `path` is optional by design (`new_media/1` permits `nil`), so it is left
+  # out rather than interpolated as an empty string.
   defp media_summary(%Part.Media{} = part) do
-    "Read #{human_bytes(part.bytes)} #{part.media_type} from #{part.path}; attached below."
+    source = if part.path, do: " from #{part.path}", else: ""
+    "Read #{human_bytes(part.bytes)} #{part.media_type}#{source}; attached below."
   end
 
   # Replace an oversized result with an in-budget pointer + head. The

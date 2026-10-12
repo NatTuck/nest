@@ -147,11 +147,21 @@ defmodule Nest.Tokens.Estimator do
   # and a test asserts the two are equal.
   @media_token_ceiling %{image: 4_096}
 
+  # A restored part whose modality this build does not know. Priced at the most
+  # expensive media we have any basis for, so an unknown attachment can never
+  # make the budget under-count. Deliberately NOT a key of
+  # `@media_token_ceiling`: nothing can produce it, and that map is pinned to
+  # `Part.modalities/0` by a test.
+  @unknown_media_token_ceiling 65_536
+
   @doc """
   The token ceiling for a media part.
   """
   @spec estimate_media(Part.Media.t()) :: pos_integer()
-  def estimate_media(%Part.Media{modality: modality}), do: estimate_media_ceiling(modality)
+  def estimate_media(%Part.Media{modality: modality}) when is_atom(modality),
+    do: estimate_media_ceiling(modality)
+
+  def estimate_media(%Part.Media{}), do: @unknown_media_token_ceiling
 
   @doc """
   The token ceiling for a media modality.

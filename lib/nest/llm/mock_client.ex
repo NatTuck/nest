@@ -383,11 +383,19 @@ defmodule Nest.LLM.MockClient do
     [%{"type" => "text", "text" => tr.content || ""} | Enum.map(media, &media_block/1)]
   end
 
-  defp media_block(%Part.Media{modality: :image, media_type: media_type, data: data}) do
+  defp media_block(%Part.Media{modality: :image, media_type: media_type, data: data})
+       when is_binary(media_type) and is_binary(data) do
     %{
       "type" => "image",
       "source" => %{"type" => "base64", "media_type" => media_type, "data" => data}
     }
+  end
+
+  # A restored part this build cannot send. The mock has to produce the same
+  # thing the real clients do, or the cross-provider replay harness would be
+  # lying about what goes on the wire.
+  defp media_block(%Part.Media{} = media) do
+    %{"type" => "text", "text" => Client.media_omitted_note(media)}
   end
 
   defp tool_call_to_wire(%{id: id, name: name, arguments: args}) do

@@ -450,11 +450,21 @@ defmodule Nest.LLM.AnthropicClient do
     }
   end
 
-  defp media_block(%Part.Media{modality: :image, media_type: media_type, data: data}) do
+  defp media_block(%Part.Media{modality: :image, media_type: media_type, data: data})
+       when is_binary(media_type) and is_binary(data) do
     %{
       "type" => "image",
       "source" => %{"type" => "base64", "media_type" => media_type, "data" => data}
     }
+  end
+
+  # A restored part this build cannot send: an unknown modality, or one with no
+  # usable type or payload. It is still shown in the panel, so it cannot simply
+  # vanish from the request either — and a `text` block is valid both inside a
+  # `tool_result` content array and on the user role, so the request stays
+  # well-formed.
+  defp media_block(%Part.Media{} = media) do
+    %{"type" => "text", "text" => Client.media_omitted_note(media)}
   end
 
   # Render a non-text part as a string for the user-role's
