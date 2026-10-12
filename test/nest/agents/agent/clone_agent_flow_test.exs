@@ -171,6 +171,13 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     # The response to the request the delivered answer rode in on, then the
     # notice's own turn.
     release_llm(llm2)
+
+    # Consume *this* turn's idle frame before the notice's turn starts: the
+    # final `await_idle/0` below must fence on the notice's turn (the one that
+    # answers with "after the answer"), and without this it would match this
+    # earlier, still-pending idle and read the transcript a turn too soon.
+    await_idle()
+
     {_third, llm3} = next_request()
     release_llm(llm3)
 

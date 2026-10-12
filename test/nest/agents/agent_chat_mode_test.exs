@@ -14,11 +14,14 @@ defmodule Nest.Agents.AgentChatModeTest do
   # mocked LLM call. 500 ms is not a bound for that under load — a whole mocked
   # turn measured p50 18.7 ms / max 34.3 ms across 40 samples in the full
   # suite, but p50 926 ms / max 1534 ms (39 of 40 over 500 ms) under 48 CPU
-  # burners. 2000 ms is ~100x the in-suite median and is also the `#21` cap on
-  # every test-side timeout, so a genuinely stuck turn still fails — as a stuck
-  # turn, not as a flake. (Measured on the spawn turn in `sub_agent_tools_test.exs`;
-  # the turns in this file are the same class.)
-  @turn_fence_ms 1_000
+  # burners. Re-measured in the full suite at `max_cases: 16`, the turn's *first*
+  # frame (the user message) took 992 ms — the suite's documented scheduling-race
+  # cost (`notes/sketchy-slow-tests.md` §2/§10: every `start_agent/1` serializes
+  # on the global `Mimic.Coordinator`, and the single `Nest.Agents.Supervisor`
+  # callback performs each whole agent start). 2000 ms is the `#21` cap on every
+  # test-side timeout, clears that measured spread with headroom, and still fails
+  # a genuinely stuck turn — as a stuck turn, not as a flake.
+  @turn_fence_ms 2_000
 
   alias Nest.Agents.Agent
 
@@ -53,7 +56,7 @@ defmodule Nest.Agents.AgentChatModeTest do
                          parts: [%Part.Text{text: "[mode: chat]\nRead foo"}],
                          metadata: %{"mode" => "chat"}
                        }}},
-                     500
+                     @turn_fence_ms
 
       await_idle(pid)
     end
@@ -69,7 +72,7 @@ defmodule Nest.Agents.AgentChatModeTest do
                          parts: [%Part.Text{text: "[mode: chat]\nHello"}],
                          metadata: %{"mode" => "chat"}
                        }}},
-                     500
+                     @turn_fence_ms
 
       await_idle(pid)
     end
@@ -85,7 +88,7 @@ defmodule Nest.Agents.AgentChatModeTest do
                          parts: [%Part.Text{text: "[mode: chat]\nHello"}],
                          metadata: %{"mode" => "chat"}
                        }}},
-                     500
+                     @turn_fence_ms
 
       await_idle(pid)
     end
@@ -122,7 +125,7 @@ defmodule Nest.Agents.AgentChatModeTest do
                          parts: [%Part.Text{text: "[mode: build]\nRun"}],
                          metadata: %{"mode" => "build"}
                        }}},
-                     500
+                     @turn_fence_ms
 
       await_idle(pid)
     end
@@ -159,7 +162,7 @@ defmodule Nest.Agents.AgentChatModeTest do
                          parts: [%Part.Text{text: "[mode: build]\nHello"}],
                          metadata: %{"mode" => "build"}
                        }}},
-                     500
+                     @turn_fence_ms
 
       await_idle(pid)
     end
@@ -306,7 +309,7 @@ defmodule Nest.Agents.AgentChatModeTest do
                          parts: [%Part.Text{text: "[mode: build]\nHi"}],
                          metadata: %{"mode" => "build"}
                        }}},
-                     500
+                     @turn_fence_ms
 
       await_idle(pid)
     end

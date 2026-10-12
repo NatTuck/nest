@@ -28,11 +28,16 @@ defmodule Nest.Agents.AgentStreamErrorTest do
   #
   # The fence is a failure bound, not an expected duration. The idle broadcast
   # inherits the whole turn's latency (after the stream is consumed, usage merged,
-  # and the assistant message appended): 76 ms in isolation vs 700-1000 ms at
-  # `max_cases: 24` (measured; see `notes/test-suite-speedup.md`), so 1000 ms
-  # leaves room for a slow error path while a genuinely stuck turn still fails.
-  # The underlying slowness is tracked in #21 (Elixir test timeout audit).
-  @turn_fence_ms 1_000
+  # and the assistant message appended). Measured in the full suite at
+  # `max_cases: 16`: 1132 ms for this error-only turn (and 992 ms for the sibling
+  # in `agent_chat_mode_test.exs`), vs 76 ms in isolation. That gap is the
+  # suite's documented scheduling-race cost (`notes/sketchy-slow-tests.md`
+  # §2/§10): every `start_agent/1` serializes on the global `Mimic.Coordinator`,
+  # and the single `Nest.Agents.Supervisor` callback performs each whole agent
+  # start, so a mocked turn inherits the queue through its DB appends. 2 s — the
+  # `#21` cap on test-side timeouts — clears the measured spread with headroom
+  # while a genuinely stuck turn still fails as a fence.
+  @turn_fence_ms 2_000
 
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient

@@ -396,9 +396,9 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     # timer's message (mailbox order), i.e. it is processed while the phase is
     # `:stopping`.
     #
-    # The batch's own turn is over by now, so put the parent back in a busy
-    # phase first: `{:stop, …}` on an idle agent is a no-op.
-    state = await_idle(parent_pid)
+    # No turn runs here (the coordinator's run below is fabricated), so no idle
+    # `chat:status` frame will ever arrive: read the already-idle state directly.
+    state = :sys.get_state(parent_pid, 1_000)
     set_status(parent_pid, :streaming)
     # Explicit timeouts on both: `:sys.suspend/1` and `:sys.resume/1` otherwise
     # rely on OTP's implicit 5 s ack deadline, which is over the `#21` cap. They

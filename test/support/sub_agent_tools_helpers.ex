@@ -35,12 +35,17 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   #   * 48 CPU burners, 40 samples: p50 926 ms, max 1534 ms; 39/40 over 500 ms
   #   * the observed 1-in-40 gate failure (seed 200984, load 5.60) missed a
   #     500 ms fence outright
+  #   * full suite, `max_cases: 16`: 1051 ms for the first `await_idle/1` in
+  #     `sub_agent_tools_test.exs` (the peer-delivery turn), while the file's
+  #     later calls settle in ~15 ms — the suite's documented scheduling-race
+  #     cost (`notes/sketchy-slow-tests.md` §2/§10: `start_agent/1` serializes on
+  #     the global `Mimic.Coordinator` and the single `Nest.Agents.Supervisor`)
+  #     landing on a whole turn.
   #
-  # 2000 ms is ~100x the in-suite median and 4x the 500 ms fence the observed
-  # failure missed, and it is also the `#21` cap on every test-side timeout (and
-  # so on ExUnit's per-test timeout too), so a stuck turn still fails — as a
-  # stuck turn, not as a flake.
-  @turn_fence_ms 1_000
+  # 2000 ms is the `#21` cap on every test-side timeout (and so on ExUnit's
+  # per-test timeout too), clears the measured spread with headroom, and still
+  # fails a stuck turn — as a stuck turn, not as a flake.
+  @turn_fence_ms 2_000
 
   @doc """
   The turn fence (`#{@turn_fence_ms}` ms) for a test's own `eventually/2`.
@@ -161,7 +166,8 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   Whether the agent's machine has settled to `:idle`.
   """
   @spec idle?(pid()) :: boolean()
-  def idle?(pid), do: Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
+  def idle?(pid),
+    do: Machine.status_for(:sys.get_state(pid, @turn_fence_ms).live.machine) == :idle
 
   @doc """
   Wait until every given agent has settled to `:idle`.

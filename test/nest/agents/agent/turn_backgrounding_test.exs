@@ -530,10 +530,24 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       assert_receive {:send_delivered, ^tool}, 1_000
       send(tool, :release_result)
 
-      # The turn's end is the machine's own `chat:status` frame: `start_agent/1`
-      # subscribed this test pid to the agent's topic, so the frame is the event
-      # that decides the turn is over and `1_000` is only the failure bound.
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
+      # This delivery produces more than one turn — the aggregate's own turn,
+      # the turn the queued note drains in, and the batch result's notice turn —
+      # so an idle `chat:status` frame is ambiguous: `assert_receive/2` would
+      # take the *first* one and read the state while a later turn is still
+      # running (exactly the bug this replaces). Poll the settled condition
+      # instead, with the `:sys.get_state/2` call as the barrier, so the wait
+      # spans every turn the release starts. `#21` caps test-side timeouts at
+      # 2 s; the three mocked turns share 1 s.
+      assert Eventually.eventually(
+               fn ->
+                 state = :sys.get_state(pid, 1_000)
+
+                 Machine.status_for(state.live.machine) == :idle and
+                   state.live.inbox == [] and
+                   state.live.machine.work.backgrounded == %{}
+               end,
+               timeout: 1_000
+             )
 
       state = :sys.get_state(pid, 1_000)
 

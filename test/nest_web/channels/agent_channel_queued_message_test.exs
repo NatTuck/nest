@@ -265,6 +265,14 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # two queued entries as one batch: the peer's entry keeps the agent label
       # that disambiguates it, and the notice reports the batch's real result.
       release_llm(llm2)
+
+      # Consume this turn's own idle push before the drain turn starts: the
+      # `chat:status` idle asserted further down must be the drain turn's (the
+      # one whose assistant append completes the transcript), and without this
+      # it would match this earlier, still-pending idle and read the transcript
+      # a turn too soon.
+      assert_push "chat:status", %{status: "idle"}, 1_000
+
       {_third, llm3} = next_request()
       release_llm(llm3)
 
