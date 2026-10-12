@@ -6,7 +6,7 @@ defmodule Nest.Tools.Groups do
   tool names. This module is the single source of truth for the mapping
   from a group to the concrete tools it grants, and for expanding a list
   of groups into the individual tool names the rest of the pipeline
-  (`Nest.Agents.Agent.SystemPrompt`, `Nest.Tools.get_functions/3`, the
+  (`Nest.Agents.Agent.SystemPrompt`, `Nest.Tools.get_functions/2`, the
   BatchSizer, ...) already works with.
 
   Groups:

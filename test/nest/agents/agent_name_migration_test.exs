@@ -18,6 +18,7 @@ defmodule Nest.Agents.AgentNameMigrationTest do
   import Ecto.Query
 
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Sandbox.Mounts
 
   @migration_file "priv/repo/migrations/20261011000000_sanitize_agent_names.exs"
 
@@ -320,13 +321,7 @@ defmodule Nest.Agents.AgentNameMigrationTest do
   # renderings.
   defp insert_system_message(agent_id, name, opts \\ []) do
     {prompt, _mode, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(
-        vocation(),
-        nil,
-        {nil, nil},
-        name,
-        0
-      )
+      SystemPrompt.compose_vocation_config(vocation(), Mounts.new(nil, nil), {nil, nil}, name, 0)
 
     insert_message(agent_id, 0, "system", prompt <> Keyword.get(opts, :extra, ""))
   end

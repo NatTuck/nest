@@ -22,6 +22,7 @@ defmodule Nest.Tools.ShellCmdTest do
   import ExUnit.CaptureLog
   import Nest.Test.TmpCleanup
 
+  alias Nest.Sandbox.Mounts
   alias Nest.Tools
   alias Nest.Tools.ShellCmd
 
@@ -58,7 +59,7 @@ defmodule Nest.Tools.ShellCmdTest do
     # `:exec.stop/1`.
     log =
       capture_log(fn ->
-        assert {:error, message} = ShellCmd.execute("true", ws, nil, nil, [])
+        assert {:error, message} = ShellCmd.execute("true", Mounts.new(ws, nil), nil, [])
 
         assert message =~ "Exit code 130"
         assert message =~ "[Command cancelled]"
@@ -76,7 +77,7 @@ defmodule Nest.Tools.ShellCmdTest do
     # pre-seeded stop when none is in the mailbox. A trivial
     # `true` command exits 0 immediately and bwrap reports
     # the success path.
-    assert {:ok, output} = ShellCmd.execute("true", ws, nil, nil, [])
+    assert {:ok, output} = ShellCmd.execute("true", Mounts.new(ws, nil), nil, [])
 
     # The output is the "no output" placeholder because
     # `true` produces no stdout/stderr.
@@ -107,8 +108,7 @@ defmodule Nest.Tools.ShellCmdTest do
         assert {:error, output} =
                  ShellCmd.execute(
                    "for ((i = 0; i < 12; i++)); do echo tick; sleep 0.05; done",
-                   ws,
-                   nil,
+                   Mounts.new(ws, nil),
                    nil,
                    timeout: 300
                  )
@@ -152,8 +152,7 @@ defmodule Nest.Tools.ShellCmdTest do
     result =
       ShellCmd.execute_raw(
         "for ((i = 0; i < 1000000; i++)); do echo tick; done",
-        ws,
-        nil,
+        Mounts.new(ws, nil),
         nil,
         timeout: 100
       )
@@ -180,7 +179,7 @@ defmodule Nest.Tools.ShellCmdTest do
   # this is the reachable form of the bug: 8.64e10 ms of bound.
   @tag :bwrap
   test "a `timeout` past `receive`'s `after` ceiling still runs the command", %{ws: ws} do
-    function = Tools.get_function("shell-cmd", ws)
+    function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
 
     assert {:ok, output} =
              function.function.(%{"command" => "echo hi", "timeout" => 86_400_000}, nil)
@@ -215,14 +214,14 @@ defmodule Nest.Tools.ShellCmdTest do
     log =
       capture_log(fn ->
         assert {:error, first} =
-                 ShellCmd.execute("echo first; sleep 5", ws, nil, nil, timeout: 50)
+                 ShellCmd.execute("echo first; sleep 5", Mounts.new(ws, nil), nil, timeout: 50)
 
         assert first =~ "[Command timed out after 50ms]"
         assert eventually(fn -> stale_down_pending?() end, timeout: 500, interval: 10)
 
         # Call 2's own output. With the stale `:DOWN` it is the empty-output
         # placeholder instead, returned before its command had finished.
-        assert {:ok, second} = ShellCmd.execute("echo second", ws, nil, nil, [])
+        assert {:ok, second} = ShellCmd.execute("echo second", Mounts.new(ws, nil), nil, [])
         assert second == "second\n"
       end)
 
@@ -235,7 +234,7 @@ defmodule Nest.Tools.ShellCmdTest do
   # These exercise the tool, not just the module, so the argument's schema
   # and its conversion are covered too.
   test "the tool leaves a command that finishes before its bound alone, output intact", %{ws: ws} do
-    function = Tools.get_function("shell-cmd", ws)
+    function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
 
     # Explicit: `timeout: 1` is one second, and the command runs ~0.1s, so
     # the bound must not truncate it (a broken conversion — e.g. seconds
@@ -266,7 +265,7 @@ defmodule Nest.Tools.ShellCmdTest do
   test "the tool's schema declares `timeout` in seconds, default 60, no maximum, optional", %{
     ws: ws
   } do
-    tool = Tools.get_function("shell-cmd", ws)
+    tool = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
     timeout = tool.parameters_schema["properties"]["timeout"]
 
     # `default_timeout_ms/0` is the single source of truth for the default;
@@ -289,7 +288,7 @@ defmodule Nest.Tools.ShellCmdTest do
   end
 
   test "the tool rejects a non-positive or non-integer `timeout` as a tool error", %{ws: ws} do
-    function = Tools.get_function("shell-cmd", ws)
+    function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
 
     # Rejected before anything runs, so the tool error is the whole result.
     # The shape is the one `agents-wait-for-idle`'s `timeout` rejection uses, so the
@@ -306,7 +305,7 @@ defmodule Nest.Tools.ShellCmdTest do
   end
 
   test "the tool refuses to pipe output into head, tail, or grep", %{ws: ws} do
-    function = Tools.get_function("shell-cmd", ws)
+    function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
 
     # Rejected before anything runs, so no bwrap is needed and the tool error
     # is the whole result. Each command pipes into a pager at some stage.
@@ -338,7 +337,7 @@ defmodule Nest.Tools.ShellCmdTest do
   end
 
   test "the tool rejects a non-string command instead of crashing ShellCmd", %{ws: ws} do
-    function = Tools.get_function("shell-cmd", ws)
+    function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
 
     # `Nest.LLM.Tools` only checks that the `command` key is present, so a list
     # reaches the tool; it must come back as a tool error rather than crashing
@@ -351,7 +350,7 @@ defmodule Nest.Tools.ShellCmdTest do
 
   @tag :bwrap
   test "the tool still runs head/tail/grep directly and pipes into other commands", %{ws: ws} do
-    function = Tools.get_function("shell-cmd", ws)
+    function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
     File.write!(Path.join(ws, "sample.txt"), "alpha\nbeta\n")
 
     # `head`/`grep` as the command word — no pipe into them — run normally.
@@ -395,10 +394,10 @@ defmodule Nest.Tools.ShellCmdTest do
     # Default caps bind the canonical workspace read-write; --chdir
     # targets the user's symlinked path. Reading and writing through
     # the symlink must resolve to the canonical writable mount.
-    assert {:ok, output} = ShellCmd.execute("cat hello.txt", link, nil, nil, [])
+    assert {:ok, output} = ShellCmd.execute("cat hello.txt", Mounts.new(link, nil), nil, [])
     assert output =~ "symlink-ok"
 
-    assert {:ok, _} = ShellCmd.execute("echo written > out.txt", link, nil, nil, [])
+    assert {:ok, _} = ShellCmd.execute("echo written > out.txt", Mounts.new(link, nil), nil, [])
     assert File.read!(Path.join(real, "out.txt")) =~ "written"
   end
 
@@ -407,7 +406,7 @@ defmodule Nest.Tools.ShellCmdTest do
 
     # The workspace is validated before bwrap runs, so a missing
     # directory surfaces as a clean error and is never auto-created.
-    assert {:error, message} = ShellCmd.execute("true", missing, nil, nil, [])
+    assert {:error, message} = ShellCmd.execute("true", Mounts.new(missing, nil), nil, [])
     assert message =~ "does not exist"
 
     refute File.exists?(missing)
@@ -421,15 +420,15 @@ defmodule Nest.Tools.ShellCmdTest do
     echo "$greeting" | tr a-z A-Z
     """
 
-    assert {:ok, output} = ShellCmd.execute(command, ws, nil, nil, [])
+    assert {:ok, output} = ShellCmd.execute(command, Mounts.new(ws, nil), nil, [])
     assert output =~ ~s{HELLO "WORLD" }
   end
 
   test "stdin is delivered over a pipe, and an absent stdin gives an immediate EOF", %{ws: ws} do
-    assert {:ok, output} = ShellCmd.execute("wc -c", ws, nil, nil, stdin: "abcde")
+    assert {:ok, output} = ShellCmd.execute("wc -c", Mounts.new(ws, nil), nil, stdin: "abcde")
     assert String.trim(output) == "5"
 
-    assert {:ok, output} = ShellCmd.execute("wc -c", ws, nil, nil, [])
+    assert {:ok, output} = ShellCmd.execute("wc -c", Mounts.new(ws, nil), nil, [])
     assert String.trim(output) == "0"
   end
 
@@ -438,7 +437,7 @@ defmodule Nest.Tools.ShellCmdTest do
     # stderr, or a timed-out glob/read would classify as an empty `:read_failed`
     # with no signal at all.
     assert {:ok, 1, _stdout, stderr} =
-             ShellCmd.execute_raw("sleep 5", ws, nil, nil, timeout: 50)
+             ShellCmd.execute_raw("sleep 5", Mounts.new(ws, nil), nil, timeout: 50)
 
     assert stderr =~ "[Command timed out after 50ms]"
   end
@@ -462,25 +461,27 @@ defmodule Nest.Tools.ShellCmdTest do
     stage = Path.join(Path.dirname(tmp), ".cmds")
 
     # $0 is the staged script, as seen from inside the sandbox.
-    assert {:ok, output} = ShellCmd.execute(~s{basename "$0"}, ws, tmp, nil, [])
+    assert {:ok, output} = ShellCmd.execute(~s{basename "$0"}, Mounts.new(ws, tmp), nil, [])
     assert output =~ "nest-cmd-"
 
     # The transcript is temporary either way: the caller gets the output.
-    assert {:ok, _} = ShellCmd.execute("echo bye", ws, tmp, nil, [])
+    assert {:ok, _} = ShellCmd.execute("echo bye", Mounts.new(ws, tmp), nil, [])
     assert Path.wildcard(Path.join(stage, "nest-cmd-*.sh")) == []
   end
 
   test "there is no set -e, and the exit code of the last statement is what is reported", %{
     ws: ws
   } do
-    assert {:ok, output} = ShellCmd.execute("false\necho survived", ws, nil, nil, [])
+    assert {:ok, output} = ShellCmd.execute("false\necho survived", Mounts.new(ws, nil), nil, [])
     assert output =~ "survived"
 
     # A non-zero exit is a deliberate diagnostic — capture it so it
     # doesn't escape into the test log.
     log =
       capture_log(fn ->
-        assert {:error, output} = ShellCmd.execute("echo before\nexit 3", ws, nil, nil, [])
+        assert {:error, output} =
+                 ShellCmd.execute("echo before\nexit 3", Mounts.new(ws, nil), nil, [])
+
         assert output =~ "before"
         assert output =~ "Exit code 3"
       end)
@@ -492,7 +493,7 @@ defmodule Nest.Tools.ShellCmdTest do
   test "large stdin streams over the pipe and never hits an ARG_MAX ceiling", %{ws: ws} do
     payload = :binary.copy("abcdefgh", 400_000)
 
-    assert {:ok, _} = ShellCmd.execute("cat > big.bin", ws, nil, nil, stdin: payload)
+    assert {:ok, _} = ShellCmd.execute("cat > big.bin", Mounts.new(ws, nil), nil, stdin: payload)
     assert File.stat!(Path.join(ws, "big.bin")).size == byte_size(payload)
   end
 

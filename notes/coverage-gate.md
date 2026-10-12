@@ -69,12 +69,14 @@ it was and the JSON file is the single source of the gate.
 ## The margin, as a checkable statement
 
 The gate is a comparison against the whole tree, so what matters is how much
-jitter it takes to cross it:
+jitter it takes to cross it. Measured from the single `mix test --cover` run
+recorded in `notes/test-runs/27-cover-final.log` (2319 tests, 0 failures,
+exit 0):
 
-* 7850 relevant lines, so 85% means at most **1177 missed**; the gate fails at
-  **≥ 1178 missed** (`(7850 - 1178) / 7850 = 84.99%`).
-* A clean run misses **1153** (`[TOTAL] 85.3%`), i.e. the margin is **25 missed
-  lines** — roughly 0.3 percentage points.
+* 9090 relevant lines, so 85% means at most **1363 missed**; the gate fails at
+  **≥ 1364 missed** (`(9090 - 1364) / 9090 = 84.99%`).
+* That run missed **1150** (`[TOTAL] 87.3%`), i.e. the margin is **213 missed
+  lines** — about 2.3 percentage points.
 * The observed jitter is **1–2 lines per run**, from **two** sources, and
   neither is seed-stable:
   * `lib/nest/llm/mock_client.ex` — `91.3%` (9 missed) or `92.3%` (8 missed);
@@ -84,12 +86,30 @@ jitter it takes to cross it:
     six.
 
   So the attribution of either to a *specific* seed is not reproducible — the
-  pair is the honest description, and both are far inside the 25-line margin.
+  pair is the honest description, and both are far inside the margin.
 * Which is why six consecutive `--cover` runs (including the seed that
   reproduced the original failure) all report `85.3%` and exit 0. The earlier
   instability was not jitter inside the margin: it was a single module
   (`lib/nest/chat_model.ex`) dropping from ~88% to 65% — 37 missed lines at
   once — which is the bug fixed above.
+
+### Why the figures above moved
+
+An earlier version of this section gave **7850** relevant lines, **1153**
+missed, `[TOTAL] 85.3%` and a **25-line** margin. The missed count was right;
+the denominator was not. The total is `missed / relevant`, and the tree has
+grown by **1240 relevant lines** since that run — so 7850 and 9090 each
+describe a real run of their own tree, and only 9090 describes the current one.
+The six `85.3%` runs quoted above are on the older tree for the same reason.
+
+Two consequences worth keeping in mind:
+
+* The gate is *not* near its threshold any more. A regression would have to
+  miss 213 more lines before it trips, which is a much weaker canary than the
+  25-line margin the note originally claimed. Treat a `--cover` failure as a
+  real signal, but do not read a passing run as evidence of much.
+* Any future edit to `coveralls.json`'s stop words changes `relevant` and
+  moves every number here, including the margin.
 
 ## Why every key in the file is mirrored from the dependency
 

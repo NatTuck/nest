@@ -187,7 +187,7 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
       {system_prompt, _mode, _tools, _vocation} =
         SystemPrompt.compose_vocation_config(
           ctx.vocation,
-          ctx.workspace_path,
+          ctx.mounts,
           {ctx.context_limit, ctx.context_limit_source},
           ctx.agent_name,
           ctx.depth

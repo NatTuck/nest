@@ -228,7 +228,7 @@ defmodule Nest.LLM.ToolsTest do
       # Passing `%{"x" => "ok"}` succeeds; passing anything
       # else raises FunctionClauseError. This is exactly the
       # shape of the original user-reported crash
-      # (`Nest.Tools.write_file_function/2`'s strict pattern
+      # (`Nest.Tools.write_file_function/1`'s strict pattern
       # match on `%{"path" => path, "content" => content}`).
       tool = %Tool{
         name: "strict",

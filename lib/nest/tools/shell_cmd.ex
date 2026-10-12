@@ -2,10 +2,11 @@ defmodule Nest.Tools.ShellCmd do
   @moduledoc """
   Sandboxed shell command execution using bwrap and erlexec.
 
-  This module provides sandboxed command execution for agent tools.
+  This module provides sandboxed command execution for agents.
   Commands run in an isolated environment with:
   - Network isolation (configurable via caps)
-  - Read-only filesystem access (except workspace and /tmp when tmp_path is provided)
+  - Read-only filesystem access (except the workspace and the scratch
+    directory, when the mode grants them)
   - A fresh devtmpfs at /dev, so shell redirects like `> /dev/null` and
     `2>/dev/null` work as expected
   - Process namespace isolation
@@ -13,11 +14,13 @@ defmodule Nest.Tools.ShellCmd do
 
   ## Sandbox Profile
 
-  The bwrap profile is determined by the `caps` map (see `Nest.Sandbox`).
-  When `caps` is `nil` (legacy callers), the default profile is used:
+  The bwrap profile is determined by the `caps` map and the `Nest.Sandbox.Mounts`
+  value (see `Nest.Sandbox`). When `caps` is `nil` (legacy callers), the
+  default profile is used:
   - Network: Disabled
   - Filesystem read: Entire host (read-only)
-  - Filesystem write: Workspace directory (at original path) and /tmp (when tmp_path provided)
+  - Filesystem write: The workspace directory (at its own path) and the
+    scratch directory (bound at /tmp)
   - /dev: A fresh devtmpfs on a non-HPU host (overlays the read-only
     host /dev so device files like /dev/null are writable inside the
     sandbox). On an HPU host the host's `/dev` is re-bound with
@@ -28,8 +31,7 @@ defmodule Nest.Tools.ShellCmd do
   require Logger
 
   alias Nest.Sandbox
-  alias Nest.Sandbox.Paths
-  alias Nest.Sandbox.ShellJobs
+  alias Nest.Sandbox.{Mounts, Paths, ShellJobs}
   alias Nest.Tools.Exec
 
   @default_timeout_ms 60_000
@@ -67,7 +69,7 @@ defmodule Nest.Tools.ShellCmd do
     * `:stdin` - Binary data to send to the command's stdin over a real pipe (no base64) (default: "")
     * `:background` - when `true`, start the command as a background job
       owned by `Nest.Sandbox.ShellJobs` and return a job handle instead of
-      waiting. Requires a `tmp_path` (the log lives under it on the host;
+      waiting. Requires a scratch directory (the job log lives under it, and
       the path reported to the agent is the sandbox's
       `/tmp/<agent-name>/shell-jobs/<id>.log`). Additional
       opts: `:agent_key` (`{space_id, agent_name}`), `:agent_pid`, and
@@ -84,59 +86,59 @@ defmodule Nest.Tools.ShellCmd do
   displayed as a message in the chat UI.
 
   Pass `nil` for `caps` to use the default profile (no network, full
-  host read-only, workspace + tmp writable). This is preserved for
+  host read-only, workspace + scratch writable). This is preserved for
   back-compat with callers that haven't been migrated.
   """
-  @spec execute(String.t(), String.t() | nil, String.t() | nil, map() | nil, keyword()) ::
+  @spec execute(String.t(), Mounts.t(), map() | nil, keyword()) ::
           {:ok, String.t()} | {:error, String.t()}
-  def execute(command, workspace_path, tmp_path \\ nil, caps \\ nil, opts \\ []) do
-    with {:ok, workspace} <- resolve_workspace(workspace_path),
-         {:ok, sandboxed_cmd, script} <- build_command(command, workspace, tmp_path, caps) do
-      dispatch(command, script, sandboxed_cmd, workspace, tmp_path, caps, opts)
+  def execute(command, mounts, caps \\ nil, opts \\ []) do
+    with {:ok, mounts} <- validate_workspace(mounts),
+         {:ok, sandboxed_cmd, script} <- build_command(command, mounts, caps) do
+      dispatch(command, script, sandboxed_cmd, mounts, caps, opts)
     end
   end
 
   # Foreground vs background selection for a built command, kept out of
-  # `execute/5` to hold its ABC size down.
-  defp dispatch(command, script, sandboxed_cmd, workspace, tmp_path, caps, opts) do
+  # `execute/4` to hold its ABC size down.
+  defp dispatch(command, script, sandboxed_cmd, mounts, caps, opts) do
     if Keyword.get(opts, :background, false) do
-      run_background(command, script, sandboxed_cmd, workspace, tmp_path, caps, opts)
+      run_background(command, script, sandboxed_cmd, mounts, caps, opts)
     else
       timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
       stdin = normalize_stdin(Keyword.get(opts, :stdin))
 
       Logger.info(
-        "Executing sandboxed script #{script} in #{workspace}: #{truncate_log(command)}"
+        "Executing sandboxed script #{script} in #{Mounts.workspace(mounts) || "/"}: " <>
+          truncate_log(command)
       )
 
-      exec_staged(script, sandboxed_cmd, timeout, stdin, command, {workspace, tmp_path})
+      exec_staged(script, sandboxed_cmd, timeout, stdin, command, mounts)
     end
   end
 
   @doc """
-  Low-level sibling of `execute/5` for callers that need the raw exit code and
+  Low-level sibling of `execute/4` for callers that need the raw exit code and
   the separated stdout/stderr streams instead of the decorated combined output.
 
-  `Nest.Sandbox.read/4`, `stat/5`, and `glob/5` use this to run inside bwrap: a
+  `Nest.Sandbox.read/3`, `stat/4`, and `glob/4` use this to run inside bwrap: a
   read must see stdout exactly (an empty file is a valid read, so the
-  `"[Command executed successfully with no output]"` placeholder `execute/5`
+  `"[Command executed successfully with no output]"` placeholder `execute/4`
   emits is wrong here) and must inspect stderr to classify failures.
 
   Returns `{:ok, exit_code, stdout, stderr}` or `{:error, reason}`. There is no
-  default for `tmp_path` or `caps`: `caps: nil` means the full default profile,
-  so a caller that forgets to pass caps must not compile. `workspace_path` /
-  `tmp_path` are HOST paths used only to build the bwrap argument list; they
-  must never be handed back to a caller (see `Nest.Sandbox`'s "host spelling
-  must not escape" rule).
+  default for `caps`: `caps: nil` means the full default profile, so a caller
+  that forgets to pass caps must not compile. `mounts` carries the two
+  directories the sandbox binds, and is the only thing this module reads them
+  out of.
   """
-  @spec execute_raw(String.t(), String.t() | nil, String.t() | nil, map() | nil, keyword()) ::
+  @spec execute_raw(String.t(), Mounts.t(), map() | nil, keyword()) ::
           {:ok, non_neg_integer(), binary(), binary()} | {:error, String.t()}
-  def execute_raw(command, workspace_path, tmp_path, caps, opts \\ []) do
+  def execute_raw(command, mounts, caps, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
     stdin = normalize_stdin(Keyword.get(opts, :stdin))
 
-    with {:ok, workspace} <- resolve_workspace(workspace_path),
-         {:ok, sandboxed_cmd, script} <- build_command(command, workspace, tmp_path, caps) do
+    with {:ok, mounts} <- validate_workspace(mounts),
+         {:ok, sandboxed_cmd, script} <- build_command(command, mounts, caps) do
       try do
         run_with_erlexec_raw(sandboxed_cmd, timeout, stdin)
       after
@@ -148,11 +150,11 @@ defmodule Nest.Tools.ShellCmd do
   # Stage the command's transcript, then build the bwrap command line. When
   # the sandbox cannot be built (e.g. a workspace under the scratch bind), the
   # staged script is removed and the reason is returned rather than raised.
-  defp build_command(command, workspace, tmp_path, caps) do
-    if tmp_path, do: File.mkdir_p!(tmp_path)
-    {script, script_path} = stage_script(command, tmp_path)
+  defp build_command(command, mounts, caps) do
+    Mounts.ensure_scratch!(mounts)
+    {script, script_path} = stage_script(command, mounts)
 
-    case build_sandboxed_command(script_path, workspace, tmp_path, caps) do
+    case build_sandboxed_command(script_path, mounts, caps) do
       {:ok, sandboxed_cmd} ->
         {:ok, sandboxed_cmd, script}
 
@@ -165,13 +167,13 @@ defmodule Nest.Tools.ShellCmd do
   # Run the staged script and remove it afterwards: it is only a transcript of
   # the command, and all the caller keeps is the output, so it goes on every
   # path - success, failure, timeout or crash.
-  defp exec_staged(script, sandboxed_cmd, timeout, stdin, command, {workspace, tmp_path}) do
+  defp exec_staged(script, sandboxed_cmd, timeout, stdin, command, mounts) do
     case run_with_erlexec(sandboxed_cmd, timeout, stdin) do
       {:ok, exit_code, output} ->
-        handle_exit_result(command, exit_code, output, workspace, tmp_path)
+        handle_exit_result(command, exit_code, output, mounts)
 
       {:error, reason} ->
-        handle_startup_failure(command, reason, workspace, tmp_path)
+        handle_startup_failure(command, reason, mounts)
     end
   after
     File.rm(script)
@@ -179,25 +181,20 @@ defmodule Nest.Tools.ShellCmd do
 
   # Start the command as a background job and either report an immediate
   # exit (within the grace window) as a normal result, or hand the caller a
-  # job handle. `ShellJobs` removes the job's *host* script when the job
-  # ends; the sandbox spelling is only used to build the bwrap command line.
-  defp run_background(
-         command,
-         script,
-         sandboxed_cmd,
-         workspace,
-         tmp_path,
-         caps,
-         opts
-       ) do
-    if is_nil(tmp_path) do
+  # job handle. `ShellJobs` removes the job's staged script when the job ends;
+  # the sandbox spelling is only used to build the bwrap command line.
+  defp run_background(command, script, sandboxed_cmd, mounts, caps, opts) do
+    if is_nil(Mounts.scratch(mounts)) do
       File.rm(script)
       {:error, "Background jobs require a tmp directory"}
     else
       grace = Keyword.get(opts, :grace_ms, @default_grace_ms)
       agent_key = Keyword.get(opts, :agent_key, {:unknown, :unknown})
 
-      Logger.info("Starting background shell job in #{workspace}: #{truncate_log(command)}")
+      Logger.info(
+        "Starting background shell job in #{Mounts.workspace(mounts) || "/"}: " <>
+          truncate_log(command)
+      )
 
       case ShellJobs.start_job(%{
              agent_key: agent_key,
@@ -205,11 +202,11 @@ defmodule Nest.Tools.ShellCmd do
              command: command,
              bwrap: sandboxed_cmd,
              script_path: script,
-             tmp_path: tmp_path,
+             mounts: mounts,
              max_jobs: background_cap(caps)
            }) do
         {:ok, job_id, log_path} ->
-          await_background_start(job_id, log_path, grace, agent_key, command, workspace, tmp_path)
+          await_background_start(job_id, log_path, grace, agent_key, command, mounts)
 
         {:error, reason} ->
           File.rm(script)
@@ -218,13 +215,13 @@ defmodule Nest.Tools.ShellCmd do
     end
   end
 
-  defp await_background_start(job_id, log_path, grace, agent_key, command, workspace, tmp_path) do
+  defp await_background_start(job_id, log_path, grace, agent_key, command, mounts) do
     ShellJobs.subscribe(agent_key, job_id, self())
 
     receive do
       {:shell_job_exit, ^job_id, code} ->
         {:ok, output} = ShellJobs.output(agent_key, job_id)
-        handle_exit_result(command, code, output, workspace, tmp_path)
+        handle_exit_result(command, code, output, mounts)
     after
       grace ->
         ShellJobs.unsubscribe(agent_key, job_id, self())
@@ -246,21 +243,21 @@ defmodule Nest.Tools.ShellCmd do
     end
   end
 
-  defp handle_exit_result(_command, 0, "", _workspace, _tmp_path) do
+  defp handle_exit_result(_command, 0, "", _mounts) do
     {:ok, "[Command executed successfully with no output]"}
   end
 
-  defp handle_exit_result(_command, 0, output, _workspace, _tmp_path) do
+  defp handle_exit_result(_command, 0, output, _mounts) do
     {:ok, output}
   end
 
-  defp handle_exit_result(command, exit_code, output, workspace, tmp_path) do
-    log_bwrap_failure(command, exit_code, output, workspace, tmp_path)
+  defp handle_exit_result(command, exit_code, output, mounts) do
+    log_bwrap_failure(command, exit_code, output, mounts)
     {:error, "Exit code #{exit_code}:\n#{output}"}
   end
 
-  defp handle_startup_failure(command, reason, workspace, tmp_path) do
-    log_erlexec_start_failure(command, reason, workspace, tmp_path)
+  defp handle_startup_failure(command, reason, mounts) do
+    log_erlexec_start_failure(command, reason, mounts)
     {:error, "Execution failed: #{reason}"}
   end
 
@@ -269,34 +266,44 @@ defmodule Nest.Tools.ShellCmd do
   # for reasons we don't fully understand yet. We want the
   # server log to capture every occurrence with enough detail
   # to diagnose a flake from the log alone.
-  defp log_bwrap_failure(command, exit_code, output, workspace, tmp_path) do
+  #
+  # Printing the directories is deliberate here, as it is on the two `info`
+  # lines above: a bwrap flake is diagnosed by asking *which* directories the
+  # failing invocation was given, and the agent's own `/tmp/<agent-name>/...`
+  # spelling is not what bwrap was handed. None of it reaches the agent — this
+  # is the operator's log — so it is not the leak the sandbox-spelling rule is
+  # about.
+  defp log_bwrap_failure(command, exit_code, output, mounts) do
     Logger.error(
       "ShellCmd.execute: bwrap exited non-zero " <>
         "(exit_code=#{exit_code}) for command=#{truncate_log(command)} " <>
-        "workspace=#{workspace} tmp_path=#{tmp_path || "none"} " <>
+        "workspace=#{Mounts.workspace(mounts) || "none"} " <>
+        "scratch=#{Mounts.scratch(mounts) || "none"} " <>
         "output=#{inspect(output)}"
     )
   end
 
-  defp log_erlexec_start_failure(command, reason, workspace, tmp_path) do
+  defp log_erlexec_start_failure(command, reason, mounts) do
     Logger.error(
       "ShellCmd.execute: erlexec failed to start process " <>
         "(reason=#{inspect(reason)}) for command=#{truncate_log(command)} " <>
-        "workspace=#{workspace} tmp_path=#{tmp_path || "none"}"
+        "workspace=#{Mounts.workspace(mounts) || "none"} " <>
+        "scratch=#{Mounts.scratch(mounts) || "none"}"
     )
   end
 
   # Stage the command's transcript for bash to read. The staging dir is
   # `Paths.stage_dir/1`: inside the bound space scratch dir (visible at
-  # `/tmp/.cmds`) when a scratch dir exists, else under the host tmp dir
+  # `/tmp/.cmds`) when a scratch dir exists, else under the system tmp dir
   # (visible at the same path through the read-only root bind). Keeping it out
   # of the agent's own scratch dir means a glob over that dir never sees it.
-  defp stage_script(command, tmp_path) do
-    dir = Paths.stage_dir(tmp_path)
+  defp stage_script(command, mounts) do
+    scratch = Mounts.scratch(mounts)
+    dir = Paths.stage_dir(scratch)
     File.mkdir_p!(dir)
-    host = Path.join(dir, script_name())
-    File.write!(host, command)
-    {host, Path.join(Paths.stage_dir_sandbox(tmp_path), Path.basename(host))}
+    path = Path.join(dir, script_name())
+    File.write!(path, command)
+    {path, Path.join(Paths.stage_dir_sandbox(scratch), Path.basename(path))}
   end
 
   defp script_name do
@@ -319,31 +326,29 @@ defmodule Nest.Tools.ShellCmd do
   with a read-only /dev where even opening /dev/null for writing
   fails with "Permission denied".
   """
-  @spec build_bwrap_args(String.t() | nil, String.t() | nil, map() | nil) ::
+  @spec build_bwrap_args(Mounts.t(), map() | nil) ::
           {:ok, [String.t()]} | {:error, String.t()}
-  def build_bwrap_args(workspace_path, tmp_path \\ nil, caps \\ nil) do
+  def build_bwrap_args(mounts, caps \\ nil) do
     effective_caps = caps || Sandbox.default_caps()
-    Sandbox.build(effective_caps, workspace_path, tmp_path)
+    Sandbox.build(effective_caps, mounts)
   end
 
   # Private functions
 
-  defp resolve_workspace(nil) do
-    # No workspace: `Nest.Sandbox.build/3` binds no workspace and chdirs to
-    # the scratch root (or `/`).
-    {:ok, nil}
-  end
+  # No workspace: `Nest.Sandbox.build/2` binds no workspace and chdirs to
+  # the scratch root (or `/`).
+  defp validate_workspace(%Mounts{workspace: nil} = mounts), do: {:ok, mounts}
 
-  defp resolve_workspace(path) do
+  defp validate_workspace(%Mounts{workspace: path} = mounts) do
     if File.dir?(path) do
-      {:ok, path}
+      {:ok, mounts}
     else
       {:error, "Workspace directory does not exist: #{path}"}
     end
   end
 
-  defp build_sandboxed_command(command, workspace_path, tmp_path, caps) do
-    case build_bwrap_args(workspace_path, tmp_path, caps) do
+  defp build_sandboxed_command(command, mounts, caps) do
+    case build_bwrap_args(mounts, caps) do
       {:ok, bwrap_args} -> {:ok, build_bwrap_command(command, bwrap_args)}
       {:error, reason} -> {:error, reason}
     end
@@ -502,8 +507,8 @@ defmodule Nest.Tools.ShellCmd do
   # running).
   defp handle_stop_chat(os_pid, acc) do
     :exec.stop(os_pid)
-    # The marker goes in *stderr* so both `execute/5` (which renders stderr via
-    # `combine_output/1`) and `execute_raw/4,5` (which classifies stderr) see
+    # The marker goes in *stderr* so both `execute/4` (which renders stderr via
+    # `combine_output/1`) and `execute_raw/3,4` (which classifies stderr) see
     # it; appending it to the combined output dropped it for raw callers.
     acc = append_stderr(acc, "[Command cancelled]")
     # 130 = 128 + SIGINT(2), the conventional shell cancellation
@@ -544,7 +549,7 @@ defmodule Nest.Tools.ShellCmd do
     # mailbox. Harmless: the next `collect_output/5` matches only the erlexec
     # pid of its own command, so it skips the stale one instead of reporting
     # it as its own result.
-    # Stderr, like `handle_stop_chat/2`, so `execute_raw/4,5` sees the marker.
+    # Stderr, like `handle_stop_chat/2`, so `execute_raw/3,4` sees the marker.
     acc = append_stderr(acc, "[Command timed out after #{timeout}ms]")
     {:ok, 1, combine_output(acc), stdout_bin(acc), stderr_bin(acc)}
   end

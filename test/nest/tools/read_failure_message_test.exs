@@ -25,6 +25,7 @@ defmodule Nest.Tools.ReadFailureMessageTest do
   import ExUnit.CaptureLog
 
   alias Nest.LLM.Tool, as: Function
+  alias Nest.Sandbox.Mounts
   alias Nest.Tools
 
   setup do
@@ -143,7 +144,7 @@ defmodule Nest.Tools.ReadFailureMessageTest do
   defp inspect_tool(ctx, args), do: call("file-inspect", ctx, args)
 
   defp call(name, ctx, args) do
-    %Function{function: fun} = Tools.get_function(name, ctx.ws, ctx.tmp_path)
+    %Function{function: fun} = Tools.get_function(name, Mounts.new(ctx.ws, ctx.tmp_path))
     fun.(args, %{caps: ctx.caps})
   end
 end

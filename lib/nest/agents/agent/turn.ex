@@ -25,6 +25,7 @@ defmodule Nest.Agents.Agent.Turn do
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.Timeline
   alias Nest.Agents.Agent.Turn.Executor
+  alias Nest.Sandbox.Mounts
 
   @max_settle_depth 200
 
@@ -276,13 +277,8 @@ defmodule Nest.Agents.Agent.Turn do
   """
   @spec build_ctx(Agent.t(), keyword()) :: map()
   def build_ctx(state, opts \\ []) do
-    {mode, caps} =
-      ChatPipeline.resolve_mode_and_caps(
-        state.live.mode,
-        state.vocation,
-        state.workspace_path,
-        state.tmp_path
-      )
+    mounts = Mounts.from_agent(state)
+    {mode, caps} = ChatPipeline.resolve_mode_and_caps(state.live.mode, state.vocation, mounts)
 
     %{
       agent_pid: self(),
@@ -295,8 +291,7 @@ defmodule Nest.Agents.Agent.Turn do
       context_limit: state.llm_metrics.context_limit,
       context_limit_source: state.llm_metrics.context_limit_source,
       messages: Keyword.get(opts, :messages, state.chat_state.messages),
-      tmp_path: state.tmp_path,
-      workspace_path: state.workspace_path,
+      mounts: mounts,
       mode: mode,
       next_message_index: state.chat_state.next_message_index,
       crossed_thresholds: state.live.crossed_thresholds,
