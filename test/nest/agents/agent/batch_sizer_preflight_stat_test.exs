@@ -395,6 +395,41 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
     end
   end
 
+  describe "media projection (issue #40)" do
+    test "a media target projects at its modality ceiling, with no stat at all" do
+      # No stat is stubbed and no such file exists, so a projection that
+      # consulted the filesystem would fall back to the summary size. Pricing
+      # media needs no I/O: every provider downsamples to its own ceiling
+      # before billing, so the ceiling is the bound.
+      c = ctx_with_ws("/ws", [])
+
+      assert ProjectedSize.project(call("c1", "file-read", %{"path" => "shot.png"}), c) ==
+               Nest.Tokens.Estimator.estimate_media_ceiling(:image)
+    end
+
+    test "every extension the tool can attach projects at the ceiling" do
+      c = ctx_with_ws("/ws", [])
+
+      for ext <- ~w(png PNG jpg jpeg gif webp) do
+        assert ProjectedSize.project(call("c1", "file-read", %{"path" => "a.#{ext}"}), c) ==
+                 Nest.Tokens.Estimator.estimate_media_ceiling(:image)
+      end
+    end
+
+    test "a non-media path still projects from its stat, not from the ceiling" do
+      # The media branch is extension-gated on purpose: every `.txt` fixture
+      # takes the original stat-then-estimate body, which is what keeps this
+      # file's frozen-oracle parity tests byte-identical. Do not widen the gate.
+      stub_stats(4_000)
+      c = ctx_with_ws("/ws", [])
+
+      projected = ProjectedSize.project(call("c1", "file-read", %{"path" => "a.txt"}), c)
+
+      assert projected == Nest.Tokens.Estimator.estimate_bytes(4_000)
+      refute projected == Nest.Tokens.Estimator.estimate_media_ceiling(:image)
+    end
+  end
+
   # A `:generating` machine carrying the context shape the response path reads
   # (the `ctx/2` above is a subset: the BatchSizer only needs tools/caps/limit).
   defp machine do

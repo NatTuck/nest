@@ -124,6 +124,54 @@ defmodule Nest.Tokens.Estimator do
     |> Kernel.+(@per_message_overhead)
   end
 
+  # Per-part ceiling for binary media, by modality.
+  #
+  # Token cost is a function of the decoded pixels the provider renders, and
+  # every provider downsamples to its own ceiling before billing, so the
+  # ceiling is the true upper bound on the model-visible cost — and it is the
+  # only bound derivable without decoding the file.
+  #
+  # Pricing media by byte size would be wrong rather than merely
+  # conservative: base64 is ~4 bytes per token at `estimate_bytes/1`'s ratio,
+  # so a 1 MB image would price at ~250_000 tokens, roughly 100x its real
+  # cost, and the preflight would refuse every image on any real context
+  # window. The provider decodes the base64, so its token count is not
+  # proportional to the encoded length at all.
+  #
+  # These are proposed upper bounds, not measurements — measuring them needs
+  # real API calls with real images. They are anchored on the providers'
+  # documented downsampling limits: Anthropic scales an image so its long edge
+  # is <= 1568px and prices by area/750; OpenAI `detail: "high"` scales to
+  # 2048x2048 and prices 85 + 170 per 512x512 tile. 4096 is a headroom
+  # multiple of both. Keyed by the same vocabulary as `Part.modalities/0`,
+  # and a test asserts the two are equal.
+  @media_token_ceiling %{image: 4_096}
+
+  @doc """
+  The token ceiling for a media part.
+  """
+  @spec estimate_media(Part.Media.t()) :: pos_integer()
+  def estimate_media(%Part.Media{modality: modality}), do: estimate_media_ceiling(modality)
+
+  @doc """
+  The token ceiling for a media modality.
+
+  Raises for a modality outside `@media_token_ceiling`. That is deliberate:
+  the alternative is the 10-token catch-all in `estimate_part/1`, which would
+  price a 1 MB image at 10 and mean the cap never fires. `Part.new_media/1`
+  refuses any modality outside `Part.modalities/0`, so the two vocabularies
+  cannot drift and this is unreachable.
+  """
+  @spec estimate_media_ceiling(Part.Media.modality()) :: pos_integer()
+  def estimate_media_ceiling(modality), do: Map.fetch!(@media_token_ceiling, modality)
+
+  @doc """
+  The media pricing ceilings, keyed by modality. Exposed so a test can
+  assert this vocabulary equals `Part.modalities/0`.
+  """
+  @spec media_token_ceilings() :: %{Part.Media.modality() => pos_integer()}
+  def media_token_ceilings, do: @media_token_ceiling
+
   @doc """
   Returns a conservative token count for a list of messages
   (the canonical `Message.t()` tagged-tuple shape).
@@ -192,6 +240,8 @@ defmodule Nest.Tokens.Estimator do
   end
 
   def estimate_part(%Part.Refusal{refusal: text}), do: estimate(text || "")
+
+  def estimate_part(%Part.Media{} = media), do: estimate_media(media)
 
   def estimate_part(_), do: @per_message_overhead
 

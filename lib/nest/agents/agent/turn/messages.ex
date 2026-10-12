@@ -69,9 +69,10 @@ defmodule Nest.Agents.Agent.Turn.Messages do
 
   @doc """
   Build a `{:tool, _}` message wrapping a list of
-  `ToolResult` structs as `Part.ToolResult` parts.
+  `ToolResult` structs as `Part.ToolResult` parts, plus any
+  `Part.Media` parts that accompany them.
   """
-  @spec tool([ToolResult.t()]) :: {:tool, Tool.t()}
+  @spec tool([ToolResult.t() | Part.Media.t()]) :: {:tool, Tool.t()}
   def tool(results) do
     result_parts = Enum.map(results, &tool_result_to_part/1)
 
@@ -93,6 +94,12 @@ defmodule Nest.Agents.Agent.Turn.Messages do
       is_error: tr.is_error || false
     }
   end
+
+  # A media part is already a part: it rides along as the sibling of the
+  # `ToolResult` it answers. `Enum.map/2` keeps the two adjacent and in the
+  # order `BatchSizer` emitted them, which is what the Anthropic encoder's
+  # grouping and the OpenAI hoist both rely on.
+  defp tool_result_to_part(%Part.Media{} = media), do: media
 
   @doc """
   Build a synthetic error tool-result message for the

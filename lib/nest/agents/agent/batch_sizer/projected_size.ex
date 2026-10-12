@@ -24,6 +24,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   alias Nest.Messages.ToolCall
   alias Nest.Sandbox
   alias Nest.Tokens.Estimator
+  alias Nest.Tools.MediaKind
 
   @safety_padding 1.20
 
@@ -228,6 +229,29 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
     end
   end
 
+  # A media target prices at its modality ceiling — the same number the
+  # execution path's cap compares against — so the preflight can refuse BEFORE
+  # the read.
+  #
+  # Gated on the extension, which is only a hint: `file --mime-type` is the
+  # authority and costs a bwrap spawn, which the preflight must not pay per
+  # call. A wrong guess here can only mis-project, never mis-execute, because
+  # the tool re-detects authoritatively at execution time. This asymmetry is
+  # deliberate.
+  #
+  # The gate is what keeps the frozen-oracle parity tests in
+  # `batch_sizer_preflight_stat_test.exs` byte-identical: every `.txt` fixture
+  # takes `text_read_projection/2` below, unchanged. Do not widen it.
+  def read_file_projection(%ToolCall{arguments: %{"path" => path}} = tc, ctx)
+      when is_binary(path) do
+    case MediaKind.from_path(path) do
+      {:ok, modality} -> Estimator.estimate_media_ceiling(modality)
+      :text -> text_read_projection(tc, ctx)
+    end
+  end
+
+  def read_file_projection(_, _ctx), do: summary_baseline_size() * @safety_padding
+
   # read_file projection: stat-then-cap, then estimate from byte
   # size. The actual read happens in Phase 2; preflight does the
   # cheaper stat so the batch can be refused before doing the read
@@ -235,7 +259,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   # honors the same caps the read would, and resolves the path
   # against the workspace (an absolute path is used as-is). Any
   # failure falls back to the conservative summary size.
-  def read_file_projection(%ToolCall{} = tc, ctx) do
+  defp text_read_projection(%ToolCall{} = tc, ctx) do
     with {:ok, full_path} <- resolved_read_path(tc, ctx),
          {:ok, size} <- stat_size_for(full_path, ctx) do
       # Estimate from the byte size alone. Synthesizing a same-size
@@ -246,8 +270,6 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
       _ -> summary_baseline_size() * @safety_padding
     end
   end
-
-  def read_file_projection(_, _ctx), do: summary_baseline_size() * @safety_padding
 
   def summary_baseline_size do
     estimator_overhead("[error placeholder]")
