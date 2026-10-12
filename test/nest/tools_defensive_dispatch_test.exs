@@ -21,10 +21,11 @@ defmodule Nest.ToolsDefensiveDispatchTest do
 
   alias Nest.LLM.Tools, as: LLMTools
   alias Nest.Messages.ToolCall
+  alias Nest.Sandbox.Mounts
   alias Nest.Tools
 
   test "write_file returns a structured error when called with no arguments" do
-    tool = Tools.get_function("file-write", "/tmp")
+    tool = Tools.get_function("file-write", Mounts.new("/tmp", nil))
 
     assert {:error, msg} =
              LLMTools.execute_one(
@@ -39,7 +40,7 @@ defmodule Nest.ToolsDefensiveDispatchTest do
   end
 
   test "write_file returns a structured error when only some required args are present" do
-    tool = Tools.get_function("file-write", "/tmp")
+    tool = Tools.get_function("file-write", Mounts.new("/tmp", nil))
 
     assert {:error, msg} =
              LLMTools.execute_one(
@@ -57,7 +58,7 @@ defmodule Nest.ToolsDefensiveDispatchTest do
   end
 
   test "read_file returns a structured error when called with no arguments" do
-    tool = Tools.get_function("file-read", "/tmp")
+    tool = Tools.get_function("file-read", Mounts.new("/tmp", nil))
 
     assert {:error, msg} =
              LLMTools.execute_one(
@@ -71,7 +72,7 @@ defmodule Nest.ToolsDefensiveDispatchTest do
   end
 
   test "shell_cmd returns a structured error when called with no arguments" do
-    tool = Tools.get_function("shell-cmd", "/tmp")
+    tool = Tools.get_function("shell-cmd", Mounts.new("/tmp", nil))
 
     assert {:error, msg} =
              LLMTools.execute_one(

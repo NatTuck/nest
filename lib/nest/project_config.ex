@@ -45,13 +45,14 @@ defmodule Nest.ProjectConfig do
   ## Failures
 
   A malformed `.nest` never degrades silently: `load/1` logs an error,
-  `apply_or_default/3` leaves the mode's caps unchanged, and
+  `apply_or_default/2` leaves the mode's caps unchanged, and
   `section/1` renders a visible error block into the system prompt.
   """
 
   require Logger
 
   alias Nest.FSPath
+  alias Nest.Sandbox.Mounts
 
   @file_name ".nest"
   @modes ~w(rw tmp)
@@ -213,22 +214,21 @@ defmodule Nest.ProjectConfig do
   returned unchanged. Returns `{:error, reason}` when `.nest` is
   malformed.
   """
-  @spec effective_caps(map(), String.t() | nil, String.t() | nil) ::
-          {:ok, map()} | {:error, String.t()}
-  def effective_caps(caps, workspace, tmp_path) do
-    with {:ok, config} <- load(workspace) do
-      {:ok, merge(caps, config, workspace, tmp_path)}
+  @spec effective_caps(map(), Mounts.t()) :: {:ok, map()} | {:error, String.t()}
+  def effective_caps(caps, mounts) do
+    with {:ok, config} <- load(Mounts.workspace(mounts)) do
+      {:ok, merge(caps, config, mounts)}
     end
   end
 
   @doc """
-  Like `effective_caps/3` but never fails: a malformed `.nest` leaves `caps`
+  Like `effective_caps/2` but never fails: a malformed `.nest` leaves `caps`
   unchanged (the mode's default sandbox is in effect). `load/1` logs
   the error.
   """
-  @spec apply_or_default(map(), String.t() | nil, String.t() | nil) :: map()
-  def apply_or_default(caps, workspace, tmp_path) do
-    case effective_caps(caps, workspace, tmp_path) do
+  @spec apply_or_default(map(), Mounts.t()) :: map()
+  def apply_or_default(caps, mounts) do
+    case effective_caps(caps, mounts) do
       {:ok, merged} -> merged
       {:error, _reason} -> caps
     end
@@ -237,19 +237,21 @@ defmodule Nest.ProjectConfig do
   # The `[shell]` background cap applies in every mode: it is not a
   # filesystem grant, so a read-only mode can still lower it (including
   # to 0 to disable background jobs) or raise it.
-  defp merge(caps, config, workspace, tmp_path) do
+  defp merge(caps, config, mounts) do
     caps
     |> put_shell(config)
-    |> maybe_put_project_mounts(workspace, tmp_path, config)
+    |> maybe_put_project_mounts(mounts, config)
   end
 
   # Project mounts are additive write capabilities, so they only make
   # sense in modes that can already write the project. Other modes are
   # returned untouched (a read-only mode must stay read-only).
-  defp maybe_put_project_mounts(caps, workspace, tmp_path, config) do
+  defp maybe_put_project_mounts(caps, mounts, config) do
+    workspace = Mounts.workspace(mounts)
+
     if is_binary(workspace) and workspace_writable?(caps) do
       caps
-      |> put_in(["fs", "project"], resolve_mounts(mounts(config), tmp_path))
+      |> put_in(["fs", "project"], resolve_mounts(mounts(config), Mounts.scratch(mounts)))
       |> put_in(["fs", "protected"], protected_entries(workspace))
     else
       caps

@@ -1,6 +1,6 @@
 defmodule Nest.Sandbox.StatBatchTest do
   @moduledoc """
-  `Nest.Sandbox.StatBatch.stat_many/4` (issue #48): one `stat` invocation per
+  `Nest.Sandbox.StatBatch.stat_many/3` (issue #48): one `stat` invocation per
   chunk of paths, with per-path failure attribution, so the BatchSizer
   preflight does not spend one bwrap spawn per `file-read` call.
   """
@@ -11,6 +11,7 @@ defmodule Nest.Sandbox.StatBatchTest do
   import Mimic
 
   alias Nest.Sandbox
+  alias Nest.Sandbox.Mounts
   alias Nest.Sandbox.StatBatch
   alias Nest.Tools.ShellCmd
 
@@ -34,7 +35,7 @@ defmodule Nest.Sandbox.StatBatchTest do
         path
       end
 
-    assert StatBatch.stat_many(paths, ctx.caps, ctx.workspace, nil) ==
+    assert StatBatch.stat_many(paths, ctx.caps, Mounts.new(ctx.workspace, nil)) ==
              Map.new(paths, &{&1, {:ok, 10}})
   end
 
@@ -43,7 +44,7 @@ defmodule Nest.Sandbox.StatBatchTest do
     missing = Path.join(ctx.workspace, "missing.txt")
     File.write!(present, String.duplicate("x", 7))
 
-    assert StatBatch.stat_many([present, missing], ctx.caps, ctx.workspace, nil) ==
+    assert StatBatch.stat_many([present, missing], ctx.caps, Mounts.new(ctx.workspace, nil)) ==
              %{present => {:ok, 7}, missing => {:error, :enoent}}
   end
 
@@ -52,13 +53,13 @@ defmodule Nest.Sandbox.StatBatchTest do
     missing = Path.join(ctx.workspace, "missing.txt")
     File.write!(present, String.duplicate("x", 7))
 
-    # Exactly one per-path `stat/4`, for the absent path only.
-    Mimic.expect(Sandbox, :stat, 1, fn path, _caps, _ws, _tmp ->
+    # Exactly one per-path `stat/3`, for the absent path only.
+    Mimic.expect(Sandbox, :stat, 1, fn path, _caps, _mounts ->
       assert path == missing
       {:error, :enoent}
     end)
 
-    assert StatBatch.stat_many([present, missing], ctx.caps, ctx.workspace, nil) ==
+    assert StatBatch.stat_many([present, missing], ctx.caps, Mounts.new(ctx.workspace, nil)) ==
              %{present => {:ok, 7}, missing => {:error, :enoent}}
   end
 
@@ -67,15 +68,15 @@ defmodule Nest.Sandbox.StatBatchTest do
 
     # 101 paths -> two chunks (100 + 1) -> two invocations, each producing no
     # stdout at all, so the whole chunk shares one classified reason.
-    Mimic.expect(ShellCmd, :execute_raw, 2, fn _cmd, _ws, _tmp, _caps ->
+    Mimic.expect(ShellCmd, :execute_raw, 2, fn _cmd, _mounts, _caps ->
       {:ok, 1, "", "bwrap: Can't find source path /x: No such file or directory"}
     end)
 
-    Mimic.reject(Sandbox, :stat, 4)
+    Mimic.reject(Sandbox, :stat, 3)
 
     log =
       capture_log(fn ->
-        assert StatBatch.stat_many(paths, ctx.caps, ctx.workspace, nil) ==
+        assert StatBatch.stat_many(paths, ctx.caps, Mounts.new(ctx.workspace, nil)) ==
                  Map.new(paths, &{&1, {:error, :sandbox_setup_failed}})
       end)
 
@@ -92,13 +93,13 @@ defmodule Nest.Sandbox.StatBatchTest do
     newline = Path.join(ctx.workspace, "with\nnewline.txt")
     File.write!(plain, String.duplicate("x", 5))
 
-    # Line-framed batch output cannot carry it, so it goes through `stat/4`.
-    Mimic.expect(Sandbox, :stat, 1, fn path, _caps, _ws, _tmp ->
+    # Line-framed batch output cannot carry it, so it goes through `stat/3`.
+    Mimic.expect(Sandbox, :stat, 1, fn path, _caps, _mounts ->
       assert path == newline
       {:error, :enoent}
     end)
 
-    assert StatBatch.stat_many([plain, newline], ctx.caps, ctx.workspace, nil) ==
+    assert StatBatch.stat_many([plain, newline], ctx.caps, Mounts.new(ctx.workspace, nil)) ==
              %{plain => {:ok, 5}, newline => {:error, :enoent}}
   end
 
@@ -106,14 +107,14 @@ defmodule Nest.Sandbox.StatBatchTest do
     paths = [Path.join(ctx.workspace, "a\nb"), Path.join(ctx.workspace, "c\nd")]
 
     # No operand can ride the batch, so nothing is spawned for it.
-    Mimic.reject(ShellCmd, :execute_raw, 4)
+    Mimic.reject(ShellCmd, :execute_raw, 3)
 
-    Mimic.expect(Sandbox, :stat, 2, fn path, _caps, _ws, _tmp ->
+    Mimic.expect(Sandbox, :stat, 2, fn path, _caps, _mounts ->
       assert path in paths
       {:error, :enoent}
     end)
 
-    assert StatBatch.stat_many(paths, ctx.caps, ctx.workspace, nil) ==
+    assert StatBatch.stat_many(paths, ctx.caps, Mounts.new(ctx.workspace, nil)) ==
              Map.new(paths, &{&1, {:error, :enoent}})
   end
 
@@ -122,16 +123,18 @@ defmodule Nest.Sandbox.StatBatchTest do
 
     # `stat` claimed success but printed nothing parseable, so the contract
     # ("an entry for every path") is kept by the per-path fallback.
-    Mimic.expect(ShellCmd, :execute_raw, 1, fn _cmd, _ws, _tmp, _caps ->
+    Mimic.expect(ShellCmd, :execute_raw, 1, fn _cmd, _mounts, _caps ->
       {:ok, 0, "not a stat line\n", ""}
     end)
 
-    Mimic.expect(Sandbox, :stat, 1, fn p, _caps, _ws, _tmp ->
+    Mimic.expect(Sandbox, :stat, 1, fn p, _caps, _mounts ->
       assert p == path
       {:ok, %File.Stat{size: 3}}
     end)
 
-    assert StatBatch.stat_many([path], ctx.caps, ctx.workspace, nil) == %{path => {:ok, 3}}
+    assert StatBatch.stat_many([path], ctx.caps, Mounts.new(ctx.workspace, nil)) == %{
+             path => {:ok, 3}
+           }
   end
 
   test "the batched stat agrees with the sandbox view, not the host view", ctx do
@@ -144,24 +147,26 @@ defmodule Nest.Sandbox.StatBatchTest do
 
     caps = put_in(ctx.caps, ["fs", "protected"], [%{"path" => nest, "source" => "/dev/null"}])
 
-    assert StatBatch.stat_many([nest], caps, ctx.workspace, nil) == %{nest => {:ok, 0}}
+    assert StatBatch.stat_many([nest], caps, Mounts.new(ctx.workspace, nil)) == %{
+             nest => {:ok, 0}
+           }
   end
 
   test "returns an error for every path when the sandbox cannot run", ctx do
     paths = [Path.join(ctx.workspace, "a.txt"), Path.join(ctx.workspace, "b.txt")]
 
-    Mimic.expect(ShellCmd, :execute_raw, 1, fn _cmd, _ws, _tmp, _caps ->
+    Mimic.expect(ShellCmd, :execute_raw, 1, fn _cmd, _mounts, _caps ->
       {:error, "No workspace configured for this agent"}
     end)
 
-    Mimic.reject(Sandbox, :stat, 4)
+    Mimic.reject(Sandbox, :stat, 3)
 
-    assert StatBatch.stat_many(paths, ctx.caps, ctx.workspace, nil) ==
+    assert StatBatch.stat_many(paths, ctx.caps, Mounts.new(ctx.workspace, nil)) ==
              Map.new(paths, &{&1, {:error, "No workspace configured for this agent"}})
   end
 
   describe "equivalence with per-path stat/4" do
-    # The batch's entire job is to answer what `stat/4` would have answered,
+    # The batch's entire job is to answer what `stat/3` would have answered,
     # path for path. These are the awkward paths: the framing trick the module
     # doc advertises (`%n` last, so a `|` in a path cannot break the line) has
     # no other test, and a symlink / a directory / a name that is not valid
@@ -186,10 +191,10 @@ defmodule Nest.Sandbox.StatBatchTest do
 
       # The `|` path reports its real size, not a size parsed out of the path:
       # this is the assertion the framing claim in the moduledoc was missing.
-      assert StatBatch.stat_many([pipe], ctx.caps, ctx.workspace, nil) ==
+      assert StatBatch.stat_many([pipe], ctx.caps, Mounts.new(ctx.workspace, nil)) ==
                %{pipe => {:ok, 11}}
 
-      assert StatBatch.stat_many(paths, ctx.caps, ctx.workspace, nil) ==
+      assert StatBatch.stat_many(paths, ctx.caps, Mounts.new(ctx.workspace, nil)) ==
                per_path_stat(paths, ctx.caps, ctx.workspace)
     end
 
@@ -209,17 +214,17 @@ defmodule Nest.Sandbox.StatBatchTest do
       assert per_path_stat([denied], ctx.caps, ctx.workspace) ==
                %{denied => {:error, :read_permission_denied}}
 
-      assert StatBatch.stat_many([denied], ctx.caps, ctx.workspace, nil) ==
+      assert StatBatch.stat_many([denied], ctx.caps, Mounts.new(ctx.workspace, nil)) ==
                per_path_stat([denied], ctx.caps, ctx.workspace)
     end
   end
 
-  # The per-path answer `Sandbox.stat/4` gives, in `stat_many/4`'s shape
+  # The per-path answer `Sandbox.stat/3` gives, in `stat_many/3`'s shape
   # (`{:ok, size}` rather than a `%File.Stat{}`), so the two can be compared
   # byte for byte — `:ok`/`:error` shape and reason included.
   defp per_path_stat(paths, caps, workspace) do
     Map.new(paths, fn path ->
-      case Sandbox.stat(path, caps, workspace, nil) do
+      case Sandbox.stat(path, caps, Mounts.new(workspace, nil)) do
         {:ok, %File.Stat{size: size}} -> {path, {:ok, size}}
         {:error, reason} -> {path, {:error, reason}}
       end

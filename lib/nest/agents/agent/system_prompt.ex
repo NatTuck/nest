@@ -26,6 +26,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   alias Nest.Agents.Agent.Config
   alias Nest.Messages.Sanitize
   alias Nest.Sandbox
+  alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Reserve
   alias Nest.Tools.Groups
   alias Nest.Vocations
@@ -120,32 +121,32 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   """
   @spec compose_vocation_config(
           Nest.Vocations.Vocation.t() | nil,
-          String.t() | nil,
+          Mounts.t(),
           {integer() | nil, atom() | nil},
           String.t(),
           non_neg_integer()
         ) ::
           {String.t() | nil, String.t(), [String.t()], Nest.Vocations.Vocation.t() | nil}
-  def compose_vocation_config(nil, _workspace_path, _context_limit_info, _name, _depth),
+  def compose_vocation_config(nil, _mounts, _context_limit_info, _name, _depth),
     do: {nil, "chat", [], nil}
 
-  def compose_vocation_config(vocation, workspace_path, context_limit_info, name, depth) do
+  def compose_vocation_config(vocation, mounts, context_limit_info, name, depth) do
     initial_mode = get_initial_mode(vocation.modes)
     tools = Groups.expand(vocation.tools || [])
 
     system_prompt =
       (vocation.system_prompt || "") <>
         Vocations.mode_catalog(vocation, tools) <>
-        build_suffix(workspace_path, context_limit_info, name, depth, tools) <>
-        agents_md_section(workspace_path, initial_caps(vocation, initial_mode)) <>
-        Nest.ProjectConfig.section(workspace_path)
+        build_suffix(mounts, context_limit_info, name, depth, tools) <>
+        agents_md_section(mounts, initial_caps(vocation, initial_mode)) <>
+        Nest.ProjectConfig.section(Mounts.workspace(mounts))
 
     {system_prompt, initial_mode, tools, vocation}
   end
 
-  defp build_suffix(workspace_path, context_limit_info, name, depth, tools) do
+  defp build_suffix(mounts, context_limit_info, name, depth, tools) do
     identity_section(name, depth) <>
-      tool_sections(tools, workspace_path, name) <>
+      tool_sections(tools, mounts, name) <>
       context_limit_section(context_limit_info)
   end
 
@@ -158,12 +159,12 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   #
   # Ordering is load-bearing for the prompt's bytes: the scratch sentence
   # follows the identity line, then the working directory.
-  defp tool_sections([], _workspace_path, _name), do: ""
+  defp tool_sections([], _mounts, _name), do: ""
 
-  defp tool_sections(_tools, workspace_path, name),
+  defp tool_sections(_tools, mounts, name),
     do:
       scratch_section(name) <>
-        workspace_section(workspace_path) <>
+        workspace_section(Mounts.workspace(mounts)) <>
         tool_call_limit_section()
 
   # Tell the agent its name and spawn depth. Non-clones and
@@ -183,8 +184,8 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
   # Tell the agent where its own scratch directory is. The space directory
   # is bound at `/tmp` inside the sandbox, so the agent's own directory is
-  # `/tmp/<agent-name>` — the host backing path is internal to
-  # `Nest.Sandbox` and must never be shown.
+  # `/tmp/<agent-name>`. The directory that bind is made from is internal to
+  # `Nest.Sandbox` and is never named to the agent.
   #
   # Emitted only for a tool-capable vocation (see `tool_sections/3`): the
   # directory is reached with `file-*` / `shell-cmd`, so a tool-less
@@ -234,22 +235,19 @@ defmodule Nest.Agents.Agent.SystemPrompt do
       "giving a working token budget of ~#{effective} tokens.\n"
   end
 
-  defp agents_md_section(nil, _caps), do: ""
+  defp agents_md_section(%Mounts{workspace: nil}, _caps), do: ""
 
-  defp agents_md_section(workspace_path, caps) do
-    # `AGENTS.md` lives at the workspace root, which is the same spelling in
-    # both domains, so no scratch tmp is needed (the `nil` fourth arg). The
-    # read still runs through the sandbox; the host path is internal to
-    # `Nest.Sandbox` and must never be shown to the LLM.
-    case Sandbox.read(Path.join(workspace_path, "AGENTS.md"), caps, workspace_path, nil) do
-      {:ok, content} ->
-        # The file is arbitrary user bytes: NUL / invalid UTF-8 cannot be
-        # stored in the system message's jsonb row. Replace them rather
-        # than crash the Agent.
-        "\n\nHere are AGENTS.md guidelines for this project:\n\n#{Sanitize.text(content)}\n"
-
-      _ ->
-        ""
+  defp agents_md_section(mounts, caps) do
+    # `AGENTS.md` lives at the workspace root. The read runs through the
+    # sandbox like every other read, so `Nest.Sandbox` decides what is visible.
+    with {:ok, path} <- Mounts.resolve("AGENTS.md", mounts),
+         {:ok, content} <- Sandbox.read(path, caps, mounts) do
+      # The file is arbitrary user bytes: NUL / invalid UTF-8 cannot be
+      # stored in the system message's jsonb row. Replace them rather
+      # than crash the Agent.
+      "\n\nHere are AGENTS.md guidelines for this project:\n\n#{Sanitize.text(content)}\n"
+    else
+      _ -> ""
     end
   end
 

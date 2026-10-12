@@ -2,6 +2,7 @@ defmodule Nest.SandboxProjectTest do
   use ExUnit.Case, async: true
 
   alias Nest.Sandbox
+  alias Nest.Sandbox.Mounts
 
   setup do
     # A workspace outside /tmp: the scratch dir is bound at /tmp, so a
@@ -41,7 +42,7 @@ defmodule Nest.SandboxProjectTest do
     ws = Path.join(dir, "ws")
     File.mkdir_p!(ws)
     mount = %{"dest" => "/data/x", "mode" => "rw", "create" => false, "source" => "/data/x"}
-    {:ok, args} = Sandbox.build(caps([mount], []), ws, nil)
+    {:ok, args} = Sandbox.build(caps([mount], []), Mounts.new(ws, nil))
     assert ["--bind", "/data/x", "/data/x"] = find_bind(args, "--bind", "/data/x")
   end
 
@@ -50,7 +51,7 @@ defmodule Nest.SandboxProjectTest do
     File.mkdir_p!(ws)
     src = Path.join(dir, "src")
     mount = %{"dest" => "/data/y", "mode" => "tmp", "create" => false, "source" => src}
-    {:ok, args} = Sandbox.build(caps([mount], []), ws, nil)
+    {:ok, args} = Sandbox.build(caps([mount], []), Mounts.new(ws, nil))
     assert ["--bind", ^src, "/data/y"] = find_bind(args, "--bind", src)
   end
 
@@ -60,7 +61,7 @@ defmodule Nest.SandboxProjectTest do
     nest = Path.join(ws, ".nest")
     File.write!(nest, "")
     prot = [%{"path" => nest, "source" => nest}]
-    {:ok, args} = Sandbox.build(caps([], prot), ws, nil)
+    {:ok, args} = Sandbox.build(caps([], prot), Mounts.new(ws, nil))
     assert ["--ro-bind", ^nest, ^nest] = find_bind(args, "--ro-bind", nest)
     assert Enum.find_index(args, &(&1 == nest)) > Enum.find_index(args, &(&1 == ws))
   end
@@ -70,7 +71,7 @@ defmodule Nest.SandboxProjectTest do
     File.mkdir_p!(ws)
     nest = Path.join(ws, ".nest")
     prot = [%{"path" => nest, "source" => "/dev/null"}]
-    {:ok, args} = Sandbox.build(caps([], prot), ws, nil)
+    {:ok, args} = Sandbox.build(caps([], prot), Mounts.new(ws, nil))
     assert ["--ro-bind", "/dev/null", ^nest] = find_bind(args, "--ro-bind", "/dev/null")
   end
 
@@ -86,7 +87,7 @@ defmodule Nest.SandboxProjectTest do
     dest = Path.join(ws, "y")
     mount = %{"dest" => dest, "mode" => "tmp", "create" => false, "source" => src}
     caps = caps([mount], [])
-    assert {:ok, "hello"} = Sandbox.read(Path.join(dest, "f.txt"), caps, ws, nil)
-    assert {:ok, _} = Sandbox.stat(Path.join(dest, "f.txt"), caps, ws, nil)
+    assert {:ok, "hello"} = Sandbox.read(Path.join(dest, "f.txt"), caps, Mounts.new(ws, nil))
+    assert {:ok, _} = Sandbox.stat(Path.join(dest, "f.txt"), caps, Mounts.new(ws, nil))
   end
 end

@@ -5,6 +5,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
   import Nest.Test.TmpCleanup
 
+  alias Nest.Sandbox.Mounts
   alias Nest.Sandbox.ShellJobs
   alias Nest.Tools.ShellCmd
 
@@ -24,7 +25,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
   defp start_background(command, tmp, key, opts \\ []) do
     opts = Keyword.merge([background: true, agent_key: key, grace_ms: 0], opts)
-    ShellCmd.execute(command, File.cwd!(), tmp, nil, opts)
+    ShellCmd.execute(command, Mounts.new(File.cwd!(), tmp), nil, opts)
   end
 
   # Start a job that stays running past the grace window and return its id.
@@ -50,7 +51,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert [%{id: ^id, status: :exited, killed: true}] = ShellJobs.list(key)
   end
 
-  test "reports the log path the sandbox sees, not the host path", %{key: key, tmp: tmp} do
+  test "reports the log path the agent can read, not the manager's own", %{key: key, tmp: tmp} do
     assert {:ok, message} = start_background("sleep 30", tmp, key)
     assert [%{id: id, log_path: log_path}] = ShellJobs.list(key)
 
@@ -59,7 +60,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert log_path == "/tmp/#{Path.basename(tmp)}/shell-jobs/#{id}.log"
     assert message =~ "(log: #{log_path})"
 
-    # The manager still writes the log under the host tmp dir.
+    # The manager still writes the log under its own scratch directory.
     assert File.exists?(Path.join([tmp, "shell-jobs", "#{id}.log"]))
   end
 
@@ -67,10 +68,10 @@ defmodule Nest.Sandbox.ShellJobsTest do
     key = {:test, "script-cleanup-#{System.unique_integer([:positive])}"}
 
     # The real scratch shape is <root>/space-<id>/<agent-name>. With a
-    # flat tmp dir the sandbox spelling of the script happens to equal its
-    # host path, which is exactly why a flat-dir test cannot catch a
-    # broken removal (the manager would `File.rm` a path that happens to
-    # exist).
+    # flat scratch dir the script's path inside the sandbox happens to equal
+    # the path the manager writes, which is exactly why a flat-dir test
+    # cannot catch a broken removal (the manager would `File.rm` a path that
+    # happens to exist).
     root = Path.join(System.tmp_dir!(), "nest_jobs_script_#{System.unique_integer([:positive])}")
     tmp = Path.join([root, "space-1", "agent-scripts"])
     File.mkdir_p!(tmp)
@@ -126,7 +127,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
     }
 
     assert {:error, message} =
-             ShellCmd.execute("sleep 30", File.cwd!(), tmp, caps,
+             ShellCmd.execute("sleep 30", Mounts.new(File.cwd!(), tmp), caps,
                background: true,
                agent_key: key,
                grace_ms: 0
@@ -193,7 +194,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
             command: "true #{i}",
             bwrap: "true",
             script_path: nil,
-            tmp_path: tmp,
+            mounts: Mounts.new(nil, tmp),
             max_jobs: 100
           })
 

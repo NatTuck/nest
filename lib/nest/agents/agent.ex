@@ -29,6 +29,7 @@ defmodule Nest.Agents.Agent do
   alias Nest.Messages.Tool
   alias Nest.Messages.User
   alias Nest.Persistence
+  alias Nest.Sandbox.Mounts
   alias Nest.Sandbox.ShellJobs
 
   defstruct [
@@ -188,7 +189,6 @@ defmodule Nest.Agents.Agent do
   defp build_initial_system_message(attrs) do
     name = Map.fetch!(attrs, :name)
     model = Map.fetch!(attrs, :model)
-    workspace_path = Map.get(attrs, :workspace_path)
     vocation = Map.get(attrs, :vocation)
     depth = Map.get(attrs, :depth, 0)
 
@@ -197,7 +197,7 @@ defmodule Nest.Agents.Agent do
     {system_prompt, _mode, _tools, _cached_vocation} =
       SystemPrompt.compose_vocation_config(
         vocation,
-        workspace_path,
+        Mounts.new(Map.get(attrs, :workspace_path), nil),
         {context_limit, context_limit_source},
         name,
         depth
@@ -492,15 +492,11 @@ defmodule Nest.Agents.Agent do
         _ -> Nest.Sandbox.default_caps()
       end
 
-    Nest.ProjectConfig.apply_or_default(caps, state.workspace_path, state.tmp_path)
+    Nest.ProjectConfig.apply_or_default(caps, Mounts.from_agent(state))
   end
 
   def resolve_caps(%__MODULE__{} = state) do
-    Nest.ProjectConfig.apply_or_default(
-      Nest.Sandbox.default_caps(),
-      state.workspace_path,
-      state.tmp_path
-    )
+    Nest.ProjectConfig.apply_or_default(Nest.Sandbox.default_caps(), Mounts.from_agent(state))
   end
 
   def resolve_caps(_), do: Nest.Sandbox.default_caps()

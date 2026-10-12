@@ -29,6 +29,7 @@ defmodule Nest.Agents.Agent.Init do
   alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Messages.Part
   alias Nest.Messages.System
+  alias Nest.Sandbox.Mounts
   alias Nest.Tools
 
   @doc """
@@ -50,7 +51,12 @@ defmodule Nest.Agents.Agent.Init do
     name = Map.fetch!(attrs, :name)
     space_id = Map.fetch!(attrs, :space_id)
     tmp_path = create_tmp_space(space_id, name)
-    tools = Tools.get_functions(tool_names, Map.get(attrs, :workspace_path), tmp_path)
+
+    tools =
+      Tools.get_functions(
+        tool_names,
+        Mounts.new(Map.get(attrs, :workspace_path), tmp_path)
+      )
 
     {initial_messages, next_index} = initial_messages_with_system(system_prompt)
 
@@ -89,7 +95,7 @@ defmodule Nest.Agents.Agent.Init do
     {system_prompt, mode, tool_names, cached_vocation} =
       SystemPrompt.compose_vocation_config(
         Map.get(attrs, :vocation),
-        Map.get(attrs, :workspace_path),
+        Mounts.new(Map.get(attrs, :workspace_path), nil),
         {context_limit, context_limit_source},
         Map.get(attrs, :name, ""),
         Map.get(attrs, :depth, 0)
