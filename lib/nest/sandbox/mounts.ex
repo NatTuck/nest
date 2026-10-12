@@ -19,20 +19,22 @@ defmodule Nest.Sandbox.Mounts do
 
   They travel together and nothing else does, so they are one value rather
   than two arguments, and the value travels everywhere: a tool, handler or
-  agent module holds it and hands it to `Nest.Sandbox`. `Nest.Sandbox` is what
-  turns it into binds. What nothing outside the boundary does is need a
-  directory in order to name a path an agent uses — an agent names one domain,
-  the sandbox domain, and `resolve/2` is the only thing that turns a relative
-  tool path into an absolute one.
+  agent module holds it and hands it to `Nest.Sandbox` —
+  `Nest.Agents.Agent.BatchSizer.ProjectedSize` is one, forwarding `ctx.mounts`
+  to `Sandbox.stat_many/3`, `Sandbox.resolve/2` and `Sandbox.stat/3` and
+  reading no directory itself. `Nest.Sandbox` is what turns it into binds.
+  What nothing outside the boundary does is need a directory in order to name
+  a path an agent uses — an agent names one domain, the sandbox domain, and
+  `resolve/2` is the only thing that turns a relative tool path into an
+  absolute one.
 
   The directories are still *read* outside the boundary, and not only for file
   work:
 
     * `resolve/2`, to turn a relative tool path into an absolute one:
       `Nest.Tools.FileTools`, `Nest.Tools.InspectFile`,
-      `Nest.Agents.Agent.SystemPrompt`, `Nest.Agents.Agent.IntrospectionHandler`,
-      `Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess` and
-      `Nest.Agents.Agent.BatchSizer.ProjectedSize`.
+      `Nest.Agents.Agent.SystemPrompt`, `Nest.Agents.Agent.IntrospectionHandler`
+      and `Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess`.
     * The workspace, to name it to the agent or to an operator log:
       `Nest.Agents.Agent.SystemPrompt` (the working-directory and
       project-config sections), `Nest.ProjectConfig` (which reads
