@@ -22,6 +22,16 @@ export const initialState = {
   invites: [],
   invitesError: null,
   archivedCollapsed: true,
+  // Sidebar tree disclosure, keyed by the node keys built in
+  // `assets/js/utils/agentTree.js` (`agentNodeKey` for a row,
+  // `archivedGroupKey` for an `Archived (N)` group). Absent means collapsed, so
+  // the default needs no entry. It lives here rather than in each row's
+  // `useState` because collapsing an ancestor unmounts its subtree: a row's own
+  // state would be lost on the way back. Entries are never pruned — the map
+  // only holds the nodes the user actually opened, and keeping them is the
+  // point: a node that leaves the tree and returns (an agent restored from the
+  // archive, say) opens the way the user left it.
+  expandedTreeNodes: {},
 };
 
 export const normalizeStreaming = (streaming) => {

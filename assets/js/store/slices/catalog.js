@@ -41,6 +41,19 @@ export function catalogSetters(set) {
       set((state) => ({ spaces: [...state.spaces, space] }));
     },
 
+    // Flip one tree node's disclosure. The key is the node's store key (see
+    // `expandedTreeNodes` in `helpers.js` and the key builders in
+    // `assets/js/utils/agentTree.js`); an unset key is collapsed. Keys are
+    // never removed — see the note on `expandedTreeNodes`.
+    toggleTreeNode: (key) => {
+      set((state) => ({
+        expandedTreeNodes: {
+          ...state.expandedTreeNodes,
+          [key]: !state.expandedTreeNodes[key],
+        },
+      }));
+    },
+
     setArchivedSpaces: (archivedSpaces) => {
       set({ archivedSpaces: archivedSpaces || [] });
     },

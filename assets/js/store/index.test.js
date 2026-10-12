@@ -6,6 +6,7 @@
 import { describe, it, beforeEach, vi, expect } from "vitest";
 import { useStore } from "./index";
 import { MAX_CACHED_AGENTS } from "./slices/agentCache";
+import { agentNodeKey, archivedGroupKey } from "../utils/agentTree";
 
 describe("store", () => {
   beforeEach(() => {
@@ -60,6 +61,28 @@ describe("store", () => {
       useStore.getState().unarchiveSpace(999);
 
       expect(useStore.getState().archivedSpaces).toEqual([s1]);
+    });
+  });
+
+  describe("sidebar tree disclosure", () => {
+    it("toggles one node's expansion without touching the others", () => {
+      // Absent means collapsed, so the default needs no entry: the tree opens
+      // collapsed and only the nodes the user opened are in the map.
+      expect(useStore.getState().expandedTreeNodes).toEqual({});
+
+      const row = agentNodeKey(1, "root");
+      const group = archivedGroupKey(row);
+      useStore.getState().toggleTreeNode(row);
+
+      expect(useStore.getState().expandedTreeNodes).toEqual({ [row]: true });
+
+      useStore.getState().toggleTreeNode(group);
+      useStore.getState().toggleTreeNode(row);
+
+      expect(useStore.getState().expandedTreeNodes).toEqual({
+        [row]: false,
+        [group]: true,
+      });
     });
   });
 
