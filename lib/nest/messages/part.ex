@@ -227,24 +227,35 @@ defmodule Nest.Messages.Part do
   """
   @spec new_media(map()) :: {:ok, Media.t()} | {:error, String.t()}
   def new_media(attrs) when is_map(attrs) do
-    with {:ok, modality} <- check_modality(attrs[:modality]),
-         {:ok, media_type} <- check_media_type(attrs[:media_type], modality),
-         {:ok, bytes} <- check_bytes(attrs[:bytes]),
-         {:ok, data} <- check_data(attrs[:data], bytes),
-         {:ok, tool_call_id} <- check_tool_call_id(attrs[:tool_call_id]) do
-      {:ok,
-       %Media{
-         tool_call_id: tool_call_id,
-         modality: modality,
-         media_type: media_type,
-         data: data,
-         bytes: bytes,
-         path: attrs[:path]
-       }}
+    with {:ok, shape} <- check_shape(attrs),
+         {:ok, payload} <- check_payload(attrs) do
+      {:ok, build_media(attrs, Map.merge(shape, payload))}
     end
   end
 
   def new_media(other), do: {:error, "media attributes must be a map, got #{inspect(other)}"}
+
+  # The three fields that say what the part *is*.
+  defp check_shape(attrs) do
+    with {:ok, modality} <- check_modality(attrs[:modality]),
+         {:ok, media_type} <- check_media_type(attrs[:media_type], modality),
+         {:ok, tool_call_id} <- check_tool_call_id(attrs[:tool_call_id]) do
+      {:ok, %{modality: modality, media_type: media_type, tool_call_id: tool_call_id}}
+    end
+  end
+
+  # The two fields that carry the bytes. `bytes` is checked first because `data`
+  # is validated against it.
+  defp check_payload(attrs) do
+    with {:ok, bytes} <- check_bytes(attrs[:bytes]),
+         {:ok, data} <- check_data(attrs[:data], bytes) do
+      {:ok, %{bytes: bytes, data: data}}
+    end
+  end
+
+  defp build_media(attrs, fields) do
+    struct!(Media, Map.put(fields, :path, attrs[:path]))
+  end
 
   defp check_modality(modality) when modality in @modalities, do: {:ok, modality}
 

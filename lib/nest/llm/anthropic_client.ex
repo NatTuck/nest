@@ -336,23 +336,25 @@ defmodule Nest.LLM.AnthropicClient do
     results = Enum.filter(parts, &match?(%Part.ToolResult{}, &1))
     media = Enum.filter(parts, &Part.media?/1)
     media_by_id = Enum.group_by(media, & &1.tool_call_id)
-    result_ids = MapSet.new(results, & &1.tool_call_id)
 
     blocks =
       Enum.map(results, fn result ->
         tool_part_to_wire(result, Map.get(media_by_id, result.tool_call_id, []))
       end)
 
-    # A media part with no result to fold into is unreachable from the batch
-    # path, which always emits the pair. It still has to reach the model: an
-    # `image` block is valid in a user-role content array, so it rides along
-    # instead of being dropped.
-    orphans =
-      media
-      |> Enum.reject(&MapSet.member?(result_ids, &1.tool_call_id))
-      |> Enum.map(&media_block/1)
+    blocks ++ orphan_media_blocks(media, results)
+  end
 
-    blocks ++ orphans
+  # A media part with no result to fold into is unreachable from the batch path,
+  # which always emits the pair. It still has to reach the model: an `image`
+  # block is valid in a user-role content array, so it rides along instead of
+  # being dropped.
+  defp orphan_media_blocks(media, results) do
+    result_ids = MapSet.new(results, & &1.tool_call_id)
+
+    media
+    |> Enum.reject(&MapSet.member?(result_ids, &1.tool_call_id))
+    |> Enum.map(&media_block/1)
   end
 
   # Thinking is "off" for `nil` and `:off` (matching
@@ -441,8 +443,9 @@ defmodule Nest.LLM.AnthropicClient do
     %{
       "type" => "tool_result",
       "tool_use_id" => id,
-      "content" =>
-        [%{"type" => "text", "text" => content || ""} | Enum.map(media, &media_block/1)],
+      "content" => [
+        %{"type" => "text", "text" => content || ""} | Enum.map(media, &media_block/1)
+      ],
       "is_error" => is_error || false
     }
   end

@@ -350,24 +350,31 @@ defmodule Nest.LLM.MockClient do
     results = Enum.filter(parts, &match?(%Part.ToolResult{}, &1))
     media = Enum.filter(parts, &Part.media?/1)
     media_by_id = Enum.group_by(media, & &1.tool_call_id)
-    result_ids = MapSet.new(results, & &1.tool_call_id)
 
-    content =
-      Enum.map(results, fn tr ->
-        %{
-          "type" => "tool_result",
-          "tool_use_id" => tr.tool_call_id,
-          "content" => tool_result_content(tr, Map.get(media_by_id, tr.tool_call_id, [])),
-          "is_error" => Map.get(tr, :is_error) || false
-        }
-      end)
-
-    orphans =
-      media
-      |> Enum.reject(&MapSet.member?(result_ids, &1.tool_call_id))
-      |> Enum.map(&media_block/1)
+    content = Enum.map(results, &tool_result_block(&1, media_by_id))
+    orphans = orphan_media_blocks(media, results)
 
     %{"role" => "user", "content" => content ++ orphans}
+  end
+
+  defp tool_result_block(tr, media_by_id) do
+    %{
+      "type" => "tool_result",
+      "tool_use_id" => tr.tool_call_id,
+      "content" => tool_result_content(tr, Map.get(media_by_id, tr.tool_call_id, [])),
+      "is_error" => Map.get(tr, :is_error) || false
+    }
+  end
+
+  # A media part with no result to fold into rides along as a bare block rather
+  # than being dropped. Unreachable from the batch path, which always emits the
+  # pair.
+  defp orphan_media_blocks(media, results) do
+    result_ids = MapSet.new(results, & &1.tool_call_id)
+
+    media
+    |> Enum.reject(&MapSet.member?(result_ids, &1.tool_call_id))
+    |> Enum.map(&media_block/1)
   end
 
   defp tool_result_content(tr, []), do: tr.content || ""

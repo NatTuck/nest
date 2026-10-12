@@ -20,6 +20,7 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
   alias Nest.LLM.RunResponse
   alias Nest.Messages.ToolCall
   alias Nest.Sandbox
+  alias Nest.Tokens.Estimator
 
   setup :verify_on_exit!
 
@@ -404,7 +405,7 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
       c = ctx_with_ws("/ws", [])
 
       assert ProjectedSize.project(call("c1", "file-read", %{"path" => "shot.png"}), c) ==
-               Nest.Tokens.Estimator.estimate_media_ceiling(:image)
+               Estimator.estimate_media_ceiling(:image)
     end
 
     test "every extension the tool can attach projects at the ceiling" do
@@ -412,7 +413,7 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
 
       for ext <- ~w(png PNG jpg jpeg gif webp) do
         assert ProjectedSize.project(call("c1", "file-read", %{"path" => "a.#{ext}"}), c) ==
-                 Nest.Tokens.Estimator.estimate_media_ceiling(:image)
+                 Estimator.estimate_media_ceiling(:image)
       end
     end
 
@@ -425,8 +426,8 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
 
       projected = ProjectedSize.project(call("c1", "file-read", %{"path" => "a.txt"}), c)
 
-      assert projected == Nest.Tokens.Estimator.estimate_bytes(4_000)
-      refute projected == Nest.Tokens.Estimator.estimate_media_ceiling(:image)
+      assert projected == Estimator.estimate_bytes(4_000)
+      refute projected == Estimator.estimate_media_ceiling(:image)
     end
   end
 
