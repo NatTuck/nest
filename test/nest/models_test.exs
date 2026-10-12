@@ -269,8 +269,7 @@ defmodule Nest.ModelsTest do
           }
 
           %{state | static_config: static_config}
-        end,
-        500
+        end
       )
 
       on_exit(fn ->
@@ -340,8 +339,7 @@ defmodule Nest.ModelsTest do
         }
 
         %{state | static_config: static_config}
-      end,
-      500
+      end
     )
 
     on_exit(fn ->
