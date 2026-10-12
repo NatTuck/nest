@@ -9,6 +9,12 @@ defmodule Nest.Agents.Agent.Broadcasts.ModelMissing do
   `ChatPage.jsx` from the `payload.status === "model_missing"`
   marker; the resolved model label and the original reason
   ride along for log/UI display.
+
+  Like every other `chat:status` producer, the frame is
+  self-identifying: it carries the agent's own `name` and
+  `space_id`, so a subscriber to more than one agent's topic can
+  attribute it. A status broadcast that does not say whose status
+  it is is under-specified.
   """
 
   alias Nest.PubSub
@@ -19,6 +25,8 @@ defmodule Nest.Agents.Agent.Broadcasts.ModelMissing do
       "agent:#{space_id}:#{name}",
       {:chat_status,
        %{
+         name: name,
+         space_id: space_id,
          status: "model_missing",
          model: model_label(model),
          reason: inspect(reason)
