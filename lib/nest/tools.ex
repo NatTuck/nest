@@ -499,8 +499,14 @@ defmodule Nest.Tools do
       name: "models-list",
       description:
         "List available models from providers that have expose_models enabled, " <>
-          "one \"provider/model-name\" per line. Optionally filter by provider " <>
-          "name. Feed the returned strings to `agents-spawn`'s `model` argument.",
+          "one per line, optionally filtered by provider name. Each line begins " <>
+          "with the \"provider/model-name\" string to feed to `agents-spawn`'s " <>
+          "`model` argument, followed by two-space-separated fields that are " <>
+          "present only when known: `input:` the input modalities the model " <>
+          "claims (only `input: image` positively claims image input; a line " <>
+          "with no `input:` field made no claim, so the model may still accept " <>
+          "images), `ctx:` its context limit in tokens, and `tags:` the " <>
+          "provider's tags.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{

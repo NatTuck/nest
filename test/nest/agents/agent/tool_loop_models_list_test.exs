@@ -6,8 +6,11 @@ defmodule Nest.Agents.Agent.ToolLoopModelsListTest do
   `ToolLoop` runs `models-list` inline (no GenServer round-trip):
   it lists the models from providers configured with
   `expose-models = true` (optionally filtered by `provider`) and
-  formats them as `"provider/model-name"` lines, ready to feed to
-  `agents-spawn`'s `model` argument.
+  formats each as a `"provider/model-name"` line, ready to feed to
+  `agents-spawn`'s `model` argument, followed by the fields that
+  decide whether it is the *right* model — `input:` (the input
+  modalities the model claims), `ctx:` (its context limit) and
+  `tags:` (the provider's tags) — each present only when known.
 
   `DotConfig.load/0` and `Models.list/0` are stubbed so the
   listing is deterministic.
@@ -30,17 +33,24 @@ defmodule Nest.Agents.Agent.ToolLoopModelsListTest do
   @beta %{"name" => "gpt-4o", "provider" => "beta"}
   @gamma %{"name" => "claude-3-opus-20240229", "provider" => "gamma"}
 
-  defp provider(name, expose_models), do: %Provider{name: name, expose_models: expose_models}
-
+  # A provider spec is `expose_models`, or `{expose_models, tags}` when the
+  # test needs the provider to carry tags.
   defp stub_config(provider_specs) do
-    Mimic.stub(DotConfig, :load, fn ->
-      {:ok,
-       %{
-         providers:
-           Map.new(provider_specs, fn {name, expose} -> {name, provider(name, expose)} end)
-       }}
-    end)
+    providers =
+      Map.new(provider_specs, fn
+        {name, {expose, tags}} ->
+          {name, %Provider{name: name, expose_models: expose, tags: tags}}
+
+        {name, expose} ->
+          {name, %Provider{name: name, expose_models: expose, tags: []}}
+      end)
+
+    Mimic.stub(DotConfig, :load, fn -> {:ok, %{providers: providers}} end)
   end
+
+  # A `Models.list/0` entry, plus whatever metadata the test wants on it.
+  defp entry(name, provider, extra \\ %{}),
+    do: Map.merge(%{"name" => name, "provider" => provider}, extra)
 
   defp stub_models(entries) do
     Mimic.stub(Models, :list, fn -> entries end)
@@ -108,6 +118,75 @@ defmodule Nest.Agents.Agent.ToolLoopModelsListTest do
       content = run_models_list(%{})
 
       assert content == "alpha/Qwen/Qwen3.5-122B-A10B-FP8"
+    end
+
+    test "renders the fields a model and its provider do claim, and omits the rest" do
+      stub_config(%{"alpha" => {true, ["local", "vision"]}, "beta" => true})
+
+      stub_models([
+        entry("kraken-flash", "alpha", %{
+          "multi_modal" => %{"input" => ["image"]},
+          "context_limit" => 262_144
+        }),
+        entry("plain", "beta")
+      ])
+
+      lines = run_models_list(%{}) |> String.split("\n")
+
+      assert Enum.at(lines, 0) ==
+               "alpha/kraken-flash  input: image  ctx: 262144  tags: local,vision"
+
+      # No `multi_modal` key, no `context_limit`, and a provider with no
+      # tags: the line stays exactly what it was before this feature.
+      assert Enum.at(lines, 1) == "beta/plain"
+    end
+
+    test "distinguishes a claimed modality, an explicit negative, and no claim at all" do
+      stub_config(%{"alpha" => true})
+
+      stub_models([
+        entry("audio-only", "alpha", %{"multi_modal" => %{"input" => ["audio"]}}),
+        entry("refuses-images", "alpha", %{"multi_modal" => false}),
+        entry("claims-no-modalities", "alpha", %{"multi_modal" => %{"input" => []}}),
+        entry("says-nothing", "alpha")
+      ])
+
+      content = run_models_list(%{})
+
+      # A vocabulary that is not `image` is rendered as it stands rather
+      # than reported as no claim.
+      assert content =~ "alpha/audio-only  input: audio"
+
+      # An explicit negative is a claim, so it is shown — whether it
+      # arrives as `false` or as an empty modality list.
+      assert content =~ "alpha/refuses-images  input: none"
+      assert content =~ "alpha/claims-no-modalities  input: none"
+
+      # Silence is not a negative: the model may still accept images, so
+      # it gets no `input:` field rather than a misleading `input: none`.
+      refute content =~ "says-nothing  input:"
+    end
+
+    test "reports nothing listed when the config cannot be loaded" do
+      Mimic.stub(DotConfig, :load, fn -> {:error, :enoent} end)
+      stub_models([@alpha])
+
+      # The existing fallback: an unreadable config yields no exposed
+      # providers, so the listing reports none.
+      assert run_models_list(%{}) =~ "no configured provider has expose-models enabled"
+    end
+
+    test "tolerates a multi_modal shape it does not recognize" do
+      stub_config(%{"alpha" => true})
+      stub_models([entry("odd-shape", "alpha", %{"multi_modal" => %{"image" => true}})])
+
+      content = run_models_list(%{})
+
+      # `multi_modal` is an unvalidated pass-through map, so an
+      # unrecognized shape must not raise and must not be read as a
+      # claim of `image` input.
+      assert content =~ "alpha/odd-shape"
+      refute content =~ "odd-shape  input: image"
     end
   end
 end
