@@ -113,9 +113,10 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   `hold_result: true` it parks a second time *after* it, sending
   `{:send_delivered, worker}` and waiting for `:release_result` — so the batch is
   still in flight while the delivered message's turn runs, which is the shape
-  where the batch's own result arrives only once that turn has ended. Each
-  `after` is a safety valve so a failing test cannot leave the worker parked for
-  long.
+  where the batch's own result arrives only once that turn has ended. Each park's
+  `after` is a safety valve (3 s — see `park/3`) so a failing test cannot leave
+  the worker parked for long; release a decisive park within one fence, as the
+  invariant on `park/3` requires.
   """
   @spec park_agent_sends(pid(), keyword()) :: :ok
   def park_agent_sends(pid, opts \\ []) do
@@ -135,13 +136,69 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
     Mimic.allow(Nest.Agents, self(), pid)
   end
 
-  defp park(test_pid, blocked, release) do
+  @doc """
+  Park the tool worker inside `Nest.Agents.send_message/5` — the `agents-query`
+  entry point — so the test decides when the batch's query reaches its target
+  and when the batch returns.
+
+  `park_agent_sends/2`'s sibling for the querying tool: `agents-query` carries
+  its `kind` positionally, so it calls the five-arity clause while `agents-send`
+  calls the four-arity one, and both harnesses can be used in one test without
+  interfering. Only `kind: :query` calls park — anything else falls straight
+  through, so a runtime notice is never held.
+
+  The worker parks *before* the real delivery (sending `{:query_blocked,
+  worker}` and waiting for `:release_query`); with `hold_result: true` it parks
+  a second time *after* it (`{:query_delivered, worker}`, released by
+  `:release_result`), which is the shape where the peer's answer can land while
+  the caller's batch is still in flight — the batch is backgrounded, not the
+  answer queued behind it.
+
+  Both parks use the 3 s safety valve documented on `park/3`; release a decisive
+  park within one fence, as the invariant there requires.
+  """
+  @spec park_agent_queries(pid(), keyword()) :: :ok
+  def park_agent_queries(pid, opts \\ []) do
+    test_pid = self()
+    hold_result? = Keyword.get(opts, :hold_result, false)
+
+    Mimic.stub(Nest.Agents, :send_message, fn space_id, from, target, content, kind ->
+      if kind == :query, do: park(test_pid, :query_blocked, :release_query)
+
+      result =
+        Mimic.call_original(Nest.Agents, :send_message, [space_id, from, target, content, kind])
+
+      if kind == :query and hold_result? do
+        park(test_pid, :query_delivered, :release_result)
+      end
+
+      result
+    end)
+
+    Mimic.allow(Nest.Agents, self(), pid)
+  end
+
+  # Park the worker until the test releases it.
+  #
+  # The 3 s `after` is a safety valve, not a timing assumption — it only ever
+  # fires for a test that has already failed — and it is deliberately longer than
+  # a turn fence (2 s, `Nest.Agents.SubAgentToolsHelpers.turn_fence_ms/0`) so a
+  # slow host fails a fence instead of silently flipping the outcome a park pins;
+  # it stays under ExUnit's 5 s per-test timeout.
+  #
+  # INVARIANT (do not break this when editing a parked test): a *decisive* park —
+  # one whose release decides which outcome the test observes — must be released
+  # within one fence, and this valve must stay longer than that fence. Inserting
+  # an extra wait (an `eventually`, another `assert_receive`) between a decisive
+  # park and its release spends the margin between the fence and the valve, and
+  # then a slow host flips the pinned outcome instead of failing the fence.
+  defp park(test_pid, blocked, release, timeout \\ 3_000) do
     send(test_pid, {blocked, self()})
 
     receive do
       ^release -> :ok
     after
-      1_000 -> :ok
+      timeout -> :ok
     end
   end
 
