@@ -242,8 +242,9 @@ defmodule NestWeb.AgentChannel do
   end
 
   # Handle a background shell-job update from PubSub (broadcast by
-  # `Nest.Sandbox.ShellJobs` on start/exit/kill). The payload is the
-  # agent's full current job list.
+  # `Nest.Sandbox.ShellJobs` on start, exit, kill, and when the agent that
+  # owns the jobs goes away). The payload is the agent's full current job
+  # list.
   @impl true
   def handle_info({:shell_jobs, payload}, socket) do
     push(socket, "shell:jobs", payload)
