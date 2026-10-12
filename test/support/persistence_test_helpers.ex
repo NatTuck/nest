@@ -11,6 +11,7 @@ defmodule Nest.PersistenceTestHelpers do
   don't have to thread `space_id` through every fixture.
   """
 
+  alias Nest.Agents.PersistedAgent
   alias Nest.Spaces
   alias Nest.Vocations
 
@@ -22,6 +23,20 @@ defmodule Nest.PersistenceTestHelpers do
       workspace_path: nil,
       vocation_id: test_vocation_id()
     }
+  end
+
+  @doc """
+  The `agents.id` of an existing row, for a hand-built `Agent.t()` state
+  that has to name the row it owns: `Persistence.insert_message/4`
+  refuses an append whose name resolves to a different row, and a state
+  that never learned its row (`nil`) refuses every append. Returns `nil`
+  when the name has no row at all.
+  """
+  def agent_row_id(space_id, name) do
+    case Nest.Persistence.fetch_agent(space_id, name) do
+      {:ok, %PersistedAgent{id: id}} -> id
+      {:error, :not_found} -> nil
+    end
   end
 
   def test_space_id do

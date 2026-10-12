@@ -53,6 +53,17 @@ defmodule Nest.Agents.Agent.ChatState do
   marker's `message_index`; the marker itself sits below the boundary
   because of the `<=` rule.
 
+  The `agent_row_id` field is the `agents.id` row this session's
+  messages belong to: the id the process was started from, captured
+  once and never re-resolved. The append path addresses the row by
+  name (the runtime handle), so `Nest.Persistence.insert_message/4`
+  compares the row that name resolves to against this id and refuses
+  the append when they differ — otherwise a row deleted out from under
+  a live process and then taken over by a *different* agent would
+  silently collect the old agent's messages. `nil` means "this process
+  has no row" (a row-less fixture) and refuses every append, which is
+  what an unresolvable name already does.
+
   Outstanding child agents spawned via `agents-spawn` (with a
   `query`) are tracked by the machine's
   `Nest.Agents.Agent.Machine.Children` sub-machine, not here:
@@ -77,6 +88,7 @@ defmodule Nest.Agents.Agent.ChatState do
   and on agent restart.
   """
   defstruct messages: [],
+            agent_row_id: nil,
             last_compaction_index: -1,
             compaction_count: 0,
             next_message_index: 0,

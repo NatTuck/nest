@@ -6,9 +6,12 @@ defmodule Nest.Persistence.Messages do
 
   Owns the per-agent reads (`load_messages/2`,
   `load_full_messages/2`, `last_compaction_index/2`) and the
-  `update_next_message_index/3` / `update_fork_message_index/3`
-  counter bumps. All functions take `space_id` as the first
-  argument since agent names are unique within a space.
+  `update_next_message_index_by_id/2` /
+  `update_fork_message_index/3` counter bumps. All functions
+  take `space_id` as the first argument since agent names are
+  unique within a space — except the counter bump, which is
+  keyed by `agents.id` so a name that has been taken over
+  cannot redirect it.
 
   `load_messages/2` returns only the rows the agent *owns*.
   `load_full_messages/2` returns the agent's full logical
@@ -202,26 +205,29 @@ defmodule Nest.Persistence.Messages do
     end
   end
 
-  @spec update_next_message_index(integer(), String.t(), non_neg_integer()) ::
-          :ok | {:error, term()}
-  def update_next_message_index(space_id, agent_name, new_index) do
-    case Nest.Persistence.fetch_agent(space_id, agent_name) do
-      {:ok, %PersistedAgent{id: agent_id}} ->
-        now = Nest.Persistence.now()
+  @doc """
+  Bump the `next_message_index` column on the agent row with this
+  `agents.id`.
 
-        from(a in PersistedAgent, where: a.id == ^agent_id)
-        |> Repo.update_all(
-          set: [
-            next_message_index: new_index,
-            updated_at: now
-          ]
-        )
+  Keyed by id, not by name: the append path calls this with the
+  `agent_id` of the row its INSERT just returned, so a name taken over
+  between the two writes can never move a *successor's* counter. An id
+  that no longer exists is a no-op — the message row cascaded away with
+  it, so there is nothing left to keep in step.
+  """
+  @spec update_next_message_index_by_id(integer(), non_neg_integer()) :: :ok
+  def update_next_message_index_by_id(agent_id, new_index) when is_integer(agent_id) do
+    now = Nest.Persistence.now()
 
-        :ok
+    from(a in PersistedAgent, where: a.id == ^agent_id)
+    |> Repo.update_all(
+      set: [
+        next_message_index: new_index,
+        updated_at: now
+      ]
+    )
 
-      {:error, :not_found} ->
-        {:error, :agent_not_found}
-    end
+    :ok
   end
 
   @doc """
