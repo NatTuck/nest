@@ -76,7 +76,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
     test "fits when projected total is below context_limit" do
       tools = [small_tool("echo")]
       c = ctx(tools, context_limit: 100_000)
-      assert BatchSizer.preflight([call("c1", "echo")], c) == :fits
+      assert {:fits, _} = BatchSizer.preflight([call("c1", "echo")], c)
     end
 
     test "refuses when projected total exceeds context_limit" do
@@ -94,7 +94,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
 
     test "fits empty batch" do
       c = ctx([], context_limit: 100)
-      assert BatchSizer.preflight([], c) == :fits
+      assert {:fits, _} = BatchSizer.preflight([], c)
     end
   end
 
@@ -129,7 +129,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       assert content + Reserve.compaction_reserve(100) > 100
       assert {:refuse, _} = BatchSizer.preflight(calls, c)
 
-      assert :fits = BatchSizer.preflight(calls, ctx([], context_limit: 100_000))
+      assert {:fits, _} = BatchSizer.preflight(calls, ctx([], context_limit: 100_000))
     end
   end
 
@@ -333,10 +333,10 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
 
       c = ctx(tools, context_limit: 100_000_000)
 
-      assert :fits = BatchSizer.preflight([call("c1", "file-write")], c)
-      assert :fits = BatchSizer.preflight([call("c1", "file-edit")], c)
-      assert :fits = BatchSizer.preflight([call("c1", "file-inspect")], c)
-      assert :fits = BatchSizer.preflight([call("c1", "context-check")], c)
+      assert {:fits, _} = BatchSizer.preflight([call("c1", "file-write")], c)
+      assert {:fits, _} = BatchSizer.preflight([call("c1", "file-edit")], c)
+      assert {:fits, _} = BatchSizer.preflight([call("c1", "file-inspect")], c)
+      assert {:fits, _} = BatchSizer.preflight([call("c1", "context-check")], c)
     end
   end
 
@@ -382,14 +382,15 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       messages = long_history(10_354)
       c = ctx([small_tool("shell-cmd")], context_limit: 20_000, messages: messages)
 
-      assert BatchSizer.preflight(
-               [
-                 call("c1", "shell-cmd"),
-                 call("c2", "shell-cmd"),
-                 call("c3", "shell-cmd")
-               ],
-               c
-             ) == :fits
+      assert {:fits, _} =
+               BatchSizer.preflight(
+                 [
+                   call("c1", "shell-cmd"),
+                   call("c2", "shell-cmd"),
+                   call("c3", "shell-cmd")
+                 ],
+                 c
+               )
     end
   end
 
@@ -402,13 +403,14 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       tools = [small_tool("file-read"), small_tool("file-write")]
       c = ctx(tools, context_limit: 100_000, messages: [])
 
-      assert BatchSizer.preflight(
-               [
-                 call("c1", "file-read", %{"path" => "/tmp/x"}),
-                 call("c2", "totally_made_up_tool")
-               ],
-               c
-             ) == :fits
+      assert {:fits, _} =
+               BatchSizer.preflight(
+                 [
+                   call("c1", "file-read", %{"path" => "/tmp/x"}),
+                   call("c2", "totally_made_up_tool")
+                 ],
+                 c
+               )
     end
 
     test "run/2 returns an error result for an unknown tool name" do
@@ -448,7 +450,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
 
       hallucinated_batch = Enum.map(1..100, &call("c#{&1}", "hallucinated_#{&1}"))
 
-      assert BatchSizer.preflight(hallucinated_batch, c) == :fits
+      assert {:fits, _} = BatchSizer.preflight(hallucinated_batch, c)
     end
   end
 

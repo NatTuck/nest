@@ -107,7 +107,7 @@ defmodule Nest.Sandbox.StatBatch do
   # (`per_path_sizes/4`).
   defp whole_chunk_failed(paths, stderr) do
     reason = Failure.classify(stderr)
-    Failure.log(:stat, hd(paths), reason, stderr)
+    Failure.log(:stat, "#{hd(paths)} (+#{length(paths) - 1} more)", reason, stderr)
     Map.new(paths, &{&1, {:error, reason}})
   end
 
