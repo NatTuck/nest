@@ -357,6 +357,12 @@ defmodule Nest.Agents.Agent.Broadcasts do
   # call has happened yet (the suffix is fully estimated) and
   # transitions to API-reported values as the LLM responds.
   #
+  # The payload is self-identifying: `name` and `space_id` say whose
+  # status this is, so a subscriber to more than one agent's topic can
+  # attribute every frame it receives. This is the same identity the
+  # space-topic `{:agent_status, …}` frame already carries; a status
+  # broadcast that omits it is under-specified.
+  #
   # The payload also carries sub-agent identity and usage:
   #
   #   * `parentId` / `parentName` / `depth` — the agent's
@@ -389,6 +395,13 @@ defmodule Nest.Agents.Agent.Broadcasts do
     descendant = metrics.descendant_usage
 
     %{
+      # Every status frame is self-identifying. Without these two keys a
+      # subscriber to more than one agent's topic receives
+      # `{:chat_status, payload}` frames it cannot tell apart — the same
+      # identity the space-topic `{:agent_status, …}` frame already
+      # carries (see `status/1` below).
+      name: state.name,
+      space_id: state.space_id,
       status: to_string(Machine.status_for(live.machine)),
       currentMode: live.mode,
       # The queued-message count rides the status broadcast as well as
