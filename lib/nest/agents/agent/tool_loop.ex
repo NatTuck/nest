@@ -400,17 +400,25 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # Rendering `input: none` for it would turn "we were not told" into a
   # false negative. An empty modality list *is* a claim — of no input
   # modalities at all — so that one does render.
+  #
+  # Anything else non-nil is a claim we cannot *read*: a list with a
+  # non-binary element, or a shape the parser never produces such as
+  # `%{"image" => true}`. It renders as `invalid` rather than being
+  # omitted, so a broken config is never mistaken for a model that made
+  # no claim. Both lists reach us unvalidated from TOML, and
+  # `Enum.join/2` would raise on such a list.
   defp input_field(entry) do
     case Map.get(entry, "multi_modal") do
-      %{"input" => []} ->
-        "input: none"
-
-      %{"input" => [_ | _] = modalities} ->
-        if joinable?(modalities), do: "input: " <> Enum.join(modalities, ",")
-
-      _ ->
-        nil
+      nil -> nil
+      %{"input" => list} when is_list(list) -> input_text(list)
+      _malformed -> "input: invalid"
     end
+  end
+
+  defp input_text([]), do: "input: none"
+
+  defp input_text(list) do
+    if joinable?(list), do: "input: " <> Enum.join(list, ","), else: "input: invalid"
   end
 
   defp ctx_field(entry) do
@@ -426,9 +434,8 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # from the provider struct this listing already loaded.
   defp tags_field(entry, exposed) do
     with provider when is_binary(provider) <- Map.get(entry, "provider"),
-         %{tags: [_ | _] = tags} <- Map.get(exposed, provider),
-         true <- joinable?(tags) do
-      "tags: " <> Enum.join(tags, ",")
+         %{tags: [_ | _] = tags} <- Map.get(exposed, provider) do
+      if joinable?(tags), do: "tags: " <> Enum.join(tags, ","), else: "tags: invalid"
     else
       _ -> nil
     end
@@ -436,8 +443,8 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   # `multi_modal` and `tags` both reach us unvalidated from TOML, so a list
   # element that is not a binary — `input = [{ a = 1 }]`, `tags = [1]` —
-  # would raise inside `Enum.join/2` at tool-call time. A list we cannot
-  # join is rendered as no claim instead of killing the tool call.
+  # cannot be joined. Callers render such a list as `invalid` rather than
+  # omitting it or letting `Enum.join/2` raise inside the tool.
   defp joinable?(values), do: Enum.all?(values, &is_binary/1)
 
   # `agents-query`: deliver a message to a peer in this space and mark that the

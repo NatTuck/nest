@@ -167,7 +167,7 @@ defmodule Nest.Agents.Agent.ToolLoopModelsListTest do
       refute content =~ "says-nothing  input:"
     end
 
-    test "does not crash on a modality or tag list it cannot join" do
+    test "marks a modality or tag list it cannot read as invalid, and does not crash" do
       stub_config(%{"alpha" => {true, [%{"a" => 1}]}})
 
       stub_models([
@@ -177,15 +177,15 @@ defmodule Nest.Agents.Agent.ToolLoopModelsListTest do
 
       content = run_models_list(%{})
 
-      assert content =~ "alpha/bad-modalities"
-      assert content =~ "alpha/mixed-modalities"
+      # `Enum.join/2` raises on a non-binary element and both lists reach
+      # us unvalidated from TOML, so each is reported as unreadable rather
+      # than crashing the tool — or being omitted, which would let a broken
+      # config pass for a model that made no claim.
+      assert content =~ "alpha/bad-modalities  input: invalid"
+      assert content =~ "alpha/mixed-modalities  input: invalid"
 
-      # `Enum.join/2` raises on a non-binary element, and both lists reach
-      # us unvalidated from TOML, so each falls through to no claim rather
-      # than killing the tool call.
-      refute content =~ "bad-modalities  input:"
-      refute content =~ "mixed-modalities  input:"
-      refute content =~ "tags:"
+      # The provider's malformed tags are reported the same way.
+      assert content =~ "bad-modalities  input: invalid  tags: invalid"
     end
 
     test "reports nothing listed when the config cannot be loaded" do
@@ -197,17 +197,16 @@ defmodule Nest.Agents.Agent.ToolLoopModelsListTest do
       assert run_models_list(%{}) =~ "no configured provider has expose-models enabled"
     end
 
-    test "tolerates a multi_modal shape it does not recognize" do
+    test "reports an unrecognized multi_modal shape as invalid" do
       stub_config(%{"alpha" => true})
       stub_models([entry("odd-shape", "alpha", %{"multi_modal" => %{"image" => true}})])
 
       content = run_models_list(%{})
 
-      # `multi_modal` is an unvalidated pass-through map, so an
-      # unrecognized shape must not raise and must not be read as a
-      # claim of `image` input.
-      assert content =~ "alpha/odd-shape"
-      refute content =~ "odd-shape  input: image"
+      # `multi_modal` is an unvalidated pass-through map, so a shape the
+      # parser never produces must neither raise nor read as a claim of
+      # `image` input — it is a claim we cannot read.
+      assert content =~ "alpha/odd-shape  input: invalid"
     end
   end
 end

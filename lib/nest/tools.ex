@@ -506,7 +506,8 @@ defmodule Nest.Tools do
           "claims (a line whose `input:` field names `image` positively " <>
           "claims image input; a line with no `input:` field made no claim, " <>
           "so the model may still accept images), `ctx:` its context limit " <>
-          "in tokens, and `tags:` the provider's tags.",
+          "in tokens, and `tags:` the provider's tags. A field reading " <>
+          "`invalid` was configured in a form that cannot be read.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
