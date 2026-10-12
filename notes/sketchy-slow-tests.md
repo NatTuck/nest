@@ -36,12 +36,29 @@ to fix it or consider removing it as untestable."* The per-test ceiling is
 implicit, so it is 2000 ms. (It was briefly restored to 5000 on the argument
 that a failure detector is not a wait; that argument is overruled.)
 
-The consequence is that the tests which lose a scheduling race now **fail
-visibly** instead of being hidden by a longer deadline. The failure set is
-*unstable* — three consecutive runs gave 9, 11 and 6 failures with only one test
-common to the first two — so this is not "six broken tests", it is **whichever
-tests lose the race**. That makes it a mechanism problem, and §10 is the
-mechanism.
+**There is no slow *test* to fix.** The `--slowest 30` run put
+`test/nest_web/channels/lobby_channel/invites_test.exs:91` at 1680 ms (next:
+918 ms), which looked like a serial outlier at 84 % of the ceiling. It is an
+artifact of that run's mode: `--slowest` forces `max_cases: 1` **and trace
+output**, so the first test of each file absorbs that file's one-off cost
+(lazy module load, DB connection establishment, code-server warm-up) and ExUnit
+attributes it to whichever test's timer encloses it. Re-running the same file
+alone in the same mode:
+
+```
+test revoke_invite/2 returns :ok when id arrives as a JSON integer ... (5.2ms)  <- the "1680 ms" test
+test create_invite/2 returns {:error, too_many_invites} after 10 invites (73.2ms)  <- the file's real slowest
+9 tests, 0 failures — Finished in 0.2 seconds
+```
+
+So the slowest *real* test in that file is 73 ms, and the per-test distribution
+is milliseconds. The 2000 ms ceiling is not threatened by any single test; what
+threatens it is setup latency under concurrency, which is §10.
+
+The consequence is that the failure set is **unstable** — three consecutive runs
+gave 9, 11 and 6 failures with only one test common to the first two — so this is
+not "six broken tests", it is **whichever tests lose the scheduling race**. That
+makes it a mechanism problem, and §10 is the mechanism.
 
 | run | ceiling | result |
 |---|---|---|
