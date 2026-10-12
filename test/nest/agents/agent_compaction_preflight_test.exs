@@ -187,9 +187,13 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
 
       send_compaction_done(pid, summary_text, {:tool_call, tool_call_msg, 3, 30})
 
+      # `send_compaction_done/3` sends the `{:http_response, _}` as a plain
+      # message, so the `:sys.get_state/2` barrier below flushes it. The
+      # compaction broadcast is emitted inline from the agent while handling
+      # that message, so the frame is already in our mailbox.
       _ = :sys.get_state(pid, 1_000)
 
-      assert_receive {:chat_compaction, payload}
+      assert_received {:chat_compaction, payload}
 
       assert payload.marker["role"] == "compaction"
       # The two pre-seeded messages plus the committed summary assistant

@@ -13,7 +13,6 @@ defmodule Nest.AgentsTest do
   use Nest.DataCase, async: true
   alias Nest.Agents.Agent.Machine
 
-  import Eventually
   import Mimic
 
   alias Nest.Agents
@@ -389,23 +388,19 @@ defmodule Nest.AgentsTest do
 
   describe "chat/2" do
     test "sends message to agent" do
-      {pid, name} = AgentTestHelpers.start_agent(%{name: fresh_name()})
+      {_pid, name} = AgentTestHelpers.start_agent(%{name: fresh_name()})
 
       MockClient.set_response("Hi there!")
 
       :ok = Agents.chat(AgentTestHelpers.current_space_id(), name, "Hello, agent!")
 
-      # Fence on the turn's idle (not `message_count`): the count hits
-      # 3 when the assistant message is appended, which is before the
-      # turn finalizes. Poll the agent state rather than waiting on a
-      # fixed 100ms window — a slow scheduler can push the idle
-      # transition past it.
-      assert eventually(
-               fn ->
-                 Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
-               end,
-               timeout: 1_000
-             )
+      # `Agent.chat/5` is a cast, so the turn's `idle` `chat:status` frame is the
+      # arrival-decided end of the turn. `Turn.run/5` runs a turn's effects
+      # (the assistant append included) before it announces the new status, so
+      # `message_count` is already 3 by the time this frame lands.
+      # `AgentTestHelpers.start_agent/1` subscribes this test pid to the agent's
+      # topic; the 1000 ms is only the failure bound.
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), name)
       assert info.message_count == 3

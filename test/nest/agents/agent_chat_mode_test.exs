@@ -21,7 +21,6 @@ defmodule Nest.Agents.AgentChatModeTest do
   @turn_fence_ms 1_000
 
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.Machine
 
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
@@ -338,14 +337,13 @@ defmodule Nest.Agents.AgentChatModeTest do
     end
   end
 
-  # Wait until the agent has settled to `:idle`, on the machine's own status
-  # rather than the `chat:status` broadcast: a missed or reordered broadcast can
-  # never be the reason this fails, and the condition waited on is exactly the
-  # one the test-teardown invariant checks. See `@turn_fence_ms` for the budget.
-  defp await_idle(pid) do
-    assert Eventually.eventually(
-             fn -> Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle end,
-             timeout: @turn_fence_ms
-           )
+  # Wait for the turn's last frame: `Agent.chat/2` is a `GenServer.cast`, so the
+  # `"idle"` `chat:status` broadcast is emitted at the end of the turn and every
+  # earlier frame of that turn precedes it in this mailbox (the same fence
+  # `agent_chat_test.exs` uses). Arrival decides the outcome; `@turn_fence_ms` is
+  # only the failure bound. The pid is not needed: the fence reads the frames the
+  # test pid is subscribed to.
+  defp await_idle(_pid) do
+    assert_receive {:chat_status, %{status: "idle"}}, @turn_fence_ms
   end
 end

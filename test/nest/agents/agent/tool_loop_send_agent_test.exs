@@ -69,7 +69,7 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
       # A cast, so the agent handles it in `handle_cast/2` like every other
       # worker result — and it precedes this worker's `{:tool_results, …}`, so
       # mailbox order discharges the debt before the turn settles.
-      assert_receive {:"$gen_cast", {:reply_sent, "bob"}}
+      assert_received {:"$gen_cast", {:reply_sent, "bob"}}
     end
   end
 

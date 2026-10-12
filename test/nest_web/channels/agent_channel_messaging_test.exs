@@ -352,34 +352,21 @@ defmodule NestWeb.AgentChannelMessagingTest do
       assert p2["toolCallId"] == "call_stream_1"
       assert p2["content"] == "{\"command\":\"ls\"}"
 
-      # The assistant message with the parsed tool_use part
-      # arrives after the deltas (not before).
-      # Drain until we see the assistant message whose
-      # `parts` carries the parsed tool_use (the synthetic
-      # "Context?" budget-reminder pair injected between the
-      # tool result and the final assistant lands first and
-      # would otherwise satisfy `assert_push` with empty parts).
-      tool_use_parts =
-        Stream.unfold(nil, fn _ ->
-          receive do
-            %Phoenix.Socket.Message{
-              event: "chat:message",
-              payload: %{"role" => "assistant", "parts" => parts}
-            } ->
-              {parts, parts}
+      # The assistant message with the parsed tool_use part arrives after the
+      # deltas (not before). It is the first assistant `chat:message` push, so
+      # a selective receive is enough: `assert_receive` skips the user push,
+      # the deltas and the raw PubSub broadcasts, and the 1_000ms is only a
+      # failure bound, not the synchronisation.
+      assert_receive %Phoenix.Socket.Message{
+                       event: "chat:message",
+                       payload: %{"role" => "assistant", "parts" => parts}
+                     },
+                     1_000
 
-            _other ->
-              {:skip, nil}
-          after
-            2000 -> nil
-          end
-        end)
-        |> Stream.filter(&match?([_ | _], &1))
-        |> Enum.find_value(fn parts ->
-          Enum.find(parts, fn
-            %{"kind" => "tool_use"} = p -> p
-            _ -> nil
-          end)
+      tool_use_parts =
+        Enum.find(parts, fn
+          %{"kind" => "tool_use"} = p -> p
+          _ -> nil
         end)
 
       assert tool_use_parts != nil,

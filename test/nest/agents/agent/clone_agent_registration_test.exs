@@ -19,7 +19,6 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
   use Nest.DataCase, async: true
 
   import Mimic
-  import Eventually
 
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.AgentTestHelpers
@@ -101,7 +100,21 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
         2_000
       )
 
+    # The child registers itself in the `Agents.Registry` inside its own
+    # `init/1`, so the spawn reply above means its entry is there to monitor.
+    {:ok, child_pid} = AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), child_name)
+
+    # `Supervisor.stop_agent/2` fires `Process.exit/2` and returns before the
+    # process is gone, and the child goes down through the parent's own
+    # `terminate/2` cascade. Both deaths are real, arriving events: fence on
+    # them rather than polling the registry for the entries to disappear.
+    parent_ref = Process.monitor(parent_pid)
+    child_ref = Process.monitor(child_pid)
+
     :ok = Supervisor.stop_agent(AgentTestHelpers.current_space_id(), parent_name)
+
+    assert_receive {:DOWN, ^parent_ref, :process, ^parent_pid, _reason}, 1_000
+    assert_receive {:DOWN, ^child_ref, :process, ^child_pid, _reason}, 1_000
 
     assert_registry_misses(parent_name)
     assert_registry_misses(child_name)
@@ -189,12 +202,19 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     end
   end
 
+  # The caller has already fenced on the agent's `:DOWN`, so the process is
+  # provably gone. Its `Nest.Agents.Registry` entry, though, is dropped by the
+  # registry partition server's *link* `:EXIT` handler, which is asynchronous
+  # and announces nothing: `:sys.get_state/2` on that partition is the barrier
+  # that drains it (the `:EXIT` is enqueued before the `:DOWN` the caller waited
+  # on), so the lookup below reads a decided state instead of polling for it.
+  #
+  # The partition name is `Registry.Partition.pid_name/2`'s: `Nest.Agents.Registry`
+  # is a single-partition unique registry (`child_spec/0` passes no `:partitions`).
   defp assert_registry_misses(name) do
-    eventually(
-      fn ->
-        AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name) == {:error, :not_found}
-      end,
-      timeout: 1_000
-    )
+    _ = :sys.get_state(Nest.Agents.Registry.PIDPartition0, 1_000)
+
+    assert AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name) ==
+             {:error, :not_found}
   end
 end

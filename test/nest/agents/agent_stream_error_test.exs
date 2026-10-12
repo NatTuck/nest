@@ -16,8 +16,23 @@ defmodule Nest.Agents.AgentStreamErrorTest do
   use Nest.DataCase, async: true
   alias Nest.Agents.Agent.Machine
 
-  import Eventually
   import ExUnit.CaptureLog
+
+  # The turn fence. `Agent.chat/5` is a `GenServer.cast` (`agent.ex:375`), so no
+  # call returns once the turn is finished and the turn's outcome is decided by
+  # arrival. `Turn.run/5` runs the turn's effects — append the assistant message,
+  # broadcast `chat:error` — and only then broadcasts the new status, so the idle
+  # `chat_status` frame is emitted last: fencing on it proves the frames asserted
+  # below are already in this process's mailbox, and that the machine has already
+  # settled and cleared its worker.
+  #
+  # The fence is a failure bound, not an expected duration. The idle broadcast
+  # inherits the whole turn's latency (after the stream is consumed, usage merged,
+  # and the assistant message appended): 76 ms in isolation vs 700-1000 ms at
+  # `max_cases: 24` (measured; see `notes/test-suite-speedup.md`), so 1000 ms
+  # leaves room for a slow error path while a genuinely stuck turn still fails.
+  # The underlying slowness is tracked in #21 (Elixir test timeout audit).
+  @turn_fence_ms 1_000
 
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
@@ -50,9 +65,10 @@ defmodule Nest.Agents.AgentStreamErrorTest do
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
-        await_idle(pid)
 
-        assert_receive {:chat_status, %{status: "idle"}}
+        # The idle broadcast is the fence: it is emitted after the append and
+        # `chat:error`, so the frames asserted below are already here.
+        assert_receive {:chat_status, %{status: "idle"}}, @turn_fence_ms
 
         # The single assistant message carries the partial text AND the
         # error, tagged as an error.
@@ -73,15 +89,12 @@ defmodule Nest.Agents.AgentStreamErrorTest do
         assert content =~ "stream ended unexpectedly"
       end)
 
-      # The in-process turn clears its worker as `llm_error` idles the
-      # agent, so wait for it to clear rather than reading immediately.
-      assert eventually(
-               fn -> :sys.get_state(pid, 1_000).live.machine.work.active_worker == nil end,
-               timeout: 1_000
-             )
-
+      # The machine settles and clears its worker before `Turn.run/5` announces
+      # the new status, so the fence above already proves both; read it without
+      # waiting again.
       state = :sys.get_state(pid, 1_000)
       assert Machine.status_for(state.live.machine) == :idle
+      assert state.live.machine.work.active_worker == nil
     end
 
     test "an error with no streamed content produces an error-only message" do
@@ -91,9 +104,8 @@ defmodule Nest.Agents.AgentStreamErrorTest do
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
-        await_idle(pid)
 
-        assert_receive {:chat_status, %{status: "idle"}}
+        assert_receive {:chat_status, %{status: "idle"}}, @turn_fence_ms
 
         assert_received {:chat_message,
                          {:assistant,
@@ -107,39 +119,5 @@ defmodule Nest.Agents.AgentStreamErrorTest do
         assert content =~ "no output from the model for 300s"
       end)
     end
-  end
-
-  # Sync on the machine reaching `:idle` rather than fencing the status
-  # broadcast with a wall-clock timeout. `Turn.run/5` runs the turn's
-  # effects (append the message, broadcast `chat:error`) and then broadcasts
-  # the new status, all before the handler returns — so once
-  # `:sys.get_state/1` reports `:idle`, the broadcasts are already in this
-  # process's mailbox and the assertions below cannot race a slow error path.
-  #
-  # Why a 1s failure deadline, spelled out because this is a raised budget
-  # (`SMELLS.md`: "any increase in a timeout is a likely smell"):
-  #
-  #   * The wait cannot be removed. `Agent.chat/3` is a `GenServer.cast`
-  #     (`agent.ex:389`; `handle_cast` only, `callbacks.ex:59-60`), so no call
-  #     returns once the turn is finished, and the idle broadcast is itself
-  #     part of the contract under test. An unbounded wait would be worse: it
-  #     turns a clear failure into a hang bounded only by ExUnit's 60s test
-  #     timeout, which blows the 5s budget in `scripts/precommit-test.sh`.
-  #   * The signal inherits the whole latency. The idle broadcast is emitted
-  #     last in the turn (after the stream is consumed, usage merged, and the
-  #     assistant message appended): 76ms in isolation vs 700-1000ms at
-  #     `max_cases: 24` (measured; see `notes/test-suite-speedup.md`).
-  #
-  # So 1s is a failure deadline for the poll, not an expected duration — the
-  # condition holds as soon as the error has been handled, and `eventually/2`'s
-  # default is 10ms, hence the explicit value. The underlying slowness is real
-  # and tracked in #21 (Elixir test timeout audit); this should drop back to
-  # 500ms when the turn latency is fixed. The sibling test below carries the
-  # same budget.
-  defp await_idle(pid) do
-    assert eventually(
-             fn -> Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle end,
-             timeout: 1_000
-           )
   end
 end

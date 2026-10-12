@@ -81,8 +81,10 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     await_idle(coordinator_pid)
 
     # The live-add broadcast carries the space_id the sidebar groups by.
-    assert_receive {:agent_created, %{"name" => ^specialist_name, "space_id" => ^space_id}},
-                   500
+    # `await_idle/1` is the fence: the spawn broadcasts from the coordinator's
+    # own handler, so `:sys.get_state/2` on it flushes the frame before it
+    # reports the idle turn.
+    assert_received {:agent_created, %{"name" => ^specialist_name, "space_id" => ^space_id}}
 
     # The specialist exists in the space.
     assert {:ok, _info} = Nest.Agents.get_info(space_id, specialist_name)

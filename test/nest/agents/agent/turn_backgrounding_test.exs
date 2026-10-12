@@ -530,10 +530,10 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       assert_receive {:send_delivered, ^tool}, 1_000
       send(tool, :release_result)
 
-      assert Eventually.eventually(
-               fn -> Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle end,
-               timeout: 500
-             )
+      # The turn's end is the machine's own `chat:status` frame: `start_agent/1`
+      # subscribed this test pid to the agent's topic, so the frame is the event
+      # that decides the turn is over and `1_000` is only the failure bound.
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       state = :sys.get_state(pid, 1_000)
 

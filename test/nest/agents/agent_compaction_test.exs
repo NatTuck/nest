@@ -86,9 +86,8 @@ defmodule Nest.Agents.AgentCompactionTest do
       # end-of-turn wait below covers a mocked round trip only.
       assert_receive {:chat_message, {:tool, %Tool{parts: [result_part | _]}}}, 1_000
 
-      # The end of the turn is read from the machine, the authority
-      # (`status_for/1`), not from the `chat:status` broadcast: a missed or
-      # reordered broadcast can never be the reason this fails.
+      # The end of the turn is the arrival of the `chat:status` "idle" frame,
+      # with the machine (`status_for/1`) read behind it as the authority.
       await_idle(pid)
 
       assert_received {:chat_message, {:user, _}}
@@ -96,9 +95,9 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert_received {:chat_delta, %{content: "Reading file"}}
       assert_received {:chat_delta, %{content: "Done"}}
       assert_received {:chat_message, {:assistant, _}}
-      # Zero fence: the agent broadcast this in the settle that went idle,
-      # before it could answer the `:sys.get_state/1` inside `await_idle/1`.
-      assert_received {:chat_status, %{status: "idle"}}
+      # Zero fence for the block above: every one of those frames was
+      # broadcast before the "idle" frame `await_idle/1` fences on, which is
+      # where the assertion on that frame now lives.
 
       %Part.ToolResult{content: content} = result_part
 
@@ -170,8 +169,9 @@ defmodule Nest.Agents.AgentCompactionTest do
           # trip only.
           assert_receive {:chat_message, {:tool, %Tool{parts: parts}}}, 1_000
 
-          # The end of the turn is read from the machine, the authority
-          # (`status_for/1`), not from the `chat:status` broadcast.
+          # The end of the turn is the arrival of the `chat:status` "idle"
+          # frame, with the machine (`status_for/1`) read behind it as the
+          # authority.
           await_idle(pid)
 
           assert_received {:chat_message, {:user, _}}
@@ -179,9 +179,9 @@ defmodule Nest.Agents.AgentCompactionTest do
           assert_received {:chat_delta, %{content: "Running two commands"}}
           assert_received {:chat_delta, %{content: "All done"}}
           assert_received {:chat_message, {:assistant, _}}
-          # Zero fence: broadcast in the settle that went idle, before the
-          # agent could answer the `:sys.get_state/1` inside `await_idle/1`.
-          assert_received {:chat_status, %{status: "idle"}}
+          # Zero fence for the block above: every one of those frames was
+          # broadcast before the "idle" frame `await_idle/1` fences on, which
+          # is where the assertion on that frame now lives.
 
           assert length(parts) == 2
           assert Enum.map(parts, & &1.tool_call_id) == ["call_1", "call_2"]
@@ -275,7 +275,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # PubSub message is already in our mailbox.
       _ = :sys.get_state(pid, 1_000)
 
-      assert_receive {:chat_compaction, payload}
+      assert_received {:chat_compaction, payload}
       assert payload.marker["role"] == "compaction"
       assert payload.marker["archivedCount"] == 6
       # The archive is no longer pushed with the marker; the client
@@ -572,18 +572,18 @@ defmodule Nest.Agents.AgentCompactionTest do
     refute_receive {:preflight_result, _, _}, 0
   end
 
-  # Wait for the agent to settle to `:idle` on the machine's own status — the
-  # authority — rather than on the `chat:status` broadcast: a missed or
-  # reordered broadcast can never be the reason a test fails, and the condition
-  # is exactly the one the test-teardown invariant checks. `Eventually` polls
-  # at 10 ms and returns as soon as the turn is over, so the 500 ms budget is
-  # the project's fence and not a claim about how long the turn takes. Every
-  # call site first fences on the batch's own broadcast, so the sandbox work
-  # (real bwrap processes) is never inside this wait.
+  # Wait for the end of the turn on the turn's own event — the agent's
+  # `{:chat_status, %{status: "idle"}}` broadcast — and then read the machine,
+  # the authority, for the state it settled to. `Turn.run/6` announces the
+  # status change last in the settle, after every effect of the turn (message
+  # appends, the tool batch) has landed, so a subscriber woken by the "idle"
+  # frame already holds every frame of the turn; the `:sys.get_state/1` behind
+  # the fence orders the call sites' `assert_received/1` assertions behind it
+  # too. Every call site first fences on the batch's own broadcast, so the
+  # sandbox work (real bwrap processes) is never inside this wait.
   defp await_idle(pid) do
-    assert Eventually.eventually(
-             fn -> Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle end,
-             timeout: 500
-           )
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
+
+    assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
   end
 end

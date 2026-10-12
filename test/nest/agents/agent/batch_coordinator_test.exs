@@ -70,17 +70,25 @@ defmodule Nest.Agents.Agent.BatchCoordinatorTest do
     name = "stand-in-#{System.unique_integer([:positive])}"
 
     stand_in =
-      start_supervised!(
-        {Task,
-         fn ->
-           Registry.register(AgentsRegistry, {space_id, name}, nil)
-           send(test_pid, {:registered, self()})
+      start_supervised!({Task,
+       fn ->
+         Registry.register(AgentsRegistry, {space_id, name}, nil)
+         send(test_pid, {:registered, self()})
 
-           receive do
-             :never -> :ok
-           end
-         end}
-      )
+         # The coordinator's first act is a `GenServer.call` to the plan's
+         # parent, which resolves to this stand-in; it never answers it.
+         # Relaying that call's caller is what makes the coordinator's start
+         # observable without a scan: the call is already in this mailbox when
+         # the test hears about it.
+         receive do
+           {:"$gen_call", {caller, _ref}, _request} ->
+             send(test_pid, {:coordinator_called, caller})
+         end
+
+         receive do
+           :never -> :ok
+         end
+       end})
 
     assert_receive {:registered, ^stand_in}, 1_000
 
@@ -92,10 +100,14 @@ defmodule Nest.Agents.Agent.BatchCoordinatorTest do
         assert {:ok, confirmation} = BatchCoordinator.run(ctx, tc)
         assert confirmation =~ "Fanned 1 item(s)"
 
-        # This test's coordinator is the task carrying its own unique dead
-        # parent in `$callers` (`BatchCoordinator.start/3` puts `ctx.agent_pid`
-        # there), so no concurrent test's task can match.
-        coordinator = Eventually.eventually(fn -> find_coordinator(gone) end, timeout: 500)
+        # The stand-in relayed the blocked call, so that call's caller is the
+        # coordinator: its arrival is the start notification the scan of
+        # `Task.Supervisor.children` below used to poll for. This test's
+        # coordinator is the task carrying its own unique dead parent in
+        # `$callers` (`BatchCoordinator.start/3` puts `ctx.agent_pid` there), so
+        # no concurrent test's task can match.
+        assert_receive {:coordinator_called, coordinator}, 1_000
+        assert find_coordinator(gone) == coordinator
         coordinator_ref = Process.monitor(coordinator)
 
         # Release the blocked call: it exits, so the coordinator takes its crash

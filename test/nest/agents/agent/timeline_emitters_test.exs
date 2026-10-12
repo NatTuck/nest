@@ -251,9 +251,11 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
 
     send(tool, :release_send)
 
-    # The record is a file append made by the agent process while it handled the
-    # delivery, so poll for it (this file's own idiom) rather than racing it.
-    assert Eventually.eventually(fn -> inbox_action("delivered") != [] end, timeout: 500)
+    # The delivery's turn ends, and the batch's late result then gets its own.
+    # That idle is also the fence for the delivery's record below: the agent
+    # writes the record while it handles the delivery, so it is already on disk
+    # before the turn the delivery started can end.
+    assert statuses_until_idle() == ["streaming", "executing_tools", "streaming", "idle"]
 
     assert [
              %{
@@ -265,8 +267,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
              }
            ] = inbox_action("delivered")
 
-    # The delivery's turn ends, and the batch's late result then gets its own.
-    assert statuses_until_idle() == ["streaming", "executing_tools", "streaming", "idle"]
+    # The batch's late result then gets its own turn.
     assert statuses_until_idle() == ["streaming", "idle"]
   end
 
@@ -309,9 +310,16 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     :ok = Agent.chat(pid, "human note", "chat", "alice")
     {_second, llm2} = next_request()
 
-    # The record is a file append made by the agent process while it handled the
-    # delivery, so poll for it (this file's own idiom) rather than racing it.
-    assert Eventually.eventually(fn -> inbox_action("delivered") != [] end, timeout: 500)
+    # The batch's own send and its late result both queue behind the parked
+    # delivered turn, so both are there before it ends and drain as one batch.
+    # Releasing the batch here is also the fence for the delivery's record
+    # below: the agent wrote that record while handling the chat cast, which it
+    # did before this worker's call could reach it.
+    send(tool, :release_send)
+    assert_receive {:send_delivered, ^tool}, 1_000
+    assert_receive {:chat_inbox, %{count: 1}}, 1_000
+    send(tool, :release_result)
+    assert_receive {:chat_inbox, %{count: 2}}, 1_000
 
     assert [
              %{
@@ -328,14 +336,6 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     # recorded never happened (the batch was backgrounded instead). The batch's
     # own late result still enqueues its notice, which is a different producer.
     assert Enum.filter(inbox_action("enqueued"), &(&1["kind"] == "user")) == []
-
-    # The batch's own send and its late result both queue behind the parked
-    # delivered turn, so both are there before it ends and drain as one batch.
-    send(tool, :release_send)
-    assert_receive {:send_delivered, ^tool}, 1_000
-    assert_receive {:chat_inbox, %{count: 1}}, 1_000
-    send(tool, :release_result)
-    assert_receive {:chat_inbox, %{count: 2}}, 1_000
 
     release_llm(llm2)
 
@@ -419,18 +419,16 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
 
     # The child's outcome arrives as a cast in the real runtime; its delivery
     # into the parent's own inbox (idle, so the drain starts a turn) is what
-    # makes the parent record the completion, the cost and the archive. The
-    # status rebroadcast that comes with it is why this waits on the record
-    # rather than on the status stream.
+    # makes the parent record the completion, the cost and the archive.
     GenServer.cast(pid, {:child_completed, child_name, "the answer", child_usage()})
 
-    assert Eventually.eventually(
-             fn ->
-               child_action("archived") != [] and
-                 Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
-             end,
-             timeout: 500
-           )
+    # The settle rebroadcasts the (unchanged) idle status *before* it drains the
+    # delivery it just queued, so the fence is the idle frame whose inbox that
+    # drain has emptied (`pendingMessageCount: 0`, the same fence
+    # `ToolLoopSpawnTest`'s `await_delivery/2` uses): the archive append happens
+    # earlier in the same settle, and this frame leaves the agent idle, which is
+    # what the test teardown requires.
+    assert_receive {:chat_status, %{status: "idle", pendingMessageCount: 0}}, 1_000
 
     assert [%{"action" => "completed", "name" => ^child_name}] = child_action("completed")
     assert [%{"action" => "archived", "name" => ^child_name}] = child_action("archived")

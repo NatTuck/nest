@@ -1,8 +1,6 @@
 defmodule Nest.Tools.ShellJobsTest do
   use ExUnit.Case, async: true
 
-  import Eventually
-
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Messages.{ToolCall, ToolResult}
   alias Nest.Sandbox.Mounts
@@ -45,12 +43,12 @@ defmodule Nest.Tools.ShellJobsTest do
   # racing an OS kill against a fixed receive timeout.
   defp waiters(id), do: Map.get(:sys.get_state(ShellJobs, 1_000).waiters, id, [])
 
-  # `echo` is fast, but the OS decides when it exits. Poll the manager's
-  # authoritative status instead of racing the `shell-wait` timeout.
+  # `echo` is fast, but the OS decides when it exits. Wait for the manager's
+  # exit event instead of polling its status; `subscribe/3` sends the frame
+  # immediately for a job that has already exited, so nothing can be missed.
   defp wait_until_exited(key, id) do
-    assert eventually(fn -> match?({:ok, {:exited, _}}, ShellJobs.status(key, id)) end,
-             timeout: 2_000
-           )
+    assert :ok = ShellJobs.subscribe(key, id, self())
+    assert_receive {:shell_job_exit, ^id, _code}, 1_000
   end
 
   test "shell-list reports the agent's jobs", %{key: key, tmp: tmp, context: context} do

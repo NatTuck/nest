@@ -31,9 +31,11 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
   arrives exactly once in both.
 
   Every wait here is on a real agent's progress — a parked tool worker, a
-  delivered query, a settled turn — so they use
-  `SubAgentToolsHelpers.turn_fence_ms/0` (2000 ms) rather than the project's
-  500 ms fence: see that attribute for the measured rationale. The *outcome* is
+  delivered query, a settled turn — and each one is the *arrival* of the frame
+  that proves it, never a poll of the clock: the parked handshakes above, the
+  coordinator's own `{:chat_message, …}` broadcast for anything read out of a
+  transcript (the coordinator is subscribed by `start_agent/1`), and
+  `SubAgentToolsHelpers.await_idle/1` for the settled turn. The *outcome* is
   pinned by the handshake, never by the timeout, and the hold that keeps the
   batch in flight outlives the fence so a slow host fails a fence (a stuck
   turn) rather than silently flipping the outcome.
@@ -79,11 +81,10 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     assert_receive {:send_blocked, sender}, 1_000
 
     # The tool result is the delivery confirmation, never the answer: there is no
-    # wait to return one from.
-    assert Eventually.eventually(
-             fn -> query_results(coordinator_pid) != [] end,
-             timeout: turn_fence_ms()
-           )
+    # wait to return one from, so the coordinator's own `{:tool, …}` broadcast —
+    # emitted in the settle that appended it — is the whole fence.
+    assert_receive {:chat_message, {:tool, %{parts: [%Part.ToolResult{name: "agents-query"}]}}},
+                   1_000
 
     assert [%Part.ToolResult{name: "agents-query", content: content, is_error: false}] =
              query_results(coordinator_pid)
@@ -93,28 +94,28 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     refute content =~ "moved to the background"
 
     # The specialist was asked with the peer framing (the query is a peer's
-    # message, decision 7)...
-    assert Eventually.eventually(
-             fn ->
-               Enum.any?(
-                 agent_texts(specialist_pid),
-                 &(&1 =~ "[Message from agent \"#{coordinator_name}\"]" and &1 =~ "what is 2+2?")
-               )
-             end,
-             timeout: turn_fence_ms()
+    # message, decision 7). No wait needed: `{:send_blocked, …}` above is the
+    # fence — the query was appended inside the delivery call, which returned
+    # before the peer's own `agents-send` worker reached that park.
+    assert Enum.any?(
+             agent_texts(specialist_pid),
+             &(&1 =~ "[Message from agent \"#{coordinator_name}\"]" and &1 =~ "what is 2+2?")
            )
 
     # ...and its answer, released only now, arrives as a message in the
-    # coordinator's inbox. Decisive park's release: only the batch's own result
-    # is waited on between the park's message and this line (one fence), so the
-    # 3 s valve cannot fire first — see the invariant on
-    # `AgentTurnTestHelpers.park/3`.
+    # coordinator's inbox — the delivery appends it inside the call, so the
+    # coordinator's own `{:user, …}` broadcast is the fence. Decisive park's
+    # release: only the batch's own result is waited on between the park's
+    # message and this line (one fence), so the 3 s valve cannot fire first —
+    # see the invariant on `AgentTurnTestHelpers.park/3`.
     send(sender, :release_send)
 
-    assert Eventually.eventually(
-             fn -> Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "the specialist answer")) end,
-             timeout: turn_fence_ms()
-           )
+    assert_receive {:chat_message,
+                    {:user,
+                     %{parts: [%Part.Text{text: "[mode: chat]\n[Message from agent \"" <> _}]}}},
+                   1_000
+
+    assert Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "the specialist answer"))
 
     # Both turns are over, and the reply discharged the obligation the query
     # created (a give-up notice would be in the coordinator's inbox instead).
@@ -177,10 +178,10 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     assert_receive {:send_delivered, ^sender}, 1_000
     send(sender, :release_result)
 
-    assert Eventually.eventually(
-             fn -> query_results(coordinator_pid) != [] end,
-             timeout: turn_fence_ms()
-           )
+    # The backgrounding answered the batch with a synthetic `{:tool, …}` in the
+    # settle that appended it, so that broadcast is the fence.
+    assert_receive {:chat_message, {:tool, %{parts: [%Part.ToolResult{name: "agents-query"}]}}},
+                   1_000
 
     # The tool result is the machine's synthetic notice, not the confirmation
     # the delivery produced: the delivery's real result arrives later, as a
@@ -192,40 +193,43 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     assert content =~ "arrive later as a message"
     refute content =~ "owes you a reply"
 
-    # The answer arrives as a message in the coordinator's inbox...
-    assert Eventually.eventually(
-             fn -> Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "the specialist answer")) end,
-             timeout: turn_fence_ms()
-           )
+    # The answer arrives as a message in the coordinator's inbox — appended
+    # inside the delivery call, so the coordinator's own `{:user, …}` broadcast
+    # is the fence...
+    assert_receive {:chat_message,
+                    {:user,
+                     %{parts: [%Part.Text{text: "[mode: chat]\n[Message from agent \"" <> _}]}}},
+                   1_000
+
+    assert Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "the specialist answer"))
 
     # ...and the peer was asked with the peer framing (the query is a peer's
-    # message, decision 7).
-    assert Eventually.eventually(
-             fn ->
-               Enum.any?(
-                 agent_texts(specialist_pid),
-                 &(&1 =~ "[Message from agent \"#{coordinator_name}\"]" and &1 =~ "what is 2+2?")
-               )
-             end,
-             timeout: turn_fence_ms()
+    # message, decision 7). No wait needed: `{:send_blocked, …}` above is the
+    # fence — the query was appended inside the delivery call, which returned
+    # before the peer's own `agents-send` worker reached that park.
+    assert Enum.any?(
+             agent_texts(specialist_pid),
+             &(&1 =~ "[Message from agent \"#{coordinator_name}\"]" and &1 =~ "what is 2+2?")
            )
 
     # The batch returns with no live worker to settle it, so its *real* result
     # arrives as a notice — which is where the confirmation the delivery
-    # produced shows up. Decisive park's release: between the hold and this line
-    # only the peer's turn is waited on (one fence); everything after the
+    # produced shows up. A notice renders bare (no `[Message from agent …]`
+    # label), so the coordinator's own broadcast of it is the fence. Decisive
+    # park's release: between the hold and this line only the batch's own result
+    # and the peer's turn are waited on (two fences); everything after the
     # delivery handshake is already true, so the 3 s valve cannot fire first —
     # see the invariant on `AgentTurnTestHelpers.park/3`.
     send(batch, :release_result)
 
-    assert Eventually.eventually(
-             fn ->
-               Enum.any?(
-                 agent_texts(coordinator_pid),
-                 &(&1 =~ "Query delivered to #{specialist_name}" and &1 =~ "owes you a reply")
-               )
-             end,
-             timeout: turn_fence_ms()
+    assert_receive {:chat_message,
+                    {:user,
+                     %{parts: [%Part.Text{text: "[mode: chat]\nYour backgrounded command" <> _}]}}},
+                   1_000
+
+    assert Enum.any?(
+             agent_texts(coordinator_pid),
+             &(&1 =~ "Query delivered to #{specialist_name}" and &1 =~ "owes you a reply")
            )
 
     # Both turns are over, and the reply discharged the obligation the query

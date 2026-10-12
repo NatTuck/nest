@@ -252,8 +252,12 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     # bytes, standalone and in the full suite), but if the runtime ever logged
     # one it must not land in the suite's output.
     capture_log(fn ->
+      # The kill is asynchronous, so fence on the task's own death — the
+      # `:DOWN` of a monitor installed *before* the kill, so it cannot be
+      # missed — rather than polling `Process.alive?/1` for it.
+      ref = Process.monitor(coordinator)
       Process.exit(coordinator, :kill)
-      Eventually.eventually(fn -> not Process.alive?(coordinator) end, timeout: 500)
+      assert_receive {:DOWN, ^ref, :process, ^coordinator, :killed}, 1_000
 
       # The parent was told the aggregate is not coming...
       assert [notice] = await_message(parent_pid, "stopped before reporting its aggregate")
@@ -462,22 +466,23 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     cast_child_completed(parent_pid, child0, "alpha-done")
     cast_child_completed(parent_pid, child1, "beta-done")
 
+    # The aggregate's own arrival: `Agent.deliver_internal/4` never refuses, so
+    # its entry lands in the queue behind the 100 peers and the inbox broadcast
+    # that carries it is the event — the only frame in this test past the cap
+    # the refusal above pinned.
+    assert_receive {:chat_inbox, %{count: count}} when count > 100, 1_000
+
+    state = :sys.get_state(parent_pid, 1_000)
+
     aggregate =
-      Eventually.eventually(
-        fn ->
-          :sys.get_state(parent_pid, 1_000).live.inbox
-          |> Enum.find_value(fn entry ->
-            if entry.content =~ "alpha-done", do: entry.content
-          end)
-        end,
-        timeout: 500
-      )
+      Enum.find_value(state.live.inbox, fn entry ->
+        if entry.content =~ "alpha-done", do: entry.content
+      end)
 
     assert aggregate =~ ~s(["alpha-done","beta-done"])
 
     # It is queued, not refused and not lost: the parent's transcript does not
     # have it yet, and it sits behind the 100 peers in the queue.
-    state = :sys.get_state(parent_pid, 1_000)
     assert List.last(state.live.inbox).content == aggregate
     assert delivered_texts(state, "alpha-done") == []
 
@@ -544,15 +549,15 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   end
 
   # Wait until the parent is idle (its turn is over), so a test that pokes its
-  # state cannot race the turn's own transitions. Returns the state.
+  # state cannot race the turn's own transitions. The `chat:status` frame the
+  # machine emits when it settles back to `:idle` is the event that decides it
+  # (`Turn.run/6` broadcasts on every status change), and
+  # `AgentTestHelpers.start_agent/1` subscribes this test pid to the parent's
+  # topic, so the frame is the fence; 1s is only the failure bound. Returns the
+  # state, read behind the frame the agent has already broadcast.
   defp await_idle(parent_pid) do
-    Eventually.eventually(
-      fn ->
-        state = :sys.get_state(parent_pid, 1_000)
-        if Machine.status_for(state.live.machine) == :idle, do: state
-      end,
-      timeout: 1_000
-    )
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
+    :sys.get_state(parent_pid, 1_000)
   end
 
   # Fabricate a busy phase for a test that needs the parent busy at a moment the
@@ -691,8 +696,5 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     vid
   end
 
-  # `:sys.replace_state/3` with the suite's explicit 500 ms timeout, kept as a
-  # helper so the call stays on one line (the three-argument form pushes
-  # these files past the 700-line cap once `mix format` expands it).
   defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 1_000)
 end

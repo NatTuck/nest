@@ -76,10 +76,10 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
 
       AgentTestHelpers.send_compaction_done(pid, "a summary", carried_reply())
 
-      assert Eventually.eventually(
-               fn -> Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle end,
-               timeout: 500
-             )
+      # `send_compaction_done/3` *sends* the response, so the turn's own idle
+      # broadcast is the event that says the settle is over: the timeout is a
+      # failure bound, never the synchronisation.
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       state = :sys.get_state(pid, 1_000)
 
@@ -220,8 +220,11 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
                Agents.send_message(current_space_id(), "peer", name, "please summarize", :query)
 
       # The debt is set at delivery and rides the status broadcast (decision 15).
+      # The delivery is a `GenServer.call` (`Agents.send_message/5` →
+      # `Agent.deliver_message/4`), so the frame is already in the mailbox here
+      # and there is nothing to wait for.
       assert Machine.owed_senders(:sys.get_state(pid, 1_000).live.machine) == ["peer"]
-      assert_receive {:chat_status, %{status: "streaming", owedReplies: ["peer"]}}, 1_000
+      assert_received {:chat_status, %{status: "streaming", owedReplies: ["peer"]}}
 
       # The model's first request carries the query and nothing about the debt:
       # the obligation is invisible until the gate reminds.

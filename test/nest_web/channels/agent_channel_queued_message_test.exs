@@ -240,7 +240,14 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # idle went out with it: an idle here would resolve an idle-based
       # `agents-wait-for-idle` with the pre-delivery answer.
       assert_push "chat:status", %{status: "streaming", pendingMessageCount: 0}, 1_000
-      refute_push "chat:status", %{status: "idle"}, 100
+
+      # The channel is the process that turns the agent's broadcasts into these
+      # pushes, and `:sys.get_state/1` is a synchronous call to it: once it
+      # returns, every frame the channel had decided to push is already in this
+      # mailbox, so the refute is a deterministic check rather than a 100 ms
+      # window.
+      _ = :sys.get_state(socket.channel_pid, 1_000)
+      refute_push "chat:status", %{status: "idle"}, 0
 
       # The request the delivered message rides in on.
       {_second, llm2} = next_request()
@@ -276,25 +283,23 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # The transcript is: the turn-opening user message, the tool call and the
       # synthetic result the backgrounding appended, the backgrounding ack, the
       # delivered human message, its response, the delivered peer message (with
-      # the batch's late result), and its response.
-      assert Eventually.eventually(
-               fn ->
-                 :sys.get_state(agent_pid, 1_000).chat_state.messages
-                 |> Enum.map(&elem(&1, 0)) ==
-                   [
-                     :system,
-                     :user,
-                     :assistant,
-                     :tool,
-                     :assistant,
-                     :user,
-                     :assistant,
-                     :user,
-                     :assistant
-                   ]
-               end,
-               timeout: 500
-             )
+      # the batch's late result), and its response. The idle status above is
+      # broadcast only once the turn's effects have landed (the append happens
+      # before the status frame that motivates it), so the transcript is already
+      # complete here: a read, not a poll.
+      assert :sys.get_state(agent_pid, 1_000).chat_state.messages
+             |> Enum.map(&elem(&1, 0)) ==
+               [
+                 :system,
+                 :user,
+                 :assistant,
+                 :tool,
+                 :assistant,
+                 :user,
+                 :assistant,
+                 :user,
+                 :assistant
+               ]
 
       state = :sys.get_state(agent_pid, 1_000)
       messages = state.chat_state.messages
@@ -380,7 +385,11 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       assert_reply ref, :ok, %{}
 
       assert_push "chat:inbox", %{count: 1}, 1_000
-      refute_push "chat:inbox", %{count: 0}, 100
+
+      # The channel barrier makes the negative check deterministic: anything the
+      # channel would have pushed for the parked compaction is already here.
+      _ = :sys.get_state(socket.channel_pid, 1_000)
+      refute_push "chat:inbox", %{count: 0}, 0
 
       state = :sys.get_state(agent_pid, 1_000)
 

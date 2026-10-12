@@ -29,7 +29,12 @@ defmodule NestWeb.AgentChannelChatStopTest do
       ref = push(socket, "chat:stop", %{})
       assert_reply ref, :ok, %{}
 
-      refute_receive %Phoenix.Socket.Message{event: "chat:status"}, 50
+      # `:sys.get_state/1` is a synchronous call to the channel: it drains
+      # the channel's mailbox, so any `chat:status` the agent broadcast during
+      # the stop has already been pushed to this process before it answers.
+      # The check below is therefore deterministic rather than a 50 ms window.
+      _ = :sys.get_state(socket.channel_pid, 1_000)
+      refute_received %Phoenix.Socket.Message{event: "chat:status"}
     end
 
     test "stop mid-stream does not crash the channel", %{socket: socket} do

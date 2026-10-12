@@ -73,15 +73,14 @@ defmodule Nest.Agents.Agent.InboxTest do
     # transition clears `cancelled` and drains the queued messages.
     Agent.stop_chat(pid, self())
 
-    assert Eventually.eventually(
-             fn -> :sys.get_state(pid, 1_000).live.inbox == [] end,
-             timeout: 500
-           )
+    # `stop_chat/2` is a call, but the drain it triggers is not: the bounded
+    # stop timer owns the terminal transition, so the drain's own consume frame
+    # is the fence, and it is the last one due — the queue is empty after it.
+    assert_receive {:chat_inbox, %{count: 0}}, 1_000
 
     state = :sys.get_state(pid, 1_000)
 
     assert state.live.inbox == []
-    assert_receive {:chat_inbox, %{count: 0}}, 1_000
 
     combined =
       Enum.find(user_texts(state), &(&1 =~ "first message" and &1 =~ "second message"))
@@ -103,12 +102,8 @@ defmodule Nest.Agents.Agent.InboxTest do
     refute text =~ "Message from agent"
 
     # The delivery is a synchronous `GenServer.call`, but the turn it starts is
-    # not: this waits for that turn to end, on the machine's own status (the
-    # file's `wait_idle/1`) rather than on the `chat:status` broadcast, so a
-    # missed or reordered broadcast can never be the reason it fails. The
-    # budget is unchanged: this turn is a single mocked iteration with no tool
-    # call and no spawn, and delivery-to-idle measured p50 4.3 ms / max 11.2 ms
-    # over 30 samples at 24-way concurrency — ~45x inside the 500 ms fence.
+    # not: this waits for that turn to end on the `chat:status` frame that
+    # decides it — the idle that carries an empty queue (`wait_idle/1`).
     wait_idle(pid)
     assert state.live.inbox == []
   end
@@ -164,15 +159,9 @@ defmodule Nest.Agents.Agent.InboxTest do
 
     Agent.stop_chat(pid, self())
 
-    assert Eventually.eventually(
-             fn ->
-               Enum.any?(
-                 user_texts(:sys.get_state(pid, 1_000)),
-                 &(&1 =~ "queued message" and &1 =~ "saved to")
-               )
-             end,
-             timeout: 500
-           )
+    # The drain appends the pointer before it consumes the entry, so the
+    # consume frame is the fence for the pointer being in the transcript.
+    assert_receive {:chat_inbox, %{count: 0}}, 1_000
 
     state = :sys.get_state(pid, 1_000)
 
@@ -420,10 +409,9 @@ defmodule Nest.Agents.Agent.InboxTest do
 
       Agent.stop_chat(pid, self())
 
-      assert Eventually.eventually(
-               fn -> :sys.get_state(pid, 1_000).live.inbox == [] end,
-               timeout: 500
-             )
+      # One batch per human message, so the last consume frame — the empty
+      # queue — is the fence that every queued message was delivered.
+      assert_receive {:chat_inbox, %{count: 0}}, 1_000
 
       wait_idle(pid)
 
@@ -515,10 +503,9 @@ defmodule Nest.Agents.Agent.InboxTest do
 
         Agent.stop_chat(pid, self())
 
-        assert Eventually.eventually(
-                 fn -> :sys.get_state(pid, 1_000).live.inbox == [] end,
-                 timeout: 500
-               )
+        # The drain's last consume frame is the fence: the empty queue the
+        # delivered modes below are read from.
+        assert_receive {:chat_inbox, %{count: 0}}, 1_000
 
         wait_idle(pid)
 
@@ -539,10 +526,9 @@ defmodule Nest.Agents.Agent.InboxTest do
 
       Agent.stop_chat(pid, self())
 
-      assert Eventually.eventually(
-               fn -> :sys.get_state(pid, 1_000).live.inbox == [] end,
-               timeout: 500
-             )
+      # The drain appends the pointer before it consumes the entry, so the
+      # consume frame is the fence for the pointer being in the transcript.
+      assert_receive {:chat_inbox, %{count: 0}}, 1_000
 
       state = :sys.get_state(pid, 1_000)
       pointer = Enum.find(user_texts(state), &(&1 =~ "queued message"))
@@ -579,10 +565,7 @@ defmodule Nest.Agents.Agent.InboxTest do
 
       Agent.stop_chat(pid, self())
 
-      assert Eventually.eventually(
-               fn -> :sys.get_state(pid, 1_000).live.inbox == [] end,
-               timeout: 500
-             )
+      assert_receive {:chat_inbox, %{count: 0}}, 1_000
 
       wait_idle(pid)
 
@@ -656,13 +639,18 @@ defmodule Nest.Agents.Agent.InboxTest do
     }
   end
 
+  # Wait for the agent to settle, on the frame that decides it: the `idle`
+  # broadcast that ends the turn. A bare `idle` frame is not the fence — a stop,
+  # and any turn end that drains, publishes the transient
+  # `streaming -> idle -> streaming` of issue #15 first — so the fence is the
+  # idle that carries an empty queue. An empty queue is also exactly the state
+  # no further drain can start from, which is what the teardown invariant
+  # checks; the status read that follows is a read of the settled state, not a
+  # wait.
   defp wait_idle(pid) do
-    assert Eventually.eventually(
-             fn ->
-               Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
-             end,
-             timeout: 500
-           )
+    assert_receive {:chat_status, %{status: "idle", pendingMessageCount: 0}}, 1_000
+
+    assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
   end
 
   defp user_texts(state) do

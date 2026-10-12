@@ -72,8 +72,9 @@ defmodule Nest.Agents.AgentStopTest do
 
       # No chat turn is in flight. The stop handler runs
       # without crashing; no `chat:status: idle` is broadcast
-      # because the agent is already idle. The `refute_receive`
-      # waits up to 50ms for a broadcast that should never come.
+      # because the agent is already idle. `Agent.stop_chat/2`
+      # is a synchronous call, so the mailbox is already settled
+      # when it returns and `refute_received` needs no wait.
       :ok = Agent.stop_chat(pid, self())
       refute_received {:chat_status, _}
     end
@@ -146,16 +147,33 @@ defmodule Nest.Agents.AgentStopTest do
       :ok = Agent.chat(pid, "compact please")
 
       assert_receive {:chat_message, {:user, _}}, 1_000
-      # Drain to find the assistant carrying the tool call (a
-      # context-notice synthetic pair may precede it).
-      tool_assistant = wait_for_assistant_with_tool_use(2_000)
-      assert tool_assistant != nil
-      assert Enum.any?(tool_assistant.parts, &match?(%Part.ToolUse{}, &1))
 
       # `context-compact` is the sole tool call, so the turn hands off to
       # the compactor (there is no tool worker to execute); sync on the
       # resulting `:compacting` status.
       assert_receive {:chat_status, %{status: "compacting"}}, 1_000
+
+      # The assistant carrying the tool call is *carried* into the
+      # compaction, so it only reaches the transcript when the commit
+      # appends the new active segment. The `chat:compaction` marker is
+      # broadcast after that append, so it is the fence for the transcript
+      # read below (a context-notice synthetic pair, if one was injected,
+      # is not what we are looking for).
+      assert_receive {:chat_compaction, _}, 1_000
+
+      messages = :sys.get_state(pid, 1_000).chat_state.messages
+
+      tool_assistant =
+        Enum.find_value(messages, fn
+          {:assistant, %Assistant{parts: parts} = msg} ->
+            if Enum.any?(parts, &match?(%Part.ToolUse{}, &1)), do: msg
+
+          _ ->
+            nil
+        end)
+
+      assert tool_assistant != nil
+      assert Enum.any?(tool_assistant.parts, &match?(%Part.ToolUse{}, &1))
 
       # The context-compact hand-off completes quickly; the compactor
       # may already have run by the time we get here. Use the public
@@ -342,32 +360,6 @@ defmodule Nest.Agents.AgentStopTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
       assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
-    end
-  end
-
-  # Drain assistant messages until one carries a `Part.ToolUse`.
-  # A context-notice synthetic pair (an assistant message with
-  # `text: "Context?"`) may precede the real tool-call assistant
-  # when the context threshold is crossed.
-  defp wait_for_assistant_with_tool_use(timeout) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-    do_wait_for_assistant_with_tool_use(deadline)
-  end
-
-  defp do_wait_for_assistant_with_tool_use(deadline) do
-    if System.monotonic_time(:millisecond) >= deadline do
-      nil
-    else
-      receive do
-        {:chat_message, {:assistant, msg}} ->
-          if Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1)) do
-            msg
-          else
-            do_wait_for_assistant_with_tool_use(deadline)
-          end
-      after
-        100 -> do_wait_for_assistant_with_tool_use(deadline)
-      end
     end
   end
 end

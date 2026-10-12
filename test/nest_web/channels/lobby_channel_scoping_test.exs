@@ -104,7 +104,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
         {:agent_status, %{space_id: foreign_space_id, name: "theirs", status: "streaming"}}
       )
 
-      refute_push "agent:status", _, 200
+      settle(socket)
+      refute_push "agent:status", _, 0
 
       # ...and the frame for the user's own space still arrives, so the
       # `refute_push` above is not vacuous.
@@ -137,7 +138,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
 
       assert_push "agent:status", %{name: "child", status: "executing_tools"}
 
-      refute_receive %Phoenix.Socket.Broadcast{event: "agent:status"}, 200
+      settle(socket)
+      refute_received %Phoenix.Socket.Broadcast{event: "agent:status"}
 
       settle(socket)
     end
@@ -208,7 +210,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
           {unquote(tag), %{"name" => "theirs", "space_id" => foreign_space_id}}
         )
 
-        refute_push unquote(event), _, 200
+        settle(socket)
+        refute_push unquote(event), _, 0
 
         settle(socket)
       end
@@ -226,7 +229,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
         )
 
         assert_push unquote(event), %{"name" => "child", "space_id" => ^space_id}
-        refute_receive %Phoenix.Socket.Broadcast{event: unquote(event)}, 200
+        settle(socket)
+        refute_received %Phoenix.Socket.Broadcast{event: unquote(event)}
 
         settle(socket)
       end
@@ -289,7 +293,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
       assert_reply ref, :ok, %{}, 500
 
       assert_push "space:archived", %{"space_id" => ^space_id}
-      refute_receive %Phoenix.Socket.Broadcast{event: "space:archived"}, 200
+      settle(socket)
+      refute_received %Phoenix.Socket.Broadcast{event: "space:archived"}
 
       _ = Spaces.unarchive_space(space_id)
 
@@ -433,7 +438,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
       # A's socket gets it exactly once...
       assert_push "agent:status", %{name: "secret", status: "streaming"}, 1_000
       # ...and B's socket must not produce a second copy.
-      refute_push "agent:status", _, 300
+      settle(bob_socket)
+      refute_push "agent:status", _, 0
 
       # Same for an agent lifecycle frame.
       Phoenix.PubSub.broadcast(
@@ -443,7 +449,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
       )
 
       assert_push "agent:created", %{"name" => "secret-child"}, 1_000
-      refute_push "agent:created", _, 300
+      settle(bob_socket)
+      refute_push "agent:created", _, 0
 
       # And for a space-lifecycle frame on A's per-user topic.
       Phoenix.PubSub.broadcast(
@@ -453,7 +460,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
       )
 
       assert_push "space:created", %{"agentName" => "x"}, 1_000
-      refute_push "space:created", _, 300
+      settle(bob_socket)
+      refute_push "space:created", _, 0
 
       settle(alice_socket)
       settle(bob_socket)
@@ -494,11 +502,13 @@ defmodule NestWeb.LobbyChannelScopingTest do
       AgentTestHelpers.ensure_cleanup(new_name)
 
       assert_push "space:created", %{"agentName" => ^new_name}, 1_000
-      refute_push "space:created", _, 300
+      settle(bob_socket)
+      refute_push "space:created", _, 0
 
       # The root agent's creation frame rides the new space's topic.
       assert_push "agent:created", %{"name" => ^new_name}, 1_000
-      refute_push "agent:created", _, 300
+      settle(bob_socket)
+      refute_push "agent:created", _, 0
 
       settle(alice_socket)
       settle(bob_socket)

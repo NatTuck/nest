@@ -113,12 +113,14 @@ defmodule Nest.Agents.AgentObservabilityTest do
       assert_receive {:chat_message, {:tool, %{api_logs: tool_api_logs}}}, 1_000
       assert tool_api_logs == [], "Tool message should have empty api_logs"
 
-      # Wait for the final assistant with a response log
-      asst2 = wait_for_final_assistant_api_logs(2_000)
+      # The turn's end is the fence: the `idle` frame is emitted after the
+      # turn's last append, so the final assistant's response log is then
+      # readable from the transcript.
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
+
+      asst2 = final_assistant_api_logs(chat_messages(pid))
       assert asst2 != nil
       [asst2_log] = asst2
-
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       assert asst2_log.type == :response, "Final assistant message should have response log"
 
@@ -149,21 +151,24 @@ defmodule Nest.Agents.AgentObservabilityTest do
       assert_receive {:chat_status, %{status: "streaming"}}, 1_000
       assert_receive {:chat_delta, _}, 1_000
 
-      # Drain to the first assistant (tool-call). Match by
-      # content; the synthetic "Context?" assistant may
+      # The turn's end is the fence: the `idle` frame is emitted after the
+      # turn's last append, so the whole turn is then readable from the
+      # transcript. Match by content; the synthetic "Context?" assistant may
       # precede the tool-call assistant.
-      asst1 = wait_for_assistant_with_tool(2_000)
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
+
+      messages = chat_messages(pid)
+
+      asst1 = assistant_with_tool(messages)
       assert asst1 != nil
       [asst1_log] = asst1.api_logs
 
       assert_receive {:chat_message, {:tool, %{api_logs: tool_api_logs}}}, 1_000
       assert tool_api_logs == [], "Tool message should have empty api_logs"
 
-      asst2 = wait_for_final_assistant_api_logs(2_000)
+      asst2 = final_assistant_api_logs(messages)
       assert asst2 != nil
       [asst2_log] = asst2
-
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # The api_log id is `<message_index>.<sequence>`. At this low
       # usage no context-notice pair fires, so the tool-call
@@ -410,62 +415,39 @@ defmodule Nest.Agents.AgentObservabilityTest do
     end
   end
 
-  # Drain assistant messages until one carries a `Part.ToolUse`
-  # AND has api_logs populated.
-  defp wait_for_assistant_with_tool(timeout) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-    do_wait_for_assistant_with_tool(deadline)
+  # The turn's transcript, read synchronously. `MessageAppender.append_stamped/2`
+  # appends each message before the settle loop broadcasts the `idle` status, so
+  # once the turn's `idle` frame has arrived the whole turn is readable from the
+  # state: every message of the turn is already appended, whether or not this
+  # process happened to receive that message's own frame.
+  defp chat_messages(pid), do: :sys.get_state(pid, 1_000).chat_state.messages
+
+  # The first assistant in `messages` that carries a `Part.ToolUse` AND has
+  # api_logs populated; nil when there is none.
+  defp assistant_with_tool(messages) do
+    Enum.find_value(messages, fn
+      {:assistant, msg} ->
+        if has_tool_use?(msg) and has_api_logs?(msg), do: msg
+
+      _other ->
+        nil
+    end)
   end
 
-  defp do_wait_for_assistant_with_tool(deadline) do
-    if System.monotonic_time(:millisecond) >= deadline do
-      nil
-    else
-      receive do
-        {:chat_message, {:assistant, msg}} ->
-          has_tool_use = Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1))
-          has_api_logs = msg.api_logs != nil and msg.api_logs != []
+  # The api_logs of the final assistant in `messages`: the first assistant
+  # with no `Part.ToolUse` of its own that has api_logs populated; nil when
+  # the turn recorded none.
+  defp final_assistant_api_logs(messages) do
+    Enum.find_value(messages, fn
+      {:assistant, msg} ->
+        if not has_tool_use?(msg) and has_api_logs?(msg), do: msg.api_logs
 
-          if has_tool_use and has_api_logs do
-            msg
-          else
-            do_wait_for_assistant_with_tool(deadline)
-          end
-      after
-        100 -> do_wait_for_assistant_with_tool(deadline)
-      end
-    end
+      _other ->
+        nil
+    end)
   end
 
-  # Drain assistant messages until we find the final one
-  # (no tool_use, with api_logs populated). Returns the api_logs.
-  defp wait_for_final_assistant_api_logs(timeout) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-    do_wait_for_final_assistant_api_logs(deadline)
-  end
+  defp has_tool_use?(msg), do: Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1))
 
-  defp do_wait_for_final_assistant_api_logs(deadline) do
-    if System.monotonic_time(:millisecond) >= deadline do
-      nil
-    else
-      receive do
-        {:chat_message, {:assistant, msg}} ->
-          has_tool_use = Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1))
-          has_api_logs = msg.api_logs != nil and msg.api_logs != []
-
-          cond do
-            has_tool_use ->
-              do_wait_for_final_assistant_api_logs(deadline)
-
-            not has_api_logs ->
-              do_wait_for_final_assistant_api_logs(deadline)
-
-            true ->
-              msg.api_logs
-          end
-      after
-        100 -> do_wait_for_final_assistant_api_logs(deadline)
-      end
-    end
-  end
+  defp has_api_logs?(msg), do: msg.api_logs != nil and msg.api_logs != []
 end

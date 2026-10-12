@@ -145,13 +145,13 @@ defmodule Nest.Agents.Agent.LastMessageTest do
       assert [%{retrieved: true}] = :sys.get_state(pid, 1_000).live.inbox
 
       # The turn ends: the stop path's drain must prune the retrieved entry
-      # rather than leave it queued.
+      # rather than leave it queued. `stop_chat/2` only arms the bounded
+      # fallback timer, so the drain (and its `chat_inbox` broadcast) is a
+      # genuine later event; wait for that frame, not for the state it writes.
       Agent.stop_chat(pid, self())
 
-      assert Eventually.eventually(
-               fn -> :sys.get_state(pid, 1_000).live.inbox == [] end,
-               timeout: 500
-             )
+      assert_receive {:chat_inbox, %{count: 0, messages: []}}, 1_000
+      assert :sys.get_state(pid, 1_000).live.inbox == []
     end)
   end
 

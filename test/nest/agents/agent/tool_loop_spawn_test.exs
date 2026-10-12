@@ -18,7 +18,6 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
   import ExUnit.CaptureLog
   import Mimic
 
-  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.PersistedAgent
@@ -370,20 +369,15 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
   # delivery started, so no background process touches the sandbox after the
   # test ends. Returns every matching delivered text, so a caller can assert
   # there is *exactly one* (a duplicate delivery must fail the test).
+  #
+  # The fence is the idle frame that ends the delivery's own turn. A bare
+  # `status: "idle"` would not do: the child event's settle rebroadcasts the
+  # status *before* it drains the delivery it just queued, so that first idle
+  # frame still counts the delivery as pending. The turn's end is the idle
+  # frame whose inbox the drain has emptied.
   defp await_delivery(parent_pid, needle) do
-    Eventually.eventually(
-      fn -> delivered_when_idle(parent_pid, needle) end,
-      timeout: 500
-    )
-  end
-
-  defp delivered_when_idle(parent_pid, needle) do
-    state = :sys.get_state(parent_pid, 1_000)
-
-    case {Machine.status_for(state.live.machine), delivered(state, needle)} do
-      {:idle, [_ | _] = delivered} -> delivered
-      _ -> nil
-    end
+    assert_receive {:chat_status, %{status: "idle", pendingMessageCount: 0}}, 1_000
+    delivered(:sys.get_state(parent_pid, 1_000), needle)
   end
 
   defp delivered(state, needle) do

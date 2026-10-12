@@ -53,7 +53,6 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.LLM.MockClient
@@ -175,7 +174,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     {_third, llm3} = next_request()
     release_llm(llm3)
 
-    await_idle(parent_pid)
+    await_idle()
 
     parent_state = :sys.get_state(parent_pid, 1_000)
     AgentTestHelpers.assert_unique_message_indices(parent_state)
@@ -242,17 +241,16 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     assert fork_notice =~ "Your own scratch directory is `/tmp/#{child_name}/`"
   end
 
-  # Wait until the agent has settled to `:idle`, on the machine's own status.
-  #
-  # Polling the authoritative status rather than waiting for the `chat:status`
-  # broadcast means a missed or reordered broadcast can never be the reason this
-  # fails, and the condition waited on is exactly the one the test-teardown
-  # invariant checks. See `@turn_fence_ms` for the budget.
-  defp await_idle(pid) do
-    assert Eventually.eventually(
-             fn -> Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle end,
-             timeout: @turn_fence_ms
-           )
+  # Wait for the turn to end, on the `chat:status` frame the machine emits when
+  # it settles back to `:idle` (`Turn.run/6` broadcasts on every status change).
+  # `AgentTestHelpers.start_agent/1` subscribes this test pid to the agent's
+  # topic, so the frame is the event that decides when the turn is over;
+  # `@turn_fence_ms` is only the failure bound. Polling
+  # `Nest.Agents.Agent.Machine.status_for/1` instead would re-read the state
+  # this frame already announced, and would let a broadcast regression pass as
+  # success.
+  defp await_idle do
+    assert_receive {:chat_status, %{status: "idle"}}, @turn_fence_ms
   end
 
   # Cast `:child_completed` to the parent, mimicking what the child's idle
