@@ -17,6 +17,7 @@ defmodule Nest.Agents.Agent do
   alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.Machine.Backgrounding
+  alias Nest.Agents.Agent.Machine.Children
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.PreSpawn
   alias Nest.Agents.Agent.SubAgent
@@ -488,14 +489,18 @@ defmodule Nest.Agents.Agent do
     # agent's teardown passes through, so waiting on it here would put a shared
     # process's queue latency inside every agent's exit — the same rendezvous
     # that can leave a dying agent unable to answer a call for hundreds of
-    # milliseconds. The manager already monitors this pid (`track_agent/3`) and
-    # drops its jobs on its `:DOWN`, so this cast is not what keeps a job from
-    # outliving its agent; it asks for the stop without making the exit wait.
-    # (The synchronous `ShellJobs.stop_all/1` remains for callers that need the
-    # jobs gone before they remove the jobs' directory.)
+    # milliseconds. The manager already monitors this pid (`track_agent/3`), so
+    # this cast is not what keeps a job from outliving its agent; it asks for
+    # the stop without making the exit wait.
     ShellJobs.stop_all_async({state.space_id, state.name})
 
-    # Cleanup /tmp per design specification
+    # Cleanup /tmp per design specification. This removal is the *fence* the
+    # tmp-path tests rely on — the directory is gone by the time this process's
+    # `:DOWN` arrives. It is not the ordering guarantee against a running job:
+    # the cast above can still be processed after this line. That guarantee is
+    # the manager's, in `ShellJobs.drop_agent/2`: it removes the same directory
+    # *after* it has stopped this agent's jobs, so a job cannot recreate files
+    # under a just-deleted path and leave them behind.
     cleanup_tmp(state.space_id, state.name)
 
     # Note: workspace is preserved for review/debugging (per design)
@@ -519,22 +524,34 @@ defmodule Nest.Agents.Agent do
   # the boilerplate.
   defp cleanup_tmp(space_id, agent_name), do: TmpSpace.cleanup(space_id, agent_name)
 
-  # Every worker this process's turn is running: the live one, plus the batches
-  # it moved to the background (`Machine.Backgrounding.pids/1`). Distinct pids —
-  # one batch can be recorded under two refs — and `:shutdown` rather than
-  # `:kill`: a worker is a plain task, so it dies immediately either way, and
-  # `:shutdown` says why it went. No wait: this runs inside the exit handshake
-  # (see `terminate/2`), and a worker that has been sent the signal cannot run
-  # any more of the turn's code, which is the whole point.
+  # Every worker this process's turn is running: the live one, the batches it
+  # moved to the background (`Machine.Backgrounding.pids/1`), and the batch
+  # coordinators (`Machine.Children.reporting_targets/1`). All are tasks under
+  # the application-wide `Nest.Agents.TaskSupervisor`, not children of this
+  # process, and the turn's Stop transition is the only other thing that kills
+  # them — a death runs no transition. Distinct pids — one batch can be recorded
+  # under two refs, and one coordinator reports for many children.
+  #
+  # `stop_worker/1` sends the same `{:stop_chat, self()}` handshake the
+  # executor's `{:kill, pid}` action does (see `Backgrounding.kill_actions/1`):
+  # it is what lets a worker parked in a foreground `shell-cmd` `:exec.stop/1`
+  # its bwrap process before it goes. Without it the signal kills the worker
+  # while its sandbox process is still running. No wait: this runs inside the
+  # exit handshake (see `terminate/2`).
   defp stop_turn_workers(state) do
     machine = state.live.machine
 
-    [machine.work.active_worker | Backgrounding.pids(machine)]
+    ([machine.work.active_worker | Backgrounding.pids(machine)] ++
+       Children.reporting_targets(machine.children))
     |> Enum.uniq()
     |> Enum.each(&stop_worker/1)
   end
 
-  defp stop_worker(pid) when is_pid(pid), do: Process.exit(pid, :shutdown)
+  defp stop_worker(pid) when is_pid(pid) do
+    send(pid, {:stop_chat, self()})
+    Process.exit(pid, :shutdown)
+  end
+
   defp stop_worker(_none), do: :ok
 
   # Public-for-Handlers: message-construction logic. The

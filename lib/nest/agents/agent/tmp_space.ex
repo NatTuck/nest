@@ -94,6 +94,22 @@ defmodule Nest.Agents.Agent.TmpSpace do
   end
 
   @doc """
+  Remove the scratch directory for an agent key, `{space_id, name}`.
+
+  `cleanup/2` for a caller that holds the key rather than the two parts — the
+  shell-jobs manager's `drop_agent/2`, which removes an agent's scratch after
+  it has stopped the agent's jobs. A key that is not `{integer, binary}` is
+  ignored rather than routed to `cleanup/2`: `{:unknown, :unknown}` and
+  `{nil, nil}` are real keys in that manager, and neither names a directory.
+  """
+  @spec cleanup_agent_key(term()) :: :ok
+  def cleanup_agent_key({space_id, name}) when is_integer(space_id) and is_binary(name) do
+    cleanup(space_id, name)
+  end
+
+  def cleanup_agent_key(_agent_key), do: :ok
+
+  @doc """
   The host directory bound at `/tmp` inside the sandbox: the scratch
   root shared by every agent in `space_id`.
   """

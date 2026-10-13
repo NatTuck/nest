@@ -13,9 +13,11 @@ defmodule Nest.Agents.AgentTestHelpers do
   via `current_space_id/0`; everything else routes through it
   implicitly (the agent's session itself carries the `space_id`).
 
-  The on-exit cleanup walks the agent's Supervisor child tree to
-  terminate the GenServer; the `spaces` row is rolled back
-  automatically by the sandbox when the test exits.
+  The in-process teardown (`AgentTestLifecycle.stop_test_agents/0`)
+  stops every agent the test started, before the sandbox connection is
+  checked in; the `spaces` row is rolled back automatically by the
+  sandbox when the test exits. The `on_exit` hooks only watch (see
+  `AgentTestLifecycle.detect_leaked_agent/2`).
 
   ## Helpers split out
 
@@ -52,10 +54,12 @@ defmodule Nest.Agents.AgentTestHelpers do
   defdelegate assert_unique_message_indices(messages), to: AgentTestAssertions
   defdelegate record_read_file(pid, path, opts \\ []), to: AgentTestAssertions
   # One default, one owner: the 2-arity form delegates to `AgentTestLifecycle`'s
-  # 2-arity form, so both spellings use the same `@stop_ms` bound. A local
-  # default here would be a second number for the same wait (the split used to
-  # be 100 vs 5_000, backwards from intuition — the hot `on_exit` paths got the
-  # long one), and the wait is now a detector, not headroom.
+  # 2-arity form, so both spellings use the same `@stop_ms` bound. That bound is
+  # the tight *detector* — for a caller fencing a test body on an agent that must
+  # already be idle. A caller that is *cleaning up* (an `on_exit`) wants the
+  # generous cleanup bound instead, and says so by passing
+  # `AgentTestLifecycle.cleanup_ms/0` as the third argument rather than silently
+  # inheriting the detector's 10 ms.
   defdelegate wait_for_pid_down(space_id, name), to: AgentTestLifecycle
   defdelegate wait_for_pid_down(space_id, name, timeout), to: AgentTestLifecycle
 
@@ -270,11 +274,13 @@ defmodule Nest.Agents.AgentTestHelpers do
   cases that want raw `Process.flag(:trap_exit, true)` +
   `Process.exit(pid, :shutdown)` semantics.
 
-  Registers only the cleanup that is safe *after* the test process (the
+  Registers the cleanup that is safe *after* the test process (the
   SQL-sandbox connection owner) has exited: dropping this test's subscription
-  to the agent's PubSub topic. The agent itself is stopped by the test body's
-  teardown (`AgentTestLifecycle.stop_test_agents/0`), which discovers every
-  agent whose space is visible in this test's sandbox transaction — so an
+  to the agent's PubSub topic, and the leak check
+  (`AgentTestLifecycle.detect_leaked_agent/2`) for the path where the test was
+  killed at its per-test deadline. The agent itself is stopped by the test
+  body's teardown (`AgentTestLifecycle.stop_test_agents/0`), which discovers
+  every agent whose space is visible in this test's sandbox transaction — so an
   `on_exit` stop here would be redundant, and it would run `terminate/2` (and
   its DB work) on a connection whose owner has already exited. That is the
   `DBConnection.ConnectionError: owner ... exited` this helper used to be able
@@ -295,6 +301,14 @@ defmodule Nest.Agents.AgentTestHelpers do
     space_id = current_space_id()
 
     on_exit(fn -> Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{space_id}:#{name}") end)
+
+    # The in-process teardown (`AgentTestLifecycle.stop_test_agents/0`) stops
+    # this agent on the normal path, but a test killed at its per-test deadline
+    # skips the wrapper entirely — and an agent this helper started is *not*
+    # linked to the test process, so without this it would leak with nothing to
+    # notice it. `detect_leaked_agent/2` only watches, and issues no query, which
+    # is what makes it safe in an `on_exit`.
+    on_exit(fn -> AgentTestLifecycle.detect_leaked_agent(space_id, name) end)
   end
 
   @doc """
@@ -571,20 +585,35 @@ defmodule Nest.Agents.AgentTestHelpers do
   # `unsubscribe/2` below is therefore the same kind of no-op for
   # the test pid — it only unsubscribes this runner process — and is
   # kept as the belt to `drop_stale_pubsub_subscriptions/0`'s braces.
-  # The per-test on_exit body, split out so a test can run it directly: the
-  # property that matters is that it issues no query, because it runs in a
-  # process that does not own this test's sandbox connection. See
-  # `agent_test_lifecycle_test.exs`'s "the per-test on_exit cleanup issues no
-  # query".
+  # The per-test on_exit *closure*, as a named function. The registered callback
+  # is exactly what this returns, so a test can invoke the callback that is
+  # really registered rather than a lookalike — a stop re-added to this body is
+  # then exercised by `agent_test_lifecycle_test.exs`'s "the per-test on_exit
+  # cleanup issues no query" instead of escaping it. `on_exit_cleanup/3` is the
+  # body it calls.
+  #
+  # The property that matters is that it issues no query, because it runs in a
+  # process that does not own this test's sandbox connection.
   @doc false
-  def on_exit_cleanup(pid, space_id, agent_id) do
+  @spec per_test_on_exit_cleanup(pid(), integer(), String.t()) :: (-> :ok)
+  def per_test_on_exit_cleanup(pid, space_id, agent_id) do
+    fn -> on_exit_cleanup(pid, space_id, agent_id) end
+  end
+
+  defp on_exit_cleanup(pid, space_id, agent_id) do
     Process.unlink(pid)
     MockClient.stop(pid)
     Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{space_id}:#{agent_id}")
   end
 
   defp register_on_exit_cleanup(pid, space_id, agent_id) do
-    on_exit(fn -> on_exit_cleanup(pid, space_id, agent_id) end)
+    on_exit(per_test_on_exit_cleanup(pid, space_id, agent_id))
+
+    # The check the in-process teardown cannot give on the path where the test
+    # was killed at its per-test deadline: the wrapper never runs, and an agent
+    # that is not linked to the test process would otherwise leak silently.
+    # `detect_leaked_agent/2` only watches, and issues no query.
+    on_exit(fn -> AgentTestLifecycle.detect_leaked_agent(space_id, agent_id) end)
   end
 
   def get_system_prompt(pid) do

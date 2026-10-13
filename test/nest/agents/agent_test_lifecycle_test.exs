@@ -215,9 +215,17 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       # process — after the test pid, the connection owner, has exited — which
       # is why it must not stop the agent (`Supervisor.stop_agent/2` runs
       # `terminate/2`, and that queries).
+      #
+      # The callback invoked here is the one `register_on_exit_cleanup/3`
+      # actually registers (`per_test_on_exit_cleanup/3`), not a lookalike, so a
+      # stop re-added to the closure's body is exercised by this test instead of
+      # escaping it.
       cleanup =
         spawn(fn ->
-          send(test_pid, {:cleanup, AgentTestHelpers.on_exit_cleanup(pid, space_id, name)})
+          send(
+            test_pid,
+            {:cleanup, AgentTestHelpers.per_test_on_exit_cleanup(pid, space_id, name).()}
+          )
         end)
 
       ref = Process.monitor(cleanup)
@@ -226,6 +234,47 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       # `:normal`, not a crash: a query here would have killed the process with
       # `DBConnection.OwnershipError` before it could report.
       assert_receive {:DOWN, ^ref, :process, ^cleanup, :normal}, 1_000
+    end
+  end
+
+  describe "detect_leaked_agent/2" do
+    test "reports an agent that has not gone away, and not one that has" do
+      {:ok, space_id} = AgentTestHelpers.create_test_space()
+      name = "leaked-#{System.unique_integer([:positive])}"
+      test_pid = self()
+
+      # A process registered in the agents Registry that stays up: the shape of
+      # an agent the per-test teardown never reached (a test killed at its
+      # deadline skips the wrapper). The short bound is this test's own — the
+      # production default is `cleanup_ms/0`.
+      pid =
+        spawn(fn ->
+          {:ok, _} = Elixir.Registry.register(Nest.Agents.Registry, {space_id, name}, nil)
+          send(test_pid, {:registered, self()})
+
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      assert_receive {:registered, ^pid}
+
+      log =
+        capture_log(fn ->
+          assert AgentTestLifecycle.detect_leaked_agent(space_id, name, 10) ==
+                   {:leaked, space_id, name}
+        end)
+
+      # The report is the observable an operator sees; the return value above is
+      # the machine-readable half.
+      assert log =~ "outlived its test"
+      assert log =~ name
+
+      # Once it is gone, the detector does not report it.
+      ref = Process.monitor(pid)
+      send(pid, :stop)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+      assert AgentTestLifecycle.detect_leaked_agent(space_id, name, 10) == :ok
     end
   end
 

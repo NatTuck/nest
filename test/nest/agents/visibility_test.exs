@@ -177,6 +177,9 @@ defmodule Nest.Agents.VisibilityTest do
 
     AgentTestHelpers.ensure_cleanup(stopped_name)
     Supervisor.stop_agent(space_id, stopped_name)
+    # The tight detector bound (the `wait_for_pid_down/2` default): this is a
+    # body fence — the listing below is only meaningful once the stopped agent
+    # is gone — not cleanup, so it does not want the generous cleanup bound.
     AgentTestHelpers.wait_for_pid_down(space_id, stopped_name)
 
     # An archived row must never appear.
