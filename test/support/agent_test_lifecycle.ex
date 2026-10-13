@@ -221,7 +221,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
     body =
       Enum.map_join(diag, "\n", fn {space_id, name, sample, us, info} ->
         "      #{name} (space #{space_id}): sample=#{inspect(sample)} stop_us=#{us} " <>
-          "proc=#{inspect(info, limit: 8, printable_limit: 300)}"
+          "proc=#{inspect(info, limit: 24, printable_limit: 1500)}"
       end)
 
     "\n    --- teardown diag (temporary) ---\n" <> body
