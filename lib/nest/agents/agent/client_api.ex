@@ -93,6 +93,108 @@ defmodule Nest.Agents.Agent.ClientAPI do
   end
 
   @doc """
+  Returns the parent's outstanding query children: a map of child name to
+  `true` for every child still `:running` (`Machine.pending_children/1`).
+
+  `timeout` is the `GenServer.call/3` failure bound; the default is
+  OTP's (5 s). Pass a shorter bound when the read must fail as a call
+  timeout rather than as a caller deadline.
+  """
+  @spec get_pending_children(pid(), timeout()) :: %{String.t() => true}
+  def get_pending_children(pid, timeout \\ 5_000) do
+    GenServer.call(pid, :get_pending_children, timeout)
+  end
+
+  @doc """
+  Returns the context thresholds this agent has already announced
+  (`live.crossed_thresholds`), as a `MapSet` of atoms.
+
+  `timeout` is the `GenServer.call/3` failure bound; the default is
+  OTP's (5 s).
+  """
+  @spec get_crossed_thresholds(pid(), timeout()) :: MapSet.t()
+  def get_crossed_thresholds(pid, timeout \\ 5_000) do
+    GenServer.call(pid, :get_crossed_thresholds, timeout)
+  end
+
+  @doc """
+  Returns the raw children sub-machine (`Machine.Children`): the per-child
+  entry map that `Children.target/2` resolves a reporting target from.
+  `get_pending_children/2` is a *different* value (the `:running` names).
+
+  `timeout` is the `GenServer.call/3` failure bound; the default is
+  OTP's (5 s).
+  """
+  @spec get_children(pid(), timeout()) :: Nest.Agents.Agent.Machine.Children.t()
+  def get_children(pid, timeout \\ 5_000) do
+    GenServer.call(pid, :get_children, timeout)
+  end
+
+  @doc """
+  Returns the machine's turn-scoped working set (`Machine.Work`): the active
+  worker and its ref, the backgrounded batches, the compaction focus.
+
+  Read as one value on purpose: a caller that inspects several of its fields
+  must see them from one snapshot, never one call per field.
+
+  `timeout` is the `GenServer.call/3` failure bound; the default is
+  OTP's (5 s).
+  """
+  @spec get_work(pid(), timeout()) :: Nest.Agents.Agent.Machine.Work.t()
+  def get_work(pid, timeout \\ 5_000) do
+    GenServer.call(pid, :get_work, timeout)
+  end
+
+  @doc """
+  Returns the agent's LLM client configuration (`Nest.LLM.ClientConfig`): the
+  client module plus the per-call opts. `get_public_info/2` deliberately omits
+  it — `client` is an internal module atom the UI has no use for.
+
+  `timeout` is the `GenServer.call/3` failure bound; the default is
+  OTP's (5 s).
+  """
+  @spec get_client_config(pid(), timeout()) :: Nest.LLM.ClientConfig.t()
+  def get_client_config(pid, timeout \\ 5_000) do
+    GenServer.call(pid, :get_client_config, timeout)
+  end
+
+  @doc """
+  Returns the agent's registered tool closures. Test-only by construction: a
+  closure cannot be serialized, so this can never be a wire field.
+
+  `timeout` is the `GenServer.call/3` failure bound; the default is
+  OTP's (5 s).
+  """
+  @spec get_tools(pid(), timeout()) :: [Nest.LLM.Tool.t()]
+  def get_tools(pid, timeout \\ 5_000) do
+    GenServer.call(pid, :get_tools, timeout)
+  end
+
+  @doc """
+  Returns the cached `Nest.Vocations.Vocation` struct the agent is running
+  under. No broadcast carries it, so this is the only observation.
+
+  `timeout` is the `GenServer.call/3` failure bound; the default is
+  OTP's (5 s).
+  """
+  @spec get_vocation(pid(), timeout()) :: Nest.Vocations.Vocation.t() | nil
+  def get_vocation(pid, timeout \\ 5_000) do
+    GenServer.call(pid, :get_vocation, timeout)
+  end
+
+  @doc """
+  Returns the outstanding watch registrations (issue #54), keyed by the
+  watcher's ref: `%{pid: pid | nil, spec: term(), satisfied: boolean}`.
+
+  `timeout` is the `GenServer.call/3` failure bound; the default is
+  OTP's (5 s).
+  """
+  @spec get_watches(pid(), timeout()) :: %{reference() => map()}
+  def get_watches(pid, timeout \\ 5_000) do
+    GenServer.call(pid, :get_watches, timeout)
+  end
+
+  @doc """
   Returns the active message history for the agent.
 
   `timeout` is the `GenServer.call/3` failure bound; the default is

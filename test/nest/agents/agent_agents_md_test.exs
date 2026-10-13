@@ -201,7 +201,14 @@ defmodule Nest.Agents.AgentAgentsMdTest do
       )
 
       send_compaction_done(pid, "Summary text.", nil)
-      _ = :sys.get_state(pid, 1_000)
+
+      # The commit broadcasts `chat:compaction` inline from the agent while it
+      # handles the response, after the marker and the regenerated messages are
+      # in the state — so the frame is the happens-after event for the commit,
+      # and the read below (a call to the same process) is ordered behind it.
+      # The marker payload is the pin: a fence that could be satisfied by
+      # anything other than a commit would fail here.
+      assert_receive {:chat_compaction, %{marker: %{"role" => "compaction"}}}, 1_000
 
       final_messages = Nest.Agents.Agent.get_messages(pid, 1_000)
 

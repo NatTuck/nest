@@ -219,14 +219,14 @@ defmodule Nest.Agents.Agent.InboxTest do
 
     assert log =~ "cannot fit the system prompt"
 
-    state = :sys.get_state(pid, 1_000)
+    info = Agent.get_public_info(pid, 1_000)
 
-    assert [%{content: "does not fit", kind: :agent}] = state.live.inbox
+    assert [%{"content" => "does not fit", "kind" => "agent"}] = info.pending_messages
     assert_receive {:chat_inbox, %{count: 1}}, 1_000
     # Nothing was consumed, so the enqueue frame above is the only one: a
     # consume's empty frame would mean the entry had been delivered.
     refute_received {:chat_inbox, %{count: 0}}
-    assert Machine.status_for(state.live.machine) == :context_overflow
+    assert info.status == :context_overflow
   end
 
   test "delivery is rejected when the inbox is full", %{pid: pid} do
@@ -318,12 +318,14 @@ defmodule Nest.Agents.Agent.InboxTest do
                  kinds |> Enum.take(n) |> Enum.map(&Atom.to_string/1)
       end
 
-      state = :sys.get_state(pid, 1_000)
+      info = Agent.get_public_info(pid, 1_000)
 
-      assert Enum.map(state.live.inbox, & &1.kind) == kinds
-      assert Enum.map(state.live.inbox, & &1.from) == ["peer", "peer", "peer"]
-      assert Enum.map(state.live.inbox, & &1.mode) == [nil, nil, nil]
-      assert Machine.owed_senders(state.live.machine) == []
+      assert Enum.map(info.pending_messages, & &1["kind"]) ==
+               Enum.map(kinds, &Atom.to_string/1)
+
+      assert Enum.map(info.pending_messages, & &1["from"]) == ["peer", "peer", "peer"]
+      assert Enum.map(info.pending_messages, & &1["mode"]) == [nil, nil, nil]
+      assert info.owed_replies == []
 
       # The fabricated busy status is test-only: leave the agent idle and the
       # queue empty so the teardown's zero-in-flight assertion holds.
@@ -382,10 +384,10 @@ defmodule Nest.Agents.Agent.InboxTest do
 
         assert_receive {:chat_inbox, %{count: ^n}}, 1_000
 
-        state = :sys.get_state(pid, 1_000)
+        info = Agent.get_public_info(pid, 1_000)
 
-        assert Machine.status_for(state.live.machine) == status
-        assert length(state.live.inbox) == n
+        assert info.status == status
+        assert info.pending_message_count == n
       end
 
       state = :sys.get_state(pid, 1_000)

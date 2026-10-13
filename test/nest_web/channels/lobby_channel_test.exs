@@ -268,18 +268,12 @@ defmodule NestWeb.LobbyChannelTest do
 
       ref = push(socket, "create_invite", %{})
 
-      # Synchronise on the channel process, not on a wall clock. `push/3` is a
-      # `send/2` to `socket.channel_pid` from this process, so a
-      # `:sys.get_state/1` from here is queued behind it and returns only after
-      # the handler has run — by which time its `invite:created` push and its
-      # reply are already in this process's mailbox (the channel sends both to
-      # this pid, so they are FIFO ahead of the system reply). The handler's DB
-      # insert can exceed the default `assert_reply` window under the parallel
-      # channel-test load; a longer window would only widen the race instead of
-      # removing it.
-      _ = :sys.get_state(socket.channel_pid, 1_000)
-
-      assert_reply ref, :ok, public
+      # The reply is the event that decides this read. The handler's DB insert
+      # can exceed the default `assert_reply` window under the parallel
+      # channel-test load, so give it a real bound rather than synchronising on
+      # the channel process to read it with the default one — a longer window
+      # on a `0` fence would only widen the race instead of removing it.
+      assert_reply ref, :ok, public, 1_000
       assert is_integer(public.id)
       assert is_binary(public.token)
       assert byte_size(public.token) == 43

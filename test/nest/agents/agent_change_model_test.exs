@@ -87,8 +87,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
           vocation_id: vid()
         })
 
-      state_before = :sys.get_state(pid, 1_000)
-      assert state_before.client_config.client == OpenAIClient
+      assert Agent.get_client_config(pid, 1_000).client == OpenAIClient
 
       :ok =
         Agent.set_model(pid, %{
@@ -347,8 +346,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
           provider: "anthropic-provider"
         })
 
-      state = :sys.get_state(pid, 1_000)
-      crossed = state.live.crossed_thresholds
+      crossed = Agent.get_crossed_thresholds(pid, 1_000)
 
       assert is_struct(crossed, MapSet),
              "crossed_thresholds must be a MapSet (got #{inspect(crossed)})"

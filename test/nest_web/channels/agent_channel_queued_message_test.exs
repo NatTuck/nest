@@ -49,13 +49,13 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
         ref = push(socket, "chat:message", %{"content" => content, "mode" => "plan"})
         assert_reply ref, :ok, %{}
 
-        state = :sys.get_state(agent_pid, 1_000)
+        info = Nest.Agents.Agent.get_public_info(agent_pid, 1_000)
 
-        assert length(state.live.inbox) == n
-        assert Machine.status_for(state.live.machine) == status
+        assert info.pending_message_count == n
+        assert info.status == status
 
-        assert %{content: ^content, kind: :user, from: from, mode: "plan"} =
-                 List.last(state.live.inbox)
+        assert %{"content" => ^content, "kind" => "user", "from" => from, "mode" => "plan"} =
+                 List.last(info.pending_messages)
 
         assert from == user.username
       end
@@ -399,10 +399,12 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       _ = :sys.get_state(socket.channel_pid, 1_000)
       refute_push "chat:inbox", %{count: 0}, 0
 
-      state = :sys.get_state(agent_pid, 1_000)
+      info = Nest.Agents.Agent.get_public_info(agent_pid, 1_000)
 
-      assert Machine.status_for(state.live.machine) == :compacting
-      assert [%{content: "human note", kind: :user, mode: "plan"}] = state.live.inbox
+      assert info.status == :compacting
+
+      assert [%{"content" => "human note", "kind" => "user", "mode" => "plan"}] =
+               info.pending_messages
 
       # Releasing the compactor commits the compaction: the resume re-runs the
       # carried continuation and the next turn boundary drains the queue, so the

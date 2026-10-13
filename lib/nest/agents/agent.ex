@@ -332,6 +332,39 @@ defmodule Nest.Agents.Agent do
   """
   defdelegate get_messages(pid, timeout \\ 5_000), to: ClientAPI
 
+  # Returns the parent's outstanding query children (name => true). Re-export
+  # of `ClientAPI.get_pending_children/2`; `timeout` defaults to OTP's 5 s.
+  defdelegate get_pending_children(pid, timeout \\ 5_000), to: ClientAPI
+
+  # Returns the announced context thresholds. Re-export of
+  # `ClientAPI.get_crossed_thresholds/2`; `timeout` defaults to OTP's 5 s.
+  defdelegate get_crossed_thresholds(pid, timeout \\ 5_000), to: ClientAPI
+
+  # Returns the raw children sub-machine (the value `Children.target/2`
+  # resolves from). Re-export of `ClientAPI.get_children/2`; `timeout`
+  # defaults to OTP's 5 s.
+  defdelegate get_children(pid, timeout \\ 5_000), to: ClientAPI
+
+  # Returns the machine's turn-scoped working set. Re-export of
+  # `ClientAPI.get_work/2`; `timeout` defaults to OTP's 5 s.
+  defdelegate get_work(pid, timeout \\ 5_000), to: ClientAPI
+
+  # Returns the LLM client configuration. Re-export of
+  # `ClientAPI.get_client_config/2`; `timeout` defaults to OTP's 5 s.
+  defdelegate get_client_config(pid, timeout \\ 5_000), to: ClientAPI
+
+  # Returns the registered tool closures. Re-export of
+  # `ClientAPI.get_tools/2`; `timeout` defaults to OTP's 5 s.
+  defdelegate get_tools(pid, timeout \\ 5_000), to: ClientAPI
+
+  # Returns the cached Vocation struct. Re-export of
+  # `ClientAPI.get_vocation/2`; `timeout` defaults to OTP's 5 s.
+  defdelegate get_vocation(pid, timeout \\ 5_000), to: ClientAPI
+
+  # Returns the outstanding watch registrations. Re-export of
+  # `ClientAPI.get_watches/2`; `timeout` defaults to OTP's 5 s.
+  defdelegate get_watches(pid, timeout \\ 5_000), to: ClientAPI
+
   @doc """
   Fetch API logs for a specific message by index, given the agent's
   derived archive (`Persistence.load_history/2`, resolved by the

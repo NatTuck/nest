@@ -471,7 +471,7 @@ defmodule NestWeb.AgentChannelTest do
       seed_archive(space_id, name)
 
       ref = push_history(socket, %{"limit" => 2})
-      assert_reply ref, :ok, %{"messages" => page}, 0
+      assert_reply ref, :ok, %{"messages" => page}, 1_000
       # Ascending order; the newest page sits at the boundary.
       assert Enum.map(page, & &1["index"]) == [3, 4]
 
@@ -479,7 +479,7 @@ defmodule NestWeb.AgentChannelTest do
       # the human-tagged row. Index 2 is a delivered peer message (user role,
       # no `origin`) and must not be recalled.
       ref = push_history(socket, %{"role" => "user"})
-      assert_reply ref, :ok, %{"messages" => users}, 0
+      assert_reply ref, :ok, %{"messages" => users}, 1_000
       assert Enum.map(users, & &1["index"]) == [1]
       assert Enum.all?(users, &(&1["role"] == "user"))
     end
@@ -492,39 +492,36 @@ defmodule NestWeb.AgentChannelTest do
       seed_archive(space_id, name)
 
       ref = push_history(socket, %{"before" => 2, "limit" => 2})
-      assert_reply ref, :ok, %{"messages" => page}, 0
+      assert_reply ref, :ok, %{"messages" => page}, 1_000
       assert Enum.map(page, & &1["index"]) == [0, 1]
 
       ref = push_history(socket, %{"before" => 0})
-      assert_reply ref, :ok, %{"messages" => []}, 0
+      assert_reply ref, :ok, %{"messages" => []}, 1_000
     end
 
     test "rejects invalid before / limit / role", %{socket: socket} do
       ref = push_history(socket, %{"before" => -1})
-      assert_reply ref, :error, %{"reason" => "invalid_before"}, 0
+      assert_reply ref, :error, %{"reason" => "invalid_before"}, 1_000
 
       ref = push_history(socket, %{"limit" => 0})
-      assert_reply ref, :error, %{"reason" => "invalid_limit"}, 0
+      assert_reply ref, :error, %{"reason" => "invalid_limit"}, 1_000
 
       ref = push_history(socket, %{"role" => "bogus"})
-      assert_reply ref, :error, %{"reason" => "invalid_role"}, 0
+      assert_reply ref, :error, %{"reason" => "invalid_role"}, 1_000
     end
 
     test "returns [] for a never-compacted agent", %{socket: socket} do
       ref = push_history(socket, %{})
-      assert_reply ref, :ok, %{"messages" => []}, 0
+      assert_reply ref, :ok, %{"messages" => []}, 1_000
     end
   end
 
-  # Push `chat:history` and wait for the channel to handle it: `gen_server`
-  # handles this system message only after the push, and the channel sends the
-  # reply before answering it, so the reply is already in our mailbox and the
-  # 0 ms `assert_reply` below is a mailbox read, not a race. The reply is
-  # DB-backed with a rare 130-160 ms tail under 24-way concurrency.
+  # Push `chat:history` and return its ref. The reply is the event that decides
+  # the read: it is DB-backed, with a rare 130-160 ms tail under the suite's
+  # 24-way concurrency, so every caller gives `assert_reply` a real bound rather
+  # than synchronising on the channel process to read it with a `0` fence.
   defp push_history(socket, payload) do
-    ref = push(socket, "chat:history", payload)
-    _ = :sys.get_state(socket.channel_pid, 1_000)
-    ref
+    push(socket, "chat:history", payload)
   end
 
   describe "handle_in(change_model)" do

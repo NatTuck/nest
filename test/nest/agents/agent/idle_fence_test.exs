@@ -25,7 +25,6 @@ defmodule Nest.Agents.Agent.IdleFenceTest do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.Machine
   alias Nest.LLM.MockClient
 
   setup do
@@ -93,6 +92,6 @@ defmodule Nest.Agents.Agent.IdleFenceTest do
     # has no children, and these mocked responses carry no usage), so this is
     # decided by what the wait consumed, not by the clock.
     refute_received {:chat_status, %{name: ^name, status: "idle"}}
-    assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
+    assert Agent.get_public_info(pid, 1_000).status == :idle
   end
 end

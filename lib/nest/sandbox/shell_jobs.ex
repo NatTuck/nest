@@ -156,6 +156,20 @@ defmodule Nest.Sandbox.ShellJobs do
   def unsubscribe(agent_key, job_id, pid),
     do: GenServer.call(@name, {:unsubscribe, agent_key, job_id, pid})
 
+  @doc """
+  The pids registered as waiters for `job_id`, in registration order (newest
+  first).
+
+  Test-only introspection: the manager owns the waiter list, and a test that
+  asserts "this caller is not left registered" needs to read it rather than
+  race an OS kill against a fixed receive timeout.
+
+  `timeout` is the `GenServer.call/3` failure bound; the default is OTP's
+  (5 s). A converted test site passes the suite's 1 s bound instead.
+  """
+  @spec waiters(job_id(), timeout()) :: [pid()]
+  def waiters(job_id, timeout \\ 5_000), do: GenServer.call(@name, {:waiters, job_id}, timeout)
+
   @doc "Kill a running job. Its exit code is reported once the process dies."
   @spec kill(agent_key(), job_id()) :: :ok | {:error, :not_found}
   def kill(agent_key, job_id), do: GenServer.call(@name, {:kill, agent_key, job_id})
@@ -250,6 +264,10 @@ defmodule Nest.Sandbox.ShellJobs do
 
   def handle_call({:unsubscribe, _agent_key, job_id, pid}, _from, state) do
     {:reply, :ok, remove_waiter(state, job_id, pid)}
+  end
+
+  def handle_call({:waiters, job_id}, _from, state) do
+    {:reply, Map.get(state.waiters, job_id, []), state}
   end
 
   def handle_call({:kill, agent_key, job_id}, _from, state) do

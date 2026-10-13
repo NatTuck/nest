@@ -598,7 +598,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # nothing else will move the machine before the stop.
       {_second, _llm2} = next_request()
 
-      backgrounded = :sys.get_state(pid, 1_000).live.machine.work.backgrounded
+      backgrounded = Agent.get_work(pid, 1_000).backgrounded
       assert [ref] = Map.keys(backgrounded)
       assert backgrounded[ref] == %{pid: tool, ids: ["send_1"]}
 

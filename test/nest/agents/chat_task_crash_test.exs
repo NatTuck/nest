@@ -264,7 +264,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # recorded `active_worker` before the worker could run, and a synchronous
         # read is ordered after that write.
         assert_receive {worker, :worker_blocked}, 1_000
-        assert :sys.get_state(pid, 1_000).live.machine.work.active_worker == worker
+        assert Agent.get_work(pid, 1_000).active_worker == worker
 
         # A raw exit signal (not trappable by the worker's own try/catch)
         # kills the worker before it can send a result. The turn's
