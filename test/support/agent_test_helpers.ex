@@ -585,19 +585,22 @@ defmodule Nest.Agents.AgentTestHelpers do
   # `unsubscribe/2` below is therefore the same kind of no-op for
   # the test pid — it only unsubscribes this runner process — and is
   # kept as the belt to `drop_stale_pubsub_subscriptions/0`'s braces.
-  # The per-test on_exit *closure*, as a named function. The registered callback
-  # is exactly what this returns, so a test can invoke the callback that is
-  # really registered rather than a lookalike — a stop re-added to this body is
-  # then exercised by `agent_test_lifecycle_test.exs`'s "the per-test on_exit
-  # cleanup issues no query" instead of escaping it. `on_exit_cleanup/3` is the
-  # body it calls.
-  #
-  # The property that matters is that it issues no query, because it runs in a
-  # process that does not own this test's sandbox connection.
+  # The two per-test on_exit *closures*, as named functions. The registered
+  # callbacks are exactly what these return, so a test can invoke the callback
+  # that is really registered rather than a lookalike — a stop re-added to
+  # either body is then exercised instead of escaping — and can find them by
+  # their keys (`cleanup_key/2`, `leak_key/2`). Both must issue no query: they
+  # run in a process that does not own this test's sandbox connection.
   @doc false
   @spec per_test_on_exit_cleanup(pid(), integer(), String.t()) :: (-> :ok)
   def per_test_on_exit_cleanup(pid, space_id, agent_id) do
     fn -> on_exit_cleanup(pid, space_id, agent_id) end
+  end
+
+  @doc false
+  @spec per_test_on_exit_leak_check(integer(), String.t()) :: (-> term())
+  def per_test_on_exit_leak_check(space_id, agent_id) do
+    fn -> AgentTestLifecycle.detect_leaked_agent(space_id, agent_id) end
   end
 
   defp on_exit_cleanup(pid, space_id, agent_id) do
@@ -607,14 +610,15 @@ defmodule Nest.Agents.AgentTestHelpers do
   end
 
   defp register_on_exit_cleanup(pid, space_id, agent_id) do
-    on_exit(per_test_on_exit_cleanup(pid, space_id, agent_id))
-
-    # The check the in-process teardown cannot give on the path where the test
-    # was killed at its per-test deadline: the wrapper never runs, and an agent
-    # that is not linked to the test process would otherwise leak silently.
-    # `detect_leaked_agent/2` only watches, and issues no query.
-    on_exit(fn -> AgentTestLifecycle.detect_leaked_agent(space_id, agent_id) end)
+    on_exit(cleanup_key(space_id, agent_id), per_test_on_exit_cleanup(pid, space_id, agent_id))
+    on_exit(leak_key(space_id, agent_id), per_test_on_exit_leak_check(space_id, agent_id))
   end
+
+  @doc false
+  def cleanup_key(space_id, agent_id), do: {__MODULE__, :cleanup, space_id, agent_id}
+
+  @doc false
+  def leak_key(space_id, agent_id), do: {__MODULE__, :leak_check, space_id, agent_id}
 
   def get_system_prompt(pid) do
     GenServer.call(pid, :get_system_prompt)

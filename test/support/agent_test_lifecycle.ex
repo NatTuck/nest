@@ -46,9 +46,13 @@ defmodule Nest.Agents.AgentTestLifecycle do
   its `MessageAppender.append_one/2` insert with a Postgrex
   "owner exited" error. Running in the test body (via the `test`
   wrapper in `Nest.TestSupport.AgentTestMacro`) keeps the sandbox
-  checkout alive. For the same reason the `on_exit` hooks this module's
-  callers register issue no query and never stop an agent: they can only
-  report what the wrapper could not — see `detect_leaked_agent/2`.
+  checkout alive. For the same reason the `on_exit` hooks
+  `AgentTestHelpers` registers issue no query and never stop an agent:
+  they can only *report* what the wrapper could not (see
+  `detect_leaked_agent/2`). (`supervisor_subagent_test.exs`'s `safe_stop/2`
+  is the one hook in this tree that stops an agent from an `on_exit`; it
+  stops only an idle child, whose `terminate/2` issues no query — so the
+  rule holds for the hook, not because the hook obeys it.)
   """
 
   import Ecto.Query
@@ -151,6 +155,11 @@ defmodule Nest.Agents.AgentTestLifecycle do
   connection. A leaked agent is reported (an `error` log) and returned as
   `{:leaked, space_id, name}`, never forced: a stop would run `terminate/2`,
   which can query on that dead connection.
+
+  The report says only what this hook can observe — the agent is still alive
+  after its test, so the teardown did not stop it. It does **not** name a cause:
+  a deadline kill and a `stop_pid/2` that gave up at `@stop_ms` look the same
+  from here, and they are different diagnoses.
   """
   @spec detect_leaked_agent(integer(), String.t(), pos_integer()) ::
           :ok | {:leaked, integer(), String.t()}
@@ -172,9 +181,9 @@ defmodule Nest.Agents.AgentTestLifecycle do
         Process.demonitor(ref, [:flush])
 
         Logger.error(
-          "agent #{space_id}/#{name} outlived its test: the in-process teardown " <>
-            "never ran (the test was killed at its per-test deadline) and the " <>
-            "agent did not stop on its own — it is leaked into the rest of the run"
+          "agent #{space_id}/#{name} is still alive after its test: the " <>
+            "in-process teardown did not stop it, so it is leaked into the rest " <>
+            "of the run"
         )
 
         {:leaked, space_id, name}

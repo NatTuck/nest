@@ -492,7 +492,7 @@ defmodule Nest.Agents.Agent do
     # milliseconds. The manager already monitors this pid (`track_agent/3`), so
     # this cast is not what keeps a job from outliving its agent; it asks for
     # the stop without making the exit wait.
-    ShellJobs.stop_all_async({state.space_id, state.name})
+    ShellJobs.stop_all_async({state.space_id, state.name}, self())
 
     # Cleanup /tmp per design specification. This removal is the *fence* the
     # tmp-path tests rely on — the directory is gone by the time this process's

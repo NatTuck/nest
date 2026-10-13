@@ -28,7 +28,7 @@ defmodule Nest.Sandbox.ShellJobs do
   concurrently per agent; `0` disables background jobs. Jobs are keyed
   by `{space_id, agent_name}` and die when their agent dies — the manager
   monitors the agent pid and drops the agent's jobs on its `:DOWN` — or
-  when a caller invokes `stop_all/1`/`stop_all_async/1`. A drop also removes
+  when a caller invokes `stop_all/1`/`stop_all_async/2`. A drop also removes
   the agent's scratch directory, after the jobs are stopped. Finished jobs
   are kept (bounded) for `shell-wait`/`shell-list`.
 
@@ -48,6 +48,14 @@ defmodule Nest.Sandbox.ShellJobs do
   `File.rm_rf` of a dropped agent's scratch directory. It never waits
   on an agent, an LLM, or another process, so a `GenServer.call/3` to
   it is ordinary synchronous communication, not a blocking hand-off.
+
+  The `rm_rf` is the one cost this process carries that scales with the
+  agent's own data (the uncapped logs under its scratch). It stays here
+  rather than moving to a task: the removal's whole point is that it is
+  ordered *after* the job kills, so it must run in the process that did
+  the killing, and a task spawned from here could outlive the manager.
+  The work is bounded by one agent's scratch and runs on a path (the
+  agent going away) where the manager has nothing else queued for it.
   """
 
   use GenServer
@@ -56,6 +64,7 @@ defmodule Nest.Sandbox.ShellJobs do
   alias Nest.PubSub
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
+  alias Nest.Sandbox.ShellJobs.Waiters
   alias Nest.Tools.Exec
   alias Nest.Tools.ShellCmd
 
@@ -183,7 +192,9 @@ defmodule Nest.Sandbox.ShellJobs do
 
   @doc """
   Ask the manager to stop every job belonging to `agent_key`, without waiting
-  for it to happen.
+  for it to happen. `owner` is the agent's pid — the incarnation the stop is
+  for; see `Nest.Agents.Agent.TmpSpace.cleanup_agent_key/2` for why it travels
+  with the request.
 
   The non-blocking form of `stop_all/1`, for `Nest.Agents.Agent.terminate/2`:
   the manager is a process-global rendezvous that every agent's teardown passes
@@ -193,8 +204,8 @@ defmodule Nest.Sandbox.ShellJobs do
   immediately; the manager still stops the jobs and removes the scratch, and it
   already monitors the agent pid (`track_agent/3`), so they die with the agent.
   """
-  @spec stop_all_async(agent_key()) :: :ok
-  def stop_all_async(agent_key), do: GenServer.cast(@name, {:stop_all, agent_key})
+  @spec stop_all_async(agent_key(), pid()) :: :ok
+  def stop_all_async(agent_key, owner), do: GenServer.cast(@name, {:stop_all, agent_key, owner})
 
   @doc """
   The result text for a finished job, shared by the blocking `shell-wait` and
@@ -272,8 +283,7 @@ defmodule Nest.Sandbox.ShellJobs do
         {:reply, :ok, state}
 
       {:ok, _running} ->
-        waiters = Map.update(state.waiters, job_id, [pid], &[pid | &1])
-        {:reply, :ok, %{state | waiters: waiters}}
+        {:reply, :ok, %{state | waiters: Waiters.add(state.waiters, job_id, pid)}}
 
       :error ->
         {:reply, {:error, :not_found}, state}
@@ -281,11 +291,11 @@ defmodule Nest.Sandbox.ShellJobs do
   end
 
   def handle_call({:unsubscribe, _agent_key, job_id, pid}, _from, state) do
-    {:reply, :ok, remove_waiter(state, job_id, pid)}
+    {:reply, :ok, %{state | waiters: Waiters.remove(state.waiters, job_id, pid)}}
   end
 
   def handle_call({:waiters, job_id}, _from, state) do
-    {:reply, Map.get(state.waiters, job_id, []), state}
+    {:reply, Waiters.get(state.waiters, job_id), state}
   end
 
   def handle_call({:kill, agent_key, job_id}, _from, state) do
@@ -314,12 +324,15 @@ defmodule Nest.Sandbox.ShellJobs do
   end
 
   def handle_call({:stop_all, agent_key}, _from, state) do
-    {:reply, :ok, drop_agent(agent_key, state)}
+    # No incarnation to name: the sync form is a caller that only wants the
+    # jobs gone (in this tree, the shell-jobs tests), so any live owner of the
+    # key refuses the scratch removal. See `TmpSpace.cleanup_agent_key/2`.
+    {:reply, :ok, drop_agent(agent_key, state, nil)}
   end
 
   @impl true
-  def handle_cast({:stop_all, agent_key}, state) do
-    {:noreply, drop_agent(agent_key, state)}
+  def handle_cast({:stop_all, agent_key, owner}, state) do
+    {:noreply, drop_agent(agent_key, state, owner)}
   end
 
   @impl true
@@ -331,9 +344,14 @@ defmodule Nest.Sandbox.ShellJobs do
 
   def handle_info({:DOWN, _ref, :process, pid, reason}, state) do
     cond do
-      job = job_by_erl_pid(state, pid) -> {:noreply, finish_job(job, reason, state)}
-      agent_key = agent_key_by_monitor(state, pid) -> {:noreply, drop_agent(agent_key, state)}
-      true -> {:noreply, state}
+      job = job_by_erl_pid(state, pid) ->
+        {:noreply, finish_job(job, reason, state)}
+
+      agent_key = agent_key_by_monitor(state, pid) ->
+        {:noreply, drop_agent(agent_key, state, pid)}
+
+      true ->
+        {:noreply, state}
     end
   end
 
@@ -435,7 +453,7 @@ defmodule Nest.Sandbox.ShellJobs do
 
     state =
       state
-      |> notify_waiters(job.id, code)
+      |> Map.update!(:waiters, &Waiters.notify_exit(&1, job.id, code))
       |> put_job(%{job | status: {:exited, code}, exit_code: code})
       |> trim(job.agent_key)
 
@@ -468,27 +486,28 @@ defmodule Nest.Sandbox.ShellJobs do
     end
   end
 
-  defp drop_agent(agent_key, state) do
+  defp drop_agent(agent_key, state, owner) do
     jobs = state.jobs |> Map.values() |> Enum.filter(&(&1.agent_key == agent_key))
+    ids = Enum.map(jobs, & &1.id)
 
     Enum.each(jobs, &stop_job/1)
 
     # Say so before the waiter lists go with the jobs: this is the only path
     # that ends a job without an exit, and a waiter that outlives its agent
     # would otherwise wait out its whole timeout and then report the job as
-    # still running. See `notify_gone/2`.
-    notify_gone(state.waiters, jobs)
+    # still running. See `Waiters.notify_gone/2`.
+    Waiters.notify_gone(state.waiters, ids)
 
     # The jobs above are stopped, so the scratch directory can go now; removing
     # it first would let a running job recreate files under a deleted path.
-    TmpSpace.cleanup_agent_key(agent_key)
+    # `owner` is the incarnation this drop is for, so a stale monitor for a
+    # previous one cannot delete the scratch a live agent is using.
+    TmpSpace.cleanup_agent_key(agent_key, owner)
 
     case Map.get(state.agents, agent_key) do
       %{ref: ref} -> Process.demonitor(ref, [:flush])
       _ -> :ok
     end
-
-    ids = Enum.map(jobs, & &1.id)
 
     state = %{
       state
@@ -511,28 +530,6 @@ defmodule Nest.Sandbox.ShellJobs do
 
   defp stop_job(job), do: remove_script(job)
 
-  # Tell every waiter on a dropped job that the job is gone.
-  #
-  # `drop_agent/2` is reached from the agent's `:DOWN` (a crash, an archive, a
-  # supervisor shutdown) and from `stop_all/1` / `stop_all_async/1` (the agent's
-  # own `terminate/2`), so the agent is always going away — but a waiter need
-  # not go with it. The tool worker behind `shell-wait` with `block: true` is a
-  # task under `Nest.Agents.TaskSupervisor`, a sibling of the agent supervisor,
-  # so it survives its agent: without this it sits in its `receive` for the whole
-  # `timeout` and then reports "Timed out waiting for background job <id>; it is
-  # still running", which is false twice over. (The async watcher is not a
-  # concern: it monitors its caller and exits on the DOWN.)
-  #
-  # Deliberately *not* `{:shell_job_exit, id, code}`: no exit was observed, so
-  # there is no code to report, and `output/2` is `:not_found` for a job this
-  # manager no longer tracks. The distinct tag is what lets a consumer word it
-  # as "the agent that owned this job is gone" rather than as a normal exit.
-  defp notify_gone(waiters, jobs) do
-    Enum.each(jobs, fn job ->
-      Enum.each(Map.get(waiters, job.id, []), &send(&1, {:shell_job_gone, job.id}))
-    end)
-  end
-
   # SIGKILL the running external process. Plain `:exec.stop/1` sends
   # SIGTERM first and only escalates to SIGKILL after ~5s; bwrap (PID 1 in
   # its namespace) can ignore SIGTERM, which made kills flaky-slow. We want
@@ -541,30 +538,6 @@ defmodule Nest.Sandbox.ShellJobs do
     :exec.kill(os_pid, :sigkill)
   catch
     _kind, _ -> :ok
-  end
-
-  # ---- Waiters ----
-
-  defp notify_waiters(state, job_id, code) do
-    pids = Map.get(state.waiters, job_id, [])
-
-    Enum.each(pids, &send(&1, {:shell_job_exit, job_id, code}))
-    update_in(state.waiters, &Map.delete(&1, job_id))
-  end
-
-  # Drop a single waiter without notifying it. Removes the job's key
-  # entirely once its list empties.
-  defp remove_waiter(state, job_id, pid) do
-    case Map.get(state.waiters, job_id) do
-      nil ->
-        state
-
-      pids ->
-        case List.delete(pids, pid) do
-          [] -> %{state | waiters: Map.delete(state.waiters, job_id)}
-          remaining -> %{state | waiters: Map.put(state.waiters, job_id, remaining)}
-        end
-    end
   end
 
   # ---- Retention / cleanup ----

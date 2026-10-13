@@ -203,37 +203,47 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
     end
   end
 
-  describe "the per-test on_exit cleanup" do
-    test "issues no query" do
+  describe "the per-test on_exit hooks" do
+    test "are registered, and each issues no query" do
       {pid, name} = AgentTestHelpers.start_agent()
       space_id = AgentTestHelpers.current_space_id()
       test_pid = self()
 
+      # The leak check waits out `cleanup_ms` for a live agent, so stop it first:
+      # both hooks then take their fast path, and the query-free property is what
+      # is under test here, not the wait. The stop runs in the body, while the
+      # sandbox connection is still checked out.
+      Process.unlink(pid)
+      :ok = Supervisor.stop_agent(space_id, name)
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+
+      # The callbacks invoked below are the ones `register_on_exit_cleanup/3`
+      # actually registered — read back from ExUnit by their keys — not
+      # lookalikes, so a stop re-added to either closure's body is exercised by
+      # this test instead of escaping it.
+      cleanup = registered_on_exit(AgentTestHelpers.cleanup_key(space_id, name))
+      leak = registered_on_exit(AgentTestHelpers.leak_key(space_id, name))
+      refute is_nil(cleanup)
+      refute is_nil(leak)
+
       # A plain `spawn` inherits no `$callers`, so it has no sandbox connection:
-      # a query in the cleanup would crash it with `DBConnection.OwnershipError`
-      # instead of reporting `:ok`. The real `on_exit` runs in exactly such a
-      # process — after the test pid, the connection owner, has exited — which
-      # is why it must not stop the agent (`Supervisor.stop_agent/2` runs
+      # a query in a hook would crash it with `DBConnection.OwnershipError`
+      # instead of reporting. The real `on_exit` runs in exactly such a process —
+      # after the test pid, the connection owner, has exited — which is why a
+      # hook must not stop the agent (`Supervisor.stop_agent/2` runs
       # `terminate/2`, and that queries).
-      #
-      # The callback invoked here is the one `register_on_exit_cleanup/3`
-      # actually registers (`per_test_on_exit_cleanup/3`), not a lookalike, so a
-      # stop re-added to the closure's body is exercised by this test instead of
-      # escaping it.
-      cleanup =
+      runner =
         spawn(fn ->
-          send(
-            test_pid,
-            {:cleanup, AgentTestHelpers.per_test_on_exit_cleanup(pid, space_id, name).()}
-          )
+          send(test_pid, {:hooks, cleanup.(), leak.()})
         end)
 
-      ref = Process.monitor(cleanup)
+      ref = Process.monitor(runner)
 
-      assert_receive {:cleanup, :ok}, 1_000
-      # `:normal`, not a crash: a query here would have killed the process with
-      # `DBConnection.OwnershipError` before it could report.
-      assert_receive {:DOWN, ^ref, :process, ^cleanup, :normal}, 1_000
+      assert_receive {:hooks, :ok, :ok}, 1_000
+      # `:normal`, not a crash: a query in either hook would have killed the
+      # process with `DBConnection.OwnershipError` before it could report.
+      assert_receive {:DOWN, ^ref, :process, ^runner, :normal}, 1_000
     end
   end
 
@@ -267,7 +277,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
 
       # The report is the observable an operator sees; the return value above is
       # the machine-readable half.
-      assert log =~ "outlived its test"
+      assert log =~ "is still alive after its test"
       assert log =~ name
 
       # Once it is gone, the detector does not report it.
@@ -339,5 +349,17 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
 
       :ok = :sys.resume(pid)
     end
+  end
+
+  # The `on_exit` callback this test registered under `key`, as ExUnit stores
+  # it, or `nil`. `ExUnit.Server` is ExUnit's own public ETS table of on_exit
+  # callbacks, keyed by the test pid; reading it is how a test asserts that a
+  # hook is registered, rather than only exercising the function the hook calls.
+  defp registered_on_exit(key) do
+    :ets.lookup_element(ExUnit.Server, self(), 3)
+    |> Enum.find_value(fn
+      {^key, callback} -> callback
+      _ -> nil
+    end)
   end
 end
