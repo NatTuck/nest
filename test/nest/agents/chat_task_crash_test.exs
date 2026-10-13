@@ -277,6 +277,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         assert content =~ "boom"
       end)
 
+      # allowlist: snapshot — status + work
       state = :sys.get_state(pid, 1_000)
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil

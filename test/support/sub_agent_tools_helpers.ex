@@ -58,6 +58,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
 
     AgentTestHelpers.ensure_cleanup(coordinator_name)
     {:ok, pid} = Supervisor.get_agent(space_id, coordinator_name)
+    # allowlist: harness — Supervisor.spawn_agent_in_space/3's state argument
     :sys.get_state(pid, 1_000)
   end
 

@@ -122,6 +122,7 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       assert log =~ "context_overflow" or log =~ "context limit"
 
       # The agent stays idle (no chat turn was spawned).
+      # allowlist: snapshot — status + pending_user_message + messages
       state_after = :sys.get_state(pid, 1_000)
       assert Machine.status_for(state_after.live.machine) == :context_overflow
       assert state_after.live.machine.pending_user_message == nil

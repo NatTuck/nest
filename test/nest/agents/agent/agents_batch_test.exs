@@ -95,6 +95,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert ["alpha-done", "beta-done", "gamma-done"] =
              await_aggregate(parent_pid, ~s(["alpha-done))
 
+    # allowlist: snapshot — messages + pending_children + descendant_usage
     parent_state = :sys.get_state(parent_pid, 1_000)
     AgentTestHelpers.assert_unique_message_indices(parent_state.chat_state.messages)
 
@@ -400,6 +401,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     #
     # No turn runs here (the coordinator's run below is fabricated), so no idle
     # `chat:status` frame will ever arrive: read the already-idle state directly.
+    # allowlist: harness — Turn.build_ctx/1's argument
     state = :sys.get_state(parent_pid, 1_000)
     set_status(parent_pid, :streaming)
     # Explicit timeouts on both: `:sys.suspend/1` and `:sys.resume/1` otherwise
@@ -475,6 +477,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     # the refusal above pinned.
     assert_receive {:chat_inbox, %{count: count}} when count > 100, 1_000
 
+    # allowlist: snapshot — inbox + messages
     state = :sys.get_state(parent_pid, 1_000)
 
     aggregate =
@@ -559,6 +562,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   # the transcript, and no single accessor returns both.
   defp await_idle(parent_pid) do
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
+    # allowlist: snapshot — children + messages
     :sys.get_state(parent_pid, 1_000)
   end
 

@@ -98,6 +98,7 @@ defmodule Nest.Agents.Agent.TurnDeclinedDeliveryTest do
                     }},
                    500
 
+    # allowlist: snapshot — inbox + messages
     state = :sys.get_state(pid, 1_000)
 
     # Queued: the W1 invariant. The entry is in the queue, and it is not in the

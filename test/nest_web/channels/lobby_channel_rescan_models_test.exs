@@ -118,6 +118,7 @@ defmodule NestWeb.LobbyChannelRescanModelsTest do
   # reply the channel was going to send is already in the test mailbox.
   # `refute_receive ..., 0` then checks it with no wait.
   defp refute_no_reply(socket, ref) do
+    # allowlist: barrier — refute_no_reply/2's anchor
     _ = :sys.get_state(socket.channel_pid, 500)
     refute_receive %Phoenix.Socket.Reply{ref: ^ref}, 0
   end

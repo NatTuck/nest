@@ -66,6 +66,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
         1_000
       )
 
+      # allowlist: harness — Turn.build_ctx/1's argument
       state = :sys.get_state(pid, 1_000)
       assert Machine.owed_senders(state.live.machine) == ["peer"]
 
@@ -83,6 +84,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # topics — cannot satisfy it.
       assert_receive {:chat_status, %{name: ^name, status: "idle"}}, 1_000
 
+      # allowlist: snapshot — messages + owed_replies
       state = :sys.get_state(pid, 1_000)
 
       # The commit really ran (the summary landed) and the debt is gone.
@@ -129,6 +131,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # reminder and no give-up came in between.
       assert statuses_until_idle(name) == ["streaming", "executing_tools", "streaming", "idle"]
 
+      # allowlist: snapshot — messages + owed_replies
       state = :sys.get_state(pid, 1_000)
 
       refute Enum.any?(agent_user_texts(state), &(&1 =~ "have not answered"))
@@ -189,6 +192,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       assert log =~ "BatchSizer produced is_error=true tool result"
       assert log =~ "ghost"
 
+      # allowlist: snapshot — messages + owed_replies
       state = :sys.get_state(pid, 1_000)
 
       # The gate reminded once, naming the still-unanswered peer, and the
@@ -244,6 +248,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # `:generating`), so the next frame is the give-up's idle.
       assert statuses_until_idle(name) == ["idle"]
 
+      # allowlist: snapshot — messages + owed_replies
       state = :sys.get_state(pid, 1_000)
 
       assert length(Enum.filter(agent_user_texts(state), &(&1 =~ "have not answered"))) == 1

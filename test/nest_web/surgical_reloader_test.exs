@@ -71,6 +71,7 @@ defmodule NestWeb.SurgicalReloaderTest do
       # so the module map is built asynchronously after init returns.
       # `_ = :sys.get_state/2` flushes the GenServer mailbox so the
       # `handle_continue/2` callback has run before we read state.
+      # allowlist: dev-only — no introspection API; also the barrier for the call above
       state = :sys.get_state(pid, 500)
 
       assert is_map(state)
@@ -89,6 +90,7 @@ defmodule NestWeb.SurgicalReloaderTest do
 
       send(pid, {:file_event, make_ref(), {"README.md", [:modified]}})
 
+      # allowlist: dev-only — no introspection API; also the barrier for the call above
       state = :sys.get_state(pid, 500)
       assert state.pending_changes == MapSet.new()
     end
@@ -98,6 +100,7 @@ defmodule NestWeb.SurgicalReloaderTest do
 
       send(pid, {:file_event, make_ref(), {"lib/foo.ex", [:removed]}})
 
+      # allowlist: dev-only — no introspection API; also the barrier for the call above
       state = :sys.get_state(pid, 500)
       assert state.pending_changes == MapSet.new()
     end
@@ -116,6 +119,7 @@ defmodule NestWeb.SurgicalReloaderTest do
 
       # `:sys.get_state/2` is synchronous relative to the server's mailbox and
       # the event was sent first, so this observes the state after the event.
+      # allowlist: dev-only — no introspection API; also the barrier for the call above
       state = :sys.get_state(pid, 500)
 
       assert MapSet.member?(state.pending_changes, "lib/example_test.ex")
@@ -129,6 +133,7 @@ defmodule NestWeb.SurgicalReloaderTest do
 
       send(pid, :do_compile)
 
+      # allowlist: dev-only — no introspection API; also the barrier for the call above
       state = :sys.get_state(pid, 500)
       assert state.pending_changes == MapSet.new()
       assert state.compiling == false

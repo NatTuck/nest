@@ -231,6 +231,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     [{_ref, %{pid: task}}] = Map.to_list(watchers(pid))
     mref = Process.monitor(task)
 
+    # allowlist: harness — Watch.stop_all/1's argument
     state = :sys.get_state(pid, 1_000)
     assert Watch.stop_all(state).live.watches == %{}
     assert_receive {:DOWN, ^mref, :process, ^task, _reason}, 1_000
@@ -468,6 +469,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     # The action is emitted by the pure stop; `Turn.Executor`'s clause reads
     # `live.watches`. Asserting the action here keeps the Stop contract pinned
     # without driving a whole turn.
+    # allowlist: harness — Machine.step/2's argument
     state = :sys.get_state(pid, 1_000)
     machine = Machine.status_to_machine(state.live.machine, :streaming)
     {:ok, actions, _machine} = Machine.step(machine, {:stop, nil})

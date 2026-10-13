@@ -183,6 +183,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     await_idle()
 
+    # allowlist: snapshot — messages + descendant_usage
     parent_state = :sys.get_state(parent_pid, 1_000)
     AgentTestHelpers.assert_unique_message_indices(parent_state.chat_state.messages)
 
@@ -211,6 +212,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     # The clone's fork notice carries its name and depth (its system message is
     # inherited verbatim from the parent, so this user-visible notice is the
     # only place to state the clone's true identity/depth).
+    # allowlist: snapshot — depth + messages
     child_state = :sys.get_state(child_pid, 1_000)
     assert child_state.depth == parent_state.depth + 1
 

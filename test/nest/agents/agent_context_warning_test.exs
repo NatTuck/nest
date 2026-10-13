@@ -111,6 +111,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
     :ok = Agent.chat(pid, "Third message")
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
+    # allowlist: snapshot — messages + context_projection
     state = :sys.get_state(pid, 1_000)
 
     assert count_reminders(state, "Context at 25%") == 1,
@@ -130,6 +131,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
     # The projection is written only by the executor's
     # `:set_context_projection` action; exercise that action directly.
     {pid, _agent_id} = AgentTestHelpers.start_agent(%{})
+    # allowlist: harness — Executor.run_all/2's argument
     state = :sys.get_state(pid, 1_000)
 
     {state, nil} =
@@ -266,6 +268,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
     # `chat_or_queue/4` (which would queue the message while the
     # agent is busy, in a real scenario) so the test exercises the
     # pipeline's injection guard specifically.
+    # allowlist: harness — ContextReminder.highest_unannounced/3's argument
     state = :sys.get_state(pid, 1_000)
     state = put_in(state.live.machine.pending_user_message, {"New request", "chat"})
 

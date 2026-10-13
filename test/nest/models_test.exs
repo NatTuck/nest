@@ -252,6 +252,7 @@ defmodule Nest.ModelsTest do
       # The setup's scan has already cached that provider's answer for
       # this name; the static value must be emitted verbatim rather
       # than replaced by the detected one.
+      # allowlist: fixture — the read half of the :sys.replace_state pair
       previous = :sys.get_state(Models, 1_000).static_config
 
       static_model = %Nest.DotConfig.Model{
@@ -318,6 +319,7 @@ defmodule Nest.ModelsTest do
   # Add an auto-models provider to the running singleton's static config,
   # restoring the previous snapshot afterwards. The stub answers its URL.
   defp inject_second_provider do
+    # allowlist: fixture — the read half of the :sys.replace_state pair
     previous = :sys.get_state(Models, 1_000).static_config
 
     provider = %Nest.DotConfig.Provider{
@@ -388,6 +390,7 @@ defmodule Nest.ModelsTest do
       # setup's `Models.refresh/0`). We use this after the
       # test to restore the canonical state for any
       # subsequent tests in the file.
+      # allowlist: fixture — the read half of the :sys.replace_state pair
       pre_reload_static =
         :sys.get_state(Models, 1_000)
         |> Map.fetch!(:static_config)

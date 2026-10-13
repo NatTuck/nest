@@ -96,6 +96,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
+      # allowlist: snapshot — status + work + cancelled + messages
       state = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :idle
@@ -141,6 +142,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
+      # allowlist: snapshot — messages + status
       state = :sys.get_state(pid, 1_000)
 
       # Expected base: system(0), user(1), assistant+tools(2),
@@ -264,6 +266,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
         assert_receive {:chat_status, %{status: "idle"}}, 750
       end)
 
+      # allowlist: snapshot — status + work + messages
       state = :sys.get_state(pid, 1_000)
 
       # The agent goes to :idle after the final call.
@@ -312,6 +315,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
+      # allowlist: snapshot — status + work + messages
       state = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :idle
@@ -364,6 +368,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
         assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
+      # allowlist: snapshot — status + work
       state = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :idle

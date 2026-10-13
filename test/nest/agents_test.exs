@@ -508,6 +508,7 @@ defmodule Nest.AgentsTest do
 
       # No compaction was staged: the machine is still the fabricated
       # streaming state, the loop counter and focus are untouched.
+      # allowlist: snapshot — status + loop_count + work.focus
       machine = :sys.get_state(agent_pid, 1_000).live.machine
       assert Machine.status_for(machine) == :streaming
       assert machine.loop_count == 0

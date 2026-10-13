@@ -58,6 +58,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
     AgentTestHelpers.ensure_cleanup(name)
 
     {:ok, pid} = Supervisor.get_agent(space_id, name)
+    # allowlist: harness — spawn_agent_in_space/3's state argument
     :sys.get_state(pid, 1_000)
   end
 
@@ -205,6 +206,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
 
       {:ok, pid} = Supervisor.get_agent(space_id, name)
+      # allowlist: snapshot — depth + tools
       child_state = :sys.get_state(pid, 1_000)
       assert child_state.depth == max + 1
       refute Enum.any?(child_state.tools, &(&1.name == "agents-spawn"))

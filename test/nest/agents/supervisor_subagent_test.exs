@@ -351,6 +351,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   # The partition name is `Registry.Partition.pid_name/2`'s: `Nest.Agents.Registry`
   # is a single-partition unique registry (`child_spec/0` passes no `:partitions`).
   defp assert_registry_misses(name) do
+    # allowlist: registry — partition cleanup announces nothing
     _ = :sys.get_state(Nest.Agents.Registry.PIDPartition0, 1_000)
 
     assert AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name) ==

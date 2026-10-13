@@ -450,6 +450,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     {pid, name} = start_agent(default_attrs())
     track_agent(name)
     space_id = current_space_id()
+    # allowlist: harness — Turn.settle/2's argument
     state = :sys.get_state(pid, 1_000)
 
     log =
@@ -531,7 +532,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
   test "the debt diff records each branch of the obligation's change" do
     {pid, name} = start_agent(default_attrs())
     track_agent(name)
-
+    # allowlist: harness — Agent.Timeline.debt_changes/3's argument
     state = :sys.get_state(pid, 1_000)
     before = state.live.machine
 
@@ -568,6 +569,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
   test "a child's terminal outcomes are each recorded as their own action" do
     {pid, name} = start_agent(default_attrs())
     track_agent(name)
+    # allowlist: harness — Turn.settle/2's argument
     state = :sys.get_state(pid, 1_000)
 
     # Each child is terminal exactly once, so each outcome needs its own name.
@@ -592,6 +594,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
   test "the emitters record what they can and skip what has no event" do
     {pid, name} = start_agent(default_attrs())
     track_agent(name)
+    # allowlist: harness — Agent.Timeline emitters' argument
     state = :sys.get_state(pid, 1_000)
     machine = state.live.machine
 
@@ -655,6 +658,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
           1_000
         )
 
+        # allowlist: harness — Timeline.compaction_staged/3's argument
         assert :ok = Agent.Timeline.compaction_staged(:sys.get_state(pid, 1_000), ctx)
         List.last(events("compaction"))["carried"]
       end
@@ -670,6 +674,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
 
     {pid, name} = start_agent(default_attrs())
     track_agent(name)
+    # allowlist: harness — Agent.Timeline emitters' argument
     state = :sys.get_state(pid, 1_000)
 
     # `:timeline_dir` is read at call time, and a non-binary value makes

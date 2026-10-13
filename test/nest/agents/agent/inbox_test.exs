@@ -37,7 +37,7 @@ defmodule Nest.Agents.Agent.InboxTest do
 
   test "delivery to an idle agent starts a turn with the message as a user message", %{pid: pid} do
     assert {:ok, :delivered} = Agent.deliver_message(pid, "peer", "do the thing")
-
+    # allowlist: snapshot — messages + tmp_path
     state = :sys.get_state(pid, 1_000)
 
     assert Enum.any?(
@@ -79,7 +79,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     # stop timer owns the terminal transition, so the drain's own consume frame
     # is the fence, and it is the last one due — the queue is empty after it.
     assert_receive {:chat_inbox, %{count: 0}}, 1_000
-
+    # allowlist: snapshot — messages + tmp_path
     state = :sys.get_state(pid, 1_000)
 
     assert state.live.inbox == []
@@ -101,7 +101,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     # no `[Message from agent …]` label — and drained through the turn executor
     # when the target is idle, exactly like a peer delivery.
     assert {:ok, :delivered} = Agent.deliver_internal(pid, "agents-batch", ~s(["done"]), :notice)
-
+    # allowlist: snapshot — messages + tmp_path
     state = :sys.get_state(pid, 1_000)
     assert [text] = Enum.filter(user_texts(state.chat_state.messages), &(&1 =~ ~s(["done"])))
     refute text =~ "Message from agent"
@@ -169,7 +169,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     # The drain appends the pointer before it consumes the entry, so the
     # consume frame is the fence for the pointer being in the transcript.
     assert_receive {:chat_inbox, %{count: 0}}, 1_000
-
+    # allowlist: snapshot — messages + tmp_path
     state = :sys.get_state(pid, 1_000)
 
     pointer =
@@ -275,7 +275,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       log =
         capture_log(fn ->
           assert {:ok, :delivered} = Agent.deliver_message(pid, "peer", "summarize this", :query)
-
+          # allowlist: snapshot — messages + owed_replies
           state = :sys.get_state(pid, 1_000)
 
           assert Enum.any?(
@@ -341,7 +341,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       # because they are not the same loss.
       set_status(pid, :streaming)
       assert {:ok, :queued} = Agent.deliver_message(pid, "bob", "queued question", :query)
-
+      # allowlist: harness — Inbox.log_lost_replies/1's argument
       state = :sys.get_state(pid, 1_000)
       assert Machine.owed_senders(state.live.machine) == []
 
@@ -390,6 +390,7 @@ defmodule Nest.Agents.Agent.InboxTest do
         assert info.pending_message_count == n
       end
 
+      # allowlist: snapshot — inbox + messages
       state = :sys.get_state(pid, 1_000)
       inbox = state.live.inbox
 
@@ -445,7 +446,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       assert :ok = Agent.chat(pid, "hello now", "plan", "alice")
 
       assert_receive {:chat_status, %{status: "streaming"}}, 1_000
-
+      # allowlist: snapshot — inbox + mode + messages
       state = :sys.get_state(pid, 1_000)
 
       assert state.live.inbox == []
@@ -467,8 +468,9 @@ defmodule Nest.Agents.Agent.InboxTest do
             before = Agent.get_messages(pid, 1_000)
 
             assert :ok = Agent.chat(pid, "too late", "plan", "alice")
+            # allowlist: barrier — a dropped cast broadcasts nothing
             _ = :sys.get_state(pid, 1_000)
-
+            # allowlist: snapshot — inbox + messages + status
             state = :sys.get_state(pid, 1_000)
 
             assert state.live.inbox == [], "#{status} must queue nothing"
@@ -536,7 +538,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       # The drain appends the pointer before it consumes the entry, so the
       # consume frame is the fence for the pointer being in the transcript.
       assert_receive {:chat_inbox, %{count: 0}}, 1_000
-
+      # allowlist: snapshot — messages + tmp_path
       state = :sys.get_state(pid, 1_000)
       pointer = Enum.find(user_texts(state.chat_state.messages), &(&1 =~ "queued message"))
 

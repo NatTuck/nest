@@ -107,6 +107,7 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
 
     # Status should transition back to :idle after the OK click,
     # and the counter resets to 0.
+    # allowlist: snapshot — status + loop_count
     state = :sys.get_state(agent_pid, 1_000)
 
     assert Machine.status_for(state.live.machine) == :idle

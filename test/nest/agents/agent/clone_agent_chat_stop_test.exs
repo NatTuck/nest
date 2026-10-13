@@ -69,6 +69,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
 
     # Drive the chat_stopped handler directly (see module doc).
     send(parent_pid, {:chat_stopped, parent_pid})
+    # allowlist: snapshot — children + work + cancelled + status
     new_state = :sys.get_state(parent_pid, 1_000)
 
     # Bookkeeping reset.
@@ -148,6 +149,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     # torn down (this is the contract that distinguishes this
     # cascade from `Agent.terminate/2`).
     send(parent_pid, {:chat_stopped, parent_pid})
+    # allowlist: barrier — the child-teardown lookup has no event
     _ = :sys.get_state(parent_pid, 1_000)
 
     # The parent is still alive.
@@ -214,9 +216,11 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     GenServer.cast(parent_pid, {:child_completed, child_name, "ok", child_total})
 
     # Drain the cast before flushing chat_stopped.
+    # allowlist: barrier — the {:child_completed, _} cast broadcasts nothing
     _ = :sys.get_state(parent_pid, 1_000)
 
     send(parent_pid, {:chat_stopped, parent_pid})
+    # allowlist: snapshot — children + descendant_usage
     new_state = :sys.get_state(parent_pid, 1_000)
 
     # Usage was merged before the children sub-machine got cleared.

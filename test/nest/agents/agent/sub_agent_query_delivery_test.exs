@@ -133,6 +133,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # below, where the release starts a second turn.
     await_idle([coordinator_name, specialist_name])
 
+    # allowlist: snapshot — messages + owed_senders
     state = :sys.get_state(coordinator_pid, 1_000)
     assert_unique_message_indices(state.chat_state.messages)
     assert Machine.owed_senders(state.live.machine) == []
@@ -264,6 +265,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     await_idle(coordinator_name)
     await_idle(specialist_name)
 
+    # allowlist: snapshot — messages + owed_senders
     state = :sys.get_state(coordinator_pid, 1_000)
     assert_unique_message_indices(state.chat_state.messages)
     assert Machine.owed_senders(state.live.machine) == []
