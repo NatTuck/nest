@@ -61,6 +61,13 @@ defmodule Nest.Agents.AgentTestHelpers do
 
   @space_id_key :nest_test_space_id
 
+  # Every per-agent PubSub topic this test pid is subscribed to, newest first.
+  # A test may wait on more than one agent (a coordinator and its specialist, an
+  # agent and a peer it owes a reply to), and a wait is a fence on the frame that
+  # decides it — so the test pid has to be subscribed to *every* agent it waits
+  # on, not just the last one `start_agent/1` happened to start.
+  @subscribed_topics_key :nest_test_subscribed_topics
+
   @doc """
   Returns the `space_id` stored in the test process dict by the
   most recent `start_agent/1` call. Tests that bypass
@@ -233,8 +240,8 @@ defmodule Nest.Agents.AgentTestHelpers do
     # matches `assert_received` patterns prematurely. The
     # bug surfaces most visibly in `agent_compaction_test.exs:82`
     # under parallel coverage runs.
-    drop_stale_pubsub_subscription()
-    subscribe_to_agent_topic(space_id, name)
+    drop_stale_pubsub_subscriptions()
+    subscribe_to_agent(space_id, name)
 
     # Move pre-`start_agent/1` queued items from the test pid's
     # queue to the per-agent queue, then point `:nest_test_agent_pid`
@@ -558,11 +565,14 @@ defmodule Nest.Agents.AgentTestHelpers do
   #
   # Note: this on_exit runs in a SEPARATE ExUnit runner process,
   # so it CANNOT mutate the test process's process dict. Any
-  # attempt to restore `:nest_test_agent_pid` / `:nest_test_subscribed_topic`
+  # attempt to restore `:nest_test_agent_pid` / `:nest_test_subscribed_topics`
   # here would be dead code (the write wouldn't reach the test
   # pid). Those keys are instead refreshed at the start of the
-  # next `start_agent/1` (see `drop_stale_pubsub_subscription/0`
-  # and the `Process.put` in `bridge_test_to_agent/3`).
+  # next `start_agent/1` (see `drop_stale_pubsub_subscriptions/0`
+  # and the `Process.put` in `bridge_test_to_agent/3`). The
+  # `unsubscribe/2` below is therefore the same kind of no-op for
+  # the test pid — it only unsubscribes this runner process — and is
+  # kept as the belt to `drop_stale_pubsub_subscriptions/0`'s braces.
   #
   # The wait-for-DOWN is a SINGLE-MESSAGE receive — not a
   # drain loop. The drain loop used to live here was killed
@@ -581,27 +591,51 @@ defmodule Nest.Agents.AgentTestHelpers do
     GenServer.call(pid, :get_system_prompt)
   end
 
-  # Drop any leftover PubSub subscription left over from a
+  # Drop every PubSub subscription left over from a
   # prior test in this same pid. `on_exit` runs in a separate
   # ExUnit runner process and can't unsubscribe the test pid,
-  # so each `start_agent/1` clears any topic the test pid
+  # so each `start_agent/1` clears every topic the test pid
   # still holds before subscribing to the new agent's topic.
-  # The current topic is recorded in the `:nest_test_subscribed_topic`
+  # The current topics are recorded in the `:nest_test_subscribed_topics`
   # process-dict key; absence means nothing to drop.
-  defp drop_stale_pubsub_subscription do
-    case Process.get(:nest_test_subscribed_topic) do
-      nil -> :ok
-      old_topic -> Phoenix.PubSub.unsubscribe(Nest.PubSub, old_topic)
-    end
+  defp drop_stale_pubsub_subscriptions do
+    Enum.each(subscribed_topics(), &Phoenix.PubSub.unsubscribe(Nest.PubSub, &1))
 
-    Process.delete(:nest_test_subscribed_topic)
+    Process.delete(@subscribed_topics_key)
   end
 
-  defp subscribe_to_agent_topic(space_id, name) do
+  @doc """
+  Subscribe this test pid to `space_id`/`name`'s per-agent topic and record it
+  so the next `start_agent/1` can drop it.
+
+  `start_agent/1` calls this for the agent it starts. A test that starts an
+  agent by another path — `SubAgentToolsHelpers.start_mocked_specialist/3`'s
+  `Supervisor.spawn_agent_in_space/3`, or a hand-rolled peer — must call it at
+  that call site, *before* the turn it is going to wait on: the idle fence is
+  an arrival (`assert_receive` on `{:chat_status, %{name: name, status:
+  "idle"}}`), so a subscription installed after the turn settled would miss the
+  frame it is waiting for.
+
+  The status payload is self-identifying (`name`, `space_id`), so a test
+  subscribed to several agents' topics fences on the one it is waiting for.
+  """
+  @spec subscribe_to_agent(integer(), String.t()) :: String.t()
+  def subscribe_to_agent(space_id, name) do
     topic = "agent:#{space_id}:#{name}"
-    Phoenix.PubSub.subscribe(Nest.PubSub, topic)
-    Process.put(:nest_test_subscribed_topic, topic)
+
+    # Idempotent: a second `Phoenix.PubSub.subscribe/2` to the same topic
+    # delivers every frame twice and leaks the extra subscription, so the
+    # already-subscribed case is a no-op rather than a re-subscribe.
+    if topic in subscribed_topics() do
+      topic
+    else
+      Phoenix.PubSub.subscribe(Nest.PubSub, topic)
+      Process.put(@subscribed_topics_key, [topic | subscribed_topics()])
+      topic
+    end
   end
+
+  defp subscribed_topics, do: Process.get(@subscribed_topics_key, [])
 
   # Run the agent through the supervisor path (the standard
   # caller interface). Pure data shaping — no DB writes, no

@@ -6,10 +6,10 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   `Nest.Agents.Agent.CloneAgentFlowTest`, `TimelineEmittersTest`,
   `ReplyDebtTest`).
 
-  `statuses_until_idle/1` is an *ordered* collector, not a drain: it stops
-  at the first `idle`, so a test can assert the whole sequence and an `idle`
-  anywhere before the end fails. `assert_request/0` reads the request lists
-  the caller's `MockClient` spy sent.
+  `statuses_until_idle/2` is an *ordered* collector, not a drain: it stops
+  at the first `idle` (for the agent it is named), so a test can assert the
+  whole sequence and an `idle` anywhere before the end fails. `assert_request/0`
+  reads the request lists the caller's `MockClient` spy sent.
 
   `park_llm_requests/1` + `next_request/0` + `release_llm/1` are the
   *parked* variant of the same observation: each request is held until the
@@ -17,8 +17,16 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   transcript) at a specific point of a turn is not racing the HTTP worker
   for the agent's mailbox.
 
-  Both fences are 500 ms, the project's cap for test fences: a turn here is
-  two mock HTTP calls plus one in-memory tool batch.
+  `await_delivery/1` is the fence for a *delivery* rather than for a turn: it
+  consumes this test pid's frames up to the `{:chat_message, {:user, …}}` frame
+  that carries a given text, so a test can then fence on the `idle` frame that
+  ends the turn that delivery started — even when an earlier turn's `idle` is
+  still queued.
+
+  The frame waits (`statuses_until_idle/2` and `await_delivery/1`, both 1000 ms —
+  the suite's fence bound, since both wait on an `idle` frame) bound a frame the
+  turn is already producing; `assert_request/0` and `next_request/0` are 500 ms
+  and 1000 ms. A turn here is two mock HTTP calls plus one in-memory tool batch.
   """
 
   import ExUnit.Assertions
@@ -27,19 +35,26 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
 
-  # Collect the `chat:status` sequence up to (and including) the first
-  # `idle`. `start_agent/1` subscribes the test pid to the agent's topic.
-  @spec statuses_until_idle([String.t()]) :: [String.t()]
-  def statuses_until_idle(acc \\ []) do
+  # Collect the `chat:status` sequence *for one agent* up to (and including)
+  # the first `idle`, bounded at 1000 ms — the suite's fence bound, because this
+  # wait's own frame is an `idle` frame. `start_agent/1` subscribes the test pid
+  # to the agent's topic, and a test may also be subscribed to a peer's or a
+  # specialist's, so the sequence is filtered by the payload's own `name`:
+  # without it, a second agent's frames would interleave with this agent's and
+  # the asserted sequence would be a fiction.
+  @spec statuses_until_idle(String.t(), [String.t()]) :: [String.t()]
+  def statuses_until_idle(name, acc \\ []) do
     receive do
-      {:chat_status, %{status: "idle"}} ->
+      {:chat_status, %{name: ^name, status: "idle"}} ->
         Enum.reverse(["idle" | acc])
 
-      {:chat_status, %{status: status}} ->
-        statuses_until_idle([status | acc])
+      {:chat_status, %{name: ^name, status: status}} ->
+        statuses_until_idle(name, [status | acc])
     after
-      500 ->
-        flunk("no idle status within 500ms; statuses so far: #{inspect(Enum.reverse(acc))}")
+      1_000 ->
+        flunk(
+          "no idle status for #{name} within 1000ms; statuses so far: #{inspect(Enum.reverse(acc))}"
+        )
     end
   end
 
@@ -199,12 +214,12 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   #
   # HISTORY (kept because the reason it was fragile still explains the shape of
   # a parked test, but it is no longer a live constraint on any number): the
-  # valve was 3 s and had to stay *strictly longer* than a turn fence
-  # (`Nest.Agents.SubAgentToolsHelpers.turn_fence_ms/0`, 2 s), so that a slow
-  # host failed the fence rather than silently flipping a pinned outcome. `#21`
-  # caps every test-side timeout at 2 s, which made "valve > fence" impossible
-  # to satisfy. Removing the timer removes the constraint instead of trading one
-  # number against another.
+  # valve was 3 s and had to stay *strictly longer* than a whole-turn fence
+  # (`Nest.Agents.SubAgentToolsHelpers.await_idle/1`, 2 s at the time), so that a
+  # slow host failed the fence rather than silently flipping a pinned outcome.
+  # `#21` caps every test-side timeout at 2 s, which made "valve > fence"
+  # impossible to satisfy. Removing the timer removes the constraint instead of
+  # trading one number against another.
   #
   # What still matters when editing a parked test: a *decisive* park — one whose
   # release decides which outcome the test observes — must be released by the
@@ -222,6 +237,39 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
     end
 
     Process.demonitor(ref, [:flush])
+  end
+
+  @doc """
+  Consume this test pid's frames up to the `{:chat_message, {:user, …}}` frame
+  whose text carries `needle`, and return that text.
+
+  The frames broadcast *before* a delivery — the turn that caused it, and the
+  `{:broadcast, :status, nil}` every child event emits while the agent is idle —
+  are already in this mailbox, and `assert_receive/2` scans it from the front. So
+  a test that fences on the `idle` frame that ends the delivery's turn has to get
+  past them first, or it matches the earlier `idle` and reads the transcript a
+  turn too soon.
+
+  Consumed on the way: earlier `{:user, …}` frames (the test's own chat, or an
+  earlier delivery) and **every `idle` `chat:status` frame, whichever agent
+  broadcast it** — a frame carries its own agent's name, but the collector has no
+  name to filter on, so it is for a test that waits on one agent's deliveries.
+  Every other frame is left where it is.
+  """
+  @spec await_delivery(String.t()) :: String.t()
+  def await_delivery(needle) do
+    receive do
+      {:chat_message, {:user, %{parts: parts}}} ->
+        case for %Part.Text{text: text} <- parts || [], is_binary(text), text =~ needle, do: text do
+          [] -> await_delivery(needle)
+          [text | _] -> text
+        end
+
+      {:chat_status, %{status: "idle"}} ->
+        await_delivery(needle)
+    after
+      1_000 -> flunk("no delivered message containing #{inspect(needle)} within 1000ms")
+    end
   end
 
   @doc "The text of a message's parts (\"\" for a message without parts)."
