@@ -9,13 +9,15 @@ Scope of the pass: the test harness (`test/support/**`, `test/test_helper.exs`,
 
 ---
 
-## 1. The 2000 ms cap
+## 1. The 2000 ms cap (superseded — §11 has the bounds in force)
 
-`#21`'s rule: **no test-side timeout may exceed 2000 ms.** Five sites in the
-harness were over it. Two of them have moved since, and both moves are recorded
-below: the global per-test ceiling is now **3000** (raised so a fence can report
-its own failure instead of dying as an `ExUnit.TimeoutError` — see §2, §3), every
-fence is **1000**, and the two park valves are gone entirely (§4).
+`#21`'s rule was **no test-side timeout may exceed 2000 ms.** Five sites in the
+harness were over it (a sixth was deliberately raised *to* it — the
+`park_llm_requests/1` row below). Three things have moved since, and all three
+are recorded below: the global per-test ceiling is now **3000** (raised so a fence
+can report its own failure instead of dying as an `ExUnit.TimeoutError` — see §2,
+§3), the fences are **1000 ms** except for two files' shared `@turn_fence_ms`
+constants at **2000** (see §11), and the two park valves are gone entirely (§4).
 
 | site | was | then | note |
 |---|---|---|---|
@@ -33,7 +35,7 @@ Not changed, because they are **not** timeouts: `ShellCmd.default_timeout_ms() =
 
 ## 2. The global per-test ceiling — the ruling, and what it exposes
 
-The ruling was that **every** timeout in the tests, implicit or explicit, is
+The ruling was that **every** timeout in the tests, implicit or explicit, was
 2000 ms or lower, with no exceptions: *"If a test can't run under that, we need
 to fix it or consider removing it as untestable."* The per-test ceiling is
 implicit, so it was 2000 ms. (It was briefly restored to 5000 on the argument
@@ -60,8 +62,9 @@ test create_invite/2 returns {:error, too_many_invites} after 10 invites (73.2ms
 ```
 
 So the slowest *real* test in that file is 73 ms, and the per-test distribution
-is milliseconds. The 2000 ms ceiling is not threatened by any single test; what
-threatens it is setup latency under concurrency, which is §10.
+is milliseconds. The per-test ceiling (2000 ms when these runs were taken; 3000
+today) is not threatened by any single test; what threatens it is setup latency
+under concurrency, which is §10.
 
 The consequence is that the tests which lose a scheduling race now **fail
 visibly** instead of being hidden by a longer deadline, and the failure set is
@@ -89,7 +92,7 @@ blocked in a *serialization point* that the longer ceiling had been hiding:
 - **4 of the 6** in the merged run blocked in `Mimic.allow/3` →
   `GenServer.call` on the **single global `Mimic.Coordinator`**
   (`deps/mimic/lib/mimic.ex:344-347`). `start_agent/1` performs three of these
-  per test (`test/support/agent_test_helpers.ex:499`), and every test in the
+  per test (`test/support/agent_test_helpers.ex:505`), and every test in the
   suite shares that one coordinator process. It is a third-party library, so
   this cannot be de-serialized without forking Mimic.
 - one blocked in `Nest.Agents.Supervisor.start_under_supervisor/2`
@@ -97,9 +100,9 @@ blocked in a *serialization point* that the longer ceiling had been hiding:
 - one blocked in `code_server.call/1` (lazy module load inside the endpoint).
 - one blocked in `Postgrex.Protocol.recv_bind` (DB contention).
 
-Both shared points are written up as their own work in §10. They are **not**
-fixed here: a supervisor-concurrency rewrite does not belong in a
-timeout-capping branch.
+Both shared points are written up as their own work in §10. Neither was fixed
+*here* (in the timeout-capping branch: a supervisor-concurrency rewrite does not
+belong in one). §10a has since been addressed; §10b has not.
 
 **It also buys nothing for the gate.** The suite's 5 s budget
 (`scripts/precommit-test.sh`) is *throughput* across `max_cases` concurrent
@@ -116,8 +119,9 @@ bare `ExUnit.TimeoutError` instead of the fence's own diagnostic.
 
 **General rule this exposes:** a fence must sit *strictly below* the per-test
 ceiling, or its failure is reported as an opaque test timeout. Both numbers moved
-to satisfy it: every fence is **1000 ms** today (that call site included), and the
-ceiling is **3000 ms**.
+to satisfy it: the fences are **1000 ms** today (that call site included — the two
+2000 ms exceptions §11 lists are still strictly below the ceiling, so they can
+report their own failure), and the ceiling is **3000 ms**.
 
 ## 4. The park safety valves — removed, and why
 
@@ -156,15 +160,18 @@ narrowing of the margin and a candidate to revisit.
 ## 5. `wait_for_pid_down` — unified, and why 2000 rather than something smaller
 
 The same helper was exported with **two defaults 50× apart**:
-`agent_test_lifecycle.ex:72` = `5_000`, `agent_test_helpers.ex:54` (the
-`defdelegate`) = `100`. Both are now **2000**, and the doc/code mismatch at
-`agent_test_helpers.ex:256` is fixed (it documented the 100 ms path while the
+`agent_test_lifecycle.ex`'s `wait_for_pid_down/3` = `5_000`,
+`agent_test_helpers.ex:60` (the `defdelegate`) = `100`. Both are now **2000**, and
+the delegate's doc/code mismatch is fixed (it documented the 100 ms path while the
 code took the 5000 ms one).
 
-Note the split was **backwards from intuition**: the *hot* `on_exit` paths that
-run for every one of the 243 `start_agent/1` tests got the long value, while two
-hand-written call sites (`supervisor_subagent_test.exs:377`,
-`visibility_test.exs:180`) got 100 ms.
+Note the split was **backwards from intuition**: the *hot* `on_exit` paths got the
+long value for every test that starts an agent, while two hand-written call sites
+(`supervisor_subagent_test.exs:390`, `visibility_test.exs:180`) got 100 ms. The
+count of those hot paths is what `grep -rn "start_agent(" test/` shows: **214
+occurrences across 61 files** (including the definition at
+`agent_test_helpers.ex:130`), i.e. at most **213 call sites** — the earlier "243"
+here was not reproducible from the tree.
 
 **Why 2000 and not the audit's suggested 500:** the helper is
 `Process.monitor/1` + a single `:DOWN` receive, so the value is **pure
@@ -174,7 +181,8 @@ expiry `stop_pid` returns `:ok`, and the *test* then fails later via
 longer" into a teardown failure, and the doc explicitly warns that "a busy
 scheduler can push shutdown past a fixed short window" because `terminate/2`
 walks the descendant tree and removes the tmp directory. Since a long ceiling is
-free and a short one is a flake, 2000 (the cap) is the risk-minimal choice.
+free and a short one is a flake, 2000 (then the cap; the deadline is 3000 today,
+so it could be raised) is the risk-minimal choice.
 **Lowering it needs a measurement, not a preference.**
 
 **Compound cost, still present:** `stop_test_agents/0` calls `stop_pid/1` once
@@ -193,9 +201,17 @@ deadline rather than one at a time.
 
 ## 7. `:sys.get_state` — explicit timeout, and where it is "cheating"
 
-Every `:sys.get_state/2` site passes an explicit timeout — 1000 ms for the
-harness's reads (the fence bound, so a read can never outlive the fence that
-ordered it) and 500 ms for the few that read a channel's or the reloader's state.
+Almost every `:sys.get_state/2` site passes an explicit timeout. The values in
+force: **1000 ms** for the harness's reads (the fence bound, so a read can never
+outlive the fence that ordered it), **500 ms** for the ones that read a channel's
+or the reloader's state (`test/nest_web/surgical_reloader_test.exs`,
+`test/nest_web/channels/lobby_channel/providers_test.exs`,
+`test/nest_web/channels/lobby_channel_rescan_models_test.exs`), and **250 ms** for
+`AgentTestLifecycle`'s teardown probe (`@agent_probe_ms`, §11). **One site is
+bare** — `test/nest/agents/agent/watch_test.exs:428` — and is deliberately not
+fixed here: a sibling branch (`issue-21-accessor-swaps`) is rewriting that file's
+`:sys.get_state` reads right now, so it is tracked for that batch.
+
 `:sys.get_state/2` takes the timeout second; `:sys.replace_state/3` takes it
 **third** (`(Name, Fun, Timeout)`) — worth knowing, since the natural-looking
 `:sys.replace_state(pid, 500, fun)` compiles and then fails at runtime with a
@@ -231,9 +247,9 @@ teardown invariant itself, so it is justified.
   `supervisor_spawn_test.exs`'s registry poll). The rest became fences on the
   frame that decides them.
 - **Nothing relies on the 500 ms default.** Verified by walking every call site
-  (balancing parentheses) rather than grepping: all of them pass an explicit
-  `:timeout`; the only four without one are inside `eventually.ex` itself. So the
-  default is not load-bearing today and its value does not affect the suite.
+  (balancing parentheses) rather than grepping: all 9 pass an explicit `:timeout`,
+  and so do the helper's own 3 call sites in `eventually_test.exs`. So the default
+  is not load-bearing today and its value does not affect the suite.
 - **The helper had no test at all.** Added
   `test/support/eventually_test.exs` (3 tests): it returns a truthy value
   *without sleeping first* (the `interval` is set to 3000 ms, so a regression to
@@ -265,8 +281,9 @@ and worth stating plainly: every site this pass touched was a *ceiling* —
 `assert_receive`, a monitor-based `:DOWN` wait, or a `defdelegate` default — and
 a ceiling costs nothing on the happy path. The suite's time is spent elsewhere
 (compile/load, and the serialized tail of `async: false` modules). The cap's
-value is that a *hang* now costs 2 s instead of 5 s, and that the 2000 ms
-ceiling has started exposing the `Mimic.allow/3` serialization in §2.
+value is that a *hang* now costs 3 s instead of 5 s, and that lowering the ceiling
+to 2000 ms — the value these runs used — started exposing the `Mimic.allow/3`
+serialization in §2.
 
 All runs were taken while two other agents were running the suite concurrently,
 at load 6.9–10.5, so the wall times are upper bounds.
@@ -274,17 +291,20 @@ at load 6.9–10.5, so the wall times are upper bounds.
 ## 10. The two shared serialization points — their own work, not part of #21
 
 Both were found by lowering the per-test ceiling and reading the stack traces.
-Both are real, and both deserve their own change with their own review. **Do not
-fold either into a timeout branch.**
+Both were real, and each deserved its own change with its own review. **Do not
+fold either into a timeout branch.** §10a has since been addressed; §10b has not.
 
-### 10a. `Nest.Agents.Supervisor.start_under_supervisor/2` serializes agent starts
+### 10a. `Nest.Agents.Supervisor` — addressed; what remains is `init/1`
 
-`lib/nest/agents/supervisor.ex:107` is a `GenServer.call` to the single
-`Nest.Agents.Supervisor`, and the `handle_call` behind it performs the *entire*
-agent start — the `agents` row insert, model/context-limit resolution, tmp-dir
-creation and the child spec — inside that one callback. With `max_cases: 24`, N
-tests starting an agent concurrently queue on that one process, so the Nth waits
-for all N−1 before its own work begins. The failure that exposes it:
+**The defect this section recorded is gone.** `Nest.Agents.Supervisor` is a
+`DynamicSupervisor` (`lib/nest/agents/supervisor.ex:47`), not a `GenServer` with a
+start `handle_call`: `start_under_supervisor/2` is
+`DynamicSupervisor.start_child(@supervisor_name, {Agent, attrs})`
+(`lib/nest/agents/supervisor.ex:107`), and the work that used to happen inside the
+callback now happens in the *caller* — `fetch_or_start_agent/2` runs
+`Persistence.build_attrs_for_start/2` and `Agent.pre_load_heal/1` before it asks
+the supervisor for a child, and `Init`'s moduledoc records that `init/1` is pure
+(no DB access). The failure that exposed the old shape:
 
 ```
 ** (ExUnit.TimeoutError) test timed out after 2000ms
@@ -298,15 +318,18 @@ for all N−1 before its own work begins. The failure that exposes it:
     test/nest/agents/agent/clone_agent_registration_test.exs:164: start_parent/1
 ```
 
-This is a **production scaling defect**, not a test problem: it is why
-agent-starting tests need milliseconds-to-seconds rather than tens of ms. The
-shape of a fix is to keep only registry/child-spec bookkeeping in the supervisor
-callback and let each start do its own DB work in the caller (or under a
-per-space supervisor) — a real design change with its own fallout.
+That was a **production scaling defect**, not a test problem: it is why
+agent-starting tests needed milliseconds-to-seconds rather than tens of ms, and the
+fix taken is the shape this section proposed — only registry/child-spec bookkeeping
+is left in the supervisor, and each start does its own DB work in the caller. **What
+is still serialized** is OTP's own shape: `DynamicSupervisor.start_child/2` runs the
+child's `start_link`/`init/1` in the supervisor process, so a slow `init/1` still
+blocks every other start. That is why `test_helper.exs` warms the init path (see its
+comment), not why a ceiling is needed.
 
 ### 10b. `Mimic.allow/3`'s single global coordinator
 
-`test/support/agent_test_helpers.ex:499` (`allow_mimic_stubs/1`) calls
+`test/support/agent_test_helpers.ex:505` (`allow_mimic_stubs/1`) calls
 `Mimic.allow/3` once per stubbed module per `start_agent/1` — three calls per
 agent start. Each is a `GenServer.call` to the single global `Mimic.Coordinator`
 (`deps/mimic/lib/mimic.ex:344-347`), so the whole suite serializes there. That is
@@ -338,8 +361,8 @@ make a 2000 ms ceiling unworkable rather than merely tight.
 
 | bound | value | why |
 |---|---|---|
-| fences (`assert_receive`/`refute_receive`/`assert_push`/`refute_push`) | **1000 ms** | the ruling: raise every 500 to 1 s. Must stay well below the per-test deadline so a missed fence reports as a fence, not as `ExUnit.TimeoutError`. |
-| `:sys.get_state`/`:replace_state` bounds | **1000 ms** | free on a healthy process; buys headroom under load. |
+| fences (`assert_receive`/`refute_receive`/`assert_push`/`refute_push`) | **1000 ms**, two files at **2000 ms** | the ruling: raise every 500 to 1 s. The exceptions share one `@turn_fence_ms 2_000` between their idle fences and their `{:chat_message, …}` fences (`agent_chat_mode_test.exs:24`, `agent_stream_error_test.exs:40`), so splitting it would retune a non-idle timeout — left for the human. All of them sit below the per-test deadline, so a missed fence reports as a fence, not as `ExUnit.TimeoutError`. |
+| `:sys.get_state`/`:replace_state` bounds | **1000 ms**, **500 ms** for the channel/reloader reads, **250 ms** for the teardown probe | free on a healthy process; buys headroom under load. One bare site (`watch_test.exs:428`) is tracked with the accessor batch — see §7. |
 | `AgentTestLifecycle`'s teardown probe | **250 ms** | the one exception, and it goes **down**. It is a *measurement*, not a failure bound: `stop_test_agents/0` probes every owned agent synchronously, so a long bound costs N x bound per teardown (500 ms x N is what blew a 2000 ms deadline). |
 | `refute_receive ..., 0` | **0** | a deliberate non-wait, not a fence. |
 | per-test deadline (`ExUnit.configure`) | **3000 ms** | a failure bound, deliberately above the fences. |
@@ -376,5 +399,6 @@ same shape.
 
 **Result at the new defaults** (`issue-21-timeout-sweep`, seed 200905, `max_cases:
 16`, per-test 3000): **2372 tests, 0 failures**, ExUnit 7.4 s, wall 8.20 s, load
-2.81 before / 4.75 after. For comparison at the same 2000 ms deadline: 8 cases ->
+2.81 before / 4.75 after. That count is the measurement's, not the current one —
+the suite has grown since. For comparison at the same 2000 ms deadline: 8 cases ->
 0 failures, 16 -> 2, 24 -> 12.
