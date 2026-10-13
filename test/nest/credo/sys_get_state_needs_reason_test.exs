@@ -116,6 +116,17 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReasonTest do
       assert findings(source) == []
     end
 
+    test "a marker above a one-line `def … do:` still excuses its call" do
+      source = """
+      defmodule A do
+        # allowlist: barrier — settle/1 orders the channel's post-assertion DB work
+        defp settle(socket), do: :sys.get_state(socket.channel_pid, 1_000)
+      end
+      """
+
+      assert findings(source) == []
+    end
+
     test "a marker above a multi-line statement reaches the call inside it" do
       source = """
       defmodule A do
@@ -154,6 +165,55 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReasonTest do
           other = 1
           :sys.get_state(pid, 1_000)
           other
+        end
+      end
+      """
+
+      assert findings(source) == [{:stale_marker, 3}, {:unmarked, 5}]
+    end
+
+    test "a marker above a block header does not reach a read inside the block" do
+      source = """
+      defmodule A do
+        # allowlist: snapshot — messages + status
+        test "t" do
+          :sys.get_state(pid, 1_000)
+        end
+      end
+      """
+
+      assert findings(source) == [{:stale_marker, 2}, {:unmarked, 4}]
+    end
+
+    test "not through `describe`, nor through a `def` body" do
+      source = """
+      defmodule A do
+        # allowlist: snapshot — messages + status
+        describe "d" do
+          test "t" do
+            :sys.get_state(pid, 1_000)
+          end
+        end
+
+        # allowlist: snapshot — messages + status
+        def f(pid) do
+          :sys.get_state(pid, 1_000)
+        end
+      end
+      """
+
+      assert findings(source) ==
+               [{:stale_marker, 2}, {:unmarked, 5}, {:stale_marker, 9}, {:unmarked, 11}]
+    end
+
+    test "nor through an `fn` opened between the marker and the read" do
+      source = """
+      defmodule A do
+        def f(xs) do
+          # allowlist: harness — x
+          Enum.each(xs, fn x ->
+            :sys.get_state(x, 1_000)
+          end)
         end
       end
       """
@@ -207,6 +267,31 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReasonTest do
       """
 
       assert findings(source) == []
+    end
+
+    test "another module's `eventually` is not the poll helper" do
+      source = """
+      defmodule A do
+        def f(pid) do
+          # allowlist: snapshot — messages + status
+          Foo.eventually(pid, fn -> :sys.get_state(pid, 1_000) end)
+        end
+      end
+      """
+
+      assert findings(source) == []
+    end
+
+    test "a read in the options is an ordinary read, not the predicate" do
+      source = """
+      defmodule A do
+        def f(pid) do
+          eventually(fn -> ready?(pid) end, timeout: :sys.get_state(pid, 1_000))
+        end
+      end
+      """
+
+      assert findings(source) == [{:unmarked, 3}]
     end
 
     test "a read after the poll is not inside the predicate" do

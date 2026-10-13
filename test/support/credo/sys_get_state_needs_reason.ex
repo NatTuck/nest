@@ -21,12 +21,14 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReason do
        code it excuses, so a marker that excuses no call — the call it was
        written for is gone, or another statement now sits between them — is an
        issue.
-    3. **A read inside a polling predicate.** A `:sys.get_state` anywhere in an
-       `Eventually.eventually/2` call's arguments is an issue whatever markers
-       surround it. The predicate must return a boolean; this call blocks for up
-       to the GenServer's 5 s and *exits* on timeout, so the poll dies instead of
-       returning `false` — the failure is an exit, not the assertion
-       `eventually/2` promises.
+    3. **A read inside a polling predicate.** A `:sys.get_state` in the
+       predicate argument of an `Eventually.eventually/2` call is an issue
+       whatever markers surround it. The predicate must return a boolean; this
+       call blocks for up to the GenServer's 5 s and *exits* on timeout, so the
+       poll dies instead of returning `false` — the failure is an exit, not the
+       assertion `eventually/2` promises. Only the predicate is the rule's
+       subject: the options are evaluated once by the caller, so a read there is
+       an ordinary call-site read (rule 1), not a poll.
 
   ## Why a comment, and not a `file:line` allowlist
 
@@ -50,10 +52,21 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReason do
   `state = :sys.get_state(pid) # allowlist: …` and running `mix format` leaves
   the marker where the first example has it — so the two positions are the same
   site at different moments, and rejecting one of them would report the same
-  call twice for a difference the formatter erases. That is also why the rule is
-  "the marker shares the call's statement" and not "the marker is exactly one
-  line above the call": a statement may span several lines, and the marker lands
-  above its first one.
+  call twice for a difference the formatter erases.
+
+  That is why the rule is "the marker shares the call's statement" and not "the
+  marker is exactly one line above the call": a statement may span several
+  lines, and the marker lands above its first one. It also means the marker's
+  reach is bounded twice: nothing between the two lines may end a statement, and
+  nothing may *open a block* on a line in between. A marker above a block header
+  (`test "…" do`, `describe "…" do`, `def f(pid) do`) therefore excuses no read
+  inside that block — it is a marker in the enclosing block, and a leftover one
+  above a `test` must not silently excuse a new read inside it, which is exactly
+  the case this check exists to catch. The one carve-out is a block that opens
+  on the call's *own* line: a marker above a one-line
+  `defp settle(socket), do: :sys.get_state(…)` stays valid, because the
+  alternative — rewriting that definition as a multi-line `def` — is a code
+  change, and a marker must never require one.
 
   What the check enforces is *that* a reason exists and sits next to the call.
   It cannot judge whether the reason is true — that is what review is for, and a
@@ -124,8 +137,20 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReason do
       matches the literal `:sys.get_state` remote call, and a call is a node with
       an argument list (`&:sys.get_state/1` parses as the same node with none,
       and is not a call).
+    * Rule 3 knows one helper: the bare `eventually(…)` this project's tests call
+      (they `import Eventually`) and `Eventually.eventually(…)`. Another
+      module's `Foo.eventually(…)` is not the poll helper, so its arguments are
+      not scanned — matching any `.eventually` would flag an unrelated function
+      that happens to share the name.
     * A predicate passed by name (`eventually(&waiting?/1)`) hides its read from
-      rule 3, which sees only what is written inside the call's own arguments.
+      rule 3, which sees only the source of the predicate argument.
+    * **Two reads in one statement share one marker.** The marker's unit is the
+      statement, so a marked `{:sys.get_state(a), :sys.get_state(b)}` needs one
+      reason for two reads, and a third read added to that tuple passes. This is
+      the price of the adjacency rule: a marker is a comment line, and the
+      formatter gives a comment no position inside an expression to attach a
+      reason to. A statement with several reads therefore deserves a reason that
+      covers all of them.
     * Rule 3 names `:sys.get_state`, not every blocking call: an accessor
       (`Agent.get_public_info/2`) in a predicate blocks and exits in exactly the
       same way. Catching that needs a different rule — "a predicate must not
@@ -211,18 +236,18 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReason do
   def findings(source, filename \\ "nofilename") do
     {ast, comments} = parse!(source, filename)
     {calls, polls} = scan(ast)
+    {ends, opens} = statement_bounds(ast)
     markers = marker_lines(comments)
-    boundaries = statement_end_lines(ast)
 
-    excusals = excusals(markers, boundaries, MapSet.difference(calls, polls))
+    excusals = excusals(markers, ends, opens, MapSet.difference(calls, polls))
 
     (unmarked(excusals) ++ stale(markers, excusals) ++ poll_findings(polls))
     |> Enum.sort_by(fn {kind, line} -> {line, Map.fetch!(@kind_order, kind)} end)
   end
 
   # Call line => every marker that excuses it (empty when none does).
-  defp excusals(markers, boundaries, calls) do
-    for line <- calls, into: %{}, do: {line, excusing_markers(markers, boundaries, line)}
+  defp excusals(markers, ends, opens, calls) do
+    for line <- calls, into: %{}, do: {line, excusing_markers(markers, ends, opens, line)}
   end
 
   defp unmarked(excusals), do: for({line, []} <- excusals, do: {:unmarked, line})
@@ -248,7 +273,7 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReason do
   end
 
   # One walk each: the line of every `:sys.get_state` call, and the lines of the
-  # calls written inside an `eventually(...)` argument.
+  # calls written inside an `eventually(...)` predicate.
   defp scan(ast), do: {get_state_lines(ast), poll_lines(ast)}
 
   # A call always has an argument list; `&:sys.get_state/1` parses as the same
@@ -272,36 +297,63 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReason do
   end
 
   defp collect_poll_lines(node, polls) do
-    case eventually_args(node) do
+    case poll_predicate(node) do
       nil -> {node, polls}
-      args -> {node, MapSet.union(polls, get_state_lines(args))}
+      predicate -> {node, MapSet.union(polls, get_state_lines(predicate))}
     end
   end
 
-  defp eventually_args({name, _meta, args}) when name == :eventually and is_list(args), do: args
-  defp eventually_args({{:., _, [_module, :eventually]}, _meta, args}), do: args
-  defp eventually_args(_node), do: nil
+  # The predicate is the first argument. The options are evaluated once by the
+  # caller, so a read there is an ordinary call-site read, not a poll. A bare
+  # `eventually(…)` is this project's helper (the tests `import Eventually`);
+  # another module's `Foo.eventually(…)` is not, so it is not scanned.
+  defp poll_predicate({:eventually, _meta, [predicate | _]}), do: predicate
 
-  # The last line of every statement (`end_of_expression` metadata, which needs
-  # `token_metadata: true`). Two calls are in the same statement exactly when no
-  # line in between is one of these.
-  defp statement_end_lines(ast) do
-    {_ast, lines} =
-      Macro.prewalk(ast, MapSet.new(), fn
-        node, lines when is_tuple(node) and tuple_size(node) == 3 and is_list(elem(node, 1)) ->
-          {node, add_statement_end(lines, elem(node, 1))}
-
-        node, lines ->
-          {node, lines}
-      end)
-
-    lines
+  defp poll_predicate(
+         {{:., _, [{:__aliases__, _, [:Eventually]}, :eventually]}, _meta, [pred | _]}
+       ) do
+    pred
   end
 
-  defp add_statement_end(lines, meta) do
+  defp poll_predicate(_node), do: nil
+
+  # Where statements end (`end_of_expression`) and where block bodies open
+  # (`:do`, or an `fn`), both of which need `token_metadata: true`.
+  defp statement_bounds(ast) do
+    {_ast, {ends, opens}} =
+      Macro.prewalk(ast, {MapSet.new(), MapSet.new()}, fn
+        node, {ends, opens}
+        when is_tuple(node) and tuple_size(node) == 3 and is_list(elem(node, 1)) ->
+          meta = elem(node, 1)
+          {node, {add_statement_end(ends, meta), add_block_open(opens, node, meta)}}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    {ends, opens}
+  end
+
+  defp add_statement_end(ends, meta) do
     case Keyword.get(meta, :end_of_expression) do
-      nil -> lines
-      end_meta -> MapSet.put(lines, Keyword.fetch!(end_meta, :line))
+      nil -> ends
+      end_meta -> MapSet.put(ends, Keyword.fetch!(end_meta, :line))
+    end
+  end
+
+  defp add_block_open(opens, node, meta) do
+    case block_open_line(node, meta) do
+      nil -> opens
+      line -> MapSet.put(opens, line)
+    end
+  end
+
+  defp block_open_line({:fn, meta, _clauses}, _meta), do: meta[:line]
+
+  defp block_open_line(_node, meta) do
+    case Keyword.get(meta, :do) do
+      nil -> nil
+      do_meta -> Keyword.fetch!(do_meta, :line)
     end
   end
 
@@ -315,20 +367,35 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReason do
   end
 
   # Every marker that excuses a call on `call_line`: at or above it, with no
-  # statement ending in between. The formatter puts a trailing marker on the
-  # line above its statement, so this is where a marker lands either way.
-  defp excusing_markers(markers, boundaries, call_line) do
+  # statement ending and no block opening in between.
+  defp excusing_markers(markers, ends, opens, call_line) do
     markers
     |> Enum.filter(&(&1 <= call_line))
-    |> Enum.reject(&boundary_between?(boundaries, &1, call_line))
+    |> Enum.reject(&crosses?(ends, opens, &1, call_line))
   end
 
-  defp boundary_between?(_boundaries, marker_line, call_line) when marker_line >= call_line do
-    false
+  # A marker excuses a call only within its own statement: nothing between the
+  # two lines may end a statement, and nothing may open a block on a line in
+  # between. A marker above a block header (`test … do`, `describe … do`,
+  # `def f(pid) do`) sits in the enclosing block, so it must not excuse a read
+  # inside the block. A block that opens on the call's own line is not "in
+  # between", which is what keeps a marker above a one-line
+  # `defp settle(socket), do: :sys.get_state(…)` valid — the alternative would be
+  # a code change, and a marker must not require one.
+  defp crosses?(ends, opens, from_line, to_line) do
+    ends_between?(ends, from_line, to_line) or opens_between?(opens, from_line, to_line)
   end
 
-  defp boundary_between?(boundaries, marker_line, call_line) do
-    Enum.any?(marker_line..(call_line - 1), &MapSet.member?(boundaries, &1))
+  defp ends_between?(_ends, from_line, to_line) when from_line >= to_line, do: false
+
+  defp ends_between?(ends, from_line, to_line) do
+    Enum.any?(from_line..(to_line - 1), &MapSet.member?(ends, &1))
+  end
+
+  defp opens_between?(_opens, from_line, to_line) when from_line + 1 >= to_line, do: false
+
+  defp opens_between?(opens, from_line, to_line) do
+    Enum.any?((from_line + 1)..(to_line - 1), &MapSet.member?(opens, &1))
   end
 
   defp issue_for(source_file, {kind, line}) do
