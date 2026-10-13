@@ -129,8 +129,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
       {:ok, child_name} = Supervisor.start_agent_with_parent(parent_state, "do it", override)
 
-      child_state = :sys.get_state(via_registry(child_name), 1_000)
-      assert child_state.model == override
+      assert Nest.Agents.Agent.get_public_info(via_registry(child_name)).model == override
 
       space_id = AgentTestHelpers.current_space_id()
       on_exit(fn -> safe_stop(space_id, child_name) end)
@@ -142,8 +141,8 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
       {:ok, child_name} = Supervisor.start_agent_with_parent(parent_state, "do it")
 
-      child_state = :sys.get_state(via_registry(child_name), 1_000)
-      assert child_state.model == parent_state.model
+      assert Nest.Agents.Agent.get_public_info(via_registry(child_name)).model ==
+               parent_state.model
 
       space_id = AgentTestHelpers.current_space_id()
       on_exit(fn -> safe_stop(space_id, child_name) end)

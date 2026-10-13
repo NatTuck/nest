@@ -45,8 +45,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      state = :sys.get_state(pid, 1_000)
-      first = hd(state.chat_state.messages)
+      first = hd(Agent.get_messages(pid))
 
       assert match?({:system, %SystemMsg{}}, first)
     end
@@ -93,14 +92,14 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
         assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
-      state = :sys.get_state(pid, 1_000)
+      messages = Agent.get_messages(pid)
 
       # The budget reminder is a {:user, _} message containing
       # the notice text, preceded by a {:assistant, _} attention
       # message with the type-specific "Tool limit?" text.
       # Find both.
       user_messages =
-        Enum.filter(state.chat_state.messages, fn
+        Enum.filter(messages, fn
           {:user, %Nest.Messages.User{parts: parts}} ->
             Enum.any?(parts, fn
               %Part.Text{text: text} -> String.contains?(text, "tool call rounds remaining")
@@ -115,7 +114,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
              "expected a user message containing the budget reminder notice"
 
       attention_messages =
-        Enum.filter(state.chat_state.messages, fn
+        Enum.filter(messages, fn
           {:assistant, %Nest.Messages.Assistant{parts: [%Part.Text{text: "Tool limit?"}]}} -> true
           _ -> false
         end)
@@ -151,16 +150,16 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
         assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
-      state = :sys.get_state(pid, 1_000)
+      messages = Agent.get_messages(pid)
 
       # The final assistant has a different index from the
       # budget-reminder user message (regression: dual-counter
       # bug — the synthetic pair must be stamped before the
       # final response).
-      {:assistant, final} = List.last(state.chat_state.messages)
+      {:assistant, final} = List.last(messages)
 
       user_reminder =
-        Enum.find(state.chat_state.messages, fn
+        Enum.find(messages, fn
           {:user, %Nest.Messages.User{parts: parts}} ->
             Enum.any?(parts, fn
               %Part.Text{text: text} -> String.contains?(text, "tool call rounds remaining")
@@ -240,7 +239,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
       :ok = Agent.chat(pid, "Loop until done")
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid, 1_000)
+      messages = Agent.get_messages(pid)
 
       # With context_limit: 10_000, the 4000-char user body
       # (~643 tokens) crosses 25% (working budget ~1808 / 4
@@ -250,13 +249,13 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
       # injects a "Tool limit?" pair. So we expect BOTH
       # attention texts in the final messages list.
       tool_limit_attentions =
-        Enum.filter(state.chat_state.messages, fn
+        Enum.filter(messages, fn
           {:assistant, %Nest.Messages.Assistant{parts: [%Part.Text{text: "Tool limit?"}]}} -> true
           _ -> false
         end)
 
       context_attentions =
-        Enum.filter(state.chat_state.messages, fn
+        Enum.filter(messages, fn
           {:assistant, %Nest.Messages.Assistant{parts: [%Part.Text{text: "Context?"}]}} -> true
           _ -> false
         end)
@@ -280,7 +279,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
       # have type-specific content: budget says "tool call rounds",
       # context says "token budget".
       budget_user_messages =
-        Enum.filter(state.chat_state.messages, fn
+        Enum.filter(messages, fn
           {:user, %Nest.Messages.User{parts: parts}} ->
             Enum.any?(parts, fn
               %Part.Text{text: text} -> String.contains?(text, "tool call rounds")
@@ -292,7 +291,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
         end)
 
       context_user_messages =
-        Enum.filter(state.chat_state.messages, fn
+        Enum.filter(messages, fn
           {:user, %Nest.Messages.User{parts: parts}} ->
             Enum.any?(parts, fn
               %Part.Text{text: text} -> String.contains?(text, "token budget")

@@ -577,13 +577,14 @@ defmodule Nest.Agents.AgentCompactionTest do
   # the authority, for the state it settled to. `Turn.run/6` announces the
   # status change last in the settle, after every effect of the turn (message
   # appends, the tool batch) has landed, so a subscriber woken by the "idle"
-  # frame already holds every frame of the turn; the `:sys.get_state/1` behind
-  # the fence orders the call sites' `assert_received/1` assertions behind it
-  # too. Every call site first fences on the batch's own broadcast, so the
+  # frame already holds every frame of the turn; the `get_public_info/1` call
+  # behind the fence is a synchronous `GenServer.call` to the same process, so
+  # it orders the call sites' `assert_received/1` assertions behind it too.
+  # Every call site first fences on the batch's own broadcast, so the
   # sandbox work (real bwrap processes) is never inside this wait.
   defp await_idle(pid) do
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-    assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
+    assert Agent.get_public_info(pid).status == :idle
   end
 end

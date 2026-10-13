@@ -91,11 +91,11 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     on_exit(fn -> _ = Supervisor.stop_agent(space_id, specialist_name) end)
 
     # The coordinator's tool message carries the spawn result.
-    coordinator_state = :sys.get_state(coordinator_pid, 1_000)
-    AgentTestHelpers.assert_unique_message_indices(coordinator_state)
+    coordinator_messages = Agent.get_messages(coordinator_pid)
+    AgentTestHelpers.assert_unique_message_indices(coordinator_messages)
 
     {:tool, tool_msg} =
-      Enum.find(coordinator_state.chat_state.messages, fn
+      Enum.find(coordinator_messages, fn
         {:tool, %{parts: parts}} ->
           Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-spawn"}, &1))
 
@@ -146,8 +146,9 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
     space_id = AgentTestHelpers.current_space_id()
     {:ok, specialist_pid} = Supervisor.get_agent(space_id, specialist_name)
-    child_state = :sys.get_state(specialist_pid, 1_000)
-    assert child_state.model == %{name: "pegasus-default-only", provider: "pegasus"}
+
+    assert Agent.get_public_info(specialist_pid).model ==
+             %{name: "pegasus-default-only", provider: "pegasus"}
 
     on_exit(fn -> _ = Supervisor.stop_agent(space_id, specialist_name) end)
   end
@@ -180,11 +181,11 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
     assert log =~ "is_error=true tool result"
 
-    coordinator_state = :sys.get_state(coordinator_pid, 1_000)
-    AgentTestHelpers.assert_unique_message_indices(coordinator_state)
+    coordinator_messages = Agent.get_messages(coordinator_pid)
+    AgentTestHelpers.assert_unique_message_indices(coordinator_messages)
 
     {:tool, tool_msg} =
-      Enum.find(coordinator_state.chat_state.messages, fn
+      Enum.find(coordinator_messages, fn
         {:tool, %{parts: parts}} ->
           Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-spawn"}, &1))
 
@@ -263,11 +264,11 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     :ok = Agent.chat(coordinator_pid, "who is here?")
     await_idle(coordinator_pid)
 
-    coordinator_state = :sys.get_state(coordinator_pid, 1_000)
-    AgentTestHelpers.assert_unique_message_indices(coordinator_state)
+    coordinator_messages = Agent.get_messages(coordinator_pid)
+    AgentTestHelpers.assert_unique_message_indices(coordinator_messages)
 
     {:tool, tool_msg} =
-      Enum.find(coordinator_state.chat_state.messages, fn
+      Enum.find(coordinator_messages, fn
         {:tool, %{parts: parts}} ->
           Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-list"}, &1))
 
@@ -322,10 +323,10 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     :ok = Agent.chat(coordinator_pid, "hand this off")
     await_idle(coordinator_pid)
 
-    coordinator_state = :sys.get_state(coordinator_pid, 1_000)
+    coordinator_messages = Agent.get_messages(coordinator_pid)
 
     {:tool, tool_msg} =
-      Enum.find(coordinator_state.chat_state.messages, fn
+      Enum.find(coordinator_messages, fn
         {:tool, %{parts: parts}} ->
           Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-send"}, &1))
 
@@ -339,9 +340,9 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     assert content =~ "Message delivered to #{specialist_name}"
 
     {:ok, specialist_pid} = Nest.Agents.Registry.lookup(space_id, specialist_name)
-    specialist_state = :sys.get_state(specialist_pid, 1_000)
+    specialist_messages = Agent.get_messages(specialist_pid)
 
-    assert Enum.any?(specialist_state.chat_state.messages, fn
+    assert Enum.any?(specialist_messages, fn
              {:user, %{parts: parts}} ->
                Enum.any?(parts, fn
                  %Part.Text{text: text} ->
@@ -386,10 +387,10 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
     assert log =~ "is_error=true tool result"
 
-    coordinator_state = :sys.get_state(coordinator_pid, 1_000)
+    coordinator_messages = Agent.get_messages(coordinator_pid)
 
     {:tool, tool_msg} =
-      Enum.find(coordinator_state.chat_state.messages, fn
+      Enum.find(coordinator_messages, fn
         {:tool, %{parts: parts}} ->
           Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-send"}, &1))
 
@@ -428,11 +429,11 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     :ok = Agent.chat(coordinator_pid, "wait for the specialist")
     await_idle(coordinator_pid)
 
-    coordinator_state = :sys.get_state(coordinator_pid, 1_000)
-    AgentTestHelpers.assert_unique_message_indices(coordinator_state)
+    coordinator_messages = Agent.get_messages(coordinator_pid)
+    AgentTestHelpers.assert_unique_message_indices(coordinator_messages)
 
     {:tool, tool_msg} =
-      Enum.find(coordinator_state.chat_state.messages, fn
+      Enum.find(coordinator_messages, fn
         {:tool, %{parts: parts}} ->
           Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-wait-for-idle"}, &1))
 

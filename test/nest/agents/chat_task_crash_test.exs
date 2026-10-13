@@ -297,16 +297,16 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         assert content =~ "no content"
       end)
 
-      state = :sys.get_state(pid, 1_000)
+      messages = Agent.get_messages(pid)
 
       # No message in the list is empty.
-      refute Enum.any?(state.chat_state.messages, fn
+      refute Enum.any?(messages, fn
                {_role, %{parts: []}} -> true
                _ -> false
              end)
 
       # The turn still produced a non-empty assistant error message.
-      assert Enum.any?(state.chat_state.messages, fn
+      assert Enum.any?(messages, fn
                {:assistant, %Assistant{parts: [_ | _]}} -> true
                _ -> false
              end)

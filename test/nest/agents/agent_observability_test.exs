@@ -420,7 +420,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
   # once the turn's `idle` frame has arrived the whole turn is readable from the
   # state: every message of the turn is already appended, whether or not this
   # process happened to receive that message's own frame.
-  defp chat_messages(pid), do: :sys.get_state(pid, 1_000).chat_state.messages
+  defp chat_messages(pid), do: Agent.get_messages(pid)
 
   # The first assistant in `messages` that carries a `Part.ToolUse` AND has
   # api_logs populated; nil when there is none.

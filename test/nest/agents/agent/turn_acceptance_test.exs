@@ -8,12 +8,12 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
   crash, nil usage, multi-turn) with a real Agent and the
   existing `MockClient`.
 
-  They use `:sys.get_state/1` to inspect the Agent's state
-  directly so we can assert against the message index, the
-  status, and the active worker (the externally visible
-  contract the driver must honor). PubSub broadcasts are used
-  to assert the externally visible contract (chat:message,
-  chat:status, chat:error).
+  They read the Agent's state through its public accessors
+  (`Agent.get_messages/1`, `Agent.get_public_info/1`) so we can
+  assert against the message index, the status, and the active
+  worker (the externally visible contract the driver must
+  honor). PubSub broadcasts are used to assert the externally
+  visible contract (chat:message, chat:status, chat:error).
 
   These tests must pass before the refactor is complete.
   They cover the regression cases that the old
@@ -46,8 +46,8 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
   import Nest.Agents.AgentTestHelpers
 
-  defp message_indices(state) do
-    state.chat_state.messages
+  defp message_indices(messages) do
+    messages
     |> Enum.flat_map(fn
       {_, %{index: idx}} -> [idx]
       _ -> []
@@ -96,7 +96,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       assert state.live.machine.work.active_worker == nil
       assert state.live.cancelled == false
 
-      indices = message_indices(state)
+      indices = message_indices(state.chat_state.messages)
 
       assert length(state.chat_state.messages) == 3
       assert hd(state.chat_state.messages) |> elem(0) == :system
@@ -143,7 +143,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       # that crosses a threshold, depending on the test model's
       # resolved context_limit. We assert on indices being unique
       # and sequential, not on a fixed count.
-      indices = message_indices(state)
+      indices = message_indices(state.chat_state.messages)
 
       assert length(indices) >= 5
       assert indices == Enum.sort(indices), "indices must be sorted"
@@ -174,14 +174,14 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       :ok = Agent.chat(pid, "Loop until done")
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid, 1_000)
+      messages = Agent.get_messages(pid)
 
       # The budget reminder is now a synthetic pair injected at
       # the LLM-response-construction site: a {:user, _} message
       # carrying the notice text, preceded by a {:assistant, _}
       # "Context?" attention message.
       reminders =
-        Enum.filter(state.chat_state.messages, fn
+        Enum.filter(messages, fn
           {:user, %Nest.Messages.User{parts: parts}} when is_list(parts) ->
             Enum.any?(parts, fn
               %Part.Text{text: text} ->
@@ -201,7 +201,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       reminder_indices = Enum.map(reminders, fn {_, %{index: idx}} -> idx end)
 
       responses =
-        Enum.filter(state.chat_state.messages, fn
+        Enum.filter(messages, fn
           {:assistant, %Assistant{parts: parts}} when is_list(parts) ->
             Enum.all?(parts, fn
               %Nest.Messages.Part.ToolUse{} -> false
@@ -221,7 +221,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
         end)
       end)
 
-      AgentTestHelpers.assert_unique_message_indices(state)
+      AgentTestHelpers.assert_unique_message_indices(messages)
     end
   end
 
@@ -326,7 +326,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       assert final_assistants != [],
              "expected a partial assistant message after stop"
 
-      AgentTestHelpers.assert_unique_message_indices(state)
+      AgentTestHelpers.assert_unique_message_indices(state.chat_state.messages)
     end
   end
 
@@ -411,8 +411,8 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       :ok = Agent.chat(pid, "Second chat")
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid, 1_000)
-      indices = message_indices(state)
+      messages = Agent.get_messages(pid)
+      indices = message_indices(messages)
 
       # The two chats should produce: system (0), user1 (1),
       # asst1 (2), user2 (3), asst2 (4) — 5 messages with
@@ -420,7 +420,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       assert indices == [0, 1, 2, 3, 4],
              "expected indices [0, 1, 2, 3, 4], got #{inspect(indices)}"
 
-      AgentTestHelpers.assert_unique_message_indices(state)
+      AgentTestHelpers.assert_unique_message_indices(messages)
     end
   end
 end

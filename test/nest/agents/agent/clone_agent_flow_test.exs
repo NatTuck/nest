@@ -141,12 +141,12 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     {second, llm2} = next_request()
 
-    mid = :sys.get_state(parent_pid, 1_000)
+    mid = Agent.get_messages(parent_pid)
     AgentTestHelpers.assert_unique_message_indices(mid)
 
     # The child's answer is already in the transcript, behind the machine's
     # synthetic result and ack, and the batch's real result has not arrived.
-    assert Enum.map(mid.chat_state.messages, &elem(&1, 0)) ==
+    assert Enum.map(mid, &elem(&1, 0)) ==
              [:system, :user, :assistant, :tool, :assistant, :user]
 
     assert [synthetic] = tool_results(mid, "agents-spawn")
@@ -184,12 +184,12 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     await_idle()
 
     parent_state = :sys.get_state(parent_pid, 1_000)
-    AgentTestHelpers.assert_unique_message_indices(parent_state)
+    AgentTestHelpers.assert_unique_message_indices(parent_state.chat_state.messages)
 
     # The real confirmation arrives later as a message, and it names the child
     # and says where the answer goes: the spawn's promise is kept, just not by
     # the tool result the model read mid-batch.
-    assert [notice] = delivered_texts(parent_state, "Spawned agent")
+    assert [notice] = delivered_texts(parent_state.chat_state.messages, "Spawned agent")
 
     assert notice =~ child_name
     assert notice =~ "arrive as a message"
@@ -286,14 +286,14 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     GenServer.cast(parent_pid, {:child_completed, child_name, response, usage})
   end
 
-  defp tool_results(state, tool_name) do
-    for {:tool, %{parts: parts}} <- state.chat_state.messages,
+  defp tool_results(messages, tool_name) do
+    for {:tool, %{parts: parts}} <- messages,
         %Part.ToolResult{name: ^tool_name} = result <- parts,
         do: result
   end
 
-  defp delivered_texts(state, needle) do
-    for {:user, %{parts: parts}} <- state.chat_state.messages,
+  defp delivered_texts(messages, needle) do
+    for {:user, %{parts: parts}} <- messages,
         %Part.Text{text: text} <- parts,
         text =~ needle,
         do: text

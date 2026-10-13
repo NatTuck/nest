@@ -106,16 +106,16 @@ defmodule Nest.Agents.AgentStopTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid, 1_000)
+      messages = Agent.get_messages(pid)
 
       # No message in the list is empty.
-      refute Enum.any?(state.chat_state.messages, fn
+      refute Enum.any?(messages, fn
                {_role, %{parts: []}} -> true
                _ -> false
              end)
 
       # The turn was closed with a non-empty assistant acknowledgement.
-      assert Enum.any?(state.chat_state.messages, fn
+      assert Enum.any?(messages, fn
                {:assistant, %Assistant{parts: [_ | _], metadata: %{"stopped_by_user" => true}}} ->
                  true
 
@@ -161,7 +161,7 @@ defmodule Nest.Agents.AgentStopTest do
       # is not what we are looking for).
       assert_receive {:chat_compaction, _}, 1_000
 
-      messages = :sys.get_state(pid, 1_000).chat_state.messages
+      messages = Agent.get_messages(pid)
 
       tool_assistant =
         Enum.find_value(messages, fn
@@ -359,7 +359,7 @@ defmodule Nest.Agents.AgentStopTest do
       assert :ok = Agent.stop_chat(pid, self())
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
-      assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
+      assert Agent.get_public_info(pid).status == :idle
     end
   end
 end

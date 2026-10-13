@@ -88,13 +88,13 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       assert_reply ref, :ok, %{"pendingMessageCount" => 2}
 
       # A broken status still refuses the message and queues nothing new.
-      before = :sys.get_state(agent_pid, 1_000).live.inbox
+      before = Nest.Agents.Agent.get_public_info(agent_pid).pending_messages
       set_status(agent_pid, :needs_repair)
 
       ref = push(socket, "chat:message", %{"content" => "too late", "mode" => "plan"})
       assert_reply ref, :error, %{"reason" => "agent_status_needs_repair"}
 
-      assert :sys.get_state(agent_pid, 1_000).live.inbox == before
+      assert Nest.Agents.Agent.get_public_info(agent_pid).pending_messages == before
     end
   end
 
@@ -117,15 +117,15 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       ref = push(socket, "chat:message", %{"mode" => "plan"})
       assert_reply ref, :error, %{"reason" => "invalid_content"}
 
-      assert :sys.get_state(agent_pid, 1_000).live.inbox == []
+      assert Nest.Agents.Agent.get_public_info(agent_pid).pending_messages == []
 
       # A non-binary mode is normalized to nil, so the wire contract stays
       # string-or-null.
       ref = push(socket, "chat:message", %{"content" => "hello", "mode" => 123})
       assert_reply ref, :ok, %{}
 
-      state = :sys.get_state(agent_pid, 1_000)
-      assert [%{content: "hello", kind: :user, mode: nil}] = state.live.inbox
+      assert [%{"content" => "hello", "kind" => "user", "mode" => nil}] =
+               Nest.Agents.Agent.get_public_info(agent_pid).pending_messages
 
       reset_to_idle(agent_pid)
     end
@@ -295,7 +295,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # broadcast only once the turn's effects have landed (the append happens
       # before the status frame that motivates it), so the transcript is already
       # complete here: a read, not a poll.
-      assert :sys.get_state(agent_pid, 1_000).chat_state.messages
+      assert Nest.Agents.Agent.get_messages(agent_pid)
              |> Enum.map(&elem(&1, 0)) ==
                [
                  :system,
@@ -332,7 +332,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
 
       assert state.live.inbox == []
       assert Machine.status_for(state.live.machine) == :idle
-      AgentTestHelpers.assert_unique_message_indices(state)
+      AgentTestHelpers.assert_unique_message_indices(state.chat_state.messages)
     end
   end
 
@@ -425,7 +425,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
 
       assert state.live.inbox == []
       assert Machine.status_for(state.live.machine) == :idle
-      AgentTestHelpers.assert_unique_message_indices(state)
+      AgentTestHelpers.assert_unique_message_indices(state.chat_state.messages)
     end
   end
 

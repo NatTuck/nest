@@ -72,7 +72,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # Invisible to the model: the turn context (what the request is built
       # from) has no debt field, and setting the debt wrote no message.
       refute Map.has_key?(Turn.build_ctx(state), :owed_replies)
-      refute Enum.any?(texts(state), &(&1 =~ "owe"))
+      refute Enum.any?(texts(state.chat_state.messages), &(&1 =~ "owe"))
 
       AgentTestHelpers.send_compaction_done(pid, "a summary", carried_reply())
 
@@ -84,7 +84,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       state = :sys.get_state(pid, 1_000)
 
       # The commit really ran (the summary landed) and the debt is gone.
-      assert Enum.any?(texts(state), &(&1 =~ "a summary"))
+      assert Enum.any?(texts(state.chat_state.messages), &(&1 =~ "a summary"))
       assert Machine.owed_senders(state.live.machine) == []
 
       # The requester was told, and a notice creates no obligation of its own.
@@ -93,7 +93,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
                timeout: 500
              )
 
-      assert Machine.owed_senders(:sys.get_state(peer, 1_000).live.machine) == []
+      assert Nest.Agents.Agent.get_public_info(peer).owed_replies == []
       wait_idle(peer)
     end
 
@@ -122,7 +122,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       assert {:ok, :delivered} =
                Agents.send_message(current_space_id(), "peer", name, "please summarize", :query)
 
-      assert Machine.owed_senders(:sys.get_state(pid, 1_000).live.machine) == ["peer"]
+      assert Nest.Agents.Agent.get_public_info(pid).owed_replies == ["peer"]
 
       # The tool batch is its own status, and the settle is the first idle: no
       # reminder and no give-up came in between.
@@ -223,7 +223,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # The delivery is a `GenServer.call` (`Agents.send_message/5` →
       # `Agent.deliver_message/4`), so the frame is already in the mailbox here
       # and there is nothing to wait for.
-      assert Machine.owed_senders(:sys.get_state(pid, 1_000).live.machine) == ["peer"]
+      assert Nest.Agents.Agent.get_public_info(pid).owed_replies == ["peer"]
       assert_received {:chat_status, %{status: "streaming", owedReplies: ["peer"]}}
 
       # The model's first request carries the query and nothing about the debt:
@@ -261,7 +261,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
                timeout: 500
              )
 
-      assert Machine.owed_senders(:sys.get_state(peer, 1_000).live.machine) == []
+      assert Nest.Agents.Agent.get_public_info(peer).owed_replies == []
       wait_idle(peer)
     end
   end
@@ -302,7 +302,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       assert log =~ "needs_repair"
 
       # The debt is discharged regardless: the runtime gave up on it.
-      assert Machine.owed_senders(:sys.get_state(pid, 1_000).live.machine) == []
+      assert Nest.Agents.Agent.get_public_info(pid).owed_replies == []
     end
   end
 
@@ -479,16 +479,15 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
   # `user_texts/1` takes a message list).
   defp agent_user_texts(state), do: user_texts(state.chat_state.messages)
 
-  defp texts(state) do
-    state.chat_state.messages
-    |> Enum.flat_map(fn
+  defp texts(messages) do
+    Enum.flat_map(messages, fn
       {_tag, %{parts: parts}} -> [parts_text(parts)]
       _ -> []
     end)
     |> Enum.reject(&(&1 == ""))
   end
 
-  defp peer_texts(pid), do: texts(:sys.get_state(pid, 1_000))
+  defp peer_texts(pid), do: texts(Nest.Agents.Agent.get_messages(pid))
 
   defp parts_text(parts) do
     Enum.map_join(parts || [], "", fn

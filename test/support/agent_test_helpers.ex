@@ -49,7 +49,7 @@ defmodule Nest.Agents.AgentTestHelpers do
   alias Nest.Vocations
 
   defdelegate text_from_parts(parts), to: AgentTestAssertions
-  defdelegate assert_unique_message_indices(state), to: AgentTestAssertions
+  defdelegate assert_unique_message_indices(messages), to: AgentTestAssertions
   defdelegate record_read_file(pid, path, opts \\ []), to: AgentTestAssertions
   # One default, one owner. This delegate and `AgentTestLifecycle`'s
   # implementation used to disagree by 50x (100 vs 5_000) for the same

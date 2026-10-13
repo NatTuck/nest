@@ -78,19 +78,19 @@ defmodule Nest.Agents.Agent.LastMessageTest do
     set_busy(pid)
     assert {:ok, :queued} = Agent.deliver_message(pid, "bob", "the report", :agent)
 
-    [entry] = :sys.get_state(pid, 1_000).live.inbox
-    assert entry.retrieved == false
+    [entry] = Agent.get_public_info(pid).pending_messages
+    assert entry["retrieved"] == false
 
     result = fetch(pid, name, space_id, %{"name" => "bob"})
 
     assert %ToolResult{name: "agents-last-message", is_error: false, content: content} = result
     assert content =~ "the report"
     assert content =~ "bob"
-    assert content =~ entry.id
+    assert content =~ entry["id"]
 
     # The entry is consumed in place: the drain will skip it.
-    assert [%{retrieved: true, id: id}] = :sys.get_state(pid, 1_000).live.inbox
-    assert id == entry.id
+    assert [%{"retrieved" => true, "id" => id}] = Agent.get_public_info(pid).pending_messages
+    assert id == entry["id"]
     reset_to_idle(pid)
   end
 
@@ -116,7 +116,9 @@ defmodule Nest.Agents.Agent.LastMessageTest do
     assert %ToolResult{is_error: false, content: content} = result
     assert content == "No undelivered message from agent bob."
     # The human's entry is untouched.
-    assert [%{kind: :user, retrieved: false}] = :sys.get_state(pid, 1_000).live.inbox
+    assert [%{"kind" => "user", "retrieved" => false}] =
+             Agent.get_public_info(pid).pending_messages
+
     reset_to_idle(pid)
   end
 
@@ -142,7 +144,7 @@ defmodule Nest.Agents.Agent.LastMessageTest do
       set_busy(pid)
       assert {:ok, :queued} = Agent.deliver_message(pid, "bob", "report #{n}", :agent)
       assert %ToolResult{is_error: false} = fetch(pid, name, space_id, %{"name" => "bob"})
-      assert [%{retrieved: true}] = :sys.get_state(pid, 1_000).live.inbox
+      assert [%{"retrieved" => true}] = Agent.get_public_info(pid).pending_messages
 
       # The turn ends: the stop path's drain must prune the retrieved entry
       # rather than leave it queued. `stop_chat/2` only arms the bounded
@@ -151,7 +153,7 @@ defmodule Nest.Agents.Agent.LastMessageTest do
       Agent.stop_chat(pid, self())
 
       assert_receive {:chat_inbox, %{count: 0, messages: []}}, 1_000
-      assert :sys.get_state(pid, 1_000).live.inbox == []
+      assert Agent.get_public_info(pid).pending_messages == []
     end)
   end
 

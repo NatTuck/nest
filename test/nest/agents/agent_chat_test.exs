@@ -195,8 +195,8 @@ defmodule Nest.Agents.AgentChatTest do
 
       refute_received {:chat_error, _}
 
-      state = :sys.get_state(pid, 1_000)
-      tail = Enum.take(state.chat_state.messages, -4)
+      messages = Agent.get_messages(pid)
+      tail = Enum.take(messages, -4)
 
       assert Enum.map(tail, &elem(&1, 0)) == [:user, :assistant, :user, :assistant]
 
@@ -209,7 +209,7 @@ defmodule Nest.Agents.AgentChatTest do
       assert {:user, %User{parts: [%Part.Text{text: "[mode: chat]\nnext question"}]}} =
                Enum.at(tail, 2)
 
-      assert :ok = Preflight.validate(state.chat_state.messages)
+      assert :ok = Preflight.validate(messages)
     end
 
     test "a post-compaction user turn appends cleanly without a repair ack" do
@@ -241,13 +241,13 @@ defmodule Nest.Agents.AgentChatTest do
       send_compaction_done(pid, "Summary", nil)
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      state = :sys.get_state(pid, 1_000)
+      messages = Agent.get_messages(pid)
 
       assert {:assistant, %Assistant{parts: [%Part.Text{text: compaction_ack}]}} =
-               List.last(state.chat_state.messages)
+               List.last(messages)
 
       assert compaction_ack =~ "Compaction complete"
-      assert :ok = Preflight.validate(state.chat_state.messages)
+      assert :ok = Preflight.validate(messages)
 
       MockClient.set_response("Done")
       :ok = Agent.chat(pid, "next question")
@@ -255,20 +255,20 @@ defmodule Nest.Agents.AgentChatTest do
 
       refute_received {:chat_error, _}
 
-      state = :sys.get_state(pid, 1_000)
+      messages = Agent.get_messages(pid)
 
-      assert Enum.map(state.chat_state.messages, &elem(&1, 0)) |> Enum.take(-4) ==
+      assert Enum.map(messages, &elem(&1, 0)) |> Enum.take(-4) ==
                [:user, :assistant, :user, :assistant]
 
       texts =
-        Enum.map(state.chat_state.messages, fn {_role, msg} -> text_from_parts(msg.parts) end)
+        Enum.map(messages, fn {_role, msg} -> text_from_parts(msg.parts) end)
 
       assert Enum.any?(texts, &(&1 =~ "Compaction complete"))
 
       refute Enum.any?(texts, &(&1 =~ "continuing from here")),
              "the next user turn must not need the alternation bridge ack"
 
-      assert :ok = Preflight.validate(state.chat_state.messages)
+      assert :ok = Preflight.validate(messages)
     end
   end
 
