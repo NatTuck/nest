@@ -9,6 +9,9 @@ run and **dropped** (numbers below). All probe/sampler scaffolding lived in
 `/tmp/contention/` and was removed before committing; raw logs are in
 `notes/test-runs/` (gitignored).
 
+Follow-ups on this branch: `0b79746` (line cap — extract `Agent.PreSpawn`) and
+`08e76ef` (preload the app's modules in `test_helper.exs`).
+
 ## Headline
 
 On an idle host, **16-way concurrency does not miss a fence**: 8 clean runs
@@ -88,25 +91,28 @@ Registry does not move (Σ 5 ms lookups, 22 ms `list_all`, queue still 0).
 
 ## D. Where the loaded failures actually block (innermost relevant frame)
 
-8 seeds × 16 burners per arm, `max_cases: 16`:
+16 interleaved seeds × 16 burners per arm, `max_cases: 16`, toggling only the
+preload between each pair of runs:
 
-| arm | failures | `:code_server.call/1` | `Supervisor.start_*` | `Mimic.*` | other |
-|---|---|---|---|---|---|
-| baseline | 53 | **15** | **10** | 16 | 12 |
-| app-wide module preload | 46 | **2** | **0** | **38** | 6 |
-| 32 partitions (5 seeds) | 38 | 11 | 7 | 9 | 11 |
+| arm | failures | `:code_server.call/1` | `Supervisor.start_*` | `Mimic.allow/3` | `Mimic.Server.*` | other |
+|---|---|---|---|---|---|---|
+| baseline | **142** | **45** | **17** | 26 | 21 | 33 |
+| app-wide module preload | **117** | **6** | **0** | **74** | 21 | 16 |
+| 32 partitions (5 seeds) | 38 | 11 | 7 | 9 | 9 | 11 |
+
+Paired over the 16 seeds: mean difference 1.56 failures/run (sd 1.90,
+**t = 3.30**, 11 seeds better / 2 worse / 3 tied), i.e. **142 → 117, −17.6 %**.
 
 The code-server blocks are ordinary lazy **first-call** loads
 (`error_handler.undefined_function/3 → :code.ensure_loaded/1 →
 :code_server.call/1`), fired from inside `Nest.Persistence` and friends
 throughout the suite — not just at start-up, because there are 485 modules and
-the warm-up list cannot cover every path.
-
-Preloading every module of the `:nest` app in `test_helper.exs` **eliminates**
-the code-server and supervisor block sites (15+10 → 2+0) but does **not** reduce
-the failure count (53 → 46, within the run-to-run spread of 3–13): the queue
-simply moves to Mimic (16 → 38). The latency budget is conserved across the
-BEAM's single-process rendezvous points.
+the warm-up list cannot cover every path. Preloading every module of the `:nest`
+app removes those frames *and* the `Supervisor.start_*` ones with them; what
+remains is Mimic, and 74 of the 117 are `Mimic.allow/3` specifically. The
+latency budget is conserved across the BEAM's single-process rendezvous points,
+so clearing one point moves the queue to the next — which is why the failure
+count only follows partway.
 
 *Note:* `mix test --preload-modules` is a **no-op** — `Mix.Tasks.Test` parses the
 switch but only forwards it to `app.start` under `--slowest`
@@ -121,7 +127,7 @@ switch but only forwards it to `app.start` under `--slowest`
 | 2 | one `DynamicSupervisor`, `init/1` inside its critical section | **SUPPORTED** — Σ 2.8 s idle / 5.4–8.2 s loaded, p99 50–250 ms, queue ≤ 25, and 10/53 loaded failure traces; 1.8–5.2 s of it is pure queue wait (`start_child` − `agent_init`) |
 | 3 | global `ShellJobs.stop_all/1` | **REFUTED** — 545 calls, Σ 15–21 ms, queue ≤ 2, 0 failure traces |
 | 4 | global `Mimic.Coordinator` | **SUPPORTED** — 3 calls per start, Σ 3.0–11.1 s, p90 25–100 ms, p99 250 ms–2.5 s, queue ≤ 14; 16/53 traces, and **38/46 once the code server is preloaded** — i.e. it is the last queue standing |
-| 5 | code server | **SUPPORTED — the biggest single blocker** — queue 35–43 (deepest of any sampled process), 15/53 traces; removable by preloading, which then just moves the queue to Mimic |
+| 5 | code server | **SUPPORTED — the biggest single blocker** — queue 35–43 (deepest of any sampled process), 45/142 traces. **Fixed** by the app-wide preload (`08e76ef`): 45 → 6 traces, 142 → 117 failures |
 | 6 | `bwrap` spawns | **not a bottleneck by these numbers** — ports ≤ 48, procs ≤ 840, `Sandbox.allow/3` Σ 6 ms, 0 traces; a large dirty-IO-scheduler CPU share is visible but no queue forms |
 
 All loaded failures are `ExUnit.TimeoutError` (3000 ms per-test deadline)
@@ -138,16 +144,26 @@ The Registry is not it. The latency lives at the BEAM's single-process rendezvou
 points, and removing one only moves the queue to the next, so the fix has to
 clear them all (or the host contention):
 
-1. **Preload the app's modules** in `test_helper.exs`
-   (`for mod <- Application.spec(:nest, :modules), do: Code.ensure_loaded(mod)`).
-   Cheap, test-side, and it removes the code-server blocks (15 → 2 traces) and
-   the supervisor blocks (10 → 0) outright. Do not rely on
-   `mix test --preload-modules` — it does nothing without `--slowest`.
-2. **`Mimic`** is then the only remaining queue (38/46 traces): 3 `Mimic.allow/3`
-   calls per `start_agent/1`, each a `GenServer.call` to one global coordinator
-   for 3 ETS operations, sharing that process with `Mimic.Module.replace!`
-   (which recompiles the module) and `reset`. Make the private-mode `allow` path
-   caller-side (`:ets.lookup(@table, :mode)` + insert) or fork Mimic.
+1. **Preload the app's modules** in `test_helper.exs` — **done** (`08e76ef`).
+   It removes the code-server blocks (45 → 6 traces) and the supervisor blocks
+   (17 → 0) and takes the burner-loaded failure count 142 → 117 over 16
+   interleaved seeds. Do not use `mix test --preload-modules` — it does nothing
+   without `--slowest`.
+2. **`Mimic.allow/3`** is what is left: **74 of the remaining 117** burner-loaded
+   failures (63 %) block there. Three calls per `start_agent/1`, each a
+   `GenServer.call` to one global coordinator for three ETS operations, sharing
+   that process with `Mimic.Module.replace!` (a module recompile) and `reset`.
+   Mimic exposes no seam for it: `allow/3` is the public entry point, there is no
+   `stubbed?/2` to skip unneeded calls, and no config knob. The fix is a ~5-line
+   change to `Coordinator.allow/3` (do the `:ets.lookup(@table, :mode)` +
+   insert in the caller, as `handle_call` already does) which needs a fork
+   (`{:mimic, github: …, ref: …}`) or an upstream PR. The only no-fork route is
+   Mimic's `$callers` owner walk (`Mimic.Server.find_owner/2`): if the agent
+   process carried `$callers = [test_pid]`, `allow/3` would not be needed at
+   all — but `$callers` is the *child's* process dictionary, so that means
+   production code setting it from attrs in `init/1`, and it would also replace
+   `Sandbox.allow/3`'s explicit DB handoff with an ownership walk. Riskier than
+   the fork.
 3. **`DynamicSupervisor.start_child/2`** runs the child's `init/1` in the
    supervisor, so every start queues behind every other. `test_helper.exs`
    already warms the path; cutting the work per start (or the number of starts
