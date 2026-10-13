@@ -131,19 +131,22 @@ PKGS_NOBLE=(
   # configure scripts rather than against folklore:
   #   * erts/configure.ac:1218-1235 hard-errors with "No curses library
   #     functions found" without a termcap library  -> libncurses-dev;
-  #   * erts/configure.ac:1785-1807 hard-errors with "sctp support requested,
-  #     but cannot be enabled since 'netinet/sctp.h' is missing", and
-  #     --enable-sctp is the *default*, so libsctp-dev is required, not
-  #     optional;
   #   * erts/configure.ac:1275 errors on zlib older than 1.2.5 -> zlib1g-dev;
   #   * OpenSSL is what crypto (and so ssl and ssh) needs -> libssl-dev.
-  # libssh-dev, libyaml-dev, libgmp-dev, libxml2-utils and xsltproc are *not*
-  # referenced by OTP 27's configure anywhere (lib/ssh is pure Erlang, with no
-  # configure of its own). They are in asdf-erlang's and kerl's canonical
-  # Ubuntu list, they are small, and the XML toolchain is what the OTP and
-  # `mix docs` doc builds use, so they stay: this is the set the ecosystem
-  # builds OTP with, and being one package short of a build is worse than
-  # carrying a spare.
+  # libsctp-dev is not *required*. AC_ARG_ENABLE(sctp, ...) at :167 sets no
+  # default, so an unflagged configure leaves enable_sctp empty, and the header
+  # check at :1787-1798 is opportunistic: no netinet/sctp.h, no HAVE_SCTP_H,
+  # no error. The hard error at :1800-1806 is reached only by an explicit
+  # --enable-sctp or --enable-sctp=lib. It stays because it is what makes the
+  # default build -- and mise passes no configure flags -- include SCTP
+  # support at all.
+  # libssh-dev, libyaml-dev, libgmp-dev, libxml2-utils and xsltproc are not
+  # referenced anywhere in erts/configure.ac (0 hits; lib/ssh is pure Erlang,
+  # with no configure of its own). They are in asdf-erlang's and kerl's
+  # canonical Ubuntu list, they are small, and the XML toolchain is what the
+  # OTP and `mix docs` doc builds use, so they stay: this is the set the
+  # ecosystem builds OTP with, and being one package short of a build is worse
+  # than carrying a spare.
   # wxWidgets, the JDK, ODBC and `fop` are deliberately left out: a headless
   # build skips the wx, jinterface and odbc applications, and the docs are
   # built by `mix docs`, not by the OTP build.
