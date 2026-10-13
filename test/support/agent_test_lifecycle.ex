@@ -174,6 +174,14 @@ defmodule Nest.Agents.AgentTestLifecycle do
         end
       end)
 
+    # A channel this test joined is the other kind of child that borrows the
+    # sandbox connection and dies with this process. It is not an agent, so
+    # `owned_agents/0` cannot see it, and a channel killed mid-query makes the
+    # connection's ownership proxy log "owner … exited" at `:error` when this
+    # process exits. Last, so that nothing the agent stops enqueue can still be
+    # in flight. See `Nest.TestSupport.ChannelQuiescence`.
+    Nest.TestSupport.ChannelQuiescence.drain()
+
     %{owned: length(owned), in_flight: in_flight, not_stopped: not_stopped}
   end
 
