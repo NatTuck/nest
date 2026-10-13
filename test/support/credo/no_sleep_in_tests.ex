@@ -14,8 +14,10 @@ defmodule Nest.Credo.Check.NoSleepInTests do
   infrastructure, but it's not under the test runner and is exempt.
 
   Exempted: `test/support/eventually.ex` (the `eventually/2` helper is
-  a general polling primitive. It is not "a small number of tests":
-  it has 67 call sites across 30 test files, which is why `#21` questioned
+  a general polling primitive. It is not "a small number of tests": the
+  suite still has 9 call sites across 4 test files, and every one of them
+  waits on state with no PubSub event — the agent's mailbox length, a
+  registry entry, or the timeline file — which is why `#21` questioned
   whether polling should still be the default answer — see
   `notes/sketchy-slow-tests.md`. Polling remains legitimate where the
   state being waited on has no PubSub event; where one exists, wait on

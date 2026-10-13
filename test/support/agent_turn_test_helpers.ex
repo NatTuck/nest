@@ -17,10 +17,16 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   transcript) at a specific point of a turn is not racing the HTTP worker
   for the agent's mailbox.
 
-  The two frame collectors (`statuses_until_idle/2` and `assert_request/0`)
-  bound a frame the turn is already producing at 500 ms; `next_request/0`
-  bounds a parked request at 1000 ms. A turn here is two mock HTTP calls plus
-  one in-memory tool batch.
+  `await_delivery/1` is the fence for a *delivery* rather than for a turn: it
+  consumes this test pid's frames up to the `{:chat_message, {:user, …}}` frame
+  that carries a given text, so a test can then fence on the `idle` frame that
+  ends the turn that delivery started — even when an earlier turn's `idle` is
+  still queued.
+
+  The frame waits (`statuses_until_idle/2` and `await_delivery/1`, both 1000 ms —
+  the suite's fence bound, since both wait on an `idle` frame) bound a frame the
+  turn is already producing; `assert_request/0` and `next_request/0` are 500 ms
+  and 1000 ms. A turn here is two mock HTTP calls plus one in-memory tool batch.
   """
 
   import ExUnit.Assertions
@@ -30,11 +36,12 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   alias Nest.Messages.Part
 
   # Collect the `chat:status` sequence *for one agent* up to (and including)
-  # the first `idle`. `start_agent/1` subscribes the test pid to the agent's
-  # topic, and a test may also be subscribed to a peer's or a specialist's, so
-  # the sequence is filtered by the payload's own `name`: without it, a second
-  # agent's frames would interleave with this agent's and the asserted sequence
-  # would be a fiction.
+  # the first `idle`, bounded at 1000 ms — the suite's fence bound, because this
+  # wait's own frame is an `idle` frame. `start_agent/1` subscribes the test pid
+  # to the agent's topic, and a test may also be subscribed to a peer's or a
+  # specialist's, so the sequence is filtered by the payload's own `name`:
+  # without it, a second agent's frames would interleave with this agent's and
+  # the asserted sequence would be a fiction.
   @spec statuses_until_idle(String.t(), [String.t()]) :: [String.t()]
   def statuses_until_idle(name, acc \\ []) do
     receive do
@@ -44,9 +51,9 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
       {:chat_status, %{name: ^name, status: status}} ->
         statuses_until_idle(name, [status | acc])
     after
-      500 ->
+      1_000 ->
         flunk(
-          "no idle status for #{name} within 500ms; statuses so far: #{inspect(Enum.reverse(acc))}"
+          "no idle status for #{name} within 1000ms; statuses so far: #{inspect(Enum.reverse(acc))}"
         )
     end
   end
@@ -241,8 +248,13 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   are already in this mailbox, and `assert_receive/2` scans it from the front. So
   a test that fences on the `idle` frame that ends the delivery's turn has to get
   past them first, or it matches the earlier `idle` and reads the transcript a
-  turn too soon. Earlier `{:user, …}` frames (the test's own chat) are consumed
-  the same way; every other frame is left where it is.
+  turn too soon.
+
+  Consumed on the way: earlier `{:user, …}` frames (the test's own chat, or an
+  earlier delivery) and **every `idle` `chat:status` frame, whichever agent
+  broadcast it** — a frame carries its own agent's name, but the collector has no
+  name to filter on, so it is for a test that waits on one agent's deliveries.
+  Every other frame is left where it is.
   """
   @spec await_delivery(String.t()) :: String.t()
   def await_delivery(needle) do

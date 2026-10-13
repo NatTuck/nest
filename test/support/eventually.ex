@@ -13,7 +13,7 @@ defmodule Eventually do
     * `:interval` - Delay between retries in milliseconds (default: 10)
 
   The 500 ms default is a floor for *new* call sites, not something any existing
-  test relies on: all 67 `eventually/2` calls in `test/`'s 30 test files pass
+  test relies on: all 9 `eventually/2` calls in `test/`'s 4 test files pass
   their own `:timeout` (plus 3 more in `eventually_test.exs`, the helper's own
   test) — verified by walking every call site, not by grepping for the literal.
   A call site that needs a tighter bound — a property that must hold within a

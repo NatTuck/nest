@@ -127,6 +127,10 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
 
     # Both turns are over, and the reply discharged the obligation the query
     # created (a give-up notice would be in the coordinator's inbox instead).
+    # One fence per agent is enough here: the answer was absorbed into the
+    # batch's own turn (it landed after the batch produced its result), so the
+    # coordinator broadcasts exactly one `idle` — unlike the backgrounding test
+    # below, where the release starts a second turn.
     await_idle([coordinator_name, specialist_name])
 
     state = :sys.get_state(coordinator_pid, 1_000)
@@ -243,9 +247,24 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
              &(&1 =~ "Query delivered to #{specialist_name}" and &1 =~ "owes you a reply")
            )
 
-    # Both turns are over, and the reply discharged the obligation the query
-    # created (a give-up notice would be in the coordinator's inbox instead).
-    await_idle([coordinator_name, specialist_name])
+    # The release starts *two* coordinator turns — the backgrounded batch's own
+    # turn, then the batch's late-result notice — and both `idle` frames are
+    # queued by the time the wait runs, so a single fence would match the first
+    # one and return with the second turn still in flight (measured: `:streaming`
+    # at this point). `statuses_until_idle/2` consumes the first turn and asserts
+    # the sequence it ended with, so the fence below is the notice's own turn.
+    assert statuses_until_idle(coordinator_name) == [
+             "streaming",
+             "executing_tools",
+             "streaming",
+             "idle"
+           ]
+
+    # Both coordinator turns are over, the specialist's turn is too, and the reply
+    # discharged the obligation the query created (a give-up notice would be in the
+    # coordinator's inbox instead).
+    await_idle(coordinator_name)
+    await_idle(specialist_name)
 
     state = :sys.get_state(coordinator_pid, 1_000)
     assert_unique_message_indices(state)

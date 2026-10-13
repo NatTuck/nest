@@ -530,16 +530,17 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       assert_receive {:send_delivered, ^tool}, 1_000
       send(tool, :release_result)
 
-      # The release starts more than one turn — the aggregate's own turn, the turn
-      # the queued note drains in, and the batch result's notice turn — and each
-      # one ends with its own `idle` frame, so a single `assert_receive/2` on the
-      # first `idle` would read the state while a later turn is still running
-      # (exactly the bug this replaces). `statuses_until_idle/2` stops at the first
-      # `idle` (for the agent it is named), so one call per turn walks the release
-      # to its end and the third frame is the one that decides the run is over.
-      assert statuses_until_idle(name) == ["streaming", "executing_tools", "streaming", "idle"]
-      assert statuses_until_idle(name) == ["streaming", "idle"]
-      assert statuses_until_idle(name) == ["streaming", "idle"]
+      # The batch's late result is the last delivery the release makes, and the
+      # turn it starts is the run's last turn. `await_delivery/1` consumes every
+      # frame broadcast before the notice — including the `idle` frames of the
+      # turns the release already finished — so the fence below returns on the
+      # notice's own turn *whichever turn that is*: the notice batches into the
+      # boundary drain when it lands before it (`Inbox.batch/1` folds it into that
+      # drain), so the number of turns the release starts is a scheduling
+      # outcome. Counting them would assert that outcome; the settled state is
+      # asserted behind the fence below.
+      await_delivery("backgrounded command")
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       state = :sys.get_state(pid, 1_000)
 

@@ -622,11 +622,17 @@ defmodule Nest.Agents.AgentTestHelpers do
   @spec subscribe_to_agent(integer(), String.t()) :: String.t()
   def subscribe_to_agent(space_id, name) do
     topic = "agent:#{space_id}:#{name}"
-    Phoenix.PubSub.subscribe(Nest.PubSub, topic)
 
-    Process.put(@subscribed_topics_key, Enum.uniq([topic | subscribed_topics()]))
-
-    topic
+    # Idempotent: a second `Phoenix.PubSub.subscribe/2` to the same topic
+    # delivers every frame twice and leaks the extra subscription, so the
+    # already-subscribed case is a no-op rather than a re-subscribe.
+    if topic in subscribed_topics() do
+      topic
+    else
+      Phoenix.PubSub.subscribe(Nest.PubSub, topic)
+      Process.put(@subscribed_topics_key, [topic | subscribed_topics()])
+      topic
+    end
   end
 
   defp subscribed_topics, do: Process.get(@subscribed_topics_key, [])

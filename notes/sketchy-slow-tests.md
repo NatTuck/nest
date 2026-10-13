@@ -12,13 +12,16 @@ Scope of the pass: the test harness (`test/support/**`, `test/test_helper.exs`,
 ## 1. The 2000 ms cap
 
 `#21`'s rule: **no test-side timeout may exceed 2000 ms.** Five sites in the
-harness were over it.
+harness were over it. Two of them have moved since, and both moves are recorded
+below: the global per-test ceiling is now **3000** (raised so a fence can report
+its own failure instead of dying as an `ExUnit.TimeoutError` — see §2, §3), every
+fence is **1000**, and the two park valves are gone entirely (§4).
 
-| site | was | now | note |
+| site | was | then | note |
 |---|---|---|---|
-| `test/test_helper.exs` | `ExUnit.configure(timeout: 5_000)` | `2_000` | the global per-test ceiling — see §2 |
-| `test/support/agent_turn_test_helpers.ex` (`park/3`) | `3_000` | `2_000` | a park safety valve — see §4 |
-| `test/support/agent_turn_test_helpers.ex` (`park_llm_requests/1`) | `1_000` | `2_000` | **raised**, deliberately — see §4 |
+| `test/test_helper.exs` | `ExUnit.configure(timeout: 5_000)` | `2_000` → `3_000` | the global per-test ceiling — see §2 |
+| `test/support/agent_turn_test_helpers.ex` (`park/3`) | `3_000` | `2_000` → removed | the valve timer was a race, not a safety net — see §4 |
+| `test/support/agent_turn_test_helpers.ex` (`park_llm_requests/1`) | `1_000` | `2_000` → removed | **raised**, deliberately, then removed — see §4 |
 | `test/support/agent_test_lifecycle.ex` (`wait_for_pid_down/3`) | `5_000` | `2_000` | unified with the delegate — see §5 |
 | `test/support/agent_test_lifecycle.ex` (`stop_pid/2`) | `5_000` | `2_000` | same |
 | `test/support/models_test_helpers.ex` (`await_models_refresh/1`) | `5_000` | `2_000` | see §6 |
@@ -28,13 +31,18 @@ Not changed, because they are **not** timeouts: `ShellCmd.default_timeout_ms() =
 `exit({:normal, {GenServer, :call, [..., 5000]}})` / `{:timeout, {GenServer,
 :call, [Nest.Models, :list, 5000]}}` simulate production error tuples.
 
-## 2. The global per-test ceiling is 2000 — the ruling, and what it exposes
+## 2. The global per-test ceiling — the ruling, and what it exposes
 
-The ruling is that **every** timeout in the tests, implicit or explicit, is
+The ruling was that **every** timeout in the tests, implicit or explicit, is
 2000 ms or lower, with no exceptions: *"If a test can't run under that, we need
 to fix it or consider removing it as untestable."* The per-test ceiling is
-implicit, so it is 2000 ms. (It was briefly restored to 5000 on the argument
+implicit, so it was 2000 ms. (It was briefly restored to 5000 on the argument
 that a failure detector is not a wait; that argument is overruled.)
+
+**It is 3000 ms today**, and the reason is §3's rule rather than a retreat from
+the ruling: a fence that sits *at* the ceiling can never report its own failure,
+so the ceiling was raised above the fences (which are 1000 ms) to let a fence
+fail as a missing frame instead of as an opaque `ExUnit.TimeoutError`.
 
 **There is no slow *test* to fix.** The `--slowest 30` run put
 `test/nest_web/channels/lobby_channel/invites_test.exs:91` at 1680 ms (next:
@@ -101,39 +109,49 @@ with the ceiling at either value, so lowering it cannot move the suite toward
 
 ## 3. A fence at exactly the ceiling can never fire
 
-`test/nest/agents/agent/turn_acceptance_test.exs:136` uses
+`test/nest/agents/agent/turn_acceptance_test.exs:136` used
 `assert_receive {:chat_status, %{status: "idle"}}, 2000` — the *same* value as the
-global per-test ceiling. The ExUnit timeout therefore always wins, and the test
-reports a bare `ExUnit.TimeoutError` instead of the fence's own diagnostic.
+then-ceiling. The ExUnit timeout therefore always won, and the test reported a
+bare `ExUnit.TimeoutError` instead of the fence's own diagnostic.
 
-**General rule this exposes:** if the per-test ceiling is 2000, fences must sit
-*below* it — 1500 leaves the fence room to report first. Capping every fence at
-exactly 2000 silently converts every fence failure into an opaque test timeout.
+**General rule this exposes:** a fence must sit *strictly below* the per-test
+ceiling, or its failure is reported as an opaque test timeout. Both numbers moved
+to satisfy it: every fence is **1000 ms** today (that call site included), and the
+ceiling is **3000 ms**.
 
-## 4. The park safety valves (invariant vs cap)
+## 4. The park safety valves — removed, and why
 
-`agent_turn_test_helpers.ex` documents an invariant: a *decisive* park must be
+`agent_turn_test_helpers.ex` documented an invariant: a *decisive* park must be
 released within one turn fence, and the safety valve **must stay strictly longer
 than the fence** so a slow host fails the fence instead of silently flipping the
 outcome the park pins.
 
-The cap collides with it: the valves may be at most 2000, so the fence must sit
-below them. `@turn_fence_ms` (`sub_agent_tools_helpers.ex`) therefore went
-**2000 → 1800**, and both valves to **2000**.
+The cap collided with it: the valves could be at most 2000, so the fence had to
+sit below them, and `@turn_fence_ms` (`sub_agent_tools_helpers.ex`) was moved
+**2000 → 1800** with both valves at **2000**:
 
 - `park/3`: 3000 → 2000 (still > 1800 ✓).
-- `park_llm_requests/1`: 1000 → 2000. This is a **raise**, and it is a
-  *correctness* fix, not a smell-avoidance: at 1000 ms the valve was **shorter
-  than the fence**, so it could flip a parked outcome instead of letting the
-  fence report. It was violating its own invariant.
+- `park_llm_requests/1`: 1000 → 2000. That was a **raise**, and a *correctness*
+  fix, not a smell-avoidance: at 1000 ms the valve was **shorter than the fence**,
+  so it could flip a parked outcome instead of letting the fence report. It was
+  violating its own invariant.
 
-**The trade, recorded deliberately:** `@turn_fence_ms`'s 2000 was chosen from a
-measurement (in-suite p50 18.7 ms / max 34.3 ms over 40 samples; p50 926 ms /
-max 1534 ms under 48 CPU burners; a 500 ms fence missed outright at seed
-200984). At 1800 it is still ~52× the in-suite median, but it is now **inside
-the observed spread** of the extreme-load measurement, so it can fire where 2000
-would not. That failure is loud and is the outcome the invariant asks for — but
-it is a real narrowing of the margin and a candidate to revisit.
+**Both valves are gone now, and so is `@turn_fence_ms`.** The timer's only job
+was "the owner went away", and the owner going away is directly observable
+(`Process.monitor/1` + `:DOWN`), so the timer was never a safety net — it was a
+race: it could fire while the owner was still running and let the worker proceed,
+silently flipping the outcome a decisive park pins. Removing it removes the
+"valve > fence" constraint instead of trading one number against another. The
+idle fence's bound is now **1000 ms** (`SubAgentToolsHelpers.@idle_fence_ms`).
+
+**What is left of the measurement, deliberately:** the fence's 1000 ms was
+chosen from the same numbers (in-suite p50 18.7 ms / max 34.3 ms over 40 samples;
+p50 926 ms / max 1534 ms under 48 CPU burners; a 500 ms fence missed outright at
+seed 200984). 1000 ms is ~53× the in-suite median and clears the in-suite spread
+with headroom, but it is **inside the observed spread** of the extreme-load
+measurement, so it can fire there. That failure is loud (a missing frame, from the
+fence's own bound) and is the outcome the ruling asks for — but it is a real
+narrowing of the margin and a candidate to revisit.
 
 ## 5. `wait_for_pid_down` — unified, and why 2000 rather than something smaller
 
@@ -173,11 +191,13 @@ tightening (a scan taking >2 s should fail a test), but it is a coupling, not an
 independent number, and it should be decided together with the producer's
 deadline rather than one at a time.
 
-## 7. `:sys.get_state` — explicit 500 ms, and where it is "cheating"
+## 7. `:sys.get_state` — explicit timeout, and where it is "cheating"
 
-All 11 sites in the harness now pass an explicit `500`. `:sys.get_state/2` takes
-the timeout second; `:sys.replace_state/3` takes it **third** (`(Name, Fun,
-Timeout)`) — worth knowing, since the natural-looking
+Every `:sys.get_state/2` site passes an explicit timeout — 1000 ms for the
+harness's reads (the fence bound, so a read can never outlive the fence that
+ordered it) and 500 ms for the few that read a channel's or the reloader's state.
+`:sys.get_state/2` takes the timeout second; `:sys.replace_state/3` takes it
+**third** (`(Name, Fun, Timeout)`) — worth knowing, since the natural-looking
 `:sys.replace_state(pid, 500, fun)` compiles and then fails at runtime with a
 `FunctionClauseError` inside `:gen.call/4`.
 
@@ -188,12 +208,12 @@ Two distinct kinds of site, and only the second is a problem:
 `send_compaction_done/3` and `swap_to_mock_client/1` (`agent_test_helpers.ex`),
 `record_read_file/2` (`agent_test_assertions.ex`). Keep.
 
-**Unjustified barriers — the test peeks at internals instead of asserting
-observable behaviour.** These are the sites the user asked about:
+**Barriers that read instead of waiting.** These are the sites the user asked
+about; the first one has since been fixed:
 
 | site | what it does |
 |---|---|
-| `sub_agent_tools_helpers.ex` (`idle?/1`) | decides "the agent is idle" by reading `Machine.status_for(:sys.get_state(pid).live.machine)` rather than waiting on the `chat:status` broadcast. Its doc *justifies* the choice (a missed broadcast can never be the reason a test fails, and the condition matches the teardown invariant) — which is a real argument, but it does mean 67 `eventually` sites are asserting on internal state. |
+| `sub_agent_tools_helpers.ex` (`idle?/1`) | *deleted.* It decided "the agent is idle" by reading `Machine.status_for(:sys.get_state(pid).live.machine)` rather than waiting on the `chat:status` broadcast, and its doc justified the choice (a missed broadcast can never be the reason a test fails) — but it also meant a broadcast regression could pass as a success. `await_idle/1` now fences on the agent's own `{:chat_status, %{name: name, status: "idle"}}` frame, and `test/nest/agents/agent/idle_fence_test.exs` pins that the fence fails when no frame arrives. |
 | `sub_agent_tools_helpers.ex` (`query_results/1`, `agent_texts/1`) | assert on the agent's internal transcript state instead of the messages it broadcast. |
 | `sub_agent_tools_helpers.ex` (coordinator start) | a bare `:sys.get_state(pid)` used purely as a readiness barrier, asserting nothing. |
 
@@ -204,9 +224,14 @@ teardown invariant itself, so it is justified.
 
 - **The stale claim is corrected** in both `eventually.ex`'s moduledoc and
   `test/support/credo/no_sleep_in_tests.ex`: it is not "a small number of
-  tests", it is **73 call sites across 30 files**.
+  tests", it was **73 call sites across 30 files** — and it is **9 across 4
+  files** today (`agents_batch_test.exs`'s mailbox-length poll,
+  `clone_agent_chat_stop_test.exs`'s six registry/`ChildRegistry` polls,
+  `timeline_emitters_test.exs`'s timeline-file poll, and
+  `supervisor_spawn_test.exs`'s registry poll). The rest became fences on the
+  frame that decides them.
 - **Nothing relies on the 500 ms default.** Verified by walking every call site
-  (balancing parentheses) rather than grepping: all 73 pass an explicit
+  (balancing parentheses) rather than grepping: all of them pass an explicit
   `:timeout`; the only four without one are inside `eventually.ex` itself. So the
   default is not load-bearing today and its value does not affect the suite.
 - **The helper had no test at all.** Added
@@ -220,10 +245,11 @@ teardown invariant itself, so it is justified.
   call sites are strictly better served by `Process.monitor/1` +
   `assert_receive {:DOWN, …}` (process death) or by waiting on a real PubSub
   event. The registry/`:DOWN`-cleanup polls have no event and are genuinely
-  polling-only. Deciding this changes ~30 files, so it is a call for the human.
+  polling-only. Deciding this changes the remaining call sites, so it is a call
+  for the human.
 - The failure message reports only the budget, not the last observed value, and
   a `fun` that raises aborts the wait immediately instead of retrying. Both were
-  left as-is deliberately — 73 call sites depend on the current behaviour, so
+  left as-is deliberately — the call sites depend on the current behaviour, so
   changing it is its own change.
 
 ## 9. Measurement
