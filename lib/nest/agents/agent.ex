@@ -16,6 +16,7 @@ defmodule Nest.Agents.Agent do
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Init
+  alias Nest.Agents.Agent.Machine.Backgrounding
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.PreSpawn
   alias Nest.Agents.Agent.SubAgent
@@ -457,6 +458,24 @@ defmodule Nest.Agents.Agent do
     # settle): it is lost with the process, so say so in the log.
     Inbox.log_lost_replies(state)
 
+    # Stop the workers this process's turn is running. They are Tasks under the
+    # application-wide `Nest.Agents.TaskSupervisor`, not children of this
+    # process, so nothing else here reaches them — `SubAgent.cascade_terminate`
+    # below stops children and watchers, and the shell-jobs cast stops jobs.
+    # A worker left running past this process keeps doing the turn's work with
+    # nothing left to consume it: it runs tool calls of its own, and one of them
+    # — `agents-send`/`agents-query` → `Agents.send_message/5` →
+    # `Supervisor.get_agent/2`'s on-demand load → `Init.LoadHeal.heal/2` —
+    # *appends* a message for the agent it loads, in the worker's own DB
+    # context. In a test that context is the test process's sandbox connection,
+    # which is checked in as the test process exits: the append then fails with
+    # `DBConnection.ConnectionError: owner … exited`, long after the teardown
+    # stopped every agent it could see. Death bypasses the turn's Stop
+    # transition, which is the only place that kills these today
+    # (`Machine.Stopping`'s `{:kill, active_worker}` and
+    # `Machine.Backgrounding.kill_actions/1`), so it must stop them itself.
+    stop_turn_workers(state)
+
     # Stop any outstanding queries (children in
     # `pending_children`) before teardown. Defensive against
     # the case where the supervisor gave up because we
@@ -499,6 +518,24 @@ defmodule Nest.Agents.Agent do
   # `Nest.Agents.Agent.TmpSpace.cleanup/2` so this module doesn't carry
   # the boilerplate.
   defp cleanup_tmp(space_id, agent_name), do: TmpSpace.cleanup(space_id, agent_name)
+
+  # Every worker this process's turn is running: the live one, plus the batches
+  # it moved to the background (`Machine.Backgrounding.pids/1`). Distinct pids —
+  # one batch can be recorded under two refs — and `:shutdown` rather than
+  # `:kill`: a worker is a plain task, so it dies immediately either way, and
+  # `:shutdown` says why it went. No wait: this runs inside the exit handshake
+  # (see `terminate/2`), and a worker that has been sent the signal cannot run
+  # any more of the turn's code, which is the whole point.
+  defp stop_turn_workers(state) do
+    machine = state.live.machine
+
+    [machine.work.active_worker | Backgrounding.pids(machine)]
+    |> Enum.uniq()
+    |> Enum.each(&stop_worker/1)
+  end
+
+  defp stop_worker(pid) when is_pid(pid), do: Process.exit(pid, :shutdown)
+  defp stop_worker(_none), do: :ok
 
   # Public-for-Handlers: message-construction logic. The
   # canonical impl lives in `Nest.Agents.Agent.TmpSpace`; the
