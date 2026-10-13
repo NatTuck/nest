@@ -145,11 +145,6 @@ defmodule Nest.Agents.AgentTestLifecycle do
   """
   @spec stop_test_agents() :: map()
   def stop_test_agents do
-    # TEMPORARY (owner-exit probe). NOT FOR MERGE. Sample who is holding the
-    # sandbox connection *before* stopping anything, while a borrower is still
-    # alive to be named.
-    _ = Nest.TestSupport.OwnerExitProbe.holders_at_teardown()
-
     owned = owned_agents()
 
     # Sample before stopping anything. The teardown's own stops perturb the

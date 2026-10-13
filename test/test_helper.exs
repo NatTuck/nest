@@ -48,12 +48,6 @@ Mimic.copy(Nest.Tools.ShellCmd)
 # the suite is contention-bound above its real core count and over-subscribing the
 # schedulers is what produces fence misses. There is deliberately no ceiling: on a
 # 32-core/64-thread host this sets 32.
-# TEMPORARY (owner-exit probe). NOT FOR MERGE. See
-# `Nest.TestSupport.OwnerExitProbe` and the matching insert in
-# `Nest.DataCase.setup_sandbox/2`.
-:ets.new(:nest_owner_exit_probe, [:named_table, :public, :set, write_concurrency: true])
-:logger.add_handler(:nest_owner_exit_probe, Nest.TestSupport.OwnerExitProbe, %{})
-
 ExUnit.configure(
   timeout: 3_000,
   max_cases: Nest.Test.MaxCases.real_cpus()

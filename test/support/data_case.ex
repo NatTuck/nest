@@ -67,23 +67,6 @@ defmodule Nest.DataCase do
 
     case Sandbox.checkout(Nest.Repo, []) do
       :ok ->
-        # TEMPORARY (owner-exit probe). NOT FOR MERGE. This process is the
-        # connection owner from here on, so map it to the test it is running;
-        # `Nest.TestSupport.OwnerExitProbe` uses it to name the test behind a
-        # DBConnection "owner ... exited" disconnect.
-        :ets.insert(
-          :nest_owner_exit_probe,
-          {parent, {tags[:module], tags[:describe], tags[:test]}}
-        )
-
-        # Fallback hint for the probe: the most recently started test. Weak
-        # (the owner we are hunting is not necessarily this one), but it is
-        # better than nothing if the pid in the message cannot be parsed.
-        :ets.insert(
-          :nest_owner_exit_probe,
-          {:last_started, {tags[:module], tags[:describe], tags[:test]}}
-        )
-
         if tags[db_shared_tag] || not tags[:async] do
           Sandbox.mode(Nest.Repo, {:shared, parent})
         end
