@@ -109,7 +109,18 @@ end
 # `mix test --preload-modules` is NOT the way to do this: `Mix.Tasks.Test`
 # parses the switch but only forwards it to `app.start` under `--slowest`,
 # so the CLI flag is a no-op here.
-for mod <- Application.spec(:nest, :modules) || [] do
+#
+# A `nil` or empty list would leave every `:nest` module loading lazily again —
+# exactly the serialisation this block exists to remove — so fail loudly rather
+# than silently skipping the warm-up: a reader must not believe a fix is in
+# force when it is not.
+modules =
+  case Application.spec(:nest, :modules) do
+    [_ | _] = modules -> modules
+    other -> raise "expected a non-empty :nest module list to preload, got #{inspect(other)}"
+  end
+
+for mod <- modules do
   Code.ensure_loaded(mod)
 end
 

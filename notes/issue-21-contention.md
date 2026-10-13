@@ -9,8 +9,9 @@ run and **dropped** (numbers below). All probe/sampler scaffolding lived in
 `/tmp/contention/` and was removed before committing; raw logs are in
 `notes/test-runs/` (gitignored).
 
-Follow-ups on this branch: `0b79746` (line cap — extract `Agent.PreSpawn`) and
-`08e76ef` (preload the app's modules in `test_helper.exs`).
+Follow-ups on this branch: `0b79746` (line cap — extract `Agent.PreSpawn`),
+`08e76ef` (preload the app's modules in `test_helper.exs`), and a follow-up
+commit that makes the preload fail loudly on an empty module list.
 
 ## Headline
 
@@ -22,7 +23,7 @@ agents running the suite concurrently** (§9: "load 6.9–10.5"), so it is not a
 property of 16 cases per se.
 
 Add **16 pure-CPU burner OS processes** — which touch nothing inside the BEAM —
-and the recorded failure shape returns immediately: 3–13 failures per run, with
+and the recorded failure shape returns immediately: 4–12 failures per run, with
 failures blocked in `Mimic.allow/3`, in `Nest.Agents.Supervisor.start_*`
 (`supervisor.ex:107/151`) and in `:code_server.call/1`, exactly the traces
 §2/§10b recorded. So the misses are **host CPU contention**; the BEAM-internal
@@ -96,9 +97,9 @@ preload between each pair of runs:
 
 | arm | failures | `:code_server.call/1` | `Supervisor.start_*` | `Mimic.allow/3` | `Mimic.Server.*` | other |
 |---|---|---|---|---|---|---|
-| baseline | **142** | **45** | **17** | 26 | 21 | 33 |
+| baseline | **142** | **45** | **17** | 22 | 13 | 45 |
 | app-wide module preload | **117** | **6** | **0** | **74** | 21 | 16 |
-| 32 partitions (5 seeds) | 38 | 11 | 7 | 9 | 9 | 11 |
+| 32 partitions (5 seeds) | 38 | 11 | 7 | 5 | 4 | 11 |
 
 Paired over the 16 seeds: mean difference 1.56 failures/run (sd 1.90,
 **t = 3.30**, 11 seeds better / 2 worse / 3 tied), i.e. **142 → 117, −17.6 %**.
@@ -106,13 +107,28 @@ Paired over the 16 seeds: mean difference 1.56 failures/run (sd 1.90,
 The code-server blocks are ordinary lazy **first-call** loads
 (`error_handler.undefined_function/3 → :code.ensure_loaded/1 →
 :code_server.call/1`), fired from inside `Nest.Persistence` and friends
-throughout the suite — not just at start-up, because there are 485 modules and
+throughout the suite — not just at start-up, because there are 263 modules and
 the warm-up list cannot cover every path. Preloading every module of the `:nest`
 app removes those frames *and* the `Supervisor.start_*` ones with them; what
 remains is Mimic, and 74 of the 117 are `Mimic.allow/3` specifically. The
 latency budget is conserved across the BEAM's single-process rendezvous points,
 so clearing one point moves the queue to the next — which is why the failure
 count only follows partway.
+
+**What that evidence does and does not support.** The durable result is the
+*blocking traces*: `:code_server` 45 → 6 and `Supervisor.start_*` 17 → 0 of
+142 is a categorical change, not a shift in a noisy count. The failure count is
+the weaker half — the first 8-seed sample was **null** (54 → 46, paired
+t = 1.18, df 7, **p ≈ 0.27**), the 16-seed sample is 142 → 117 (t = 3.30,
+p ≈ 0.005), and 1.6 failures/run off a mean of 8.9 is a small effect either
+way. So the justification for the preload is that it removes a serialisation
+point, not that it fixes the suite on its own.
+
+It is also a **no-op under `--cover`**: ExCoveralls begins with
+`:cover.compile_beam_directory/1` over the build path
+(`deps/excoveralls/lib/excoveralls/cover.ex:19`), which loads every beam before
+the suite runs, leaving the preload nothing to do. It helps the plain
+`mix test` gate only.
 
 *Note:* `mix test --preload-modules` is a **no-op** — `Mix.Tasks.Test` parses the
 switch but only forwards it to `app.start` under `--slowest`
@@ -124,9 +140,9 @@ switch but only forwards it to `app.start` under `--slowest`
 | # | hypothesis | verdict |
 |---|---|---|
 | 1 | single-partition `Nest.Agents.Registry` | **REFUTED** — queue 0 in every sample, 10 µs lookups, 27 ms total; partitions move no failure count and cost 23× on `list_all` |
-| 2 | one `DynamicSupervisor`, `init/1` inside its critical section | **SUPPORTED** — Σ 2.8 s idle / 5.4–8.2 s loaded, p99 50–250 ms, queue ≤ 25, and 10/53 loaded failure traces; 1.8–5.2 s of it is pure queue wait (`start_child` − `agent_init`) |
+| 2 | one `DynamicSupervisor`, `init/1` inside its critical section | **SUPPORTED** — Σ 2.8 s idle / 5.4–8.2 s loaded, p99 50–250 ms, queue ≤ 25, and 17/142 loaded failure traces; 1.8–5.2 s of it is pure queue wait (`start_child` − `agent_init`) |
 | 3 | global `ShellJobs.stop_all/1` | **REFUTED** — 545 calls, Σ 15–21 ms, queue ≤ 2, 0 failure traces |
-| 4 | global `Mimic.Coordinator` | **SUPPORTED** — 3 calls per start, Σ 3.0–11.1 s, p90 25–100 ms, p99 250 ms–2.5 s, queue ≤ 14; 16/53 traces, and **38/46 once the code server is preloaded** — i.e. it is the last queue standing |
+| 4 | global `Mimic.Coordinator` | **SUPPORTED** — 3 calls per start, Σ 3.0–11.1 s, p90 25–100 ms, p99 250 ms–2.5 s, queue ≤ 14; 22/142 traces, and **74/117 once the app is preloaded** — i.e. it is the last queue standing |
 | 5 | code server | **SUPPORTED — the biggest single blocker** — queue 35–43 (deepest of any sampled process), 45/142 traces. **Fixed** by the app-wide preload (`08e76ef`): 45 → 6 traces, 142 → 117 failures |
 | 6 | `bwrap` spawns | **not a bottleneck by these numbers** — ports ≤ 48, procs ≤ 840, `Sandbox.allow/3` Σ 6 ms, 0 traces; a large dirty-IO-scheduler CPU share is visible but no queue forms |
 
@@ -181,4 +197,4 @@ concurrency.
     mix test --seed 1                     # 2393 tests, 0 failures
     # the load condition that fails
     (for i in $(seq 16); do yes >/dev/null & done); mix test --seed 1
-    # then: 3-13 failures, blocked in code_server / supervisor / Mimic
+    # then: 4-12 failures, blocked in code_server / supervisor / Mimic
