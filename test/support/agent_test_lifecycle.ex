@@ -128,6 +128,17 @@ defmodule Nest.Agents.AgentTestLifecycle do
   @stop_ms 250
 
   @doc """
+  The stop's liveness bound, in milliseconds (see `@stop_ms`).
+
+  Public so the suite can pin that it stays wide enough to clear a real
+  teardown. The handshake includes `terminate/2`'s `File.rm_rf`, so a bound tight
+  enough to measure the receive loop does not detect a busy agent — it fails idle
+  ones.
+  """
+  @spec stop_bound_ms() :: pos_integer()
+  def stop_bound_ms, do: @stop_ms
+
+  @doc """
   Send `:shutdown` to the agent registered as `space_id`/`name` and wait for
   its `:DOWN` (a single-message receive, not a drain loop). A no-op if the
   agent is already gone.

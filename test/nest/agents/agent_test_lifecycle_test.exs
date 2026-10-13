@@ -216,16 +216,19 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       # the host — failing tests whose agents were not in flight at all.
       #
       # A populated scratch directory is a *real* teardown load rather than a
-      # stub: it is the same `File.rm_rf` the agent runs for itself. 500 files
-      # cost ~13 ms of `rm_rf` on the fast host and ~42 ms on the project's
-      # slowest, so this test fails under the old bound on both. The assertion is
-      # deliberately one-sided — it says nothing about how long the stop took,
-      # only that an idle agent is never reported — so it cannot go flaky.
+      # stub: it is the same `File.rm_rf` the agent runs for itself. 200 files
+      # cost ~5 ms of `rm_rf` on the fast host and ~17 ms on the project's
+      # slowest, and the bound is 250 ms, so this cannot go flaky on either —
+      # which is why it is this size and not larger. It is a correctness pin
+      # (a populated scratch dir must not make an idle agent a violation) that
+      # doubles as a regression pin on the slow host, where the old 10 ms bound
+      # was crossed by the teardown alone. The bound's own floor is pinned
+      # separately, and deterministically, below.
       {pid, name} = AgentTestHelpers.start_agent()
       space_id = AgentTestHelpers.current_space_id()
 
       scratch = TmpSpace.create(space_id, name)
-      Enum.each(1..500, fn i -> File.write!(Path.join(scratch, "f#{i}"), "x") end)
+      Enum.each(1..200, fn i -> File.write!(Path.join(scratch, "f#{i}"), "x") end)
 
       result = AgentTestLifecycle.stop_test_agents()
 
@@ -235,6 +238,17 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       assert result.in_flight == []
       assert :ok = AgentTestLifecycle.assert_zero_remaining!(result)
       refute Process.alive?(pid)
+    end
+
+    test "the stop bound stays wide enough to clear a real teardown" do
+      # The bound is a liveness bound and has to keep clearing the handshake,
+      # which contains `terminate/2`'s `File.rm_rf` and a `:file_server`
+      # round-trip. Measured: 25-110 us with an idle host, a flat 8.5-9.1 ms
+      # plateau under CPU saturation, and over 250 ms for a 500-file scratch
+      # directory on the slow host under load. Tightening this back toward the
+      # handshake is the bug this guard was fixed for, so the floor is pinned
+      # rather than left to a comment.
+      assert AgentTestLifecycle.stop_bound_ms() >= 250
     end
   end
 
