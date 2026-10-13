@@ -179,6 +179,21 @@ defmodule Nest.Sandbox.ShellJobs do
   def stop_all(agent_key), do: GenServer.call(@name, {:stop_all, agent_key}, 10_000)
 
   @doc """
+  Ask the manager to stop every job belonging to `agent_key`, without waiting
+  for it to happen.
+
+  The non-blocking form of `stop_all/1`, for `Nest.Agents.Agent.terminate/2`:
+  the manager is a process-global rendezvous that every agent's teardown passes
+  through, so a synchronous stop there puts a shared process's queue latency
+  inside every agent's exit — the same rendezvous that can leave a *dying*
+  agent unable to answer a call for hundreds of milliseconds. A cast returns
+  immediately; the manager still drops the jobs, and it already monitors the
+  agent pid (`track_agent/3`), so the jobs die with the agent either way.
+  """
+  @spec stop_all_async(agent_key()) :: :ok
+  def stop_all_async(agent_key), do: GenServer.cast(@name, {:stop_all, agent_key})
+
+  @doc """
   The result text for a finished job, shared by the blocking `shell-wait` and
   the async watcher (issue #54) so the two wordings cannot drift.
   """
@@ -297,6 +312,11 @@ defmodule Nest.Sandbox.ShellJobs do
 
   def handle_call({:stop_all, agent_key}, _from, state) do
     {:reply, :ok, drop_agent(agent_key, state)}
+  end
+
+  @impl true
+  def handle_cast({:stop_all, agent_key}, state) do
+    {:noreply, drop_agent(agent_key, state)}
   end
 
   @impl true

@@ -51,13 +51,13 @@ defmodule Nest.Agents.AgentTestHelpers do
   defdelegate text_from_parts(parts), to: AgentTestAssertions
   defdelegate assert_unique_message_indices(messages), to: AgentTestAssertions
   defdelegate record_read_file(pid, path, opts \\ []), to: AgentTestAssertions
-  # One default, one owner. This delegate and `AgentTestLifecycle`'s
-  # implementation used to disagree by 50x (100 vs 5_000) for the same
-  # helper, and the split was backwards from intuition: the *hot* `on_exit`
-  # paths got the long one and two hand-written call sites got the short one.
-  # 2_000 is the `#21` cap on any test-side timeout; see
-  # `notes/sketchy-slow-tests.md` for why a shorter window is not safe here.
-  defdelegate wait_for_pid_down(space_id, name, timeout \\ 2_000), to: AgentTestLifecycle
+  # One default, one owner: the 2-arity form delegates to `AgentTestLifecycle`'s
+  # 2-arity form, so both spellings use the same `@stop_ms` bound. A local
+  # default here would be a second number for the same wait (the split used to
+  # be 100 vs 5_000, backwards from intuition — the hot `on_exit` paths got the
+  # long one), and the wait is now a detector, not headroom.
+  defdelegate wait_for_pid_down(space_id, name), to: AgentTestLifecycle
+  defdelegate wait_for_pid_down(space_id, name, timeout), to: AgentTestLifecycle
 
   @space_id_key :nest_test_space_id
 
@@ -270,29 +270,15 @@ defmodule Nest.Agents.AgentTestHelpers do
   cases that want raw `Process.flag(:trap_exit, true)` +
   `Process.exit(pid, :shutdown)` semantics.
 
-  Registers `on_exit(fn -> Supervisor.stop_agent(space_id, name);
-  AgentTestLifecycle.wait_for_pid_down(space_id, name) end)`.
-  The `wait_for_pid_down/3` helper sends
-  `Process.exit(pid, :shutdown)` and BLOCKS on a single
-  `:DOWN` message (NOT a drain loop — see comment on
-  `wait_for_pid_down/3`). This guarantees the agent
-  GenServer has fully terminated (mailbox can no longer
-  fire DB calls) before the test exits the cleanup
-  callback — closing the parallel-test ownership race
-  window.
-
-  (This doc used to spell the call `wait_for_pid_down(space_id, name)`,
-  which reads as the local delegate whose default was 100 ms, while the
-  code took the `AgentTestLifecycle` default of 5_000 ms. Both are now
-  2_000 ms and the doc names the call the code actually makes.)
-
-  Note: this helper does NOT delete the `agents` DB row.
-  The `DataCase` setup's automatic sandbox rollback already
-  covers that — running a DB write in the on_exit process
-  would fail with `DBConnection.OwnershipError` because
-  the on_exit runner doesn't own the test's sandbox
-  checkout. The supervisor stop is what prevents the
-  next test from racing against a ghost pid's DB calls.
+  Registers only the cleanup that is safe *after* the test process (the
+  SQL-sandbox connection owner) has exited: dropping this test's subscription
+  to the agent's PubSub topic. The agent itself is stopped by the test body's
+  teardown (`AgentTestLifecycle.stop_test_agents/0`), which discovers every
+  agent whose space is visible in this test's sandbox transaction — so an
+  `on_exit` stop here would be redundant, and it would run `terminate/2` (and
+  its DB work) on a connection whose owner has already exited. That is the
+  `DBConnection.ConnectionError: owner ... exited` this helper used to be able
+  to produce; see `register_on_exit_cleanup/3` for the full reasoning.
 
   Pair with `vocation_id_for_test/0` for tests that need
   a vocation but don't want the full `start_agent/1` setup.
@@ -308,10 +294,7 @@ defmodule Nest.Agents.AgentTestHelpers do
   def ensure_cleanup(name) do
     space_id = current_space_id()
 
-    on_exit(fn ->
-      _ = Supervisor.stop_agent(space_id, name)
-      AgentTestLifecycle.wait_for_pid_down(space_id, name)
-    end)
+    on_exit(fn -> Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{space_id}:#{name}") end)
   end
 
   @doc """
@@ -563,20 +546,20 @@ defmodule Nest.Agents.AgentTestHelpers do
 
   # on_exit runs after the test's last assertion, in a SEPARATE
   # ExUnit runner process that does NOT own the test pid's
-  # sandbox checkout — so any DB write here would fail with
-  # `DBConnection.OwnershipError`. `Supervisor.stop_agent/2`
-  # is the right cleanup: it terminates the GenServer, and the
-  # sandbox's checkin (registered by `DataCase.setup_sandbox/2`)
-  # rolls back the agent row automatically. `Agents.delete_agent/2`
-  # (which also drops the DB row) is therefore reserved for
-  # test bodies where the test pid still owns the connection.
+  # sandbox checkout — so any DB work here runs on a connection
+  # whose owner has already exited.
+  #
+  # The agent is stopped by the test body's teardown
+  # (`AgentTestLifecycle.stop_test_agents/0`), which runs while the
+  # checkout is still live. This hook therefore deliberately does NOT stop it:
+  # `Supervisor.stop_agent/2` and `wait_for_pid_down/2` both run `terminate/2`
+  # (which queries — e.g. a child's reply give-up), on that dead connection —
+  # exactly the `DBConnection.ConnectionError: owner ... exited` this file used
+  # to produce. Keep only what is safe once the owner is gone.
   #
   # Order: unlink the agent first so a normal terminate doesn't
-  # propagate `:EXIT` to the (already-dead) test pid. Then
-  # stop the agent via the supervisor, wait for the agent
-  # GenServer to fully terminate before returning (so its
-  # mailbox can't fire DB calls after the test pid has
-  # exited), and unsubscribe from its PubSub topic.
+  # propagate `:EXIT` to the (already-dead) test pid, then stop the mock
+  # client's queue, then unsubscribe from the agent's PubSub topic.
   #
   # Note: this on_exit runs in a SEPARATE ExUnit runner process,
   # so it CANNOT mutate the test process's process dict. Any
@@ -588,18 +571,20 @@ defmodule Nest.Agents.AgentTestHelpers do
   # `unsubscribe/2` below is therefore the same kind of no-op for
   # the test pid — it only unsubscribes this runner process — and is
   # kept as the belt to `drop_stale_pubsub_subscriptions/0`'s braces.
-  #
-  # The wait-for-DOWN is a SINGLE-MESSAGE receive — not a
-  # drain loop. The drain loop used to live here was killed
-  # with fire and can *NEVER EVER* come back.
+  # The per-test on_exit body, split out so a test can run it directly: the
+  # property that matters is that it issues no query, because it runs in a
+  # process that does not own this test's sandbox connection. See
+  # `agent_test_lifecycle_test.exs`'s "the per-test on_exit cleanup issues no
+  # query".
+  @doc false
+  def on_exit_cleanup(pid, space_id, agent_id) do
+    Process.unlink(pid)
+    MockClient.stop(pid)
+    Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{space_id}:#{agent_id}")
+  end
+
   defp register_on_exit_cleanup(pid, space_id, agent_id) do
-    on_exit(fn ->
-      Process.unlink(pid)
-      MockClient.stop(pid)
-      _ = Supervisor.stop_agent(space_id, agent_id)
-      AgentTestLifecycle.wait_for_pid_down(space_id, agent_id)
-      Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{space_id}:#{agent_id}")
-    end)
+    on_exit(fn -> on_exit_cleanup(pid, space_id, agent_id) end)
   end
 
   def get_system_prompt(pid) do

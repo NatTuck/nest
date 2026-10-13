@@ -446,6 +446,13 @@ defmodule Nest.Agents.Agent do
 
   @impl true
   def terminate(_reason, state) do
+    # This callback runs inside the exit handshake the test teardown uses as
+    # its idle detector (`Nest.Agents.AgentTestLifecycle.stop_pid/2`): the
+    # test's `:DOWN` only arrives once this returns, so time spent here is
+    # charged to the handshake and loosens the detector. Keep every step local
+    # and cheap, and hand anything that is not needed for the process to die to
+    # the process that needs it.
+
     # An owed reply cannot be given up from here (the notices need a live
     # settle): it is lost with the process, so say so in the log.
     Inbox.log_lost_replies(state)
@@ -457,9 +464,17 @@ defmodule Nest.Agents.Agent do
     # specialists are left running.
     SubAgent.cascade_terminate(state)
 
-    # Stop background shell jobs before their tmp log dir is removed, so
-    # a running job can't recreate files under a just-deleted directory.
-    stop_shell_jobs(state)
+    # Ask the shell-jobs manager to stop this agent's jobs. Deliberately the
+    # non-blocking form: the manager is a process-global rendezvous that every
+    # agent's teardown passes through, so waiting on it here would put a shared
+    # process's queue latency inside every agent's exit — the same rendezvous
+    # that can leave a dying agent unable to answer a call for hundreds of
+    # milliseconds. The manager already monitors this pid (`track_agent/3`) and
+    # drops its jobs on its `:DOWN`, so this cast is not what keeps a job from
+    # outliving its agent; it asks for the stop without making the exit wait.
+    # (The synchronous `ShellJobs.stop_all/1` remains for callers that need the
+    # jobs gone before they remove the jobs' directory.)
+    ShellJobs.stop_all_async({state.space_id, state.name})
 
     # Cleanup /tmp per design specification
     cleanup_tmp(state.space_id, state.name)
@@ -484,14 +499,6 @@ defmodule Nest.Agents.Agent do
   # `Nest.Agents.Agent.TmpSpace.cleanup/2` so this module doesn't carry
   # the boilerplate.
   defp cleanup_tmp(space_id, agent_name), do: TmpSpace.cleanup(space_id, agent_name)
-
-  defp stop_shell_jobs(state) do
-    ShellJobs.stop_all({state.space_id, state.name})
-  catch
-    # The manager may be down/restarting during a crash teardown; that
-    # must not turn agent shutdown into a raise.
-    :exit, _ -> :ok
-  end
 
   # Public-for-Handlers: message-construction logic. The
   # canonical impl lives in `Nest.Agents.Agent.TmpSpace`; the

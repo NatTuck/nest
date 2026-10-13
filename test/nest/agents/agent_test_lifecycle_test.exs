@@ -1,6 +1,8 @@
 defmodule Nest.Agents.AgentTestLifecycleTest do
   use Nest.DataCase, async: true
 
+  import ExUnit.CaptureLog
+
   alias Nest.Agents.Agent
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.AgentTestLifecycle
@@ -28,6 +30,12 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       assert_raise RuntimeError, ~r/still in flight at test finish/, fn ->
         AgentTestLifecycle.assert_zero_remaining!(result)
       end
+
+      # A turn runs in a worker task, not in the agent's loop, so a mid-turn
+      # agent *is* parked and its stop is an ordinary handshake. That is the
+      # division of labour: `in_flight` catches a turn in progress, and the
+      # stop bound (below) catches a loop that is not parked at all.
+      assert result.not_stopped == []
 
       # Reporting a turn in flight is not a cleanup decision: the agent is
       # stopped either way, and the parked worker is released so it cannot
@@ -62,58 +70,45 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       result = AgentTestLifecycle.stop_test_agents()
 
       assert result.in_flight == []
-      assert result.still_alive == []
+      assert result.not_stopped == []
       assert :ok = AgentTestLifecycle.assert_zero_remaining!(result)
       refute Process.alive?(pid)
     end
 
-    test "does not report an agent that does not answer within the answer wait" do
-      {pid, _name} = AgentTestHelpers.start_agent()
+    test "reports an agent that does not stop, naming it" do
+      {pid, name} = AgentTestHelpers.start_agent()
+      space_id = AgentTestHelpers.current_space_id()
 
-      # The guard's blind spot, pinned as a test rather than described in a
-      # comment: a status read that does not answer inside `@answer_ms` is **not**
-      # reported as in flight. Suspending the agent is the cheapest way to make it
-      # stop answering normal messages — which is exactly what a *busy* loop (a DB
-      # append under pool contention) looks like to this read.
+      # The stop bound's target, without racing a real turn: a suspended agent
+      # never reaches its receive loop, so it never handles the `{:EXIT, ...}`
+      # `Process.exit/2` delivers and never dies. That is what a test that ends
+      # with its agent still working looks like from here.
       #
-      # The tradeoff, stated: the old probe called every non-answer
-      # `:unresponsive`, and that is what false-failed healthy agents that were
-      # already dying; a slow-but-busy agent can now pass instead. A process that
-      # will not *stop* is still caught, by `still_alive`. (The old probe read
-      # through the `:sys` protocol, which a suspended agent still answers, so this
-      # pins the boundary against future widening rather than reproducing the old
-      # failure.)
+      # This also pins the answer-wait blind spot: a status read that does not
+      # answer inside `@answer_ms` is **not** reported as in flight, because a
+      # non-answer is not a status. A process that will not stop is reported
+      # instead — which says what is actually wrong with it.
       :ok = :sys.suspend(pid)
-      queued = elem(Process.info(pid, :message_queue_len), 1)
-      test_pid = self()
-
-      # Release it once the teardown has moved past the status question. The exit
-      # `stop_pid/2` fires lands in the same mailbox, so "one message past the
-      # read request" is that moment — an event, not a timer.
-      spawn(fn ->
-        try do
-          Eventually.eventually(
-            fn -> elem(Process.info(pid, :message_queue_len), 1) > queued + 1 end,
-            timeout: 2_000
-          )
-        rescue
-          # Unreachable: the teardown always fires the exit. If the condition is
-          # ever missed, resume anyway so the failure is the teardown's
-          # `still_alive` rather than a process left suspended.
-          _ -> :ok
-        end
-
-        if Process.alive?(pid), do: :sys.resume(pid)
-        send(test_pid, :released)
-      end)
 
       result = AgentTestLifecycle.stop_test_agents()
 
       assert result.in_flight == []
-      assert result.still_alive == []
-      assert :ok = AgentTestLifecycle.assert_zero_remaining!(result)
-      assert_receive :released
-      refute Process.alive?(pid)
+      assert result.not_stopped == [{space_id, name}]
+
+      assert_raise RuntimeError, ~r/did not stop within 10 ms of :shutdown/, fn ->
+        AgentTestLifecycle.assert_zero_remaining!(result)
+      end
+
+      # The same detector in its other entry point, and both name the agent.
+      assert_raise RuntimeError, ~r/#{name}/, fn ->
+        AgentTestLifecycle.wait_for_pid_down(space_id, name)
+      end
+
+      # The stop does not kill: the agent is still there, which is the point of
+      # reporting rather than forcing. Release it so the wrapped teardown below
+      # sees it stop normally instead of failing this test a second time.
+      assert Process.alive?(pid)
+      :ok = :sys.resume(pid)
     end
 
     test "does not report a registered process that never answers as in flight" do
@@ -141,10 +136,37 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
 
       assert result.in_flight == []
       assert :ok = AgentTestLifecycle.assert_zero_remaining!(result)
-      # Not in flight is not the same as unaccounted for: it is stopped, and
-      # the `still_alive` half of the guard would report it if it were not.
+      # Not in flight is not the same as unaccounted for: it does not trap
+      # exits, so the `:shutdown` signal kills it, and the `not_stopped` half
+      # of the guard would report it if it did not.
       refute Process.alive?(pid)
-      assert result.still_alive == []
+      assert result.not_stopped == []
+    end
+  end
+
+  describe "the per-test on_exit cleanup" do
+    test "issues no query" do
+      {pid, name} = AgentTestHelpers.start_agent()
+      space_id = AgentTestHelpers.current_space_id()
+      test_pid = self()
+
+      # A plain `spawn` inherits no `$callers`, so it has no sandbox connection:
+      # a query in the cleanup would crash it with `DBConnection.OwnershipError`
+      # instead of reporting `:ok`. The real `on_exit` runs in exactly such a
+      # process — after the test pid, the connection owner, has exited — which
+      # is why it must not stop the agent (`Supervisor.stop_agent/2` runs
+      # `terminate/2`, and that queries).
+      cleanup =
+        spawn(fn ->
+          send(test_pid, {:cleanup, AgentTestHelpers.on_exit_cleanup(pid, space_id, name)})
+        end)
+
+      ref = Process.monitor(cleanup)
+
+      assert_receive {:cleanup, :ok}, 1_000
+      # `:normal`, not a crash: a query here would have killed the process with
+      # `DBConnection.OwnershipError` before it could report.
+      assert_receive {:DOWN, ^ref, :process, ^cleanup, :normal}, 1_000
     end
   end
 
@@ -175,6 +197,39 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
 
       assert catch_exit(AgentTestLifecycle.reraise_after_teardown(:exit, :boom, stacktrace)) ==
                :boom
+    end
+
+    test "keeps the body's exception when the teardown also fails" do
+      # The trap: a hard-failing teardown must not replace an already-failing
+      # test's exception. An agent suspended past the stop bound makes the
+      # teardown fail; the body's `RuntimeError` is still the one raised, with
+      # its own stacktrace. The teardown's own failure cannot be attached to
+      # that exception without changing it, so it is *said* — the log line is
+      # the observable for it.
+      {pid, name} = AgentTestHelpers.start_agent()
+      :ok = :sys.suspend(pid)
+
+      stacktrace = [{__MODULE__, :probe, 0, [file: ~c"probe.ex", line: 7]}]
+
+      log =
+        capture_log(fn ->
+          try do
+            AgentTestLifecycle.reraise_after_teardown(
+              :error,
+              RuntimeError.exception("body boom"),
+              stacktrace
+            )
+          rescue
+            error ->
+              assert Exception.message(error) == "body boom"
+              assert [{__MODULE__, :probe, 0, _} | _] = __STACKTRACE__
+          end
+        end)
+
+      assert log =~ "did not reach zero remaining agents"
+      assert log =~ name
+
+      :ok = :sys.resume(pid)
     end
   end
 end
