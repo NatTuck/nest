@@ -502,11 +502,26 @@ defmodule Nest.Agents.AgentTestHelpers do
   # processes and need explicit access to stubs set on
   # `Mimic.expect(Req, :get, ...)` etc. No-op for tests that
   # don't use Mimic.
+  #
+  # "No-op for tests that don't use Mimic" is now literal. `allow/3` is a
+  # `GenServer.call` to the one global `Mimic.Coordinator`, and an allowance
+  # row for a module this test owns no stub for cannot do anything: the
+  # dispatch path resolves the owner and then finds no stub, so it runs the
+  # original anyway. Measured on this suite: **all 377** `start_agent/1`
+  # calls in a run own none of the three, so 1131 of the run's 1209
+  # `allow/3` calls were provably inert — 94% of the last global rendezvous
+  # in the start path. `Mimic.Coordinator` is the public ETS table Mimic
+  # itself reads ownership rows from, and `{pid, module}` is the row
+  # `Mimic.Server.register_owner/4` inserts for `stub`/`expect`/`reject`;
+  # if Mimic ever changes either, this reads `false` and the allowances the
+  # tests actually need stop being made — a loud failure, not a silent one.
   defp allow_mimic_stubs(pid) do
-    Mimic.allow(OpenAIClient, self(), pid)
-    Mimic.allow(Req, self(), pid)
-    Mimic.allow(DotConfig, self(), pid)
+    [OpenAIClient, Req, DotConfig]
+    |> Enum.filter(&owns_stubs?/1)
+    |> Enum.each(&Mimic.allow(&1, self(), pid))
   end
+
+  defp owns_stubs?(module), do: :ets.member(Mimic.Coordinator, {self(), module})
 
   # Swap the agent's client_config.client to MockClient and start
   # a per-agent queue. The agent threads its pid through
