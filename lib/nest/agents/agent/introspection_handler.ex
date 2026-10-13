@@ -60,6 +60,19 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
     {:reply, state.live.machine.loop_count, state}
   end
 
+  # Test-harness lifecycle (issue #21): the teardown's status question. It is
+  # answered *here*, in this process, from this process's own machine, so the
+  # caller never samples a state the agent has already left behind — and a
+  # caller that gets no answer learns only that this process was not there to
+  # give one (already gone, or already dying), never that it was busy.
+  #
+  # A turn runs in a worker task, never in this loop, so a genuinely mid-turn
+  # agent answers with `:streaming`/`:executing_tools`/`:compacting`: the status
+  # *value* is the in-flight signal, not a failure to answer.
+  def handle(:get_status, _from, state) do
+    {:reply, Machine.status_for(state.live.machine), state}
+  end
+
   def handle(:get_public_info, _from, state) do
     build_public_info(state)
   end

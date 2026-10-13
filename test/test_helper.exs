@@ -36,8 +36,8 @@ Mimic.copy(Nest.Tools.ShellCmd)
 # `timeout` is the per-test deadline: a **failure bound**, deliberately set above
 # the fences so a fence can report its own failure instead of dying as
 # `ExUnit.TimeoutError` with no diagnostic. Fences and waits in `test/` are 1000 ms
-# (the teardown probe in `AgentTestLifecycle` is the one documented exception, and
-# it goes *down*, not up); this is 3000 ms.
+# (the teardown's answer wait in `AgentTestLifecycle` is the
+# one documented exception, and it goes *down*, not up); this is 3000 ms.
 #
 # It does not affect the suite's 5 s gate (`scripts/precommit-test.sh`): that budget
 # is *throughput* across `max_cases` concurrent tests, not the deadline of any single

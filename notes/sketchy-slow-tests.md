@@ -207,7 +207,7 @@ outlive the fence that ordered it), **500 ms** for the ones that read a channel'
 or the reloader's state (`test/nest_web/surgical_reloader_test.exs`,
 `test/nest_web/channels/lobby_channel/providers_test.exs`,
 `test/nest_web/channels/lobby_channel_rescan_models_test.exs`), and **250 ms** for
-`AgentTestLifecycle`'s teardown probe (`@agent_probe_ms`, §11). **One site is
+`AgentTestLifecycle`'s answer wait (`@answer_ms`, §11). **One site is
 bare** — `test/nest/agents/agent/watch_test.exs:435` — and is deliberately not
 fixed here. `issue-21-accessor-swaps` has since landed without it: the site reads
 two fields (`workspace_path` + `tmp_path`) off one snapshot, so it was outside
@@ -235,8 +235,13 @@ about; the first one has since been fixed:
 | `sub_agent_tools_helpers.ex` (`query_results/1`, `agent_texts/1`) | assert on the agent's internal transcript state instead of the messages it broadcast. |
 | `sub_agent_tools_helpers.ex` (coordinator start) | a bare `:sys.get_state(pid)` used purely as a readiness barrier, asserting nothing. |
 
-`agent_test_lifecycle.ex`'s `agent_status/1` is a fourth read, but it is the
-teardown invariant itself, so it is justified.
+`agent_test_lifecycle.ex`'s teardown was a fourth read until `#21`'s teardown
+change: the status now comes from the agent *itself* (`Agent.ClientAPI.get_status/2`
+→ `Machine.status_for/1`, evaluated in the agent's own process), and every status is
+read *before* any agent is stopped — the teardown's own stops perturb the agents it
+is about to read (stopping a batch's child makes its parent continue the batch), so
+a read taken after a stop would report the cleanup's state, not the test's. The
+harness's teardown path therefore has no `:sys.get_state` read left in it.
 
 ## 8. `eventually` — the helper, not the call sites
 
@@ -364,27 +369,57 @@ make a 2000 ms ceiling unworkable rather than merely tight.
 | bound | value | why |
 |---|---|---|
 | fences (`assert_receive`/`refute_receive`/`assert_push`/`refute_push`) | **1000 ms**, two files at **2000 ms** | the ruling: raise every 500 to 1 s. The exceptions share one `@turn_fence_ms 2_000` between their idle fences and their `{:chat_message, …}` fences (`agent_chat_mode_test.exs:24`, `agent_stream_error_test.exs:40`), so splitting it would retune a non-idle timeout — left for the human. All of them sit below the per-test deadline, so a missed fence reports as a fence, not as `ExUnit.TimeoutError`. |
-| `:sys.get_state`/`:replace_state` bounds, and the `ClientAPI` accessor reads that replaced the converted ones (`get_public_info/2`, `get_messages/2`, `get_total_usage/2`) | **1000 ms**, **500 ms** for the channel/reloader reads, **250 ms** for the teardown probe | free on a healthy process; buys headroom under load. The accessors' own default is OTP's 5 s (production callers want that); only the converted test sites pass the explicit bound. One bare site (`watch_test.exs:435`) is still open — see §7. |
-| `AgentTestLifecycle`'s teardown probe | **250 ms** | the one exception, and it goes **down**. It is a *measurement*, not a failure bound: `stop_test_agents/0` probes every owned agent synchronously, so a long bound costs N x bound per teardown (500 ms x N is what blew a 2000 ms deadline). |
+| `:sys.get_state`/`:replace_state` bounds, and the `ClientAPI` accessor reads that replaced the converted ones (`get_public_info/2`, `get_messages/2`, `get_total_usage/2`) | **1000 ms**, **500 ms** for the channel/reloader reads, **250 ms** for the teardown's answer wait | free on a healthy process; buys headroom under load. The accessors' own default is OTP's 5 s (production callers want that); only the converted test sites pass the explicit bound. One bare site (`watch_test.exs:435`) is still open — see §7. |
+| `AgentTestLifecycle`'s answer wait (`@answer_ms`) | **250 ms** | the one exception, and it goes **down**. Not a fence and not a measurement: it caps how long the teardown waits for one agent to answer its own status question (`Agent.ClientAPI.get_status/2`) before giving up on it and stopping it anyway, so a long bound costs N x bound per teardown (500 ms x N is what blew a 2000 ms deadline). What it decides is the guard's one blind spot — an agent busy past it is not diagnosed as in flight (pinned by a test; see the sizing note below). |
 | `refute_receive ..., 0` | **0** | a deliberate non-wait, not a fence. |
 | per-test deadline (`ExUnit.configure`) | **3000 ms** | a failure bound, deliberately above the fences. |
 | `max_cases` | **physical cores** | `Nest.Test.MaxCases.real_cpus/0`; measured 8 cases -> 0 failures, 16 -> 2, 24 -> 12. **No ceiling**: a 32-core/64-thread host gets 32. |
 
-**Probe bound sizing, honestly.** A synthetic saturation probe could not size the
-250 ms: 32 yield-loops, and then 16 blocked + 16 allocating workers, each starved a
-*parked* process past a 5 s bound, so neither shape is the suite's. 250 ms is
-chosen for what the bound is *for* (cap teardown at 250 ms per unresponsive agent,
-catch a wedged or mid-turn one), not from a distribution. Follow-up: log the real
-probe-latency distribution from a 16-way run and revisit with data.
+**Answer-wait sizing.** The old probe's 250 ms was unsized, and its own comment
+said so: a synthetic saturation probe (32 yield-loops, then 16 blocked + 16
+allocating workers) starved a *parked* process past a 5 s bound, so it could not
+size anything. `#21`'s teardown change replaced the probe with a question the agent
+answers about itself, so a non-answer is no longer a status. `@answer_ms` is kept at
+250 — the probe's value — so what one agent can cost the teardown (`@answer_ms` +
+`@stop_ms`) is exactly what the probe plus the stop cost before.
 
-**Behaviour change, recorded deliberately.** `agent_status/1` used to fail *open*:
-a busy agent did not answer in time, `:exit, _ -> nil`, and `nil` is not in
-`@in_flight_statuses`, so `assert_zero_remaining!` **passed** — the check silently
-missed exactly the case it exists to detect. It now returns `:unresponsive` (in
-flight) when the process is alive but does not answer, and `nil` only when the
-reason says the pid is gone (`:noproc`/`:normal`/`:shutdown`). A starved-but-healthy
-agent therefore fails the test instead of passing silently. That is the intended
-direction.
+*The one measurement behind it, and what it cannot say.* Temporarily instrument
+`AgentTestLifecycle.agent_status/1` to append
+`System.monotonic_time(:microsecond)` deltas (one line per read) to a file, then:
+
+    rm -f /tmp/teardown-probe/probe.log && mix test --max-cases 16 --seed 12345
+    awk -F'\t' '{print $1}' /tmp/teardown-probe/probe.log | sort -n | \
+      awk '{a[NR]=$1} END {print "n="NR, "p50="a[int(NR*0.5)], "p99="a[int(NR*0.99)], "max="a[NR]}'
+
+473 reads: p50 21 us, p90 44 us, p99 84 us, p99.9 308 us, max 3.3 ms. Three
+caveats, and they matter:
+
+  * it is **one run**, on one host, at `max_cases: 16` (seed 12345);
+  * it is **right-censored**: a read that does not answer inside the bound is
+    reported as a timeout, not as a latency, so the sample says how fast a healthy
+    agent answers when it answers — never how often one fails to;
+  * it does **not** license "250 ms decides nothing". The bound does decide: an
+    agent busy in its own loop for longer than it is not *diagnosed* as in flight,
+    and `agent_test_lifecycle_test.exs` pins that boundary as a test rather than a
+    comment. The loaded measurement already in the tree
+    (`sub_agent_tools_helpers.ex`'s 48 CPU burners: p50 926 ms, max 1534 ms) shows
+    a 250 ms wait *can* be reached under load. What is gone is only the old
+    reading: a non-answer is no longer a status, so a *starved* agent can no longer
+    be reported as in flight — and, symmetrically, a slow-but-busy one can no
+    longer be caught.
+
+**Behaviour change, recorded deliberately.** `agent_status/1` used to read
+`:sys.get_state(pid, 250)` and invert the signal: an agent that did not answer was
+`:unresponsive`, which `@in_flight_statuses` counted as in flight. That read the
+*only* non-answer this suite actually produces — an agent that is already dying
+because the test body stopped it — as a turn in flight, and failed a healthy test.
+The teardown now asks the agent for its own status (`Agent.ClientAPI.get_status/2`),
+for every owned agent before any of them is stopped: an answered status is the signal
+(`:streaming`/`:executing_tools`/`:compacting`), a process that is gone or dying
+answers `nil`, and a process that never answers is reported by `still_alive`
+instead. A *mid-turn* agent still answers — a turn runs in
+a worker task, not in the agent's loop — so the check still catches exactly what it
+exists to detect.
 
 **Recorded, not fixed here — `DBConnection.ConnectionError` (test isolation).**
 A run logged a real connection error through `Agent.Persistence.append_message/3`:
@@ -393,11 +428,11 @@ sandbox connection was invalidated mid-query (`owner #PID<…> exited` / `Client
 still using a connection from owner`). This is a genuine isolation defect and is
 probably the mechanism behind agents that do not die in teardown. Its own change.
 
-**Recorded, not fixed here — `stop_pid/2`'s `timeout \\ 2_000`.** A second per-agent
+**Recorded, not fixed here — `stop_pid/2`'s `@stop_ms` wait.** A second per-agent
 N x multiplier in the same teardown path. It only bites on a genuinely wedged
 agent, but when it does the failure is a `TimeoutError` rather than
-`assert_zero_remaining!`'s informative message. Lower priority than the probe,
-same shape.
+`assert_zero_remaining!`'s informative message. Lower priority than the answer
+wait, same shape.
 
 **Result at the new defaults** (`issue-21-timeout-sweep`, seed 200905, `max_cases:
 16`, per-test 3000): **2372 tests, 0 failures**, ExUnit 7.4 s, wall 8.20 s, load

@@ -27,8 +27,8 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   # The idle fence's bound, in ms. It is a failure bound, not the
   # synchronisation: the wait is decided by the arrival of the agent's own
   # `{:chat_status, %{name: …, status: "idle"}}` frame. 1000 ms is the suite's
-  # cap on a test-side fence (the teardown probe in `AgentTestLifecycle` is the
-  # one documented exception).
+  # cap on a test-side fence (the teardown's answer wait in `AgentTestLifecycle`
+  # is the one documented exception).
   #
   # Sizing, from the measurements this replaced: a turn here is a mocked LLM
   # call, a real sub-agent spawn or peer delivery (DB writes, a registry

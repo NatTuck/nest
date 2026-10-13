@@ -506,6 +506,10 @@ defmodule Nest.Agents.Agent do
   """
   defdelegate terminate(pid), to: ClientAPI
 
+  # The agent's current status, read in the agent's own process. Re-export of
+  # `ClientAPI.get_status/2`.
+  defdelegate get_status(pid, timeout), to: ClientAPI
+
   # Returns public agent info for the WebSocket protocol (id, model,
   # message_count, status, vocation_id, partial, parent, usage, ...).
   # Re-export of `ClientAPI.get_public_info/2`; `timeout` defaults to
