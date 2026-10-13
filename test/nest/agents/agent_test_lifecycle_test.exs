@@ -8,6 +8,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
   alias Nest.Agents.AgentTestLifecycle
   alias Nest.Agents.AgentTurnTestHelpers
   alias Nest.Agents.Supervisor
+  alias Nest.LLM.MockClient
 
   describe "stop_test_agents/0" do
     test "reports an agent that is still mid-turn as in flight" do
@@ -20,6 +21,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       AgentTurnTestHelpers.park_llm_requests(pid)
       :ok = Agent.chat(pid, "start a turn")
       {_messages, worker} = AgentTurnTestHelpers.next_request()
+      ref = Process.monitor(worker)
 
       result = AgentTestLifecycle.stop_test_agents()
 
@@ -38,10 +40,67 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       assert result.not_stopped == []
 
       # Reporting a turn in flight is not a cleanup decision: the agent is
-      # stopped either way, and the parked worker is released so it cannot
-      # outlive the test.
+      # stopped either way, and the turn's worker is stopped with it
+      # (`Agent.stop_turn_workers/1`), so it cannot run any more of the turn
+      # after the agent — and the test — are gone. This test used to release the
+      # parked worker by hand for exactly that reason.
       refute Process.alive?(pid)
-      AgentTurnTestHelpers.release_llm(worker)
+      assert_receive {:DOWN, ^ref, :process, ^worker, :shutdown}, 1_000
+    end
+
+    test "stops the turn's tool worker, so the turn's own DB work dies with the agent" do
+      # The isolation defect's shape. A turn's *tool* worker is a Task under the
+      # application-wide `Nest.Agents.TaskSupervisor`, so nothing in
+      # `Agent.terminate/2` used to reach it — and its DB work is not the
+      # agent's: `agents-send` reaches `Agents.send_message/5` →
+      # `Supervisor.get_agent/2`'s on-demand load → `Init.LoadHeal.heal/2`, which
+      # *appends* in the worker's own DB context. A worker left running past the
+      # test process appends on the test's checked-in sandbox connection
+      # (`DBConnection.ConnectionError: owner … exited`), after the teardown has
+      # stopped every agent it can see. `park_agent_sends/2` holds the worker
+      # exactly there: before its `send_message/4`, with the turn still
+      # `:executing_tools`.
+      {pid, name} =
+        AgentTestHelpers.start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: AgentTestHelpers.programmer_vocation_id_for_test()
+        })
+
+      space_id = AgentTestHelpers.current_space_id()
+
+      AgentTurnTestHelpers.park_llm_requests(pid)
+      AgentTurnTestHelpers.park_agent_sends(pid)
+
+      MockClient.set_tool_response(%{
+        text: "Sending",
+        tool_calls: [
+          %{
+            id: "send_1",
+            name: "agents-send",
+            arguments: %{"name" => name, "message" => "note"}
+          }
+        ]
+      })
+
+      MockClient.set_response("After the note")
+      :ok = Agent.chat(pid, "start the turn")
+
+      {_request, llm} = AgentTurnTestHelpers.next_request()
+      AgentTurnTestHelpers.release_llm(llm)
+
+      assert_receive {:send_blocked, worker}, 1_000
+      assert Agent.get_public_info(pid, 1_000).status == :executing_tools
+      ref = Process.monitor(worker)
+
+      result = AgentTestLifecycle.stop_test_agents()
+
+      # The turn in flight is reported — this body ended one — so the
+      # zero-remaining assertion is not the one under test here; what is under
+      # test is that the stop reached the worker.
+      assert [{^space_id, ^name, :executing_tools}] = result.in_flight
+      assert result.not_stopped == []
+      refute Process.alive?(pid)
+      assert_receive {:DOWN, ^ref, :process, ^worker, :shutdown}, 1_000
     end
 
     test "does not report an agent the test body already stopped as in flight" do

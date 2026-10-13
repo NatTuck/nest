@@ -421,12 +421,55 @@ instead. A *mid-turn* agent still answers — a turn runs in
 a worker task, not in the agent's loop — so the check still catches exactly what it
 exists to detect.
 
-**Recorded, not fixed here — `DBConnection.ConnectionError` (test isolation).**
-A run logged a real connection error through `Agent.Persistence.append_message/3`:
-a spawned agent was still appending when its owning test process exited, so the
-sandbox connection was invalidated mid-query (`owner #PID<…> exited` / `Client … is
-still using a connection from owner`). This is a genuine isolation defect and is
-probably the mechanism behind agents that do not die in teardown. Its own change.
+**Fixed — `DBConnection.ConnectionError` (test isolation), and not the shape
+recorded.** It was recorded here as "a spawned agent was still appending when its
+owning test process exited". The appending *process* was not the agent and not a
+spawned child: it was a **turn worker**. A turn's tool worker is a Task under the
+application-wide `Nest.Agents.TaskSupervisor`, and the DB work it does is not the
+agent's: `agents-send`/`agents-query` reach `Nest.Agents.send_message/5` →
+`Supervisor.get_agent/2` → `on_demand_load/2` → `fetch_or_start_agent/2`, which
+reads the peer's rows and then heals the loaded sequence —
+`Init.LoadHeal.heal/2` → `Agent.__append_messages__/2` →
+`MessageAppender.append_in_process/2` → `AgentPersistence.append_message/3` — in
+the **worker's** DB context, over the connection the test process owns (the worker
+reaches it through its `$callers` chain to the agent the test `Sandbox.allow`ed).
+Nothing stopped that worker when its agent died: `Agent.terminate/2` stopped
+children, watchers, shell jobs and tmp, and the teardown knows only agents (the
+Registry), never workers. The turn's own Stop transition *does* kill workers
+(`Machine.Stopping`'s `{:kill, active_worker}` and
+`Machine.Backgrounding.kill_actions/1`) — but death bypasses that transition
+entirely, so a test that ended with a live worker (the teardown's own `in_flight`
+failure, or a parked worker released by the test's `:DOWN`) left it running past
+the test process, and its next query — the peer's `fetch_agent/2`, or the heal's
+append — raised `owner #PID<…> exited`.
+
+Reproduced deterministically before the fix, once: a body that parks a tool worker
+in `send_message/5` for a peer that is not running and then ends. The mutant run
+logs the `DBConnection.ConnectionError` from a `Task` whose stack reads
+`Turn.Executor.spawn_worker/3` → `ToolLoop.deliver_to_target/4` →
+`Agents.send_message/5` → `Supervisor.on_demand_load/2` →
+`fetch_or_start_agent/2` → `Persistence.build_attrs_for_start/2` →
+`Persistence.fetch_agent/2`; the same probe with the fix logs no connection error
+(it still fails the teardown's `still in flight`, which is the body's own defect,
+not the worker's). Both runs are on disk as `notes/test-runs/21-isolation-probe-*.log`
+(that directory is gitignored — the probe itself was a throwaway, not a committed
+test: the committed pin below is the durable half).
+
+**The fix** is `Agent.stop_turn_workers/1`, called from `terminate/2`: it stops
+`work.active_worker` and every `Machine.Backgrounding.pids/1` with
+`Process.exit(pid, :shutdown)`. No wait — this runs inside the exit handshake the
+teardown's detector measures — and no `:kill`: a worker is a plain task, so
+`:shutdown` is its immediate death, and unlike `:kill` it says why. Death now
+stops what the turn's Stop transition already stopped. Nothing about the spawn
+structure changes: workers are still Tasks under the shared supervisor.
+
+**The pin** is two tests in `agent_test_lifecycle_test.exs`. `reports an agent
+that is still mid-turn as in flight` no longer releases its parked HTTP worker by
+hand: it asserts that worker is stopped with the agent
+(`{:DOWN, ^ref, :process, ^worker, :shutdown}`). `stops the turn's tool worker, so
+the turn's own DB work dies with the agent` is the new one, in the `send_message`
+shape — the shape that queries. Both fail without `stop_turn_workers/1` (the
+`:DOWN` never arrives) and pass with it.
 
 **Recorded, not fixed here — `stop_pid/2`'s `@stop_ms` wait.** A second per-agent
 N x multiplier in the same teardown path. It only bites on a genuinely wedged
