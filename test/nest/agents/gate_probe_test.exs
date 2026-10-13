@@ -22,7 +22,7 @@ defmodule Nest.Agents.GateProbeTest do
 
   @burners_default 32
   @agents 12
-  @out_dir "/tmp/assistant-elephant"
+  @out_dir "notes/test-runs"
 
   test "stop handshake for idle agents under burner load" do
     burners = String.to_integer(System.get_env("GATE_PROBE_BURNERS", "#{@burners_default}"))
