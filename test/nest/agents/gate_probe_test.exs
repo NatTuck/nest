@@ -15,7 +15,13 @@ defmodule Nest.Agents.GateProbeTest do
   # `async: false` because the probe deliberately saturates every scheduler with
   # burners; running it alongside other tests would make its own load
   # unpredictable and would slow unrelated tests to a crawl.
+  #
+  # `:gate_probe` keeps it out of the default suite: run it explicitly with
+  # `mix test --include gate_probe test/nest/agents/gate_probe_test.exs`, and set
+  # `GATE_PROBE_BURNERS` to choose the load.
   use Nest.DataCase, async: false
+
+  @moduletag :gate_probe
 
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.AgentTestLifecycle
@@ -44,7 +50,7 @@ defmodule Nest.Agents.GateProbeTest do
       "burners=#{burners} agents=#{@agents} owned=#{result.owned}",
       "in_flight=#{inspect(result.in_flight)}",
       "not_stopped=#{inspect(result.not_stopped)}",
-      "samples_us=#{inspect(Enum.map(result.diag, fn {_s, _n, _sample, us, _info} -> us end))}",
+      "samples_us=#{inspect(Enum.map(result.diag, fn {_s, _n, _sample, _kind, us, _info} -> us end))}",
       "samples=#{inspect(result.diag, limit: :infinity, printable_limit: 4000)}"
     ]
 

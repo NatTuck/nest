@@ -4,6 +4,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
   import ExUnit.CaptureLog
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.AgentTestLifecycle
   alias Nest.Agents.AgentTurnTestHelpers
@@ -154,13 +155,15 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       assert result.in_flight == []
       assert result.not_stopped == [{space_id, name}]
 
-      assert_raise RuntimeError, ~r/did not stop within 10 ms of :shutdown/, fn ->
+      assert_raise RuntimeError, ~r/did not stop within 250 ms of :shutdown/, fn ->
         AgentTestLifecycle.assert_zero_remaining!(result)
       end
 
-      # The same detector in its other entry point, and both name the agent.
+      # The same detector in its other entry point, and both name the agent. The
+      # timeout is incidental to what this line pins (that the message names the
+      # agent), so it is short — the bound itself is pinned by the line above.
       assert_raise RuntimeError, ~r/#{name}/, fn ->
-        AgentTestLifecycle.wait_for_pid_down(space_id, name)
+        AgentTestLifecycle.wait_for_pid_down(space_id, name, 25)
       end
 
       # The stop does not kill: the agent is still there, which is the point of
@@ -200,6 +203,36 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       # of the guard would report it if it did not.
       refute Process.alive?(pid)
       assert result.not_stopped == []
+    end
+
+    test "does not report an idle agent whose teardown is slow" do
+      # The regression this guard was fixed for. `Agent.terminate/2` ends with
+      # `cleanup_tmp/2` -> `TmpSpace.cleanup/2` -> `File.rm_rf/1`, so the stop
+      # handshake contains real filesystem work and a `:file_server` round-trip:
+      # it is not a measurement of the agent's receive loop. The bound used to be
+      # 10 ms, and that handshake reaches it on a busy machine — 12 provably idle
+      # agents (every one of them answering `:idle`) took a tight 8.5-9.1 ms
+      # under 32 CPU burners, and crossed 10 ms as soon as anything else loaded
+      # the host — failing tests whose agents were not in flight at all.
+      #
+      # A populated scratch directory is a *real* teardown load rather than a
+      # stub: it is the same `File.rm_rf` the agent runs for itself. 500 files
+      # cost ~13 ms of `rm_rf` on the fast host and ~42 ms on the project's
+      # slowest, so this test fails under the old bound on both. The assertion is
+      # deliberately one-sided — it says nothing about how long the stop took,
+      # only that an idle agent is never reported — so it cannot go flaky.
+      {pid, name} = AgentTestHelpers.start_agent()
+      space_id = AgentTestHelpers.current_space_id()
+
+      scratch = TmpSpace.create(space_id, name)
+      Enum.each(1..500, fn i -> File.write!(Path.join(scratch, "f#{i}"), "x") end)
+
+      result = AgentTestLifecycle.stop_test_agents()
+
+      assert result.in_flight == []
+      assert result.not_stopped == []
+      assert :ok = AgentTestLifecycle.assert_zero_remaining!(result)
+      refute Process.alive?(pid)
     end
   end
 
