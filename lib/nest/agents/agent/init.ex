@@ -190,6 +190,27 @@ defmodule Nest.Agents.Agent.Init do
     )
   end
 
+  @doc """
+  Build the live state for a starting agent: the struct from attrs, then
+  the persisted message sequence hydrated into it. No DB access, no
+  broadcasts, no logging (see the hard rule in `Nest.Agents.Agent.init/1`).
+
+  Both callers build state outside the child process: `init/1` (the happy
+  path) and `Agent.PreSpawn.apply_load_heal/2`, which needs a state to run
+  the load-time heal against before the child exists.
+  """
+  @spec build_active_state(map(), Nest.LLM.ClientConfig.t()) :: Nest.Agents.Agent.t()
+  def build_active_state(attrs, client_config) do
+    state = build_state(attrs, client_config)
+
+    seed_from_db(
+      state,
+      Map.get(attrs, :preloaded_messages, []),
+      Map.get(attrs, :last_compaction_index, -1),
+      Map.get(attrs, :compaction_count, 0)
+    )
+  end
+
   # When the in-memory system message is already at position 0
   # of the preloaded list, partition it as-is into history
   # and messages.
