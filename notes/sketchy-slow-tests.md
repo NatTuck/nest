@@ -208,9 +208,11 @@ or the reloader's state (`test/nest_web/surgical_reloader_test.exs`,
 `test/nest_web/channels/lobby_channel/providers_test.exs`,
 `test/nest_web/channels/lobby_channel_rescan_models_test.exs`), and **250 ms** for
 `AgentTestLifecycle`'s teardown probe (`@agent_probe_ms`, §11). **One site is
-bare** — `test/nest/agents/agent/watch_test.exs:428` — and is deliberately not
-fixed here: a sibling branch (`issue-21-accessor-swaps`) is rewriting that file's
-`:sys.get_state` reads right now, so it is tracked for that batch.
+bare** — `test/nest/agents/agent/watch_test.exs:435` — and is deliberately not
+fixed here. `issue-21-accessor-swaps` has since landed without it: the site reads
+two fields (`workspace_path` + `tmp_path`) off one snapshot, so it was outside
+that batch's single-field rows, and one `get_public_info/2` call covers both —
+still open, see §11.
 
 `:sys.get_state/2` takes the timeout second; `:sys.replace_state/3` takes it
 **third** (`(Name, Fun, Timeout)`) — worth knowing, since the natural-looking
@@ -362,7 +364,7 @@ make a 2000 ms ceiling unworkable rather than merely tight.
 | bound | value | why |
 |---|---|---|
 | fences (`assert_receive`/`refute_receive`/`assert_push`/`refute_push`) | **1000 ms**, two files at **2000 ms** | the ruling: raise every 500 to 1 s. The exceptions share one `@turn_fence_ms 2_000` between their idle fences and their `{:chat_message, …}` fences (`agent_chat_mode_test.exs:24`, `agent_stream_error_test.exs:40`), so splitting it would retune a non-idle timeout — left for the human. All of them sit below the per-test deadline, so a missed fence reports as a fence, not as `ExUnit.TimeoutError`. |
-| `:sys.get_state`/`:replace_state` bounds | **1000 ms**, **500 ms** for the channel/reloader reads, **250 ms** for the teardown probe | free on a healthy process; buys headroom under load. One bare site (`watch_test.exs:428`) is tracked with the accessor batch — see §7. |
+| `:sys.get_state`/`:replace_state` bounds, and the `ClientAPI` accessor reads that replaced the converted ones (`get_public_info/2`, `get_messages/2`, `get_total_usage/2`) | **1000 ms**, **500 ms** for the channel/reloader reads, **250 ms** for the teardown probe | free on a healthy process; buys headroom under load. The accessors' own default is OTP's 5 s (production callers want that); only the converted test sites pass the explicit bound. One bare site (`watch_test.exs:435`) is still open — see §7. |
 | `AgentTestLifecycle`'s teardown probe | **250 ms** | the one exception, and it goes **down**. It is a *measurement*, not a failure bound: `stop_test_agents/0` probes every owned agent synchronously, so a long bound costs N x bound per teardown (500 ms x N is what blew a 2000 ms deadline). |
 | `refute_receive ..., 0` | **0** | a deliberate non-wait, not a fence. |
 | per-test deadline (`ExUnit.configure`) | **3000 ms** | a failure bound, deliberately above the fences. |
@@ -402,3 +404,36 @@ same shape.
 2.81 before / 4.75 after. That count is the measurement's, not the current one —
 the suite has grown since. For comparison at the same 2000 ms deadline: 8 cases ->
 0 failures, 16 -> 2, 24 -> 12.
+
+**Recorded, not fixed here — the accessor reads, and what they cost.**
+`issue-21-accessor-swaps` converted 106 `:sys.get_state/2` reads in the tests to
+`ClientAPI` accessors, so the bound above now covers those calls too: the three
+accessors take the `GenServer.call/3` bound as an optional second argument
+(production default unchanged at OTP's 5 s), and every converted site passes
+`1_000`. Two consequences worth keeping in view, neither a defect today:
+
+* `get_public_info/2` builds the whole public map per call — `Inbox.serialize/1`
+  over the queue, plus `Broadcasts.Usage.context_usage_map/4` →
+  `ConversationSize.size/1` over the whole transcript
+  (`lib/nest/agents/agent/broadcasts/usage.ex:177`). So an `await_idle`/`wait_idle`
+  helper that calls it once per turn is O(transcript) per turn, where the
+  `:sys.get_state/2` it replaced was O(1). The suite is still under 5 s and no
+  fence moved, so this is recorded rather than optimised; if it ever matters, the
+  fix is a narrower accessor for the fence helpers (the status alone), not a cache.
+* §7's "all 11 sites in the harness now pass an explicit `500`", and its two
+  `:sys.get_state` rows for `query_results/1` / `agent_texts/1`, are superseded:
+  the harness bound is 1 s (this section), and those two helpers now read the
+  transcript through `get_messages/2` with that bound.
+* The `/1` accessor calls that are *not* converted sites keep OTP's 5 s, and so
+  keep the diagnosis gap this change closed for the converted ones. 18 sites,
+  its own batch, not this one: `turn_acceptance_test.exs:385,391`;
+  `agent_observability_test.exs:218,261,310,318,362,399,406`;
+  `agent_system_messages_test.exs:56`; `agent_tmp_path_test.exs:81,114`;
+  `chat_task_crash_test.exs:153`;
+  `supervisor_subagent_test.exs:99,198,315,316`; `agents_test.exs:579`.
+  (`client_api_test.exs`'s six `/1` calls are deliberate: they pin the default.)
+* Still open from §7: `watch_test.exs:435`'s bare `:sys.get_state/1`, and its
+  sibling at `:399` (which passes 1 s), each read `workspace_path` + `tmp_path`
+  off one snapshot. One `get_public_info/2` call covers both fields, so each is a
+  one-line conversion — they were simply outside the converted batch's
+  single-field rows.

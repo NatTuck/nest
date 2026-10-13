@@ -41,7 +41,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     state = :sys.get_state(pid, 1_000)
 
     assert Enum.any?(
-             user_texts(state),
+             user_texts(state.chat_state.messages),
              &(&1 =~ "[Message from agent \"peer\"]" and &1 =~ "do the thing")
            )
 
@@ -66,8 +66,10 @@ defmodule Nest.Agents.Agent.InboxTest do
     assert {:ok, :queued} = Agent.deliver_message(pid, "bob", "second message")
     assert_receive {:chat_inbox, %{count: 2}}, 1_000
 
-    state = :sys.get_state(pid, 1_000)
-    assert Enum.map(state.live.inbox, & &1.from) == ["alice", "bob"]
+    assert Enum.map(Agent.get_public_info(pid, 1_000).pending_messages, & &1["from"]) == [
+             "alice",
+             "bob"
+           ]
 
     # The in-flight turn ends (preempted here); the resulting idle
     # transition clears `cancelled` and drains the queued messages.
@@ -83,7 +85,10 @@ defmodule Nest.Agents.Agent.InboxTest do
     assert state.live.inbox == []
 
     combined =
-      Enum.find(user_texts(state), &(&1 =~ "first message" and &1 =~ "second message"))
+      Enum.find(
+        user_texts(state.chat_state.messages),
+        &(&1 =~ "first message" and &1 =~ "second message")
+      )
 
     assert combined =~ "[Message from agent \"alice\"]"
     assert combined =~ "[Message from agent \"bob\"]"
@@ -98,7 +103,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     assert {:ok, :delivered} = Agent.deliver_internal(pid, "agents-batch", ~s(["done"]), :notice)
 
     state = :sys.get_state(pid, 1_000)
-    assert [text] = Enum.filter(user_texts(state), &(&1 =~ ~s(["done"])))
+    assert [text] = Enum.filter(user_texts(state.chat_state.messages), &(&1 =~ ~s(["done"])))
     refute text =~ "Message from agent"
 
     # The delivery is a synchronous `GenServer.call`, but the turn it starts is
@@ -121,7 +126,9 @@ defmodule Nest.Agents.Agent.InboxTest do
     # ...while the runtime's own result queues anyway. Refusing it would lose
     # the batch's whole output (the coordinator has nowhere else to put it).
     assert {:ok, :queued} = Agent.deliver_internal(pid, "agents-batch", ~s(["done"]), :notice)
-    assert List.last(:sys.get_state(pid, 1_000).live.inbox).content == ~s(["done"])
+
+    assert List.last(Agent.get_public_info(pid, 1_000).pending_messages)["content"] ==
+             ~s(["done"])
 
     reset_to_idle(pid)
   end
@@ -166,7 +173,10 @@ defmodule Nest.Agents.Agent.InboxTest do
     state = :sys.get_state(pid, 1_000)
 
     pointer =
-      Enum.find(user_texts(state), &(&1 =~ "queued message" and &1 =~ "saved to"))
+      Enum.find(
+        user_texts(state.chat_state.messages),
+        &(&1 =~ "queued message" and &1 =~ "saved to")
+      )
 
     assert pointer =~ "You have 1 queued message"
 
@@ -185,7 +195,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       assert {:error, {:status, :needs_repair}} =
                Agent.deliver_message(pid, "peer", "hello", kind)
 
-      assert :sys.get_state(pid, 1_000).live.inbox == []
+      assert Agent.get_public_info(pid, 1_000).pending_messages == []
     end
   end
 
@@ -220,16 +230,11 @@ defmodule Nest.Agents.Agent.InboxTest do
   end
 
   test "delivery is rejected when the inbox is full", %{pid: pid} do
-    full =
-      for n <- 1..100 do
-        %{
-          from: "peer",
-          content: "msg #{n}",
-          timestamp: DateTime.utc_now(),
-          kind: :agent,
-          mode: nil
-        }
-      end
+    # `entry/5` builds the whole documented entry shape (`id`, `human?`,
+    # `fulfilled_ids`, `retrieved`), which matters now that the count below is
+    # read through `get_public_info/2` — that serializes the queue, and a
+    # hand-rolled partial entry would crash it.
+    full = for n <- 1..100, do: entry(:agent, "peer", "msg #{n}")
 
     :sys.replace_state(pid, fn state -> %{state | live: %{state.live | inbox: full}} end, 1_000)
 
@@ -237,13 +242,13 @@ defmodule Nest.Agents.Agent.InboxTest do
       assert {:error, :inbox_full} = Agent.deliver_message(pid, "peer", "one too many", kind)
     end
 
-    assert length(:sys.get_state(pid, 1_000).live.inbox) == 100
+    assert Agent.get_public_info(pid, 1_000).pending_message_count == 100
   end
 
   test "self-delivery is allowed", %{pid: pid, name: name} do
     assert {:ok, :delivered} = Agent.deliver_message(pid, name, "note to self")
 
-    assert Enum.any?(user_texts(:sys.get_state(pid, 1_000)), &(&1 =~ "note to self"))
+    assert Enum.any?(user_texts(Agent.get_messages(pid, 1_000)), &(&1 =~ "note to self"))
     wait_idle(pid)
   end
 
@@ -274,7 +279,7 @@ defmodule Nest.Agents.Agent.InboxTest do
           state = :sys.get_state(pid, 1_000)
 
           assert Enum.any?(
-                   user_texts(state),
+                   user_texts(state.chat_state.messages),
                    &(&1 =~ "[Message from agent \"peer\"]" and &1 =~ "summarize this")
                  )
 
@@ -416,7 +421,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       wait_idle(pid)
 
       drained_metadata =
-        :sys.get_state(pid, 1_000).chat_state.messages
+        Agent.get_messages(pid, 1_000)
         |> Enum.drop(before)
         |> Enum.flat_map(fn
           {:user, %{metadata: metadata}} -> [metadata]
@@ -443,8 +448,8 @@ defmodule Nest.Agents.Agent.InboxTest do
 
       assert state.live.inbox == []
       assert state.live.mode == "plan"
-      assert Enum.any?(user_texts(state), &(&1 =~ "hello now"))
-      assert Enum.any?(user_texts(state), &(&1 =~ "[mode: plan]"))
+      assert Enum.any?(user_texts(state.chat_state.messages), &(&1 =~ "hello now"))
+      assert Enum.any?(user_texts(state.chat_state.messages), &(&1 =~ "[mode: plan]"))
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
@@ -457,7 +462,7 @@ defmodule Nest.Agents.Agent.InboxTest do
         capture_log(fn ->
           for status <- Machine.blocked_phases() do
             set_status(pid, status)
-            before = :sys.get_state(pid, 1_000).chat_state.messages
+            before = Agent.get_messages(pid, 1_000)
 
             assert :ok = Agent.chat(pid, "too late", "plan", "alice")
             _ = :sys.get_state(pid, 1_000)
@@ -498,7 +503,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       ]
 
       for {entries, expected_modes, label} <- cases do
-        before = length(:sys.get_state(pid, 1_000).chat_state.messages)
+        before = Agent.get_public_info(pid, 1_000).message_count
         stage_drain(pid, entries)
 
         Agent.stop_chat(pid, self())
@@ -510,7 +515,7 @@ defmodule Nest.Agents.Agent.InboxTest do
         wait_idle(pid)
 
         delivered =
-          :sys.get_state(pid, 1_000).chat_state.messages
+          Agent.get_messages(pid, 1_000)
           |> Enum.drop(before)
           |> Enum.filter(&match?({:user, _}, &1))
           |> Enum.map(&mode_of/1)
@@ -531,7 +536,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       assert_receive {:chat_inbox, %{count: 0}}, 1_000
 
       state = :sys.get_state(pid, 1_000)
-      pointer = Enum.find(user_texts(state), &(&1 =~ "queued message"))
+      pointer = Enum.find(user_texts(state.chat_state.messages), &(&1 =~ "queued message"))
 
       # The human's mode still rides the delivered message, and the oversized
       # content itself is in the scratch file.
@@ -560,7 +565,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       # drain) and by the `build_drained_message/3` cases below;
       # `agent_chat_mode_test.exs`'s "tags a human chat but not a spawn-style
       # kickoff" covers only the idle path.
-      before = length(:sys.get_state(pid, 1_000).chat_state.messages)
+      before = Agent.get_public_info(pid, 1_000).message_count
       stage_drain(pid, [entry(:user, "alice", "queued prompt", "plan", true)])
 
       Agent.stop_chat(pid, self())
@@ -570,7 +575,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       wait_idle(pid)
 
       appended_user_metadata =
-        :sys.get_state(pid, 1_000).chat_state.messages
+        Agent.get_messages(pid, 1_000)
         |> Enum.drop(before)
         |> Enum.flat_map(fn
           {:user, %{metadata: metadata}} -> [metadata]
@@ -650,12 +655,11 @@ defmodule Nest.Agents.Agent.InboxTest do
   defp wait_idle(pid) do
     assert_receive {:chat_status, %{status: "idle", pendingMessageCount: 0}}, 1_000
 
-    assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
+    assert Agent.get_public_info(pid, 1_000).status == :idle
   end
 
-  defp user_texts(state) do
-    state.chat_state.messages
-    |> Enum.flat_map(fn
+  defp user_texts(messages) do
+    Enum.flat_map(messages, fn
       {:user, %{parts: parts}} -> [parts_text(parts)]
       _ -> []
     end)

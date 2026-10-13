@@ -269,7 +269,7 @@ defmodule Nest.Agents.AgentCompactionTest do
         {:http_response, ref, %Nest.LLM.RunResponse{text: summary_text, usage: nil}}
       )
 
-      # `:sys.get_state/1` queues behind `:compaction_done` and
+      # `:sys.get_state/2` queues behind `:compaction_done` and
       # returns only after the broadcast has fired (broadcast is
       # in the same callback as the message handling), so the
       # PubSub message is already in our mailbox.
@@ -371,7 +371,7 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       send(pid, {:preflight_request, fake_task, state_before.chat_state.messages || []})
 
-      # There should be NO `:preflight_result` reply. `:sys.get_state/1` is a
+      # There should be NO `:preflight_result` reply. `:sys.get_state/2` is a
       # synchronous call, and the Agent processes its mailbox in order, so by
       # the time it returns the `send/2` above has been handled — a handler,
       # if one existed, would already have replied. That makes this a
@@ -565,7 +565,7 @@ defmodule Nest.Agents.AgentCompactionTest do
   end
 
   # Assert the Agent produced no `:preflight_result` reply for a message it was
-  # just sent. See the call sites: the `:sys.get_state/1` is what makes this
+  # just sent. See the call sites: the `:sys.get_state/2` is what makes this
   # sound (and is why it needs no wait).
   defp refute_no_preflight_reply(pid) do
     _ = :sys.get_state(pid, 1_000)
@@ -577,13 +577,14 @@ defmodule Nest.Agents.AgentCompactionTest do
   # the authority, for the state it settled to. `Turn.run/6` announces the
   # status change last in the settle, after every effect of the turn (message
   # appends, the tool batch) has landed, so a subscriber woken by the "idle"
-  # frame already holds every frame of the turn; the `:sys.get_state/1` behind
-  # the fence orders the call sites' `assert_received/1` assertions behind it
-  # too. Every call site first fences on the batch's own broadcast, so the
+  # frame already holds every frame of the turn; the `get_public_info/2` call
+  # behind the fence is a synchronous `GenServer.call` to the same process, so
+  # it orders the call sites' `assert_received/1` assertions behind it too.
+  # Every call site first fences on the batch's own broadcast, so the
   # sandbox work (real bwrap processes) is never inside this wait.
   defp await_idle(pid) do
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-    assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
+    assert Agent.get_public_info(pid, 1_000).status == :idle
   end
 end

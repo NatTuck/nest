@@ -192,7 +192,7 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
 
       # The sender that was told is gone; the one that arrived in the window is
       # still owed.
-      assert Machine.owed_senders(:sys.get_state(pid, 1_000).live.machine) == ["late"]
+      assert Agent.get_public_info(pid, 1_000).owed_replies == ["late"]
 
       # ...and the debt asserted above is cleared before the test ends, so the
       # agent's own teardown does not log a loss this test has already proved.
@@ -214,7 +214,7 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
         1_000
       )
 
-      assert Machine.owed_senders(:sys.get_state(pid, 1_000).live.machine) == ["peer"]
+      assert Agent.get_public_info(pid, 1_000).owed_replies == ["peer"]
       clear_debt(pid)
     end
 

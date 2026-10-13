@@ -204,7 +204,8 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
       assert delivered =~ "the answer"
 
       # The child's usage merged into the parent's descendant totals.
-      assert :sys.get_state(parent_pid, 1_000).llm_metrics.descendant_usage.output_tokens == 42
+      assert Nest.Agents.Agent.get_public_info(parent_pid, 1_000).descendant_usage.output_tokens ==
+               42
     end
 
     test "a child stopped before it answered reaches the parent as a bare notice", %{vid: vid} do
@@ -377,17 +378,17 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
   # frame whose inbox the drain has emptied.
   defp await_delivery(parent_pid, needle) do
     assert_receive {:chat_status, %{status: "idle", pendingMessageCount: 0}}, 1_000
-    delivered(:sys.get_state(parent_pid, 1_000), needle)
+    delivered(Nest.Agents.Agent.get_messages(parent_pid, 1_000), needle)
   end
 
-  defp delivered(state, needle) do
-    state.chat_state.messages
+  defp delivered(messages, needle) do
+    messages
     |> Enum.flat_map(&user_texts/1)
     |> Enum.filter(&(&1 =~ needle))
   end
 
   defp parent_texts(parent_pid) do
-    :sys.get_state(parent_pid, 1_000).chat_state.messages |> Enum.flat_map(&user_texts/1)
+    Nest.Agents.Agent.get_messages(parent_pid, 1_000) |> Enum.flat_map(&user_texts/1)
   end
 
   defp user_texts({:user, %{parts: parts}}) do

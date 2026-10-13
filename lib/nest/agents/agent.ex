@@ -508,20 +508,22 @@ defmodule Nest.Agents.Agent do
 
   # Returns public agent info for the WebSocket protocol (id, model,
   # message_count, status, vocation_id, partial, parent, usage, ...).
-  # Re-export of `ClientAPI.get_public_info/1`.
-  defdelegate get_public_info(pid), to: ClientAPI
+  # Re-export of `ClientAPI.get_public_info/2`; `timeout` defaults to
+  # OTP's 5 s.
+  defdelegate get_public_info(pid, timeout \\ 5_000), to: ClientAPI
 
   # Returns the combined usage map for the agent: `usage_totals +
   # descendant_usage`, computed field-by-field. Re-export of
-  # `ClientAPI.get_total_usage/1`.
-  defdelegate get_total_usage(pid), to: ClientAPI
+  # `ClientAPI.get_total_usage/2`; `timeout` defaults to OTP's 5 s.
+  defdelegate get_total_usage(pid, timeout \\ 5_000), to: ClientAPI
 
   @doc """
   Returns the active message list for the agent.
 
-  Re-export of `ClientAPI.get_messages/1`.
+  Re-export of `ClientAPI.get_messages/2`; `timeout` defaults to OTP's
+  5 s.
   """
-  defdelegate get_messages(pid), to: ClientAPI
+  defdelegate get_messages(pid, timeout \\ 5_000), to: ClientAPI
 
   @doc """
   Fetch API logs for a specific message by index, given the agent's

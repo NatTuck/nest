@@ -203,7 +203,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
       send_compaction_done(pid, "Summary text.", nil)
       _ = :sys.get_state(pid, 1_000)
 
-      final_messages = :sys.get_state(pid, 1_000).chat_state.messages
+      final_messages = Nest.Agents.Agent.get_messages(pid, 1_000)
 
       assert match?({:system, _}, Enum.at(final_messages, 0)),
              "expected system message at messages[0]"

@@ -80,7 +80,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert child_names == ["alpha", "beta", "gamma"]
 
     # The tool result is the confirmation, not the aggregate: nothing waited.
-    confirmation = batch_tool_result(:sys.get_state(parent_pid, 1_000)).content
+    confirmation = batch_tool_result(Agent.get_messages(parent_pid, 1_000)).content
     assert confirmation =~ "Fanned 3 item(s)"
     assert confirmation =~ "alpha, beta, gamma"
     assert confirmation =~ "aggregate"
@@ -96,7 +96,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
              await_aggregate(parent_pid, ~s(["alpha-done))
 
     parent_state = :sys.get_state(parent_pid, 1_000)
-    AgentTestHelpers.assert_unique_message_indices(parent_state)
+    AgentTestHelpers.assert_unique_message_indices(parent_state.chat_state.messages)
 
     # The children report to the coordinator, so the parent reads the batch
     # once: the aggregate is the only batch traffic in its transcript.
@@ -217,7 +217,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
 
     # The confirmation promises exactly what fail_fast does, before anything
     # fails: it stops at the first failure and reports the slots it filled.
-    confirmation = batch_tool_result(:sys.get_state(parent_pid, 1_000)).content
+    confirmation = batch_tool_result(Agent.get_messages(parent_pid, 1_000)).content
     assert confirmation =~ "stops at the first failure"
     assert confirmation =~ "reports the slots it filled before it stopped"
 
@@ -403,7 +403,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     set_status(parent_pid, :streaming)
     # Explicit timeouts on both: `:sys.suspend/1` and `:sys.resume/1` otherwise
     # rely on OTP's implicit 5 s ack deadline, which is over the `#21` cap. They
-    # get the cap rather than the 500 ms the `:sys.get_state` reads use, because
+    # get the cap rather than the 1 s the `:sys.get_state` reads use, because
     # they *change* the process's system state (a timeout here is a broken test,
     # not a slow read) and because the ack is handled ahead of the mailbox.
     :sys.suspend(parent_pid, 2_000)
@@ -600,9 +600,9 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
         do: text
   end
 
-  defp batch_tool_result(parent_state) do
+  defp batch_tool_result(messages) do
     {:tool, %{parts: [%Part.ToolResult{name: "agents-batch"} = result]}} =
-      Enum.find(parent_state.chat_state.messages, fn
+      Enum.find(messages, fn
         {:tool, %{parts: parts}} ->
           Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-batch"}, &1))
 

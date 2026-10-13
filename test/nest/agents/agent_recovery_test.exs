@@ -123,8 +123,8 @@ defmodule Nest.Agents.Agent.RecoveryTest do
           _ref = Agent.chat(pid, "hello?")
           # Yield to the GenServer so the cast has been handled.
           _ = :sys.get_state(pid, 1_000)
-          state = :sys.get_state(pid, 1_000)
-          assert Enum.all?(state.chat_state.messages, &match?({:system, _}, &1))
+          messages = Agent.get_messages(pid, 1_000)
+          assert Enum.all?(messages, &match?({:system, _}, &1))
         end)
 
       assert log =~ "could not resolve model"

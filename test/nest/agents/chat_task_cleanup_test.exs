@@ -8,7 +8,6 @@ defmodule Nest.Agents.ChatTaskCleanupTest do
   own ExUnit worker.
   """
   use Nest.DataCase, async: true
-  alias Nest.Agents.Agent.Machine
 
   import ExUnit.CaptureLog
   import Mimic
@@ -73,8 +72,7 @@ defmodule Nest.Agents.ChatTaskCleanupTest do
 
       # The agent finalized cleanly — still alive, in :idle.
       assert Process.alive?(pid)
-      state = :sys.get_state(pid, 1_000)
-      assert Machine.status_for(state.live.machine) == :idle
+      assert Agent.get_public_info(pid, 1_000).status == :idle
     end
 
     test "a {:noproc, {GenServer, :call, _}} exit (target already gone) is also silent", %{} do

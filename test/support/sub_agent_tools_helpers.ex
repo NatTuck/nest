@@ -183,9 +183,9 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   """
   @spec query_results(pid()) :: [Part.ToolResult.t()]
   def query_results(pid) do
-    state = :sys.get_state(pid, 1_000)
+    messages = Nest.Agents.Agent.get_messages(pid, 1_000)
 
-    Enum.flat_map(state.chat_state.messages, fn
+    Enum.flat_map(messages, fn
       {:tool, %{parts: parts}} ->
         Enum.filter(parts, &match?(%Part.ToolResult{name: "agents-query"}, &1))
 
@@ -199,9 +199,9 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   """
   @spec agent_texts(pid()) :: [String.t()]
   def agent_texts(pid) do
-    state = :sys.get_state(pid, 1_000)
+    messages = Nest.Agents.Agent.get_messages(pid, 1_000)
 
-    for {:user, %{parts: parts}} <- state.chat_state.messages, do: parts_text(parts)
+    for {:user, %{parts: parts}} <- messages, do: parts_text(parts)
   end
 
   # The text of a message's parts. Private on purpose: `AgentTurnTestHelpers`

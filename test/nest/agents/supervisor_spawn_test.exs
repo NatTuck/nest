@@ -176,8 +176,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
 
       {:ok, pid} = Supervisor.get_agent(space_id, name)
-      child_state = :sys.get_state(pid, 1_000)
-      assert child_state.model == override
+      assert Nest.Agents.Agent.get_public_info(pid, 1_000).model == override
     end
 
     test "spawn without a model override inherits the parent's model", %{space_id: space_id} do
@@ -190,8 +189,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
 
       {:ok, pid} = Supervisor.get_agent(space_id, name)
-      child_state = :sys.get_state(pid, 1_000)
-      assert child_state.model == state.model
+      assert Nest.Agents.Agent.get_public_info(pid, 1_000).model == state.model
     end
 
     test "fresh spawn at max depth has agents-spawn excluded from its tool list",
@@ -300,8 +298,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       on_exit(fn -> _ = Supervisor.stop_agent(space.id, name) end)
 
       {:ok, pid} = Supervisor.get_agent(space.id, name)
-      child_state = :sys.get_state(pid, 1_000)
-      assert child_state.vocation_id == allowed.id
+      assert Nest.Agents.Agent.get_public_info(pid, 1_000).vocation_id == allowed.id
     end
 
     test "omitting vocation with multiple allowed vocations is refused as ambiguous" do

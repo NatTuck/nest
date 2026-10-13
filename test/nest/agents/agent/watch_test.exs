@@ -72,7 +72,7 @@ defmodule Nest.Agents.Agent.WatchTest do
   defp await_idle(pid) do
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-    assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
+    assert Agent.get_public_info(pid, 1_000).status == :idle
   end
 
   defp set_busy(pid) do
@@ -105,7 +105,7 @@ defmodule Nest.Agents.Agent.WatchTest do
   end
 
   defp notices(pid) do
-    :sys.get_state(pid, 1_000).chat_state.messages
+    Agent.get_messages(pid, 1_000)
     |> Enum.flat_map(fn
       {:user, %{parts: parts}} -> Enum.map(parts, & &1.text)
       _ -> []
@@ -128,7 +128,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     # A watch is registered, and the agent never left idle (issue #54): the
     # tool returned without blocking a turn.
     assert map_size(watchers(pid)) == 1
-    assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle
+    assert Agent.get_public_info(pid, 1_000).status == :idle
   end
 
   test "an already-idle-only wait registers nothing", %{pid: pid, name: name, space_id: space_id} do
@@ -336,7 +336,14 @@ defmodule Nest.Agents.Agent.WatchTest do
     assert length(texts) == 1
     assert Enum.count(texts, &(&1 =~ "the report")) == 1
     refute Enum.any?(texts, &(&1 =~ "Agents now idle"))
-    refute Enum.any?(:sys.get_state(pid, 1_000).live.inbox, &(&1.kind == :notice))
+
+    # Access, not a `match?`: a malformed entry raises loudly here, where a
+    # pattern would silently mismatch and leave the `refute` vacuous (the
+    # serialized key itself is pinned by `last_message_test`'s patterns).
+    refute Enum.any?(
+             Agent.get_public_info(pid, 1_000).pending_messages,
+             &(&1["kind"] == "notice")
+           )
   end
 
   # The second variant: the caller is busy when the report arrives, so it
@@ -378,7 +385,7 @@ defmodule Nest.Agents.Agent.WatchTest do
       ])
 
     assert content =~ "the report"
-    assert [%{retrieved: true}] = :sys.get_state(pid, 1_000).live.inbox
+    assert [%{"retrieved" => true}] = Agent.get_public_info(pid, 1_000).pending_messages
     reset_to_idle(pid)
   end
 

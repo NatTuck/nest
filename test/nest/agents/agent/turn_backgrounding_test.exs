@@ -107,7 +107,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # The batch reached the tool worker, which is parked before the first
       # `agents-send`: the agent really is `:executing_tools`.
       assert_receive {:send_blocked, tool}, 1_000
-      assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :executing_tools
+      assert Agent.get_public_info(pid, 1_000).status == :executing_tools
 
       # Release it: the message reaches this same agent, and the batch is
       # backgrounded on it.
@@ -236,7 +236,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       assert Enum.any?(user_texts(third), &(&1 =~ "Message from agent"))
 
-      AgentTestHelpers.assert_unique_message_indices(state)
+      AgentTestHelpers.assert_unique_message_indices(state.chat_state.messages)
     end
   end
 
@@ -274,7 +274,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # The batch reached the tool worker, which is parked before its
       # `agents-send`: the agent really is `:executing_tools`.
       assert_receive {:send_blocked, worker}, 1_000
-      assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :executing_tools
+      assert Agent.get_public_info(pid, 1_000).status == :executing_tools
 
       # A human message with a mode now backgrounds the batch and is delivered
       # mid-batch — never dropped — and its mode is applied at delivery, not
@@ -373,7 +373,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       assert late =~ "Message queued for #{name} (busy)"
       assert Enum.any?(user_texts(third), &(&1 =~ "peer note"))
 
-      AgentTestHelpers.assert_unique_message_indices(state)
+      AgentTestHelpers.assert_unique_message_indices(state.chat_state.messages)
     end
   end
 
@@ -411,7 +411,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       # The batch reached the tool worker, parked before its `agents-send`.
       assert_receive {:send_blocked, tool}, 1_000
-      assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :executing_tools
+      assert Agent.get_public_info(pid, 1_000).status == :executing_tools
 
       # Release it: the message reaches this same agent, so the batch
       # backgrounds itself and the message is delivered now.
@@ -474,7 +474,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       {:ok, attrs} = Persistence.build_attrs_for_start(current_space_id(), name)
       assert attrs.load_heal == nil
 
-      AgentTestHelpers.assert_unique_message_indices(state)
+      AgentTestHelpers.assert_unique_message_indices(state.chat_state.messages)
     end
   end
 
@@ -508,7 +508,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       :ok = Agent.chat(pid, "start the turn")
 
       assert_receive {:send_blocked, tool}, 1_000
-      assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :executing_tools
+      assert Agent.get_public_info(pid, 1_000).status == :executing_tools
 
       # The aggregate is the disposition the coordinator relies on: `:delivered`
       # means it reached the transcript.
@@ -588,7 +588,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # `agents-send`: the agent really is `:executing_tools` with a live worker
       # and an unanswered `tool_use`.
       assert_receive {:send_blocked, tool}, 1_000
-      assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :executing_tools
+      assert Agent.get_public_info(pid, 1_000).status == :executing_tools
 
       # A human message backgrounds the batch, so it is *still running* — parked
       # inside its call — when the stop lands.
@@ -650,9 +650,9 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       send(pid, {:tool_results, ref, [late_result()]})
       _ = :sys.get_state(pid, 1_000)
 
-      assert :sys.get_state(pid, 1_000).chat_state.messages == state.chat_state.messages
+      assert Agent.get_messages(pid, 1_000) == state.chat_state.messages
 
-      AgentTestHelpers.assert_unique_message_indices(state)
+      AgentTestHelpers.assert_unique_message_indices(state.chat_state.messages)
     end
   end
 

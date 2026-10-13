@@ -578,7 +578,7 @@ defmodule NestWeb.AgentChannelChatTest do
       # The held user message was appended after the compaction summary
       # (wire role `user`); the bridge inserted an assistant ack so the
       # resumed list is wire-valid and the turn actually ran.
-      messages = :sys.get_state(agent_pid, 1_000).chat_state.messages
+      messages = Nest.Agents.Agent.get_messages(agent_pid, 1_000)
 
       assert :ok = Preflight.validate(messages)
 

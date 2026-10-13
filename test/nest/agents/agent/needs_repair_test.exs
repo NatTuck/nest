@@ -212,7 +212,7 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
           before = state.chat_state.messages
           _ref = Agent.chat(pid, "hello?")
           _ = :sys.get_state(pid, 1_000)
-          assert :sys.get_state(pid, 1_000).chat_state.messages == before
+          assert Agent.get_messages(pid, 1_000) == before
         end)
 
       assert log =~ "invalid active message sequence"
