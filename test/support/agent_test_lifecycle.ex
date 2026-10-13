@@ -51,6 +51,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
   alias Nest.Agents.Registry
   alias Nest.Repo
   alias Nest.Spaces.Space
+  alias Nest.TestSupport.ChannelQuiescence
 
   # Observable status values that mean an LLM/tool/compaction turn is
   # actively running. Every other value (`:idle`, `:model_missing`,
@@ -175,7 +176,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
     # connection's ownership proxy log "owner … exited" at `:error` when this
     # process exits. Last, so that nothing the agent stops enqueue can still be
     # in flight. See `Nest.TestSupport.ChannelQuiescence`.
-    Nest.TestSupport.ChannelQuiescence.drain()
+    ChannelQuiescence.drain()
 
     %{owned: length(owned), in_flight: in_flight, not_stopped: not_stopped}
   end
