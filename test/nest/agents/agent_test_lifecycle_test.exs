@@ -216,19 +216,20 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       # the host — failing tests whose agents were not in flight at all.
       #
       # A populated scratch directory is a *real* teardown load rather than a
-      # stub: it is the same `File.rm_rf` the agent runs for itself. 200 files
-      # cost ~5 ms of `rm_rf` on the fast host and ~17 ms on the project's
-      # slowest, and the bound is 250 ms, so this cannot go flaky on either —
-      # which is why it is this size and not larger. It is a correctness pin
-      # (a populated scratch dir must not make an idle agent a violation) that
-      # doubles as a regression pin on the slow host, where the old 10 ms bound
-      # was crossed by the teardown alone. The bound's own floor is pinned
-      # separately, and deterministically, below.
+      # stub: it is the same `File.rm_rf` the agent runs for itself, and the
+      # teardown's cost is the number of file operations in it. Deliberately
+      # small — `File.rm_rf` of 100 entries measures 332-597 ms under 32 CPU
+      # burners, so a pin big enough to be a *magnitude* check would itself go
+      # flaky on a loaded host, and a sometimes-failing test is worse than a
+      # failing one. What this pins is the contract: a populated scratch
+      # directory must not turn an idle agent into a violation. The bound's floor,
+      # which is what a tightening would break, is pinned separately and
+      # deterministically below.
       {pid, name} = AgentTestHelpers.start_agent()
       space_id = AgentTestHelpers.current_space_id()
 
       scratch = TmpSpace.create(space_id, name)
-      Enum.each(1..200, fn i -> File.write!(Path.join(scratch, "f#{i}"), "x") end)
+      Enum.each(1..20, fn i -> File.write!(Path.join(scratch, "f#{i}"), "x") end)
 
       result = AgentTestLifecycle.stop_test_agents()
 

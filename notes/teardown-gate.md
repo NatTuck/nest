@@ -26,9 +26,8 @@ tight bound is therefore a detector rather than headroom. The premise is false:
 `File.rm_rf/1`, which is synchronous filesystem work and a `:file_server`
 round-trip **inside the window the bound measures**.
 
-The stacktrace of every agent that crossed the bound says so — an agent that is
-stopping, parked in the file server, having answered `:idle` to the status
-question:
+The stacktrace of every agent that crossed the bound says where it was — an
+agent that is *stopping*, having answered `:idle` to the status question:
 
 ```
 [status: :waiting, message_queue_len: 0,
@@ -39,16 +38,47 @@ question:
                       {Nest.Agents.Agent, :terminate, 2}, ...]]
 ```
 
-So the bound failed *idle* agents on a busy machine. Because the cost is a fixed
-number of `:file_server` round-trips times a scheduling quantum, the handshake
-saturates on a flat plateau just under the old bound rather than scattering —
-which is why it produced a steady trickle of failures on a slow host instead of
-obvious noise.
+A stacktrace is a location, not a cause, so the cost was attributed by
+measurement rather than by reading the frame. Under 32 BEAM burners on a
+32-logical-CPU host, with agents that had all answered `:idle`:
 
-## Measurements
+| what | loaded | idle |
+| --- | --- | --- |
+| one `ClientAPI.get_status/2` round trip | 117 us | 1 - 9 us |
+| `File.rm_rf/1` of an empty directory | ~9 ms | 14 - 68 us |
+| `File.rm_rf/1` of a 100-entry directory | 332 - 597 ms | 1.2 - 1.4 ms |
+| the stop handshake, 12 idle agents | 8.5 - 9.1 ms | 25 - 110 us |
 
-The handshake, for agents that had all answered `:idle` (so provably not in a
-turn), measured with the probe below.
+So it *is* the file work — the empty directory's `rm_rf` alone accounts for the
+whole plateau, and it multiplies with entries — but it is **not** either of the
+two mechanisms that were guessed at:
+
+* **not round-trip scheduling.** A message round trip under the same load is
+  117 us, orders of magnitude below one file operation. (`@answer_ms` cites
+  "48 CPU burners: p50 926 ms" as a loaded round-trip figure. It is not: that
+  number is the *whole turn* — a mocked LLM call, a real sub-agent spawn with DB
+  writes, and a second mocked call — from `sub_agent_tools_helpers.ex`'s fence
+  sizing. The same file's *idle* status-read sample, p50 21 us, is the
+  comparable one.)
+* **not `:file_server` throughput.** `Process.whereis(:file_server)` is `nil` in
+  this OTP, so there is no global process for deletes to queue on. The cost is
+  per operation, in the NIF and the syscall.
+
+That the tail "survives moving every cross-process call out of
+`Agent.terminate/2`" — the claim the previous comment carried — is consistent
+with this: `File.rm_rf` is not a cross-process call terminate *makes*, it is a
+library call inside `cleanup_tmp/2`, so an experiment that removed terminate's own
+cross-process work would leave exactly this cost in place.
+
+Real scratch directories are empty, so the empty-directory cost is the realistic
+one: of 25 sampled across a full suite run, 23 held 0 entries and 2 held 1. That
+is why the handshake produced a steady trickle of failures on a slow host rather
+than obvious noise — it sat just under a 10 ms bound.
+
+## The handshake's cost curve
+
+The stop handshake, for agents that had all answered `:idle` (so provably not in
+a turn), measured with the probe below.
 
 `vampire` — 32 logical / 16 physical CPUs, suite at `max_cases: 16`:
 

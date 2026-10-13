@@ -84,28 +84,50 @@ defmodule Nest.Agents.AgentTestLifecycle do
   # agent.
   #
   # This is a **liveness** bound — did the process die at all — and deliberately
-  # not a tight one, because the handshake it bounds is not only the agent's
-  # receive loop. `Agent.terminate/2` ends with `cleanup_tmp/2` ->
-  # `TmpSpace.cleanup/2` -> `File.rm_rf/1`: synchronous filesystem work and a
-  # `:file_server` round-trip, inside the very window this bound measures. A
-  # bound that handshake can cross therefore cannot mean "the agent was busy" —
-  # it means the *machine* was busy, and an idle agent is failed for it.
+  # not a tight one, because the handshake it bounds is not the agent's receive
+  # loop. `Agent.terminate/2` ends with `cleanup_tmp/2` -> `TmpSpace.cleanup/2`
+  # -> `File.rm_rf/1`, so the stop includes blocking filesystem work. The comment
+  # this replaces said the opposite — "`Agent.terminate/2` keeps no cross-process
+  # or filesystem work of its own ... the handshake measures the loop, not the
+  # teardown" — and that clause is simply wrong. It is what made a 10 ms bound
+  # look like a detector. A bound this handshake can cross cannot mean "the agent
+  # was busy": it means the *machine* was busy, and an idle agent is failed for it.
   #
-  # Measurements, every one of them with agents that had answered `:idle` to the
-  # status question and so were provably not in a turn:
+  # Measured on a 32-logical-CPU host, with agents that had all answered `:idle`
+  # to the status question and so were provably not in a turn, at 32 BEAM burners
+  # (and idle, in brackets):
   #
-  #   * idle machine, whole suite at `max_cases: 16`: 479 clean-path handshakes,
-  #     p50 130 us / p90 250 us / p99 1.1 ms / max 4.4 ms;
-  #   * a 12-idle-agent probe on a 32-logical-CPU host: 25-110 us with no
-  #     burners, 51-789 us at 16 burners, and a tight **8.5-9.1 ms plateau** at
-  #     32, 48, 64 and 96 — saturation alone brings the handshake to within 10%
-  #     of the 10 ms bound this replaces, and the plateau is flat rather than
-  #     scattered because the cost is a fixed number of `:file_server`
-  #     round-trips times a scheduling quantum, not queueing noise;
-  #   * add any other load on the host and it crosses: a 48-burner run under
-  #     concurrent compilation measured 7.6-10.9 ms with 3 of 12 agents over
-  #     10 ms, and `celedyr`'s own suite runs measured 10.4-11.1 ms, producing 4
-  #     detector failures at `max_cases: 12` and 24 at `max_cases: 24`.
+  #   * one `ClientAPI.get_status/2` round trip to an idle agent: 117 us (1-9 us);
+  #   * `File.rm_rf/1` of an EMPTY directory: ~9 ms (14-68 us);
+  #   * `File.rm_rf/1` of a 100-entry directory: 332-597 ms (1.2-1.4 ms);
+  #   * the stop handshake for 12 idle agents: a flat 8.5-9.1 ms plateau
+  #     (25-110 us).
+  #
+  # So the cost is the file work, and specifically the number of file operations:
+  # an empty directory's `rm_rf` alone is the whole plateau, and it multiplies
+  # with entries. Two things it is *not*:
+  #
+  #   * not round-trip scheduling. A message round trip under the same load is
+  #     117 us — orders of magnitude below one file operation. (`@answer_ms` cites
+  #     "48 CPU burners: p50 926 ms" as a loaded figure; that number is the *whole
+  #     turn* — a mocked LLM call, a real sub-agent spawn with DB writes, and a
+  #     second mocked call — in `sub_agent_tools_helpers.ex`'s fence sizing. It is
+  #     not a status read.)
+  #   * not `:file_server` throughput: `Process.whereis(:file_server)` is `nil` in
+  #     this OTP, so there is no global process for deletes to queue on. The cost
+  #     is per operation, in the NIF and the syscall.
+  #
+  # That the tail "survives moving every cross-process call out of
+  # `Agent.terminate/2`" — the claim the previous comment carried — is consistent
+  # with this: `File.rm_rf` is not a cross-process call terminate *makes*, it is a
+  # library call inside `cleanup_tmp/2`, so an experiment that removed terminate's
+  # own cross-process work would leave exactly this cost in place.
+  #
+  # Real scratch directories are empty, so the empty-directory cost is the
+  # realistic one: of 25 sampled across a full suite run, 23 held 0 entries and 2
+  # held 1. 250 ms clears ~9 ms by ~27x even under full CPU saturation, and
+  # `celedyr` — which reproduced the old failure as 4-24 detector failures per run
+  # — now produces none at `max_cases` 8, 12 and 24.
   #
   # The stacktrace of every agent that crossed it is the same, and says where
   # the time went:
