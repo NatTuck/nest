@@ -90,6 +90,29 @@ for mod <- [
   :ok
 end
 
+# Preload the application's own modules (#21).
+#
+# The list above covers the hot *dependencies*; `:nest`'s own modules are
+# loaded lazily on their first call, and under host load that is where the
+# suite actually stalls. Instrumented at `max_cases: 16` with 16 CPU
+# burners (an idle host does not reproduce it at all), `:code_server.call/1`
+# was the innermost frame of 45 of 142 failures, and the code server's
+# message queue reached 35-43 — the deepest queue in the run, above
+# `Mimic.Coordinator` (<= 14) and the `DynamicSupervisor` (<= 25).
+#
+# Preloading every `:nest` module removes those frames, and the
+# `Supervisor.start_*` ones with them (45 -> 6, 17 -> 0 of 142), and the
+# failure count follows: 142 -> 117 over 16 interleaved burner-loaded seeds
+# (mean 8.9 -> 7.3 per run, paired t = 3.3, 11 seeds better / 2 worse / 3
+# tied). What is left is Mimic's global coordinator (95 of 117).
+#
+# `mix test --preload-modules` is NOT the way to do this: `Mix.Tasks.Test`
+# parses the switch but only forwards it to `app.start` under `--slowest`,
+# so the CLI flag is a no-op here.
+for mod <- Application.spec(:nest, :modules) || [] do
+  Code.ensure_loaded(mod)
+end
+
 # Warm the agent-start path (#21).
 #
 # `Agent.init/1` runs inside the supervisor's critical section —
