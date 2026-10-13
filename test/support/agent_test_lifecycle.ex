@@ -17,7 +17,11 @@ defmodule Nest.Agents.AgentTestLifecycle do
       `Agent.start_link/1`, including production-spawned children and
       `start_supervised!` pids), scoped to the spaces the test created
       (visible in the test's sandbox transaction). No per-test
-      registration is required.
+      registration is required. Each discovered agent is asked for its
+      own status, in its own process (`Agent.ClientAPI.get_status/2`),
+      *before* any of them is stopped — so the in-flight check is
+      answered by the agent it is about and cannot be answered by a
+      clock.
     * `assert_zero_remaining!/1` — asserts that the teardown left
       nothing behind. The caller decides whether to assert, so cleanup
       can never mask an unrelated body failure.
@@ -38,7 +42,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
 
   import Ecto.Query
 
-  alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.ClientAPI
   alias Nest.Agents.Registry
   alias Nest.Repo
   alias Nest.Spaces.Space
@@ -48,28 +52,34 @@ defmodule Nest.Agents.AgentTestLifecycle do
   # `:context_overflow`, `:compaction_failed`,
   # `:compaction_loop_detected`) is a terminal/frozen state where no
   # turn is in flight, so the agent cannot write to the DB anymore.
-  @in_flight_statuses [:streaming, :executing_tools, :compacting, :unresponsive]
+  @in_flight_statuses [:streaming, :executing_tools, :compacting]
 
-  # The teardown probe's bound is a *measurement*, not a failure bound, and it is
-  # the single documented exception to the 1000 ms the ruling sets for fences: it
-  # goes DOWN, not up. An idle agent answers `:sys.get_state/2` in microseconds, so
-  # the bound costs nothing on the happy path — but `stop_test_agents/0` probes
-  # every owned agent synchronously, so a long bound makes teardown cost N x bound
-  # and blows the per-test deadline. That is the bug this replaces (500 ms x N).
+  # How long teardown waits for one agent to answer its own status question
+  # (`Agent.ClientAPI.get_status/2`) before giving up on that agent and stopping
+  # it anyway. It is not a failure bound and not a measurement of the agent: it
+  # decides nothing, because a non-answer is not a status (see `agent_status/1`).
+  # It stays at 250 — the value of the `:sys.get_state` probe it replaces — so
+  # what one agent can cost the teardown is unchanged (`@answer_ms` +
+  # `@stop_ms`, exactly what the probe plus the stop cost).
   #
-  # Sizing, honestly: a synthetic saturation probe was not usable. 32 yield-loops,
-  # and then 16 blocked + 16 allocating workers, both starved a *parked* process
-  # past a 5 s bound, so neither shape is the suite's and neither can size this.
-  # 250 ms is therefore chosen for what the bound is FOR, not from a distribution:
-  # it caps teardown at 250 ms per agent that cannot answer, and an agent that
-  # cannot answer in 250 ms while idle is either wedged or mid-turn — the two cases
-  # this check exists to catch. A starved-but-healthy agent now reads as in flight
-  # and fails the test; that is the intended direction (see `agent_status/1`) and is
-  # recorded in `notes/sketchy-slow-tests.md`.
-  #
-  # Follow-up: log the real probe-latency distribution from a suite run (16-way)
-  # and revisit this number with data. Do NOT "fix" it to 1000.
-  @agent_probe_ms 250
+  # Sizing, from the real thing this time: 473 teardown answers across a full
+  # suite at `max_cases: 16` (seed 12345) took p50 21 us, p90 44 us, p99 84 us,
+  # p99.9 308 us, max 3.3 ms. 250 ms is ~76x that max, so it is headroom for a
+  # healthy agent, not a latency budget. What it costs: an agent that is busy in
+  # its own loop (a DB append under pool contention) for longer than this is no
+  # longer *diagnosed* as in flight — the old probe called that "in flight", and
+  # that same non-answer is what made a *dying* agent a false positive. A clock
+  # cannot tell the two apart, which is why it is gone.
+  @answer_ms 250
+
+  # Cleanup headroom for the stop itself: `stop_pid/2`'s `:DOWN` wait, and
+  # `wait_for_pid_down/3`'s. It is a single `:DOWN` receive, so it costs nothing
+  # on the happy path and only bounds a failure: an agent's
+  # `terminate/2` walks its descendant tree and removes its tmp directory, so a
+  # busy scheduler can push shutdown past a fixed short window. A genuinely
+  # wedged agent still blows the bound (and is then reported by
+  # `assert_zero_remaining!/1`).
+  @stop_ms 2_000
 
   @doc """
   Send `:shutdown` to the agent pid and wait for its
@@ -90,7 +100,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
   bound (and is then reported by `assert_zero_remaining!/1`).
   """
   @spec wait_for_pid_down(integer(), String.t(), pos_integer()) :: :ok
-  def wait_for_pid_down(space_id, name, timeout \\ 2_000) do
+  def wait_for_pid_down(space_id, name, timeout \\ @stop_ms) do
     case Registry.lookup(space_id, name) do
       {:ok, pid} ->
         stop_pid(pid, timeout)
@@ -114,14 +124,21 @@ defmodule Nest.Agents.AgentTestLifecycle do
   registration.
 
   Returns `%{owned: non_neg_integer(), in_flight: [...], still_alive:
-  [...]}`. Stop + single `:DOWN` wait, no loops. The caller decides
-  whether to raise so that cleanup cannot mask an unrelated body
-  failure.
+  [...]}`. Read every status, then stop every agent with a single
+  `:DOWN` wait each, no loops. The caller decides whether to raise so
+  that cleanup cannot mask an unrelated body failure.
   """
   @spec stop_test_agents() :: map()
   def stop_test_agents do
     owned = owned_agents()
 
+    # Sample before stopping anything. The teardown's own stops perturb the
+    # agents it is about to read: stopping one agent starts a turn on another
+    # (a batch's child terminating makes its parent continue the batch), so a
+    # read taken *after* a stop reports the state the cleanup created instead of
+    # the state the test left behind. Measured on
+    # `agents_batch_test.exs`'s coordinator-death test, which read `:streaming`
+    # for exactly that reason.
     in_flight =
       for {space_id, name, pid} <- owned,
           status = agent_status(pid),
@@ -129,7 +146,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
         {space_id, name, status}
       end
 
-    Enum.each(owned, fn {_space_id, _name, pid} -> stop_pid(pid) end)
+    Enum.each(owned, fn {_space_id, _name, pid} -> stop_pid(pid, @stop_ms) end)
 
     still_alive = for {space_id, name, pid} <- owned, Process.alive?(pid), do: {space_id, name}
 
@@ -215,48 +232,43 @@ defmodule Nest.Agents.AgentTestLifecycle do
     end
   end
 
-  # Synchronous, loop-free read of the agent's live status, with the in-flight
-  # signal **inverted**: an agent that does not answer is busy, which is exactly
-  # what "in flight" means. Three outcomes, distinguished by the exit reason:
+  # The agent's own status, read in its own process: `Machine.status_for/1` is
+  # evaluated by the agent, so nothing is sampled from outside and no clock
+  # stands in for a status. Three outcomes, and only the first is a status:
   #
-  #   * answers with a state      -> its status (`Machine.status_for/1`);
-  #   * answers with anything else -> `:not_an_agent` (a unit test registered a
-  #     stand-in in the agents Registry; that must NOT read as in-flight);
-  #   * dead pid (`:noproc`)       -> `nil` — down, not in flight (already
-  #     reported by `still_alive`);
-  #   * alive but did not answer   -> `:unresponsive` — in flight.
-  #
-  # The last one is a deliberate behaviour change: a starved-but-healthy agent now
-  # *fails* the test instead of passing silently, because the old `:exit, _ -> nil`
-  # made the check miss precisely the case it exists to detect ("the test finished
-  # while a turn was still running"). Recorded in `notes/sketchy-slow-tests.md`.
+  #   * the agent answers   -> that is its status, exactly. A *mid-turn* agent
+  #     answers: a turn runs in a worker task, not in the agent's loop, so
+  #     `:streaming`/`:executing_tools`/`:compacting` is the in-flight signal.
+  #   * the agent goes away -> the call exits with the reason it went away
+  #     (`:noproc`/`:shutdown`/a crash), which is `nil` here: no process is left
+  #     to run a turn. This is the race that produced the false positive — a
+  #     test body that already stopped its agent leaves it mid-`terminate/2`,
+  #     and an agent that is being stopped is not in flight.
+  #   * the agent never answers -> `:timeout` (dying behind a contended
+  #     synchronous call, or wedged), which is also `nil` and not a status. A
+  #     process that will not stop is reported by `still_alive` instead, which
+  #     says what is actually wrong with it.
   defp agent_status(pid) do
-    case :sys.get_state(pid, @agent_probe_ms) do
-      %{live: %{machine: machine}} -> Machine.status_for(machine)
-      _ -> :not_an_agent
-    end
+    ClientAPI.get_status(pid, @answer_ms)
   catch
-    :exit, reason -> if agent_gone?(reason), do: nil, else: :unresponsive
+    :exit, _reason -> nil
   end
 
-  # `:sys.get_state/2` exits with the bare atom `:timeout` when the process does
-  # not answer in time; a pid that is already dead gives `:noproc`.
-  defp agent_gone?(:noproc), do: true
-  defp agent_gone?(:normal), do: true
-  defp agent_gone?(:shutdown), do: true
-  defp agent_gone?({:noproc, _}), do: true
-  defp agent_gone?({:normal, _}), do: true
-  defp agent_gone?({:shutdown, _}), do: true
-  defp agent_gone?(_), do: false
-
-  defp stop_pid(pid, timeout \\ 2_000) do
+  defp stop_pid(pid, timeout) do
     # Unlink first: test-started agents are linked to the test pid so
     # an unexpected crash fails the test. A deliberate `:shutdown`
     # would otherwise propagate to (and kill) the test pid.
     Process.unlink(pid)
     ref = Process.monitor(pid)
     Process.exit(pid, :shutdown)
+    await_down(ref, pid, timeout)
+  end
 
+  # A single `:DOWN` receive — never a drain loop. `Process.monitor/1` runs
+  # before the exit signal, so the receive cannot miss the event even if the pid
+  # was already dead at monitor-time (`:DOWN, :noproc`). `Process.demonitor/1,
+  # [:flush]` on timeout cleans up any pending DOWN.
+  defp await_down(ref, pid, timeout) do
     receive do
       {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
     after

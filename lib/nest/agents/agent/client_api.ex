@@ -20,6 +20,8 @@ defmodule Nest.Agents.Agent.ClientAPI do
     * `get_history/1` — archived history (compacted-away
       messages plus `{:compaction, _}` markers).
     * `terminate/1` — `GenServer.stop/2` with normal reason.
+    * `get_status/2` — the agent's current status, read in
+      the agent's own process.
 
   ## Why this lives separately from IntrospectionHandler
 
@@ -27,6 +29,26 @@ defmodule Nest.Agents.Agent.ClientAPI do
   module owns the "send the call" wrappers so the GenServer's
   exported call surface doesn't grow past the credo cap.
   """
+
+  @doc """
+  The agent's current status (`Nest.Agents.Agent.Machine.status_for/1`), read
+  inside the agent's own process (issue #21).
+
+  Used by the test harness's teardown, which needs to know whether the test it
+  is cleaning up after ended while a turn was still running. The read is a
+  message like any other, so it does not return when the agent is not there to
+  answer: it exits with the reason the process went away (already stopped,
+  already dying), or with `:timeout` if it never answered at all. Both mean "no
+  status" — a process that cannot answer is not a process with a turn in
+  flight.
+
+  A turn runs in a worker task, not in the agent's loop, so a mid-turn agent
+  answers this normally (`:streaming` / `:executing_tools` / `:compacting`).
+  """
+  @spec get_status(pid(), timeout()) :: atom()
+  def get_status(pid, timeout) do
+    GenServer.call(pid, :get_status, timeout)
+  end
 
   @doc """
   Terminates the agent process.
