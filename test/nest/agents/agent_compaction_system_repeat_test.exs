@@ -112,7 +112,12 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
     consume_pre_seed_broadcasts(messages)
 
     send_compaction_done(pid, summary_text, nil)
-    _ = :sys.get_state(pid, 1_000)
+
+    # The commit broadcasts `chat:compaction` inline, after the marker and the
+    # regenerated messages are in the state, so the frame is the happens-after
+    # event for the commit (and the payload binds the fence to a commit rather
+    # than to ambient traffic).
+    assert_receive {:chat_compaction, %{marker: %{"role" => "compaction"}}}, 1_000
     state = :sys.get_state(pid, 1_000)
 
     # The `nil` continuation resumes a post-compaction LLM turn
@@ -436,8 +441,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       vocation = create_vocation(%{system_prompt: original_marker})
       {pid, _agent_id} = start_with_vocation(vocation)
 
-      state_before = :sys.get_state(pid, 1_000)
-      assert state_before.vocation.system_prompt =~ original_marker
+      assert Nest.Agents.Agent.get_vocation(pid, 1_000).system_prompt =~ original_marker
 
       {:ok, _updated} =
         Vocations.update_vocation(vocation, %{system_prompt: fresh_marker})
@@ -466,10 +470,8 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       {pid, _agent_id} = start_with_vocation(vocation)
 
       # Initial state has only the original tools.
-      initial_state = :sys.get_state(pid, 1_000)
-
       initial_tool_names =
-        initial_state.tools
+        Nest.Agents.Agent.get_tools(pid, 1_000)
         |> Enum.map(fn t -> t.name end)
         |> MapSet.new()
 

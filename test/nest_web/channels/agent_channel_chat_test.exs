@@ -465,9 +465,9 @@ defmodule NestWeb.AgentChannelChatTest do
       # channel no longer rejects `:compacting`.
       assert_reply ref, :ok, %{}
 
-      state = :sys.get_state(agent_pid, 1_000)
-      assert [%{content: "during compaction", kind: :user}] = state.live.inbox
-      assert Machine.status_for(state.live.machine) == :compacting
+      info = Nest.Agents.Agent.get_public_info(agent_pid, 1_000)
+      assert [%{"content" => "during compaction", "kind" => "user"}] = info.pending_messages
+      assert info.status == :compacting
 
       # The `:compacting` status was fabricated for the disposition check
       # (there is no real turn). Restore idle so the teardown's
@@ -635,7 +635,7 @@ defmodule NestWeb.AgentChannelChatTest do
       # The channel read `payload["focus"]` and threaded it through
       # `Agents.compact/3` → `Agent.compact/2` onto the machine's working
       # set synchronously (before the reply).
-      assert :sys.get_state(agent_pid, 1_000).live.machine.work.focus == "keep the API decisions"
+      assert Nest.Agents.Agent.get_work(agent_pid, 1_000).focus == "keep the API decisions"
 
       # Retrying re-renders the same focus; the compactor completes
       # (MockClient's random-text fallback) and the agent returns to idle.

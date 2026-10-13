@@ -188,12 +188,12 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       send_compaction_done(pid, summary_text, {:tool_call, tool_call_msg, 3, 30})
 
       # `send_compaction_done/3` sends the `{:http_response, _}` as a plain
-      # message, so the `:sys.get_state/2` barrier below flushes it. The
-      # compaction broadcast is emitted inline from the agent while handling
-      # that message, so the frame is already in our mailbox.
-      _ = :sys.get_state(pid, 1_000)
-
-      assert_received {:chat_compaction, payload}
+      # message. The commit that handles it broadcasts `chat:compaction` inline
+      # (after the marker and the regenerated messages are in the state), so the
+      # frame is both the happens-after event for the commit and the payload
+      # under test. Wait on it rather than on a mailbox barrier, and assert the
+      # payload so the fence cannot be satisfied by a non-commit frame.
+      assert_receive {:chat_compaction, payload}, 1_000
 
       assert payload.marker["role"] == "compaction"
       # The two pre-seeded messages plus the committed summary assistant
@@ -203,6 +203,27 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       # The archive is fetched lazily over `chat:history`, not pushed.
       refute Map.has_key?(payload, :history)
 
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
+    end
+
+    test "the fence is the commit's frame: a plain turn broadcasts none" do
+      # The pin for the converted barrier above. `{:chat_compaction, _}` is
+      # emitted only by a commit (`Broadcasts.compaction/2`'s two callers are
+      # both inside the commit path), so a fence that could be satisfied by
+      # ambient traffic would pass on the plain turn below when it must not.
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      MockClient.set_response("hello")
+      :ok = Agent.chat(pid, "hi")
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
+
+      refute_received {:chat_compaction, _}
+
+      # ...and the commit's own frame is the one that decides it, carrying the
+      # marker the commit appended.
+      MockClient.set_response("done")
+      send_compaction_done(pid, "a summary", nil)
+      assert_receive {:chat_compaction, %{marker: %{"role" => "compaction"}}}, 1_000
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end

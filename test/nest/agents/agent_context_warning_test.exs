@@ -155,11 +155,11 @@ defmodule Nest.Agents.AgentContextWarningTest do
     :ok = Agent.chat(pid, "First message")
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-    state = :sys.get_state(pid, 1_000)
+    crossed = Agent.get_crossed_thresholds(pid, 1_000)
 
-    assert MapSet.member?(state.live.crossed_thresholds, :p25),
+    assert MapSet.member?(crossed, :p25),
            "expected :p25 to be persisted on the Agent after firing, " <>
-             "got #{inspect(state.live.crossed_thresholds)}"
+             "got #{inspect(crossed)}"
   end
 
   test "compaction_done clears crossed_thresholds so the next turn can re-fire" do
@@ -199,11 +199,11 @@ defmodule Nest.Agents.AgentContextWarningTest do
     # the field must still be empty (no reminder fires).
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-    state = :sys.get_state(pid, 1_000)
+    crossed = Agent.get_crossed_thresholds(pid, 1_000)
 
-    assert state.live.crossed_thresholds == %MapSet{},
+    assert crossed == %MapSet{},
            "expected crossed_thresholds cleared after compaction, " <>
-             "got #{inspect(state.live.crossed_thresholds)}"
+             "got #{inspect(crossed)}"
   end
 
   @tag timeout: 2_000

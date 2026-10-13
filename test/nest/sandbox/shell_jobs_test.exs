@@ -40,7 +40,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
   # The manager owns the waiter list, so read it directly instead of
   # racing an OS kill against a fixed receive timeout.
-  defp waiters(id), do: Map.get(:sys.get_state(ShellJobs, 1_000).waiters, id, [])
+  defp waiters(id), do: ShellJobs.waiters(id, 1_000)
 
   test "starts a job running, lists it, and kills it", %{key: key, tmp: tmp} do
     id = start_running!("sleep 30", tmp, key)
@@ -66,7 +66,9 @@ defmodule Nest.Sandbox.ShellJobsTest do
   end
 
   test "removes the staged script from the host once the job exits (nested tmp)" do
-    key = {:test, "script-cleanup-#{System.unique_integer([:positive])}"}
+    # A real space id: `broadcast/2` is guarded on `is_integer(space_id)`, and
+    # the job-list broadcast is the fence below.
+    key = {1, "script-cleanup-#{System.unique_integer([:positive])}"}
 
     # The real scratch shape is <root>/space-<id>/<agent-name>. With a
     # flat scratch dir the script's path inside the sandbox happens to equal
@@ -85,11 +87,16 @@ defmodule Nest.Sandbox.ShellJobsTest do
     {:ok, _message} = start_background("true", tmp, key)
     assert [%{id: id}] = ShellJobs.list(key)
 
-    # Wait for the job to exit, then synchronize with the manager so its
-    # `finish_job/3` (which removes the host script) has run to completion.
+    # `finish_job/3` removes the host script and *then* broadcasts the job list,
+    # so the broadcast is the happens-after event for "the script is gone".
+    # Subscribe after the start (whose broadcast would be a different frame), so
+    # the only frame this can match is the finish's; the payload names the job
+    # and its exit, which is what pins the fence to that event.
+    {space_id, name} = key
+    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
     assert :ok = ShellJobs.subscribe(key, id, self())
     assert_receive {:shell_job_exit, ^id, 0}, 1_000
-    _ = :sys.get_state(ShellJobs, 1_000)
+    assert_receive {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}, 1_000
 
     assert Path.wildcard(Path.join(tmp, ".nest-cmd-*.sh"), match_dot: true) == []
   end
@@ -242,6 +249,11 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     id = start_running!("sleep 30", tmp, key)
     assert_receive {:shell_jobs, %{jobs: [%{id: ^id}]}}, 1_000
+
+    # The pin for the converted barrier in the nested-tmp test: the broadcast is
+    # the happens-after event for `finish_job/3`'s script removal, so no
+    # `:exited` frame exists while the job is still running.
+    refute_received {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}
 
     assert :ok = ShellJobs.kill(key, id)
     assert_receive {:shell_jobs, %{jobs: [%{id: ^id, killed: true}]}}, 1_000

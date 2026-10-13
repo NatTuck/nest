@@ -73,9 +73,9 @@ defmodule Nest.Agents.AgentContextLimitTest do
         end
       })
 
-    state = :sys.get_state(pid, 1_000)
-    assert state.llm_metrics.context_limit == 200_000
-    assert state.llm_metrics.context_limit_source == :openrouter
+    info = Agent.get_public_info(pid, 1_000)
+    assert info.context_limit == 200_000
+    assert info.context_limit_source == :openrouter
     assert_received {:cache_lookup, "claude-3-opus-20240229"}
 
     Agent.terminate(pid)
@@ -89,9 +89,9 @@ defmodule Nest.Agents.AgentContextLimitTest do
         context_limit_lookup: fn _provider, _model -> nil end
       })
 
-    state = :sys.get_state(pid, 1_000)
-    assert state.llm_metrics.context_limit == 128_000
-    assert state.llm_metrics.context_limit_source == :default
+    info = Agent.get_public_info(pid, 1_000)
+    assert info.context_limit == 128_000
+    assert info.context_limit_source == :default
 
     Agent.terminate(pid)
   end
@@ -110,9 +110,9 @@ defmodule Nest.Agents.AgentContextLimitTest do
         context_limit_lookup: fn _provider, _model -> nil end
       })
 
-    state = :sys.get_state(pid, 1_000)
-    assert state.llm_metrics.context_limit == 512_000
-    assert state.llm_metrics.context_limit_source == :provider_default
+    info = Agent.get_public_info(pid, 1_000)
+    assert info.context_limit == 512_000
+    assert info.context_limit_source == :provider_default
 
     Agent.terminate(pid)
   end
@@ -134,9 +134,9 @@ defmodule Nest.Agents.AgentContextLimitTest do
         model: %{name: "pegasus-per-model-test", provider: "pegasus"}
       })
 
-    state = :sys.get_state(pid, 1_000)
-    assert state.llm_metrics.context_limit == 32_000
-    assert state.llm_metrics.context_limit_source == :config
+    info = Agent.get_public_info(pid, 1_000)
+    assert info.context_limit == 32_000
+    assert info.context_limit_source == :config
 
     Agent.terminate(pid)
   end
@@ -168,9 +168,9 @@ defmodule Nest.Agents.AgentContextLimitTest do
         end
       })
 
-    state = :sys.get_state(pid, 1_000)
-    assert state.llm_metrics.context_limit == 224_000
-    assert state.llm_metrics.context_limit_source == :olla
+    info = Agent.get_public_info(pid, 1_000)
+    assert info.context_limit == 224_000
+    assert info.context_limit_source == :olla
     assert_received {:cache_lookup, "typhon"}
 
     Agent.terminate(pid)

@@ -100,7 +100,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
 
     # The children report to the coordinator, so the parent reads the batch
     # once: the aggregate is the only batch traffic in its transcript.
-    assert delivered_texts(parent_state, "Message from agent") == []
+    assert delivered_texts(parent_state.chat_state.messages, "Message from agent") == []
 
     # Usage-merge ran for the three children.
     assert parent_state.llm_metrics.descendant_usage.output_tokens > 0
@@ -144,7 +144,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert String.starts_with?(first, "[error:")
     assert first =~ "without producing any text"
 
-    assert Machine.pending_children(:sys.get_state(parent_pid, 1_000).live.machine) == %{}
+    assert Agent.get_pending_children(parent_pid, 1_000) == %{}
   end
 
   test "a child that dies before responding fails its slot and is not archived", %{vid: vid} do
@@ -177,7 +177,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert String.starts_with?(first, "[error:")
     assert first =~ "stopped before it answered"
 
-    assert Machine.pending_children(:sys.get_state(parent_pid, 1_000).live.machine) == %{}
+    assert Agent.get_pending_children(parent_pid, 1_000) == %{}
 
     # A failed child is never auto-archived (unlike a completed one).
     {:ok, failed_row} = Nest.Persistence.fetch_agent(space_id, child0)
@@ -199,7 +199,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert [first, second] = await_aggregate(parent_pid, "timed out after")
     assert first =~ "timed out after 1ms"
     assert second =~ "timed out after 1ms"
-    assert Machine.pending_children(:sys.get_state(parent_pid, 1_000).live.machine) == %{}
+    assert Agent.get_pending_children(parent_pid, 1_000) == %{}
   end
 
   test "a timed-out item under fail_fast stops the rest and reports it", %{vid: vid} do
@@ -226,7 +226,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert [report] = await_message(parent_pid, "stopped:")
     assert report =~ "Batch of 2 stopped: an item timed out after 1ms"
 
-    assert Machine.pending_children(:sys.get_state(parent_pid, 1_000).live.machine) == %{}
+    assert Agent.get_pending_children(parent_pid, 1_000) == %{}
   end
 
   test "a batch whose coordinator dies falls back to per-child messages", %{vid: vid} do
@@ -302,7 +302,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert second =~ "timed out after 1ms"
     assert third =~ "timed out after 1ms"
 
-    assert Machine.pending_children(:sys.get_state(parent_pid, 1_000).live.machine) == %{}
+    assert Agent.get_pending_children(parent_pid, 1_000) == %{}
   end
 
   test "a fail_fast stop reports the slots the batch filled before it", %{vid: vid} do
@@ -332,7 +332,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert report =~ "stopped before it answered"
 
     # The rest were stopped, not left running.
-    assert Machine.pending_children(:sys.get_state(parent_pid, 1_000).live.machine) == %{}
+    assert Agent.get_pending_children(parent_pid, 1_000) == %{}
 
     # The already-filled slot goes with the notice — a child's answer is not
     # discarded along with the batch — and the slot the stop never reached says
@@ -382,8 +382,9 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     # aggregate arrives.
     state = await_idle(parent_pid)
     assert state.live.machine.children == %Children{}
-    assert delivered_texts(state, "stopped before reporting its aggregate") == []
-    assert delivered_texts(state, "Message from agent") == []
+    messages = state.chat_state.messages
+    assert delivered_texts(messages, "stopped before reporting its aggregate") == []
+    assert delivered_texts(messages, "Message from agent") == []
   end
 
   test "a spawn request already in flight when the Stop lands is refused", %{vid: vid} do
@@ -431,8 +432,9 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert {:error, :not_found} = Nest.Persistence.fetch_agent(space_id, "alpha")
     assert {:error, :not_found} = Nest.Persistence.fetch_agent(space_id, "beta")
     assert state.live.machine.children == %Children{}
-    assert delivered_texts(state, "stopped before reporting its aggregate") == []
-    assert delivered_texts(state, "Batch of 2 stopped") == []
+    messages = state.chat_state.messages
+    assert delivered_texts(messages, "stopped before reporting its aggregate") == []
+    assert delivered_texts(messages, "Batch of 2 stopped") == []
   end
 
   test "a full peer inbox does not refuse the batch aggregate", %{vid: vid} do
@@ -485,7 +487,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     # It is queued, not refused and not lost: the parent's transcript does not
     # have it yet, and it sits behind the 100 peers in the queue.
     assert List.last(state.live.inbox).content == aggregate
-    assert delivered_texts(state, "alpha-done") == []
+    assert delivered_texts(state.chat_state.messages, "alpha-done") == []
 
     reset_to_idle(parent_pid)
   end
@@ -502,7 +504,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   end
 
   defp batch_target(parent_pid, child_name) do
-    Children.target(:sys.get_state(parent_pid, 1_000).live.machine.children, child_name)
+    Children.target(Agent.get_children(parent_pid, 1_000), child_name)
   end
 
   # Start a parent agent whose `Agents.chat/3` is stubbed (children don't run a
@@ -543,7 +545,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   defp await_message(parent_pid, needle) do
     await_delivery(needle)
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
-    delivered_texts(:sys.get_state(parent_pid, 1_000), needle)
+    delivered_texts(Agent.get_messages(parent_pid, 1_000), needle)
   end
 
   # Wait until the parent is idle (its turn is over), so a test that pokes its
@@ -552,7 +554,9 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   # (`Turn.run/6` broadcasts on every status change), and
   # `AgentTestHelpers.start_agent/1` subscribes this test pid to the parent's
   # topic, so the frame is the fence; 1s is only the failure bound. Returns the
-  # state, read behind the frame the agent has already broadcast.
+  # state, read behind the frame the agent has already broadcast. Kept as a
+  # whole-state read: its callers assert on the children sub-machine *and* on
+  # the transcript, and no single accessor returns both.
   defp await_idle(parent_pid) do
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
     :sys.get_state(parent_pid, 1_000)
@@ -593,8 +597,8 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     end
   end
 
-  defp delivered_texts(state, needle) do
-    for {:user, %{parts: parts}} <- state.chat_state.messages,
+  defp delivered_texts(messages, needle) do
+    for {:user, %{parts: parts}} <- messages,
         %Part.Text{text: text} <- parts,
         text =~ needle,
         do: text
@@ -641,17 +645,10 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   # completion in production.
   defp cast_child_completed(parent_pid, child_name, response) do
     usage = %{
-      input_tokens: 0,
-      output_tokens: 42,
-      cache_read_input_tokens: 0,
-      cache_creation_input_tokens: 0,
-      reasoning_tokens: 0,
-      total_tokens: 42,
-      last_output: 42,
-      total_input_tokens: 0,
-      total_cache_read_input_tokens: 0,
-      total_cache_creation_input_tokens: 0,
-      context_input_tokens: 0
+      Broadcasts.empty_usage_totals()
+      | output_tokens: 42,
+        total_tokens: 42,
+        last_output: 42
     }
 
     GenServer.cast(parent_pid, {:child_completed, child_name, response, usage})

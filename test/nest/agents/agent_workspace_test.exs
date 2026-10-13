@@ -278,7 +278,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
 
       # Below max depth the spawn tools survive the rebuild.
       :ok = Agents.change_workspace(space_id, agent_name(pid), second)
-      assert Enum.any?(:sys.get_state(pid, 1_000).tools, &(&1.name == "agents-spawn"))
+      assert Enum.any?(Nest.Agents.Agent.get_tools(pid, 1_000), &(&1.name == "agents-spawn"))
 
       # At max depth they are dropped, matching Init/compaction.
       max = Config.configured_max_depth()
@@ -286,7 +286,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
 
       :ok = Agents.change_workspace(space_id, agent_name(pid), third)
 
-      tools = :sys.get_state(pid, 1_000).tools
+      tools = Nest.Agents.Agent.get_tools(pid, 1_000)
       refute Enum.any?(tools, &(&1.name in ["agents-spawn", "agents-batch"]))
       assert Enum.any?(tools, &(&1.name == "file-read"))
     end

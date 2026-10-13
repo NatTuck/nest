@@ -269,13 +269,12 @@ defmodule Nest.Agents.AgentCompactionTest do
         {:http_response, ref, %Nest.LLM.RunResponse{text: summary_text, usage: nil}}
       )
 
-      # `:sys.get_state/2` queues behind `:compaction_done` and
-      # returns only after the broadcast has fired (broadcast is
-      # in the same callback as the message handling), so the
-      # PubSub message is already in our mailbox.
-      _ = :sys.get_state(pid, 1_000)
-
-      assert_received {:chat_compaction, payload}
+      # The commit broadcasts `chat:compaction` inline from the agent while it
+      # handles the response (after the marker and the regenerated messages are
+      # in the state), so the frame is the happens-after event for the commit.
+      # The marker payload binds the fence to a commit rather than to ambient
+      # traffic.
+      assert_receive {:chat_compaction, payload}, 1_000
       assert payload.marker["role"] == "compaction"
       assert payload.marker["archivedCount"] == 6
       # The archive is no longer pushed with the marker; the client
@@ -290,9 +289,9 @@ defmodule Nest.Agents.AgentCompactionTest do
     test "an over-reserve final reply is compacted and committed active-side exactly once" do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      state = :sys.get_state(pid, 1_000)
-      space_id = state.space_id
-      name = state.name
+      info = Agent.get_public_info(pid, 1_000)
+      space_id = info.space_id
+      name = info.name
 
       # A small effective window: the reply's reported usage (85k) plus the
       # reserve (20k) exceeds 100k, while the pre-reply context fits.

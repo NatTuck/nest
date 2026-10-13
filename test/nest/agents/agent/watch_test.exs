@@ -64,7 +64,7 @@ defmodule Nest.Agents.Agent.WatchTest do
   defp next_listing([last]), do: {last, [last]}
   defp next_listing([head | rest]), do: {head, rest}
 
-  defp watchers(pid), do: :sys.get_state(pid, 1_000).live.watches
+  defp watchers(pid), do: Agent.get_watches(pid, 1_000)
 
   # The notice drains into a turn; the turn's own idle status frame is the
   # event that says it finished, and the status read confirms the agent is
@@ -396,11 +396,11 @@ defmodule Nest.Agents.Agent.WatchTest do
   } do
     # `shell-wait` follows the same shape as `agents-wait-for-idle`: register,
     # return, go idle, and deliver the job's result as a notice.
-    state = :sys.get_state(pid, 1_000)
+    info = Agent.get_public_info(pid, 1_000)
     key = {space_id, name}
 
     {:ok, _} =
-      ShellCmd.execute("echo done", Mounts.new(state.workspace_path, state.tmp_path), nil,
+      ShellCmd.execute("echo done", Mounts.new(info.workspace_path, info.tmp_path), nil,
         background: true,
         agent_key: key,
         grace_ms: 0
@@ -432,11 +432,11 @@ defmodule Nest.Agents.Agent.WatchTest do
     name: name,
     space_id: space_id
   } do
-    state = :sys.get_state(pid)
+    info = Agent.get_public_info(pid, 1_000)
     key = {space_id, name}
 
     {:ok, _} =
-      ShellCmd.execute("sleep 30", Mounts.new(state.workspace_path, state.tmp_path), nil,
+      ShellCmd.execute("sleep 30", Mounts.new(info.workspace_path, info.tmp_path), nil,
         background: true,
         agent_key: key,
         grace_ms: 0

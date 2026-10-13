@@ -305,13 +305,13 @@ defmodule Nest.Agents.AgentChatTest do
 
       {pid, _id} = start_agent(%{vocation_id: vocation.id, vocation: vocation})
 
-      # No broadcast carries the full Vocation struct; the only way to
-      # observe it is via the agent's process state. Kept as future
-      # work: expose `state.vocation` via a GenServer call.
-      state = :sys.get_state(pid, 1_000)
-      assert state.vocation != nil
-      assert state.vocation.id == vocation.id
-      assert state.vocation.name == vocation.name
+      # No broadcast carries the full Vocation struct, so the agent's own
+      # process is the only place to observe it — through the introspection
+      # accessor.
+      cached = Agent.get_vocation(pid, 1_000)
+      assert cached != nil
+      assert cached.id == vocation.id
+      assert cached.name == vocation.name
     end
   end
 end
