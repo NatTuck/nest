@@ -22,8 +22,8 @@
 # Supported targets
 # -----------------
 #
-#   Ubuntu 24.04 LTS   ID=ubuntu     VERSION_ID=24.04
-#   Ubuntu 26.04       ID=ubuntu     VERSION_ID=26.04
+#   Ubuntu 24.04 LTS   ID=ubuntu     VERSION_ID=24.04  (noble)
+#   Ubuntu 26.04 LTS   ID=ubuntu     VERSION_ID=26.04  (resolute)
 #   Linux Mint 22.x    ID=linuxmint  UBUNTU_CODENAME=noble
 #   Debian 13          ID=debian     VERSION_CODENAME=trixie
 #
@@ -124,8 +124,12 @@ require_root() {
 # Package sets
 # ---------------------------------------------------------------------------
 
-# Ubuntu 24.04 LTS (noble). Ubuntu 26.04 and Linux Mint 22.x use this set too;
-# see detect_distro.
+# Ubuntu 24.04 LTS (noble). Ubuntu 26.04 (resolute) and Linux Mint 22.x use
+# this set too; see detect_distro. Every name below was checked against the
+# 26.04 archive as well as noble's and is still correct there (PostgreSQL 18
+# is what the `postgresql` metapackage pulls, and pkg_needed() accepts any
+# installed server by capability), so there is no separate PKGS_RESOLUTE to
+# keep in step.
 PKGS_NOBLE=(
   # Erlang/OTP 27 build prerequisites, checked against OTP 27.3.4.6's own
   # configure scripts rather than against folklore:
@@ -158,6 +162,15 @@ PKGS_NOBLE=(
   git curl ca-certificates unzip
   ripgrep
   bubblewrap
+  # Binaries the *app* hands to the sandbox as a command string, so they have
+  # to exist on the host: `file` is the authoritative media check
+  # (lib/nest/tools/media_kind.ex:101) and the type description
+  # (lib/nest/tools/inspect_file.ex:128); `inotifywait` is what the
+  # `file_system` dependency needs, started by
+  # lib/nest_web/surgical_reloader.ex:34 whenever code reloading is on, so dev
+  # boot needs it as much as the tests do. Everything else the sandbox runs is
+  # coreutils, bash or bwrap, all of which the base image already has.
+  file inotify-tools
   # Postgres. `postgresql` is a metapackage: pkg_needed() accepts any
   # installed server instead, so a host with postgresql-16 already is fine.
   # `citext` (used by the users migration) ships inside the server package on
@@ -211,13 +224,14 @@ detect_distro() {
           esac
           ;;
         26.04)
-          # Ubuntu 26.04 does not exist yet, so there is nothing to check its
-          # package names against. We assume the 24.04 (noble) set is still
-          # right and say so; when 26.04 ships, re-check libssh-dev,
-          # libsctp-dev and libncurses-dev against the archive and split
-          # PKGS_NOBLE if they have moved. Any codename is accepted here
-          # because we cannot know 26.04's yet.
-          note "Ubuntu 26.04 is not released yet: assuming the 24.04 (noble) package set"
+          # Ubuntu 26.04 LTS is "Resolute Raccoon". Its codename is checked
+          # the same way 24.04's is, so a renamed or re-based archive fails
+          # loudly instead of quietly installing 24.04's package names.
+          case "${DISTRO_UBUNTU_CODENAME:-$DISTRO_CODENAME}" in
+            resolute) ;;
+            "") note "no codename in $OS_RELEASE_FILE; trusting VERSION_ID=26.04" ;;
+            *) die "unsupported Ubuntu codename: ${DISTRO_UBUNTU_CODENAME:-$DISTRO_CODENAME} (expected resolute)" ;;
+          esac
           ;;
         *)
           die "unsupported Ubuntu release: ${DISTRO_VERSION_ID:-unknown} (supported: 24.04, 26.04)"
