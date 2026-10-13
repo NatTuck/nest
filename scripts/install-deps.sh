@@ -80,12 +80,14 @@ step() { printf '\n==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 skip() { printf '    ok, already done: %s\n' "$*"; }
 
-# Print a labelled, wrapped list (used for the package report).
+# Print a labelled, wrapped list (used for the package report). `fold -s`
+# breaks at a blank and leaves it at the end of the line, so the trailing
+# whitespace is stripped before the indent is added.
 print_list() {
   local label=$1
   shift
   printf '    %s:\n' "$label"
-  printf '%s\n' "$*" | fold -s -w 74 | sed 's/^/      /'
+  printf '%s\n' "$*" | fold -s -w 74 | sed -e 's/[[:space:]]*$//' -e 's/^/      /'
 }
 
 # Echo a command the way the user would have to type it.
@@ -424,6 +426,19 @@ bwrap_works() {
 }
 
 ensure_bwrap() {
+  # "Not installed" and "installed but broken" are different problems, and a
+  # message that blames the binary for a package that is not there sends the
+  # reader somewhere useless. In a dry run the package step has only *printed*
+  # the install, so a missing bwrap is expected rather than an error.
+  if ! command -v bwrap >/dev/null 2>&1; then
+    note "bubblewrap is not installed"
+    if [ "$DRY_RUN" -eq 1 ]; then
+      note "a real run would install it with the package list above, then verify it"
+      return 0
+    fi
+    die "bubblewrap is not installed, and the package step did not install it. Is the bubblewrap package in this archive?"
+  fi
+
   if bwrap_works; then
     skip "bubblewrap starts a sandbox ($(bwrap --version))"
     return 0
@@ -433,6 +448,7 @@ ensure_bwrap() {
 
   local apparmor_sysctl=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
   local clone_sysctl=/proc/sys/kernel/unprivileged_userns_clone
+  local seccomp_hint="bwrap still cannot start a sandbox. Check for a seccomp policy that blocks CLONE_NEWUSER (some container runtimes do), and run scripts/probe-bwrap-flags.sh for details."
 
   # Ubuntu 23.10+ (and therefore Linux Mint 22) ships
   # kernel.apparmor_restrict_unprivileged_userns=1, which blocks
@@ -446,6 +462,7 @@ ensure_bwrap() {
     [ -r "$SCRIPT_DIR/fix-apparmor.sh" ] || die "expected $SCRIPT_DIR/fix-apparmor.sh to exist"
     if [ "$DRY_RUN" -eq 1 ]; then
       show_cmd bash "$SCRIPT_DIR/fix-apparmor.sh"
+      note "a real run would apply that and re-run the sandbox probe"
       return 0
     fi
     require_root "disabling the AppArmor user-namespace restriction"
@@ -457,6 +474,7 @@ ensure_bwrap() {
     note "kernel.unprivileged_userns_clone=0 blocks unprivileged user namespaces"
     if [ "$DRY_RUN" -eq 1 ]; then
       show_cmd sysctl -w kernel.unprivileged_userns_clone=1
+      note "a real run would apply that and re-run the sandbox probe"
       return 0
     fi
     require_root "enabling unprivileged user namespaces"
@@ -465,7 +483,16 @@ ensure_bwrap() {
     printf '%s\n' 'kernel.unprivileged_userns_clone = 1' \
       >/etc/sysctl.d/99-nest-userns-clone.conf
   else
+    # Nothing here explains it: a seccomp policy or a container runtime that
+    # forbids CLONE_NEWUSER, most likely. There is nothing for the script to
+    # fix, so the dry run reports what a real run would do and stops cleanly.
     note "no AppArmor or unprivileged_userns_clone restriction found"
+    if [ "$DRY_RUN" -eq 1 ]; then
+      note "a real run would re-check the probe and, if the sandbox still cannot start, stop with:"
+      note "  $seccomp_hint"
+      return 0
+    fi
+    die "$seccomp_hint"
   fi
 
   if bwrap_works; then
@@ -473,7 +500,7 @@ ensure_bwrap() {
     return 0
   fi
 
-  die "bwrap still cannot start a sandbox. Check for a seccomp policy that blocks CLONE_NEWUSER (some container runtimes do), and run scripts/probe-bwrap-flags.sh for details."
+  die "$seccomp_hint"
 }
 
 # ---------------------------------------------------------------------------
@@ -542,15 +569,20 @@ main() {
   step "bubblewrap"
   ensure_bwrap
 
+  step "runtimes"
+  if command -v mise >/dev/null 2>&1; then
+    note "mise is installed ($(mise --version 2>/dev/null | sed -n 1p)); the runtimes in .tool-versions come from it"
+  else
+    note "mise is not on PATH, and the runtimes in .tool-versions come from it."
+    note "install it with: curl https://mise.run | sh"
+    note "this script deliberately does not install a version manager for you"
+  fi
+
   step "summary"
   if [ "$DRY_RUN" -eq 1 ]; then
     say "    dry run: nothing on this host was changed."
   else
     say "    system dependencies are in place."
-  fi
-  if ! command -v mise >/dev/null 2>&1; then
-    say "    note: mise is not on PATH, and the runtimes in .tool-versions come"
-    say "          from it. Install it with \`curl https://mise.run | sh\`."
   fi
   say "    next: mise install && mix setup"
   say "    no reboot is required."
