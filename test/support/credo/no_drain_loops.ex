@@ -36,11 +36,16 @@ defmodule Nest.Credo.Check.NoDrainLoops do
   is enforced everywhere — and the test raises on a file it cannot parse rather
   than skipping it.
 
-  ## Blind spot
+  ## Blind spots
 
-  Source-level `receive` nodes only. A drain loop produced by a macro expansion
-  (the `receive` never appears in the source) is invisible to a source-based
-  check — the same limit every Credo check has.
+    * Source-level `receive` nodes only. A drain loop produced by a macro
+      expansion (the `receive` never appears in the source) is invisible — the
+      limit every source-based Credo check has.
+    * Remote self-recursion: a catch-all's body is matched against a *local*
+      call to the enclosing name, so `__MODULE__.loop(n)` is not detected.
+    * A `receive` inside `quote do … end` inside a function whose catch-all
+      calls that function's name is flagged, even though the quoted receive is
+      not the running one. Contrived; accepted.
   """
   use Credo.Check,
     base_priority: :high,
@@ -65,9 +70,14 @@ defmodule Nest.Credo.Check.NoDrainLoops do
         |> Enum.map(&issue_for(source_file, &1))
 
       {:error, error} ->
-        # A gate must not silently skip a file it cannot read. Credo's own
-        # syntax-error reporting is a separate concern; failing here keeps this
-        # check from reporting "clean" for a file it never actually analysed.
+        # Belt-and-braces, not the fail-loud mechanism. Through `mix credo` this
+        # is unreachable: Credo only hands checks files it has already parsed
+        # (`LoadAndValidateSourceFiles` passes the `:valid` ones), and
+        # `do_run_on_source_file` rescues a check's raise unless
+        # `crash_on_error` is set. It stays so a direct caller of `run/2` gets a
+        # loud failure instead of a silent empty result; the fail-loud path that
+        # is actually reachable is the project-wide test's
+        # `Code.string_to_quoted!`.
         raise "NoDrainLoops could not parse #{source_file.filename}: #{inspect(error)}"
     end
   end
@@ -83,8 +93,10 @@ defmodule Nest.Credo.Check.NoDrainLoops do
   end
 
   # Carry the name of the lexically enclosing function so a catch-all's body can
-  # be tested for a self-recursive call to it.
-  defp walk({kind, _meta, [head, body]} = node, _fun, acc) when kind in [:def, :defp] do
+  # be tested for a self-recursive call to it. Macros count too: a `receive`
+  # inside a macro body has an enclosing name just like a function.
+  defp walk({kind, _meta, [head, body]} = node, _fun, acc)
+       when kind in [:def, :defp, :defmacro, :defmacrop] do
     {_body, acc} = walk(body, def_name(head), acc)
     {node, acc}
   end
@@ -150,6 +162,11 @@ defmodule Nest.Credo.Check.NoDrainLoops do
     found
   end
 
+  # A guarded head (`defp loop(n) when n > 0`) parses as
+  # `{:when, _, [head, guard]}`. Unwrap it before reading the name, or `name`
+  # would be `:when` and the self-recursion test could never match the real
+  # recursive call — a textbook guarded drain loop would pass the lint.
+  defp def_name({:when, _meta, [head, _guard]}), do: def_name(head)
   defp def_name({name, _meta, _args}) when is_atom(name), do: name
   defp def_name(_head), do: nil
 
