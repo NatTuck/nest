@@ -232,7 +232,7 @@ defmodule Nest.Agents.Agent.InboxTest do
   test "delivery is rejected when the inbox is full", %{pid: pid} do
     # `entry/5` builds the whole documented entry shape (`id`, `human?`,
     # `fulfilled_ids`, `retrieved`), which matters now that the count below is
-    # read through `get_public_info/1` — that serializes the queue, and a
+    # read through `get_public_info/2` — that serializes the queue, and a
     # hand-rolled partial entry would crash it.
     full = for n <- 1..100, do: entry(:agent, "peer", "msg #{n}")
 

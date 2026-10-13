@@ -337,9 +337,12 @@ defmodule Nest.Agents.Agent.WatchTest do
     assert Enum.count(texts, &(&1 =~ "the report")) == 1
     refute Enum.any?(texts, &(&1 =~ "Agents now idle"))
 
+    # Access, not a `match?`: a malformed entry raises loudly here, where a
+    # pattern would silently mismatch and leave the `refute` vacuous (the
+    # serialized key itself is pinned by `last_message_test`'s patterns).
     refute Enum.any?(
              Agent.get_public_info(pid, 1_000).pending_messages,
-             &match?(%{"kind" => "notice"}, &1)
+             &(&1["kind"] == "notice")
            )
   end
 

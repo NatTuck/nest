@@ -9,14 +9,17 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
   existing `MockClient`.
 
   They inspect the Agent's state directly — through its public
-  accessors (`Agent.get_messages/1`, `Agent.get_public_info/1`)
-  where one reaches the field, and `:sys.get_state/1` for the
-  machine internals none does (the active worker, `cancelled`) —
-  so we can assert against the message index, the status, and
-  the active worker (the externally visible contract the driver
-  must honor). PubSub broadcasts are used to assert the
-  externally visible contract (chat:message, chat:status,
-  chat:error).
+  accessors (`Agent.get_messages/2`, `Agent.get_public_info/2`,
+  each taking the read's failure bound) where one reaches the
+  field, and `:sys.get_state/2` in the two cases no accessor
+  covers: the machine internals it does not expose (the active
+  worker, `cancelled`), and a site that reads the transcript and
+  the status from one snapshot, where two accessor calls could
+  observe two different states. That is how they assert against
+  the message index, the status, and the active worker (the
+  externally visible contract the driver must honor). PubSub
+  broadcasts are used to assert the externally visible contract
+  (chat:message, chat:status, chat:error).
 
   These tests must pass before the refactor is complete.
   They cover the regression cases that the old

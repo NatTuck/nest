@@ -242,7 +242,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       assert_push "chat:status", %{status: "streaming", pendingMessageCount: 0}, 1_000
 
       # The channel is the process that turns the agent's broadcasts into these
-      # pushes, and `:sys.get_state/1` is a synchronous call to it: once it
+      # pushes, and `:sys.get_state/2` is a synchronous call to it: once it
       # returns, every frame the channel had decided to push is already in this
       # mailbox, so the refute is a deterministic check rather than a 100 ms
       # window.

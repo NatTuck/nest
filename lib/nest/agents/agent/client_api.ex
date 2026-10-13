@@ -12,11 +12,11 @@ defmodule Nest.Agents.Agent.ClientAPI do
 
   ## Functions
 
-    * `get_public_info/1` — full public info (name, model,
+    * `get_public_info/2` — full public info (name, model,
       status, modes, message_count, partial, usage).
-    * `get_total_usage/1` — combined
+    * `get_total_usage/2` — combined
       `usage_totals + descendant_usage` map.
-    * `get_messages/1` — active message list.
+    * `get_messages/2` — active message list.
     * `terminate/1` — `GenServer.stop/2` with normal reason.
 
   `get_public_info/2`, `get_messages/2` and `get_total_usage/2` take the

@@ -229,7 +229,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      # `Agent.get_public_info/1` is a synchronous call — by the time it
+      # `Agent.get_public_info/2` is a synchronous call — by the time it
       # returns, the GenServer has finished processing any init-time work
       # (including any (incorrectly) spawned probe task). Confirm the
       # configured context_limit is what public_info reports and that the

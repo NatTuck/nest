@@ -360,7 +360,7 @@ accessors take the `GenServer.call/3` bound as an optional second argument
 (production default unchanged at OTP's 5 s), and every converted site passes
 `1_000`. Two consequences worth keeping in view, neither a defect today:
 
-* `get_public_info/1` builds the whole public map per call — `Inbox.serialize/1`
+* `get_public_info/2` builds the whole public map per call — `Inbox.serialize/1`
   over the queue, plus `Broadcasts.Usage.context_usage_map/4` →
   `ConversationSize.size/1` over the whole transcript
   (`lib/nest/agents/agent/broadcasts/usage.ex:177`). So an `await_idle`/`wait_idle`
@@ -372,3 +372,11 @@ accessors take the `GenServer.call/3` bound as an optional second argument
   `:sys.get_state` rows for `query_results/1` / `agent_texts/1`, are superseded:
   the harness bound is 1 s (this section), and those two helpers now read the
   transcript through `get_messages/2` with that bound.
+* The `/1` accessor calls that are *not* converted sites keep OTP's 5 s, and so
+  keep the diagnosis gap this change closed for the converted ones. 18 sites,
+  its own batch, not this one: `turn_acceptance_test.exs:385,391`;
+  `agent_observability_test.exs:218,261,310,318,362,399,406`;
+  `agent_system_messages_test.exs:56`; `agent_tmp_path_test.exs:81,114`;
+  `chat_task_crash_test.exs:153`;
+  `supervisor_subagent_test.exs:99,198,315,316`; `agents_test.exs:579`.
+  (`client_api_test.exs`'s six `/1` calls are deliberate: they pin the default.)
