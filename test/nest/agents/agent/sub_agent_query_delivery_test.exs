@@ -32,9 +32,10 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
 
   Every wait here is on a real agent's progress — a parked tool worker, a
   delivered query, a settled turn — and each one is the *arrival* of the frame
-  that proves it, never a poll of the clock: the parked handshakes above, the
-  coordinator's own `{:chat_message, …}` broadcast for anything read out of a
-  transcript (the coordinator is subscribed by `start_agent/1`), and
+  that proves it, never a poll of the clock: the parked handshakes above, each
+  agent's own `{:chat_message, …}` / `{:chat_status, …}` broadcast for anything
+  read out of a transcript or waited on (the coordinator is subscribed by
+  `start_agent/1`, the specialist by `start_mocked_specialist/3`), and
   `SubAgentToolsHelpers.await_idle/1` for the settled turn. The *outcome* is
   pinned by the handshake, never by the timeout, and the hold that keeps the
   batch in flight outlives the fence so a slow host fails a fence (a stuck
@@ -96,11 +97,18 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # The specialist was asked with the peer framing (the query is a peer's
     # message, decision 7). No wait needed: `{:send_blocked, …}` above is the
     # fence — the query was appended inside the delivery call, which returned
-    # before the peer's own `agents-send` worker reached that park.
-    assert Enum.any?(
-             agent_texts(specialist_pid),
-             &(&1 =~ "[Message from agent \"#{coordinator_name}\"]" and &1 =~ "what is 2+2?")
-           )
+    # before the peer's own `agents-send` worker reached that park. The frame is
+    # the specialist's own `{:chat_message, {:user, …}}` broadcast, which this
+    # test pid is subscribed to (`start_mocked_specialist/3`); consuming it here
+    # is also what keeps the answer's frame below unambiguous, since the two
+    # deliveries differ only in their sender and a `chat:message` frame carries
+    # no agent identity.
+    assert_receive {:chat_message,
+                    {:user,
+                     %{parts: [%Part.Text{text: "[mode: chat]\n[Message from agent \"" <> rest}]}}},
+                   1_000
+
+    assert rest == "#{coordinator_name}\"]\nwhat is 2+2?"
 
     # ...and its answer, released only now, arrives as a message in the
     # coordinator's inbox — the delivery appends it inside the call, so the
@@ -119,7 +127,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
 
     # Both turns are over, and the reply discharged the obligation the query
     # created (a give-up notice would be in the coordinator's inbox instead).
-    await_idle([coordinator_pid, specialist_pid])
+    await_idle([coordinator_name, specialist_name])
 
     state = :sys.get_state(coordinator_pid, 1_000)
     assert_unique_message_indices(state)
@@ -163,6 +171,18 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # held there too: both sides are parked with the batch in flight.
     assert_receive {:send_blocked, sender}, 1_000
 
+    # The query the specialist is answering, on its own `{:chat_message, {:user,
+    # …}}` broadcast (this test pid is subscribed to both agents' topics).
+    # Consuming it here keeps the answer's frame below unambiguous: the two
+    # deliveries differ only in their sender, and a `chat:message` frame carries
+    # no agent identity.
+    assert_receive {:chat_message,
+                    {:user,
+                     %{parts: [%Part.Text{text: "[mode: chat]\n[Message from agent \"" <> rest}]}}},
+                   1_000
+
+    assert rest == "#{coordinator_name}\"]\nwhat is 2+2?"
+
     assert Machine.status_for(:sys.get_state(coordinator_pid, 1_000).live.machine) ==
              :executing_tools
 
@@ -203,15 +223,6 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
 
     assert Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "the specialist answer"))
 
-    # ...and the peer was asked with the peer framing (the query is a peer's
-    # message, decision 7). No wait needed: `{:send_blocked, …}` above is the
-    # fence — the query was appended inside the delivery call, which returned
-    # before the peer's own `agents-send` worker reached that park.
-    assert Enum.any?(
-             agent_texts(specialist_pid),
-             &(&1 =~ "[Message from agent \"#{coordinator_name}\"]" and &1 =~ "what is 2+2?")
-           )
-
     # The batch returns with no live worker to settle it, so its *real* result
     # arrives as a notice — which is where the confirmation the delivery
     # produced shows up. A notice renders bare (no `[Message from agent …]`
@@ -234,7 +245,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
 
     # Both turns are over, and the reply discharged the obligation the query
     # created (a give-up notice would be in the coordinator's inbox instead).
-    await_idle([coordinator_pid, specialist_pid])
+    await_idle([coordinator_name, specialist_name])
 
     state = :sys.get_state(coordinator_pid, 1_000)
     assert_unique_message_indices(state)

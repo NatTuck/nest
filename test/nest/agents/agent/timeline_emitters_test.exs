@@ -73,7 +73,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     space_id = current_space_id()
 
     :ok = Agent.chat(pid, "hi")
-    assert statuses_until_idle() == ["streaming", "idle"]
+    assert statuses_until_idle(name) == ["streaming", "idle"]
 
     # The worker's own exit is the turn's last transition, and it lands after
     # the idle status this test waits on; waiting for the record makes both the
@@ -153,7 +153,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
 
     # Idle target: delivered, and the drain that follows it.
     assert {:ok, :delivered} = Agents.send_message(space_id, "peer", name, "hello", :agent)
-    assert statuses_until_idle() == ["streaming", "idle"]
+    assert statuses_until_idle(name) == ["streaming", "idle"]
 
     # Busy target: queued.
     set_status(pid, :streaming)
@@ -255,7 +255,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     # That idle is also the fence for the delivery's record below: the agent
     # writes the record while it handles the delivery, so it is already on disk
     # before the turn the delivery started can end.
-    assert statuses_until_idle() == ["streaming", "executing_tools", "streaming", "idle"]
+    assert statuses_until_idle(name) == ["streaming", "executing_tools", "streaming", "idle"]
 
     assert [
              %{
@@ -268,7 +268,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
            ] = inbox_action("delivered")
 
     # The batch's late result then gets its own turn.
-    assert statuses_until_idle() == ["streaming", "idle"]
+    assert statuses_until_idle(name) == ["streaming", "idle"]
   end
 
   test "a human message that backgrounds the batch records the disposition it was given" do
@@ -339,12 +339,12 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
 
     release_llm(llm2)
 
-    assert statuses_until_idle() == ["streaming", "executing_tools", "streaming", "idle"]
+    assert statuses_until_idle(name) == ["streaming", "executing_tools", "streaming", "idle"]
 
     {_third, llm3} = next_request()
     release_llm(llm3)
 
-    assert statuses_until_idle() == ["streaming", "idle"]
+    assert statuses_until_idle(name) == ["streaming", "idle"]
   end
 
   test "a spawn records the child, its tool result, its outcome, its cost and its archive" do
@@ -384,7 +384,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     :ok = Agent.chat(pid, "delegate this")
 
     # The tool batch is its own status; the turn then streams the final reply.
-    statuses = statuses_until_idle()
+    statuses = statuses_until_idle(name)
     assert hd(statuses) == "streaming"
     assert "executing_tools" in statuses
 
@@ -458,7 +458,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
         assert {:ok, :delivered} =
                  Agents.send_message(space_id, "ghost", name, "question?", :query)
 
-        assert statuses_until_idle() == ["streaming", "idle"]
+        assert statuses_until_idle(name) == ["streaming", "idle"]
 
         # An undeclared event has no transition and so no `turn` line: the
         # `error` type carries the quarantine. The broadcast site records the
@@ -499,7 +499,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     # A manual compaction: the trigger line omits `trigger` (it is decided in a
     # pure module and does not ride the action), the commit line carries it.
     assert :ok = GenServer.call(pid, {:compact, nil})
-    assert statuses_until_idle() == ["compacting", "idle"]
+    assert statuses_until_idle(name) == ["compacting", "idle"]
 
     assert [staged, committed] = events("compaction")
     refute Map.has_key?(staged, "trigger")

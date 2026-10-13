@@ -52,7 +52,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # arm then asks the gate (the reply is committed, so the turn is not over):
       # it reminds once, and the settle after that reminder gives the reply up
       # rather than leaving it owed.
-      {pid, _name} = start_agent(default_attrs())
+      {pid, name} = start_agent(default_attrs())
       peer = start_peer("peer", "peer handled the notice")
 
       :sys.replace_state(
@@ -78,8 +78,10 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
 
       # `send_compaction_done/3` *sends* the response, so the turn's own idle
       # broadcast is the event that says the settle is over: the timeout is a
-      # failure bound, never the synchronisation.
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
+      # failure bound, never the synchronisation. The payload names the agent, so
+      # the peer's own `idle` frame — this test pid is subscribed to both agents'
+      # topics — cannot satisfy it.
+      assert_receive {:chat_status, %{name: ^name, status: "idle"}}, 1_000
 
       state = :sys.get_state(pid, 1_000)
 
@@ -88,13 +90,12 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       assert Machine.owed_senders(state.live.machine) == []
 
       # The requester was told, and a notice creates no obligation of its own.
-      assert Eventually.eventually(
-               fn -> Enum.any?(peer_texts(peer), &(&1 =~ "did not reply")) end,
-               timeout: 500
-             )
-
+      # The notice starts the peer's own turn, and that turn's idle frame is the
+      # fence; the notice itself was appended inside the delivery, so it is in the
+      # transcript by then.
+      wait_idle("peer")
+      assert Enum.any?(peer_texts(peer), &(&1 =~ "did not reply"))
       assert Machine.owed_senders(:sys.get_state(peer, 1_000).live.machine) == []
-      wait_idle(peer)
     end
 
     test "a reply that reaches the peer clears it before the turn settles" do
@@ -126,17 +127,18 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
 
       # The tool batch is its own status, and the settle is the first idle: no
       # reminder and no give-up came in between.
-      assert statuses_until_idle() == ["streaming", "executing_tools", "streaming", "idle"]
+      assert statuses_until_idle(name) == ["streaming", "executing_tools", "streaming", "idle"]
 
       state = :sys.get_state(pid, 1_000)
 
       refute Enum.any?(agent_user_texts(state), &(&1 =~ "have not answered"))
       assert Machine.owed_senders(state.live.machine) == []
 
-      assert Eventually.eventually(
-               fn -> Enum.any?(peer_texts(peer), &(&1 =~ "here is the answer")) end,
-               timeout: 500
-             )
+      # The peer's own turn — the one the delivered reply started — is the fence,
+      # and the reply was appended inside the delivery, so it is in the peer's
+      # transcript by then.
+      wait_idle("peer")
+      assert Enum.any?(peer_texts(peer), &(&1 =~ "here is the answer"))
 
       # No give-up notice: the reply was the answer, not a surrender.
       refute Enum.any?(peer_texts(peer), &(&1 =~ "did not reply"))
@@ -176,7 +178,12 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
                      :query
                    )
 
-          assert statuses_until_idle() == ["streaming", "executing_tools", "streaming", "idle"]
+          assert statuses_until_idle(name) == [
+                   "streaming",
+                   "executing_tools",
+                   "streaming",
+                   "idle"
+                 ]
         end)
 
       assert log =~ "BatchSizer produced is_error=true tool result"
@@ -192,12 +199,8 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       assert length(reminded) == 1
       assert Machine.owed_senders(state.live.machine) == []
 
-      assert Eventually.eventually(
-               fn -> Enum.any?(peer_texts(peer), &(&1 =~ "did not reply")) end,
-               timeout: 500
-             )
-
-      wait_idle(peer)
+      wait_idle("peer")
+      assert Enum.any?(peer_texts(peer), &(&1 =~ "did not reply"))
     end
   end
 
@@ -224,7 +227,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # `Agent.deliver_message/4`), so the frame is already in the mailbox here
       # and there is nothing to wait for.
       assert Machine.owed_senders(:sys.get_state(pid, 1_000).live.machine) == ["peer"]
-      assert_received {:chat_status, %{status: "streaming", owedReplies: ["peer"]}}
+      assert_received {:chat_status, %{name: ^name, status: "streaming", owedReplies: ["peer"]}}
 
       # The model's first request carries the query and nothing about the debt:
       # the obligation is invisible until the gate reminds.
@@ -239,7 +242,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
 
       # The reminder itself caused no status frame (the phase never left
       # `:generating`), so the next frame is the give-up's idle.
-      assert statuses_until_idle() == ["idle"]
+      assert statuses_until_idle(name) == ["idle"]
 
       state = :sys.get_state(pid, 1_000)
 
@@ -251,18 +254,15 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
 
       # The requester learned that no answer is coming, as the runtime's own
       # words: the notice arrives bare, with no `[Message from agent …]` label.
-      assert Eventually.eventually(
-               fn ->
-                 Enum.any?(
-                   peer_texts(peer),
-                   &(&1 =~ "did not reply" and not String.contains?(&1, "Message from agent"))
-                 )
-               end,
-               timeout: 500
+      # The peer's own turn on that notice is the fence.
+      wait_idle("peer")
+
+      assert Enum.any?(
+               peer_texts(peer),
+               &(&1 =~ "did not reply" and not String.contains?(&1, "Message from agent"))
              )
 
       assert Machine.owed_senders(:sys.get_state(peer, 1_000).live.machine) == []
-      wait_idle(peer)
     end
   end
 
@@ -349,12 +349,10 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # registry's own ETS cleanup (the partition server's link `EXIT`) is not.
       assert Supervisor.get_running_agent(current_space_id(), name) == {:error, :not_found}
 
-      assert Eventually.eventually(
-               fn -> Enum.any?(peer_texts(peer), &(&1 =~ "did not reply")) end,
-               timeout: 500
-             )
-
-      wait_idle(peer)
+      # The give-up notice starts the peer's own turn, and that turn's idle frame
+      # is the fence.
+      wait_idle("peer")
+      assert Enum.any?(peer_texts(peer), &(&1 =~ "did not reply"))
     end
 
     test "a process that dies outside the stop path records the lost obligation" do
@@ -420,6 +418,12 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       )
 
     {:ok, pid} = Supervisor.get_agent(space_id, name)
+
+    # The peer is started by hand (not by `start_agent/1`), so this call site
+    # subscribes the test pid to its topic: `wait_idle/1` fences on the peer's own
+    # idle frame, which is broadcast by the turn the notice starts.
+    AgentTestHelpers.subscribe_to_agent(space_id, name)
+
     Sandbox.allow(Nest.Repo, self(), pid)
 
     :sys.replace_state(
@@ -438,12 +442,13 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
   end
 
   # A peer that received a notice runs a turn on it; the teardown rejects an
-  # agent left in flight, so wait for it to settle.
-  defp wait_idle(pid) do
-    assert Eventually.eventually(
-             fn -> Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :idle end,
-             timeout: 500
-           )
+  # agent left in flight, so wait for that turn to end — on the frame that
+  # decides it, the peer's own `{:chat_status, %{name: name, status: "idle"}}`
+  # broadcast. `start_peer/2` subscribes this test pid to the peer's topic, and
+  # the payload names the agent, so the other agent's frames (this test pid is
+  # subscribed to both) cannot satisfy the fence.
+  defp wait_idle(name) do
+    assert_receive {:chat_status, %{name: ^name, status: "idle"}}, 1_000
   end
 
   # Put an agent into an arbitrary machine status, as `InboxTest` does. Only the

@@ -178,10 +178,10 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # turn end: an `idle` before that third `streaming` would resolve an
       # idle-based `agents-wait-for-idle` with the pre-delivery answer and report a
       # partial result to a parent.
-      assert statuses_until_idle() == ["streaming", "executing_tools", "streaming", "idle"]
+      assert statuses_until_idle(name) == ["streaming", "executing_tools", "streaming", "idle"]
 
       # The notice's own turn, which ends the run.
-      assert statuses_until_idle() == ["streaming", "idle"]
+      assert statuses_until_idle(name) == ["streaming", "idle"]
 
       state = :sys.get_state(pid, 1_000)
 
@@ -322,7 +322,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # rides the status payload without changing the status) -> streaming (the
       # backgrounding) -> idle. No `idle` before that third `streaming`: the
       # delivery did not wait for a turn end.
-      assert statuses_until_idle() == [
+      assert statuses_until_idle(name) == [
                "streaming",
                "executing_tools",
                "executing_tools",
@@ -330,7 +330,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
                "idle"
              ]
 
-      assert statuses_until_idle() == ["streaming", "idle"]
+      assert statuses_until_idle(name) == ["streaming", "idle"]
 
       state = :sys.get_state(pid, 1_000)
 
@@ -423,7 +423,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       # The delivered turn ends: the agent is idle, the batch is still in the
       # background, and nothing is queued behind it.
-      assert statuses_until_idle() == ["streaming", "executing_tools", "streaming", "idle"]
+      assert statuses_until_idle(name) == ["streaming", "executing_tools", "streaming", "idle"]
 
       idle = :sys.get_state(pid, 1_000)
 
@@ -436,7 +436,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # so the result must start the notice's own turn.
       send(tool, :release_result)
 
-      assert statuses_until_idle() == ["streaming", "idle"]
+      assert statuses_until_idle(name) == ["streaming", "idle"]
 
       state = :sys.get_state(pid, 1_000)
 
@@ -530,24 +530,16 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       assert_receive {:send_delivered, ^tool}, 1_000
       send(tool, :release_result)
 
-      # This delivery produces more than one turn — the aggregate's own turn,
-      # the turn the queued note drains in, and the batch result's notice turn —
-      # so an idle `chat:status` frame is ambiguous: `assert_receive/2` would
-      # take the *first* one and read the state while a later turn is still
-      # running (exactly the bug this replaces). Poll the settled condition
-      # instead, with the `:sys.get_state/2` call as the barrier, so the wait
-      # spans every turn the release starts. `#21` caps test-side timeouts at
-      # 2 s; the three mocked turns share 1 s.
-      assert Eventually.eventually(
-               fn ->
-                 state = :sys.get_state(pid, 1_000)
-
-                 Machine.status_for(state.live.machine) == :idle and
-                   state.live.inbox == [] and
-                   state.live.machine.work.backgrounded == %{}
-               end,
-               timeout: 1_000
-             )
+      # The release starts more than one turn — the aggregate's own turn, the turn
+      # the queued note drains in, and the batch result's notice turn — and each
+      # one ends with its own `idle` frame, so a single `assert_receive/2` on the
+      # first `idle` would read the state while a later turn is still running
+      # (exactly the bug this replaces). `statuses_until_idle/2` stops at the first
+      # `idle` (for the agent it is named), so one call per turn walks the release
+      # to its end and the third frame is the one that decides the run is over.
+      assert statuses_until_idle(name) == ["streaming", "executing_tools", "streaming", "idle"]
+      assert statuses_until_idle(name) == ["streaming", "idle"]
+      assert statuses_until_idle(name) == ["streaming", "idle"]
 
       state = :sys.get_state(pid, 1_000)
 
@@ -619,7 +611,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       # streaming -> executing_tools (the batch) -> streaming (the backgrounding)
       # -> idle (the stop). The stop is the turn's end, so no `idle` precedes it.
-      assert statuses_until_idle() == ["streaming", "executing_tools", "streaming", "idle"]
+      assert statuses_until_idle(name) == ["streaming", "executing_tools", "streaming", "idle"]
 
       # No new turn starts: the status sequence has no frame past the stop, and
       # nothing asks the model for anything. Both are `refute_received/1` rather

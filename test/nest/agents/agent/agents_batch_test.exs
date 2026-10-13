@@ -32,6 +32,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
 
   import ExUnit.CaptureLog
   import Mimic
+  import Nest.Agents.AgentTurnTestHelpers
 
   alias Nest.Agents
   alias Nest.Agents.Agent
@@ -534,18 +535,15 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   # Wait until the parent has delivered a message containing `needle` and
   # finished the turn that delivery started, so no background process touches
   # the sandbox after the test ends. Returns every matching text.
+  #
+  # `await_delivery/1` consumes the delivery's own frame, and the stale frames in
+  # front of it; the `idle` frame that follows it is the turn's end — every status
+  # broadcast carries the status the machine has *now*, so an `idle` frame after
+  # the delivery means the delivery's turn has settled.
   defp await_message(parent_pid, needle) do
-    Eventually.eventually(
-      fn ->
-        state = :sys.get_state(parent_pid, 1_000)
-
-        case {Machine.status_for(state.live.machine), delivered_texts(state, needle)} do
-          {:idle, [_ | _] = texts} -> texts
-          _ -> nil
-        end
-      end,
-      timeout: 1_000
-    )
+    await_delivery(needle)
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
+    delivered_texts(:sys.get_state(parent_pid, 1_000), needle)
   end
 
   # Wait until the parent is idle (its turn is over), so a test that pokes its
