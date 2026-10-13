@@ -229,8 +229,10 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
 
       result = AgentTestLifecycle.stop_test_agents()
 
+      # Asserted through the gate rather than on the raw lists, so a failure
+      # carries the diag: how long the stop actually took and what the agent was
+      # doing when it missed the bound.
       assert result.in_flight == []
-      assert result.not_stopped == []
       assert :ok = AgentTestLifecycle.assert_zero_remaining!(result)
       refute Process.alive?(pid)
     end
