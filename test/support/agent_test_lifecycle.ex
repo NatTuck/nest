@@ -56,20 +56,22 @@ defmodule Nest.Agents.AgentTestLifecycle do
 
   # How long teardown waits for one agent to answer its own status question
   # (`Agent.ClientAPI.get_status/2`) before giving up on that agent and stopping
-  # it anyway. It is not a failure bound and not a measurement of the agent: it
-  # decides nothing, because a non-answer is not a status (see `agent_status/1`).
-  # It stays at 250 — the value of the `:sys.get_state` probe it replaces — so
-  # what one agent can cost the teardown is unchanged (`@answer_ms` +
-  # `@stop_ms`, exactly what the probe plus the stop cost).
+  # it anyway. Not a failure bound and not a measurement of the agent: a
+  # non-answer is not a status (see `agent_status/1`), so the bound can no longer
+  # make a *starved* agent read as in flight. What it does decide is the guard's
+  # one blind spot: an agent busy in its own loop (a DB append under pool
+  # contention) for longer than this is not *diagnosed* as in flight, and
+  # `agent_test_lifecycle_test.exs` pins that boundary as a test rather than a
+  # comment. It stays at 250 — the value of the `:sys.get_state` probe it
+  # replaces — so what one agent can cost the teardown is unchanged
+  # (`@answer_ms` + `@stop_ms`, exactly what the probe plus the stop cost).
   #
-  # Sizing, from the real thing this time: 473 teardown answers across a full
-  # suite at `max_cases: 16` (seed 12345) took p50 21 us, p90 44 us, p99 84 us,
-  # p99.9 308 us, max 3.3 ms. 250 ms is ~76x that max, so it is headroom for a
-  # healthy agent, not a latency budget. What it costs: an agent that is busy in
-  # its own loop (a DB append under pool contention) for longer than this is no
-  # longer *diagnosed* as in flight — the old probe called that "in flight", and
-  # that same non-answer is what made a *dying* agent a false positive. A clock
-  # cannot tell the two apart, which is why it is gone.
+  # The one measurement behind it is a single, right-censored run: 473 answers at
+  # `max_cases: 16` took p50 21 us / p99 84 us / max 3.3 ms. A read that does not
+  # answer inside the bound is a timeout, not a latency, so the sample cannot say
+  # how often a healthy agent fails to answer — and this repo's loaded
+  # measurement (48 CPU burners: p50 926 ms, max 1534 ms) shows the bound *can* be
+  # reached under load. Command and caveats: `notes/sketchy-slow-tests.md` §11.
   @answer_ms 250
 
   # Cleanup headroom for the stop itself: `stop_pid/2`'s `:DOWN` wait, and

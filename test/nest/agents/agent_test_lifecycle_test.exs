@@ -67,6 +67,55 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       refute Process.alive?(pid)
     end
 
+    test "does not report an agent that does not answer within the answer wait" do
+      {pid, _name} = AgentTestHelpers.start_agent()
+
+      # The guard's blind spot, pinned as a test rather than described in a
+      # comment: a status read that does not answer inside `@answer_ms` is **not**
+      # reported as in flight. Suspending the agent is the cheapest way to make it
+      # stop answering normal messages — which is exactly what a *busy* loop (a DB
+      # append under pool contention) looks like to this read.
+      #
+      # The tradeoff, stated: the old probe called every non-answer
+      # `:unresponsive`, and that is what false-failed healthy agents that were
+      # already dying; a slow-but-busy agent can now pass instead. A process that
+      # will not *stop* is still caught, by `still_alive`. (The old probe read
+      # through the `:sys` protocol, which a suspended agent still answers, so this
+      # pins the boundary against future widening rather than reproducing the old
+      # failure.)
+      :ok = :sys.suspend(pid)
+      queued = elem(Process.info(pid, :message_queue_len), 1)
+      test_pid = self()
+
+      # Release it once the teardown has moved past the status question. The exit
+      # `stop_pid/2` fires lands in the same mailbox, so "one message past the
+      # read request" is that moment — an event, not a timer.
+      spawn(fn ->
+        try do
+          Eventually.eventually(
+            fn -> elem(Process.info(pid, :message_queue_len), 1) > queued + 1 end,
+            timeout: 2_000
+          )
+        rescue
+          # Unreachable: the teardown always fires the exit. If the condition is
+          # ever missed, resume anyway so the failure is the teardown's
+          # `still_alive` rather than a process left suspended.
+          _ -> :ok
+        end
+
+        if Process.alive?(pid), do: :sys.resume(pid)
+        send(test_pid, :released)
+      end)
+
+      result = AgentTestLifecycle.stop_test_agents()
+
+      assert result.in_flight == []
+      assert result.still_alive == []
+      assert :ok = AgentTestLifecycle.assert_zero_remaining!(result)
+      assert_receive :released
+      refute Process.alive?(pid)
+    end
+
     test "does not report a registered process that never answers as in flight" do
       {:ok, space_id} = AgentTestHelpers.create_test_space()
       name = "never-answers-#{System.unique_integer([:positive])}"

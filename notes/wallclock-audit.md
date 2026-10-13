@@ -375,7 +375,7 @@ Sites that poll for it: `clone_agent_registration_test.exs:195`,
 `clone_agent_chat_stop_test.exs:84,159,167`, `supervisor_spawn_test.exs:418`,
 `supervisor_subagent_test.exs:341`, `give_up_delivery_test.exs:95`, and the
 `assert_registry_misses/1` helper. Note the counter-example already in the tree:
-`test/support/agent_test_lifecycle.ex:70` looks the pid up and then **monitors**
+`test/support/agent_test_lifecycle.ex`'s `wait_for_pid_down/3` looks the pid up and then **monitors**
 it, waiting for the DOWN — a read for discovery, a monitor for the barrier.
 
 Honest recommendation, in two parts:
