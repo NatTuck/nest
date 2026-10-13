@@ -154,22 +154,35 @@ defmodule Nest.Agents.AgentTestLifecycle do
     # the state the test left behind. Measured on
     # `agents_batch_test.exs`'s coordinator-death test, which read `:streaming`
     # for exactly that reason.
+    samples =
+      Enum.map(owned, fn {space_id, name, pid} ->
+        {space_id, name, pid, sample_status(pid)}
+      end)
+
     in_flight =
-      for {space_id, name, pid} <- owned,
-          status = agent_status(pid),
+      for {space_id, name, _pid, {:answered, status}} <- samples,
           status in @in_flight_statuses do
         {space_id, name, status}
       end
 
-    not_stopped =
-      Enum.flat_map(owned, fn {space_id, name, pid} ->
-        case stop_pid(pid, @stop_ms) do
-          :ok -> []
-          :timeout -> [{space_id, name}]
+    {not_stopped, diag} =
+      Enum.reduce(samples, {[], []}, fn {space_id, name, pid, sample}, {ns, dg} ->
+        {kind, us, info} = stop_and_record(pid)
+        entry = {space_id, name, sample, us, info}
+
+        if kind == :timeout do
+          {[{space_id, name} | ns], [entry | dg]}
+        else
+          {ns, [entry | dg]}
         end
       end)
 
-    %{owned: length(owned), in_flight: in_flight, not_stopped: not_stopped}
+    %{
+      owned: length(owned),
+      in_flight: in_flight,
+      not_stopped: Enum.reverse(not_stopped),
+      diag: Enum.reverse(diag)
+    }
   end
 
   @doc """
@@ -180,12 +193,17 @@ defmodule Nest.Agents.AgentTestLifecycle do
   :compacting]`) when the test body finished.
   """
   @spec assert_zero_remaining!(map()) :: :ok
-  def assert_zero_remaining!(%{owned: owned, in_flight: in_flight, not_stopped: not_stopped}) do
+  def assert_zero_remaining!(%{
+        owned: owned,
+        in_flight: in_flight,
+        not_stopped: not_stopped,
+        diag: diag
+      }) do
     cond do
       not_stopped != [] ->
         raise "expected zero remaining agents for this test, but these did not stop " <>
                 "within #{@stop_ms} ms of :shutdown: #{inspect(not_stopped)} " <>
-                "(owned: #{owned})"
+                "(owned: #{owned})" <> format_diag(diag)
 
       in_flight != [] ->
         raise "expected zero remaining agents for this test, but these were still " <>
@@ -195,6 +213,18 @@ defmodule Nest.Agents.AgentTestLifecycle do
       true ->
         :ok
     end
+  end
+
+  # DIAGNOSTIC (Step 1): per-agent evidence for every owned agent, so a missed
+  # stop bound can be told apart from a genuinely busy agent.
+  defp format_diag(diag) do
+    body =
+      Enum.map_join(diag, "\n", fn {space_id, name, sample, us, info} ->
+        "      #{name} (space #{space_id}): sample=#{inspect(sample)} stop_us=#{us} " <>
+          "proc=#{inspect(info, limit: 8, printable_limit: 300)}"
+      end)
+
+    "\n    --- teardown diag (temporary) ---\n" <> body
   end
 
   @doc """
@@ -287,10 +317,38 @@ defmodule Nest.Agents.AgentTestLifecycle do
   #     synchronous call, or wedged), which is also `nil` and not a status. A
   #     process that will not stop is reported by `not_stopped` instead, which
   #     says what is actually wrong with it.
-  defp agent_status(pid) do
-    ClientAPI.get_status(pid, @answer_ms)
+  defp sample_status(pid) do
+    {:answered, ClientAPI.get_status(pid, @answer_ms)}
   catch
-    :exit, _reason -> nil
+    :exit, reason -> {:exit, exit_tag(reason)}
+  end
+
+  # DIAGNOSTIC (Step 1): a non-answer and a gone agent both collapsed to `nil`,
+  # so the guard could not say which had happened.
+  defp exit_tag({:timeout, _}), do: :no_answer
+  defp exit_tag({:noproc, _}), do: :gone
+  defp exit_tag(other), do: other
+
+  # DIAGNOSTIC (Step 1): how long the stop handshake actually took, and what the
+  # agent was doing when it missed the bound.
+  defp stop_and_record(pid) do
+    started = System.monotonic_time(:microsecond)
+    result = stop_pid(pid, @stop_ms)
+    us = System.monotonic_time(:microsecond) - started
+    {result, us, if(result == :timeout, do: proc_info(pid), else: nil)}
+  end
+
+  defp proc_info(pid) do
+    case Process.info(pid, [
+           :status,
+           :message_queue_len,
+           :current_function,
+           :current_stacktrace,
+           :reductions
+         ]) do
+      nil -> :gone
+      info -> info
+    end
   end
 
   # Stop one agent and wait for it to die. Returns `:timeout` — never `:ok` —
