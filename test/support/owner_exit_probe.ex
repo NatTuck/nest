@@ -22,6 +22,9 @@ defmodule Nest.TestSupport.OwnerExitProbe do
 
   @table :nest_owner_exit_probe
   @path "/tmp/owner-exit-probe.log"
+  # Only the events we are hunting, so a run's evidence can be read without
+  # wading through every other :error the suite deliberately logs.
+  @hits "/tmp/owner-exit-hits.log"
 
   def adding_handler(config), do: {:ok, config}
   def removing_handler(_config), do: :ok
@@ -50,6 +53,8 @@ defmodule Nest.TestSupport.OwnerExitProbe do
       inspect(owner),
       " test=",
       inspect(lookup(owner)),
+      " last_started=",
+      inspect(last_started()),
       "\nborrowers(still alive, owner in $callers): ",
       inspect(borrowers(owner)),
       "\n",
@@ -58,14 +63,20 @@ defmodule Nest.TestSupport.OwnerExitProbe do
     ]
 
     File.write!(@path, line, [:append])
+
+    if String.contains?(text, "disconnected:") and String.contains?(text, "exited") do
+      File.write!(@hits, line, [:append])
+    end
   rescue
     _ -> :ok
   end
 
-  # The pid named by "owner #PID<0.123.0> exited".
+  # The pid named by "owner #PID<0.123.0> exited". Elixir inspects pids as
+  # `#PID<a.b.c>`; `:erlang.list_to_pid/1` wants the Erlang spelling `<a.b.c>`,
+  # so the `#` has to go or it raises and the lookup silently degrades.
   defp owner_pid(text) do
-    case Regex.run(~r/owner (#PID<[^>]*>) exited/, text) do
-      [_, pid_text] -> :erlang.list_to_pid(String.to_charlist(pid_text))
+    case Regex.run(~r/owner #PID<([0-9]+\.[0-9]+\.[0-9]+)> exited/, text) do
+      [_, inner] -> :erlang.list_to_pid(String.to_charlist("<" <> inner <> ">"))
       _ -> nil
     end
   rescue
@@ -78,6 +89,15 @@ defmodule Nest.TestSupport.OwnerExitProbe do
     case :ets.lookup(@table, pid) do
       [{^pid, test}] -> test
       _ -> :unknown_owner
+    end
+  rescue
+    _ -> :ets_unavailable
+  end
+
+  defp last_started do
+    case :ets.lookup(@table, :last_started) do
+      [{:last_started, test}] -> test
+      _ -> :none
     end
   rescue
     _ -> :ets_unavailable

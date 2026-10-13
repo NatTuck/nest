@@ -76,6 +76,14 @@ defmodule Nest.DataCase do
           {parent, {tags[:module], tags[:describe], tags[:test]}}
         )
 
+        # Fallback hint for the probe: the most recently started test. Weak
+        # (the owner we are hunting is not necessarily this one), but it is
+        # better than nothing if the pid in the message cannot be parsed.
+        :ets.insert(
+          :nest_owner_exit_probe,
+          {:last_started, {tags[:module], tags[:describe], tags[:test]}}
+        )
+
         if tags[db_shared_tag] || not tags[:async] do
           Sandbox.mode(Nest.Repo, {:shared, parent})
         end
