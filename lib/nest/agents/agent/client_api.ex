@@ -17,8 +17,6 @@ defmodule Nest.Agents.Agent.ClientAPI do
     * `get_total_usage/1` — combined
       `usage_totals + descendant_usage` map.
     * `get_messages/1` — active message list.
-    * `get_history/1` — archived history (compacted-away
-      messages plus `{:compaction, _}` markers).
     * `terminate/1` — `GenServer.stop/2` with normal reason.
 
   ## Why this lives separately from IntrospectionHandler

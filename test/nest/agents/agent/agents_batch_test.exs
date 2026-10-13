@@ -402,7 +402,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     set_status(parent_pid, :streaming)
     # Explicit timeouts on both: `:sys.suspend/1` and `:sys.resume/1` otherwise
     # rely on OTP's implicit 5 s ack deadline, which is over the `#21` cap. They
-    # get the cap rather than the 500 ms the `:sys.get_state` reads use, because
+    # get the cap rather than the 1 s the `:sys.get_state` reads use, because
     # they *change* the process's system state (a timeout here is a broken test,
     # not a slow read) and because the ack is handled ahead of the mailbox.
     :sys.suspend(parent_pid, 2_000)

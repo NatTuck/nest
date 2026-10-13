@@ -229,19 +229,16 @@ defmodule Nest.Agents.AgentObservabilityTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      # :sys.get_state/1 is a synchronous call — by the time it
-      # returns, the GenServer has finished processing any
-      # init-time work (including any (incorrectly) spawned probe
-      # task). Confirm the configured context_limit is what
-      # public_info reports and that the source is :config, not
-      # :probe or :default.
-      # No broadcast carries the internal context_limit_source field
-      # directly; the init push carries it as a wire string. The
-      # internal atom is only observable via state — kept as
-      # legitimate :sys.get_state use.
-      state = :sys.get_state(pid, 1_000)
-      assert state.llm_metrics.context_limit == 512_000
-      assert state.llm_metrics.context_limit_source == :config
+      # `Agent.get_public_info/1` is a synchronous call — by the time it
+      # returns, the GenServer has finished processing any init-time work
+      # (including any (incorrectly) spawned probe task). Confirm the
+      # configured context_limit is what public_info reports and that the
+      # source is :config, not :probe or :default. (No broadcast carries the
+      # internal `context_limit_source` field directly — the init push carries
+      # it as a wire string — so the accessor is the observable here.)
+      info = Agent.get_public_info(pid)
+      assert info.context_limit == 512_000
+      assert info.context_limit_source == :config
 
       Agent.terminate(pid)
     end

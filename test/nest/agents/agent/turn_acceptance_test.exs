@@ -8,12 +8,15 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
   crash, nil usage, multi-turn) with a real Agent and the
   existing `MockClient`.
 
-  They read the Agent's state through its public accessors
-  (`Agent.get_messages/1`, `Agent.get_public_info/1`) so we can
-  assert against the message index, the status, and the active
-  worker (the externally visible contract the driver must
-  honor). PubSub broadcasts are used to assert the externally
-  visible contract (chat:message, chat:status, chat:error).
+  They inspect the Agent's state directly — through its public
+  accessors (`Agent.get_messages/1`, `Agent.get_public_info/1`)
+  where one reaches the field, and `:sys.get_state/1` for the
+  machine internals none does (the active worker, `cancelled`) —
+  so we can assert against the message index, the status, and
+  the active worker (the externally visible contract the driver
+  must honor). PubSub broadcasts are used to assert the
+  externally visible contract (chat:message, chat:status,
+  chat:error).
 
   These tests must pass before the refactor is complete.
   They cover the regression cases that the old

@@ -336,7 +336,11 @@ defmodule Nest.Agents.Agent.WatchTest do
     assert length(texts) == 1
     assert Enum.count(texts, &(&1 =~ "the report")) == 1
     refute Enum.any?(texts, &(&1 =~ "Agents now idle"))
-    refute Enum.any?(Agent.get_public_info(pid).pending_messages, &(&1["kind"] == "notice"))
+
+    refute Enum.any?(
+             Agent.get_public_info(pid).pending_messages,
+             &match?(%{"kind" => "notice"}, &1)
+           )
   end
 
   # The second variant: the caller is busy when the report arrives, so it
