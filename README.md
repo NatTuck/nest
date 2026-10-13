@@ -1,5 +1,21 @@
 # Nest
 
+## System dependencies
+
+`scripts/install-deps.sh` installs everything the build needs from the
+system side: the Erlang/OTP 27 build prerequisites, Postgres (server plus
+a login role for the current user), a working `bwrap`, and the usual
+tooling. Supported targets are Ubuntu 24.04/26.04, Linux Mint 22.x and
+Debian 13; anything else is refused up front.
+
+```sh
+sudo bash scripts/install-deps.sh
+```
+
+It is safe to re-run, and `--dry-run` prints what it would do without
+doing it. The language runtimes come from mise (`.tool-versions`), so run
+`mise install` afterwards.
+
 ## Development Server
 
 To start your Phoenix server:
