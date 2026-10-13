@@ -186,3 +186,61 @@ plus a constant would have been enough.
 * `Mimic`'s curve covers stub/allow *registration*. If dispatch of a stubbed
   function also queues on the same server, the real load is higher than measured
   — unverified.
+
+## The round-trip cost curve — and what the cited figure actually measures
+
+Two phases, both `MIX_ENV=test mix run` on each host, so both run on the BEAM the
+suite runs on. Scripts: `notes/maxcases-ladder/roundtrip.exs` (phase 1),
+`notes/maxcases-ladder/roundtrip_os.exs` (phase 2).
+
+**Phase 1 — load applied *inside* the BEAM.** N busy-loop BEAM processes, so the
+independent variable is the BEAM's own run queue, read with
+`:erlang.statistics(:run_queue)`. p50 per-call, µs:
+
+| host | burners | run_queue | `gen_server_call` | `mimic_stub` | `postgres` |
+|---|---|---|---|---|---|
+| vampire (32 sched) | 0 | 0 | 2 | 3 | 36 |
+| vampire | 64 | 33 | 45 | 46 | 382 |
+| vampire | 128 | 97 | **184** | 183 | 794 |
+| celedyr (24 sched) | 0 | 0 | 12 | 27 | 504 |
+| celedyr | 16 | 2 | 95 | 87 | 354 |
+| celedyr | 32 | 10 | 160 | 162 | 994 |
+| celedyr | 64 | 42 | 414 | 417 | 1627 |
+| celedyr | 128 | 106 | **585** | 587 | **3582** |
+
+Round-trip latency **does** grow with run-queue depth — ~50× on celedyr from idle
+to rq ~106 — it stays flat while the burner count is at or below the scheduler
+count, celedyr's knee is at a *lower* queue depth than vampire's, and at equal
+depth celedyr costs ~3× more. A two-process call and a Mimic call track each
+other almost exactly, which is what "same shape, different server" looks like.
+
+**Phase 2 — load applied *outside* the BEAM.** N OS burner processes
+(`while :; do :; done`), which is the condition the repo's own figures use. The
+actual burner count is recorded per row. p50 is **flat**: vampire
+`gen_server_call` 1 µs at 0/8/16/32/48/64 burners (final loadavg 39.06); celedyr
+12/12/8/8/8/10 µs at 0/8/16/32/48/64 (final loadavg 10.39). OS burners starve the
+schedulers of CPU but do not deepen the BEAM run queue, and a two-process round
+trip is unaffected; only `postgres_query` shows a tail (max 4–25 ms). So the two
+phases are not the same experiment, and phase 1 is the one that moves latency.
+
+**What the 926 ms figure measures — it is not a round trip.**
+`test/support/sub_agent_tools_helpers.ex:37` sizes `@idle_fence_ms` from *a whole
+sub-agent turn*: "a mocked LLM call, a real sub-agent spawn or peer delivery (DB
+writes, a registry insert, a new process), and a second mocked LLM call" — p50
+18.7 ms in-suite, and p50 926 ms / max 1534 ms under 48 burners (39 of 40 over
+500 ms). The round-trip measurement in the same docstring (`@answer_ms`,
+`notes/sketchy-slow-tests.md` §11) is **p50 21 µs / p99 84 µs / max 3.3 ms** over
+473 reads at `max_cases: 16`, with no burners at all. That is consistent with the
+curve above rather than in tension with it.
+
+**Consequence for the ceiling.** At the deepest run queue I can produce (rq ~106
+on celedyr) one round trip costs ~0.6 ms. The suite's tightest bounds are 250 ms
+(the teardown's answer wait), 1000 ms (fences) and 3000 ms (per-test deadline);
+reaching 250 ms would need roughly 400× that queue depth. So the round-trip term
+is real, it is the right thing to bound, and it is *not* what is failing at 6–8
+cases — the file-server term (1.4 ms per `rm_rf` at 8 callers, 6.7 ms at 32,
+against a 10 ms bound) is still the one that lines up with those failures.
+
+This is a measurement, not a verdict on the cause. It does not establish that
+`:file_server` is the cause either; it establishes that the round-trip figure
+cited for the opposite conclusion measures a turn, not a round trip.

@@ -1,0 +1,31 @@
+host	burners	run_queue	schedulers	op	samples	mean_us	p50_us	p99_us	max_us
+vampire	0	0	32	gen_server_call	15	5.0	2	29	29
+vampire	0	0	32	mimic_stub	15	5.8	3	34	34
+vampire	0	0	32	mimic_allow	15	2.5	2	9	9
+vampire	0	0	32	postgres_query	15	384.8	36	5073	5073
+vampire	1	1	32	gen_server_call	15	14.9	1	51	51
+vampire	1	1	32	mimic_stub	15	4.7	2	41	41
+vampire	1	1	32	mimic_allow	15	1.7	1	8	8
+vampire	1	1	32	postgres_query	15	69.3	36	416	416
+vampire	8	1	32	gen_server_call	15	15.9	1	41	41
+vampire	8	1	32	mimic_stub	15	4.9	2	36	36
+vampire	8	1	32	mimic_allow	15	1.5	1	7	7
+vampire	8	1	32	postgres_query	15	55.5	28	295	295
+vampire	16	1	32	gen_server_call	15	14.1	1	48	48
+vampire	16	1	32	mimic_stub	15	6.9	3	53	53
+vampire	16	1	32	mimic_allow	15	2.6	2	10	10
+vampire	16	1	32	postgres_query	15	110.5	64	539	539
+vampire	32	2	32	gen_server_call	15	29.9	24	50	50
+vampire	32	2	32	mimic_stub	15	38.9	25	143	143
+vampire	32	2	32	mimic_allow	15	596.3	24	6013	6013
+vampire	32	3	32	postgres_query	15	1077.3	217	7254	7254
+vampire	64	33	32	gen_server_call	15	49.3	45	80	80
+vampire	64	36	32	mimic_stub	15	50.6	46	88	88
+vampire	64	34	32	mimic_allow	15	45.1	45	49	49
+vampire	64	34	32	postgres_query	15	407.4	382	670	670
+vampire	128	97	32	gen_server_call	15	183.3	184	205	205
+vampire	128	99	32	mimic_stub	15	187.3	183	228	228
+vampire	128	98	32	mimic_allow	15	181.8	184	197	197
+vampire	128	99	32	postgres_query	15	952.1	794	3098	3098
+# loadavg 	5.85 3.84 3.24 4/3221 98
+# schedulers 	32
