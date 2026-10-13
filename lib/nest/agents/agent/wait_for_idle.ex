@@ -278,11 +278,13 @@ defmodule Nest.Agents.Agent.WaitForIdle do
         {:chat_status, _payload} ->
           check(space_id, names, initial_busy, deadline, timeout, all?, monitor, monitors)
 
-        # Every other message is discarded. The target's own streaming traffic
-        # lands on this topic too, and so can a late delivery meant for a
-        # sibling call. None of them changes a target's status.
-        _other ->
-          loop(space_id, names, initial_busy, deadline, timeout, all?, monitor, monitors)
+          # Deliberately *no* catch-all: this is a selective receive. The target's
+          # own streaming traffic (`chat:delta`, `chat_message`, `shell:jobs`, …)
+          # lands on the same topic and so can a late delivery meant for a sibling
+          # call — but none of it can change a target's disposition, so the
+          # runtime skips it and leaves it in the mailbox. A `_other` clause here
+          # would be a drain loop: it would take every non-matching message out of
+          # the mailbox and re-`receive` just to discard it.
       after
         min(remaining, @max_after_ms) ->
           # `remaining` is positive here, so this is either the caller's
