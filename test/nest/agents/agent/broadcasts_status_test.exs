@@ -31,6 +31,7 @@ defmodule Nest.Agents.Agent.BroadcastsStatusTest do
 
   test "emits the space-scoped status frame alongside the per-agent one" do
     {pid, name} = start_agent()
+    # allowlist: harness — Broadcasts.status/1's argument
     state = :sys.get_state(pid, 1_000)
 
     Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.topic(state.space_id, name))

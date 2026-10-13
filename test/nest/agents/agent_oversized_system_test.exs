@@ -77,6 +77,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
     create_vocation(%{})
   end
 
+  # allowlist: harness — Compaction.stage/3 + Executor.run_all/2 drive on the struct
   defp agent_state(pid), do: :sys.get_state(pid, 1_000)
 
   # The post-turn compaction entry point: stage a compaction against an

@@ -246,6 +246,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # returns, every frame the channel had decided to push is already in this
       # mailbox, so the refute is a deterministic check rather than a 100 ms
       # window.
+      # allowlist: barrier — anchor for refute_push "chat:status", 0
       _ = :sys.get_state(socket.channel_pid, 1_000)
       refute_push "chat:status", %{status: "idle"}, 0
 
@@ -309,6 +310,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
                  :assistant
                ]
 
+      # allowlist: snapshot — messages + inbox + status
       state = :sys.get_state(agent_pid, 1_000)
       messages = state.chat_state.messages
 
@@ -396,6 +398,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
 
       # The channel barrier makes the negative check deterministic: anything the
       # channel would have pushed for the parked compaction is already here.
+      # allowlist: barrier — anchor for refute_push "chat:inbox", 0
       _ = :sys.get_state(socket.channel_pid, 1_000)
       refute_push "chat:inbox", %{count: 0}, 0
 
@@ -423,6 +426,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # The turn the delivered message started runs to completion.
       assert_push "chat:status", %{status: "idle"}, 1_000
 
+      # allowlist: snapshot — inbox + status + messages
       state = :sys.get_state(agent_pid, 1_000)
 
       assert state.live.inbox == []

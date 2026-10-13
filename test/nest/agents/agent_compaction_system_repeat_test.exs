@@ -118,6 +118,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
     # event for the commit (and the payload binds the fence to a commit rather
     # than to ambient traffic).
     assert_receive {:chat_compaction, %{marker: %{"role" => "compaction"}}}, 1_000
+    # allowlist: snapshot — model + tools + vocation + messages + indices
     state = :sys.get_state(pid, 1_000)
 
     # The `nil` continuation resumes a post-compaction LLM turn

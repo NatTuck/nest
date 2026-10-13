@@ -178,6 +178,7 @@ defmodule NestWeb.AgentChannelTest do
       # handled the broadcast. `:sys.get_state/1` is a synchronous call to the
       # channel process, so the check below is deterministic rather than a
       # 200 ms window.
+      # allowlist: barrier — anchor for refute_push "chat:delta"
       _ = :sys.get_state(socket.channel_pid, 1_000)
       refute_push "chat:delta", %{"content" => "x"}, 0
     end

@@ -325,6 +325,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert_receive {:chat_compaction, %{marker: _}}, 1_000
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
+      # allowlist: snapshot — messages + status
       state = :sys.get_state(pid, 1_000)
       messages = state.chat_state.messages
 
@@ -365,6 +366,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # must NOT have a handler for `{:preflight_request, _, _}` —
       # any such message lands in the Agent's mailbox unhandled
       # and is silently discarded.
+      # allowlist: harness — a fabricated preflight payload needs the whole state
       state_before = :sys.get_state(pid, 1_000)
       fake_task = self()
 
@@ -458,6 +460,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # scheduler.
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
+      # allowlist: snapshot — messages + space_id + name
       state = :sys.get_state(pid, 1_000)
       messages = state.chat_state.messages
       history = Nest.Persistence.load_history(state.space_id, state.name)
@@ -567,6 +570,7 @@ defmodule Nest.Agents.AgentCompactionTest do
   # just sent. See the call sites: the `:sys.get_state/2` is what makes this
   # sound (and is why it needs no wait).
   defp refute_no_preflight_reply(pid) do
+    # allowlist: barrier — refute_no_preflight_reply/1's anchor
     _ = :sys.get_state(pid, 1_000)
     refute_receive {:preflight_result, _, _}, 0
   end

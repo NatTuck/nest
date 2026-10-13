@@ -155,6 +155,7 @@
           {Nest.Credo.Check.SourceFileMaxLines, [max_lines: 500, max_total_lines: 700]},
           {Nest.Credo.Check.NoSleepInTests, []},
           {Nest.Credo.Check.NoDrainLoops, []},
+          {Nest.Credo.Check.SysGetStateNeedsReason, []},
           {Credo.Check.Warning.UnsafeExec, []},
           {Credo.Check.Warning.UnusedEnumOperation, []},
           {Credo.Check.Warning.UnusedFileOperation, []},

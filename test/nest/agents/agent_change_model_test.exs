@@ -95,6 +95,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
           provider: "anthropic-provider"
         })
 
+      # allowlist: snapshot — client config + model
       state = :sys.get_state(pid, 1_000)
       assert state.client_config.client == AnthropicClient
 
@@ -155,6 +156,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
         1_000
       )
 
+      # allowlist: snapshot — client config + model
       state_before = :sys.get_state(pid, 1_000)
 
       result =
@@ -165,6 +167,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
       assert result == {:error, :agent_busy}
 
+      # allowlist: snapshot — client config + model + status
       state_after = :sys.get_state(pid, 1_000)
       assert state_after.client_config.client == state_before.client_config.client
       assert state_after.model == state_before.model
@@ -248,6 +251,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
               vocation_id: vid()
             })
 
+          # allowlist: snapshot — client config + status
           state = :sys.get_state(pid, 1_000)
           assert Machine.status_for(state.live.machine) == :model_missing
           assert state.client_config.client == RecoveryClient
@@ -259,6 +263,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
               provider: "anthropic-provider"
             })
 
+          # allowlist: snapshot — client config + status + model
           state = :sys.get_state(pid, 1_000)
           assert Machine.status_for(state.live.machine) == :idle
           assert state.client_config.client == AnthropicClient

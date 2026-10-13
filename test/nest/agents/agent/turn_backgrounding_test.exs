@@ -119,6 +119,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       {second, llm2} = next_request()
 
+      # allowlist: snapshot — status + loop_count + inbox
       mid = :sys.get_state(pid, 1_000)
 
       # The delivery did not wait for the batch: the message is in the
@@ -183,6 +184,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # The notice's own turn, which ends the run.
       assert statuses_until_idle(name) == ["streaming", "idle"]
 
+      # allowlist: snapshot — status + work + inbox + loop_count + messages
       state = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :idle
@@ -284,6 +286,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       {second, llm2} = next_request()
 
+      # allowlist: snapshot — status + inbox + mode + messages
       state = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :streaming
@@ -332,6 +335,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       assert statuses_until_idle(name) == ["streaming", "idle"]
 
+      # allowlist: snapshot — status + inbox + mode + messages
       state = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :idle
@@ -425,6 +429,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # background, and nothing is queued behind it.
       assert statuses_until_idle(name) == ["streaming", "executing_tools", "streaming", "idle"]
 
+      # allowlist: snapshot — status + work.backgrounded + inbox + messages
       idle = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(idle.live.machine) == :idle
@@ -438,6 +443,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       assert statuses_until_idle(name) == ["streaming", "idle"]
 
+      # allowlist: snapshot — status + work.backgrounded + inbox
       state = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :idle
@@ -515,6 +521,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       assert {:ok, :delivered} =
                Agent.deliver_internal(pid, "agents-batch", "the aggregate", :notice)
 
+      # allowlist: snapshot — status + work.backgrounded + inbox + messages
       mid = :sys.get_state(pid, 1_000)
 
       # The notice is in the transcript and the batch has moved to the
@@ -542,6 +549,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       await_delivery("backgrounded command")
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
+      # allowlist: snapshot — inbox + work.backgrounded
       state = :sys.get_state(pid, 1_000)
 
       assert state.live.inbox == []
@@ -620,10 +628,12 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # follow-up chain first: a turn that started in it — the drain the stop's
       # own `:stop_timer` runs — would have broadcast its `streaming` frame (and
       # been dispatched from its deferred `:iterate`) by now.
+      # allowlist: barrier — the deferred :iterate chain announces nothing
       _ = :sys.get_state(pid, 1_000)
       refute_received {:chat_status, _}
       refute_received {:llm_request, _, _}
 
+      # allowlist: snapshot — status + work.backgrounded + inbox
       state = :sys.get_state(pid, 1_000)
 
       assert Machine.status_for(state.live.machine) == :idle
@@ -648,6 +658,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # Both orders are no-ops: while `:stopping` the stop guards drop it, and
       # once the entry is cleared the idle clause drops it as stale.
       send(pid, {:tool_results, ref, [late_result()]})
+      # allowlist: barrier — no event for "the late result appended nothing"
       _ = :sys.get_state(pid, 1_000)
 
       assert Agent.get_messages(pid, 1_000) == state.chat_state.messages

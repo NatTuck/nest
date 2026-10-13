@@ -109,6 +109,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
           new
         )
 
+      # allowlist: snapshot — workspace_path + tools + messages
       state = :sys.get_state(pid, 1_000)
       assert state.workspace_path == new
 
@@ -225,6 +226,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
           new
         )
 
+      # allowlist: snapshot — workspace_path + messages
       state = :sys.get_state(pid, 1_000)
       assert state.workspace_path == new
       assert {:assistant, %{parts: parts}} = List.last(state.chat_state.messages)

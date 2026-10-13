@@ -97,6 +97,7 @@ defmodule Nest.Agents.AgentStreamErrorTest do
       # The machine settles and clears its worker before `Turn.run/5` announces
       # the new status, so the fence above already proves both; read it without
       # waiting again.
+      # allowlist: snapshot — status + work
       state = :sys.get_state(pid, 1_000)
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil

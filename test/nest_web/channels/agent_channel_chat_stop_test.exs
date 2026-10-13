@@ -33,6 +33,7 @@ defmodule NestWeb.AgentChannelChatStopTest do
       # the channel's mailbox, so any `chat:status` the agent broadcast during
       # the stop has already been pushed to this process before it answers.
       # The check below is therefore deterministic rather than a 50 ms window.
+      # allowlist: barrier — anchor for refute_received %Phoenix.Socket.Message{}
       _ = :sys.get_state(socket.channel_pid, 1_000)
       refute_received %Phoenix.Socket.Message{event: "chat:status"}
     end
