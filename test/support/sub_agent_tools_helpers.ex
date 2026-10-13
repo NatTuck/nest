@@ -193,7 +193,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   """
   @spec query_results(pid()) :: [Part.ToolResult.t()]
   def query_results(pid) do
-    messages = Nest.Agents.Agent.get_messages(pid)
+    messages = Nest.Agents.Agent.get_messages(pid, 1_000)
 
     Enum.flat_map(messages, fn
       {:tool, %{parts: parts}} ->
@@ -209,7 +209,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   """
   @spec agent_texts(pid()) :: [String.t()]
   def agent_texts(pid) do
-    messages = Nest.Agents.Agent.get_messages(pid)
+    messages = Nest.Agents.Agent.get_messages(pid, 1_000)
 
     for {:user, %{parts: parts}} <- messages, do: parts_text(parts)
   end

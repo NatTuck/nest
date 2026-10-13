@@ -141,7 +141,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     {second, llm2} = next_request()
 
-    mid = Agent.get_messages(parent_pid)
+    mid = Agent.get_messages(parent_pid, 1_000)
     AgentTestHelpers.assert_unique_message_indices(mid)
 
     # The child's answer is already in the transcript, behind the machine's

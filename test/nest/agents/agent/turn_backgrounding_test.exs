@@ -107,7 +107,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # The batch reached the tool worker, which is parked before the first
       # `agents-send`: the agent really is `:executing_tools`.
       assert_receive {:send_blocked, tool}, 1_000
-      assert Agent.get_public_info(pid).status == :executing_tools
+      assert Agent.get_public_info(pid, 1_000).status == :executing_tools
 
       # Release it: the message reaches this same agent, and the batch is
       # backgrounded on it.
@@ -274,7 +274,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # The batch reached the tool worker, which is parked before its
       # `agents-send`: the agent really is `:executing_tools`.
       assert_receive {:send_blocked, worker}, 1_000
-      assert Agent.get_public_info(pid).status == :executing_tools
+      assert Agent.get_public_info(pid, 1_000).status == :executing_tools
 
       # A human message with a mode now backgrounds the batch and is delivered
       # mid-batch — never dropped — and its mode is applied at delivery, not
@@ -411,7 +411,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       # The batch reached the tool worker, parked before its `agents-send`.
       assert_receive {:send_blocked, tool}, 1_000
-      assert Agent.get_public_info(pid).status == :executing_tools
+      assert Agent.get_public_info(pid, 1_000).status == :executing_tools
 
       # Release it: the message reaches this same agent, so the batch
       # backgrounds itself and the message is delivered now.
@@ -508,7 +508,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       :ok = Agent.chat(pid, "start the turn")
 
       assert_receive {:send_blocked, tool}, 1_000
-      assert Agent.get_public_info(pid).status == :executing_tools
+      assert Agent.get_public_info(pid, 1_000).status == :executing_tools
 
       # The aggregate is the disposition the coordinator relies on: `:delivered`
       # means it reached the transcript.
@@ -595,7 +595,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # `agents-send`: the agent really is `:executing_tools` with a live worker
       # and an unanswered `tool_use`.
       assert_receive {:send_blocked, tool}, 1_000
-      assert Agent.get_public_info(pid).status == :executing_tools
+      assert Agent.get_public_info(pid, 1_000).status == :executing_tools
 
       # A human message backgrounds the batch, so it is *still running* — parked
       # inside its call — when the stop lands.
@@ -657,7 +657,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       send(pid, {:tool_results, ref, [late_result()]})
       _ = :sys.get_state(pid, 1_000)
 
-      assert Agent.get_messages(pid) == state.chat_state.messages
+      assert Agent.get_messages(pid, 1_000) == state.chat_state.messages
 
       AgentTestHelpers.assert_unique_message_indices(state.chat_state.messages)
     end

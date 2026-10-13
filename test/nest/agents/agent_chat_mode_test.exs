@@ -228,13 +228,13 @@ defmodule Nest.Agents.AgentChatModeTest do
         start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
 
       # Initial state: vocation default (lex-first: "build").
-      assert Agent.get_public_info(pid).current_mode == "build"
+      assert Agent.get_public_info(pid, 1_000).current_mode == "build"
 
       # Send a chat with mode "plan". The agent's state.live.mode
       # should update to "plan".
       :ok = Agent.chat(pid, "Plan this", "plan")
       await_idle(pid)
-      assert Agent.get_public_info(pid).current_mode == "plan"
+      assert Agent.get_public_info(pid, 1_000).current_mode == "plan"
 
       # The next chat without an explicit mode arg uses the
       # updated state.live.mode — confirms sticky mode is wired
@@ -242,7 +242,7 @@ defmodule Nest.Agents.AgentChatModeTest do
       # fallback.
       :ok = Agent.chat(pid, "And another")
       await_idle(pid)
-      assert Agent.get_public_info(pid).current_mode == "plan"
+      assert Agent.get_public_info(pid, 1_000).current_mode == "plan"
     end
 
     test "state.live.mode falls back to vocation default when the requested mode is unknown" do
@@ -270,7 +270,7 @@ defmodule Nest.Agents.AgentChatModeTest do
 
       # The fallback (vocation default, lex-first: "build") is
       # written to state.live.mode.
-      assert Agent.get_public_info(pid).current_mode == "build"
+      assert Agent.get_public_info(pid, 1_000).current_mode == "build"
 
       # And reflected in the chat:status broadcast.
       assert_receive {:chat_status, %{status: "idle", currentMode: "build"}}, 1_000

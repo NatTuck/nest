@@ -123,7 +123,7 @@ defmodule Nest.Agents.Agent.RecoveryTest do
           _ref = Agent.chat(pid, "hello?")
           # Yield to the GenServer so the cast has been handled.
           _ = :sys.get_state(pid, 1_000)
-          messages = Agent.get_messages(pid)
+          messages = Agent.get_messages(pid, 1_000)
           assert Enum.all?(messages, &match?({:system, _}, &1))
         end)
 

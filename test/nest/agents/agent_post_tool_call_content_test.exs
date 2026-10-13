@@ -146,7 +146,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
     # The turn's transcript. `MessageAppender.append_stamped/2` appends and
     # broadcasts each message before the settle loop broadcasts the `idle`
     # status, so after `await_idle/0` the whole turn is readable from the state.
-    defp chat_messages(pid), do: Agent.get_messages(pid)
+    defp chat_messages(pid), do: Agent.get_messages(pid, 1_000)
 
     # The first `{:assistant, msg}` in `messages` satisfying `predicate`; nil
     # when none does.

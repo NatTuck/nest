@@ -348,7 +348,7 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
   defp unique_int, do: System.unique_integer([:positive])
 
   defp workspace_root(pid) do
-    Nest.Agents.Agent.get_public_info(pid).workspace_path
+    Nest.Agents.Agent.get_public_info(pid, 1_000).workspace_path
   end
 
   defp read_files(pid) do

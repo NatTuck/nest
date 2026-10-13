@@ -72,7 +72,7 @@ defmodule Nest.Agents.ChatTaskCleanupTest do
 
       # The agent finalized cleanly — still alive, in :idle.
       assert Process.alive?(pid)
-      assert Agent.get_public_info(pid).status == :idle
+      assert Agent.get_public_info(pid, 1_000).status == :idle
     end
 
     test "a {:noproc, {GenServer, :call, _}} exit (target already gone) is also silent", %{} do

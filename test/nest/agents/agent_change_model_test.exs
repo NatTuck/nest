@@ -197,12 +197,12 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
           vocation_id: vid()
         })
 
-      model_before = Agent.get_public_info(pid).model
+      model_before = Agent.get_public_info(pid, 1_000).model
 
       result = Agent.set_model(pid, %{name: "ghost-model-from-nowhere", provider: "nope"})
       assert {:error, {:invalid_model, %Nest.ChatModel.ModelNotFoundError{}}} = result
 
-      assert Agent.get_public_info(pid).model == model_before
+      assert Agent.get_public_info(pid, 1_000).model == model_before
     end
   end
 
@@ -305,7 +305,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
       # State must not have been mutated. Model is stored as a
       # string-keyed map (jsonb JSON wire format).
-      assert Agent.get_public_info(pid).model["name"] == "qwen3.5-plus"
+      assert Agent.get_public_info(pid, 1_000).model["name"] == "qwen3.5-plus"
     end
 
     test "preserves the MapSet invariant on crossed_thresholds" do

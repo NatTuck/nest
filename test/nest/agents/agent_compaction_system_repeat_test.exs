@@ -217,7 +217,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       {pid, _agent_id} = start_with_vocation(vocation)
 
       # Verify the system prompt at init contains the original.
-      [{:system, initial_sys} | _] = Nest.Agents.Agent.get_messages(pid)
+      [{:system, initial_sys} | _] = Nest.Agents.Agent.get_messages(pid, 1_000)
 
       initial_text = text_from_parts(initial_sys.parts)
 
@@ -266,7 +266,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       {pid, _agent_id} = start_with_vocation(vocation, workspace_path: workspace_path)
 
       # Verify the initial system prompt contains the sentinel.
-      [{:system, init_sys} | _] = Nest.Agents.Agent.get_messages(pid)
+      [{:system, init_sys} | _] = Nest.Agents.Agent.get_messages(pid, 1_000)
       init_text = text_from_parts(init_sys.parts)
 
       assert init_text =~ sentinel
@@ -408,7 +408,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       )
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
-      active = Nest.Agents.Agent.get_messages(pid)
+      active = Nest.Agents.Agent.get_messages(pid, 1_000)
 
       carried =
         Enum.find_value(active, fn

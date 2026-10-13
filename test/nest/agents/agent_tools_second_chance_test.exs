@@ -81,7 +81,7 @@ defmodule Nest.Agents.AgentToolsSecondChanceTest do
       # second-chance path ran at all — without them the turn would have
       # finalized on the obedient path, exactly as it did before the
       # overflow round was scripted as events.
-      messages = Nest.Agents.Agent.get_messages(pid)
+      messages = Nest.Agents.Agent.get_messages(pid, 1_000)
 
       assert Enum.any?(messages, fn
                {:tool, %Tool{parts: parts}} ->

@@ -236,7 +236,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
       # source is :config, not :probe or :default. (No broadcast carries the
       # internal `context_limit_source` field directly — the init push carries
       # it as a wire string — so the accessor is the observable here.)
-      info = Agent.get_public_info(pid)
+      info = Agent.get_public_info(pid, 1_000)
       assert info.context_limit == 512_000
       assert info.context_limit_source == :config
 
@@ -417,7 +417,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
   # once the turn's `idle` frame has arrived the whole turn is readable from the
   # state: every message of the turn is already appended, whether or not this
   # process happened to receive that message's own frame.
-  defp chat_messages(pid), do: Agent.get_messages(pid)
+  defp chat_messages(pid), do: Agent.get_messages(pid, 1_000)
 
   # The first assistant in `messages` that carries a `Part.ToolUse` AND has
   # api_logs populated; nil when there is none.

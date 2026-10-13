@@ -585,6 +585,6 @@ defmodule Nest.Agents.AgentCompactionTest do
   defp await_idle(pid) do
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-    assert Agent.get_public_info(pid).status == :idle
+    assert Agent.get_public_info(pid, 1_000).status == :idle
   end
 end

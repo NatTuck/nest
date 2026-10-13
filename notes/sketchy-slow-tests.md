@@ -313,7 +313,7 @@ make a 2000 ms ceiling unworkable rather than merely tight.
 | bound | value | why |
 |---|---|---|
 | fences (`assert_receive`/`refute_receive`/`assert_push`/`refute_push`) | **1000 ms** | the ruling: raise every 500 to 1 s. Must stay well below the per-test deadline so a missed fence reports as a fence, not as `ExUnit.TimeoutError`. |
-| `:sys.get_state`/`:replace_state` bounds | **1000 ms** | free on a healthy process; buys headroom under load. |
+| `:sys.get_state`/`:replace_state` bounds, and the `ClientAPI` accessor reads that replaced the converted ones (`get_public_info/2`, `get_messages/2`, `get_total_usage/2`) | **1000 ms** | free on a healthy process; buys headroom under load. The accessors' own default is OTP's 5 s (production callers want that); only the converted test sites pass the explicit bound. |
 | `AgentTestLifecycle`'s teardown probe | **250 ms** | the one exception, and it goes **down**. It is a *measurement*, not a failure bound: `stop_test_agents/0` probes every owned agent synchronously, so a long bound costs N x bound per teardown (500 ms x N is what blew a 2000 ms deadline). |
 | `refute_receive ..., 0` | **0** | a deliberate non-wait, not a fence. |
 | per-test deadline (`ExUnit.configure`) | **3000 ms** | a failure bound, deliberately above the fences. |
@@ -352,3 +352,23 @@ same shape.
 16`, per-test 3000): **2372 tests, 0 failures**, ExUnit 7.4 s, wall 8.20 s, load
 2.81 before / 4.75 after. For comparison at the same 2000 ms deadline: 8 cases ->
 0 failures, 16 -> 2, 24 -> 12.
+
+**Recorded, not fixed here — the accessor reads, and what they cost.**
+`issue-21-accessor-swaps` converted 106 `:sys.get_state/2` reads in the tests to
+`ClientAPI` accessors, so the bound above now covers those calls too: the three
+accessors take the `GenServer.call/3` bound as an optional second argument
+(production default unchanged at OTP's 5 s), and every converted site passes
+`1_000`. Two consequences worth keeping in view, neither a defect today:
+
+* `get_public_info/1` builds the whole public map per call — `Inbox.serialize/1`
+  over the queue, plus `Broadcasts.Usage.context_usage_map/4` →
+  `ConversationSize.size/1` over the whole transcript
+  (`lib/nest/agents/agent/broadcasts/usage.ex:177`). So an `await_idle`/`wait_idle`
+  helper that calls it once per turn is O(transcript) per turn, where the
+  `:sys.get_state/2` it replaced was O(1). The suite is still under 5 s and no
+  fence moved, so this is recorded rather than optimised; if it ever matters, the
+  fix is a narrower accessor for the fence helpers (the status alone), not a cache.
+* §7's "all 11 sites in the harness now pass an explicit `500`", and its two
+  `:sys.get_state` rows for `query_results/1` / `agent_texts/1`, are superseded:
+  the harness bound is 1 s (this section), and those two helpers now read the
+  transcript through `get_messages/2` with that bound.

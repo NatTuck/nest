@@ -195,7 +195,7 @@ defmodule Nest.Agents.AgentChatTest do
 
       refute_received {:chat_error, _}
 
-      messages = Agent.get_messages(pid)
+      messages = Agent.get_messages(pid, 1_000)
       tail = Enum.take(messages, -4)
 
       assert Enum.map(tail, &elem(&1, 0)) == [:user, :assistant, :user, :assistant]
@@ -241,7 +241,7 @@ defmodule Nest.Agents.AgentChatTest do
       send_compaction_done(pid, "Summary", nil)
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      messages = Agent.get_messages(pid)
+      messages = Agent.get_messages(pid, 1_000)
 
       assert {:assistant, %Assistant{parts: [%Part.Text{text: compaction_ack}]}} =
                List.last(messages)
@@ -255,7 +255,7 @@ defmodule Nest.Agents.AgentChatTest do
 
       refute_received {:chat_error, _}
 
-      messages = Agent.get_messages(pid)
+      messages = Agent.get_messages(pid, 1_000)
 
       assert Enum.map(messages, &elem(&1, 0)) |> Enum.take(-4) ==
                [:user, :assistant, :user, :assistant]

@@ -106,7 +106,7 @@ defmodule Nest.Agents.AgentStopTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      messages = Agent.get_messages(pid)
+      messages = Agent.get_messages(pid, 1_000)
 
       # No message in the list is empty.
       refute Enum.any?(messages, fn
@@ -161,7 +161,7 @@ defmodule Nest.Agents.AgentStopTest do
       # is not what we are looking for).
       assert_receive {:chat_compaction, _}, 1_000
 
-      messages = Agent.get_messages(pid)
+      messages = Agent.get_messages(pid, 1_000)
 
       tool_assistant =
         Enum.find_value(messages, fn
@@ -359,7 +359,7 @@ defmodule Nest.Agents.AgentStopTest do
       assert :ok = Agent.stop_chat(pid, self())
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
-      assert Agent.get_public_info(pid).status == :idle
+      assert Agent.get_public_info(pid, 1_000).status == :idle
     end
   end
 end

@@ -99,7 +99,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       {pid, _vid, _old} = workspace_agent!()
       new = new_ws("new")
 
-      system_before = List.first(Nest.Agents.Agent.get_messages(pid))
+      system_before = List.first(Nest.Agents.Agent.get_messages(pid, 1_000))
 
       :ok =
         Agents.edit_agent(
@@ -143,7 +143,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
                )
 
       # The agent's workspace is unchanged.
-      assert Nest.Agents.Agent.get_public_info(pid).workspace_path == old
+      assert Nest.Agents.Agent.get_public_info(pid, 1_000).workspace_path == old
     end
 
     test "rejects a missing workspace and an under-/tmp workspace" do
@@ -165,7 +165,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
                  "/tmp/under"
                )
 
-      assert Nest.Agents.Agent.get_public_info(pid).workspace_path == old
+      assert Nest.Agents.Agent.get_public_info(pid, 1_000).workspace_path == old
     end
 
     test "refuses while the agent is busy" do
@@ -241,7 +241,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       assert {:error, :workspace_under_tmp} =
                Agents.change_workspace(space_id, agent_name(pid), "/tmp/under")
 
-      assert Nest.Agents.Agent.get_public_info(pid).workspace_path == old
+      assert Nest.Agents.Agent.get_public_info(pid, 1_000).workspace_path == old
     end
 
     test "reapplies the max-depth spawn exclusion when tools are rebuilt" do
@@ -306,7 +306,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
     end
   end
 
-  defp agent_name(pid), do: Nest.Agents.Agent.get_public_info(pid).name
+  defp agent_name(pid), do: Nest.Agents.Agent.get_public_info(pid, 1_000).name
 
   defp test_model, do: %{name: "qwen3.5-plus", provider: "model-studio"}
 end

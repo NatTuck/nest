@@ -177,7 +177,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       :ok = Agent.chat(pid, "Loop until done")
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      messages = Agent.get_messages(pid)
+      messages = Agent.get_messages(pid, 1_000)
 
       # The budget reminder is now a synthetic pair injected at
       # the LLM-response-construction site: a {:user, _} message
@@ -414,7 +414,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       :ok = Agent.chat(pid, "Second chat")
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      messages = Agent.get_messages(pid)
+      messages = Agent.get_messages(pid, 1_000)
       indices = message_indices(messages)
 
       # The two chats should produce: system (0), user1 (1),

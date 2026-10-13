@@ -297,7 +297,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         assert content =~ "no content"
       end)
 
-      messages = Agent.get_messages(pid)
+      messages = Agent.get_messages(pid, 1_000)
 
       # No message in the list is empty.
       refute Enum.any?(messages, fn

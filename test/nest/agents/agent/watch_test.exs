@@ -72,7 +72,7 @@ defmodule Nest.Agents.Agent.WatchTest do
   defp await_idle(pid) do
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-    assert Agent.get_public_info(pid).status == :idle
+    assert Agent.get_public_info(pid, 1_000).status == :idle
   end
 
   defp set_busy(pid) do
@@ -105,7 +105,7 @@ defmodule Nest.Agents.Agent.WatchTest do
   end
 
   defp notices(pid) do
-    Agent.get_messages(pid)
+    Agent.get_messages(pid, 1_000)
     |> Enum.flat_map(fn
       {:user, %{parts: parts}} -> Enum.map(parts, & &1.text)
       _ -> []
@@ -128,7 +128,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     # A watch is registered, and the agent never left idle (issue #54): the
     # tool returned without blocking a turn.
     assert map_size(watchers(pid)) == 1
-    assert Agent.get_public_info(pid).status == :idle
+    assert Agent.get_public_info(pid, 1_000).status == :idle
   end
 
   test "an already-idle-only wait registers nothing", %{pid: pid, name: name, space_id: space_id} do
@@ -338,7 +338,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     refute Enum.any?(texts, &(&1 =~ "Agents now idle"))
 
     refute Enum.any?(
-             Agent.get_public_info(pid).pending_messages,
+             Agent.get_public_info(pid, 1_000).pending_messages,
              &match?(%{"kind" => "notice"}, &1)
            )
   end
@@ -382,7 +382,7 @@ defmodule Nest.Agents.Agent.WatchTest do
       ])
 
     assert content =~ "the report"
-    assert [%{"retrieved" => true}] = Agent.get_public_info(pid).pending_messages
+    assert [%{"retrieved" => true}] = Agent.get_public_info(pid, 1_000).pending_messages
     reset_to_idle(pid)
   end
 

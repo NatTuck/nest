@@ -93,7 +93,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
                timeout: 500
              )
 
-      assert Nest.Agents.Agent.get_public_info(peer).owed_replies == []
+      assert Nest.Agents.Agent.get_public_info(peer, 1_000).owed_replies == []
       wait_idle(peer)
     end
 
@@ -122,7 +122,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       assert {:ok, :delivered} =
                Agents.send_message(current_space_id(), "peer", name, "please summarize", :query)
 
-      assert Nest.Agents.Agent.get_public_info(pid).owed_replies == ["peer"]
+      assert Nest.Agents.Agent.get_public_info(pid, 1_000).owed_replies == ["peer"]
 
       # The tool batch is its own status, and the settle is the first idle: no
       # reminder and no give-up came in between.
@@ -223,7 +223,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # The delivery is a `GenServer.call` (`Agents.send_message/5` →
       # `Agent.deliver_message/4`), so the frame is already in the mailbox here
       # and there is nothing to wait for.
-      assert Nest.Agents.Agent.get_public_info(pid).owed_replies == ["peer"]
+      assert Nest.Agents.Agent.get_public_info(pid, 1_000).owed_replies == ["peer"]
       assert_received {:chat_status, %{status: "streaming", owedReplies: ["peer"]}}
 
       # The model's first request carries the query and nothing about the debt:
@@ -261,7 +261,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
                timeout: 500
              )
 
-      assert Nest.Agents.Agent.get_public_info(peer).owed_replies == []
+      assert Nest.Agents.Agent.get_public_info(peer, 1_000).owed_replies == []
       wait_idle(peer)
     end
   end
@@ -302,7 +302,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       assert log =~ "needs_repair"
 
       # The debt is discharged regardless: the runtime gave up on it.
-      assert Nest.Agents.Agent.get_public_info(pid).owed_replies == []
+      assert Nest.Agents.Agent.get_public_info(pid, 1_000).owed_replies == []
     end
   end
 
@@ -487,7 +487,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
     |> Enum.reject(&(&1 == ""))
   end
 
-  defp peer_texts(pid), do: texts(Nest.Agents.Agent.get_messages(pid))
+  defp peer_texts(pid), do: texts(Nest.Agents.Agent.get_messages(pid, 1_000))
 
   defp parts_text(parts) do
     Enum.map_join(parts || [], "", fn

@@ -79,7 +79,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert child_names == ["alpha", "beta", "gamma"]
 
     # The tool result is the confirmation, not the aggregate: nothing waited.
-    confirmation = batch_tool_result(Agent.get_messages(parent_pid)).content
+    confirmation = batch_tool_result(Agent.get_messages(parent_pid, 1_000)).content
     assert confirmation =~ "Fanned 3 item(s)"
     assert confirmation =~ "alpha, beta, gamma"
     assert confirmation =~ "aggregate"
@@ -216,7 +216,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
 
     # The confirmation promises exactly what fail_fast does, before anything
     # fails: it stops at the first failure and reports the slots it filled.
-    confirmation = batch_tool_result(Agent.get_messages(parent_pid)).content
+    confirmation = batch_tool_result(Agent.get_messages(parent_pid, 1_000)).content
     assert confirmation =~ "stops at the first failure"
     assert confirmation =~ "reports the slots it filled before it stopped"
 

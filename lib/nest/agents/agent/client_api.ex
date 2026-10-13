@@ -19,6 +19,14 @@ defmodule Nest.Agents.Agent.ClientAPI do
     * `get_messages/1` — active message list.
     * `terminate/1` — `GenServer.stop/2` with normal reason.
 
+  `get_public_info/2`, `get_messages/2` and `get_total_usage/2` take the
+  `GenServer.call/3` failure bound as an optional second argument. The
+  default is OTP's own (5 s), which is what production callers want; a
+  caller that reads state after an event — every converted `#21` test
+  site — passes the suite's 1 s bound instead, so a wedged agent reports
+  as a call timeout rather than as the per-test deadline (see
+  `notes/sketchy-slow-tests.md` §11).
+
   ## Why this lives separately from IntrospectionHandler
 
   IntrospectionHandler owns the `handle_call` clauses; this
@@ -40,27 +48,37 @@ defmodule Nest.Agents.Agent.ClientAPI do
   Returns a map with :id, :model, :message_count, :status,
   :vocation_id, :partial, :parent_id, :parent_name, :depth,
   :descendant_usage, and :total_usage.
+
+  `timeout` is the `GenServer.call/3` failure bound; the default is
+  OTP's (5 s). Pass a shorter bound when the read must fail as a call
+  timeout rather than as a caller deadline.
   """
-  @spec get_public_info(pid()) :: map()
-  def get_public_info(pid) do
-    GenServer.call(pid, :get_public_info)
+  @spec get_public_info(pid(), timeout()) :: map()
+  def get_public_info(pid, timeout \\ 5_000) do
+    GenServer.call(pid, :get_public_info, timeout)
   end
 
   @doc """
   Returns the combined usage map for the agent: `usage_totals +
   descendant_usage`, computed field-by-field.
+
+  `timeout` is the `GenServer.call/3` failure bound; the default is
+  OTP's (5 s).
   """
-  @spec get_total_usage(pid()) :: map() | nil
-  def get_total_usage(pid) do
-    GenServer.call(pid, :get_total_usage)
+  @spec get_total_usage(pid(), timeout()) :: map() | nil
+  def get_total_usage(pid, timeout \\ 5_000) do
+    GenServer.call(pid, :get_total_usage, timeout)
   end
 
   @doc """
   Returns the active message history for the agent.
+
+  `timeout` is the `GenServer.call/3` failure bound; the default is
+  OTP's (5 s).
   """
-  @spec get_messages(pid()) :: [Nest.Messages.Message.t()]
-  def get_messages(pid) do
-    GenServer.call(pid, :get_messages)
+  @spec get_messages(pid(), timeout()) :: [Nest.Messages.Message.t()]
+  def get_messages(pid, timeout \\ 5_000) do
+    GenServer.call(pid, :get_messages, timeout)
   end
 
   @doc """

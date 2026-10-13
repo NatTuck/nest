@@ -104,7 +104,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     assert is_integer(index)
 
     # The request line: the sizing numbers the request actually cost.
-    limit = Agent.get_public_info(pid).context_limit
+    limit = Agent.get_public_info(pid, 1_000).context_limit
 
     assert [
              %{
@@ -246,7 +246,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     :ok = Agent.chat(pid, "start the turn")
 
     assert_receive {:send_blocked, tool}, 1_000
-    assert Agent.get_public_info(pid).status == :executing_tools
+    assert Agent.get_public_info(pid, 1_000).status == :executing_tools
 
     send(tool, :release_send)
 
@@ -302,7 +302,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     release_llm(llm1)
 
     assert_receive {:send_blocked, tool}, 1_000
-    assert Agent.get_public_info(pid).status == :executing_tools
+    assert Agent.get_public_info(pid, 1_000).status == :executing_tools
 
     # The human's message backgrounds the batch, and its turn is parked: the
     # delivery is the one the record is about.

@@ -150,7 +150,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # The batch reached the tool worker, parked before its query.
     assert_receive {:query_blocked, batch}, 1_000
 
-    assert Agent.get_public_info(coordinator_pid).status == :executing_tools
+    assert Agent.get_public_info(coordinator_pid, 1_000).status == :executing_tools
 
     # Release it: the query is delivered (the peer's turn starts) and the worker
     # parks again *after* the delivery, so the batch is still running for
@@ -162,7 +162,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # held there too: both sides are parked with the batch in flight.
     assert_receive {:send_blocked, sender}, 1_000
 
-    assert Agent.get_public_info(coordinator_pid).status == :executing_tools
+    assert Agent.get_public_info(coordinator_pid, 1_000).status == :executing_tools
 
     # Release the answer: it lands while the batch is executing, so the batch is
     # moved to the background and the answer is delivered now.
