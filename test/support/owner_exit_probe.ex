@@ -25,6 +25,54 @@ defmodule Nest.TestSupport.OwnerExitProbe do
   # Only the events we are hunting, so a run's evidence can be read without
   # wading through every other :error the suite deliberately logs.
   @hits "/tmp/owner-exit-hits.log"
+  # Whoever is holding the sandbox connection when a test body ends. This is
+  # the deterministic half of the diagnostic: it does not depend on winning the
+  # race that produces the disconnect, because it reads the holder while the
+  # borrower is still alive.
+  @holders "/tmp/owner-exit-holders.log"
+
+  @doc """
+  TEMPORARY. Every `DBConnection.Holder` table whose owner is not the calling
+  process — i.e. a process other than the sandbox owner is holding the
+  connection — recorded with enough of that process to name it.
+
+  `DBConnection.Holder.new/4` creates each holder with
+  `:ets.new(DBConnection.Holder, [:public, :ordered_set, ...])`, so the tables
+  are anonymous but their `:name` is the module, and `:ets.info(t, :owner)`
+  names the process that currently holds it (a borrower during a query, the
+  pool otherwise).
+  """
+  def holders_at_teardown do
+    me = self()
+
+    found =
+      for t <- :ets.all(),
+          :ets.info(t, :name) == DBConnection.Holder,
+          owner = :ets.info(t, :owner),
+          is_pid(owner),
+          owner != me,
+          info = Process.info(owner, [:initial_call, :current_stacktrace, :dictionary]),
+          info != nil do
+        callers = Keyword.get(Keyword.get(info, :dictionary, []), :"$callers")
+
+        %{
+          holder: t,
+          owner: owner,
+          initial_call: Keyword.get(info, :initial_call),
+          in_my_callers: is_list(callers) and me in callers,
+          callers: callers,
+          stacktrace: Keyword.get(info, :current_stacktrace)
+        }
+      end
+
+    if found != [] do
+      File.write!(@holders, [inspect(found, limit: :infinity), "\n"], [:append])
+    end
+
+    found
+  rescue
+    _ -> []
+  end
 
   def adding_handler(config), do: {:ok, config}
   def removing_handler(_config), do: :ok
