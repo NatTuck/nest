@@ -80,13 +80,16 @@ defmodule NestWeb.LobbyChannel.ProbeCacheTest do
       assert :ok = MultimodalCache.put(provider(), "m", :positive)
 
       ref = push(socket, "probe_cache_stats", %{})
-      assert_reply ref, :ok, %{"stats" => stats}, 1_000
+      assert_reply ref, :ok, %{"stats" => stats}, 500
 
       assert stats.entries == 1
       assert stats.oldest_age_s >= 0
       assert stats.path == path
 
-      # A read: every session on the topic is not told about it.
+      # A read: every session on the topic is not told about it. The `0` fence
+      # is sound only while `probe_cache_stats` has a single emitter
+      # (`ProbeCache.clear/0`): a second one could land between the reply and
+      # this line.
       refute_push "probe_cache_stats", _, 0
     end
 
@@ -100,8 +103,8 @@ defmodule NestWeb.LobbyChannel.ProbeCacheTest do
       ref = push(socket, "clear_probe_cache", %{})
 
       expected = %{entries: 0, oldest_age_s: nil, path: path}
-      assert_reply ref, :ok, %{"stats" => ^expected}, 1_000
-      assert_push "probe_cache_stats", %{stats: ^expected}, 1_000
+      assert_reply ref, :ok, %{"stats" => ^expected}, 500
+      assert_push "probe_cache_stats", %{stats: ^expected}, 500
 
       assert MultimodalCache.get(provider(), "m") == nil
       assert File.read!(path) =~ ~s("providers": {})
@@ -116,7 +119,7 @@ defmodule NestWeb.LobbyChannel.ProbeCacheTest do
       ref = push(socket, "clear_probe_cache", %{})
 
       expected = %{entries: 0, oldest_age_s: nil, path: path}
-      assert_reply ref, :ok, %{"stats" => ^expected}, 1_000
+      assert_reply ref, :ok, %{"stats" => ^expected}, 500
       assert File.exists?(path)
     end
 
@@ -129,11 +132,15 @@ defmodule NestWeb.LobbyChannel.ProbeCacheTest do
 
       for event <- ["probe_cache_stats", "clear_probe_cache"] do
         ref = push(bob_socket, event, %{})
-        assert_reply ref, :error, %{"reason" => "forbidden"}, 1_000
+        assert_reply ref, :error, %{"reason" => "forbidden"}, 500
       end
 
       assert File.read!(path) == before
       assert MultimodalCache.get(provider(), "m") == :positive
+
+      # `probe_cache_stats` has a single emitter (`ProbeCache.clear/0`), so
+      # with the bounded reply above already received this `0` fence decides
+      # the absence: a broadcast would have been emitted before the reply.
       refute_push "probe_cache_stats", _, 0
     end
   end

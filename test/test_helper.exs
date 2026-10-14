@@ -275,6 +275,38 @@ for mod <- modules do
   Code.ensure_loaded(mod)
 end
 
+# Warm the TOML encoder chain (#21).
+#
+# `Writer.save_providers/2`'s first call in a VM loads modules lazily inside
+# `TomlElixir.encode/1`, and the code server is shared, so the first call is
+# charged to whichever test happens to save first — inside that test's 3000 ms
+# deadline. Measured on this host, in a full `mix test` run: 83 ms for the
+# first `TomlElixir.encode/1`, 100 ms for the first `Writer.save_providers/2`,
+# and once 630 ms and once 1.18 s, against 45 µs for the same first call in an
+# idle VM and ~350 µs hot. Paying it here, before any deadline, moves it out of
+# every test's window exactly like the code-server and agent-start warm-ups
+# above; it also fixes `writer_test.exs`, whose first save pays the same cost.
+#
+# The call takes a non-empty map on purpose. `TomlElixir.encode(%{})` loads
+# `TomlElixir.Encoder.Serializer` but short-circuits before it reaches
+# `TomlElixir.Encoder.Helpers`, so an empty table does not warm both modules
+# this exists to warm. One key is enough: `Helpers.encode_key/1` (and, for the
+# string value, `Helpers.escape_string/1`) then load.
+_ = TomlElixir.encode(%{"warmup" => "warmup"})
+
+# Fail loudly if the warm-up did not take. This is what stops a future reader
+# from deleting it as dead code and letting the flake return silently, and it
+# mirrors the `:nest` module list's fail-loud check above: a reader must not
+# believe a warm-up is in force when it is not.
+not_loaded =
+  for mod <- [TomlElixir.Encoder.Serializer, TomlElixir.Encoder.Helpers],
+      not Code.ensure_loaded?(mod),
+      do: mod
+
+if not_loaded != [] do
+  raise "TOML encoder warm-up did not load #{inspect(not_loaded)}"
+end
+
 # Warm the agent-start path (#21).
 #
 # `Agent.init/1` runs inside the supervisor's critical section —

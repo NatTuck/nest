@@ -160,8 +160,8 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # The reply and the `providers_updated` push are the events that decide
       # these two assertions: each carries its own real bound, rather than
       # synchronising on the channel process to read them with a `0` fence.
-      assert_reply ref, :ok, %{}, 1_000
-      assert_push "providers_updated", %{providers: providers}, 1_000
+      assert_reply ref, :ok, %{}, 500
+      assert_push "providers_updated", %{providers: providers}, 500
 
       assert Enum.any?(providers, &(&1["name"] == "acme"))
       assert File.exists?(local_file)
@@ -183,11 +183,11 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
           ]
         })
 
-      assert_reply ref, :ok, %{}, 1_000
+      assert_reply ref, :ok, %{}, 500
 
       # The push serializes the config the handler just reloaded, so this pins
       # the outbound `true` as well as the `false` the two defaults produce.
-      assert_push "providers_updated", %{providers: providers}, 1_000
+      assert_push "providers_updated", %{providers: providers}, 500
 
       by_name = Map.new(providers, &{&1["name"], &1["probe_multimodal"]})
       assert by_name["opted-in"] == true
@@ -250,7 +250,10 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
 
       # The handler has already returned its error reply (`assert_reply`
       # above), and a channel broadcasts before it replies — so a broadcast
-      # would already be in this mailbox. No wait is needed.
+      # would already be in this mailbox. No wait is needed. The `0` fence is
+      # sound only while `providers_updated` has a single emitter
+      # (`Providers.save/2`): a second one could land between the reply and
+      # this line.
       refute_push "providers_updated", _, 0
     end
   end
