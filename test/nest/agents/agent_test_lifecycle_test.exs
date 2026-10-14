@@ -155,7 +155,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       assert result.in_flight == []
       assert result.not_stopped == [{space_id, name}]
 
-      assert_raise RuntimeError, ~r/did not stop within 250 ms of :shutdown/, fn ->
+      assert_raise RuntimeError, ~r/did not stop within 150 ms of :shutdown/, fn ->
         AgentTestLifecycle.assert_zero_remaining!(result)
       end
 
@@ -245,11 +245,11 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       # The bound is a liveness bound and has to keep clearing the handshake,
       # which contains `terminate/2`'s `File.rm_rf` and a `:file_server`
       # round-trip. Measured: 25-110 us with an idle host, a flat 8.5-9.1 ms
-      # plateau under CPU saturation, and over 250 ms for a 500-file scratch
-      # directory on the slow host under load. Tightening this back toward the
+      # plateau under CPU saturation, and 332-597 ms for a 100-entry scratch
+      # directory under the same load. Tightening this back toward the
       # handshake is the bug this guard was fixed for, so the floor is pinned
       # rather than left to a comment.
-      assert AgentTestLifecycle.stop_bound_ms() >= 250
+      assert AgentTestLifecycle.stop_bound_ms() >= 150
     end
   end
 

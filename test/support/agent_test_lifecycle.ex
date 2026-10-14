@@ -74,9 +74,13 @@ defmodule Nest.Agents.AgentTestLifecycle do
   # The one measurement behind it is a single, right-censored run: 473 answers at
   # `max_cases: 16` took p50 21 us / p99 84 us / max 3.3 ms. A read that does not
   # answer inside the bound is a timeout, not a latency, so the sample cannot say
-  # how often a healthy agent fails to answer — and this repo's loaded
-  # measurement (48 CPU burners: p50 926 ms, max 1534 ms) shows the bound *can* be
-  # reached under load. Command and caveats: `notes/sketchy-slow-tests.md` §11.
+  # how often a healthy agent fails to answer. This comment used to cite "48 CPU
+  # burners: p50 926 ms" as a loaded round-trip figure, which is not what that
+  # measurement is: it is the *whole turn* in `sub_agent_tools_helpers.ex`'s fence
+  # sizing — a mocked LLM call, a real sub-agent spawn with DB writes, and a
+  # second mocked call. Measured directly, one `get_status/2` round trip is 117 us
+  # under 32 burners, so the bound is reached far less easily than that citation
+  # implied. Command and caveats: `notes/sketchy-slow-tests.md` §11.
   @answer_ms 250
 
   # How long one agent's stop waits for its `:DOWN` after
@@ -125,7 +129,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
   #
   # Real scratch directories are empty, so the empty-directory cost is the
   # realistic one: of 25 sampled across a full suite run, 23 held 0 entries and 2
-  # held 1. 250 ms clears ~9 ms by ~27x even under full CPU saturation, and
+  # held 1. 150 ms clears ~9 ms by ~16x even under full CPU saturation, and
   # `celedyr` — which reproduced the old failure as 4-24 detector failures per run
   # — now produces none at `max_cases` 8, 12 and 24.
   #
@@ -139,15 +143,19 @@ defmodule Nest.Agents.AgentTestLifecycle do
   #                           {Nest.Agents.Agent.TmpSpace, :cleanup, 2},
   #                           {Nest.Agents.Agent, :terminate, 2}, ...]]
   #
-  # That is an agent that *is* stopping, parked in the file server. The "already
-  # idle" invariant is therefore asserted from state instead — `sample_status/1`
+  # That is an agent that *is* stopping — a location, not a cause, which is why
+  # the cost above was attributed by measurement rather than by reading the frame.
+  # The "already idle" invariant is therefore asserted from state instead —
+  # `sample_status/1`
   # -> `in_flight`, where no clock can stand in for it — and this bound keeps
   # only the weaker job underneath it: an agent that never reaches its receive
   # loop never handles the `{:EXIT, _, :shutdown}` signal and never dies, and
-  # that is what it still catches. 250 ms is ~20x the worst handshake measured
-  # on the slowest host in this project (`celedyr`), and small enough that a
-  # genuinely stuck agent does not blow the suite's time budget.
-  @stop_ms 250
+  # that is what it still catches. 150 ms is ~14x the worst handshake measured on
+  # the slowest host in this project (`celedyr`, 10.4-11.1 ms under suite load),
+  # and it is deliberately no larger: two pins have to *reach* the bound to prove
+  # the gate can fail, so the suite pays 2x it, and the 5 s budget on the fast host
+  # is tight enough that the cost is worth keeping down.
+  @stop_ms 150
 
   @doc """
   The stop's liveness bound, in milliseconds (see `@stop_ms`).
