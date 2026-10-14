@@ -389,6 +389,74 @@ describe("channels", () => {
       assert.strictEqual(useStore.getState().archivedAgents[0].name, "sub");
     });
 
+    it("should mark an agent stopped on agent:stopped event", async () => {
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [{ name: "sub", space_id: 7, model: { name: "gpt-4" } }],
+          archived_agents: [],
+          models: [],
+        },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length, 1);
+      });
+
+      // The premise: the row starts on the neutral default, so the assertion
+      // below cannot pass because the status was already "stopped". That
+      // default is the lie this frame exists to correct — a row with no live
+      // process is not idle.
+      assert.strictEqual(useStore.getState().agents[0].status, "idle");
+
+      simulateServerEvent("lobby", "agent:stopped", {
+        space_id: 7,
+        name: "sub",
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents[0].status, "stopped");
+      });
+
+      // Still listed. A stopped agent has no process, but it is not gone: it
+      // is rehydrated on demand the next time it is addressed, so dropping the
+      // row would be a different and false claim.
+      assert.strictEqual(useStore.getState().agents.length, 1);
+    });
+
+    it("should leave an archived agent alone when a late agent:stopped arrives", async () => {
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [{ name: "sub", space_id: 7, model: { name: "gpt-4" } }],
+          archived_agents: [],
+          models: [],
+        },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length, 1);
+      });
+
+      // An archive stops the agent too, and the stop is emitted by the agent's
+      // own `terminate/2`, so it can arrive second. It must not pull the row
+      // back into the active list — the archive already said where it went.
+      simulateServerEvent("lobby", "agent:archived", {
+        space_id: 7,
+        name: "sub",
+      });
+      simulateServerEvent("lobby", "agent:stopped", {
+        space_id: 7,
+        name: "sub",
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().archivedAgents.length, 1);
+      });
+      assert.strictEqual(useStore.getState().agents.length, 0);
+      assert.strictEqual(useStore.getState().archivedAgents[0].name, "sub");
+    });
+
     it("should move an agent back to agents on agent:unarchived event", async () => {
       setNextJoinResult("lobby", {
         autoInit: {

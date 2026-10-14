@@ -54,9 +54,63 @@ defmodule Nest.Agents.Agent.Broadcasts do
   reaches exactly the clients that can see its space. The pre-#41 global
   `"lobby"` broadcast reached every connected user, whatever space they
   were in.
+
+  The payload is built here, from `attrs`, rather than by the caller (#72).
+  Two callers — the lobby's space-creation path and `Agent.SubAgent`'s spawn
+  path — used to build their own maps, so the two shapes could drift while the
+  client (`assets/js/store/slices/catalog.js`'s `normalizeAgent/1`) read them
+  as one. Every key is present in every frame, so a frame's shape is a property
+  of this function and not of which caller sent it; a caller that has nothing
+  to say about a field omits it and the field is explicitly `nil` (or the
+  documented default) on the wire, rather than absent and indistinguishable
+  from a field the client has never been told about.
+
+  `attrs` keys: `:name` (required), `:model`, `:status` (default `"idle"`),
+  `:vocation`, `:workspace_path`, `:parent_id`, `:parent_name`, `:depth`
+  (default `0`).
   """
-  @spec agent_created(integer(), map()) :: :ok
-  def agent_created(space_id, payload), do: lifecycle(space_id, :agent_created, payload)
+  @spec agent_created(integer(), keyword()) :: :ok
+  def agent_created(space_id, attrs) do
+    lifecycle(space_id, :agent_created, created_payload(space_id, attrs))
+  end
+
+  @doc false
+  # The single construction site for the `agent:created` payload (#72). Public
+  # only so a test can pin the shape without going through PubSub.
+  @spec created_payload(integer(), keyword()) :: map()
+  def created_payload(space_id, attrs) do
+    %{
+      "name" => Keyword.fetch!(attrs, :name),
+      "space_id" => space_id,
+      "model" => model_payload(Keyword.get(attrs, :model)),
+      "status" => Keyword.get(attrs, :status, "idle"),
+      "vocation" => Keyword.get(attrs, :vocation),
+      "workspace_path" => Keyword.get(attrs, :workspace_path),
+      "parentId" => Keyword.get(attrs, :parent_id),
+      "parentName" => Keyword.get(attrs, :parent_name),
+      "depth" => Keyword.get(attrs, :depth, 0)
+    }
+  end
+
+  @doc """
+  Announce that an agent stopped (#73).
+
+  Emitted by the agent itself from `Agent.terminate/2`, so the frame is a fact
+  rather than a prediction: `Supervisor.stop_agent/2` fires an exit signal and
+  returns, and nothing outside that callback knows the process has actually
+  gone. Emitting there also means every way an agent can end is covered — a
+  plain stop, an archive, a crash, a reload — because all of them run it.
+
+  One consequence is worth knowing: an archive therefore produces this frame
+  *and* `agent:archived`. They do not contradict each other, since an archived
+  agent is also stopped, and the client's handler only touches rows still in its
+  active list — so a stop that arrives after the archive is a no-op rather than
+  a resurrection. See `assets/js/store/slices/catalog.js`'s `markAgentStopped`.
+
+  See `agent_created/2` for the topic and audience.
+  """
+  @spec agent_stopped(integer(), map()) :: :ok
+  def agent_stopped(space_id, payload), do: lifecycle(space_id, :agent_stopped, payload)
 
   @doc """
   Announce that an agent — and, because archiving recurses, its whole

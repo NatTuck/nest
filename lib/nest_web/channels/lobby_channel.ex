@@ -160,6 +160,12 @@ defmodule NestWeb.LobbyChannel do
   end
 
   @impl true
+  def handle_info({:agent_stopped, payload}, socket) do
+    push(socket, "agent:stopped", payload)
+    {:noreply, socket}
+  end
+
+  @impl true
   def handle_info({:agent_archived, payload}, socket) do
     push(socket, "agent:archived", payload)
     {:noreply, socket}
@@ -602,14 +608,19 @@ defmodule NestWeb.LobbyChannel do
     |> maybe_add_opt(:workspace_path, workspace_path)
   end
 
+  # The payload is `Broadcasts`'s to build (#72); this passes what the
+  # space-creation path knows. The model goes in whole rather than as a
+  # name/provider pair, because `Broadcasts.created_payload/2` runs it through
+  # the same `model_payload/1` the status broadcast uses — so a root agent's
+  # frame now carries the same model shape a subagent's does instead of a
+  # narrower one.
   defp broadcast_agent_created(space_id, name, model, vocation, workspace_path) do
-    Broadcasts.agent_created(space_id, %{
-      "name" => name,
-      "space_id" => space_id,
-      "model" => %{"name" => model.name, "provider" => model.provider},
-      "vocation" => vocation,
-      "workspace_path" => workspace_path
-    })
+    Broadcasts.agent_created(space_id,
+      name: name,
+      model: model,
+      vocation: vocation,
+      workspace_path: workspace_path
+    )
   end
 
   defp build_model_map(model_params) do
