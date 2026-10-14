@@ -227,10 +227,10 @@ defmodule Nest.DotConfig do
   end
 
   @doc """
-  Loads config from a specific file path. The parsed result is cached
-  per `{file_path, mtime}` so repeated loads (e.g. per agent spawn) don't
-  re-read + re-parse the file; the cache invalidates automatically when
-  the file's mtime changes.
+  Loads config from a specific file path. The parsed result is cached under
+  the file's identity (`{file_path, mtime, size}`) so repeated loads (e.g. per
+  agent spawn) don't re-read + re-parse it; see `invalidate_cache/1` for how a
+  replacement becomes visible.
   """
   def load(file_path) do
     case cached_config(file_path) do
@@ -240,6 +240,21 @@ defmodule Nest.DotConfig do
       :miss ->
         do_load(file_path)
     end
+  end
+
+  @doc """
+  Drop the cached parse of `path`, so the next `load/1` re-reads the file.
+
+  The cache's key is the file's identity (`{path, mtime, size}`), and
+  `File.stat/2`'s mtime is whole-second, so the key alone cannot distinguish
+  two replacements inside one second that keep the same byte count. A writer
+  that has just put new bytes in place therefore says so here instead of
+  relying on the key: `Nest.DotConfig.Writer.write_atomic/2` calls this.
+  """
+  @spec invalidate_cache(Path.t()) :: :ok
+  def invalidate_cache(path) do
+    :ets.match_delete(cache_table(), {{path, :_, :_}, :_})
+    :ok
   end
 
   defp do_load(file_path) do
@@ -282,17 +297,20 @@ defmodule Nest.DotConfig do
   end
 
   defp cached_config(path) do
-    with {:ok, %{mtime: mtime}} <- File.stat(path, time: :posix),
-         [{_, config}] <- :ets.lookup(cache_table(), {path, mtime}) do
+    with {:ok, %{mtime: mtime, size: size}} <- File.stat(path, time: :posix),
+         [{_, config}] <- :ets.lookup(cache_table(), {path, mtime, size}) do
       {:ok, config}
     else
       _ -> :miss
     end
   end
 
+  # One entry per path, not one per identity: the key changes whenever the
+  # mtime ticks, so an insert that kept the old entry would leak one per write.
   defp cache_config(path, config) do
-    with {:ok, %{mtime: mtime}} <- File.stat(path, time: :posix) do
-      :ets.insert(cache_table(), {{path, mtime}, config})
+    with {:ok, %{mtime: mtime, size: size}} <- File.stat(path, time: :posix) do
+      invalidate_cache(path)
+      :ets.insert(cache_table(), {{path, mtime, size}, config})
     end
   end
 

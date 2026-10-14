@@ -4,7 +4,11 @@ defmodule Nest.DotConfigTest do
   """
   use ExUnit.Case, async: true
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.DotConfig
+  alias Nest.DotConfig.Provider
+  alias Nest.DotConfig.Writer
 
   describe "load/0" do
     test "loads config from test/data/config.toml in test environment" do
@@ -94,6 +98,67 @@ defmodule Nest.DotConfigTest do
 
     test "returns error for non-existent file" do
       assert {:error, _} = DotConfig.load("/nonexistent/path/config.toml")
+    end
+  end
+
+  describe "the parse cache behind load/1" do
+    # `load/1` caches a parse under the file's *identity* — `File.stat/2`'s
+    # mtime and size. An mtime has one-second resolution, so an identity is
+    # not a content fingerprint, and a parse cached under it can be served
+    # for bytes that have since been replaced.
+    #
+    # These tests pin that hazard exactly instead of hoping two writes land
+    # inside the same wall-clock second: each one forces the file back onto
+    # the identity the stale parse was cached under. That is what makes the
+    # regression deterministic rather than timing-dependent.
+
+    test "re-reads a file the app just replaced, at an unchanged identity" do
+      path = cache_tmp_file("cache_rewrite")
+
+      assert :ok = Writer.save_providers([provider("acme")], path)
+      assert {:ok, first} = DotConfig.load(path)
+      assert Map.keys(first.providers) == ["acme"]
+
+      cached_mtime = mtime_of(path)
+      cached_size = size_of(path)
+
+      # `acmb` serializes to exactly the same number of bytes as `acme`, so
+      # the identity is unchanged in *both* of its terms. Nothing about the
+      # file on disk can tell the cache its parse is stale; only the writer's
+      # own invalidation can make this load see the new bytes.
+      assert :ok = Writer.save_providers([provider("acmb")], path)
+      File.touch!(path, cached_mtime)
+
+      # The premise the regression rests on: the identity really is the one
+      # the first parse was cached under. Without this the test could pass
+      # because the identity moved, which would test nothing.
+      assert mtime_of(path) == cached_mtime
+      assert size_of(path) == cached_size
+
+      assert {:ok, second} = DotConfig.load(path)
+      assert Map.keys(second.providers) == ["acmb"]
+    end
+
+    test "re-reads a file that changed without the app writing it" do
+      path = cache_tmp_file("cache_external")
+
+      File.write!(path, provider_toml("https://one.example/v1"))
+      assert {:ok, first} = DotConfig.load(path)
+      assert first.providers["acme"].base_url == "https://one.example/v1"
+
+      cached_mtime = mtime_of(path)
+
+      # A hand-edit: the app never wrote this file, so no writer is in a
+      # position to invalidate anything. The identity's `size` term is the
+      # only thing left that can catch it.
+      edited_url = "https://a-much-longer.example/v1"
+      File.write!(path, provider_toml(edited_url))
+      File.touch!(path, cached_mtime)
+
+      assert mtime_of(path) == cached_mtime
+
+      assert {:ok, second} = DotConfig.load(path)
+      assert second.providers["acme"].base_url == edited_url
     end
   end
 
@@ -545,4 +610,32 @@ defmodule Nest.DotConfigTest do
       end
     end
   end
+
+  # --- the parse-cache fixtures ---
+
+  defp provider(name) do
+    %Provider{name: name, base_url: "https://cache.example/v1", models: []}
+  end
+
+  defp provider_toml(base_url) do
+    """
+    [providers.acme]
+    base-url = "#{base_url}"
+    """
+  end
+
+  defp cache_tmp_file(label) do
+    path =
+      Path.join(System.tmp_dir!(), "#{label}_#{System.unique_integer([:positive])}.toml")
+
+    on_exit(fn -> rm_tmp!(path, label) end)
+    path
+  end
+
+  # The two terms of the identity the cache keys on. Reading them the same way
+  # `DotConfig` does is what lets a test say "the identity is unchanged", and
+  # `File.touch!/2` takes a posix second directly, so forcing one back needs no
+  # timezone-dependent `:calendar.datetime()` conversion.
+  defp mtime_of(path), do: File.stat!(path, time: :posix).mtime
+  defp size_of(path), do: File.stat!(path).size
 end
