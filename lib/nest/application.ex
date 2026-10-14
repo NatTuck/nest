@@ -11,13 +11,24 @@ defmodule Nest.Application do
 
   @impl true
   def start(_type, _args) do
+    # Start the cl100k_base vocabulary build first and await it last.
+    #
+    # `Tokenizer.load/0` is ~125ms of Rust-side work (parse the bundled
+    # JSON, build the BPE vocabulary) and it is independent of the
+    # supervision tree below, which costs a further ~70ms. Running it
+    # concurrently means boot pays the *larger* of the two instead of
+    # their sum, while keeping the invariant that matters: `start/2` does
+    # not return until the tokenizer is in `:persistent_term`, so
+    # `Tokenizer.count/1` can never observe a half-loaded app and a
+    # failure to load still fails the application start loudly.
+    #
+    # Nothing in the supervision tree may call `Tokenizer.count/1` (only
+    # `Nest.Tokens.Estimator` does, and nothing reaches it from a child's
+    # `init/1`) — if that ever changes, that child must await the task.
+    tokenizer_task = Task.async(&Tokenizer.load/0)
+
     # Check system dependencies first
     check_system_dependencies!()
-
-    # Load the cl100k_base tokenizer once, before any agent can size
-    # a context window. `:persistent_term` makes the hot-path
-    # `Estimator` reads lock-free.
-    Tokenizer.load()
 
     base_children = [
       NestWeb.Telemetry,
@@ -49,7 +60,11 @@ defmodule Nest.Application do
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Nest.Supervisor]
-    Supervisor.start_link(children, opts)
+    result = Supervisor.start_link(children, opts)
+
+    Task.await(tokenizer_task, 60_000)
+
+    result
   end
 
   # Tell Phoenix to update the endpoint configuration
