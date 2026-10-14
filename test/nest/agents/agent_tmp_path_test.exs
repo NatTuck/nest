@@ -78,10 +78,20 @@ defmodule Nest.Agents.AgentTmpPathTest do
 
     test "passes tmp_path to agent state" do
       {pid, _name} = start_agent()
-      info = Agent.get_public_info(pid)
 
-      assert info.tmp_path =~ ~r|/tmp/nest-#{System.pid()}/space-\d+/agent\d+|,
-             "Expected tmp_path to match pattern, got: #{inspect(info.tmp_path)}"
+      # Read the agent's own state rather than the introspection payload:
+      # the scratch dir is a real host directory and is deliberately not on
+      # the wire (asserted below).
+      # allowlist: snapshot — tmp_path
+      state = :sys.get_state(pid, 1_000)
+
+      assert state.tmp_path =~ ~r|/tmp/nest-#{System.pid()}/space-\d+/agent\d+|,
+             "Expected tmp_path to match pattern, got: #{inspect(state.tmp_path)}"
+
+      # It must not reach a client either. `build_public_info/1` is what the
+      # channels push, and #79 removed the field from it so the one remaining
+      # host path outside `Nest.Sandbox.Mounts` stops leaving the boundary.
+      refute Map.has_key?(Agent.get_public_info(pid), :tmp_path)
     end
 
     test "cleans up tmp directory on agent termination" do
@@ -111,9 +121,11 @@ defmodule Nest.Agents.AgentTmpPathTest do
       AgentTestHelpers.ensure_cleanup(agent_id)
 
       {:ok, pid} = Nest.Agents.Supervisor.get_agent(AgentTestHelpers.current_space_id(), agent_id)
-      info = Agent.get_public_info(pid)
 
-      assert info.tmp_path == agent_tmp_path(current_space_id(), name)
+      # allowlist: snapshot — tmp_path
+      state = :sys.get_state(pid, 1_000)
+
+      assert state.tmp_path == agent_tmp_path(current_space_id(), name)
     end
 
     test "cleans up tmp directory when stopped via Supervisor.stop_agent/2" do
