@@ -1,0 +1,74 @@
+diff --git a/lib/nest/agents/agent/machine/compaction.ex b/lib/nest/agents/agent/machine/compaction.ex
+index cfd8929..a95297d 100644
+--- a/lib/nest/agents/agent/machine/compaction.ex
++++ b/lib/nest/agents/agent/machine/compaction.ex
+@@ -33,9 +33,46 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
+   alias Nest.Agents.Agent.Turn.ContextReminder
+   alias Nest.Agents.Agent.Turn.Dispatch
+   alias Nest.Agents.Agent.WorkspaceHandler
++  alias Nest.Messages.Part
++  alias Nest.Messages.User
+ 
+   @max_consecutive_compactions 3
+ 
++  @doc """
++  The transcript row for a manual `/compact [focus]` request (issue #98).
++
++  The request is a *message*, not only a control-plane event: the human asked
++  for something and the transcript has to say so. It is built as an ordinary
++  human `%User{}` — the same shape `ChatPipeline.build_user_message/3` gives a
++  typed message — so it renders, persists, and appears in the Ctrl/Cmd+Up
++  recall list like anything else the human typed.
++
++  It is appended *before* the compaction request is assembled, and it is not in
++  that request: the compactor's messages come from `work.ctx.messages`, the
++  snapshot `Turn.build_ctx/2` took when the turn's context was built, which
++  predates this append. The operator's guidance reaches the compactor through
++  `work.focus` exactly as before, so nothing is lost. After the compaction the
++  row sits below the new boundary and is never sent again either. A test pins
++  the "not in the request" half by inspecting the request the agent makes.
++  """
++  @spec request_message(Machine.t(), String.t() | nil) :: Nest.Messages.Message.t()
++  def request_message(m, focus) do
++    mode = m.work.ctx.mode
++
++    {:user,
++     %User{
++       index: nil,
++       timestamp: DateTime.utc_now(),
++       parts: [%Part.Text{text: "[mode: #{mode}]\n#{request_text(focus)}"}],
++       metadata: Map.merge(%{"mode" => mode}, User.human_metadata()),
++       api_logs: []
++     }}
++  end
++
++  defp request_text(nil), do: "/compact"
++  defp request_text(""), do: "/compact"
++  defp request_text(focus), do: "/compact #{focus}"
++
+   @doc "Stage a compaction turn (loop-breaker checked)."
+   @spec stage(Machine.t(), Machine.entry() | nil, Machine.entry() | nil) ::
+           {:ok, [term()], Machine.t()}
+diff --git a/lib/nest/agents/agent/machine/transitions.ex b/lib/nest/agents/agent/machine/transitions.ex
+index b696097..ab64dbe 100644
+--- a/lib/nest/agents/agent/machine/transitions.ex
++++ b/lib/nest/agents/agent/machine/transitions.ex
+@@ -251,8 +251,17 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
+   # consecutive-compaction counter before staging: three back-to-back manual
+   # requests are deliberate, not the automatic loop the breaker guards against.
+   # The optional `focus` rides on `work` into `Dispatch.compaction_plan/1`.
++  #
++  # The request is a message before it is a compaction (issue #98): the row is
++  # appended first, so the transcript records what the human asked for whether
++  # or not the compaction then runs (the loop breaker can refuse it). A refused
++  # append surfaces as `{:append_result, :invalid, _}` and fails the turn
++  # visibly, which is the disposition every other append gets.
+   def do_step(%{phase: :idle} = m, {:compact_request, focus}) do
+-    Compaction.stage(%{m | loop_count: 0, work: %{m.work | focus: focus}}, nil, nil)
++    {:ok, actions, machine} =
++      Compaction.stage(%{m | loop_count: 0, work: %{m.work | focus: focus}}, nil, nil)
++
++    {:ok, [{:append, Compaction.request_message(m, focus)} | actions], machine}
+   end
+ 
+   def do_step(%{phase: :idle} = m, {:inbox_drain, entries, content}),

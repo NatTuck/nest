@@ -1,0 +1,136 @@
+defmodule Nest.Agents.Agent.CompactionRequestMessageTest do
+  @moduledoc """
+  Issue #98: the manual `/compact [focus]` request is a *message*.
+
+  The human asked for something, so the transcript has to say so — the project
+  does not hide things from the user. The request is therefore appended as an
+  ordinary human `%User{}`, the same shape `ChatPipeline.build_user_message/3`
+  gives a typed message, so it renders, persists, and reaches the Ctrl/Cmd+Up
+  recall list like anything else the human typed.
+
+  It must not be sent to the model, and the exclusion is **not a filter**.
+  `Turn.build_ctx/2` snapshots `chat_state.messages` into `work.ctx.messages`,
+  and `Dispatch.compaction_plan/1` builds the compactor's request from that
+  snapshot — which predates this append. The operator's guidance already
+  reaches the compactor through `work.focus`, so a second copy as a chat
+  message would be a duplicate that then rode the active segment into every
+  later request. The request-inspecting test below is what keeps it absent:
+  if a future change refreshes the context between the append and the request,
+  that test fails loudly rather than the row silently leaking to the model.
+
+  Note the row's disposition: the compaction it requests archives it, so
+  afterwards it sits in the archived slice, rendered with the segment it
+  belongs to. That is why the visibility assertion reads the persisted
+  transcript rather than `chat_state.messages`.
+  """
+
+  use Nest.DataCase, async: true
+
+  import Mimic
+
+  alias Nest.Agents.Agent
+  alias Nest.LLM.MockClient
+  alias Nest.Persistence
+
+  setup :verify_on_exit!
+
+  setup do
+    Process.put(:nest_test_agent_pid, self())
+    MockClient.start_link()
+    MockClient.clear()
+
+    on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
+
+    :ok
+  end
+
+  import Nest.Agents.AgentTestHelpers
+  import Nest.Agents.AgentTurnTestHelpers
+
+  test "a manual /compact with a focus is visible, and is not in the compactor's request" do
+    {pid, _agent_id} = start_agent(default_attrs())
+    spy_on_requests(pid)
+
+    # The compactor's own call is the first request this agent makes.
+    MockClient.set_response("a summary")
+
+    assert :ok = Agent.compact(pid, "keep the API details")
+
+    # The transcript carries the request as the human's own words. Read the
+    # persisted sequence, not `chat_state.messages`: the compaction archives
+    # the segment the request belongs to, so it is a history row by now.
+    assert_receive {:chat_status, %{status: "idle"}}, 500
+
+    # allowlist: snapshot — space_id + name
+    state = :sys.get_state(pid, 500)
+
+    assert persisted_user_texts(state.space_id, state.name)
+           |> Enum.any?(&(&1 =~ "/compact keep the API details"))
+
+    # ...and it is not in the request the agent made. The compactor's own
+    # suffix is a `{:user, _}` too, and it does carry the focus — as guidance,
+    # rendered by `CompactionProbeSupport.compaction_suffix/2`, never as the
+    # command. The literal command text is what must be absent.
+    request = assert_request()
+
+    refute Enum.any?(user_texts(request), &String.contains?(&1, "/compact"))
+  end
+
+  test "a manual /compact with no focus is still visible" do
+    {pid, _agent_id} = start_agent(default_attrs())
+    MockClient.set_response("a summary")
+
+    assert :ok = Agent.compact(pid, nil)
+
+    assert_receive {:chat_status, %{status: "idle"}}, 500
+
+    # allowlist: snapshot — space_id + name
+    state = :sys.get_state(pid, 500)
+
+    texts = persisted_user_texts(state.space_id, state.name)
+
+    # `/compact` with no args is the whole request; the mode prefix is the
+    # same one every typed message carries.
+    assert Enum.any?(texts, &(&1 =~ "[mode: chat]\n/compact"))
+    refute Enum.any?(texts, &String.contains?(&1, "/compact "))
+  end
+
+  # --- helpers ---
+
+  defp default_attrs do
+    %{model: %{name: "qwen3.5-plus"}, vocation_id: programmer_vocation_id_for_test()}
+  end
+
+  # The `{:user, _}` texts of the agent's *persisted* transcript — the active
+  # rows plus the archived slice, which is what a reload renders. `index` and
+  # role are not consulted: the question is only what the human's rows say.
+  defp persisted_user_texts(space_id, name) do
+    active =
+      case Persistence.load_messages(space_id, name) do
+        {:ok, messages} -> messages
+        _ -> []
+      end
+
+    archived =
+      case Persistence.load_history(space_id, name) do
+        {:ok, messages} -> messages
+        _ -> []
+      end
+
+    user_texts(active ++ archived)
+  end
+
+  # Record the message list of every request the agent makes, then hand off to
+  # the scripted `MockClient` (the `TurnAcceptanceTest` spy, as
+  # `ReplyDebtTest` carries it).
+  defp spy_on_requests(pid) do
+    test_pid = self()
+
+    Mimic.stub(MockClient, :run, fn request, opts ->
+      send(test_pid, {:llm_request, request.messages})
+      Mimic.call_original(MockClient, :run, [request, opts])
+    end)
+
+    Mimic.allow(MockClient, self(), pid)
+  end
+end
