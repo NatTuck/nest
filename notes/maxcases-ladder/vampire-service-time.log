@@ -1,0 +1,56 @@
+host	op	callers	samples	mean_us	p50_us	p99_us	max_us
+vampire	gen_server_call	1	300	0.5	0	4	7
+vampire	file_stat_missing	1	300	4.0	4	8	17
+warning: Range.new/2 and first..last default to a step of -1 when last < first. Use Range.new(first, last, -1) or first..last//-1, or pass 1 if that was your intention
+  tmp/maxcases-ladder/service_time.exs:69: anonymous fn/3 in SvcTime.rm_rf/3
+  (elixir 1.18.4) lib/enum.ex:4484: Enum.map/2
+  tmp/maxcases-ladder/service_time.exs:66: anonymous fn/3 in SvcTime.rm_rf/3
+  (elixir 1.18.4) lib/task/supervised.ex:101: Task.Supervised.invoke_mfa/2
+  (elixir 1.18.4) lib/task/supervised.ex:36: Task.Supervised.reply/4
+
+vampire	rm_rf_empty	1	50	67.1	65	143	143
+vampire	rm_rf_3files	1	50	90.6	87	182	182
+vampire	mimic_stub	1	300	2.2	2	13	36
+vampire	mimic_allow	1	300	1.3	1	5	47
+vampire	postgres_query	1	300	48.6	22	157	7270
+vampire	gen_server_call	2	600	2.4	1	17	250
+vampire	file_stat_missing	2	600	4.8	3	22	33
+vampire	rm_rf_empty	2	100	104.1	111	181	181
+vampire	rm_rf_3files	2	100	94.2	94	119	119
+vampire	mimic_stub	2	600	3.2	2	16	37
+vampire	mimic_allow	2	600	3.0	2	23	44
+vampire	postgres_query	2	600	37.7	27	179	541
+vampire	gen_server_call	4	1200	9.5	9	23	35
+vampire	file_stat_missing	4	1200	14.8	15	36	43
+vampire	rm_rf_empty	4	200	215.4	213	286	297
+vampire	rm_rf_3files	4	200	272.0	271	324	331
+vampire	mimic_stub	4	1200	11.0	10	35	77
+vampire	mimic_allow	4	1200	13.8	10	67	128
+vampire	postgres_query	4	1200	39.4	35	88	746
+vampire	gen_server_call	8	2400	7.5	6	29	111
+vampire	file_stat_missing	8	2400	33.5	33	50	65
+vampire	rm_rf_empty	8	400	350.6	327	828	938
+vampire	rm_rf_3files	8	400	459.1	423	918	1003
+vampire	mimic_stub	8	2400	12.0	8	37	1597
+vampire	mimic_allow	8	2400	13.4	11	73	392
+vampire	postgres_query	8	2400	55.2	49	122	598
+vampire	gen_server_call	16	4800	6.5	6	21	41
+vampire	file_stat_missing	16	4800	38.8	32	100	122
+vampire	rm_rf_empty	16	800	976.7	978	1448	1497
+vampire	rm_rf_3files	16	800	867.8	836	1312	1322
+vampire	mimic_stub	16	4800	47.3	29	218	2705
+vampire	mimic_allow	16	4800	14.0	13	56	141
+vampire	postgres_query	16	4800	101.4	98	178	646
+vampire	gen_server_call	32	9600	36.8	34	98	203
+vampire	file_stat_missing	32	9600	155.9	158	207	246
+vampire	rm_rf_empty	32	1600	1311.4	1260	2071	2165
+vampire	rm_rf_3files	32	1600	1998.6	1844	3172	3477
+vampire	mimic_stub	32	9600	112.6	73	555	14521
+vampire	mimic_allow	32	9600	36.8	28	153	368
+vampire	postgres_query	32	9600	135.9	126	374	3470
+# --- :file_server_2 reachability probe (messages received during 200 ops) ---
+# rm_rf_empty     	1200
+# file_stat       	200
+# gen_server_call 	0
+# postgres_query  	0
+# load1 	1.8

@@ -1,0 +1,56 @@
+host	op	callers	samples	mean_us	p50_us	p99_us	max_us
+celedyr	gen_server_call	1	300	6.0	6	15	20
+celedyr	file_stat_missing	1	300	24.5	22	74	186
+warning: Range.new/2 and first..last default to a step of -1 when last < first. Use Range.new(first, last, -1) or first..last//-1, or pass 1 if that was your intention
+  tmp/maxcases-ladder/service_time.exs:69: anonymous fn/3 in SvcTime.rm_rf/3
+  (elixir 1.18.4) lib/enum.ex:4484: Enum.map/2
+  tmp/maxcases-ladder/service_time.exs:66: anonymous fn/3 in SvcTime.rm_rf/3
+  (elixir 1.18.4) lib/task/supervised.ex:101: Task.Supervised.invoke_mfa/2
+  (elixir 1.18.4) lib/task/supervised.ex:36: Task.Supervised.reply/4
+
+celedyr	rm_rf_empty	1	50	267.7	254	400	400
+celedyr	rm_rf_3files	1	50	248.8	246	300	300
+celedyr	mimic_stub	1	300	13.3	12	34	88
+celedyr	mimic_allow	1	300	8.7	8	18	49
+celedyr	postgres_query	1	300	395.7	285	746	15856
+celedyr	gen_server_call	2	600	10.3	5	26	1888
+celedyr	file_stat_missing	2	600	48.3	44	112	142
+celedyr	rm_rf_empty	2	100	454.5	455	716	716
+celedyr	rm_rf_3files	2	100	405.3	401	521	521
+celedyr	mimic_stub	2	600	15.2	15	38	144
+celedyr	mimic_allow	2	600	22.8	21	60	86
+celedyr	postgres_query	2	600	424.2	374	866	1843
+celedyr	gen_server_call	4	1200	23.8	23	46	70
+celedyr	file_stat_missing	4	1200	78.4	73	122	167
+celedyr	rm_rf_empty	4	200	820.1	896	1191	1205
+celedyr	rm_rf_3files	4	200	1197.0	1250	1417	1426
+celedyr	mimic_stub	4	1200	41.2	40	99	141
+celedyr	mimic_allow	4	1200	35.2	33	86	122
+celedyr	postgres_query	4	1200	440.9	413	837	2292
+celedyr	gen_server_call	8	2400	41.3	38	95	201
+celedyr	file_stat_missing	8	2400	158.7	153	242	398
+celedyr	rm_rf_empty	8	400	1363.1	1269	2058	2104
+celedyr	rm_rf_3files	8	400	2187.7	1940	4538	4615
+celedyr	mimic_stub	8	2400	81.4	57	305	12114
+celedyr	mimic_allow	8	2400	70.2	62	162	682
+celedyr	postgres_query	8	2400	551.5	535	909	2233
+celedyr	gen_server_call	16	4800	67.1	63	158	366
+celedyr	file_stat_missing	16	4800	265.4	265	446	586
+celedyr	rm_rf_empty	16	800	2705.2	2614	3939	4318
+celedyr	rm_rf_3files	16	800	4178.8	4099	5295	6135
+celedyr	mimic_stub	16	4800	262.8	114	1940	59190
+celedyr	mimic_allow	16	4800	102.1	88	360	880
+celedyr	postgres_query	16	4800	634.2	607	1234	3789
+celedyr	gen_server_call	32	9600	105.6	101	259	523
+celedyr	file_stat_missing	32	9600	574.4	566	744	894
+celedyr	rm_rf_empty	32	1600	6729.1	7096	8863	9743
+celedyr	rm_rf_3files	32	1600	8625.7	8772	11620	12920
+celedyr	mimic_stub	32	9600	997.3	551	4611	78861
+celedyr	mimic_allow	32	9600	232.3	203	853	1260
+celedyr	postgres_query	32	9600	784.5	740	1936	5480
+# --- :file_server_2 reachability probe (messages received during 200 ops) ---
+# rm_rf_empty     	1200
+# file_stat       	200
+# gen_server_call 	0
+# postgres_query  	0
+# load1 	2.43
