@@ -294,14 +294,21 @@ end
 # string value, `Helpers.escape_string/1`) then load.
 _ = TomlElixir.encode(%{"warmup" => "warmup"})
 
-# Fail loudly if the warm-up did not take. This is what stops a future reader
-# from deleting it as dead code and letting the flake return silently, and it
-# mirrors the `:nest` module list's fail-loud check above: a reader must not
-# believe a warm-up is in force when it is not.
+# Fail loudly if the warm-up did not take, so a future reader cannot delete the
+# line above as dead code and let the flake return silently.
+#
+# `:code.is_loaded/1` and not `Code.ensure_loaded?/1`: the latter *loads* the
+# module it is asked about, so it reports every module as loaded whether or not
+# the warm-up ran, and this guard would then pass over a deleted warm-up. (The
+# `:nest` module list above uses `Code.ensure_loaded/1` deliberately — there the
+# point *is* to load.) `:code.is_loaded/1` answers `false` for a module that is
+# not loaded and a `{:file, _}` tuple once it is, which is what `Enum.reject/2`
+# reads as "not loaded".
 not_loaded =
-  for mod <- [TomlElixir.Encoder.Serializer, TomlElixir.Encoder.Helpers],
-      not Code.ensure_loaded?(mod),
-      do: mod
+  Enum.reject(
+    [TomlElixir.Encoder.Serializer, TomlElixir.Encoder.Helpers],
+    &:code.is_loaded/1
+  )
 
 if not_loaded != [] do
   raise "TOML encoder warm-up did not load #{inspect(not_loaded)}"

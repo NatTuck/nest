@@ -59,6 +59,14 @@ defmodule Nest.Agents.Registry do
   failed start: `gen_server` calls `gen:unregister_name/1` from inside the child,
   for precisely this "the parent could get an already_started error" reason.)
 
+  Releasing from the owner is also what keeps this safe when a replacement is
+  starting at the same moment. `Registry.unregister/2` drops the entry *and* calls
+  the registry's `unlink_if_unregistered/3`, so a process that gives up its last
+  key is unlinked from its partition server and that server will therefore never
+  run its link-`:EXIT` cleanup for it later. That matters because the cleanup keys
+  on `{space_id, name}`: run against a name a replacement had already taken, it
+  would delete the replacement's entry rather than this process's.
+
   Returns `{:error, :registry_unavailable}` when the registry is already gone,
   which happens during application shutdown — the registry is a separate process
   and a dying agent must not crash over it. A shutdown path may ignore that: the

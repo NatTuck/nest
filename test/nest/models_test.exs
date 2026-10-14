@@ -207,9 +207,10 @@ defmodule Nest.ModelsTest do
       # `pegasus-per-model-test` is a static-config entry with
       # `context-limit = 32000`. The provider's scan also reports
       # `max_model_len = 65536` for that same name, and `pegasus` has
-      # `default-context-limit = 512000`. The per-model static value
-      # outranks both, so all three tiers are pinned in one place:
-      # static > discovery cache > provider default.
+      # `default-context-limit = 512000`. The per-model static value outranks
+      # both, so this pins the top of the chain — static > discovery cache — and
+      # the provider default is the floor the sibling test above pins, where a
+      # model with no static entry takes 512000.
       assert Models.context_limit("pegasus", "pegasus-per-model-test") == {:vllm, 65_536}
 
       per_model = Enum.find(Models.list(), fn m -> m["name"] == "pegasus-per-model-test" end)
