@@ -3,8 +3,8 @@
 #
 #   MIX_ENV=test mix run tmp/maxcases-ladder/roundtrip.exs
 #
-# Why this and not a filesystem throughput curve: `:file_server` is a
-# *location*, not a cause. The teardown tail survives removing every
+# Why this and not a filesystem throughput curve: the serializing process is
+# `file_server_2`, and it is a *location*, not a cause. The teardown tail survives removing every
 # cross-process call from `Agent.terminate/2` (see `@stop_ms`'s docstring), and
 # a pure `Agent.ClientAPI.get_status/2` round trip to an idle agent -- no
 # filesystem at all -- measured p50 926 ms / max 1534 ms under 48 CPU burners
