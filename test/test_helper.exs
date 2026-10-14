@@ -1,37 +1,155 @@
-Mimic.copy(Nest.LLM.OpenAIClient)
-Mimic.copy(Req)
-Mimic.copy(Nest.DotConfig)
-Mimic.copy(Nest.LLM.MockClient)
-Mimic.copy(Nest.LLM.AnthropicClient)
-Mimic.copy(Nest.Models)
-Mimic.copy(Nest.Persistence)
-Mimic.copy(Nest.Vocations)
-Mimic.copy(Nest.Agents.Agent)
-Mimic.copy(Nest.Agents.Agent.Config)
-Mimic.copy(Nest.Agents)
-Mimic.copy(Nest.Agents.Supervisor)
-Mimic.copy(Phoenix.Channel)
-
+# Modules Mimic swaps for a proxy. Written once, and used for both the
+# `Mimic.copy/1` calls below and the eager copy that follows them, so the two
+# cannot drift apart.
+#
 # Copied here, never per-test: Mimic's copy swaps the module for its proxy and
 # re-imports coverdata around the swap, so a copy that runs *during* the suite
 # (from an async module's `setup`) makes that module's coverage depend on test
 # order — enough to swing the total across the `minimum_coverage` gate in
 # ./coveralls.json. `Nest.ChatModel` and `Nest.Agents.Registry` are both
 # exercised by other tests, so they belong in this list.
-Mimic.copy(Nest.ChatModel)
-Mimic.copy(Nest.Agents.Registry)
-# `Task.Supervisor` is copied here for the same reason, and because it is used
+#
+# `Task.Supervisor` is here for the same reason, and because it is used
 # concurrently by other tests: the give-up's delivery stubs it to force a
 # refusal, and a per-test copy would swap the module out from under whatever
 # else is starting a task.
-Mimic.copy(Task.Supervisor)
+#
+# `Nest.Sandbox` and `Nest.Tools.ShellCmd` are here for the same reason: the
+# BatchSizer preflight tests stub their `stat`/`execute_raw` entry points, and a
+# per-test copy would re-import coverdata mid-suite — with `Sandbox` exercised
+# by many other tests, that is the worst module to swap per-test.
+mimic_modules = [
+  {Nest.LLM.OpenAIClient, []},
+  {Req, []},
+  {Nest.DotConfig, []},
+  {Nest.LLM.MockClient, []},
+  {Nest.LLM.AnthropicClient, []},
+  {Nest.Models, []},
+  {Nest.Persistence, []},
+  {Nest.Vocations, []},
+  {Nest.Agents.Agent, []},
+  {Nest.Agents.Agent.Config, []},
+  {Nest.Agents, []},
+  {Nest.Agents.Supervisor, []},
+  {Phoenix.Channel, []},
+  {Nest.ChatModel, []},
+  {Nest.Agents.Registry, []},
+  {Task.Supervisor, []},
+  {Nest.Sandbox, []},
+  {Nest.Tools.ShellCmd, []}
+]
 
-# `Nest.Sandbox` and `Nest.Tools.ShellCmd` are copied here for the same reason:
-# the BatchSizer preflight tests stub their `stat`/`execute_raw` entry points,
-# and a per-test copy would re-import coverdata mid-suite — with `Sandbox`
-# exercised by many other tests, that is the worst module to swap per-test.
-Mimic.copy(Nest.Sandbox)
-Mimic.copy(Nest.Tools.ShellCmd)
+Enum.each(mimic_modules, fn {module, opts} -> Mimic.copy(module, opts) end)
+
+# Force those copies to happen now, before the suite runs, rather than lazily on
+# the first `stub`/`expect`/`reject` that targets each module.
+#
+# `Mimic.copy/1` only *marks* a module for copying (unless `:cover` is enabled
+# for it). The copy itself is done by the first line of
+# `Mimic.Server.stub/expect/reject`, `Coordinator.ensure_copied/1`, and
+# `Mimic.Coordinator` performs it inside its own `handle_call`:
+# `handle_call({:ensure_copied, …})` -> `ensure_module_copied/2` ->
+# `Mimic.Module.replace!/2`, which recompiles the renamed original and then
+# compiles a whole mock module. A GenServer serialises its `handle_call`s, so
+# every module's copy is serialised against every other's, and it is paid
+# *during* the suite, while the host is already saturated with concurrent tests.
+# Measured for these 18 modules: 712 ms on a 32-scheduler host and 3.0 s on the
+# 24-scheduler one, all of it serial.
+#
+# Doing that through `Mimic.Coordinator.ensure_copied/1`, even from concurrent
+# callers, does not help — it is the same serialising `handle_call` (measured:
+# 716 ms with 32 concurrent callers vs 712 ms serial on the 32-scheduler host,
+# 2.9 s either way on the other). So the copies are driven from here, in
+# parallel, through `Mimic.Module.replace!/2`, which is 5.3-6.6x faster
+# (135/124 ms and 457/499 ms respectively) and still produces working mocks.
+#
+# `Mimic.Module` is `@moduledoc false`, so this reaches into an internal of the
+# dependency — it does not patch it. It is safe only because a module that is
+# already copied is skipped: under `--cover`, `Mimic.copy/1` has already copied
+# each module inside the Coordinator and recorded the coverdata path that
+# `reset/1` needs to restore, and copying it a second time here would throw that
+# away. In the no-cover case `Mimic.Module.replace!/2` returns `:ok`, so the
+# Coordinator's `modules_beam` stays empty exactly as it would have on the lazy
+# path, and the modules stay in `modules_to_be_copied` (put there by
+# `mark_to_copy/2`) so `reset/1` is unaffected.
+#
+# The copies now happen before `ExUnit.start()` and before the warm-up blocks
+# below, so on this path the warm-up and the suite run against Mimic's proxies
+# from the start, where the lazy path ran the warm-up against the real modules
+# and swapped each one only on its first `stub`/`expect`. (`mix test` starts the
+# application itself, before this file is loaded, so the application's own boot
+# is unaffected either way.) That is harmless — an unstubbed proxy delegates to
+# the original, and both arms are 2429 tests / 0 failures with identical
+# coverage — but it is a real difference in what the boot path exercises, and
+# the A/B cannot separate it from the contention effect.
+#
+# `NEST_MIMIC_EAGER_COPY` selects the path so the suite can be A/B'd on one
+# tree: `off` is the old lazy behaviour, `serial` the old eager one. Both are
+# measurement switches, not settings to run the suite with. Note that `off`
+# silently disables the fix *and* skips the fail-loud check below, so an `off`
+# run cannot notice that the copies did not happen; it exists only to reproduce
+# the pre-change baseline.
+eager_copy_mode = System.get_env("NEST_MIMIC_EAGER_COPY", "parallel")
+
+already_copied =
+  Enum.count(mimic_modules, fn {module, _opts} -> Mimic.Module.copied?(module) end)
+
+{elapsed_us, :ok} =
+  :timer.tc(fn ->
+    case eager_copy_mode do
+      "off" ->
+        :ok
+
+      "serial" ->
+        Enum.each(mimic_modules, fn {module, _opts} ->
+          :ok = Mimic.Coordinator.ensure_copied(module)
+        end)
+
+      "parallel" ->
+        mimic_modules
+        |> Task.async_stream(
+          fn {module, opts} ->
+            if Mimic.Module.copied?(module) do
+              :ok
+            else
+              Mimic.Module.replace!(module, opts)
+            end
+          end,
+          max_concurrency: System.schedulers_online(),
+          ordered: false,
+          # Boot scaffolding that runs outside ExUnit, so this is not a test
+          # fence and no fence budget applies to it. 60 s mirrors Mimic's own
+          # `@long_timeout` for this same operation (`ensure_copied/1` in
+          # deps/mimic/lib/mimic/coordinator.ex).
+          timeout: 60_000
+        )
+        |> Stream.run()
+
+      other ->
+        raise ArgumentError,
+              "NEST_MIMIC_EAGER_COPY must be off, serial or parallel, got #{inspect(other)}"
+    end
+  end)
+
+# Fail loudly if the eager copy did not take. A silent no-op here would leave
+# every copy being made lazily during the suite, which is the thing this block
+# exists to prevent, and the suite would still pass — just slowly, and with the
+# contention that makes it flaky.
+if eager_copy_mode != "off" do
+  not_copied =
+    for {module, _opts} <- mimic_modules, not Mimic.Module.copied?(module), do: module
+
+  if not_copied != [] do
+    raise "Mimic eager copy did not take for #{inspect(not_copied)}"
+  end
+end
+
+if System.get_env("NEST_MIMIC_COPY_TIMING") do
+  IO.puts(
+    "NEST_MIMIC_COPY_MS=#{div(elapsed_us, 1000)} mode=#{eager_copy_mode} " <>
+      "already_copied=#{already_copied}/#{length(mimic_modules)}"
+  )
+end
 
 # `timeout` is the per-test deadline: a **failure bound**, deliberately set above
 # the fences so a fence can report its own failure instead of dying as
