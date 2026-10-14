@@ -40,15 +40,40 @@ defmodule Nest.Test.SourceScan do
   either way — it only shortens the window in which the scan can be starved by
   the other tests running beside it. The cost to those tests is the same total
   CPU, delivered over a shorter interval.
+
+  A raise from `fun` — a file that will not parse is the usual case — is
+  re-raised in the caller with its original stacktrace, rather than surfacing as
+  a task exit. See `run/2`.
   """
   @spec flat_map([Path.t()], (Path.t() -> [term()])) :: [term()]
   def flat_map(files, fun) when is_list(files) and is_function(fun, 1) do
     files
-    |> Task.async_stream(fun,
+    |> Task.async_stream(&run(fun, &1),
       ordered: true,
       timeout: :infinity,
       max_concurrency: System.schedulers_online()
     )
-    |> Enum.flat_map(fn {:ok, results} -> results end)
+    |> Enum.flat_map(fn
+      {:ok, {:ok, results}} -> results
+      {:ok, {:raised, exception, stacktrace}} -> reraise(exception, stacktrace)
+      {:exit, reason} -> exit(reason)
+    end)
+  end
+
+  # A raise inside a task is reported as that task's exit: the task logs an
+  # `[error] Task ... terminating` block and the caller is taken down by the
+  # link, so a `rescue` in the caller never sees the original exception. A file
+  # that will not parse is the usual way these checks fail, so the raise is
+  # caught here and carried back as a value, to be re-raised in the caller —
+  # where it is a plain raise again, with its original stacktrace.
+  #
+  # The `{:exit, reason}` clause cannot be reached while `timeout: :infinity`
+  # holds, because a task can no longer exit abnormally. It is there so that a
+  # future finite timeout reports its reason rather than a `FunctionClauseError`
+  # from this `Enum.flat_map/2`.
+  defp run(fun, file) do
+    {:ok, fun.(file)}
+  rescue
+    exception -> {:raised, exception, __STACKTRACE__}
   end
 end

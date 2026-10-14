@@ -212,7 +212,12 @@ defmodule Nest.Credo.Check.NoDrainLoopsTest do
       # 3 s per-test deadline under contention. See `Nest.Test.SourceScan`.
       offenders =
         SourceScan.flat_map(files, fn file ->
-          lines = file |> File.read!() |> Code.string_to_quoted!() |> NoDrainLoops.drain_loops()
+          lines =
+            file
+            |> File.read!()
+            |> Code.string_to_quoted!(file: file)
+            |> NoDrainLoops.drain_loops()
+
           Enum.map(lines, &{Path.relative_to(file, root), &1})
         end)
 
