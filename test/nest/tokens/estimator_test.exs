@@ -73,6 +73,25 @@ defmodule Nest.Tokens.EstimatorTest do
     end
   end
 
+  describe "fallback_or_reraise/4" do
+    test "falls back when the tokenizer is loaded and re-raises when it is not" do
+      # The rescue body of the tokenizer call, with the `loaded?` boolean
+      # passed in so both branches are reachable without touching
+      # `:persistent_term`.
+      error = %ArgumentError{message: "genuine tokenization failure"}
+      text = "the quick brown fox"
+
+      # Loaded: a genuine tokenization failure falls back to chars / 4.
+      assert Estimator.fallback_or_reraise(text, true, error, []) == 5
+
+      # Unloaded: that is a boot-ordering bug, not a tokenization
+      # failure, so it has to surface instead of becoming a wrong count.
+      assert_raise ArgumentError, "genuine tokenization failure", fn ->
+        Estimator.fallback_or_reraise(text, false, error, [])
+      end
+    end
+  end
+
   describe "estimate/1 (string)" do
     test "is at least 20% higher than raw_count" do
       raw = Estimator.raw_count("Hello, world!")

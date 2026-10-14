@@ -41,7 +41,10 @@ defmodule Nest.Tokens.Tokenizer do
 
   Lets a caller tell a boot-ordering bug — nothing has loaded it yet —
   apart from a genuine tokenization failure. The two need different
-  handling; see `Nest.Tokens.Estimator.count_tokens/1`.
+  handling: a boot-ordering bug has to be loud, while a genuine failure
+  falls back to a heuristic count. `Nest.Tokens.Estimator` is the only
+  production caller, and `Nest.Tokens.Estimator.raw_count/1` is the
+  public entry point that reaches this.
   """
   @spec loaded?() :: boolean()
   def loaded?, do: :persistent_term.get(@key, nil) != nil

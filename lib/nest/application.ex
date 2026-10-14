@@ -42,13 +42,15 @@ defmodule Nest.Application do
     # violation is a loud error and never a quietly wrong `chars/4` count.
     # Only `Estimator` reaches `Tokenizer.count/1`.
     #
-    # Not covered by a test: nothing asserts that an unloaded tokenizer
-    # makes `Estimator` raise, because arranging it means erasing the
-    # `:persistent_term` key — global state, so it would need an
-    # `async: false` module plus a reload, a real cost in the sync phase
-    # of a suite that is fighting a 5s wall-clock gate. The premise that
-    # boot *does* load the tokenizer is pinned by the `Tokenizer.loaded?()`
-    # assertion in `test/nest/tokens/tokenizer_test.exs`.
+    # The failure path's decision is covered directly: its body is
+    # `Nest.Tokens.Estimator.fallback_or_reraise/4`, which takes the
+    # `Tokenizer.loaded?/0` boolean as an argument, and both branches are
+    # asserted in `test/nest/tokens/estimator_test.exs`. What is still not
+    # covered end to end is the arrangement — erase the `:persistent_term`
+    # key, then read through `Estimator` — which needs global state, hence
+    # an `async: false` module plus a reload. The premise that boot *does*
+    # load the tokenizer is pinned by the `Tokenizer.loaded?()` assertion
+    # in `test/nest/tokens/tokenizer_test.exs`.
     #
     # The await is bounded so a hung load cannot wedge boot forever; 60s
     # is ~600x the measured load, so a load slow enough to hit it is a
