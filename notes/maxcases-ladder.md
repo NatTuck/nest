@@ -242,5 +242,14 @@ cases — the file-server term (1.4 ms per `rm_rf` at 8 callers, 6.7 ms at 32,
 against a 10 ms bound) is still the one that lines up with those failures.
 
 This is a measurement, not a verdict on the cause. It does not establish that
-`:file_server` is the cause either; it establishes that the round-trip figure
+`file_server_2` is the cause either; it establishes that the round-trip figure
 cited for the opposite conclusion measures a turn, not a round trip.
+
+## Correction: the process is `file_server_2`
+
+An earlier revision of this file said `:file_server`. On OTP 27 that name does not
+exist — `Process.whereis(:file_server)` is `nil`, and the registered serializing
+process is **`file_server_2`** (`Process.whereis(:file_server_2)` =
+`#PID<0.53.0>`). The measurements above always traced `file_server_2`; only the
+prose was loose. The framing is unchanged: a confirmed *location*, not an
+established cause.

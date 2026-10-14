@@ -18,7 +18,7 @@
 #   postgres_query    Nest.Repo.query("select 1")
 #
 # Also traces :file_server_2 to test, rather than assume, that an operation
-# is routed through it: a claim of "spends its time in :file_server" is
+# is routed through it: a claim of "spends its time in file_server_2" is
 # checkable, and an untraced op is not routed there.
 
 defmodule SvcTime.Server do
