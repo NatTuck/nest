@@ -4,6 +4,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
   import ExUnit.CaptureLog
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.AgentTestLifecycle
   alias Nest.Agents.AgentTurnTestHelpers
@@ -154,13 +155,15 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       assert result.in_flight == []
       assert result.not_stopped == [{space_id, name}]
 
-      assert_raise RuntimeError, ~r/did not stop within 10 ms of :shutdown/, fn ->
+      assert_raise RuntimeError, ~r/did not stop within 150 ms of :shutdown/, fn ->
         AgentTestLifecycle.assert_zero_remaining!(result)
       end
 
-      # The same detector in its other entry point, and both name the agent.
+      # The same detector in its other entry point, and both name the agent. The
+      # timeout is incidental to what this line pins (that the message names the
+      # agent), so it is short — the bound itself is pinned by the line above.
       assert_raise RuntimeError, ~r/#{name}/, fn ->
-        AgentTestLifecycle.wait_for_pid_down(space_id, name)
+        AgentTestLifecycle.wait_for_pid_down(space_id, name, 25)
       end
 
       # The stop does not kill: the agent is still there, which is the point of
@@ -201,31 +204,140 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       refute Process.alive?(pid)
       assert result.not_stopped == []
     end
+
+    test "does not report an idle agent whose teardown is slow" do
+      # The regression this guard was fixed for. `Agent.terminate/2` ends with
+      # `cleanup_tmp/2` -> `TmpSpace.cleanup/2` -> `File.rm_rf/1`, so the stop
+      # handshake contains real filesystem work — a `File.rm_rf` per agent — and
+      # it is not a measurement of the agent's receive loop. The bound used to be
+      # 10 ms, and that handshake reaches it on a busy machine — 12 provably idle
+      # agents (every one of them answering `:idle`) took a tight 8.5-9.1 ms
+      # under 32 CPU burners, and crossed 10 ms as soon as anything else loaded
+      # the host — failing tests whose agents were not in flight at all.
+      #
+      # A populated scratch directory is a *real* teardown load rather than a
+      # stub: it is the same `File.rm_rf` the agent runs for itself, and the
+      # teardown's cost is the number of file operations in it. Deliberately
+      # small — `File.rm_rf` of 100 entries measures 332-597 ms under 32 CPU
+      # burners, so a pin big enough to be a *magnitude* check would itself go
+      # flaky on a loaded host, and a sometimes-failing test is worse than a
+      # failing one. Its margin depends on which measurement you take: file-alone,
+      # a 20-entry handshake is 3.96 ms on the slow host, so it clears the bound by
+      # ~38x; under full suite load the worst handshake measured is 39.3 ms, ~3.8x.
+      # What this pins is the contract: a populated scratch directory must not turn
+      # an idle agent into a violation. The bound's floor,
+      # which is what a tightening would break, is pinned separately and
+      # deterministically below.
+      {pid, name} = AgentTestHelpers.start_agent()
+      space_id = AgentTestHelpers.current_space_id()
+
+      scratch = TmpSpace.create(space_id, name)
+      Enum.each(1..20, fn i -> File.write!(Path.join(scratch, "f#{i}"), "x") end)
+
+      result = AgentTestLifecycle.stop_test_agents()
+
+      # Asserted through the gate rather than on the raw lists, so a failure
+      # carries the diag: how long the stop actually took and what the agent was
+      # doing when it missed the bound.
+      assert result.in_flight == []
+      assert :ok = AgentTestLifecycle.assert_zero_remaining!(result)
+      refute Process.alive?(pid)
+    end
+
+    test "the stop bound stays wide enough to clear a real teardown" do
+      # The bound is a liveness bound and has to keep clearing the handshake,
+      # which contains `terminate/2`'s `File.rm_rf`. Measured: 25-110 us with an
+      # idle host, a flat 8.5-9.1 ms plateau under CPU saturation, and 332-597 ms
+      # for a 100-entry scratch
+      # directory under the same load. Tightening this back toward the
+      # handshake is the bug this guard was fixed for, so the floor is pinned
+      # rather than left to a comment.
+      assert AgentTestLifecycle.stop_bound_ms() >= 150
+    end
   end
 
-  describe "the per-test on_exit cleanup" do
-    test "issues no query" do
+  describe "the per-test on_exit hooks" do
+    test "are registered, and each issues no query" do
       {pid, name} = AgentTestHelpers.start_agent()
       space_id = AgentTestHelpers.current_space_id()
       test_pid = self()
 
+      # The leak check waits out `cleanup_ms` for a live agent, so stop it first:
+      # both hooks then take their fast path, and the query-free property is what
+      # is under test here, not the wait. The stop runs in the body, while the
+      # sandbox connection is still checked out.
+      Process.unlink(pid)
+      :ok = Supervisor.stop_agent(space_id, name)
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+
+      # The callbacks invoked below are the ones `register_on_exit_cleanup/3`
+      # actually registered — read back from ExUnit by their keys — not
+      # lookalikes, so a stop re-added to either closure's body is exercised by
+      # this test instead of escaping it.
+      cleanup = registered_on_exit(AgentTestHelpers.cleanup_key(space_id, name))
+      leak = registered_on_exit(AgentTestHelpers.leak_key(space_id, name))
+      refute is_nil(cleanup)
+      refute is_nil(leak)
+
       # A plain `spawn` inherits no `$callers`, so it has no sandbox connection:
-      # a query in the cleanup would crash it with `DBConnection.OwnershipError`
-      # instead of reporting `:ok`. The real `on_exit` runs in exactly such a
-      # process — after the test pid, the connection owner, has exited — which
-      # is why it must not stop the agent (`Supervisor.stop_agent/2` runs
+      # a query in a hook would crash it with `DBConnection.OwnershipError`
+      # instead of reporting. The real `on_exit` runs in exactly such a process —
+      # after the test pid, the connection owner, has exited — which is why a
+      # hook must not stop the agent (`Supervisor.stop_agent/2` runs
       # `terminate/2`, and that queries).
-      cleanup =
+      runner =
         spawn(fn ->
-          send(test_pid, {:cleanup, AgentTestHelpers.on_exit_cleanup(pid, space_id, name)})
+          send(test_pid, {:hooks, cleanup.(), leak.()})
         end)
 
-      ref = Process.monitor(cleanup)
+      ref = Process.monitor(runner)
 
-      assert_receive {:cleanup, :ok}, 1_000
-      # `:normal`, not a crash: a query here would have killed the process with
-      # `DBConnection.OwnershipError` before it could report.
-      assert_receive {:DOWN, ^ref, :process, ^cleanup, :normal}, 1_000
+      assert_receive {:hooks, :ok, :ok}, 1_000
+      # `:normal`, not a crash: a query in either hook would have killed the
+      # process with `DBConnection.OwnershipError` before it could report.
+      assert_receive {:DOWN, ^ref, :process, ^runner, :normal}, 1_000
+    end
+  end
+
+  describe "detect_leaked_agent/2" do
+    test "reports an agent that has not gone away, and not one that has" do
+      {:ok, space_id} = AgentTestHelpers.create_test_space()
+      name = "leaked-#{System.unique_integer([:positive])}"
+      test_pid = self()
+
+      # A process registered in the agents Registry that stays up: the shape of
+      # an agent the per-test teardown never reached (a test killed at its
+      # deadline skips the wrapper). The short bound is this test's own — the
+      # production default is `cleanup_ms/0`.
+      pid =
+        spawn(fn ->
+          {:ok, _} = Elixir.Registry.register(Nest.Agents.Registry, {space_id, name}, nil)
+          send(test_pid, {:registered, self()})
+
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      assert_receive {:registered, ^pid}
+
+      log =
+        capture_log(fn ->
+          assert AgentTestLifecycle.detect_leaked_agent(space_id, name, 10) ==
+                   {:leaked, space_id, name}
+        end)
+
+      # The report is the observable an operator sees; the return value above is
+      # the machine-readable half.
+      assert log =~ "is still alive after its test"
+      assert log =~ name
+
+      # Once it is gone, the detector does not report it.
+      ref = Process.monitor(pid)
+      send(pid, :stop)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+      assert AgentTestLifecycle.detect_leaked_agent(space_id, name, 10) == :ok
     end
   end
 
@@ -290,5 +402,17 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
 
       :ok = :sys.resume(pid)
     end
+  end
+
+  # The `on_exit` callback this test registered under `key`, as ExUnit stores
+  # it, or `nil`. `ExUnit.Server` is ExUnit's own public ETS table of on_exit
+  # callbacks, keyed by the test pid; reading it is how a test asserts that a
+  # hook is registered, rather than only exercising the function the hook calls.
+  defp registered_on_exit(key) do
+    :ets.lookup_element(ExUnit.Server, self(), 3)
+    |> Enum.find_value(fn
+      {^key, callback} -> callback
+      _ -> nil
+    end)
   end
 end

@@ -3,6 +3,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
   import Nest.Test.TmpCleanup
 
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.Sandbox.Mounts
   alias Nest.Sandbox.ShellJobs
   alias Nest.Tools.ShellCmd
@@ -148,6 +149,47 @@ defmodule Nest.Sandbox.ShellJobsTest do
     _id = start_running!("sleep 30", tmp, key)
     assert :ok = ShellJobs.stop_all(key)
     assert ShellJobs.list(key) == []
+  end
+
+  test "keeps the scratch while a live agent owns the key, then removes it" do
+    # `TmpSpace.create` builds the real scratch path (`/tmp/nest-<pid>/space-<id>/<name>`),
+    # which is the path `cleanup_agent_key/2` derives from the key — unlike the
+    # fixture `tmp`, so the manager's removal is observable here.
+    space_id = System.unique_integer([:positive])
+    name = "incarnation-#{System.unique_integer([:positive])}"
+    key = {space_id, name}
+    tmp = TmpSpace.create(space_id, name)
+    test_pid = self()
+
+    on_exit(fn -> TmpSpace.cleanup(space_id, name) end)
+
+    # A live incarnation registered under the key. The scratch path is derived
+    # from the key, so a monitor for a *previous* incarnation can fire after this
+    # one starts; the removal must refuse while a live agent owns the path.
+    owner =
+      spawn(fn ->
+        {:ok, _} = Elixir.Registry.register(Nest.Agents.Registry, key, nil)
+        send(test_pid, :registered)
+
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    assert_receive :registered
+    assert File.dir?(tmp)
+
+    # The manager's removal path, refused because the key has a live owner.
+    assert :ok = ShellJobs.stop_all(key)
+    assert File.dir?(tmp)
+
+    ref = Process.monitor(owner)
+    send(owner, :stop)
+    assert_receive {:DOWN, ^ref, :process, ^owner, :normal}, 1_000
+
+    # With no live owner, the same path removes it.
+    assert :ok = ShellJobs.stop_all(key)
+    refute File.exists?(tmp)
   end
 
   test "jobs die with their agent, which says so to its waiters and its clients", %{
