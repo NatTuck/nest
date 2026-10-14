@@ -73,9 +73,22 @@ Enum.each(mimic_modules, fn {module, opts} -> Mimic.copy(module, opts) end)
 # path, and the modules stay in `modules_to_be_copied` (put there by
 # `mark_to_copy/2`) so `reset/1` is unaffected.
 #
+# The copies now happen before `ExUnit.start()` and before the warm-up blocks
+# below, so on this path the warm-up and the suite run against Mimic's proxies
+# from the start, where the lazy path ran the warm-up against the real modules
+# and swapped each one only on its first `stub`/`expect`. (`mix test` starts the
+# application itself, before this file is loaded, so the application's own boot
+# is unaffected either way.) That is harmless — an unstubbed proxy delegates to
+# the original, and both arms are 2429 tests / 0 failures with identical
+# coverage — but it is a real difference in what the boot path exercises, and
+# the A/B cannot separate it from the contention effect.
+#
 # `NEST_MIMIC_EAGER_COPY` selects the path so the suite can be A/B'd on one
 # tree: `off` is the old lazy behaviour, `serial` the old eager one. Both are
-# measurement switches, not settings to run the suite with.
+# measurement switches, not settings to run the suite with. Note that `off`
+# silently disables the fix *and* skips the fail-loud check below, so an `off`
+# run cannot notice that the copies did not happen; it exists only to reproduce
+# the pre-change baseline.
 eager_copy_mode = System.get_env("NEST_MIMIC_EAGER_COPY", "parallel")
 
 already_copied =
@@ -104,6 +117,10 @@ already_copied =
           end,
           max_concurrency: System.schedulers_online(),
           ordered: false,
+          # Boot scaffolding that runs outside ExUnit, so this is not a test
+          # fence and no fence budget applies to it. 60 s mirrors Mimic's own
+          # `@long_timeout` for this same operation (`ensure_copied/1` in
+          # deps/mimic/lib/mimic/coordinator.ex).
           timeout: 60_000
         )
         |> Stream.run()

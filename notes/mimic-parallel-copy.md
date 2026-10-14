@@ -1,6 +1,8 @@
 # Copying Mimic's modules from the caller, in parallel, at boot
 
-Branch: `issue-21-parallel-copy` (off `issue-21` @ `824d376`). NOT reviewed, NOT merged.
+Branch: `issue-21-parallel-copy` (off `issue-21` @ `824d376`). Reviewed, with the
+review's fix-ups applied; handed back to be merged into `issue-21` — not merged
+here.
 
 ## The problem
 
@@ -19,9 +21,10 @@ all 18 copies are serialised against each other, and they are paid *during* the 
 
 ## The control: the Coordinator API cannot be parallelised
 
-`/tmp/damaged-cheetah/mimic_copy_probe.exs` marks the 18 modules the way
-`Mimic.copy/1` does and then copies them three ways. Run as
-`MIX_ENV=test NEST_MIMIC_PROBE=<mode> mix run <script>` from the project root.
+`scripts/mimic-copy-probe.exs` marks the 18 modules the way `Mimic.copy/1` does
+and then copies them three ways. Run as
+`MIX_ENV=test NEST_MIMIC_PROBE=<mode> mix run scripts/mimic-copy-probe.exs` from
+the project root.
 
 | mode | vampire (32 sched) | celedyr (24 sched) |
 |---|---|---|
