@@ -13,6 +13,7 @@ defmodule NestWeb.LobbyChannelTest do
   alias Nest.Agents.Supervisor
   alias Nest.Blueprints
   alias Nest.Repo
+  alias Nest.TestSupport.ChannelQuiescence
   alias Nest.Vocations
 
   # The `:after_join` spawns a supervised `Task` for `broken_agents`;
@@ -59,6 +60,33 @@ defmodule NestWeb.LobbyChannelTest do
     Process.put(:lobby_test_user_id, user.id)
 
     {:ok, %{user: user, token: token, space_id: space_id}}
+  end
+
+  describe "teardown quiescence" do
+    # The channel half of the zero-remaining invariant. A channel a test joins
+    # borrows the test's sandbox connection (it inherits `$callers`) and dies
+    # with the test process, so a channel still processing a message when the
+    # body ends is killed mid-query and `DBConnection.Ownership.Proxy` logs
+    # "owner … exited" at `:error`. The teardown can only drain it if the join
+    # recorded it — that is what this pins.
+    test "a joined channel is recorded for the teardown to drain" do
+      {socket, _payload} = join_lobby()
+
+      assert is_pid(socket.channel_pid)
+      assert {socket.channel_pid, socket.topic} in Process.get(:nest_joined_channels, [])
+    end
+
+    test "draining with nothing joined is a no-op, and a channel that is gone is tolerated" do
+      assert ChannelQuiescence.drain() == :ok
+
+      dead = spawn(fn -> :ok end)
+      ref = Process.monitor(dead)
+      assert_receive {:DOWN, ^ref, :process, ^dead, _reason}
+
+      Process.put(:nest_joined_channels, [{dead, "lobby"}])
+
+      assert ChannelQuiescence.drain() == :ok
+    end
   end
 
   describe "join/3" do

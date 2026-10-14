@@ -64,6 +64,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
   alias Nest.Agents.Registry
   alias Nest.Repo
   alias Nest.Spaces.Space
+  alias Nest.TestSupport.ChannelQuiescence
 
   # Observable status values that mean an LLM/tool/compaction turn is
   # actively running. Every other value (`:idle`, `:model_missing`,
@@ -322,6 +323,14 @@ defmodule Nest.Agents.AgentTestLifecycle do
     owned = owned_agents()
     samples = Enum.map(owned, &sample_agent/1)
     diag = Enum.map(samples, &stop_and_measure/1)
+
+    # A channel this test joined is the other kind of child that borrows the
+    # sandbox connection and dies with this process. It is not an agent, so
+    # `owned_agents/0` cannot see it, and a channel killed mid-query makes the
+    # connection's ownership proxy log "owner … exited" at `:error` when this
+    # process exits. Last, so that nothing the agent stops enqueue can still be
+    # in flight. See `Nest.TestSupport.ChannelQuiescence`.
+    ChannelQuiescence.drain()
 
     %{
       owned: length(owned),
