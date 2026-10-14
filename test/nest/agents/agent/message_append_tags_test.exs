@@ -289,6 +289,7 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
 
       initial = [system(0), assistant_text(1)]
       insert_messages(name, initial)
+      before = length(Persistence.load_full_messages(test_space_id(), name))
 
       state = state(name, initial)
       state = %{state | live: %{state.live | machine: %{state.live.machine | loop_count: 3}}}
@@ -319,6 +320,13 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
 
       assert {:ok, _stamped, after_human} = MessageAppender.handle_single(after_request, human)
       assert after_human.live.machine.loop_count == 0
+
+      # ... and both appends really persisted, rather than only updating the
+      # in-memory state. Without the fixture's `agent_row_id`,
+      # `append_message/3` refuses every write with `:agent_row_reused` and
+      # logs it, and the assertions above would still pass. Three rows land:
+      # the request, and the bridge + human pair.
+      assert length(Persistence.load_full_messages(test_space_id(), name)) == before + 3
     end
   end
 
@@ -332,8 +340,24 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
         usage_totals: Broadcasts.empty_usage_totals(),
         descendant_usage: Broadcasts.empty_usage_totals()
       },
-      chat_state: %Agent.ChatState{messages: messages, next_message_index: next_index(messages)}
+      chat_state: %Agent.ChatState{
+        messages: messages,
+        next_message_index: next_index(messages),
+        agent_row_id: agent_row_id(name)
+      }
     }
+  end
+
+  # The row this session was started from. `append_message/3` passes this as
+  # `expect_agent_row_id`, and refuses a write whose name resolves to a
+  # *different* row (`:agent_row_reused`) — so a fixture that leaves it `nil`
+  # while a row exists drops and logs every append. A test that then asserted
+  # on the in-memory state alone would pass while nothing was persisted.
+  defp agent_row_id(name) do
+    case Persistence.fetch_agent(test_space_id(), name) do
+      {:ok, %{id: id}} -> id
+      _ -> nil
+    end
   end
 
   defp live(state, status) do
