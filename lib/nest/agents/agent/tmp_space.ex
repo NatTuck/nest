@@ -94,6 +94,52 @@ defmodule Nest.Agents.Agent.TmpSpace do
   end
 
   @doc """
+  Remove the scratch directory for an agent key, `{space_id, name}`.
+
+  `cleanup/2` for a caller that holds the key rather than the two parts — the
+  shell-jobs manager's `drop_agent/3`, which removes an agent's scratch after
+  it has stopped the agent's jobs. A key that is not `{integer, binary}` is
+  ignored rather than routed to `cleanup/2`: `{:unknown, :unknown}` and
+  `{nil, nil}` are real keys in that manager, and neither names a directory.
+
+  The removal is tied to an **incarnation**: `owner` is the pid of the agent
+  being dropped, and the call refuses while a *different* live agent is
+  registered under the key. The scratch path is derived from the key, so two
+  incarnations of the same agent share it; a monitor for a previous incarnation
+  can fire after the next one has started (the manager's `:DOWN` for a pid it
+  tracked), and removing the directory then would delete a live agent's scratch
+  out from under it. `owner` may be `nil` for a caller with no incarnation to
+  name, in which case *any* live owner refuses. The registry is the authority on
+  which incarnation, if any, owns the key.
+
+  **Residual window, not closed.** The guard is check-then-act: it reads the
+  registry, then `cleanup/2` does the `rm_rf`, and a new incarnation can slip in
+  between — `Agent.start_link/1` registers the name before `init/1` runs
+  (`agent.ex`'s `Registry.via_tuple/2`), and `init/1` then `mkdir_p!`s the
+  directory (`Init.build_state/2` → `create/2`). If the lookup returns `:error`,
+  the manager is preempted, that incarnation registers and creates, and the
+  manager resumes, it removes the *new* agent's scratch. The window is one
+  preemption gap (a registry lookup, a regex match and a `Path.join`; none
+  yields), and the consequence is a scratch-less agent — nothing re-creates the
+  directory. Closing it needs the create to be ordered after any pending delete
+  for the key (or an incarnation-unique path), not a better-timed check.
+  """
+  @spec cleanup_agent_key(term(), pid() | nil) :: :ok
+  def cleanup_agent_key({space_id, name} = key, owner)
+      when is_integer(space_id) and is_binary(name) do
+    if live_other_owner?(key, owner), do: :ok, else: cleanup(space_id, name)
+  end
+
+  def cleanup_agent_key(_agent_key, _owner), do: :ok
+
+  defp live_other_owner?({space_id, name}, owner) do
+    case Nest.Agents.Registry.lookup(space_id, name) do
+      {:ok, pid} -> pid != owner and Process.alive?(pid)
+      _ -> false
+    end
+  end
+
+  @doc """
   The host directory bound at `/tmp` inside the sandbox: the scratch
   root shared by every agent in `space_id`.
   """
