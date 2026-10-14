@@ -78,6 +78,9 @@ Enum.each(mimic_modules, fn {module, opts} -> Mimic.copy(module, opts) end)
 # measurement switches, not settings to run the suite with.
 eager_copy_mode = System.get_env("NEST_MIMIC_EAGER_COPY", "parallel")
 
+already_copied =
+  Enum.count(mimic_modules, fn {module, _opts} -> Mimic.Module.copied?(module) end)
+
 {elapsed_us, :ok} =
   :timer.tc(fn ->
     case eager_copy_mode do
@@ -125,7 +128,10 @@ if eager_copy_mode != "off" do
 end
 
 if System.get_env("NEST_MIMIC_COPY_TIMING") do
-  IO.puts("NEST_MIMIC_COPY_MS=#{div(elapsed_us, 1000)} mode=#{eager_copy_mode}")
+  IO.puts(
+    "NEST_MIMIC_COPY_MS=#{div(elapsed_us, 1000)} mode=#{eager_copy_mode} " <>
+      "already_copied=#{already_copied}/#{length(mimic_modules)}"
+  )
 end
 
 # `timeout` is the per-test deadline: a **failure bound**, deliberately set above
