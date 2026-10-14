@@ -4,11 +4,7 @@ defmodule Nest.DotConfigTest do
   """
   use ExUnit.Case, async: true
 
-  import Nest.Test.TmpCleanup
-
   alias Nest.DotConfig
-  alias Nest.DotConfig.Provider
-  alias Nest.DotConfig.Writer
 
   describe "load/0" do
     test "loads config from test/data/config.toml in test environment" do
