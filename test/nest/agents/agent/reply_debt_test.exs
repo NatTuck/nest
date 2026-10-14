@@ -356,19 +356,16 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # process to die (a documented property of the stop path). The agent
       # traps exits, so that signal arrives as a *message* it must be scheduled
       # to handle before `terminate/2` runs, and the pid stays alive until
-      # `terminate/2` returns. Measured on this host the archive's own DB write
-      # usually outlasts that handshake — the `:DOWN` lands 4-5 µs after
-      # `archive_agent/2` returns — but not always: it has been measured still
-      # alive 46 µs after the return, and a bare `Process.alive?/1` read there
-      # is exactly the flake this replaced.
+      # `terminate/2` returns. A bare `Process.alive?/1` read there is exactly
+      # the flake this replaced.
       ref = Process.monitor(pid)
       assert :ok = Supervisor.archive_agent(current_space_id(), name)
       assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
 
-      # `terminate/2` has run, so the process is gone. The registry's own ETS
-      # cleanup (the partition server's link `EXIT`) is still asynchronous, but
-      # `get_running_agent/2` liveness-checks the pid: whether the entry is
-      # already gone or still present with a dead pid, both branches answer
+      # `terminate/2` has run, so the process is gone — and its registry name is
+      # already free, because `terminate/2` releases it itself, before the
+      # process exits (see `Nest.Agents.Registry.release/2`). `get_running_agent/2`
+      # additionally liveness-checks the pid, so both branches answer
       # `{:error, :not_found}`.
       assert Supervisor.get_running_agent(current_space_id(), name) == {:error, :not_found}
 
