@@ -7,6 +7,7 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReasonTest do
   Code.require_file("../../support/credo/sys_get_state_needs_reason.ex", __DIR__)
 
   alias Nest.Credo.Check.SysGetStateNeedsReason
+  alias Nest.Test.SourceScan
 
   defp findings(source), do: SysGetStateNeedsReason.findings(source)
 
@@ -346,8 +347,10 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReasonTest do
       # empty list is green.
       assert length(files) > 100
 
+      # Concurrently: a sequential scan of the tree stretches past the suite's
+      # 3 s per-test deadline under contention. See `Nest.Test.SourceScan`.
       offenders =
-        Enum.flat_map(files, fn file ->
+        SourceScan.flat_map(files, fn file ->
           path = Path.relative_to(file, root)
 
           file

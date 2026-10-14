@@ -7,6 +7,7 @@ defmodule Nest.Credo.Check.NoDrainLoopsTest do
   Code.require_file("../../support/credo/no_drain_loops.ex", __DIR__)
 
   alias Nest.Credo.Check.NoDrainLoops
+  alias Nest.Test.SourceScan
 
   # The Credo check sees only what `.credo.exs` includes (`lib/`, `test/`, …).
   # This test covers the rest of the project's Elixir — `config/`, `scripts/`,
@@ -207,9 +208,16 @@ defmodule Nest.Credo.Check.NoDrainLoopsTest do
       # empty list is green.
       assert length(files) > 100
 
+      # Concurrently: a sequential scan of the tree stretches past the suite's
+      # 3 s per-test deadline under contention. See `Nest.Test.SourceScan`.
       offenders =
-        Enum.flat_map(files, fn file ->
-          lines = file |> File.read!() |> Code.string_to_quoted!() |> NoDrainLoops.drain_loops()
+        SourceScan.flat_map(files, fn file ->
+          lines =
+            file
+            |> File.read!()
+            |> Code.string_to_quoted!(file: file)
+            |> NoDrainLoops.drain_loops()
+
           Enum.map(lines, &{Path.relative_to(file, root), &1})
         end)
 
