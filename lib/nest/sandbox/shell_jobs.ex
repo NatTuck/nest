@@ -186,7 +186,17 @@ defmodule Nest.Sandbox.ShellJobs do
   @spec kill(agent_key(), job_id()) :: :ok | {:error, :not_found}
   def kill(agent_key, job_id), do: GenServer.call(@name, {:kill, agent_key, job_id})
 
-  @doc "Stop every job for `agent_key` and remove the agent's scratch directory, synchronously."
+  @doc """
+  Stop every job for `agent_key` synchronously, then remove the agent's scratch
+  directory (see `drop_agent/3`).
+
+  **Narrowed contract:** this form names no incarnation — it passes `owner:
+  nil` — so the removal refuses while *any* live agent is registered under the
+  key (`Nest.Agents.Agent.TmpSpace.cleanup_agent_key/2`). It is the
+  administrative/test form; its callers in this tree are the shell-jobs tests.
+  An agent's own `terminate/2` uses `stop_all_async/2`, which carries `self()`
+  and so may remove the scratch its own incarnation owns.
+  """
   @spec stop_all(agent_key()) :: :ok
   def stop_all(agent_key), do: GenServer.call(@name, {:stop_all, agent_key}, 10_000)
 

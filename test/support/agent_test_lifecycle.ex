@@ -50,9 +50,10 @@ defmodule Nest.Agents.AgentTestLifecycle do
   `AgentTestHelpers` registers issue no query and never stop an agent:
   they can only *report* what the wrapper could not (see
   `detect_leaked_agent/2`). (`supervisor_subagent_test.exs`'s `safe_stop/2`
-  is the one hook in this tree that stops an agent from an `on_exit`; it
-  stops only an idle child, whose `terminate/2` issues no query — so the
-  rule holds for the hook, not because the hook obeys it.)
+  is the one hook in this tree that stops an agent from an `on_exit`. It does
+  not check idleness — it stops whatever it is handed — but its callers stop
+  children they spawned and never turned, so its `terminate/2` issues no query
+  in practice.)
   """
 
   import Ecto.Query
