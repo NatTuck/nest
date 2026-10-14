@@ -142,11 +142,16 @@ defmodule Nest.Agents.AgentTestLifecycle do
   # library call inside `cleanup_tmp/2`, so an experiment that removed terminate's
   # own cross-process work would leave exactly this cost in place.
   #
-  # Real scratch directories are empty, so the empty-directory cost is the
-  # realistic one: of 25 sampled across a full suite run, 23 held 0 entries and 2
-  # held 1. 150 ms clears ~9 ms by ~16x even under full CPU saturation, and
-  # `celedyr` — which reproduced the old failure as 4-24 detector failures per run
-  # — now produces none at `max_cases` 8, 12 and 24.
+  # Real scratch directories are empty, so the empty-directory cost is the one
+  # that applies: of the 25 directories visible during a probe run, 22 held 0
+  # entries, 2 held 1, and one was not a directory. 150 ms clears the ~9 ms
+  # empty-directory handshake by ~16x even under full CPU saturation. The worst
+  # handshake measured across a *real* suite run is larger than that typical case
+  # — 39.3 ms, from instrumenting every teardown stop on `celedyr` at
+  # `max_cases` 8 (n=480, p50 596 us, p99 20.9 ms; the fast host, n=483, max
+  # 4.35 ms) — so the bound is ~3.8x the worst measured, not ~16x. `celedyr`,
+  # which reproduced the old failure as 4-24 detector failures per run, now
+  # produces none at `max_cases` 8, 12 and 24.
   #
   # The stacktrace of every agent that crossed it is the same, and says where
   # the time went:
@@ -165,9 +170,9 @@ defmodule Nest.Agents.AgentTestLifecycle do
   # -> `in_flight`, where no clock can stand in for it — and this bound keeps
   # only the weaker job underneath it: an agent that never reaches its receive
   # loop never handles the `{:EXIT, _, :shutdown}` signal and never dies, and
-  # that is what it still catches. 150 ms is ~14x the worst handshake measured on
-  # the slowest host in this project (`celedyr`, 10.4-11.1 ms under suite load),
-  # and it is deliberately no larger: two pins have to *reach* the bound to prove
+  # that is what it still catches. 150 ms is ~3.8x the worst handshake measured
+  # across a real suite run (see the numbers above), and it is deliberately no
+  # larger: two pins have to *reach* the bound to prove
   # the gate can fail, so the suite pays 2x it, and the 5 s budget on the fast host
   # is tight enough that the cost is worth keeping down.
   @stop_ms 150

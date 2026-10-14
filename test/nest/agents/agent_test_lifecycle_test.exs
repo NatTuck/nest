@@ -208,7 +208,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
     test "does not report an idle agent whose teardown is slow" do
       # The regression this guard was fixed for. `Agent.terminate/2` ends with
       # `cleanup_tmp/2` -> `TmpSpace.cleanup/2` -> `File.rm_rf/1`, so the stop
-      # handshake contains real filesystem work and a `:file_server` round-trip:
+      # handshake contains real filesystem work — a `File.rm_rf` per agent — and
       # it is not a measurement of the agent's receive loop. The bound used to be
       # 10 ms, and that handshake reaches it on a busy machine — 12 provably idle
       # agents (every one of them answering `:idle`) took a tight 8.5-9.1 ms
@@ -221,7 +221,9 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       # small — `File.rm_rf` of 100 entries measures 332-597 ms under 32 CPU
       # burners, so a pin big enough to be a *magnitude* check would itself go
       # flaky on a loaded host, and a sometimes-failing test is worse than a
-      # failing one. What this pins is the contract: a populated scratch
+      # failing one. Its own margin is not large: 20 entries measure 3.96 ms of
+      # `rm_rf` alone on the slow host, so it clears the bound by a few times
+      # rather than by orders of magnitude. What this pins is the contract: a populated scratch
       # directory must not turn an idle agent into a violation. The bound's floor,
       # which is what a tightening would break, is pinned separately and
       # deterministically below.
@@ -243,8 +245,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
 
     test "the stop bound stays wide enough to clear a real teardown" do
       # The bound is a liveness bound and has to keep clearing the handshake,
-      # which contains `terminate/2`'s `File.rm_rf` and a `:file_server`
-      # round-trip. Measured: 25-110 us with an idle host, a flat 8.5-9.1 ms
+      # which contains `terminate/2`'s `File.rm_rf`. Measured: 25-110 us with an idle host, a flat 8.5-9.1 ms
       # plateau under CPU saturation, and 332-597 ms for a 100-entry scratch
       # directory under the same load. Tightening this back toward the
       # handshake is the bug this guard was fixed for, so the floor is pinned
