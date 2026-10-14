@@ -11,24 +11,35 @@ defmodule Nest.Application do
 
   @impl true
   def start(_type, _args) do
-    # Start the cl100k_base vocabulary build first and await it last.
-    #
-    # `Tokenizer.load/0` is ~125ms of Rust-side work (parse the bundled
-    # JSON, build the BPE vocabulary) and it is independent of the
-    # supervision tree below, which costs a further ~70ms. Running it
-    # concurrently means boot pays the *larger* of the two instead of
-    # their sum, while keeping the invariant that matters: `start/2` does
-    # not return until the tokenizer is in `:persistent_term`, so
-    # `Tokenizer.count/1` can never observe a half-loaded app and a
-    # failure to load still fails the application start loudly.
-    #
-    # Nothing in the supervision tree may call `Tokenizer.count/1` (only
-    # `Nest.Tokens.Estimator` does, and nothing reaches it from a child's
-    # `init/1`) — if that ever changes, that child must await the task.
-    tokenizer_task = Task.async(&Tokenizer.load/0)
-
     # Check system dependencies first
     check_system_dependencies!()
+
+    # Start the cl100k_base vocabulary build here and await it last.
+    #
+    # `Tokenizer.load/0` is ~95ms of Rust-side work (parse the bundled
+    # JSON, build the BPE vocabulary) and it is independent of the
+    # supervision tree below it, so running it concurrently means boot
+    # pays the *larger* of the two instead of their sum: `:nest`'s whole
+    # start measured 209.5ms before this change and 163.6ms after
+    # (interleaved, warm runs). `:persistent_term` keeps the hot-path
+    # `Estimator` reads lock-free.
+    #
+    # It is safe only because `start/2` still does not return until the
+    # tokenizer is in `:persistent_term`: nothing can observe a
+    # half-loaded app, and a load failure still fails the application
+    # start loudly. So nothing in the supervision tree may call
+    # `Tokenizer.count/1` — only `Nest.Tokens.Estimator` does, and
+    # nothing reaches it from a child's `init/1`. That constraint fails
+    # *silently* when it is broken: `Estimator.count_tokens/1` rescues
+    # every tokenizer failure and falls back to a `chars/4` heuristic, so
+    # an early read yields quietly wrong counts rather than a crash, and
+    # no test would fail. If that ever changes, the child must await this
+    # task instead of reading through `Estimator`.
+    #
+    # The await is bounded so a hung load cannot wedge boot forever; 60s
+    # is ~600x the measured load, so a load slow enough to hit it is a
+    # real failure, not a slow machine.
+    tokenizer_task = Task.async(&Tokenizer.load/0)
 
     base_children = [
       NestWeb.Telemetry,
