@@ -102,63 +102,48 @@ defmodule Nest.DotConfigTest do
   end
 
   describe "the parse cache behind load/1" do
-    # `load/1` caches a parse under the file's *identity* — `File.stat/2`'s
-    # mtime and size. An mtime has one-second resolution, so an identity is
-    # not a content fingerprint, and a parse cached under it can be served
-    # for bytes that have since been replaced.
-    #
-    # These tests pin that hazard exactly instead of hoping two writes land
-    # inside the same wall-clock second: each one forces the file back onto
-    # the identity the stale parse was cached under. That is what makes the
-    # regression deterministic rather than timing-dependent.
-
-    test "re-reads a file the app just replaced, at an unchanged identity" do
-      path = cache_tmp_file("cache_rewrite")
+    # `load/1` reads the file on every call and caches only the parse, keyed on
+    # the bytes it read — never on the file's *identity*. `ParseCacheTest` pins
+    # that key directly; this test pins what it buys where a caller can see it,
+    # and it makes the identity as unhelpful as it can be: each replacement is
+    # forced back onto the mtime the previous parse was cached under, with the
+    # length held equal. A cache keyed on the identity would serve the stale
+    # parse here; one keyed on the content cannot.
+    test "a replacement is re-read even when the file's mtime and length are unchanged" do
+      path = cache_tmp_file("cache_replaced")
 
       assert :ok = Writer.save_providers([provider("acme")], path)
       assert {:ok, first} = DotConfig.load(path)
       assert Map.keys(first.providers) == ["acme"]
 
-      cached_mtime = mtime_of(path)
-      cached_size = size_of(path)
+      identity = identity_of(path)
 
-      # `acmb` serializes to exactly the same number of bytes as `acme`, so
-      # the identity is unchanged in *both* of its terms. Nothing about the
-      # file on disk can tell the cache its parse is stale; only the writer's
-      # own invalidation can make this load see the new bytes.
+      # `acmb` serializes to exactly as many bytes as `acme`, and the touch puts
+      # the file back on the mtime the `acme` parse was cached under. The
+      # premise is asserted below: without it the test could pass because the
+      # identity moved, which would test nothing.
       assert :ok = Writer.save_providers([provider("acmb")], path)
-      File.touch!(path, cached_mtime)
-
-      # The premise the regression rests on: the identity really is the one
-      # the first parse was cached under. Without this the test could pass
-      # because the identity moved, which would test nothing.
-      assert mtime_of(path) == cached_mtime
-      assert size_of(path) == cached_size
+      File.touch!(path, identity.mtime)
+      assert identity_of(path) == identity
 
       assert {:ok, second} = DotConfig.load(path)
       assert Map.keys(second.providers) == ["acmb"]
-    end
 
-    test "re-reads a file that changed without the app writing it" do
-      path = cache_tmp_file("cache_external")
-
+      # The same question for a file the application never wrote. No writer was
+      # ever in a position to tell the cache anything, and it makes no
+      # difference: the key is the bytes, whoever put them there.
       File.write!(path, provider_toml("https://one.example/v1"))
-      assert {:ok, first} = DotConfig.load(path)
-      assert first.providers["acme"].base_url == "https://one.example/v1"
+      assert {:ok, hand_written} = DotConfig.load(path)
+      assert hand_written.providers["acme"].base_url == "https://one.example/v1"
 
-      cached_mtime = mtime_of(path)
+      hand_identity = identity_of(path)
 
-      # A hand-edit: the app never wrote this file, so no writer is in a
-      # position to invalidate anything. The identity's `size` term is the
-      # only thing left that can catch it.
-      edited_url = "https://a-much-longer.example/v1"
-      File.write!(path, provider_toml(edited_url))
-      File.touch!(path, cached_mtime)
+      File.write!(path, provider_toml("https://two.example/v1"))
+      File.touch!(path, hand_identity.mtime)
+      assert identity_of(path) == hand_identity
 
-      assert mtime_of(path) == cached_mtime
-
-      assert {:ok, second} = DotConfig.load(path)
-      assert second.providers["acme"].base_url == edited_url
+      assert {:ok, edited} = DotConfig.load(path)
+      assert edited.providers["acme"].base_url == "https://two.example/v1"
     end
   end
 
@@ -632,10 +617,13 @@ defmodule Nest.DotConfigTest do
     path
   end
 
-  # The two terms of the identity the cache keys on. Reading them the same way
-  # `DotConfig` does is what lets a test say "the identity is unchanged", and
-  # `File.touch!/2` takes a posix second directly, so forcing one back needs no
-  # timezone-dependent `:calendar.datetime()` conversion.
+  # The two terms of the identity a stat-based key would have used. Reading them
+  # the way `File.stat/2` reports them, and forcing a replacement back onto the
+  # previous value of both, is what leaves the bytes as the only thing that can
+  # tell two revisions apart. `File.touch!/2` takes a posix second directly
+  # (`posix_time()` is in its spec), so this needs no timezone conversion.
+  defp identity_of(path), do: %{mtime: mtime_of(path), size: size_of(path)}
+
   defp mtime_of(path), do: File.stat!(path, time: :posix).mtime
   defp size_of(path), do: File.stat!(path).size
 end

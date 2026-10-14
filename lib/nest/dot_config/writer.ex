@@ -50,11 +50,6 @@ defmodule Nest.DotConfig.Writer do
 
   Missing parent directories are created. On any failure the temp file
   is removed and `{:error, reason}` is returned.
-
-  A successful write also drops any cached parse of `path`
-  (`Nest.DotConfig.invalidate_cache/1`): the bytes under that path are new,
-  and the parse cache's identity key cannot see a replacement that keeps the
-  file's length and lands inside the cached mtime's second.
   """
   @spec write_atomic(String.t(), iodata()) :: :ok | {:error, term()}
   def write_atomic(path, contents) do
@@ -64,7 +59,6 @@ defmodule Nest.DotConfig.Writer do
          :ok <- File.write(tmp, contents),
          :ok <- File.chmod(tmp, 0o600),
          :ok <- File.rename(tmp, path) do
-      DotConfig.invalidate_cache(path)
       :ok
     else
       {:error, reason} ->

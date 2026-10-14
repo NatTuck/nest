@@ -381,7 +381,7 @@ defmodule Nest.ProjectConfig do
       "No project mounts were applied; the mode's default sandbox is in effect.\n"
   end
 
-  # ---- cache (keyed by {path, mtime}, mirroring Nest.DotConfig) ----
+  # ---- cache (keyed by {path, mtime}) ----
 
   @cache_table :nest_project_config_cache
 
