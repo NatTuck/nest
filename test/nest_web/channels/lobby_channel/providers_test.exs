@@ -48,12 +48,12 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       assert pegasus["base_url"] == "http://pegasus:8080/v1"
       assert pegasus["auto_models"] == true
       assert pegasus["expose_models"] == false
+      assert pegasus["probe_multimodal"] == false
       assert is_list(pegasus["models"])
     end
 
-    test "persists expose_models through the writer and re-serializes it", %{
-      local_file: local_file
-    } do
+    test "persists expose_models and probe_multimodal through the writer and re-serializes them",
+         %{local_file: local_file} do
       providers = [
         %Provider{
           name: "exposed",
@@ -64,7 +64,8 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
           tags: [],
           models: [],
           auto_probe: true,
-          expose_models: true
+          expose_models: true,
+          probe_multimodal: true
         }
       ]
 
@@ -72,8 +73,11 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
 
       exposed = Enum.find(Providers.providers(), &(&1["name"] == "exposed"))
       assert exposed["expose_models"] == true
+      assert exposed["probe_multimodal"] == true
 
-      assert File.read!(local_file) =~ "expose-models"
+      toml = File.read!(local_file)
+      assert toml =~ "expose-models"
+      assert toml =~ "probe-multimodal"
     end
 
     test "reflects a freshly written local.toml" do
@@ -164,6 +168,38 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       assert File.read!(local_file) =~ "acme"
     end
 
+    test "round-trips probe_multimodal through save, the push and local.toml", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      Mimic.expect(Nest.Models, :rescan, fn -> :ok end)
+
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [
+            %{"name" => "opted-in", "probe_multimodal" => true},
+            %{"name" => "opted-out", "probe_multimodal" => false},
+            %{"name" => "absent"}
+          ]
+        })
+
+      assert_reply ref, :ok, %{}, 1_000
+
+      # The push serializes the config the handler just reloaded, so this pins
+      # the outbound `true` as well as the `false` the two defaults produce.
+      assert_push "providers_updated", %{providers: providers}, 1_000
+
+      by_name = Map.new(providers, &{&1["name"], &1["probe_multimodal"]})
+      assert by_name["opted-in"] == true
+      assert by_name["opted-out"] == false
+      assert by_name["absent"] == false
+
+      # ... and the writer persists the same values.
+      toml = File.read!(local_file)
+      assert toml =~ ~s(probe-multimodal = true)
+      assert toml =~ ~s(probe-multimodal = false)
+    end
+
     test "rejects a non-admin user with :forbidden" do
       admin_id = Process.get(:providers_admin_id)
 
@@ -187,10 +223,22 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       assert_reply ref, :error, %{"reason" => "invalid_payload"}
     end
 
-    test "replies invalid_payload on a bad thinking-effort value", %{socket: socket} do
+    test "replies invalid_payload on a bad thinking-effort or probe_multimodal value", %{
+      socket: socket
+    } do
       ref =
         push(socket, "save_providers", %{
           "providers" => [%{"name" => "acme", "default_thinking_effort" => "turbo"}]
+        })
+
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}
+
+      # A non-boolean `probe_multimodal` is a typo, not an opt-out: it raises
+      # (as the TOML parser does) rather than being coerced to `false` and
+      # persisted, so the same rescue answers `invalid_payload`.
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [%{"name" => "acme", "probe_multimodal" => "yes"}]
         })
 
       assert_reply ref, :error, %{"reason" => "invalid_payload"}

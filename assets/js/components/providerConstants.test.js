@@ -42,6 +42,7 @@ describe("providerConstants", () => {
       probe_base_url: null,
       auto_probe: true,
       expose_models: false,
+      probe_multimodal: false,
       models: [],
     });
     expect(a.id).not.toBe(b.id);

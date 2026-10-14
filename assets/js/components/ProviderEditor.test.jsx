@@ -155,7 +155,7 @@ describe("ProviderEditor", () => {
     expect(onRemove).toHaveBeenCalledTimes(1);
   });
 
-  it("toggles auto-discover models", () => {
+  it("toggles each provider flag independently", () => {
     const onChange = vi.fn();
     render(
       <ProviderEditor
@@ -165,42 +165,20 @@ describe("ProviderEditor", () => {
       />,
     );
 
-    fireEvent.click(screen.getByLabelText(/auto-discover models/i));
+    // Each checkbox reports the whole updated provider, so click them in
+    // turn and read what each one produced.
+    for (const [label, field, expected] of [
+      [/auto-discover models/i, "auto_models", true],
+      [/auto-probe endpoint/i, "auto_probe", false],
+      [/expose models in list-models/i, "expose_models", true],
+      [/probe models for multimodal input/i, "probe_multimodal", true],
+    ]) {
+      onChange.mockClear();
+      fireEvent.click(screen.getByLabelText(label));
 
-    const [updated] = onChange.mock.calls[0];
-    expect(updated.auto_models).toBe(true);
-  });
-
-  it("toggles auto-probe off", () => {
-    const onChange = vi.fn();
-    render(
-      <ProviderEditor
-        provider={provider}
-        onChange={onChange}
-        onRemove={() => {}}
-      />,
-    );
-
-    fireEvent.click(screen.getByLabelText(/auto-probe endpoint/i));
-
-    const [updated] = onChange.mock.calls[0];
-    expect(updated.auto_probe).toBe(false);
-  });
-
-  it("toggles expose models in list-models", () => {
-    const onChange = vi.fn();
-    render(
-      <ProviderEditor
-        provider={provider}
-        onChange={onChange}
-        onRemove={() => {}}
-      />,
-    );
-
-    fireEvent.click(screen.getByLabelText(/expose models in list-models/i));
-
-    const [updated] = onChange.mock.calls[0];
-    expect(updated.expose_models).toBe(true);
+      const [updated] = onChange.mock.calls[0];
+      expect(updated[field]).toBe(expected);
+    }
   });
 
   it("clears default context limit when the input is emptied", () => {

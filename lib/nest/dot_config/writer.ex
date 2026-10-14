@@ -37,6 +37,10 @@ defmodule Nest.DotConfig.Writer do
   end
 
   defp provider_to_map(%Provider{} = p) do
+    Map.put(provider_settings_to_map(p), "models", Enum.map(p.models || [], &model_to_map/1))
+  end
+
+  defp provider_settings_to_map(%Provider{} = p) do
     %{}
     |> maybe_put("base-url", p.base_url)
     |> maybe_put("api-key", p.api_key)
@@ -49,7 +53,7 @@ defmodule Nest.DotConfig.Writer do
     |> maybe_put("probe-base-url", p.probe_base_url)
     |> maybe_put("auto-probe", p.auto_probe)
     |> maybe_put("expose-models", p.expose_models)
-    |> maybe_put("models", Enum.map(p.models || [], &model_to_map/1))
+    |> maybe_put("probe-multimodal", p.probe_multimodal)
   end
 
   defp model_to_map(%Model{} = m) do

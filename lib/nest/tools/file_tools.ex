@@ -228,24 +228,25 @@ defmodule Nest.Tools.FileTools do
     })
   end
 
-  # Fail closed on the caller's model: `multi_modal` is `nil` for a model that
-  # declares nothing, and "declares nothing" is not a claim of support.
+  # Fail closed on the caller's model. The catalog gives three answers and
+  # each gets its own refusal: a model that declares the modality is accepted,
+  # one that declares input modalities *without* it is text-only, and one that
+  # declares nothing at all is unknown — "declares nothing" is not a claim of
+  # support, and the caller is told which of the two it is because the remedies
+  # differ.
   defp check_media_input(modality, context) do
-    model = media_model(context)
-
-    cond do
-      is_nil(model) ->
+    case media_model(context) do
+      nil ->
         {:error,
          "file-read cannot attach #{modality} data: this agent's model is not known, " <>
            "so Nest cannot tell whether it accepts #{modality} input."}
 
-      # `media_inputs/1` holds the strings `Discover` normalizes provider
-      # answers to (`%{"input" => ["image"]}`); the modality here is an atom.
-      Atom.to_string(modality) in media_inputs(model) ->
-        :ok
-
-      true ->
-        {:error, media_unsupported_error(model, modality)}
+      model ->
+        case declared_input(model, modality) do
+          :supported -> :ok
+          :unsupported -> {:error, media_unsupported_error(model, modality)}
+          :unknown -> {:error, media_unknown_error(model, modality)}
+        end
     end
   end
 
@@ -256,29 +257,59 @@ defmodule Nest.Tools.FileTools do
     end
   end
 
-  # The model's declared input modalities, or `[]` when nothing declares any.
+  # What the merged catalog declares about `modality` for `model`:
+  # `:supported` when some entry lists it, `:unsupported` when entries list
+  # input modalities and none is this one, and `:unknown` when no entry lists
+  # any (`multi_modal` is `nil` there — the provider published no modality
+  # metadata we recognize, which is not the same as declaring text-only).
   #
   # Matched on name alone: `client_config` carries the model name but no
   # provider, and the catalog merges models from every provider by name. A
-  # provider that reports no capability contributes `nil`, which is "says
-  # nothing about it" rather than "does not support it", so a positive claim
-  # from any provider serving that model is the best evidence available.
-  defp media_inputs(model) do
-    Nest.Models.list()
-    |> Enum.filter(&(&1["name"] == model))
-    |> Enum.flat_map(fn
-      %{"multi_modal" => %{"input" => inputs}} when is_list(inputs) -> inputs
-      _ -> []
-    end)
-    |> Enum.uniq()
+  # positive claim from any provider serving that model is the best evidence
+  # available, so it wins over a negative one.
+  defp declared_input(model, modality) do
+    name = Atom.to_string(modality)
+
+    declarations =
+      Nest.Models.list()
+      |> Enum.filter(&(&1["name"] == model))
+      |> Enum.map(&declared_inputs/1)
+      |> Enum.reject(&is_nil/1)
+
+    cond do
+      declarations == [] -> :unknown
+      Enum.any?(declarations, &(name in &1)) -> :supported
+      true -> :unsupported
+    end
   end
 
+  # The input modalities one catalog entry declares, or `nil` when it declares
+  # none. `%{"input" => []}` is a declaration of no input modalities at all,
+  # so it is `[]` here rather than `nil`.
+  defp declared_inputs(%{"multi_modal" => %{"input" => inputs}}) when is_list(inputs), do: inputs
+  defp declared_inputs(_entry), do: nil
+
   defp media_unsupported_error(model, modality) do
-    "file-read refused: the model #{inspect(model)} does not declare #{modality} input, " <>
-      "and a #{modality} part is re-sent on every subsequent request, so attaching one " <>
-      "would break every later turn until the conversation is compacted. " <>
+    "file-read refused: the model #{inspect(model)} declares text-only input — its " <>
+      "models-list entry lists input modalities and #{modality} is not among them — and a " <>
+      "#{modality} part is re-sent on every subsequent request, so attaching one would " <>
+      "break every later turn until the conversation is compacted. " <>
       "Use a model whose models-list entry shows input: #{modality}, or inspect the file " <>
       "with shell-cmd instead (e.g. `file --mime-type <path>`)."
+  end
+
+  # Nothing anywhere declares this model's input modalities, so we refuse
+  # without claiming it is text-only, and name both ways to settle it.
+  defp media_unknown_error(model, modality) do
+    "file-read refused: nothing declares whether the model #{inspect(model)} accepts " <>
+      "#{modality} input — its provider publishes no modality metadata we can read — and " <>
+      "a #{modality} part is re-sent on every subsequent request, so attaching one could " <>
+      "break every later turn until the conversation is compacted. " <>
+      "Settle it either by declaring the model's input statically " <>
+      "(multi-modal = { input = [\"#{modality}\"] } in config.toml) or by setting " <>
+      "probe-multimodal = true on that provider so Nest probes the model. " <>
+      "In the meantime, inspect the file with shell-cmd instead " <>
+      "(e.g. `file --mime-type <path>`)."
   end
 
   defp read_file_content(full_path, caps, mounts) do

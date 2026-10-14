@@ -53,6 +53,9 @@ defmodule Nest.ModelsTest do
     #     via `:sys.replace_state`) — the static-vs-detected fixtures.
     #   * `MiniMax-M2.5` is image-capable here while its static twin under
     #     `model-studio` sets nothing — the cross-provider fill-in guard.
+    #   * `pegasus-text-only` publishes `["text"]` — a *declared* text-only
+    #     answer, which must stay distinct from the `nil` that the `id`-only
+    #     entries produce.
     #
     # A second auto provider (`other-auto`, injected by the one-request
     # test) is answered too, so a scan with two providers can be counted.
@@ -109,6 +112,14 @@ defmodule Nest.ModelsTest do
                  "id" => "pegasus-static-audio",
                  "object" => "model",
                  "input_modalities" => ["text", "image"]
+               },
+               %{
+                 # A published modality list that does not name "image":
+                 # the provider *declares* text-only input, which is a
+                 # different answer from the `id`-only entries above.
+                 "id" => "pegasus-text-only",
+                 "object" => "model",
+                 "input_modalities" => ["text"]
                }
              ]
            }
@@ -208,6 +219,25 @@ defmodule Nest.ModelsTest do
       assert vl["provider"] == "pegasus"
       assert vl["multi_modal"] == %{"input" => ["image"]}
       assert vl["context_limit"] == 512_000
+    end
+
+    test "keeps a declared text-only answer apart from an unknown one" do
+      # `pegasus-text-only` publishes a modality list that does not name
+      # "image": the provider is declaring text-only input, which the
+      # catalog must carry as `%{"input" => []}` — not as the `nil` that
+      # means "no modality metadata at all". `MiniMax-M3` (an `id`-only
+      # entry) is the unknown case; the two refusals `file-read` gives
+      # are different, so the two values must not collapse.
+      text_only = Enum.find(Models.list(), fn m -> m["name"] == "pegasus-text-only" end)
+      unknown = Enum.find(Models.list(), fn m -> m["name"] == "MiniMax-M3" end)
+
+      assert text_only != nil
+      assert text_only["provider"] == "pegasus"
+      assert text_only["multi_modal"] == %{"input" => []}
+
+      assert unknown != nil
+      assert unknown["provider"] == "pegasus"
+      assert unknown["multi_modal"] == nil
     end
 
     test "emits a static multi_modal verbatim, including for a model no scan covers" do

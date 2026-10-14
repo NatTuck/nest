@@ -83,6 +83,7 @@ defmodule Nest.Models do
 
   alias Nest.ChatModel
   alias Nest.DotConfig
+  alias Nest.Models.MultiModal
 
   @type source :: :vllm | :openrouter | :llama_cpp
 
@@ -579,6 +580,21 @@ defmodule Nest.Models do
   #
   # Empty maps on failure (`ChatModel.list_models_with_metadata/1`
   # swallows transport errors and returns `[]`).
+  #
+  # `Nest.Models.MultiModal.resolve/3` turns the body's answer into the
+  # three-valued vocabulary, probing the model when the body left it
+  # unknown and the provider opted in with `probe-multimodal`.
+  #
+  # Known defect: those probes run inline here, under this provider's Task,
+  # while the scan's 5 s `@default_deadline_ms` bounds only the *first*
+  # broadcast. Two 20 s probe requests per unknown model therefore outlive the
+  # deadline: a probed model stays `multi_modal: nil` in the payload until
+  # this query finishes and its late `models_updated` lands, and
+  # `{:models_scan_complete, _}` -- which re-enables the GUI's rescan button
+  # -- fires before the probes have answered. A correct fix needs a per-scan
+  # probe budget (a deadline the probe path itself honours); the deadline's
+  # current semantics are pre-existing and pinned by `test/nest/models_test.exs`.
+  # Documented in `Nest.LLM.MultimodalProbe`'s "Cost and latency".
   defp query_provider(provider) do
     entries = ChatModel.list_models_with_metadata(provider)
 
@@ -595,7 +611,7 @@ defmodule Nest.Models do
            name: entry.name,
            provider_name: provider.name,
            context_limit: nil,
-           multi_modal: entry.multi_modal
+           multi_modal: MultiModal.resolve(provider, entry.name, entry.multi_modal)
          }}
       end)
       |> Map.new()
@@ -670,25 +686,10 @@ defmodule Nest.Models do
   # The multi-modal input vocabulary for a merged model entry. An
   # explicit static `multi-modal` is authoritative and is never
   # overwritten by a differing discovery answer; detection is a
-  # fill-in for when static config sets nothing.
-  #
-  # When static config has no entry at all, `model` *is* the
-  # auto-discovered entry and already carries the detected value, so
-  # the first clause covers it. Otherwise the fill-in is looked up for
-  # this model's own {provider, name} pair — the key the context-limit
-  # cache uses — so a same-named model discovered under a *different*
-  # provider cannot contribute a capability this one lacks.
-  defp effective_multi_modal(%{multi_modal: static}, _auto) when static != nil, do: static
-
-  defp effective_multi_modal(model, auto) do
-    case Map.get(auto, model.name) do
-      %{provider_name: provider, multi_modal: detected} ->
-        if provider == model.provider_name, do: detected, else: nil
-
-      _ ->
-        nil
-    end
-  end
+  # fill-in for when static config sets nothing. See
+  # `Nest.Models.MultiModal.effective/2` for the {provider, name}
+  # matching rule.
+  defp effective_multi_modal(model, auto), do: MultiModal.effective(model, auto)
 
   defp provider_default(providers, provider_name) do
     case Map.get(providers, provider_name) do

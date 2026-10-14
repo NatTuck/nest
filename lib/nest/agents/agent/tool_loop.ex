@@ -396,12 +396,12 @@ defmodule Nest.Agents.Agent.ToolLoop do
   #
   # `nil` renders nothing rather than an explicit "none": it means *no
   # claim was made*, which is not the same as "cannot see images".
-  # `Discover.extract_multi_modal_from_model/1` reports a text-only
-  # provider's answer as `nil` too, and its own doc says a consumer must
-  # read that as "no image input claimed" rather than "unknown".
-  # Rendering `input: none` for it would turn "we were not told" into a
-  # false negative. An empty modality list *is* a claim — of no input
-  # modalities at all — so that one does render.
+  # `Discover.extract_multi_modal_from_model/1` keeps those apart — a
+  # provider that publishes a modality list without `"image"` reports
+  # `%{"input" => []}` (rendered `input: none` below), and only a body
+  # with no modality field we recognize reports `nil`.
+  # Rendering `input: none` for the latter would turn "we were not told"
+  # into a false negative.
   defp input_field(entry) do
     case Map.get(entry, "multi_modal") do
       nil -> nil

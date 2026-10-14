@@ -241,7 +241,11 @@ defmodule Nest.LLM.DiscoverTest do
 
   describe "extract_multi_modal_from_model/1" do
     # Every recognized shape normalizes to the static TOML vocabulary
-    # (`multi-modal = { input = ["image"] }` in config.toml).
+    # (`multi-modal = { input = ["image"] }` in config.toml), and every
+    # shape answers all three ways: positive, a *negative* (the body
+    # publishes input modalities and none is "image"), and *unknown* (no
+    # modality field we recognize). The negative/unknown split is the
+    # point — `file-read` refuses a media part differently for each.
     test "normalizes each recognized provider shape to the static vocabulary" do
       # OpenRouter: the measured shape lists every modality the model
       # accepts. Only "image" is in our vocabulary.
@@ -263,44 +267,69 @@ defmodule Nest.LLM.DiscoverTest do
              }) == %{"input" => ["image"]}
     end
 
-    test "returns nil when the body claims no image input or says nothing about it" do
-      # No capability field at all.
-      assert Discover.extract_multi_modal_from_model(%{"id" => "text-only"}) == nil
-
-      # A modality list that names modalities but not "image" is reported
-      # as `nil` too: discovery never claims "known to have none", so a
-      # consumer reads `nil` as "no image input claimed".
+    test "reports a published modality list without \"image\" as text-only, per shape" do
+      # A list is the provider *declaring* input, so "no image" is an
+      # answer of its own — an empty `input` list, not `nil`. (Live:
+      # DeepSeek's `deepseek-v4-pro` reports `["text"]`.)
       assert Discover.extract_multi_modal_from_model(%{
-               "id" => "text-only",
+               "id" => "deepseek-v4-pro",
                "input_modalities" => ["text"]
-             }) == nil
+             }) == %{"input" => []}
 
+      # OpenRouter's nested shape says the same thing in the same way.
       assert Discover.extract_multi_modal_from_model(%{
                "id" => "text-only",
                "architecture" => %{"input_modalities" => ["text", "file"]}
-             }) == nil
+             }) == %{"input" => []}
 
-      # An empty list is still a list, so it takes the same branch.
+      # An empty list is still a list: the provider declared that the
+      # model accepts no input modality at all.
       assert Discover.extract_multi_modal_from_model(%{
                "id" => "text-only",
                "input_modalities" => []
-             }) == nil
+             }) == %{"input" => []}
 
-      # A malformed (non-list) modality field is not a signal either.
-      assert Discover.extract_multi_modal_from_model(%{
-               "id" => "text-only",
-               "input_modalities" => "image"
-             }) == nil
-
-      # An Anthropic capability flag that is false, empty or not a map.
+      # Anthropic's flag is a declaration in both directions.
       assert Discover.extract_multi_modal_from_model(%{
                "id" => "claude-3-opus-20240229",
                "capabilities" => %{"image_input" => %{"supported" => false}}
+             }) == %{"input" => []}
+    end
+
+    test "returns nil when no recognized shape publishes a modality field" do
+      # Nothing at all.
+      assert Discover.extract_multi_modal_from_model(%{"id" => "no-metadata"}) == nil
+
+      # `architecture` present without an `input_modalities` list, and
+      # no flat field either: still nothing published.
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "no-metadata",
+               "architecture" => %{"tokenizer" => "cl100k"}
+             }) == nil
+
+      # A malformed (non-list) modality field is not a shape we can
+      # read, so the answer stays unknown rather than claiming a
+      # negative.
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "no-metadata",
+               "input_modalities" => "image"
+             }) == nil
+
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "no-metadata",
+               "architecture" => %{"input_modalities" => "text"}
+             }) == nil
+
+      # An Anthropic capability object that is missing, empty, or not a
+      # map says nothing; so does a non-boolean `supported`.
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "claude-3-opus-20240229",
+               "capabilities" => %{"image_input" => %{}}
              }) == nil
 
       assert Discover.extract_multi_modal_from_model(%{
                "id" => "claude-3-opus-20240229",
-               "capabilities" => %{"image_input" => %{}}
+               "capabilities" => %{"image_input" => %{"supported" => "yes"}}
              }) == nil
 
       assert Discover.extract_multi_modal_from_model(%{
@@ -331,7 +360,26 @@ defmodule Nest.LLM.DiscoverTest do
                "id" => "list-says-no-flag-says-yes",
                "architecture" => %{"input_modalities" => ["text"]},
                "capabilities" => %{"image_input" => %{"supported" => true}}
-             }) == nil
+             }) == %{"input" => []}
+
+      # The nested shape only wins when it is actually published: an
+      # `architecture` object without a usable list falls through to the
+      # flat field.
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "both-shapes",
+               "architecture" => %{"tokenizer" => "cl100k"},
+               "input_modalities" => ["text"]
+             }) == %{"input" => []}
+
+      # Nested-wins has a sharp edge, pinned here as the documented
+      # consequence: a nested list that omits "image" answers *text-only* even
+      # when the flat list names it -- a wrong negative rather than an unknown.
+      # Reading the shapes as a union would answer `%{"input" => ["image"]}`.
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "nested-says-no-flat-says-yes",
+               "architecture" => %{"input_modalities" => ["text"]},
+               "input_modalities" => ["text", "image"]
+             }) == %{"input" => []}
     end
   end
 

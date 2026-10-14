@@ -146,7 +146,7 @@ export function ProviderEditor({ provider, onChange, onRemove }) {
         </Field>
       </div>
 
-      <div className="flex items-center gap-6 text-sm text-gray-700">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-gray-700">
         <label className="flex items-center gap-2">
           <input
             type="checkbox"
@@ -173,6 +173,15 @@ export function ProviderEditor({ provider, onChange, onRemove }) {
             aria-label="Expose models in list-models"
           />
           Expose models in list-models
+        </label>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={!!provider.probe_multimodal}
+            onChange={(e) => set("probe_multimodal", e.target.checked)}
+            aria-label="Probe models for multimodal input"
+          />
+          Probe models for multimodal input
         </label>
       </div>
 

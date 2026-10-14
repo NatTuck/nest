@@ -188,6 +188,7 @@ defmodule Nest.ChatModel.ListModelsTest do
         "data" => [
           %{"id" => "text-only-no-limit"},
           %{"id" => "with-limit", "max_model_len" => 4096},
+          %{"id" => "declared-text-only", "input_modalities" => ["text"]},
           %{"id" => "image-no-limit", "input_modalities" => ["text", "image"]},
           %{"id" => "image-and-limit", "max_model_len" => 8192, "input_modalities" => ["image"]}
         ]
@@ -198,6 +199,12 @@ defmodule Nest.ChatModel.ListModelsTest do
       assert [
                %{name: "text-only-no-limit", source: nil, limit: nil, multi_modal: nil},
                %{name: "with-limit", source: :vllm, limit: 4096, multi_modal: nil},
+               %{
+                 name: "declared-text-only",
+                 source: nil,
+                 limit: nil,
+                 multi_modal: %{"input" => []}
+               },
                %{
                  name: "image-no-limit",
                  source: nil,

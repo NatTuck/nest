@@ -74,6 +74,7 @@ defmodule NestWeb.LobbyChannel.Providers do
       "probe_base_url" => p.probe_base_url,
       "auto_probe" => p.auto_probe,
       "expose_models" => p.expose_models,
+      "probe_multimodal" => p.probe_multimodal,
       "models" => Enum.map(p.models || [], &model_to_map/1)
     }
   end
@@ -101,8 +102,22 @@ defmodule NestWeb.LobbyChannel.Providers do
       probe_base_url: m["probe_base_url"],
       auto_probe: if(is_boolean(m["auto_probe"]), do: m["auto_probe"], else: true),
       expose_models: if(is_boolean(m["expose_models"]), do: m["expose_models"], else: false),
+      probe_multimodal: parse_probe_multimodal(m["probe_multimodal"]),
       models: Enum.map(m["models"] || [], &model_from_map/1)
     }
+  end
+
+  # The opt-in is a boolean, and it is persisted: a non-boolean in the payload
+  # is a typo, not a request to opt out, so it raises rather than being
+  # silently coerced to `false` (which would write the wrong value to
+  # `local.toml`). The function-level `rescue` in `save/2` turns the raise into
+  # `invalid_payload`, exactly as a bad thinking-effort value does. Absent
+  # (`nil`) keeps the documented default of `false`, matching the TOML parser.
+  defp parse_probe_multimodal(value) when is_boolean(value), do: value
+  defp parse_probe_multimodal(nil), do: false
+
+  defp parse_probe_multimodal(value) do
+    raise "invalid probe_multimodal #{inspect(value)}: must be a boolean"
   end
 
   defp model_from_map(m) do

@@ -39,6 +39,7 @@ defmodule Nest.DotConfig.WriterTest do
           default_thinking_effort: :high,
           probe_base_url: "https://probe.example/v1",
           auto_probe: false,
+          probe_multimodal: true,
           models: [
             %Model{
               name: "acme-1",
@@ -65,6 +66,7 @@ defmodule Nest.DotConfig.WriterTest do
       assert provider.default_thinking_effort == :high
       assert provider.probe_base_url == "https://probe.example/v1"
       assert provider.auto_probe == false
+      assert provider.probe_multimodal == true
 
       model = provider.models |> List.first()
       assert model.name == "acme-1"

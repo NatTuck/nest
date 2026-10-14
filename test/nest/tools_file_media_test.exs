@@ -45,7 +45,11 @@ defmodule Nest.ToolsFileMediaTest do
   end
 
   defp text_model do
-    %{"name" => "text-model", "provider" => "local", "multi_modal" => nil}
+    %{"name" => "text-model", "provider" => "local", "multi_modal" => %{"input" => []}}
+  end
+
+  defp unknown_model do
+    %{"name" => "unknown-model", "provider" => "local", "multi_modal" => nil}
   end
 
   describe "MediaKind.from_path/1" do
@@ -74,7 +78,9 @@ defmodule Nest.ToolsFileMediaTest do
   end
 
   describe "the file-read media gate" do
-    test "refuses a media read for a model that declares no image input", %{workspace: workspace} do
+    test "refuses a media read for a model that declares text-only input", %{
+      workspace: workspace
+    } do
       File.write!(Path.join(workspace, "shot.png"), @png)
       stub_catalog([text_model()])
 
@@ -87,10 +93,36 @@ defmodule Nest.ToolsFileMediaTest do
       # would be re-sent on every later request.
       assert msg =~ "file-read refused"
       assert msg =~ ~s("text-model")
+      assert msg =~ "declares text-only input"
       assert msg =~ "image"
       assert msg =~ "shell-cmd"
 
+      # No probe remedy: the provider answered, it just answered "no".
+      refute msg =~ "probe-multimodal"
+
       # Fail closed before the read: no part was built, so no payload leaks in.
+      refute msg =~ "base64"
+    end
+
+    test "refuses a media read for a model whose input nothing declares", %{workspace: workspace} do
+      File.write!(Path.join(workspace, "shot.png"), @png)
+      stub_catalog([unknown_model()])
+
+      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
+
+      assert {:error, msg} = function.function.(%{"path" => "shot.png"}, ctx("unknown-model"))
+
+      assert msg =~ "file-read refused"
+      assert msg =~ ~s("unknown-model")
+      assert msg =~ "no modality metadata"
+
+      # Both remedies are named, because this is the case they exist for.
+      assert msg =~ "multi-modal"
+      assert msg =~ "probe-multimodal"
+      assert msg =~ "shell-cmd"
+
+      # Silence is not a claim that the model is text-only.
+      refute msg =~ "text-only"
       refute msg =~ "base64"
     end
 

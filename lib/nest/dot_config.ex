@@ -79,6 +79,14 @@ defmodule Nest.DotConfig do
     models visible in the `models-list` tool output. Defaults to
     `false`. Set `expose-models = true` on providers whose models
     should be discoverable by agents via the `models-list` tool.
+
+    `probe_multimodal` is the optional opt-in that lets discovery
+    probe a model's image-input support (`Nest.LLM.MultimodalProbe`)
+    when the provider's `/models` body leaves it unknown. Defaults to
+    `false`. It never overrides a definite answer from the metadata:
+    a provider that publishes a modality list, or an Anthropic-style
+    capability flag, is believed as-is. Parsed from the optional
+    `probe-multimodal` TOML key.
     """
     defstruct [
       :name,
@@ -93,6 +101,7 @@ defmodule Nest.DotConfig do
       :default_thinking_effort,
       :probe_base_url,
       :expose_models,
+      probe_multimodal: false,
       auto_probe: true
     ]
   end
@@ -586,7 +595,8 @@ defmodule Nest.DotConfig do
       default_thinking_effort: parse_thinking_effort(Map.get(data, "default-thinking-effort")),
       probe_base_url: parse_probe_base_url(Map.get(data, "probe-base-url"), name),
       auto_probe: parse_auto_probe(Map.get(data, "auto-probe"), name),
-      expose_models: parse_expose_models(Map.get(data, "expose-models"), name)
+      expose_models: parse_expose_models(Map.get(data, "expose-models"), name),
+      probe_multimodal: parse_probe_multimodal(Map.get(data, "probe-multimodal"), name)
     }
   end
 
@@ -634,6 +644,18 @@ defmodule Nest.DotConfig do
 
   defp parse_expose_models(value, provider_name) do
     raise "Provider #{provider_name}: invalid expose-models #{inspect(value)}: must be a boolean"
+  end
+
+  # Parses the optional `probe-multimodal` opt-in (a discovered
+  # model's image-input support may be probed by
+  # `Nest.LLM.MultimodalProbe`). Defaults to `false` when absent:
+  # probing costs a real request per model, so it is opt-in.
+  defp parse_probe_multimodal(nil, _provider_name), do: false
+
+  defp parse_probe_multimodal(value, _provider_name) when is_boolean(value), do: value
+
+  defp parse_probe_multimodal(value, provider_name) do
+    raise "Provider #{provider_name}: invalid probe-multimodal #{inspect(value)}: must be a boolean"
   end
 
   # Parses and validates the optional `timeout` (in seconds) for a provider.
