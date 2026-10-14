@@ -254,6 +254,32 @@ defmodule Nest.ChatModelTest do
       {:ok, config} = ChatModel.build_client_config(provider, "test-model")
       assert config.api_key == "sk-plain-key-123"
     end
+
+    test "an unresolvable reference yields no credential rather than raising" do
+      # The variable is set nowhere. `DotConfig.load/0` rejects such a key
+      # at startup, so reaching a client means the key went bad after load
+      # (the variable was unset, the file removed). A chat turn must not
+      # crash over that — it goes out unauthenticated.
+      System.delete_env("NEST_TEST_DEFINITELY_UNSET_API_KEY")
+
+      provider = %DotConfig.Provider{
+        name: "unresolvable-test",
+        base_url: "http://test.com",
+        api_key: "${NEST_TEST_DEFINITELY_UNSET_API_KEY}",
+        protocol: "openai",
+        auto_models: false,
+        tags: [],
+        models: []
+      }
+
+      assert {:ok, config} = ChatModel.build_client_config(provider, "test-model")
+      assert config.api_key == nil
+
+      assert {:ok, anthropic_config} =
+               ChatModel.build_client_config(%{provider | protocol: "anthropic"}, "test-model")
+
+      assert anthropic_config.api_key == nil
+    end
   end
 
   describe "list_models/1 HTTP integration" do
@@ -279,6 +305,39 @@ defmodule Nest.ChatModelTest do
       end)
 
       ChatModel.list_models(provider)
+    end
+
+    test "sends no Authorization header when the key reference cannot be resolved" do
+      # The variable is set nowhere, so the reference cannot be resolved.
+      # Discovery must not crash over it: the request goes out unauthenticated
+      # and the provider's own 401 is the failure.
+      System.delete_env("NEST_TEST_DEFINITELY_UNSET_API_KEY")
+
+      provider = %DotConfig.Provider{
+        name: "unresolvable-key",
+        base_url: "http://api.test.com/v1",
+        api_key: "${NEST_TEST_DEFINITELY_UNSET_API_KEY}",
+        protocol: "openai",
+        auto_models: true,
+        tags: [],
+        models: []
+      }
+
+      expect(Req, :get, fn url, opts ->
+        assert url == "http://api.test.com/v1/models"
+
+        headers = Keyword.get(opts, :headers, [])
+        refute Enum.any?(headers, &match?({"Authorization", _}, &1))
+
+        {:ok, %{status: 401, body: %{"error" => "unauthorized"}}}
+      end)
+
+      log =
+        capture_log(fn ->
+          assert ChatModel.list_models(provider) == []
+        end)
+
+      assert log =~ "Provider returned status 401"
     end
 
     test "handles OpenAI-style /models response format" do

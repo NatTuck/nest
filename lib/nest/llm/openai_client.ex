@@ -61,12 +61,11 @@ defmodule Nest.LLM.OpenAIClient do
       Req.post(
         url,
         [
-          auth: {:bearer, api_key},
           json: build_payload(request, opts),
           receive_timeout: timeout,
           into: :self,
           http_errors: :return
-        ] ++ HttpWorker.retry_opts(opts)
+        ] ++ Client.bearer_auth_opts(api_key) ++ HttpWorker.retry_opts(opts)
       )
 
     HttpWorker.handle_response(result, parent, "OpenAIClient", &format_error_chunk/3, ctx)

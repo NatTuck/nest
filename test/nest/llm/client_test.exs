@@ -122,6 +122,24 @@ defmodule Nest.LLM.ClientTest do
     end
   end
 
+  describe "credential headers" do
+    # These are the exact shapes the two clients put on the wire. They are
+    # asserted here rather than through `run/2` because each client issues
+    # its request from a `spawn_link`ed worker process, which a per-test
+    # Mimic stub cannot reach (Mimic's private mode is process-scoped).
+    test "a nil or empty key means no credential at all" do
+      assert Client.bearer_auth_opts(nil) == []
+      assert Client.bearer_auth_opts("") == []
+      assert Client.api_key_header(nil) == []
+      assert Client.api_key_header("") == []
+    end
+
+    test "a resolved key means the provider's own credential" do
+      assert Client.bearer_auth_opts("sk-abc") == [auth: {:bearer, "sk-abc"}]
+      assert Client.api_key_header("sk-abc") == [{"x-api-key", "sk-abc"}]
+    end
+  end
+
   describe "receive_timeout/1" do
     test "falls back to a finite default when the provider leaves it unset" do
       # `ClientConfig.receive_timeout` defaults to nil, which used to become

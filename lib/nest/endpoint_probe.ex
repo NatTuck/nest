@@ -232,7 +232,7 @@ defmodule Nest.EndpointProbe do
   defp openai_headers(provider), do: auth_headers(provider)
 
   defp anthropic_headers(provider) do
-    [{"x-api-key", key(provider)}, {"anthropic-version", @anthropic_version}]
+    api_key_headers(provider) ++ [{"anthropic-version", @anthropic_version}]
   end
 
   defp auth_headers(provider) do
@@ -242,7 +242,23 @@ defmodule Nest.EndpointProbe do
     end
   end
 
-  defp key(provider), do: DotConfig.resolve_api_key(provider.api_key)
+  defp api_key_headers(provider) do
+    case key(provider) do
+      k when is_binary(k) and k != "" -> [{"x-api-key", k}]
+      _ -> []
+    end
+  end
+
+  # A key that cannot be resolved right now (an unset `${ENV_VAR}`, a
+  # `file:` that is gone) means "no credential", never a crash: the probe
+  # goes out unauthenticated and the provider's own status decides.
+  # `DotConfig.load/0` rejects an unresolvable reference at startup, so
+  # reaching here means the key went bad after load.
+  defp key(provider) do
+    DotConfig.resolve_api_key(provider.api_key)
+  rescue
+    _unresolvable -> nil
+  end
 
   defp discovery_result(url, headers) do
     case get(url, headers) do

@@ -12,6 +12,9 @@ defmodule Nest.EndpointProbeTest do
 
   setup :verify_on_exit!
 
+  # The variable is set nowhere, so this reference cannot be resolved.
+  @unresolvable_key "${NEST_TEST_DEFINITELY_UNSET_API_KEY}"
+
   defp provider(opts \\ []) do
     %DotConfig.Provider{
       name: Keyword.get(opts, :name, "probe-test"),
@@ -54,6 +57,40 @@ defmodule Nest.EndpointProbeTest do
   defp status_reply(url, suffix, status) do
     body = %{"data" => [%{"id" => String.replace(url, suffix, "") <> "-model"}]}
     {:ok, %{status: status, body: body}}
+  end
+
+  # Stubs both probe verbs, fails the probe on the spot if a credential
+  # header goes out, and records the path of every request so a test can
+  # assert which routes were actually probed. `probe/1` issues its
+  # requests synchronously from the calling process, so the stub's
+  # assertion belongs to the test and every capture is already in the
+  # mailbox when `probe/1` returns.
+  defp stub_probe_requests(openai_chat_status) do
+    test_pid = self()
+
+    Mimic.stub(Req, :get, fn url, opts ->
+      assert_no_credential!(url, opts)
+      send(test_pid, {:probe_request, URI.parse(url).path})
+      {:ok, %{status: 200, body: %{"data" => [%{"id" => "m"}]}}}
+    end)
+
+    Mimic.stub(Req, :post, fn url, opts ->
+      assert_no_credential!(url, opts)
+      send(test_pid, {:probe_request, URI.parse(url).path})
+
+      if String.ends_with?(url, "/v1/messages") do
+        {:ok, %{status: 200}}
+      else
+        {:ok, %{status: openai_chat_status}}
+      end
+    end)
+  end
+
+  defp assert_no_credential!(url, opts) do
+    headers = Keyword.get(opts, :headers, [])
+
+    refute Enum.any?(headers, fn {name, _} -> name in ["Authorization", "x-api-key"] end),
+           "probe request to #{url} carried a credential: #{inspect(headers)}"
   end
 
   describe "naive_structure/1" do
@@ -204,6 +241,35 @@ defmodule Nest.EndpointProbeTest do
       assert structure.discovery_base_url == base
       assert structure.discovery_resolved? == false
       assert structure.protocol_resolved? == true
+    end
+  end
+
+  describe "probe/1 with an unresolvable api-key" do
+    test "sends no credential header on the discovery and OpenAI chat probes" do
+      System.delete_env("NEST_TEST_DEFINITELY_UNSET_API_KEY")
+      stub_probe_requests(200)
+
+      assert {:ok, structure} = EndpointProbe.probe(provider(api_key: @unresolvable_key))
+      assert structure.protocol == :openai
+      assert structure.protocol_resolved? == true
+
+      assert_received {:probe_request, "/models"}
+      assert_received {:probe_request, "/chat/completions"}
+    end
+
+    test "sends no credential header on the Anthropic chat probe" do
+      System.delete_env("NEST_TEST_DEFINITELY_UNSET_API_KEY")
+      # OpenAI chat 404s, so the probe falls through to the Anthropic
+      # route — the one that would carry `x-api-key`.
+      stub_probe_requests(404)
+
+      assert {:ok, structure} = EndpointProbe.probe(provider(api_key: @unresolvable_key))
+      assert structure.protocol == :anthropic
+      assert structure.protocol_resolved? == true
+
+      assert_received {:probe_request, "/models"}
+      assert_received {:probe_request, "/chat/completions"}
+      assert_received {:probe_request, "/v1/messages"}
     end
   end
 

@@ -37,7 +37,7 @@ defmodule Nest.LLM.Client do
   @typedoc "Options forwarded to the client at call time"
   @type opt ::
           {:system_prompt, String.t()}
-          | {:api_key, String.t()}
+          | {:api_key, String.t() | nil}
           | {:base_url, String.t()}
           | {:receive_timeout, non_neg_integer() | :infinity}
           | {:headers, [{String.t(), String.t()}]}
@@ -69,6 +69,34 @@ defmodule Nest.LLM.Client do
       value -> value
     end
   end
+
+  @doc """
+  Req options carrying a bearer credential, or `[]` when there is none.
+
+  `nil` and `""` both mean "no credential configured": a provider with
+  no `api-key`, a literal opt-out, or an `${ENV_VAR}` / `file:`
+  reference that could not be resolved. The request then goes out with
+  no `authorization` header at all and the provider's own `401` is the
+  failure — an ordinary error, never a raise. Req has no clause for
+  `{:bearer, nil}` (it raises `FunctionClauseError`), which is why
+  absence is expressed by omitting the option.
+  """
+  @spec bearer_auth_opts(String.t() | nil) :: keyword()
+  def bearer_auth_opts(api_key) when is_binary(api_key) and api_key != "",
+    do: [auth: {:bearer, api_key}]
+
+  def bearer_auth_opts(_none), do: []
+
+  @doc """
+  The Anthropic `x-api-key` header, or `[]` when there is no credential
+  to send. See `bearer_auth_opts/1` for why an absent credential is a
+  legitimate configuration rather than an error.
+  """
+  @spec api_key_header(String.t() | nil) :: [{String.t(), String.t()}]
+  def api_key_header(api_key) when is_binary(api_key) and api_key != "",
+    do: [{"x-api-key", api_key}]
+
+  def api_key_header(_none), do: []
 
   @doc """
   Run a streaming completion.

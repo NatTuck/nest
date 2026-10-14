@@ -116,7 +116,7 @@ defmodule Nest.ChatModel do
   end
 
   defp build_openai_config(provider, model_name, structure) do
-    api_key = DotConfig.resolve_api_key(provider.api_key)
+    api_key = resolve_api_key(provider)
     actual = ensure_model_name(provider, model_name)
 
     %ClientConfig{
@@ -131,7 +131,7 @@ defmodule Nest.ChatModel do
   end
 
   defp build_anthropic_config(provider, model_name, structure) do
-    api_key = DotConfig.resolve_api_key(provider.api_key)
+    api_key = resolve_api_key(provider)
     actual = ensure_model_name(provider, model_name)
 
     %ClientConfig{
@@ -294,7 +294,7 @@ defmodule Nest.ChatModel do
     # completions`) benefit from the probed path.
     structure = EndpointCache.get(provider) || EndpointProbe.naive_structure(provider)
     url = discovery_url(structure)
-    headers = [{"Authorization", "Bearer #{DotConfig.resolve_api_key(provider.api_key)}"}]
+    headers = auth_headers(provider)
 
     case Req.get(url, headers: headers) do
       {:ok, %{status: 200, body: body}} ->
@@ -327,6 +327,28 @@ defmodule Nest.ChatModel do
       _ ->
         log_list_status(provider, 404)
         :error
+    end
+  end
+
+  # A provider's `api-key` may be a `${ENV_VAR}` or `file:...` reference
+  # that cannot be resolved right now (the variable is unset, the file is
+  # gone). `DotConfig.load/0` rejects that at startup, but the key can go
+  # bad *after* load, and neither a chat turn nor a model scan may crash
+  # over it: no credential means the request goes out with no auth header
+  # and the provider's own `401` is the failure — an ordinary
+  # per-provider error every caller here already handles.
+  defp resolve_api_key(provider) do
+    DotConfig.resolve_api_key(provider.api_key)
+  rescue
+    _unresolvable -> nil
+  end
+
+  # Discovery without a credential is legitimate (local servers usually
+  # need none). Same shape as `Nest.LLM.Discover.build_headers/1`.
+  defp auth_headers(provider) do
+    case resolve_api_key(provider) do
+      key when is_binary(key) and key != "" -> [{"Authorization", "Bearer #{key}"}]
+      _ -> []
     end
   end
 

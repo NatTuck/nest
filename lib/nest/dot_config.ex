@@ -170,6 +170,7 @@ defmodule Nest.DotConfig do
     # `--warnings-as-errors`), but dropping the `__MODULE__.` prefix is a
     # silent re-break of that test.
     merge_loads(load(base), load(__MODULE__.local_file()))
+    |> validate_provider_keys()
   end
 
   # Merge the base (config.toml) and overlay (local.toml) parses. Missing
@@ -451,6 +452,41 @@ defmodule Nest.DotConfig do
   end
 
   # Private functions
+
+  # A provider's `api-key` may be a `${ENV_VAR}` or `file:...` reference
+  # whose value only exists at runtime. Every consumer resolves it lazily
+  # and must never raise over it, so the one place that can name *which*
+  # provider is broken is here, at load time. Only a reference-shaped key
+  # is resolved: a literal key (including the documented
+  # `api-key = "none"` opt-out), an empty key, and an absent key are all
+  # legitimate and pass through untouched.
+  defp validate_provider_keys({:ok, config}) do
+    Enum.each(Map.values(config.providers), &validate_provider_key/1)
+    {:ok, config}
+  end
+
+  defp validate_provider_keys({:error, reason}), do: {:error, reason}
+
+  defp validate_provider_key(%Provider{name: name, api_key: key}) when is_binary(key) do
+    if reference_key?(key), do: resolve_reference_key!(name, key), else: :ok
+  end
+
+  defp validate_provider_key(%Provider{}), do: :ok
+
+  defp reference_key?(key),
+    do: String.starts_with?(key, "${") or String.starts_with?(key, "file:")
+
+  # Local (not `__MODULE__.`) on purpose: `Nest.DotConfig` is Mimic-wrapped
+  # and a remote self-call would go through the proxy, and thus any stub.
+  defp resolve_reference_key!(provider_name, key) do
+    resolve_api_key(key)
+    :ok
+  rescue
+    error in RuntimeError ->
+      reraise "Provider #{provider_name}: cannot resolve api-key #{inspect(key)}: " <>
+                Exception.message(error),
+              __STACKTRACE__
+  end
 
   defp parse_config(raw_config) do
     providers =

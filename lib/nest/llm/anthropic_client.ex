@@ -50,11 +50,12 @@ defmodule Nest.LLM.AnthropicClient do
     timeout = Client.receive_timeout(opts)
     parent = self()
 
-    headers = [
-      {"x-api-key", api_key},
-      {"anthropic-version", @anthropic_version},
-      {"content-type", "application/json"}
-    ]
+    headers =
+      Client.api_key_header(api_key) ++
+        [
+          {"anthropic-version", @anthropic_version},
+          {"content-type", "application/json"}
+        ]
 
     worker = spawn_link(fn -> http_worker(parent, url, headers, request, opts, timeout) end)
 
