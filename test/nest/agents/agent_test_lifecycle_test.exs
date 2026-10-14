@@ -221,10 +221,11 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       # small — `File.rm_rf` of 100 entries measures 332-597 ms under 32 CPU
       # burners, so a pin big enough to be a *magnitude* check would itself go
       # flaky on a loaded host, and a sometimes-failing test is worse than a
-      # failing one. Its own margin is not large: 20 entries measure 3.96 ms of
-      # `rm_rf` alone on the slow host, so it clears the bound by a few times
-      # rather than by orders of magnitude. What this pins is the contract: a populated scratch
-      # directory must not turn an idle agent into a violation. The bound's floor,
+      # failing one. Its margin depends on which measurement you take: file-alone,
+      # a 20-entry handshake is 3.96 ms on the slow host, so it clears the bound by
+      # ~38x; under full suite load the worst handshake measured is 39.3 ms, ~3.8x.
+      # What this pins is the contract: a populated scratch directory must not turn
+      # an idle agent into a violation. The bound's floor,
       # which is what a tightening would break, is pinned separately and
       # deterministically below.
       {pid, name} = AgentTestHelpers.start_agent()
@@ -245,8 +246,9 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
 
     test "the stop bound stays wide enough to clear a real teardown" do
       # The bound is a liveness bound and has to keep clearing the handshake,
-      # which contains `terminate/2`'s `File.rm_rf`. Measured: 25-110 us with an idle host, a flat 8.5-9.1 ms
-      # plateau under CPU saturation, and 332-597 ms for a 100-entry scratch
+      # which contains `terminate/2`'s `File.rm_rf`. Measured: 25-110 us with an
+      # idle host, a flat 8.5-9.1 ms plateau under CPU saturation, and 332-597 ms
+      # for a 100-entry scratch
       # directory under the same load. Tightening this back toward the
       # handshake is the bug this guard was fixed for, so the floor is pinned
       # rather than left to a comment.

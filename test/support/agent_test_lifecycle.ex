@@ -132,9 +132,16 @@ defmodule Nest.Agents.AgentTestLifecycle do
   #     turn* — a mocked LLM call, a real sub-agent spawn with DB writes, and a
   #     second mocked call — in `sub_agent_tools_helpers.ex`'s fence sizing. It is
   #     not a status read.)
-  #   * not `:file_server` throughput: `Process.whereis(:file_server)` is `nil` in
-  #     this OTP, so there is no global process for deletes to queue on. The cost
-  #     is per operation, in the NIF and the syscall.
+  #   * not queueing behind other callers. File operations do go through one
+  #     global process, but it is `file_server_2`, not `:file_server`: that name is
+  #     gone, and `Process.whereis/1` returns `nil` for it and a pid for
+  #     `:file_server_2`, the only file-ish registered process on this OTP. This
+  #     measurement has no other file I/O in it, though — the load is CPU burners
+  #     and an empty `rm_rf` is a handful of round trips — so there is no queue to
+  #     wait behind. What the 9 ms is, is the per-round-trip cost: the file server
+  #     has to be scheduled and the operation does real work in the syscall path,
+  #     which is why a plain message round trip is 117 us under the same load
+  #     while a file round trip is milliseconds.
   #
   # That the tail "survives moving every cross-process call out of
   # `Agent.terminate/2`" — the claim the previous comment carried — is consistent
@@ -151,7 +158,9 @@ defmodule Nest.Agents.AgentTestLifecycle do
   # `max_cases` 8 (n=480, p50 596 us, p99 20.9 ms; the fast host, n=483, max
   # 4.35 ms) — so the bound is ~3.8x the worst measured, not ~16x. `celedyr`,
   # which reproduced the old failure as 4-24 detector failures per run, now
-  # produces none at `max_cases` 8, 12 and 24.
+  # produces none at `max_cases` 8, 12 and 24. Other failures remain there and are
+  # load-dependent (0-2 at 8, 0-5 at 12, 11-18 at 24 across runs), and every one of
+  # them is a Mimic or Postgres timeout, not this detector.
   #
   # The stacktrace of every agent that crossed it is the same, and says where
   # the time went:

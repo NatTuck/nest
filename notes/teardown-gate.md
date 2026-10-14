@@ -23,8 +23,8 @@ agent.
 its agent parked in its receive loop, so the handshake is microseconds and a
 tight bound is therefore a detector rather than headroom. The premise is false:
 `Agent.terminate/2` ends with `cleanup_tmp/2` -> `TmpSpace.cleanup/2` ->
-`File.rm_rf/1`, which is synchronous filesystem work and a `:file_server`
-round-trip **inside the window the bound measures**.
+`File.rm_rf/1`, which is synchronous filesystem work — a handful of round trips
+through the global file server — **inside the window the bound measures**.
 
 The stacktrace of every agent that crossed the bound says where it was — an
 agent that is *stopping*, having answered `:idle` to the status question:
@@ -60,9 +60,17 @@ two mechanisms that were guessed at:
   writes, and a second mocked call — from `sub_agent_tools_helpers.ex`'s fence
   sizing. The same file's *idle* status-read sample, p50 21 us, is the
   comparable one.)
-* **not `:file_server` throughput.** `Process.whereis(:file_server)` is `nil` in
-  this OTP, so there is no global process for deletes to queue on. The cost is
-  per operation, in the NIF and the syscall.
+* **not queueing behind other callers.** File operations *do* go through one
+  global process — but it is `file_server_2`, not `:file_server`: that name is
+  gone, and `Process.whereis/1` returns `nil` for it and a pid for
+  `:file_server_2`, the only file-ish registered process on this OTP. (The ladder
+  work independently traced ~1200 messages per 200 `rm_rf` into it.) This
+  measurement has no other file I/O in it, though: the load is 32 CPU burners and
+  an empty `rm_rf` is only a handful of round trips, so there is no queue to wait
+  behind. What the ~9 ms is, is the *per-round-trip* cost — the file server has to
+  be scheduled, and the operation does real work in the syscall path — which is why
+  a plain message round trip is 117 us under the same load while a file round trip
+  is milliseconds.
 
 That the tail "survives moving every cross-process call out of
 `Agent.terminate/2`" — the claim the previous comment carried — is consistent
@@ -71,8 +79,8 @@ library call inside `cleanup_tmp/2`, so an experiment that removed terminate's o
 cross-process work would leave exactly this cost in place.
 
 Real scratch directories are empty, so the empty-directory cost is the realistic
-one: of 25 sampled across a full suite run, 23 held 0 entries and 2 held 1. That
-is why the handshake produced a steady trickle of failures on a slow host rather
+one: of the 25 directories visible during a probe run, 22 held 0 entries, 2 held
+1, and one was not a directory. That is why the handshake produced a steady trickle of failures on a slow host rather
 than obvious noise — it sat just under a 10 ms bound.
 
 ## The handshake's cost curve
@@ -99,32 +107,45 @@ with 3 of 12 agents over 10 ms.
 `celedyr` — 24 logical / 12 physical, an old AMD Opteron; the slow host the suite
 must also pass on:
 
-| max_cases | before (failures / of which this detector) | after |
+| max_cases | before (failures / detector) | after (failures / detector) |
 | --- | --- | --- |
-| 8 | 9 / 7 | **0 / 0** |
-| 12 | 13 / 4 | **2 / 0** |
-| 24 | 68 / 24 | **17 / 0** |
+| 8 | 9 / 7 | 0-2 / **0** |
+| 12 | 13 / 4 | 0-5 / **0** |
+| 24 | 68 / 24 | 11-18 / **0** |
 
-(The earlier figures from the main checkout, before this branch's diagnostics
-existed, were 5 / 2 at 8, 8 / 6 at 12, and 20 / 6 at 24.) With an idle host
-celedyr's handshake is 172-500 us, so its failures came from load, not from being
-slow as such. Every remaining failure after the fix is an `ExUnit.TimeoutError`
-(Mimic's single server and a Postgres round trip), which is a separate
-workstream.
+The "after" failures are a *range* because they are host-load dependent: this
+branch measured 0 at 8, 1-5 at 12 and 11-18 at 24 across runs, and the independent
+review measured 2 at 8. The detector count is **0 in every run**, which is the
+claim that matters. (The pre-fix figures from the main checkout, before this
+branch's diagnostics existed, were 5 / 2 at 8, 8 / 6 at 12 and 20 / 6 at 24.)
+With an idle host celedyr's handshake is 172-500 us, so its failures came from
+load, not from being slow as such. Every failure that remains is an
+`ExUnit.TimeoutError` — `Mimic.stub`/`Mimic.allow` queueing on Mimic's single
+server, plus a Postgres round trip — which is a separate workstream.
+
+The probe above is a *controlled* load. The distribution across a real suite run
+was measured separately, by instrumenting every teardown stop: 483 stops on the
+fast host (max 4.35 ms) and 480 on celedyr at `max_cases` 8 (p50 596 us, p99
+20.9 ms, max 39.3 ms), with no correct agent crossing the bound in either run.
+Those figures come from the independent review of this branch, not from the probe
+below.
 
 ## The fix
 
 * The idle invariant is asserted from state, where it always belonged.
-* `@stop_ms` became 250 ms and is documented as a liveness bound: ~20x the worst
-  handshake measured on the slowest host, and small enough that a genuinely stuck
-  agent does not blow the suite's 5 s budget.
+* `@stop_ms` became 150 ms and is documented as a liveness bound. Two margins,
+  and they are different quantities: file-alone a handshake is 3.96 ms (~38x), and
+  the worst handshake measured under full suite load is 39.3 ms (~3.8x). It is
+  deliberately no larger, because two pins have to *reach* the bound to prove the
+  gate can still fail, so the suite pays 2x it.
 * A stop that misses the bound now reports the evidence — the sampled status, how
   long the stop took, and `Process.info/2` for the agent (status, queue length,
   current function and stacktrace) — which is what told "stopping, in
   `terminate/2`" apart from "wedged in a call".
-* Pins: an idle agent with a *populated* scratch directory (200 files, a real
-  `File.rm_rf` load rather than a stub) must not be reported; and the bound's
-  floor is pinned so it cannot be tightened back toward the handshake.
+* Pins: an idle agent with a *populated* scratch directory (20 files — a real
+  `File.rm_rf` load rather than a stub, and deliberately small so the pin cannot
+  flake on a loaded host) must not be reported; and the bound's floor is pinned
+  through `stop_bound_ms/0` so it cannot be tightened back toward the handshake.
 
 ## Reproducing the probe
 
