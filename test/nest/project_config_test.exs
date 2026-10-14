@@ -7,24 +7,38 @@ defmodule Nest.ProjectConfigTest do
   alias Nest.Sandbox.Mounts
 
   setup do
-    ProjectConfig.clear_cache()
     dir = Path.join(System.tmp_dir!(), "nest_projcfg_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     on_exit(fn -> if String.contains?(dir, "nest_projcfg_"), do: File.rm_rf(dir) end)
     %{dir: dir}
   end
 
-  defp write_nest(dir, body) do
-    File.write!(Path.join(dir, ".nest"), body)
+  defp write_nest(dir, body), do: File.write!(nest_path(dir), body)
+
+  defp nest_path(dir), do: Path.join(dir, ".nest")
+
+  # The two terms of the identity a stat-based key would have used. Reading them
+  # the way `File.stat/2` reports them, and forcing a rewrite back onto the
+  # previous value of both, is what leaves the bytes as the only thing that can
+  # tell two revisions apart. `File.touch!/2` takes a posix second directly
+  # (`posix_time()` is in its spec), so this needs no timezone conversion.
+  defp identity_of(dir) do
+    path = nest_path(dir)
+    %{mtime: File.stat!(path, time: :posix).mtime, size: File.stat!(path).size}
   end
 
   defp caps(write \\ [":workspace"]) do
     %{"net" => false, "fs" => %{"read" => ["/"], "write" => write}}
   end
 
+  # Each case writes a *different* body to the same `.nest`, and this expects
+  # the error to be reported every time. That holds because the parse cache is
+  # keyed on the bytes: a body the cache has not seen is a miss, so the parse
+  # runs and logs. No cache clearing is involved — with the old mtime key, two
+  # of these writes landing inside one second were indistinguishable and the
+  # second case was served the first case's error.
   defp expect_error(dir, body, needle) do
     write_nest(dir, body)
-    ProjectConfig.clear_cache()
 
     log =
       capture_log(fn ->
@@ -69,9 +83,29 @@ defmodule Nest.ProjectConfigTest do
       assert {:ok, config} = ProjectConfig.load(dir)
       assert config["shell"] == %{"background" => 1}
 
+      # The rewrite is picked up with nothing cleared first: the bytes changed,
+      # so the cache key changed.
       write_nest(dir, "[shell]\nbackground = 4\n")
-      ProjectConfig.clear_cache()
       assert {:ok, %{"shell" => %{"background" => 4}}} = ProjectConfig.load(dir)
+    end
+
+    test "re-reads a rewritten .nest at an unchanged mtime and length", %{dir: dir} do
+      write_nest(dir, "[[mount]]\npath = \"~/aaa\"\nmode = \"rw\"\n")
+      assert {:ok, %{"mounts" => [first]}} = ProjectConfig.load(dir)
+      assert first["dest"] == Path.expand("~/aaa")
+
+      identity = identity_of(dir)
+
+      # `~/bbb` is exactly as long as `~/aaa`, and the touch puts the file back
+      # on the mtime the first parse was cached under, so nothing the filesystem
+      # reports has changed. The premise is asserted below: without it the test
+      # could pass because the identity moved, which would test nothing.
+      write_nest(dir, "[[mount]]\npath = \"~/bbb\"\nmode = \"rw\"\n")
+      File.touch!(nest_path(dir), identity.mtime)
+      assert identity_of(dir) == identity
+
+      assert {:ok, %{"mounts" => [second]}} = ProjectConfig.load(dir)
+      assert second["dest"] == Path.expand("~/bbb")
     end
   end
 
@@ -96,6 +130,25 @@ defmodule Nest.ProjectConfigTest do
         "[[mount]]\npath = \"~/x\"\nmode = \"rw\"\n[[mount]]\npath = \"~/x\"\nmode = \"tmp\"\n"
 
       expect_error(dir, body, "duplicate")
+    end
+
+    test "reports a .nest it cannot read", %{dir: dir} do
+      # A directory where the file should be is the cheapest way to make the
+      # read fail, and unlike a permission bit it behaves the same for any user.
+      File.mkdir_p!(nest_path(dir))
+
+      log =
+        capture_log(fn ->
+          assert ProjectConfig.load(dir) == {:error, "could not read .nest: :eisdir"}
+        end)
+
+      # Asserted for inclusion only: `capture_log` collects every process's
+      # lines, concurrent tests' included, so a count here would be fiction. An
+      # unreadable `.nest` has no bytes and therefore no cache key, which is why
+      # this failure is reported on *every* load rather than once. That is
+      # deliberate — a `.nest` we cannot read must not degrade silently — and it
+      # is not assertable from here.
+      assert log =~ "could not read .nest"
     end
   end
 

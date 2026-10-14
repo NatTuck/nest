@@ -52,6 +52,7 @@ defmodule Nest.ProjectConfig do
   require Logger
 
   alias Nest.FSPath
+  alias Nest.ParseCache
   alias Nest.Sandbox.Mounts
 
   @file_name ".nest"
@@ -67,7 +68,13 @@ defmodule Nest.ProjectConfig do
   @type config :: %{optional(String.t()) => [mount()] | shell() | nil}
 
   @doc """
-  Load and parse `<workspace>/.nest`, cached by `{path, mtime}`.
+  Load and parse `<workspace>/.nest`.
+
+  The file is read on every call, because that read is how a change is noticed;
+  only the parse and validate step is cached, keyed on the bytes that were read
+  (`Nest.ParseCache`). A rewritten `.nest` is therefore picked up on its own —
+  new bytes are a new key, whatever the file's mtime happens to be — and no
+  caller has to clear anything first.
 
   Returns `{:ok, config}` (`%{"mounts" => []}` when there is no file)
   or `{:error, reason}` when the file exists but is malformed.
@@ -76,35 +83,30 @@ defmodule Nest.ProjectConfig do
   def load(workspace) when is_binary(workspace) do
     path = Path.join(workspace, @file_name)
 
-    case cached(path) do
-      {:ok, result} ->
-        result
-
-      :miss ->
-        result = compute(workspace, path)
-        cache(path, result)
-        result
+    case File.read(path) do
+      {:ok, content} -> parse_cached(path, content, workspace)
+      {:error, :enoent} -> {:ok, %{"mounts" => []}}
+      {:error, reason} -> read_failure(path, reason)
     end
   end
 
   def load(nil), do: {:ok, %{"mounts" => []}}
 
-  # Read + parse + validate, logging a malformed file exactly once per
-  # mtime (the result is cached, so `load/1` doesn't re-log).
-  defp compute(workspace, path) do
-    result =
-      case File.read(path) do
-        {:ok, content} -> parse(content, workspace)
-        {:error, :enoent} -> {:ok, %{"mounts" => []}}
-        {:error, reason} -> {:error, "could not read .nest: #{inspect(reason)}"}
-      end
+  # The read succeeded, so the bytes are the cache key. A failure is cached
+  # beside a success: a malformed file is remembered as malformed for exactly
+  # those bytes, which is what keeps its error logged once per revision instead
+  # of once per load.
+  defp parse_cached(path, content, workspace) do
+    case ParseCache.fetch(path, content) do
+      {:ok, result} ->
+        result
 
-    case result do
-      {:error, reason} -> Logger.error("Nest.ProjectConfig: ignoring #{path}: #{reason}")
-      _ -> :ok
+      :miss ->
+        result = parse(content, workspace)
+        ParseCache.put(path, content, result)
+        log_failure(path, result)
+        result
     end
-
-    result
   end
 
   defp parse(content, workspace) do
@@ -113,6 +115,20 @@ defmodule Nest.ProjectConfig do
       {:error, reason} -> {:error, "invalid TOML: #{inspect(reason)}"}
     end
   end
+
+  # An unreadable `.nest` has no bytes to key on, so this failure cannot be
+  # memoized and is reported on every load.
+  defp read_failure(path, reason) do
+    result = {:error, "could not read .nest: #{inspect(reason)}"}
+    log_failure(path, result)
+    result
+  end
+
+  defp log_failure(path, {:error, reason}) do
+    Logger.error("Nest.ProjectConfig: ignoring #{path}: #{reason}")
+  end
+
+  defp log_failure(_path, _result), do: :ok
 
   defp validate(raw, workspace) do
     with {:ok, mounts} <- validate_mounts(Map.get(raw, "mount", []), workspace),
@@ -302,6 +318,24 @@ defmodule Nest.ProjectConfig do
     [%{"path" => nest, "source" => source}]
   end
 
+  # The canonical-workspace memo's table. (The `.nest` parse has its own cache,
+  # keyed on the file's bytes, in `Nest.ParseCache`.)
+  @cache_table :nest_project_config_cache
+
+  defp cache_table do
+    case :ets.whereis(@cache_table) do
+      :undefined ->
+        try do
+          :ets.new(@cache_table, [:named_table, :public, read_concurrency: true])
+        rescue
+          ArgumentError -> @cache_table
+        end
+
+      _ ->
+        @cache_table
+    end
+  end
+
   # `FSPath.canonical/1` shells out to `realpath`; cache the result per
   # workspace so per-message caps resolution doesn't spawn a process.
   defp canonical_ws(workspace) do
@@ -379,47 +413,5 @@ defmodule Nest.ProjectConfig do
     "\n\n[Project sandbox config error]\n\n" <>
       ".nest could not be loaded: #{reason}. " <>
       "No project mounts were applied; the mode's default sandbox is in effect.\n"
-  end
-
-  # ---- cache (keyed by {path, mtime}) ----
-
-  @cache_table :nest_project_config_cache
-
-  defp cached(path) do
-    with {:ok, %{mtime: mtime}} <- File.stat(path, time: :posix),
-         [{_, result}] <- :ets.lookup(cache_table(), {path, mtime}) do
-      {:ok, result}
-    else
-      _ -> :miss
-    end
-  end
-
-  defp cache(path, result) do
-    with {:ok, %{mtime: mtime}} <- File.stat(path, time: :posix) do
-      :ets.insert(cache_table(), {{path, mtime}, result})
-    end
-  end
-
-  defp cache_table do
-    case :ets.whereis(@cache_table) do
-      :undefined ->
-        try do
-          :ets.new(@cache_table, [:named_table, :public, read_concurrency: true])
-        rescue
-          ArgumentError -> @cache_table
-        end
-
-      _ ->
-        @cache_table
-    end
-  end
-
-  @doc false
-  # Test-only: drop the mtime cache so a rewritten `.nest` is re-read
-  # even within the same mtime second.
-  @spec clear_cache() :: :ok
-  def clear_cache do
-    :ets.delete_all_objects(cache_table())
-    :ok
   end
 end

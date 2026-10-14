@@ -1,12 +1,12 @@
-defmodule Nest.DotConfig.ParseCacheTest do
+defmodule Nest.ParseCacheTest do
   @moduledoc """
-  `Nest.DotConfig.ParseCache`'s own contract: the key is the file's bytes, and a
-  path keeps one entry.
+  `Nest.ParseCache`'s own contract: the key is the file's bytes, and a path
+  keeps one entry.
   """
 
   use ExUnit.Case, async: true
 
-  alias Nest.DotConfig.ParseCache
+  alias Nest.ParseCache
 
   test "a path caches per content, and content it has not seen is a miss" do
     path = unique_path()
@@ -29,6 +29,15 @@ defmodule Nest.DotConfig.ParseCacheTest do
     # size, not its correctness: had the entry stayed it would still have been
     # the right answer for those bytes.
     assert ParseCache.fetch(path, "one") == :miss
+  end
+
+  test "a failure is cached as readily as a success" do
+    path = unique_path()
+
+    # Callers rely on this: `Nest.ProjectConfig` logs a malformed `.nest` once
+    # per revision, which only holds if the failure itself is what was cached.
+    assert :ok = ParseCache.put(path, "bad", {:error, "nope"})
+    assert ParseCache.fetch(path, "bad") == {:ok, {:error, "nope"}}
   end
 
   test "two paths do not share an entry, even for identical content" do

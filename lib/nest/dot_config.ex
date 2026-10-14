@@ -4,7 +4,7 @@ defmodule Nest.DotConfig do
   """
 
   alias Nest.DotConfig.KeyValidation
-  alias Nest.DotConfig.ParseCache
+  alias Nest.ParseCache
 
   @config_dir :filename.basedir(:user_config, "nest")
   @config_file Path.join(@config_dir, "config.toml")
@@ -232,7 +232,7 @@ defmodule Nest.DotConfig do
 
   The file is read on every call, because that read is how a change is noticed.
   Only the expensive half — the TOML decode and the parse — is cached, keyed on
-  the bytes that were read (`Nest.DotConfig.ParseCache`). Repeated loads of an
+  the bytes that were read (`Nest.ParseCache`). Repeated loads of an
   unchanged file (e.g. one per agent spawn) therefore re-read it but never
   re-parse it, and a file that changed at all is re-parsed, whoever wrote it.
   """
