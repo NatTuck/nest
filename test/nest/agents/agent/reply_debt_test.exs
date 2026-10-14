@@ -82,7 +82,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # failure bound, never the synchronisation. The payload names the agent, so
       # the peer's own `idle` frame — this test pid is subscribed to both agents'
       # topics — cannot satisfy it.
-      assert_receive {:chat_status, %{name: ^name, status: "idle"}}, 1_000
+      assert_receive {:chat_status, %{name: ^name, status: "idle"}}, 500
 
       # allowlist: snapshot — messages + owed_replies
       state = :sys.get_state(pid, 1_000)
@@ -297,7 +297,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       log =
         capture_log(fn ->
           AgentTestHelpers.send_compaction_done(pid, "a summary", carried_reply())
-          assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 1_000
+          assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 500
         end)
 
       # The carried reply reminds first (the gate), so the give-up that gets
@@ -347,11 +347,29 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # `capture_log` collects every process's logs — including concurrent
       # tests' agents, which log the same sentence for their own peers — so an
       # absence assertion there flakes and tests nothing.
+      #
+      # The monitor is the fence for "the process is gone", and it is exact: a
+      # monitor on an already-dead pid delivers its `:DOWN` immediately, so
+      # there is no window in which this fence cannot be satisfied. It is needed
+      # because `archive_agent/2` stops through `stop_one/3`, which fires
+      # `Process.exit(pid, :shutdown)` and returns without waiting for the
+      # process to die (a documented property of the stop path). The agent
+      # traps exits, so that signal arrives as a *message* it must be scheduled
+      # to handle before `terminate/2` runs, and the pid stays alive until
+      # `terminate/2` returns. Measured on this host the archive's own DB write
+      # usually outlasts that handshake — the `:DOWN` lands 4-5 µs after
+      # `archive_agent/2` returns — but not always: it has been measured still
+      # alive 46 µs after the return, and a bare `Process.alive?/1` read there
+      # is exactly the flake this replaced.
+      ref = Process.monitor(pid)
       assert :ok = Supervisor.archive_agent(current_space_id(), name)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
 
-      # The process is gone, so its `terminate/2` has run. `get_running_agent/2`
-      # checks `Process.alive?/1`, so it is deterministic here even though the
-      # registry's own ETS cleanup (the partition server's link `EXIT`) is not.
+      # `terminate/2` has run, so the process is gone. The registry's own ETS
+      # cleanup (the partition server's link `EXIT`) is still asynchronous, but
+      # `get_running_agent/2` liveness-checks the pid: whether the entry is
+      # already gone or still present with a dead pid, both branches answer
+      # `{:error, :not_found}`.
       assert Supervisor.get_running_agent(current_space_id(), name) == {:error, :not_found}
 
       # The give-up notice starts the peer's own turn, and that turn's idle frame
@@ -452,8 +470,12 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
   # broadcast. `start_peer/2` subscribes this test pid to the peer's topic, and
   # the payload names the agent, so the other agent's frames (this test pid is
   # subscribed to both) cannot satisfy the fence.
+  #
+  # The bound is a failure detector, never the synchronisation. Measured on this
+  # host (20 CPU hogs, the peer's turn scripted): 3.9 ms min, 4.8 ms median,
+  # 12.2 ms max over 20 runs — so 500 ms leaves ~40x headroom.
   defp wait_idle(name) do
-    assert_receive {:chat_status, %{name: ^name, status: "idle"}}, 1_000
+    assert_receive {:chat_status, %{name: ^name, status: "idle"}}, 500
   end
 
   # Put an agent into an arbitrary machine status, as `InboxTest` does. Only the
