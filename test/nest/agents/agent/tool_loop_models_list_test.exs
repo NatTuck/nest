@@ -188,13 +188,24 @@ defmodule Nest.Agents.Agent.ToolLoopModelsListTest do
       assert content =~ "bad-modalities  input: invalid  tags: invalid"
     end
 
-    test "reports nothing listed when the config cannot be loaded" do
-      Mimic.stub(DotConfig, :load, fn -> {:error, :enoent} end)
+    test "names the load failure rather than reporting a configuration state" do
       stub_models([@alpha])
 
-      # The existing fallback: an unreadable config yields no exposed
-      # providers, so the listing reports none.
-      assert run_models_list(%{}) =~ "no configured provider has expose-models enabled"
+      Mimic.stub(DotConfig, :load, fn -> {:error, :enoent} end)
+      content = run_models_list(%{})
+
+      # An unreadable config is not "no provider has expose-models enabled".
+      # That is a specific and false claim about a configuration state, and it
+      # reads to the agent as a legitimate answer, so the two conditions are
+      # reported differently and the reason is carried through.
+      assert content =~ "the configuration could not be read"
+      assert content =~ "enoent"
+      refute content =~ "no configured provider has expose-models enabled"
+
+      # `DotConfig.load/0`'s own failures are strings, and those are carried
+      # through unquoted rather than `inspect`ed.
+      Mimic.stub(DotConfig, :load, fn -> {:error, "Config file not found at /nope"} end)
+      assert run_models_list(%{}) =~ "Config file not found at /nope"
     end
 
     test "reports an unrecognized multi_modal shape as invalid" do

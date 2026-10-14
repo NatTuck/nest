@@ -531,8 +531,8 @@ defmodule Nest.DotConfig do
       api_key: Map.get(data, "api-key"),
       protocol: Map.get(data, "protocol", "openai"),
       auto_models: Map.get(data, "auto-models", false),
-      tags: Map.get(data, "tags", []),
-      models: parse_provider_models(data),
+      tags: parse_tags(Map.get(data, "tags"), name),
+      models: parse_provider_models(data, name),
       timeout_seconds: parse_timeout(Map.get(data, "timeout"), name),
       default_context_limit:
         parse_default_context_limit(Map.get(data, "default-context-limit"), name),
@@ -546,10 +546,13 @@ defmodule Nest.DotConfig do
 
   # Parses the provider's explicit `models` list, returning `[]`
   # when the key is absent or malformed.
-  defp parse_provider_models(data) do
+  defp parse_provider_models(data, provider_name) do
     case Map.get(data, "models") do
-      models_list when is_list(models_list) -> Enum.map(models_list, &parse_model/1)
-      _ -> []
+      models_list when is_list(models_list) ->
+        Enum.map(models_list, &parse_model(&1, provider_name))
+
+      _ ->
+        []
     end
   end
 
@@ -630,19 +633,62 @@ defmodule Nest.DotConfig do
     raise "Provider #{provider_name}: invalid default-context-limit #{inspect(limit)}: must be a positive integer"
   end
 
-  defp parse_model(model_data) do
-    multi_modal =
-      case Map.get(model_data, "multi-modal") do
-        nil -> nil
-        mm when is_map(mm) -> mm
-        _ -> nil
-      end
+  # Parses and validates a provider's `tags`: absent means no tags, a list of
+  # names is kept, and anything else raises. `tags = "abc"` used to reach
+  # `Enum.member?/2` in `get_providers_by_tag/2`, which raises on a binary.
+  defp parse_tags(nil, _provider_name), do: []
+
+  defp parse_tags(tags, provider_name) do
+    if is_list(tags) and Enum.all?(tags, &is_binary/1) do
+      tags
+    else
+      raise "Provider #{provider_name}: invalid tags #{inspect(tags)}: must be a list of strings"
+    end
+  end
+
+  # Parses and validates a model's optional `multi-modal` claim. `nil` means
+  # "no claim made", which is not a negative — see `Nest.Models.MultiModal`
+  # for the three-valued vocabulary. A table whose `input` is a list of names
+  # is kept; everything else raises, so an explicit `multi-modal = false` is a
+  # startup error rather than being silently discarded into "no claim",
+  # matching `parse_timeout` and `parse_default_context_limit`.
+  #
+  # A table with no `input` key is kept as-is: it is not a claim this system
+  # can read, and `models-list` reports that honestly as `input: invalid`.
+  defp parse_multi_modal(nil, _provider_name, _model_name), do: nil
+
+  defp parse_multi_modal(%{} = claim, provider_name, model_name) do
+    case Map.get(claim, "input") do
+      nil ->
+        claim
+
+      input ->
+        if is_list(input) and Enum.all?(input, &is_binary/1) do
+          claim
+        else
+          raise invalid_modalities_message(input, provider_name, model_name)
+        end
+    end
+  end
+
+  defp parse_multi_modal(value, provider_name, model_name) do
+    raise "Provider #{provider_name}, model #{model_name}: invalid multi-modal " <>
+            "#{inspect(value)}: must be a table"
+  end
+
+  defp invalid_modalities_message(input, provider_name, model_name) do
+    "Provider #{provider_name}, model #{model_name}: invalid multi-modal input " <>
+      "#{inspect(input)}: must be a list of strings"
+  end
+
+  defp parse_model(model_data, provider_name) do
+    name = Map.get(model_data, "name")
 
     %Model{
-      name: Map.get(model_data, "name"),
+      name: name,
       provider_name: nil,
       context_limit: Map.get(model_data, "context-limit"),
-      multi_modal: multi_modal,
+      multi_modal: parse_multi_modal(Map.get(model_data, "multi-modal"), provider_name, name),
       thinking_effort: parse_thinking_effort(Map.get(model_data, "thinking-effort"))
     }
   end
