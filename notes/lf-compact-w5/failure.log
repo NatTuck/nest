@@ -1,0 +1,329 @@
+Running ExUnit with seed: 882332, max_cases: 16
+
+18:46:00.026 [error] [agent:1373343:agent2946] chat:error msg_index= source=Nest.Agents.Agent.Turn.Executor :: Compaction failed: Refusing to send an invalid message sequence (wire preflight): alternation: consecutive same-role messages at 2
+
+
+  1) test a manual /compact with no focus is still visible (Nest.Agents.Agent.CompactionRequestMessageTest)
+     test/nest/agents/agent/compaction_request_message_test.exs:79
+     Assertion failed, no matching message after 500ms
+     Showing 4 of 4 messages in the mailbox
+     code: assert_receive {:chat_status, %{status: "idle"}}
+     mailbox:
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\n/compact"
+                      }
+                    ],
+                    timestamp: ~U[2026-10-14 22:46:00.023115Z],
+                    metadata: %{
+                      "mode" => "chat",
+                      "origin" => "human"
+                    },
+                    api_logs: [],
+                    tokens: nil
+                  }}}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_status,
+                 %{
+                   name: "agent2946",
+                   status: "compacting",
+                   depth: 0,
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0,
+                     context_input_tokens: 414,
+                     projected_context_input_tokens: nil,
+                     working_budget: 409600
+                   },
+                   space_id: 1373343,
+                   model: %{
+                     "name" => "qwen3.5-plus",
+                     "provider" => "model-studio"
+                   },
+                   contextLimit: 512000,
+                   contextLimitSource: :config,
+                   currentMode: "chat",
+                   descendantUsage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0,
+                     context_input_tokens: 0
+                   },
+                   owedReplies: [],
+                   parentId: nil,
+                   parentName: nil,
+                   pendingMessageCount: 0,
+                   totalUsage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0,
+                     context_input_tokens: 0
+                   },
+                   workspacePath: nil
+                 }}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_error,
+                 %{
+                   index: nil,
+                   content: "Compaction failed: Refusing to send an invalid message sequence (wire preflight): alternation: consecutive same-role messages at 2\n[Source: Nest.Agents.Agent.Turn.Executor]",
+                   compactionError: true
+                 }}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_status,
+                 %{
+                   name: "agent2946",
+                   status: "compaction_failed",
+                   depth: 0,
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0,
+                     context_input_tokens: 414,
+                     projected_context_input_tokens: nil,
+                     working_budget: 409600
+                   },
+                   space_id: 1373343,
+                   model: %{
+                     "name" => "qwen3.5-plus",
+                     "provider" => "model-studio"
+                   },
+                   contextLimit: 512000,
+                   contextLimitSource: :config,
+                   currentMode: "chat",
+                   descendantUsage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0,
+                     context_input_tokens: 0
+                   },
+                   owedReplies: [],
+                   parentId: nil,
+                   parentName: nil,
+                   pendingMessageCount: 0,
+                   totalUsage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0,
+                     context_input_tokens: 0
+                   },
+                   workspacePath: nil
+                 }}
+     stacktrace:
+       test/nest/agents/agent/compaction_request_message_test.exs:85: (test)
+
+18:46:00.541 [error] [agent:1373344:agent26] chat:error msg_index= source=Nest.Agents.Agent.Turn.Executor :: Compaction failed: Refusing to send an invalid message sequence (wire preflight): alternation: consecutive same-role messages at 2
+
+
+  2) test a manual /compact with a focus is visible, and is not in the compactor's request (Nest.Agents.Agent.CompactionRequestMessageTest)
+     test/nest/agents/agent/compaction_request_message_test.exs:50
+     Assertion failed, no matching message after 500ms
+     Showing 4 of 4 messages in the mailbox
+     code: assert_receive {:chat_status, %{status: "idle"}}
+     mailbox:
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\n/compact keep the API details"
+                      }
+                    ],
+                    timestamp: ~U[2026-10-14 22:46:00.539417Z],
+                    metadata: %{
+                      "mode" => "chat",
+                      "origin" => "human"
+                    },
+                    api_logs: [],
+                    tokens: nil
+                  }}}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_status,
+                 %{
+                   name: "agent26",
+                   status: "compacting",
+                   depth: 0,
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0,
+                     context_input_tokens: 417,
+                     projected_context_input_tokens: nil,
+                     working_budget: 409600
+                   },
+                   space_id: 1373344,
+                   model: %{
+                     "name" => "qwen3.5-plus",
+                     "provider" => "model-studio"
+                   },
+                   contextLimit: 512000,
+                   contextLimitSource: :config,
+                   currentMode: "chat",
+                   descendantUsage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0,
+                     context_input_tokens: 0
+                   },
+                   owedReplies: [],
+                   parentId: nil,
+                   parentName: nil,
+                   pendingMessageCount: 0,
+                   totalUsage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0,
+                     context_input_tokens: 0
+                   },
+                   workspacePath: nil
+                 }}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_error,
+                 %{
+                   index: nil,
+                   content: "Compaction failed: Refusing to send an invalid message sequence (wire preflight): alternation: consecutive same-role messages at 2\n[Source: Nest.Agents.Agent.Turn.Executor]",
+                   compactionError: true
+                 }}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_status,
+                 %{
+                   name: "agent26",
+                   status: "compaction_failed",
+                   depth: 0,
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0,
+                     context_input_tokens: 417,
+                     projected_context_input_tokens: nil,
+                     working_budget: 409600
+                   },
+                   space_id: 1373344,
+                   model: %{
+                     "name" => "qwen3.5-plus",
+                     "provider" => "model-studio"
+                   },
+                   contextLimit: 512000,
+                   contextLimitSource: :config,
+                   currentMode: "chat",
+                   descendantUsage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0,
+                     context_input_tokens: 0
+                   },
+                   owedReplies: [],
+                   parentId: nil,
+                   parentName: nil,
+                   pendingMessageCount: 0,
+                   totalUsage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0,
+                     context_input_tokens: 0
+                   },
+                   workspacePath: nil
+                 }}
+     stacktrace:
+       test/nest/agents/agent/compaction_request_message_test.exs:62: (test)
+
+
+Finished in 1.1 seconds (1.1s async, 0.00s sync)
+2 tests, 2 failures
