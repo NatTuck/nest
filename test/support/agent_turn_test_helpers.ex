@@ -114,6 +114,50 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   end
 
   @doc """
+  Park the **next** LLM request only, then let every later request run.
+
+  `park_llm_requests/1`'s one-shot sibling, for a test that has to read the
+  agent's state at one point of a turn but must not control how many turns the
+  rest of the test starts — that count is a scheduling outcome, and a test that
+  had to release every request would be asserting it.
+
+  The first request after installation parks and reports
+  `{:llm_request, messages, worker}` exactly as `park_llm_requests/1` does, so
+  `next_request/0` and `release_llm/1` work unchanged; every request after it
+  goes straight through to the original. The claim is taken with `:counters`
+  because the stub runs in whichever process makes the call, and successive
+  requests need not be the same one.
+  """
+  @spec park_next_llm_request(pid()) :: :ok
+  def park_next_llm_request(pid) do
+    test_pid = self()
+    taken = :counters.new(1, [])
+
+    Mimic.stub(MockClient, :run, fn request, opts ->
+      :counters.add(taken, 1, 1)
+
+      if :counters.get(taken, 1) == 1 do
+        send(test_pid, {:llm_request, request.messages, self()})
+
+        # As in `park_llm_requests/1`: the only reason to give up the park is
+        # the test going away, which is an event, not a clock.
+        ref = Process.monitor(test_pid)
+
+        receive do
+          :release_llm -> :ok
+          {:DOWN, ^ref, :process, ^test_pid, _reason} -> :ok
+        end
+
+        Process.demonitor(ref, [:flush])
+      end
+
+      Mimic.call_original(MockClient, :run, [request, opts])
+    end)
+
+    Mimic.allow(MockClient, self(), pid)
+  end
+
+  @doc """
   The next parked request, as `{messages, worker}`. Nothing runs until the
   caller releases `worker`, so it can assert on the state the request was made
   from.

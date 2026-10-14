@@ -516,10 +516,22 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       assert_receive {:send_blocked, tool}, 1_000
       assert Agent.get_public_info(pid, 1_000).status == :executing_tools
 
+      # Park the notice's turn before it starts — the batch is held in its tool
+      # worker, so the next request can only be the notice's — and read the
+      # state while it is held. Without the park the read races the HTTP worker:
+      # the mocked response returns immediately, so the notice's turn can finish
+      # first, and `:idle` is then legitimate (a backgrounded batch with the turn
+      # yielded is exactly what backgrounding means). See `park_next_llm_request/1`.
+      park_next_llm_request(pid)
+
       # The aggregate is the disposition the coordinator relies on: `:delivered`
       # means it reached the transcript.
       assert {:ok, :delivered} =
                Agent.deliver_internal(pid, "agents-batch", "the aggregate", :notice)
+
+      # The turn that started is the notice's: its own request carries it.
+      {notice_request, notice_llm} = next_request()
+      assert Enum.any?(user_texts(notice_request), &(&1 =~ "the aggregate"))
 
       # allowlist: snapshot — status + work.backgrounded + inbox + messages
       mid = :sys.get_state(pid, 1_000)
@@ -530,6 +542,10 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       assert map_size(mid.live.machine.work.backgrounded) == 1
       assert mid.live.inbox == []
       assert Enum.any?(user_texts(mid.chat_state.messages), &(&1 =~ "the aggregate"))
+
+      # Let the notice's turn finish. Only this one request was parked, so every
+      # turn the rest of the test starts runs unparked.
+      release_llm(notice_llm)
 
       # Release the batch: its own send runs, it returns, and everything it
       # queued drains. The turn must reach idle for the teardown.
