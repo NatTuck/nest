@@ -92,8 +92,10 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
       when name in ["agents-list", "agents-list-archived", "models-list"],
       do: Estimator.estimate_bytes(@max_list_chars)
 
-  def project(%ToolCall{name: "agents-archive"}, _ctx),
-    do: estimator_overhead("Archived agent clever-raven.")
+  # One sentence per archived name, so the projection scales with the list
+  # `agents-archive` accepts.
+  def project(%ToolCall{name: "agents-archive"} = tc, _ctx),
+    do: estimator_overhead("Archived agent clever-raven.") * archive_name_count(tc)
 
   def project(%ToolCall{name: "agents-unarchive"}, _ctx),
     do: estimator_overhead("Restored agent clever-raven.")
@@ -277,4 +279,12 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   def estimator_overhead(text) do
     Estimator.estimate(text) * @safety_padding
   end
+
+  # How many names an `agents-archive` call asks for. Clamped to at least one:
+  # a call whose `name` is unusable still produces one error sentence, and this
+  # is a bound, so it must never be zero.
+  defp archive_name_count(%ToolCall{arguments: %{"name" => names}}) when is_list(names),
+    do: max(length(names), 1)
+
+  defp archive_name_count(_tc), do: 1
 end

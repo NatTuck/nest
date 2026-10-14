@@ -26,6 +26,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   BatchSizer doesn't try to project a per-tool size for it.
   """
 
+  alias Nest.Agents.Agent.Archive
   alias Nest.Agents.Agent.BatchCoordinator
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.LastMessage
@@ -598,26 +599,13 @@ defmodule Nest.Agents.Agent.ToolLoop do
     end
   end
 
-  # `agents-archive`: stop + mark an existing agent in this
-  # space archived. Routes through the parent GenServer so the
-  # stop/DB write happens in the same process context as other
-  # lifecycle operations.
+  # `agents-archive`: stop + mark the agents a call names archived. Routes
+  # through the parent GenServer so the stop/DB write happens in the same
+  # process context as other lifecycle operations; the per-name loop and the
+  # result shaping live in `Nest.Agents.Agent.Archive`.
   defp run_archive_agent(ctx, %ToolCall{} = tc) do
-    target = extract_string_arg(tc, "name")
-    parent_via_tuple = Registry.via_tuple(ctx.space_id, ctx.agent_name)
-
-    case GenServer.call(parent_via_tuple, {:archive_agent_request, self(), target}) do
-      {:ok, archived_name} ->
-        build_tool_result(tc, "agents-archive", "Archived agent #{archived_name}.")
-
-      {:error, reason} ->
-        build_tool_result(
-          tc,
-          "agents-archive",
-          "Could not archive #{target}: #{inspect(reason)}",
-          true
-        )
-    end
+    {content, is_error} = Archive.run(ctx, tc)
+    build_tool_result(tc, "agents-archive", content, is_error)
   end
 
   # `agents-unarchive`: restore an archived agent in this space —

@@ -460,27 +460,34 @@ defmodule Nest.Tools do
   # #62). The spec lives in `Nest.Tools.LastMessage`; execution lives in
   # `Nest.Agents.Agent.ToolLoop.run_last_message/2`.
 
-  # The `agents-archive` tool: stop + mark an existing agent in
-  # this space archived. It is then excluded from `agents-list`
-  # and the lobby sidebar, and querying it is an error. Use this
+  # The `agents-archive` tool: stop + mark existing agents in
+  # this space archived. They are then excluded from `agents-list`
+  # and the lobby sidebar, and querying them is an error. Use this
   # to clean up long-lived specialists you're done with.
+  #
+  # `name` takes one agent name or a list of them: cleaning up after a
+  # multi-agent workflow usually means several at once.
   #
   # The `function` here is a stub. Real execution lives in
   # `Nest.Agents.Agent.ToolLoop`, which routes through the agent
-  # GenServer to stop and archive the target.
+  # GenServer to stop and archive each target.
   defp archive_agent_function do
     %Tool{
       name: "agents-archive",
       description:
-        "Stop and archive a sub-agent in this space. The archived agent is no " <>
-          "longer listed or queryable. Use this to clean up a specialist you no " <>
-          "longer need.",
+        "Stop and archive sub-agents in this space. The archived agents are no " <>
+          "longer listed or queryable. Use this to clean up specialists you no " <>
+          "longer need. Pass one name, or a list of names to archive several in " <>
+          "a single call.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
           "name" => %{
-            "type" => "string",
-            "description" => "The name of the sub-agent to archive."
+            "type" => ["string", "array"],
+            "items" => %{"type" => "string"},
+            "description" =>
+              "The name of the sub-agent to archive, or a non-empty list of " <>
+                "names to archive in one call."
           }
         },
         "required" => ["name"]

@@ -283,12 +283,6 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
         repair_command: state.live.repair.command,
         vocation_id: state.vocation_id,
         vocation_slug: state.vocation && state.vocation.slug,
-        # The agent's scratch directory, unconsumed by the client: `statusExtras/1`
-        # in `assets/js/channels/agent.js` whitelists the fields it wants and
-        # does not include this one, and no tool reads it either. Retained
-        # because `agent_tmp_path_test.exs` uses it as its handle on the real
-        # tmp lifecycle; removing it is issue #79.
-        tmp_path: state.tmp_path,
         # Run the streaming accumulator (or nil) through
         # `Streaming.to_json_safe/1` so `get_public_info/1`
         # is JSON-encodable end-to-end. Lobby and AgentChannel

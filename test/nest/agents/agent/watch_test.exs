@@ -397,11 +397,14 @@ defmodule Nest.Agents.Agent.WatchTest do
   } do
     # `shell-wait` follows the same shape as `agents-wait-for-idle`: register,
     # return, go idle, and deliver the job's result as a notice.
-    info = Agent.get_public_info(pid, 1_000)
+    # The mounts come from the agent's own state: `tmp_path` is a real host
+    # directory, and #79 took it off the introspection payload.
+    # allowlist: snapshot — workspace_path + tmp_path
+    state = :sys.get_state(pid, 1_000)
     key = {space_id, name}
 
     {:ok, _} =
-      ShellCmd.execute("echo done", Mounts.new(info.workspace_path, info.tmp_path), nil,
+      ShellCmd.execute("echo done", Mounts.from_agent(state), nil,
         background: true,
         agent_key: key,
         grace_ms: 0
@@ -433,11 +436,12 @@ defmodule Nest.Agents.Agent.WatchTest do
     name: name,
     space_id: space_id
   } do
-    info = Agent.get_public_info(pid, 1_000)
+    # allowlist: snapshot — workspace_path + tmp_path
+    state = :sys.get_state(pid, 1_000)
     key = {space_id, name}
 
     {:ok, _} =
-      ShellCmd.execute("sleep 30", Mounts.new(info.workspace_path, info.tmp_path), nil,
+      ShellCmd.execute("sleep 30", Mounts.from_agent(state), nil,
         background: true,
         agent_key: key,
         grace_ms: 0
