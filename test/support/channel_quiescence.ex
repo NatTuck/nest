@@ -33,11 +33,16 @@ defmodule Nest.TestSupport.ChannelQuiescence do
   which is exactly "this channel is idle now".
 
   Best effort on purpose: a channel that will not answer inside the bound is
-  left alone rather than turned into a new teardown failure. This is a
-  quiescence aid, not an assertion — the assertion is
-  `assert_zero_remaining!/1`, and a channel that refuses to drain is reported
-  by the disconnect it goes on to cause.
+  left alone rather than turned into a new teardown failure — a drain is a
+  quiescence aid, not an assertion, and the assertion is
+  `assert_zero_remaining!/1`. But it is never *silent*: a give-up is logged at
+  `:error` naming the channel and the bound, because a give-up means the
+  channel may still be mid-query when the owner exits, which is the exact state
+  that produces the disconnect this module exists to prevent. A clean run
+  therefore has no such line, and a run that does has said why.
   """
+
+  require Logger
 
   @drain_ms 1_000
 
@@ -63,8 +68,24 @@ defmodule Nest.TestSupport.ChannelQuiescence do
     _ = :sys.get_state(pid, @drain_ms)
     :ok
   catch
-    # `:sys.get_state` exits on timeout, and a channel may legitimately be gone
-    # by now (a test that stopped it, or one that crashed).
-    :exit, _reason -> :ok
+    :exit, reason ->
+      # A channel that is already gone (a test stopped it, or it crashed) has
+      # nothing to drain and says nothing. A channel that is still *alive* and
+      # would not answer inside the bound is the opposite: it may still be
+      # mid-query when the owner exits, which is exactly the state that
+      # produces the "owner … exited" disconnect this module exists to prevent.
+      # Give up without failing the test (a drain is not an assertion, and a
+      # teardown failure must not mask a body failure), but never silently —
+      # a give-up has to leave a trace in the run's output.
+      if Process.alive?(pid) do
+        Logger.error(
+          "channel drain gave up after #{@drain_ms} ms on #{inspect(pid)} " <>
+            "(#{inspect(Process.info(pid, :initial_call))}): it may still be using " <>
+            "this test's sandbox connection when the owner exits. " <>
+            "Reason: #{inspect(reason)}"
+        )
+      end
+
+      :ok
   end
 end
