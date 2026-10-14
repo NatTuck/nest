@@ -72,15 +72,41 @@ defmodule Nest.Tokens.Estimator do
 
   def raw_count(_), do: 0
 
-  # cl100k_base count, with a heuristic fallback on any tokenizer
-  # failure. `Nest.Tokens.Tokenizer.count/1` reads a pre-loaded
-  # tokenizer from `:persistent_term`; the only expected failure is
-  # invalid UTF-8, which the caller already filters with
-  # `String.valid?/1`. The rescue stays as a safety net.
+  # cl100k_base count, with a heuristic fallback on a genuine
+  # tokenization failure. `Nest.Tokens.Tokenizer.count/1` reads a
+  # pre-loaded tokenizer from `:persistent_term`; invalid UTF-8, the one
+  # failure we can anticipate, never reaches this rescue — the caller
+  # filters it with `String.valid?/1` and takes the byte-based path
+  # instead. So the rescue's only remaining purpose is a genuine
+  # tokenization failure (a NIF-level error, say), where a `chars/4`
+  # count beats crashing the sizing path.
+  #
+  # An *unloaded* tokenizer is not a tokenization failure and must not
+  # fall back. `Nest.Application` loads it concurrently with the
+  # supervision tree, and the endpoint binds its listener before the
+  # load is awaited, so this is reachable while the tokenizer is still
+  # absent. Falling back there returns a `chars/4` count that is quietly
+  # wrong — no error, no failing test, just a wrong context budget.
+  # Re-raise instead: a boot-ordering bug has to be loud.
   defp count_tokens(text) do
     Tokenizer.count(text)
   rescue
-    _ -> char_estimate(text)
+    error -> fallback_or_reraise(text, Tokenizer.loaded?(), error, __STACKTRACE__)
+  end
+
+  # The rescue body of `count_tokens/1`, with the `:persistent_term` read
+  # hoisted to the caller: the loaded/unloaded decision is then a pure
+  # function of its arguments, so the loud path can be tested without
+  # erasing global state.
+  @doc false
+  @spec fallback_or_reraise(String.t(), boolean(), Exception.t(), Exception.stacktrace()) ::
+          non_neg_integer()
+  def fallback_or_reraise(text, loaded?, error, stacktrace) do
+    if loaded? do
+      char_estimate(text)
+    else
+      reraise error, stacktrace
+    end
   end
 
   # Invalid-UTF-8 fallback. Byte-based because the standard
