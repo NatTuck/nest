@@ -70,6 +70,28 @@ Application.ensure_all_started(:nest)
 # particular is loaded on the first request, and a `page_controller_test` has
 # been observed burning its whole per-test deadline in `code_server.call/1`
 # waiting for exactly that. See `lib/nest_web/endpoint.ex`.
+#
+# The rest of the request path's dependencies are here for the same reason, and
+# each was added from an observed frame rather than from a guess. Reading the
+# `ExUnit.TimeoutError` stacktraces whose innermost frame is
+# `:code_server.call/1` names the *call site* that triggered the lazy load, and
+# reading that call site names the module it was waiting for. The frames seen so
+# far, and what each pulls in:
+#
+#   * `Plug.Session.init/1` (plug session.ex:57, `store.init/1`)
+#     -> `Plug.Session.COOKIE`;
+#   * `Plug.Conn.put_resp_cookie/4` (plug conn.ex:1716)
+#     -> `Plug.Conn.Cookies`;
+#   * `Phoenix.Controller.protect_from_forgery/2` -> `Plug.CSRFProtection`;
+#   * `Phoenix.Controller.template_render_to_iodata/4` -> `Phoenix.Template`,
+#     and through it the HEEx engine (`Phoenix.LiveView.HTMLEngine`) for the two
+#     `.heex` templates in `lib/nest_web`;
+#   * `NestWeb.Router.__match_route__/3` -> the pipeline's plugs, i.e. the
+#     `Phoenix.Controller` entry points.
+#
+# `Code.ensure_loaded?/1` is enough for each: what is being removed is the
+# *load* — one code-server round trip per module — and it does not matter which
+# call site would have paid it.
 for mod <- [
       Jason,
       Jason.Decoder,
@@ -83,6 +105,16 @@ for mod <- [
       Plug.MethodOverride,
       Plug.Head,
       Plug.Session,
+      Plug.Conn,
+      Plug.Conn.Cookies,
+      Plug.Conn.Query,
+      Plug.CSRFProtection,
+      Plug.Session.COOKIE,
+      Phoenix.Controller,
+      Phoenix.Template,
+      Phoenix.HTML,
+      Phoenix.LiveView,
+      Phoenix.LiveView.HTMLEngine,
       NestWeb.Router,
       NestWeb.Endpoint
     ],

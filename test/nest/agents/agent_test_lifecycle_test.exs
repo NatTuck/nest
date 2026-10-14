@@ -4,6 +4,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
   import ExUnit.CaptureLog
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.AgentTestLifecycle
   alias Nest.Agents.AgentTurnTestHelpers
@@ -154,13 +155,15 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       assert result.in_flight == []
       assert result.not_stopped == [{space_id, name}]
 
-      assert_raise RuntimeError, ~r/did not stop within 10 ms of :shutdown/, fn ->
+      assert_raise RuntimeError, ~r/did not stop within 150 ms of :shutdown/, fn ->
         AgentTestLifecycle.assert_zero_remaining!(result)
       end
 
-      # The same detector in its other entry point, and both name the agent.
+      # The same detector in its other entry point, and both name the agent. The
+      # timeout is incidental to what this line pins (that the message names the
+      # agent), so it is short — the bound itself is pinned by the line above.
       assert_raise RuntimeError, ~r/#{name}/, fn ->
-        AgentTestLifecycle.wait_for_pid_down(space_id, name)
+        AgentTestLifecycle.wait_for_pid_down(space_id, name, 25)
       end
 
       # The stop does not kill: the agent is still there, which is the point of
@@ -200,6 +203,56 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       # of the guard would report it if it did not.
       refute Process.alive?(pid)
       assert result.not_stopped == []
+    end
+
+    test "does not report an idle agent whose teardown is slow" do
+      # The regression this guard was fixed for. `Agent.terminate/2` ends with
+      # `cleanup_tmp/2` -> `TmpSpace.cleanup/2` -> `File.rm_rf/1`, so the stop
+      # handshake contains real filesystem work — a `File.rm_rf` per agent — and
+      # it is not a measurement of the agent's receive loop. The bound used to be
+      # 10 ms, and that handshake reaches it on a busy machine — 12 provably idle
+      # agents (every one of them answering `:idle`) took a tight 8.5-9.1 ms
+      # under 32 CPU burners, and crossed 10 ms as soon as anything else loaded
+      # the host — failing tests whose agents were not in flight at all.
+      #
+      # A populated scratch directory is a *real* teardown load rather than a
+      # stub: it is the same `File.rm_rf` the agent runs for itself, and the
+      # teardown's cost is the number of file operations in it. Deliberately
+      # small — `File.rm_rf` of 100 entries measures 332-597 ms under 32 CPU
+      # burners, so a pin big enough to be a *magnitude* check would itself go
+      # flaky on a loaded host, and a sometimes-failing test is worse than a
+      # failing one. Its margin depends on which measurement you take: file-alone,
+      # a 20-entry handshake is 3.96 ms on the slow host, so it clears the bound by
+      # ~38x; under full suite load the worst handshake measured is 39.3 ms, ~3.8x.
+      # What this pins is the contract: a populated scratch directory must not turn
+      # an idle agent into a violation. The bound's floor,
+      # which is what a tightening would break, is pinned separately and
+      # deterministically below.
+      {pid, name} = AgentTestHelpers.start_agent()
+      space_id = AgentTestHelpers.current_space_id()
+
+      scratch = TmpSpace.create(space_id, name)
+      Enum.each(1..20, fn i -> File.write!(Path.join(scratch, "f#{i}"), "x") end)
+
+      result = AgentTestLifecycle.stop_test_agents()
+
+      # Asserted through the gate rather than on the raw lists, so a failure
+      # carries the diag: how long the stop actually took and what the agent was
+      # doing when it missed the bound.
+      assert result.in_flight == []
+      assert :ok = AgentTestLifecycle.assert_zero_remaining!(result)
+      refute Process.alive?(pid)
+    end
+
+    test "the stop bound stays wide enough to clear a real teardown" do
+      # The bound is a liveness bound and has to keep clearing the handshake,
+      # which contains `terminate/2`'s `File.rm_rf`. Measured: 25-110 us with an
+      # idle host, a flat 8.5-9.1 ms plateau under CPU saturation, and 332-597 ms
+      # for a 100-entry scratch
+      # directory under the same load. Tightening this back toward the
+      # handshake is the bug this guard was fixed for, so the floor is pinned
+      # rather than left to a comment.
+      assert AgentTestLifecycle.stop_bound_ms() >= 150
     end
   end
 

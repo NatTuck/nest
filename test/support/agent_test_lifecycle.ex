@@ -82,38 +82,120 @@ defmodule Nest.Agents.AgentTestLifecycle do
   # `agent_test_lifecycle_test.exs` pins that boundary as a test rather than a
   # comment. It stays at 250 — the value of the `:sys.get_state` probe it
   # replaces — so the *answer* half of what one agent can cost the teardown
-  # (`@answer_ms` + `@stop_ms`) is unchanged. The stop half is not: it is now
-  # the 10 ms detector (`@stop_ms`), not the multi-second bound the probe used
+  # (`@answer_ms` + `@stop_ms`) is unchanged. The stop half is not: it is now the
+  # 150 ms liveness bound (`@stop_ms`), not the multi-second bound the probe used
   # to be paired with, so the total is far lower.
   #
   # The one measurement behind it is a single, right-censored run: 473 answers at
   # `max_cases: 16` took p50 21 us / p99 84 us / max 3.3 ms. A read that does not
   # answer inside the bound is a timeout, not a latency, so the sample cannot say
-  # how often a healthy agent fails to answer — and this repo's loaded
-  # measurement (48 CPU burners: p50 926 ms, max 1534 ms) shows the bound *can* be
-  # reached under load. Command and caveats: `notes/sketchy-slow-tests.md` §11.
+  # how often a healthy agent fails to answer. This comment used to cite "48 CPU
+  # burners: p50 926 ms" as a loaded round-trip figure, which is not what that
+  # measurement is: it is the *whole turn* in `sub_agent_tools_helpers.ex`'s fence
+  # sizing — a mocked LLM call, a real sub-agent spawn with DB writes, and a
+  # second mocked call. Measured directly, one `get_status/2` round trip is 117 us
+  # under 32 burners, so the bound is reached far less easily than that citation
+  # implied. Command and caveats: `notes/sketchy-slow-tests.md` §11.
   @answer_ms 250
 
   # How long one agent's stop waits for its `:DOWN` after
   # `Process.exit(pid, :shutdown)`, before the teardown hard-fails naming that
-  # agent. This is a **detector**, not headroom: see `stop_pid/2` for why a
-  # compliant test's agent is parked in its receive loop when the test ends, and
-  # therefore why the handshake is meant to be microseconds. A bound a busy
-  # agent can sit under would not detect anything.
+  # agent.
   #
-  # The number comes from a measurement, not a preference. Instrumenting the
-  # handshake in-memory (`:counters`, so the probe adds no I/O to what it
-  # measures) and running the whole suite at `max_cases: 16` on an idle machine
-  # (seed 12345), the 479 clean-path handshakes took p50 130 us / p90 250 us /
-  # p99 1.1 ms / max 4.4 ms. The tail is not the agent: it is the scheduler
-  # under the suite's own concurrency (the suite is contention-bound above its
-  # physical core count — 8 cases is much tighter, and `notes/sketchy-slow-tests.md`
-  # §11 has the 8/16/24 numbers), and it survives moving every cross-process
-  # call out of `Agent.terminate/2`. 10 ms is the smallest value that clears the
-  # measured max with real room (~2.3x) — and it is the ceiling the design
-  # allows: a clean path that needed more would mean the detector's premise was
-  # wrong, not that the bound should grow.
-  @stop_ms 10
+  # This is a **liveness** bound — did the process die at all — and deliberately
+  # not a tight one, because the handshake it bounds is not the agent's receive
+  # loop. `Agent.terminate/2` ends with `cleanup_tmp/2` -> `TmpSpace.cleanup/2`
+  # -> `File.rm_rf/1`, so the stop includes blocking filesystem work. The comment
+  # this replaces said the opposite — "`Agent.terminate/2` keeps no cross-process
+  # or filesystem work of its own ... the handshake measures the loop, not the
+  # teardown" — and that clause is simply wrong. It is what made a 10 ms bound
+  # look like a detector. A bound this handshake can cross cannot mean "the agent
+  # was busy": it means the *machine* was busy, and an idle agent is failed for it.
+  #
+  # Measured on a 32-logical-CPU host, with agents that had all answered `:idle`
+  # to the status question and so were provably not in a turn, at 32 BEAM burners
+  # (and idle, in brackets):
+  #
+  #   * one `ClientAPI.get_status/2` round trip to an idle agent: 117 us (1-9 us);
+  #   * `File.rm_rf/1` of an EMPTY directory: ~9 ms (14-68 us);
+  #   * `File.rm_rf/1` of a 100-entry directory: 332-597 ms (1.2-1.4 ms);
+  #   * the stop handshake for 12 idle agents: a flat 8.5-9.1 ms plateau
+  #     (25-110 us).
+  #
+  # So the cost is the file work, and specifically the number of file operations:
+  # an empty directory's `rm_rf` alone is the whole plateau, and it multiplies
+  # with entries. Two things it is *not*:
+  #
+  #   * not round-trip scheduling. A message round trip under the same load is
+  #     117 us — orders of magnitude below one file operation. (`@answer_ms` cites
+  #     "48 CPU burners: p50 926 ms" as a loaded figure; that number is the *whole
+  #     turn* — a mocked LLM call, a real sub-agent spawn with DB writes, and a
+  #     second mocked call — in `sub_agent_tools_helpers.ex`'s fence sizing. It is
+  #     not a status read.)
+  #   * not queueing behind other callers. File operations do go through one
+  #     global process, but it is `file_server_2`, not `:file_server`: that name is
+  #     gone, and `Process.whereis/1` returns `nil` for it and a pid for
+  #     `:file_server_2`, the only file-ish registered process on this OTP. This
+  #     measurement has no other file I/O in it, though — the load is CPU burners
+  #     and an empty `rm_rf` is a handful of round trips — so there is no queue to
+  #     wait behind. What the 9 ms is, is the per-round-trip cost: the file server
+  #     has to be scheduled and the operation does real work in the syscall path,
+  #     which is why a plain message round trip is 117 us under the same load
+  #     while a file round trip is milliseconds.
+  #
+  # That the tail "survives moving every cross-process call out of
+  # `Agent.terminate/2`" — the claim the previous comment carried — is consistent
+  # with this: `File.rm_rf` is not a cross-process call terminate *makes*, it is a
+  # library call inside `cleanup_tmp/2`, so an experiment that removed terminate's
+  # own cross-process work would leave exactly this cost in place.
+  #
+  # Real scratch directories are empty, so the empty-directory cost is the one
+  # that applies: of the 25 directories visible during a probe run, 22 held 0
+  # entries, 2 held 1, and one was not a directory. 150 ms clears the ~9 ms
+  # empty-directory handshake by ~16x even under full CPU saturation. The worst
+  # handshake measured across a *real* suite run is larger than that typical case
+  # — 39.3 ms, from instrumenting every teardown stop on `celedyr` at
+  # `max_cases` 8 (n=480, p50 596 us, p99 20.9 ms; the fast host, n=483, max
+  # 4.35 ms) — so the bound is ~3.8x the worst measured, not ~16x. `celedyr`,
+  # which reproduced the old failure as 4-24 detector failures per run, now
+  # produces none at `max_cases` 8, 12 and 24. Other failures remain there and are
+  # load-dependent (0-2 at 8, 0-5 at 12, 11-18 at 24 across runs), and every one of
+  # them is a Mimic or Postgres timeout, not this detector.
+  #
+  # The stacktrace of every agent that crossed it is the same, and says where
+  # the time went:
+  #
+  #     [status: :waiting, message_queue_len: 0,
+  #      current_function: {:gen, :do_call, 4},
+  #      current_stacktrace: [{:gen, :do_call, 4}, {:gen_server, :call, 3},
+  #                           {:file, :call, 2}, {File, :do_rm_rf, 3},
+  #                           {Nest.Agents.Agent.TmpSpace, :cleanup, 2},
+  #                           {Nest.Agents.Agent, :terminate, 2}, ...]]
+  #
+  # That is an agent that *is* stopping — a location, not a cause, which is why
+  # the cost above was attributed by measurement rather than by reading the frame.
+  # The "already idle" invariant is therefore asserted from state instead —
+  # `sample_status/1`
+  # -> `in_flight`, where no clock can stand in for it — and this bound keeps
+  # only the weaker job underneath it: an agent that never reaches its receive
+  # loop never handles the `{:EXIT, _, :shutdown}` signal and never dies, and
+  # that is what it still catches. 150 ms is ~3.8x the worst handshake measured
+  # across a real suite run (see the numbers above), and it is deliberately no
+  # larger: two pins have to *reach* the bound to prove
+  # the gate can fail, so the suite pays 2x it, and the 5 s budget on the fast host
+  # is tight enough that the cost is worth keeping down.
+  @stop_ms 150
+
+  @doc """
+  The stop's liveness bound, in milliseconds (see `@stop_ms`).
+
+  Public so the suite can pin that it stays wide enough to clear a real
+  teardown. The handshake includes `terminate/2`'s `File.rm_rf`, so a bound tight
+  enough to measure the receive loop does not detect a busy agent — it fails idle
+  ones.
+  """
+  @spec stop_bound_ms() :: pos_integer()
+  def stop_bound_ms, do: @stop_ms
 
   # The cleanup bound. Unlike `@stop_ms` this is **not** a detector policing an
   # invariant a compliant test already holds; it is the safety net for the path
@@ -228,39 +310,56 @@ defmodule Nest.Agents.AgentTestLifecycle do
   registration.
 
   Returns `%{owned: non_neg_integer(), in_flight: [...], not_stopped:
-  [...]}`. Read every status, then stop every agent with a single
+  [...], diag: [...]}`. Read every status, then stop every agent with a single
   `:DOWN` wait each, no loops. Every agent is stopped even when one of
   them does not die in time, so a failure reports the whole set; the
   caller decides whether to raise, so cleanup cannot mask an unrelated
-  body failure.
+  body failure. `diag` carries the per-agent evidence a failure message
+  needs (see `format_diag/1`); it is read only when something failed.
   """
   @spec stop_test_agents() :: map()
   def stop_test_agents do
     owned = owned_agents()
+    samples = Enum.map(owned, &sample_agent/1)
+    diag = Enum.map(samples, &stop_and_measure/1)
 
-    # Sample before stopping anything. The teardown's own stops perturb the
-    # agents it is about to read: stopping one agent starts a turn on another
-    # (a batch's child terminating makes its parent continue the batch), so a
-    # read taken *after* a stop reports the state the cleanup created instead of
-    # the state the test left behind. Measured on
-    # `agents_batch_test.exs`'s coordinator-death test, which read `:streaming`
-    # for exactly that reason.
-    in_flight =
-      for {space_id, name, pid} <- owned,
-          status = agent_status(pid),
-          status in @in_flight_statuses do
-        {space_id, name, status}
-      end
+    %{
+      owned: length(owned),
+      in_flight: in_flight(samples),
+      not_stopped: not_stopped(diag),
+      diag: diag
+    }
+  end
 
-    not_stopped =
-      Enum.flat_map(owned, fn {space_id, name, pid} ->
-        case stop_pid(pid, @stop_ms) do
-          :ok -> []
-          :timeout -> [{space_id, name}]
-        end
-      end)
+  # Sample before stopping anything. The teardown's own stops perturb the agents
+  # it is about to read: stopping one agent starts a turn on another (a batch's
+  # child terminating makes its parent continue the batch), so a read taken
+  # *after* a stop reports the state the cleanup created instead of the state the
+  # test left behind. Measured on `agents_batch_test.exs`'s coordinator-death
+  # test, which read `:streaming` for exactly that reason.
+  defp sample_agent({space_id, name, pid}) do
+    {space_id, name, pid, sample_status(pid)}
+  end
 
-    %{owned: length(owned), in_flight: in_flight, not_stopped: not_stopped}
+  # The mandatory invariant, and the only thing that can fail on state: an owned
+  # agent that answered with a status saying a turn is running. A non-answer is
+  # not a status (see `sample_status/1`), so it cannot be a violation here.
+  defp in_flight(samples) do
+    for {space_id, name, _pid, {:answered, status}} <- samples,
+        status in @in_flight_statuses do
+      {space_id, name, status}
+    end
+  end
+
+  defp stop_and_measure({space_id, name, pid, sample}) do
+    started = System.monotonic_time(:microsecond)
+    kind = stop_pid(pid, @stop_ms)
+    us = System.monotonic_time(:microsecond) - started
+    {space_id, name, sample, kind, us, if(kind == :timeout, do: proc_info(pid), else: nil)}
+  end
+
+  defp not_stopped(diag) do
+    for {space_id, name, _sample, :timeout, _us, _info} <- diag, do: {space_id, name}
   end
 
   @doc """
@@ -271,12 +370,17 @@ defmodule Nest.Agents.AgentTestLifecycle do
   :compacting]`) when the test body finished.
   """
   @spec assert_zero_remaining!(map()) :: :ok
-  def assert_zero_remaining!(%{owned: owned, in_flight: in_flight, not_stopped: not_stopped}) do
+  def assert_zero_remaining!(%{
+        owned: owned,
+        in_flight: in_flight,
+        not_stopped: not_stopped,
+        diag: diag
+      }) do
     cond do
       not_stopped != [] ->
         raise "expected zero remaining agents for this test, but these did not stop " <>
                 "within #{@stop_ms} ms of :shutdown: #{inspect(not_stopped)} " <>
-                "(owned: #{owned})"
+                "(owned: #{owned})" <> format_diag(diag)
 
       in_flight != [] ->
         raise "expected zero remaining agents for this test, but these were still " <>
@@ -286,6 +390,22 @@ defmodule Nest.Agents.AgentTestLifecycle do
       true ->
         :ok
     end
+  end
+
+  # The evidence behind a `not_stopped` failure, for every agent the test owned:
+  # what the status question answered, how long the stop actually took, and — for
+  # an agent that missed the bound — what it was doing at that moment. That last
+  # one is what tells "stopping, in `terminate/2`" apart from "wedged in a call",
+  # i.e. a busy machine from a bug. It earned its place here: the diagnosis of
+  # this guard's false positives came from exactly this stacktrace.
+  defp format_diag(diag) do
+    body =
+      Enum.map_join(diag, "\n", fn {space_id, name, sample, _kind, us, info} ->
+        "      #{name} (space #{space_id}): sample=#{inspect(sample)} stop_us=#{us} " <>
+          "proc=#{inspect(info, limit: 24, printable_limit: 1500)}"
+      end)
+
+    "\n    --- teardown diag ---\n" <> body
   end
 
   @doc """
@@ -334,7 +454,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
           "failure is being re-raised unchanged"
       )
 
-      %{owned: 0, in_flight: [], not_stopped: []}
+      %{owned: 0, in_flight: [], not_stopped: [], diag: []}
   end
 
   # The body's exception is the one that is raised (see
@@ -389,37 +509,56 @@ defmodule Nest.Agents.AgentTestLifecycle do
   #     answers: a turn runs in a worker task, not in the agent's loop, so
   #     `:streaming`/`:executing_tools`/`:compacting` is the in-flight signal.
   #   * the agent goes away -> the call exits with the reason it went away
-  #     (`:noproc`/`:shutdown`/a crash), which is `nil` here: no process is left
-  #     to run a turn. This is the race that produced the false positive — a
-  #     test body that already stopped its agent leaves it mid-`terminate/2`,
-  #     and an agent that is being stopped is not in flight.
-  #   * the agent never answers -> `:timeout` (dying behind a contended
-  #     synchronous call, or wedged), which is also `nil` and not a status. A
+  #     (`:noproc`/`:shutdown`/a crash), which is `{:exit, _}` here: no process
+  #     is left to run a turn. This is the race that produced the original false
+  #     positive — a test body that already stopped its agent leaves it
+  #     mid-`terminate/2`, and an agent that is being stopped is not in flight.
+  #   * the agent never answers -> `{:exit, :no_answer}` (dying behind a
+  #     contended synchronous call, or wedged), which is also not a status. A
   #     process that will not stop is reported by `not_stopped` instead, which
   #     says what is actually wrong with it.
-  defp agent_status(pid) do
-    ClientAPI.get_status(pid, @answer_ms)
+  defp sample_status(pid) do
+    {:answered, ClientAPI.get_status(pid, @answer_ms)}
   catch
-    :exit, _reason -> nil
+    :exit, reason -> {:exit, exit_tag(reason)}
+  end
+
+  # A non-answer and a gone agent are different facts, and a failure message has
+  # to be able to say which one happened.
+  defp exit_tag({:timeout, _}), do: :no_answer
+  defp exit_tag({:noproc, _}), do: :gone
+  defp exit_tag(other), do: other
+
+  # What an agent was doing when it missed the stop bound. Only read on the
+  # failure path: `Process.info/2` with a stacktrace is not free.
+  defp proc_info(pid) do
+    case Process.info(pid, [
+           :status,
+           :message_queue_len,
+           :current_function,
+           :current_stacktrace,
+           :reductions
+         ]) do
+      nil -> :gone
+      info -> info
+    end
   end
 
   # Stop one agent and wait for it to die. Returns `:timeout` — never `:ok` —
   # when the `:DOWN` did not arrive inside `timeout`.
   #
-  # The wait is the test's idle detector: a test may not complete until its
-  # agent is *already* idle, and that is a mandatory invariant, so the stop has
-  # to say when it does not hold rather than give up. That is also what makes
-  # the bound tight. An agent traps exits, so `Process.exit(pid, :shutdown)`
-  # does not kill it — it arrives as the message `{:EXIT, test_pid, :shutdown}`,
-  # which `Agent.Handlers.ExitHandler` turns into `{:stop, reason, state}`, and
-  # **a message is only handled when the agent reaches its receive loop**. A
-  # compliant test's agent is parked there when the test ends, so the handshake
-  # is the microseconds it takes to hand the signal over; a test that ended
-  # with its agent still working does not get that, and the bound turns the
-  # difference into a failure that names the agent instead of a cleanup that
-  # quietly reports success. `Agent.terminate/2` keeps no cross-process or
-  # filesystem work of its own (see its comments) for exactly that reason: the
-  # handshake measures the loop, not the teardown.
+  # The mandatory invariant — a test may not complete until its agent is
+  # *already* idle — is asserted from **state**, by `sample_status/1` before
+  # anything is stopped. That is a statement about the agent, and no clock can
+  # stand in for it. This wait answers the weaker question underneath it: did
+  # the process die at all. Its bound is a liveness bound for the reason spelled
+  # out on `@stop_ms` — the handshake includes `terminate/2`'s filesystem
+  # teardown, so it cannot measure the loop. An agent traps exits, so
+  # `Process.exit(pid, :shutdown)` does not kill it: the signal arrives as the
+  # message `{:EXIT, test_pid, :shutdown}`, which `Agent.Handlers.ExitHandler`
+  # turns into `{:stop, reason, state}`, and a message is only handled when the
+  # agent reaches its receive loop. An agent that never gets there — suspended,
+  # or wedged in a call — never dies, and that is what this bound catches.
   defp stop_pid(pid, timeout) do
     # Unlink first: test-started agents are linked to the test pid so
     # an unexpected crash fails the test. A deliberate `:shutdown`
