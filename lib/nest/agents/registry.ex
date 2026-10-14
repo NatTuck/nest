@@ -37,6 +37,43 @@ defmodule Nest.Agents.Registry do
   end
 
   @doc """
+  Release this process's own registration for `{space_id, name}`.
+
+  Called from `Nest.Agents.Agent.terminate/2`, so the name is free *before* the
+  process dies rather than after the registry's own cleanup has run.
+
+  The registry is linked to every process it holds, and deletes an entry when it
+  processes that process's link `EXIT` — a scheduling hop *after* the process is
+  gone. Inside that hop `DynamicSupervisor.start_child/2` under this name is
+  refused, and the refusal is `{:error, {:already_started, _}}` with `:undefined`
+  as the reported pid, because `Registry.whereis_name/1` liveness-checks and
+  reports a dead process as absent while `gen.erl`'s `register_name/1` fills the
+  error's pid in from `where/1`. `Supervisor.start_under_supervisor/2` maps any
+  `:already_started` to `{:ok, name}`, so a start landing in that hop reports
+  success while nothing is running. Releasing the name from its owner removes the
+  hop: the entry is gone before the `:DOWN` of the process that held it.
+
+  Only the registered process can do this. `Registry.register_name/2` accepts a
+  pid only `when pid == self()`, so the registration belongs to the agent itself
+  and this is the owner giving up its own key. (OTP does the same thing for a
+  failed start: `gen_server` calls `gen:unregister_name/1` from inside the child,
+  for precisely this "the parent could get an already_started error" reason.)
+
+  Returns `{:error, :registry_unavailable}` when the registry is already gone,
+  which happens during application shutdown — the registry is a separate process
+  and a dying agent must not crash over it. A shutdown path may ignore that: the
+  registry's own cleanup is still the backstop.
+  """
+  @spec release(integer(), String.t()) :: :ok | {:error, :registry_unavailable}
+  def release(space_id, name) do
+    Registry.unregister(@registry, {space_id, name})
+  rescue
+    # `Registry.unregister/2` reads the registry's own ETS tables, and `info!/1`
+    # raises `ArgumentError` ("unknown registry") once they are gone.
+    ArgumentError -> {:error, :registry_unavailable}
+  end
+
+  @doc """
   Looks up an agent by its `{space_id, name}`.
 
   Returns `{:ok, pid}` if the agent is running, or

@@ -181,20 +181,18 @@ defmodule Nest.Agents.SupervisorTest do
       :ok = Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
       assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1_000
 
-      # The registry's auto-cleanup runs in the partition server's
-      # `handle_info({:EXIT, pid, _})`: asynchronous, announcing nothing, and
-      # not ordered by the `:DOWN` above (measured: ~27% of exits are still in
-      # the table right after it). `:sys.get_state/2` on that partition is the
-      # barrier that drains it — the link `:EXIT` is enqueued before the
-      # `:DOWN` we waited on — so the lookup below reads a decided state
-      # instead of polling for it.
-      #
-      # The partition name is `Registry.Partition.pid_name/2`'s; the registry
-      # is single-partition (`Nest.Agents.Registry.child_spec/0` passes no
-      # `:partitions`).
-      # allowlist: registry — partition cleanup announces nothing
-      _ = :sys.get_state(Nest.Agents.Registry.PIDPartition0, 1_000)
-
+      # No barrier here, and none is needed: the name is released by its owner.
+      # `Agent.terminate/2`'s last act is `Registry.release/2`, so the entry is
+      # gone *before* the process exits and therefore before the `:DOWN` above.
+      # That is the point of releasing it there. The registry's own cleanup runs
+      # in its partition server's `handle_info({:EXIT, pid, _})` — a scheduling
+      # hop after the process is gone — and inside that hop a start under this
+      # name is refused with `{:error, {:already_started, :undefined}}` (a dead
+      # pid reads as absent to `Registry.whereis_name/1`), which
+      # `Supervisor.start_under_supervisor/2` reports as `{:ok, name}`: success
+      # for an agent that is not running. This assertion is the invariant that
+      # closes it, and it is deterministic only because the owner releases the
+      # name first.
       assert Registry.lookup(AgentTestHelpers.current_space_id(), name) ==
                {:error, :not_found}
     end

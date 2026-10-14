@@ -343,18 +343,15 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   end
 
   # The caller has already fenced on the agent's `:DOWN`, so the process is
-  # provably gone. Its `Nest.Agents.Registry` entry, though, is dropped by the
-  # registry partition server's *link* `:EXIT` handler, which is asynchronous
-  # and announces nothing: `:sys.get_state/2` on that partition is the barrier
-  # that drains it (the `:EXIT` is enqueued before the `:DOWN` the caller waited
-  # on), so the lookup below reads a decided state instead of polling for it.
-  #
-  # The partition name is `Registry.Partition.pid_name/2`'s: `Nest.Agents.Registry`
-  # is a single-partition unique registry (`child_spec/0` passes no `:partitions`).
+  # provably gone — and so is its `Nest.Agents.Registry` entry, because the
+  # agent released it itself: `Agent.terminate/2`'s last act is
+  # `Registry.release/2`, which runs before the process exits and therefore
+  # before the `:DOWN` the caller waited on. No barrier is needed, and none is
+  # possible. The registry's own link-`:EXIT` cleanup would have run a
+  # scheduling hop later, and that hop is exactly what let a start under this
+  # name be refused with an `:already_started` that
+  # `Supervisor.start_under_supervisor/2` reports as success.
   defp assert_registry_misses(name) do
-    # allowlist: registry — partition cleanup announces nothing
-    _ = :sys.get_state(Nest.Agents.Registry.PIDPartition0, 1_000)
-
     assert AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name) ==
              {:error, :not_found}
   end
