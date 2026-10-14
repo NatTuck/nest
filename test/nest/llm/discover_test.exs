@@ -3,7 +3,7 @@ defmodule Nest.LLM.DiscoverTest do
   Tests for the best-effort context-window discovery probe.
 
   Covers every known provider response shape (vLLM, OpenRouter,
-  Olla, llama.cpp) and the failure modes that should fall
+  DeepSeek, Olla, llama.cpp) and the failure modes that should fall
   through to the 128k default.
   """
   use ExUnit.Case, async: true
@@ -80,6 +80,47 @@ defmodule Nest.LLM.DiscoverTest do
 
       assert Discover.context_limit(build_config(model: "openai/gpt-4o")) ==
                {:openrouter, 128_000}
+    end
+  end
+
+  describe "DeepSeek response shape" do
+    # DeepSeek's `/v1/models` publishes `context_window` for the limit and
+    # `input_modalities` for input support. The modality half was already read
+    # (atlascloud's flat shape), so one body and one request proved a model
+    # image-capable *and* resolved it to the 128k default. Measured live for
+    # `deepseek-flash`, reproduced verbatim.
+    test "extracts context_window from a DeepSeek /v1/models response" do
+      body = %{
+        "data" => [
+          %{
+            "id" => "deepseek-flash",
+            "object" => "model",
+            "name" => "DeepSeek-V4.1-Flash",
+            "context_window" => 1_048_576,
+            "max_output_tokens" => 393_216,
+            "input_modalities" => ["text", "image"],
+            "output_modalities" => ["text"]
+          }
+        ]
+      }
+
+      Mimic.expect(Req, :get, fn _url, _opts ->
+        {:ok, %{status: 200, body: body}}
+      end)
+
+      assert Discover.context_limit(build_config(model: "deepseek-flash")) ==
+               {:context_window, 1_048_576}
+
+      # The same entry's modality half: this half always worked.
+      assert Discover.extract_multi_modal_from_model(hd(body["data"])) == %{"input" => ["image"]}
+    end
+
+    test "context_length wins over context_window when a body carries both" do
+      # No measured provider publishes both. Pinned so a future refactor cannot
+      # flip it: OpenRouter's field is the narrower claim.
+      model = %{"id" => "both", "context_length" => 128_000, "context_window" => 1_048_576}
+
+      assert Discover.extract_limit_from_model(model) == {:openrouter, 128_000}
     end
   end
 
@@ -496,6 +537,12 @@ defmodule Nest.LLM.DiscoverTest do
       end)
 
       assert Discover.context_limit(build_config()) == {:default, @default_limit}
+
+      # `max_input_tokens` is deliberately not read: it is ambiguous (input-only
+      # vs. total context) and its only publisher, raven-ferrus, also publishes
+      # `context_length`, which the branch above already reads.
+      assert Discover.extract_limit_from_model(%{"id" => "x", "max_input_tokens" => 65_536}) ==
+               nil
     end
   end
 

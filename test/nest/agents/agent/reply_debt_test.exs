@@ -347,11 +347,26 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # `capture_log` collects every process's logs — including concurrent
       # tests' agents, which log the same sentence for their own peers — so an
       # absence assertion there flakes and tests nothing.
+      #
+      # The monitor is the fence for "the process is gone", and it is exact: a
+      # monitor on an already-dead pid delivers its `:DOWN` immediately, so
+      # there is no window in which this fence cannot be satisfied. It is needed
+      # because `archive_agent/2` stops through `stop_one/3`, which fires
+      # `Process.exit(pid, :shutdown)` and returns without waiting for the
+      # process to die (a documented property of the stop path). The agent
+      # traps exits, so that signal arrives as a *message* it must be scheduled
+      # to handle before `terminate/2` runs, and the pid stays alive until
+      # `terminate/2` returns. A bare `Process.alive?/1` read there is exactly
+      # the flake this replaced.
+      ref = Process.monitor(pid)
       assert :ok = Supervisor.archive_agent(current_space_id(), name)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
 
-      # The process is gone, so its `terminate/2` has run. `get_running_agent/2`
-      # checks `Process.alive?/1`, so it is deterministic here even though the
-      # registry's own ETS cleanup (the partition server's link `EXIT`) is not.
+      # `terminate/2` has run, so the process is gone — and its registry name is
+      # already free, because `terminate/2` releases it itself, before the
+      # process exits (see `Nest.Agents.Registry.release/2`). `get_running_agent/2`
+      # additionally liveness-checks the pid, so both branches answer
+      # `{:error, :not_found}`.
       assert Supervisor.get_running_agent(current_space_id(), name) == {:error, :not_found}
 
       # The give-up notice starts the peer's own turn, and that turn's idle frame
@@ -452,6 +467,8 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
   # broadcast. `start_peer/2` subscribes this test pid to the peer's topic, and
   # the payload names the agent, so the other agent's frames (this test pid is
   # subscribed to both) cannot satisfy the fence.
+  #
+  # The bound is a failure detector, never the synchronisation.
   defp wait_idle(name) do
     assert_receive {:chat_status, %{name: ^name, status: "idle"}}, 1_000
   end

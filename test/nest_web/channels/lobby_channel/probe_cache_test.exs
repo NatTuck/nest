@@ -86,7 +86,10 @@ defmodule NestWeb.LobbyChannel.ProbeCacheTest do
       assert stats.oldest_age_s >= 0
       assert stats.path == path
 
-      # A read: every session on the topic is not told about it.
+      # A read: every session on the topic is not told about it. The `0` fence
+      # is sound only while `probe_cache_stats` has a single emitter
+      # (`ProbeCache.clear/0`): a second one could land between the reply and
+      # this line.
       refute_push "probe_cache_stats", _, 0
     end
 
@@ -134,6 +137,10 @@ defmodule NestWeb.LobbyChannel.ProbeCacheTest do
 
       assert File.read!(path) == before
       assert MultimodalCache.get(provider(), "m") == :positive
+
+      # `probe_cache_stats` has a single emitter (`ProbeCache.clear/0`), so
+      # with the bounded reply above already received this `0` fence decides
+      # the absence: a broadcast would have been emitted before the reply.
       refute_push "probe_cache_stats", _, 0
     end
   end

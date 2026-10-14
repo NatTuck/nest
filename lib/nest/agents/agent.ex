@@ -504,6 +504,21 @@ defmodule Nest.Agents.Agent do
     cleanup_tmp(state.space_id, state.name)
 
     # Note: workspace is preserved for review/debugging (per design)
+
+    # Give up this agent's registry name *before* the process dies, rather than
+    # leaving it to the registry's own cleanup. See
+    # `Nest.Agents.Registry.release/2`: that cleanup runs a scheduling hop after
+    # death, and inside that hop a start under this name is refused with an
+    # `:already_started` that `Supervisor.start_under_supervisor/2` reports as
+    # success — a running agent that does not exist.
+    #
+    # Deliberately the last act of this callback. Releasing it earlier would let
+    # a replacement take the name while this process is still stopping workers
+    # and removing its tmp directory, which is worse than the hop we are closing.
+    # The result is ignored because a registry that is already gone is not a
+    # reason for a dying agent to crash.
+    _ = Registry.release(state.space_id, state.name)
+
     :ok
   end
 

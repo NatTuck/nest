@@ -250,7 +250,10 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
 
       # The handler has already returned its error reply (`assert_reply`
       # above), and a channel broadcasts before it replies — so a broadcast
-      # would already be in this mailbox. No wait is needed.
+      # would already be in this mailbox. No wait is needed. The `0` fence is
+      # sound only while `providers_updated` has a single emitter
+      # (`Providers.save/2`): a second one could land between the reply and
+      # this line.
       refute_push "providers_updated", _, 0
     end
   end

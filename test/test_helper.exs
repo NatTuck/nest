@@ -275,6 +275,45 @@ for mod <- modules do
   Code.ensure_loaded(mod)
 end
 
+# Warm the TOML encoder chain (#21).
+#
+# `Writer.save_providers/2`'s first call in a VM loads modules lazily inside
+# `TomlElixir.encode/1`, and the code server is shared, so the first call is
+# charged to whichever test happens to save first — inside that test's 3000 ms
+# deadline. Measured on this host, in a full `mix test` run: 83 ms for the
+# first `TomlElixir.encode/1`, 100 ms for the first `Writer.save_providers/2`,
+# and once 630 ms and once 1.18 s, against 45 µs for the same first call in an
+# idle VM and ~350 µs hot. Paying it here, before any deadline, moves it out of
+# every test's window exactly like the code-server and agent-start warm-ups
+# above; it also fixes `writer_test.exs`, whose first save pays the same cost.
+#
+# The call takes a non-empty map on purpose. `TomlElixir.encode(%{})` loads
+# `TomlElixir.Encoder.Serializer` but short-circuits before it reaches
+# `TomlElixir.Encoder.Helpers`, so an empty table does not warm both modules
+# this exists to warm. One key is enough: `Helpers.encode_key/1` (and, for the
+# string value, `Helpers.escape_string/1`) then load.
+_ = TomlElixir.encode(%{"warmup" => "warmup"})
+
+# Fail loudly if the warm-up did not take, so a future reader cannot delete the
+# line above as dead code and let the flake return silently.
+#
+# `:code.is_loaded/1` and not `Code.ensure_loaded?/1`: the latter *loads* the
+# module it is asked about, so it reports every module as loaded whether or not
+# the warm-up ran, and this guard would then pass over a deleted warm-up. (The
+# `:nest` module list above uses `Code.ensure_loaded/1` deliberately — there the
+# point *is* to load.) `:code.is_loaded/1` answers `false` for a module that is
+# not loaded and a `{:file, _}` tuple once it is, which is what `Enum.reject/2`
+# reads as "not loaded".
+not_loaded =
+  Enum.reject(
+    [TomlElixir.Encoder.Serializer, TomlElixir.Encoder.Helpers],
+    &:code.is_loaded/1
+  )
+
+if not_loaded != [] do
+  raise "TOML encoder warm-up did not load #{inspect(not_loaded)}"
+end
+
 # Warm the agent-start path (#21).
 #
 # `Agent.init/1` runs inside the supervisor's critical section —

@@ -4,7 +4,11 @@ defmodule Nest.DotConfigTest do
   """
   use ExUnit.Case, async: true
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.DotConfig
+  alias Nest.DotConfig.Provider
+  alias Nest.DotConfig.Writer
 
   describe "load/0" do
     test "loads config from test/data/config.toml in test environment" do
@@ -94,6 +98,52 @@ defmodule Nest.DotConfigTest do
 
     test "returns error for non-existent file" do
       assert {:error, _} = DotConfig.load("/nonexistent/path/config.toml")
+    end
+  end
+
+  describe "the parse cache behind load/1" do
+    # `load/1` reads the file on every call and caches only the parse, keyed on
+    # the bytes it read — never on the file's *identity*. `ParseCacheTest` pins
+    # that key directly; this test pins what it buys where a caller can see it,
+    # and it makes the identity as unhelpful as it can be: each replacement is
+    # forced back onto the mtime the previous parse was cached under, with the
+    # length held equal. A cache keyed on the identity would serve the stale
+    # parse here; one keyed on the content cannot.
+    test "a replacement is re-read even when the file's mtime and length are unchanged" do
+      path = cache_tmp_file("cache_replaced")
+
+      assert :ok = Writer.save_providers([provider("acme")], path)
+      assert {:ok, first} = DotConfig.load(path)
+      assert Map.keys(first.providers) == ["acme"]
+
+      identity = identity_of(path)
+
+      # `acmb` serializes to exactly as many bytes as `acme`, and the touch puts
+      # the file back on the mtime the `acme` parse was cached under. The
+      # premise is asserted below: without it the test could pass because the
+      # identity moved, which would test nothing.
+      assert :ok = Writer.save_providers([provider("acmb")], path)
+      File.touch!(path, identity.mtime)
+      assert identity_of(path) == identity
+
+      assert {:ok, second} = DotConfig.load(path)
+      assert Map.keys(second.providers) == ["acmb"]
+
+      # The same question for a file the application never wrote. No writer was
+      # ever in a position to tell the cache anything, and it makes no
+      # difference: the key is the bytes, whoever put them there.
+      File.write!(path, provider_toml("https://one.example/v1"))
+      assert {:ok, hand_written} = DotConfig.load(path)
+      assert hand_written.providers["acme"].base_url == "https://one.example/v1"
+
+      hand_identity = identity_of(path)
+
+      File.write!(path, provider_toml("https://two.example/v1"))
+      File.touch!(path, hand_identity.mtime)
+      assert identity_of(path) == hand_identity
+
+      assert {:ok, edited} = DotConfig.load(path)
+      assert edited.providers["acme"].base_url == "https://two.example/v1"
     end
   end
 
@@ -545,4 +595,35 @@ defmodule Nest.DotConfigTest do
       end
     end
   end
+
+  # --- the parse-cache fixtures ---
+
+  defp provider(name) do
+    %Provider{name: name, base_url: "https://cache.example/v1", models: []}
+  end
+
+  defp provider_toml(base_url) do
+    """
+    [providers.acme]
+    base-url = "#{base_url}"
+    """
+  end
+
+  defp cache_tmp_file(label) do
+    path =
+      Path.join(System.tmp_dir!(), "#{label}_#{System.unique_integer([:positive])}.toml")
+
+    on_exit(fn -> rm_tmp!(path, label) end)
+    path
+  end
+
+  # The two terms of the identity a stat-based key would have used. Reading them
+  # the way `File.stat/2` reports them, and forcing a replacement back onto the
+  # previous value of both, is what leaves the bytes as the only thing that can
+  # tell two revisions apart. `File.touch!/2` takes a posix second directly
+  # (`posix_time()` is in its spec), so this needs no timezone conversion.
+  defp identity_of(path), do: %{mtime: mtime_of(path), size: size_of(path)}
+
+  defp mtime_of(path), do: File.stat!(path, time: :posix).mtime
+  defp size_of(path), do: File.stat!(path).size
 end

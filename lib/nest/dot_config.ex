@@ -4,6 +4,7 @@ defmodule Nest.DotConfig do
   """
 
   alias Nest.DotConfig.KeyValidation
+  alias Nest.ParseCache
 
   @config_dir :filename.basedir(:user_config, "nest")
   @config_file Path.join(@config_dir, "config.toml")
@@ -227,33 +228,27 @@ defmodule Nest.DotConfig do
   end
 
   @doc """
-  Loads config from a specific file path. The parsed result is cached
-  per `{file_path, mtime}` so repeated loads (e.g. per agent spawn) don't
-  re-read + re-parse the file; the cache invalidates automatically when
-  the file's mtime changes.
+  Loads config from a specific file path.
+
+  The file is read on every call, because that read is how a change is noticed.
+  Only the expensive half — the TOML decode and the parse — is cached, keyed on
+  the bytes that were read (`Nest.ParseCache`). Repeated loads of an
+  unchanged file (e.g. one per agent spawn) therefore re-read it but never
+  re-parse it, and a file that changed at all is re-parsed, whoever wrote it.
   """
   def load(file_path) do
-    case cached_config(file_path) do
-      {:ok, config} ->
-        {:ok, config}
-
-      :miss ->
-        do_load(file_path)
+    with {:ok, content} <- read(file_path) do
+      case ParseCache.fetch(file_path, content) do
+        {:ok, config} -> {:ok, config}
+        :miss -> decode(file_path, content)
+      end
     end
   end
 
-  defp do_load(file_path) do
+  defp read(file_path) do
     case File.read(file_path) do
       {:ok, content} ->
-        case Toml.decode(content) do
-          {:ok, config} ->
-            config = parse_config(config)
-            cache_config(file_path, config)
-            {:ok, config}
-
-          {:error, reason} ->
-            {:error, "Failed to parse TOML: #{inspect(reason)}"}
-        end
+        {:ok, content}
 
       {:error, :enoent} ->
         {:error, "Config file not found at #{file_path}"}
@@ -263,36 +258,15 @@ defmodule Nest.DotConfig do
     end
   end
 
-  @cache_table :nest_dotconfig_cache
+  defp decode(file_path, content) do
+    case Toml.decode(content) do
+      {:ok, config} ->
+        config = parse_config(config)
+        ParseCache.put(file_path, content, config)
+        {:ok, config}
 
-  defp cache_table do
-    case :ets.whereis(@cache_table) do
-      :undefined -> new_cache_table()
-      _ -> @cache_table
-    end
-  end
-
-  # Two processes can race the `whereis` check during app start (the
-  # Models scan and the endpoint probe both load config concurrently),
-  # so the loser of the `:ets.new` race adopts the winner's table.
-  defp new_cache_table do
-    :ets.new(@cache_table, [:named_table, :public, read_concurrency: true])
-  rescue
-    ArgumentError -> @cache_table
-  end
-
-  defp cached_config(path) do
-    with {:ok, %{mtime: mtime}} <- File.stat(path, time: :posix),
-         [{_, config}] <- :ets.lookup(cache_table(), {path, mtime}) do
-      {:ok, config}
-    else
-      _ -> :miss
-    end
-  end
-
-  defp cache_config(path, config) do
-    with {:ok, %{mtime: mtime}} <- File.stat(path, time: :posix) do
-      :ets.insert(cache_table(), {{path, mtime}, config})
+      {:error, reason} ->
+        {:error, "Failed to parse TOML: #{inspect(reason)}"}
     end
   end
 

@@ -106,6 +106,13 @@ defmodule Nest.ModelsTest do
                %{
                  "id" => "pegasus-per-model-test",
                  "object" => "model",
+                 # A recognized limit field, so the discovery cache holds an
+                 # answer for a name that is *also* a static entry with its
+                 # own `context-limit` (32000, in test/data/config.toml).
+                 # The static value must win the resolution — see the
+                 # "static `context-limit` wins over the discovery cache"
+                 # test below.
+                 "max_model_len" => 65_536,
                  "architecture" => %{"input_modalities" => ["text", "image", "file"]}
                },
                %{
@@ -196,10 +203,16 @@ defmodule Nest.ModelsTest do
       assert mm3["context_limit"] == 512_000
     end
 
-    test "Models.list/0 surfaces the per-model `context-limit` for static-config entries" do
+    test "static per-model `context-limit` wins over the discovery cache" do
       # `pegasus-per-model-test` is a static-config entry with
-      # `context-limit = 32000`. The same provider has a default
-      # of 512000, but the per-model value wins.
+      # `context-limit = 32000`. The provider's scan also reports
+      # `max_model_len = 65536` for that same name, and `pegasus` has
+      # `default-context-limit = 512000`. The per-model static value outranks
+      # both, so this pins the top of the chain — static > discovery cache — and
+      # the provider default is the floor the sibling test above pins, where a
+      # model with no static entry takes 512000.
+      assert Models.context_limit("pegasus", "pegasus-per-model-test") == {:vllm, 65_536}
+
       per_model = Enum.find(Models.list(), fn m -> m["name"] == "pegasus-per-model-test" end)
       assert per_model != nil
       assert per_model["provider"] == "pegasus"
