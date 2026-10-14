@@ -75,6 +75,9 @@ defmodule Nest.Application do
       # Endpoint probing + cache (started before Models so the model
       # manager can read probed discovery paths)
       Nest.EndpointCache,
+      # On-disk cache of multi-modal probe verdicts, so a rescan does not
+      # re-probe every model of every opted-in provider
+      Nest.LLM.MultimodalCache,
       # Start model manager (queries auto-providers)
       Nest.Models
     ]

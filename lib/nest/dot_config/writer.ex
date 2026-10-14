@@ -30,10 +30,55 @@ defmodule Nest.DotConfig.Writer do
       "providers" => Map.new(providers, fn p -> {p.name, provider_to_map(p)} end)
     }
 
-    with {:ok, toml} <- TomlElixir.encode(config),
-         :ok <- File.mkdir_p(Path.dirname(file)) do
-      File.write(file, toml)
+    with {:ok, toml} <- TomlElixir.encode(config) do
+      write_atomic(file, toml)
     end
+  end
+
+  @doc """
+  Write `contents` to `path` atomically: the bytes go to a
+  uniquely-named sibling temp file first, then a rename puts them in
+  place. A reader therefore sees either the previous contents or the
+  complete new ones, never a half-written file, and a crash mid-write
+  leaves the old file intact.
+
+  The temp name carries a per-VM counter *and* four random bytes, so
+  two writers collide neither within one BEAM nor across two. The temp
+  file is created `0600`: a rename replaces the target's mode with the
+  new file's, so without this an existing `0600` file would come back
+  with the umask's mode.
+
+  Missing parent directories are created. On any failure the temp file
+  is removed and `{:error, reason}` is returned.
+  """
+  @spec write_atomic(String.t(), iodata()) :: :ok | {:error, term()}
+  def write_atomic(path, contents) do
+    tmp = tmp_path(path)
+
+    with :ok <- File.mkdir_p(Path.dirname(path)),
+         :ok <- File.write(tmp, contents),
+         :ok <- File.chmod(tmp, 0o600),
+         :ok <- File.rename(tmp, path) do
+      :ok
+    else
+      {:error, reason} ->
+        File.rm(tmp)
+        {:error, reason}
+    end
+  end
+
+  @doc false
+  # The temp path `write_atomic/2` writes to, public only so its naming
+  # scheme is testable: `<path>.tmp.<counter>.<8 random hex bytes>`. The
+  # counter keeps two writers in one VM apart; the random bytes keep two
+  # BEAMs -- whose counters start from the same value -- apart.
+  @spec tmp_path(String.t()) :: String.t()
+  def tmp_path(path) do
+    suffix =
+      Integer.to_string(System.unique_integer([:positive])) <>
+        "." <> Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
+
+    path <> ".tmp." <> suffix
   end
 
   defp provider_to_map(%Provider{} = p) do

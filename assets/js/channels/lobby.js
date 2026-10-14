@@ -129,6 +129,13 @@ export function joinLobby(onOk, onError) {
     getStore().setProviders(payload.providers || []);
   });
 
+  // Cache stats are broadcast by every `clear_probe_cache` (so a second
+  // admin's clear refreshes this GUI too) and are also carried by the
+  // replies to `probe_cache_stats` / `clear_probe_cache`.
+  lobbyChannel.on("probe_cache_stats", (payload) => {
+    getStore().setProbeCacheStats(payload?.stats);
+  });
+
   lobbyChannel
     .join()
     .receive("ok", () => {
@@ -275,6 +282,57 @@ export function saveProviders(providers, onOk, onError) {
     .push("save_providers", { providers })
     .receive("ok", () => {
       if (onOk) onOk();
+    })
+    .receive("error", (err) => {
+      if (onError) onError(err);
+    });
+}
+
+/**
+ * Ask the lobby for the multimodal probe cache's stats (admin-only
+ * server-side). The reply carries `{entries, oldest_age_s, path}`; it is
+ * stored rather than handed back, so the page reads one source of truth
+ * (`probeCacheStats`) whether the stats arrived as a reply or as a
+ * broadcast.
+ */
+export function requestProbeCacheStats(onOk, onError) {
+  if (!lobbyChannel) {
+    if (onError) onError(new Error("Not connected to lobby"));
+    return;
+  }
+
+  lobbyChannel
+    .push("probe_cache_stats", {})
+    .receive("ok", (resp) => {
+      getStore().setProbeCacheStats(resp?.stats);
+      if (onOk) onOk(resp);
+    })
+    .receive("error", (err) => {
+      if (onError) onError(err);
+    });
+}
+
+/**
+ * Clear the persisted multimodal probe cache (admin-only server-side,
+ * idempotent). The reply carries the post-clear stats and the lobby
+ * broadcasts them to every session; a reply without stats stores `null`
+ * so the GUI says "state unknown" instead of leaving pre-clear numbers
+ * on screen for a cache that is now empty.
+ *
+ * Nothing about a scan in flight is touched: a verdict a probe settles
+ * after the clear is written normally.
+ */
+export function clearProbeCache(onOk, onError) {
+  if (!lobbyChannel) {
+    if (onError) onError(new Error("Not connected to lobby"));
+    return;
+  }
+
+  lobbyChannel
+    .push("clear_probe_cache", {})
+    .receive("ok", (resp) => {
+      getStore().setProbeCacheStats(resp?.stats);
+      if (onOk) onOk(resp);
     })
     .receive("error", (err) => {
       if (onError) onError(err);

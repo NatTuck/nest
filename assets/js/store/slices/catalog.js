@@ -25,6 +25,18 @@ export function catalogSetters(set) {
       set({ providers: providers || [] });
     },
 
+    /**
+     * Replace the multimodal probe cache's stats — the lobby's
+     * `probe_cache_stats` frame and the reply to `clear_probe_cache`
+     * both carry them. `null` means "the server has not told us", which
+     * the panel renders as an explicit unknown rather than as an empty
+     * cache: "nothing is cached" and "we don't know" call for different
+     * actions from the user.
+     */
+    setProbeCacheStats: (probeCacheStats) => {
+      set({ probeCacheStats: probeCacheStats ?? null });
+    },
+
     setSuggestedName: (suggestedName) => {
       set({ suggestedName: suggestedName || null });
     },

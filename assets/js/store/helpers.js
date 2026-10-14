@@ -16,6 +16,11 @@ export const initialState = {
   models: [],
   vocations: [],
   providers: [],
+  // Stats for the persisted multimodal probe cache (`{entries,
+  // oldest_age_s, path}`), as last reported by the lobby. `null` until
+  // the server has answered — the providers page renders that as an
+  // explicit "state unknown", never as an empty cache.
+  probeCacheStats: null,
   suggestedName: null,
   agentsCache: {},
   currentUser: null,

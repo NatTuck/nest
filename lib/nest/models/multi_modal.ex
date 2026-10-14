@@ -18,7 +18,9 @@ defmodule Nest.Models.MultiModal do
   answer from it is always kept. Only when the body says nothing *and*
   the provider opted in with `probe-multimodal = true` is the model
   handed to `Nest.LLM.MultimodalProbe`, whose three-valued answer maps
-  onto the same vocabulary.
+  onto the same vocabulary. That probe is the expensive one — a request
+  per model — so its answer is kept in `Nest.LLM.MultimodalCache` and
+  reused until it expires or the provider's endpoint changes.
 
   `effective/2` picks between a static `multi-modal` and the
   discovered value for the merged catalog entry: static config is
@@ -27,6 +29,7 @@ defmodule Nest.Models.MultiModal do
   """
 
   alias Nest.DotConfig.Provider
+  alias Nest.LLM.MultimodalCache
   alias Nest.LLM.MultimodalProbe
 
   @image_input %{"input" => ["image"]}
@@ -42,7 +45,31 @@ defmodule Nest.Models.MultiModal do
   """
   @spec resolve(Provider.t(), String.t(), map() | nil) :: map() | nil
   def resolve(%Provider{} = provider, name, detected),
-    do: resolve(provider, name, detected, &MultimodalProbe.probe/2)
+    do: resolve(provider, name, detected, &cached_probe/2)
+
+  # A cached verdict answers for free; a miss falls through to the real
+  # probe and remembers what it settles on. `:unknown` is not a finding
+  # and is deliberately not stored (`MultimodalCache.put/3` ignores it),
+  # so a provider that is momentarily unreachable is probed again next
+  # scan instead of staying unknown for a week.
+  defp cached_probe(provider, name) do
+    case MultimodalCache.get(provider, name) do
+      :positive -> :positive
+      :negative -> :negative
+      nil -> probe_and_cache(provider, name)
+    end
+  end
+
+  defp probe_and_cache(provider, name) do
+    case MultimodalProbe.probe(provider, name) do
+      :unknown ->
+        :unknown
+
+      verdict ->
+        MultimodalCache.put(provider, name, verdict)
+        verdict
+    end
+  end
 
   @doc false
   # The probe seam: probing costs a request per model, and its gate is

@@ -4,15 +4,26 @@
  * a Save button persists the full set to `~/.config/nest/local.toml`
  * (never `config.toml`). Setting a provider's "Auto-discover models"
  * flag lets the runtime discover its models from the `/models` endpoint.
+ *
+ * The page also carries the multimodal probe cache's status panel and a
+ * "Rescan providers" button (`ProbeCachePanel`), since the cache is a
+ * consequence of scanning: the panel shows what the last scans learned
+ * and clearing it is what makes the next scan re-probe.
  */
 
 import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { useStore } from "../store";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
-import { saveProviders } from "../channels";
+import {
+  requestProbeCacheStats,
+  rescanModels,
+  saveProviders,
+} from "../channels";
+import { ProbeCachePanel } from "../components/ProbeCachePanel";
 import { ProviderEditor } from "../components/ProviderEditor";
 import { emptyProvider, makeId } from "../components/providerConstants";
+import { errorText } from "../utils/errorText";
 
 export function ProvidersPage() {
   const providers = useStore((state) => state.providers);
@@ -26,6 +37,7 @@ export function ProvidersPage() {
   // without ids.
   const [draft, setDraft] = useState(() => assignIds(providers));
   const [saving, setSaving] = useState(false);
+  const [isRescanning, setIsRescanning] = useState(false);
   const [error, setError] = useState(null);
 
   // Re-seed the editable draft whenever the store's provider list
@@ -57,8 +69,30 @@ export function ProvidersPage() {
       stripIds(draft),
       () => setSaving(false),
       (err) => {
-        setError(err?.reason || "Failed to save provider config");
+        setError(errorText(err, "Failed to save provider config"));
         setSaving(false);
+      },
+    );
+  };
+
+  // The server holds the `rescan_models` push open until the scan is
+  // genuinely complete, so the reply — not the per-provider
+  // `models_updated` partials — is what ends the spinner. A completed
+  // scan has probed every model it did not already have a cached verdict
+  // for, so the panel's numbers are stale from that moment on and get
+  // re-fetched here.
+  const handleRescanModels = () => {
+    setIsRescanning(true);
+    setError(null);
+
+    rescanModels(
+      () => {
+        setIsRescanning(false);
+        requestProbeCacheStats();
+      },
+      (err) => {
+        setIsRescanning(false);
+        setError(errorText(err, "Failed to rescan providers"));
       },
     );
   };
@@ -73,6 +107,11 @@ export function ProvidersPage() {
           leaves <code className="text-gray-800">config.toml</code> untouched.
         </p>
       </div>
+
+      <ProbeCachePanel
+        isRescanning={isRescanning}
+        onRescan={handleRescanModels}
+      />
 
       {error && (
         <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">

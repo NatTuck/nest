@@ -762,6 +762,225 @@ describe("channels", () => {
         ]);
       });
     });
+
+    it("should update store.probeCacheStats on probe_cache_stats event", async () => {
+      // Broadcast by every `clear_probe_cache`, so a second admin's clear
+      // refreshes this GUI's panel without a round trip.
+      setNextJoinResult("lobby", {
+        autoInit: { agents: [], models: [], providers: [] },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().probeCacheStats, null);
+      });
+
+      const stats = {
+        entries: 2,
+        oldest_age_s: 90,
+        path: "/tmp/probe-cache.json",
+      };
+      simulateServerEvent("lobby", "probe_cache_stats", { stats });
+
+      await vi.waitFor(() => {
+        assert.deepStrictEqual(useStore.getState().probeCacheStats, stats);
+      });
+    });
+
+    it("should store null stats when the probe_cache_stats frame carries none", async () => {
+      // A frame we cannot read must not leave the previous numbers on
+      // screen: the panel renders null as an explicit unknown.
+      setNextJoinResult("lobby", {
+        autoInit: { agents: [], models: [], providers: [] },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().probeCacheStats, null);
+      });
+
+      useStore.getState().setProbeCacheStats({
+        entries: 3,
+        oldest_age_s: 10,
+        path: "/tmp/probe-cache.json",
+      });
+
+      simulateServerEvent("lobby", "probe_cache_stats", {});
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().probeCacheStats, null);
+      });
+    });
+  });
+
+  describe("probe cache pushes", () => {
+    async function joinConnectedLobby() {
+      setNextJoinResult("lobby", {
+        autoInit: { agents: [], models: [], providers: [] },
+      });
+      joinLobby();
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().providers.length, 0);
+      });
+    }
+
+    it("requestProbeCacheStats pushes probe_cache_stats and stores the reply's stats", async () => {
+      const { requestProbeCacheStats } = await import("./channels");
+      await joinConnectedLobby();
+
+      const stats = {
+        entries: 5,
+        oldest_age_s: 3600,
+        path: "/tmp/probe-cache.json",
+      };
+      setNextPushResult("lobby", "probe_cache_stats", { ok: { stats } });
+
+      const capturePromise = captureNextPush("lobby", "probe_cache_stats");
+      requestProbeCacheStats();
+      assert.deepStrictEqual(await capturePromise, {});
+
+      await vi.waitFor(() => {
+        assert.deepStrictEqual(useStore.getState().probeCacheStats, stats);
+      });
+    });
+
+    it("requestProbeCacheStats stores null when the reply carries no stats", async () => {
+      const { requestProbeCacheStats } = await import("./channels");
+      await joinConnectedLobby();
+
+      useStore.getState().setProbeCacheStats({
+        entries: 9,
+        oldest_age_s: 0,
+        path: "/tmp/stale.json",
+      });
+
+      setNextPushResult("lobby", "probe_cache_stats", { ok: {} });
+
+      requestProbeCacheStats();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().probeCacheStats, null);
+      });
+    });
+
+    it("requestProbeCacheStats forwards a server-side error to onError and keeps the stats", async () => {
+      const { requestProbeCacheStats } = await import("./channels");
+      await joinConnectedLobby();
+
+      const stats = {
+        entries: 5,
+        oldest_age_s: 3600,
+        path: "/tmp/probe-cache.json",
+      };
+      useStore.getState().setProbeCacheStats(stats);
+
+      setNextPushResult("lobby", "probe_cache_stats", {
+        error: { reason: "forbidden" },
+      });
+
+      let captured = null;
+      requestProbeCacheStats(
+        () => {},
+        (err) => {
+          captured = err;
+        },
+      );
+
+      await vi.waitFor(() => {
+        assert.deepStrictEqual(captured, { reason: "forbidden" });
+      });
+      // A refused read changed nothing, so the last numbers the lobby
+      // sent stay on screen.
+      assert.deepStrictEqual(useStore.getState().probeCacheStats, stats);
+    });
+
+    it("clearProbeCache pushes clear_probe_cache and stores the post-clear stats", async () => {
+      const { clearProbeCache } = await import("./channels");
+      await joinConnectedLobby();
+
+      useStore.getState().setProbeCacheStats({
+        entries: 5,
+        oldest_age_s: 3600,
+        path: "/tmp/probe-cache.json",
+      });
+
+      const stats = {
+        entries: 0,
+        oldest_age_s: null,
+        path: "/tmp/probe-cache.json",
+      };
+      setNextPushResult("lobby", "clear_probe_cache", { ok: { stats } });
+
+      const capturePromise = captureNextPush("lobby", "clear_probe_cache");
+      clearProbeCache();
+      assert.deepStrictEqual(await capturePromise, {});
+
+      await vi.waitFor(() => {
+        assert.deepStrictEqual(useStore.getState().probeCacheStats, stats);
+      });
+    });
+
+    it("clearProbeCache forwards a server-side error to onError and keeps the stats", async () => {
+      const { clearProbeCache } = await import("./channels");
+      await joinConnectedLobby();
+
+      const stats = {
+        entries: 5,
+        oldest_age_s: 3600,
+        path: "/tmp/probe-cache.json",
+      };
+      useStore.getState().setProbeCacheStats(stats);
+
+      setNextPushResult("lobby", "clear_probe_cache", {
+        error: { reason: "forbidden" },
+      });
+
+      let captured = null;
+      clearProbeCache(
+        () => {},
+        (err) => {
+          captured = err;
+        },
+      );
+
+      await vi.waitFor(() => {
+        assert.deepStrictEqual(captured, { reason: "forbidden" });
+      });
+      // A refused clear changed nothing, so the panel keeps reporting
+      // what is still cached.
+      assert.deepStrictEqual(useStore.getState().probeCacheStats, stats);
+    });
+
+    it("both pushes call onError when not connected to the lobby", async () => {
+      const { clearProbeCache, requestProbeCacheStats } = await import(
+        "./channels"
+      );
+
+      const errors = [];
+      requestProbeCacheStats(
+        () => {},
+        (err) => errors.push(err.message),
+      );
+      clearProbeCache(
+        () => {},
+        (err) => errors.push(err.message),
+      );
+
+      assert.deepStrictEqual(errors, [
+        "Not connected to lobby",
+        "Not connected to lobby",
+      ]);
+    });
+
+    it("both pushes are no-ops when not connected and no onError is provided", async () => {
+      const { clearProbeCache, requestProbeCacheStats } = await import(
+        "./channels"
+      );
+
+      // Should not throw on the disconnected path.
+      requestProbeCacheStats();
+      clearProbeCache();
+    });
   });
 
   describe("rescanModels", () => {

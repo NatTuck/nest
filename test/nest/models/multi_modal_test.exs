@@ -13,9 +13,22 @@ defmodule Nest.Models.MultiModalTest do
   import Mimic
 
   alias Nest.DotConfig
+  alias Nest.LLM.MultimodalCache
   alias Nest.Models.MultiModal
 
   setup :verify_on_exit!
+
+  # `resolve/3` consults the probe cache on every miss, and stores what the
+  # probe settles on. These tests are about the gate and the probe, not about
+  # the file: without these stubs a run would read and write the real cache
+  # file, and one run's verdict would answer the next run's probe. The cache
+  # itself is pinned in `test/nest/llm/multimodal_cache_test.exs`, and each
+  # test below that expects a verdict to be stored says so explicitly.
+  setup do
+    Mimic.stub(MultimodalCache, :get, fn _provider, _name -> nil end)
+    Mimic.stub(MultimodalCache, :put, fn _provider, _name, _verdict -> :ok end)
+    :ok
+  end
 
   @image %{"input" => ["image"]}
   @text_only %{"input" => []}
@@ -149,6 +162,9 @@ defmodule Nest.Models.MultiModalTest do
       Mimic.expect(Req, :post, 1, fn _url, _opts -> openai_answer(@answer_a) end)
       Mimic.expect(Req, :post, 1, fn _url, _opts -> openai_answer(@answer_b) end)
 
+      # The verdict the probe settles on is what the cache is handed, once.
+      Mimic.expect(MultimodalCache, :put, 1, fn _provider, "unknown-model", :positive -> :ok end)
+
       assert MultiModal.resolve(opted_in(), "unknown-model", nil) == @image
     end
 
@@ -158,7 +174,32 @@ defmodule Nest.Models.MultiModalTest do
       # expected count of 1 is itself the assertion that the probe halts.
       Mimic.expect(Req, :post, 1, fn _url, _opts -> rejected(404, @rejection) end)
 
+      Mimic.expect(MultimodalCache, :put, 1, fn _provider, "text-only-model", :negative -> :ok end)
+
       assert MultiModal.resolve(opted_in(), "text-only-model", nil) == @text_only
+    end
+
+    test "a probe that settles nothing is not cached" do
+      # A transport error is `:unknown`: not a finding, and storing it would
+      # leave the model looking unprobed for a week. The rejected `put/3`
+      # (verified on exit) is the assertion that the cache never sees it.
+      Mimic.reject(MultimodalCache, :put, 3)
+      Mimic.expect(Req, :post, 1, fn _url, _opts -> {:error, :timeout} end)
+
+      assert MultiModal.resolve(opted_in(), "unreachable-model", nil) == nil
+    end
+
+    test "a cached verdict answers without any request at all" do
+      # The whole point of the cache: a hit costs nothing. The rejected
+      # `Req.post/2` (verified on exit) is the assertion of that.
+      Mimic.reject(Req, :post, 2)
+
+      Mimic.stub(MultimodalCache, :get, fn %DotConfig.Provider{name: "p"}, name ->
+        if name == "cached-image", do: :positive, else: :negative
+      end)
+
+      assert MultiModal.resolve(opted_in(), "cached-image", nil) == @image
+      assert MultiModal.resolve(opted_in(), "cached-text", nil) == @text_only
     end
   end
 

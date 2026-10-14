@@ -34,6 +34,7 @@ defmodule NestWeb.LobbyChannel do
   alias NestWeb.LobbyChannel.AgentErrors
   alias NestWeb.LobbyChannel.Authz
   alias NestWeb.LobbyChannel.Invites
+  alias NestWeb.LobbyChannel.ProbeCache
   alias NestWeb.LobbyChannel.Providers
 
   @impl true
@@ -374,6 +375,12 @@ defmodule NestWeb.LobbyChannel do
 
   @impl true
   def handle_in("revoke_invite", payload, socket), do: Invites.revoke_invite(payload, socket)
+
+  @impl true
+  def handle_in("probe_cache_stats", payload, socket), do: ProbeCache.stats(payload, socket)
+
+  @impl true
+  def handle_in("clear_probe_cache", payload, socket), do: ProbeCache.clear(payload, socket)
 
   @impl true
   def handle_in("save_providers", payload, socket) do

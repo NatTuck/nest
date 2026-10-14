@@ -12,6 +12,9 @@
  *  - A save failure surfaces the error inline.
  *  - Re-seeds the draft when the store's provider list changes
  *    (e.g. after a `providers_updated` broadcast).
+ *  - Renders the probe-cache panel above the provider list, requests
+ *    its stats, and rescans the catalog from it (refreshing the stats
+ *    a completed scan has invalidated).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -25,11 +28,19 @@ vi.mock("../channels", async () => {
   const actual = await vi.importActual("../channels");
   return {
     ...actual,
+    clearProbeCache: vi.fn(),
+    requestProbeCacheStats: vi.fn(),
+    rescanModels: vi.fn(),
     saveProviders: vi.fn(),
   };
 });
 
-import { saveProviders } from "../channels";
+import {
+  clearProbeCache,
+  requestProbeCacheStats,
+  rescanModels,
+  saveProviders,
+} from "../channels";
 
 function setStore(patch) {
   act(() => {
@@ -81,10 +92,14 @@ describe("ProvidersPage", () => {
     document.title = "Nest · Phoenix Framework";
 
     saveProviders.mockReset();
+    clearProbeCache.mockReset();
+    requestProbeCacheStats.mockReset();
+    rescanModels.mockReset();
     setStore({
       isConnected: true,
       providers: [],
       currentUser: adminUser(),
+      probeCacheStats: null,
     });
   });
 
@@ -254,5 +269,78 @@ describe("ProvidersPage", () => {
     expect(screen.getByLabelText(/provider name/i)).toHaveValue("brand-new");
 
     unmount();
+  });
+
+  it("renders the probe cache panel above the provider list and requests its stats", async () => {
+    setStore({
+      probeCacheStats: {
+        entries: 12,
+        oldest_age_s: 259200,
+        path: "/tmp/probe-cache.json",
+      },
+    });
+
+    await renderPage();
+
+    expect(requestProbeCacheStats).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByRole("button", {
+        name: "Clear probe cache (12 entries, oldest 3 days)",
+      }),
+    ).toBeInTheDocument();
+
+    // The panel belongs above the list it reports on, not beside Save.
+    const heading = screen.getByText(/multimodal probe cache/i);
+    const addProvider = screen.getByRole("button", { name: /add provider/i });
+    expect(
+      heading.compareDocumentPosition(addProvider) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("rescans the catalog from the panel and refreshes the cache stats", async () => {
+    let finishRescan;
+    rescanModels.mockImplementation((onOk) => {
+      finishRescan = onOk;
+    });
+
+    await renderPage();
+
+    expect(requestProbeCacheStats).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Rescan providers" }));
+
+    await waitFor(() => expect(rescanModels).toHaveBeenCalledTimes(1));
+    expect(
+      screen.getByRole("button", { name: "Rescan providers" }),
+    ).toBeDisabled();
+
+    // A completed scan has probed whatever it had no verdict for, so
+    // the panel's numbers are stale from that moment on.
+    act(() => finishRescan());
+
+    await waitFor(() =>
+      expect(requestProbeCacheStats).toHaveBeenCalledTimes(2),
+    );
+    expect(
+      screen.getByRole("button", { name: "Rescan providers" }),
+    ).toBeEnabled();
+  });
+
+  it("surfaces a rescan failure inline", async () => {
+    rescanModels.mockImplementation((_onOk, onError) =>
+      onError({ reason: "scan failed" }),
+    );
+
+    await renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Rescan providers" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("scan failed")).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("button", { name: "Rescan providers" }),
+    ).toBeEnabled();
   });
 });

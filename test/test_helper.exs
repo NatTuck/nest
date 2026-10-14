@@ -24,6 +24,7 @@ mimic_modules = [
   {Nest.DotConfig, []},
   {Nest.LLM.MockClient, []},
   {Nest.LLM.AnthropicClient, []},
+  {Nest.LLM.MultimodalCache, []},
   {Nest.Models, []},
   {Nest.Persistence, []},
   {Nest.Vocations, []},
@@ -53,8 +54,8 @@ Enum.each(mimic_modules, fn {module, opts} -> Mimic.copy(module, opts) end)
 # compiles a whole mock module. A GenServer serialises its `handle_call`s, so
 # every module's copy is serialised against every other's, and it is paid
 # *during* the suite, while the host is already saturated with concurrent tests.
-# Measured for these 18 modules: 712 ms on a 32-scheduler host and 3.0 s on the
-# 24-scheduler one, all of it serial.
+# Measured for the 18 modules the list held at the time: 712 ms on a
+# 32-scheduler host and 3.0 s on the 24-scheduler one, all of it serial.
 #
 # Doing that through `Mimic.Coordinator.ensure_copied/1`, even from concurrent
 # callers, does not help — it is the same serialising `handle_call` (measured:
