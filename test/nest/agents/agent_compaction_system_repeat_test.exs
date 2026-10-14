@@ -112,8 +112,14 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
     consume_pre_seed_broadcasts(messages)
 
     send_compaction_done(pid, summary_text, nil)
-    _ = :sys.get_state(pid)
-    state = :sys.get_state(pid)
+
+    # The commit broadcasts `chat:compaction` inline, after the marker and the
+    # regenerated messages are in the state, so the frame is the happens-after
+    # event for the commit (and the payload binds the fence to a commit rather
+    # than to ambient traffic).
+    assert_receive {:chat_compaction, %{marker: %{"role" => "compaction"}}}, 1_000
+    # allowlist: snapshot — model + tools + vocation + messages + indices
+    state = :sys.get_state(pid, 1_000)
 
     # The `nil` continuation resumes a post-compaction LLM turn
     # (`resume_with_pending/1`). Finish it so the agent is idle when
@@ -121,7 +127,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
     # so the resumed turn is actually exercised rather than killed
     # mid-flight. `state` is the compaction-time snapshot, captured
     # before the resumed turn's assistant message lands.
-    assert_receive {:chat_status, %{status: "idle"}}, 500
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
     state
   end
@@ -137,17 +143,21 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       |> Enum.map(&message_index/1)
       |> Enum.max(fn -> -1 end)
 
-    :sys.replace_state(pid, fn state ->
-      bumped_index = max(state.chat_state.next_message_index, highest_index + 1)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        bumped_index = max(state.chat_state.next_message_index, highest_index + 1)
 
-      %{
-        state
-        | chat_state: %{state.chat_state | messages: messages, next_message_index: bumped_index}
-      }
-    end)
+        %{
+          state
+          | chat_state: %{state.chat_state | messages: messages, next_message_index: bumped_index}
+        }
+      end,
+      1_000
+    )
 
     for stamped <- messages do
-      GenServer.call(pid, {:append_message, stamped}, 5_000)
+      GenServer.call(pid, {:append_message, stamped}, 500)
     end
   end
 
@@ -160,7 +170,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
   # count drifts.
   defp consume_pre_seed_broadcasts(messages) do
     for _ <- messages do
-      assert_receive {:chat_message, _}
+      assert_received {:chat_message, _}
     end
   end
 
@@ -213,9 +223,8 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       {pid, _agent_id} = start_with_vocation(vocation)
 
       # Verify the system prompt at init contains the original.
-      initial_state = :sys.get_state(pid)
+      [{:system, initial_sys} | _] = Nest.Agents.Agent.get_messages(pid, 1_000)
 
-      [{:system, initial_sys} | _] = initial_state.chat_state.messages
       initial_text = text_from_parts(initial_sys.parts)
 
       assert initial_text =~ original_marker
@@ -263,8 +272,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       {pid, _agent_id} = start_with_vocation(vocation, workspace_path: workspace_path)
 
       # Verify the initial system prompt contains the sentinel.
-      init_state = :sys.get_state(pid)
-      [{:system, init_sys} | _] = init_state.chat_state.messages
+      [{:system, init_sys} | _] = Nest.Agents.Agent.get_messages(pid, 1_000)
       init_text = text_from_parts(init_sys.parts)
 
       assert init_text =~ sentinel
@@ -405,9 +413,8 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
         {:compact_tool, [carried_assistant, synthetic_result], 1, 5}
       )
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
-      state = :sys.get_state(pid)
-      active = state.chat_state.messages
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
+      active = Nest.Agents.Agent.get_messages(pid, 1_000)
 
       carried =
         Enum.find_value(active, fn
@@ -435,8 +442,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       vocation = create_vocation(%{system_prompt: original_marker})
       {pid, _agent_id} = start_with_vocation(vocation)
 
-      state_before = :sys.get_state(pid)
-      assert state_before.vocation.system_prompt =~ original_marker
+      assert Nest.Agents.Agent.get_vocation(pid, 1_000).system_prompt =~ original_marker
 
       {:ok, _updated} =
         Vocations.update_vocation(vocation, %{system_prompt: fresh_marker})
@@ -465,10 +471,8 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       {pid, _agent_id} = start_with_vocation(vocation)
 
       # Initial state has only the original tools.
-      initial_state = :sys.get_state(pid)
-
       initial_tool_names =
-        initial_state.tools
+        Nest.Agents.Agent.get_tools(pid, 1_000)
         |> Enum.map(fn t -> t.name end)
         |> MapSet.new()
 

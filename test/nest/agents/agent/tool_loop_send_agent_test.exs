@@ -69,7 +69,7 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
       # A cast, so the agent handles it in `handle_cast/2` like every other
       # worker result — and it precedes this worker's `{:tool_results, …}`, so
       # mailbox order discharges the debt before the turn settles.
-      assert_receive {:"$gen_cast", {:reply_sent, "bob"}}
+      assert_received {:"$gen_cast", {:reply_sent, "bob"}}
     end
   end
 
@@ -90,7 +90,7 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
     assert content == "Agent ghost not found in this space."
 
     # A failed send is not a reply: the debt stands (decision 11).
-    refute_receive {:"$gen_cast", {:reply_sent, _}}, 50
+    refute_received {:"$gen_cast", {:reply_sent, _}}
   end
 
   test "surfaces delivery errors" do
@@ -109,6 +109,6 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
     assert broken =~ "needs_repair"
 
     # Neither failure cleared the debt: nothing reached the target.
-    refute_receive {:"$gen_cast", {:reply_sent, _}}, 50
+    refute_received {:"$gen_cast", {:reply_sent, _}}
   end
 end

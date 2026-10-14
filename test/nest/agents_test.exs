@@ -13,7 +13,6 @@ defmodule Nest.AgentsTest do
   use Nest.DataCase, async: true
   alias Nest.Agents.Agent.Machine
 
-  import Eventually
   import Mimic
 
   alias Nest.Agents
@@ -22,6 +21,12 @@ defmodule Nest.AgentsTest do
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
+
+  # `:sys.replace_state/3` with an explicit timeout: OTP's default is 5000 ms,
+  # well over both this suite's 500 ms test bound and ExUnit's 2000 ms per-test
+  # ceiling, so a wedged server surfaces as the stuck call it is rather than as
+  # a test timeout (#21).
+  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 1_000)
 
   setup :verify_on_exit!
 
@@ -383,23 +388,19 @@ defmodule Nest.AgentsTest do
 
   describe "chat/2" do
     test "sends message to agent" do
-      {pid, name} = AgentTestHelpers.start_agent(%{name: fresh_name()})
+      {_pid, name} = AgentTestHelpers.start_agent(%{name: fresh_name()})
 
       MockClient.set_response("Hi there!")
 
       :ok = Agents.chat(AgentTestHelpers.current_space_id(), name, "Hello, agent!")
 
-      # Fence on the turn's idle (not `message_count`): the count hits
-      # 3 when the assistant message is appended, which is before the
-      # turn finalizes. Poll the agent state rather than waiting on a
-      # fixed 100ms window — a slow scheduler can push the idle
-      # transition past it.
-      assert eventually(
-               fn ->
-                 Machine.status_for(:sys.get_state(pid).live.machine) == :idle
-               end,
-               timeout: 1_000
-             )
+      # `Agent.chat/5` is a cast, so the turn's `idle` `chat:status` frame is the
+      # arrival-decided end of the turn. `Turn.run/5` runs a turn's effects
+      # (the assistant append included) before it announces the new status, so
+      # `message_count` is already 3 by the time this frame lands.
+      # `AgentTestHelpers.start_agent/1` subscribes this test pid to the agent's
+      # topic; the 1000 ms is only the failure bound.
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), name)
       assert info.message_count == 3
@@ -492,7 +493,7 @@ defmodule Nest.AgentsTest do
 
       # Fabricate a streaming agent: `compact/3` must refuse rather than
       # stage a compaction on a turn that is already in flight.
-      :sys.replace_state(agent_pid, fn state ->
+      replace_state(agent_pid, fn state ->
         %{
           state
           | live: %{
@@ -507,13 +508,14 @@ defmodule Nest.AgentsTest do
 
       # No compaction was staged: the machine is still the fabricated
       # streaming state, the loop counter and focus are untouched.
-      machine = :sys.get_state(agent_pid).live.machine
+      # allowlist: snapshot — status + loop_count + work.focus
+      machine = :sys.get_state(agent_pid, 1_000).live.machine
       assert Machine.status_for(machine) == :streaming
       assert machine.loop_count == 0
       assert machine.work.focus == nil
 
       # Restore idle so the teardown's zero-in-flight-agents assertion holds.
-      :sys.replace_state(agent_pid, fn state ->
+      replace_state(agent_pid, fn state ->
         %{
           state
           | live: %{

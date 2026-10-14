@@ -5,9 +5,9 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   Both files drive the same pair of real agents — a coordinator on a vocation
   that exposes the `agents` tool group, and a specialist spawned into the same
   space with its LLM client swapped for `MockClient` — so the fixtures
-  (`coordinator_state/1`, `start_mocked_specialist/3`), the turn fence, and the
-  transcript readers (`query_results/1`, `agent_texts/1`) live here rather than
-  being duplicated across them.
+  (`coordinator_state/1`, `start_mocked_specialist/3`), the idle fence
+  (`await_idle/1`), and the transcript readers (`query_results/1`,
+  `agent_texts/1`) live here rather than being duplicated across them.
 
   Split out of `Nest.Agents.Agent.SubAgentToolsTest` (credo's file cap) when its
   `agents-query` test was split into the two outcomes it actually pins
@@ -18,37 +18,27 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   import ExUnit.Callbacks
 
   alias Ecto.Adapters.SQL.Sandbox
-  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
   alias Nest.Vocations
 
-  # A turn in these tests is: a mocked LLM call, a real sub-agent spawn or peer
-  # delivery (DB writes, a registry insert, a new process), and a second mocked
-  # LLM call. `Agent.chat/2` is a `GenServer.cast`, so a fence after it covers
-  # that *whole* turn — which is why a 500 ms fence here was a race, not a
-  # check. Measured for the scenario in "agents-spawn with a model argument":
+  # The idle fence's bound, in ms. It is a failure bound, not the
+  # synchronisation: the wait is decided by the arrival of the agent's own
+  # `{:chat_status, %{name: …, status: "idle"}}` frame. 1000 ms is the suite's
+  # cap on a test-side fence (the teardown's answer wait in `AgentTestLifecycle`
+  # is the one documented exception).
   #
-  #   * full suite, 24-way concurrency, 40 samples: p50 18.7 ms, max 34.3 ms
-  #   * 48 CPU burners, 40 samples: p50 926 ms, max 1534 ms; 39/40 over 500 ms
-  #   * the observed 1-in-40 gate failure (seed 200984, load 5.60) missed a
-  #     500 ms fence outright
-  #
-  # 2000 ms is ~100x the in-suite median and 4x the 500 ms fence the observed
-  # failure missed, and it stays under ExUnit's 5 s per-test timeout, so a stuck
-  # turn still fails — as a stuck turn, not as a flake.
-  @turn_fence_ms 2_000
-
-  @doc """
-  The turn fence (`#{@turn_fence_ms}` ms) for a test's own `eventually/2`.
-
-  See the comment on `@turn_fence_ms` for why a whole turn needs more than the
-  project's 500 ms fence.
-  """
-  @spec turn_fence_ms() :: pos_integer()
-  def turn_fence_ms, do: @turn_fence_ms
+  # Sizing, from the measurements this replaced: a turn here is a mocked LLM
+  # call, a real sub-agent spawn or peer delivery (DB writes, a registry
+  # insert, a new process), and a second mocked LLM call. In the full suite at
+  # 24-way concurrency the whole turn measured p50 18.7 ms / max 34.3 ms over
+  # 40 samples; under 48 CPU burners, p50 926 ms / max 1534 ms (39 of 40 over
+  # 500 ms). 1000 ms clears the in-suite spread with headroom and still fails a
+  # genuinely stuck turn — as a stuck turn, not as a flake. See
+  # `notes/sketchy-slow-tests.md`.
+  @idle_fence_ms 1_000
 
   @doc """
   Start a real coordinator agent in `space_id` and return its runtime state.
@@ -68,7 +58,8 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
 
     AgentTestHelpers.ensure_cleanup(coordinator_name)
     {:ok, pid} = Supervisor.get_agent(space_id, coordinator_name)
-    :sys.get_state(pid)
+    # allowlist: harness — Supervisor.spawn_agent_in_space/3's state argument
+    :sys.get_state(pid, 1_000)
   end
 
   @doc """
@@ -139,11 +130,22 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
     assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation_slug)
 
     {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
+
+    # `spawn_agent_in_space/3` does not subscribe this test pid (only
+    # `AgentTestHelpers.start_agent/1` does, for the agents it starts), so the
+    # call site has to: `await_idle/1` fences on this agent's own idle frame,
+    # and a subscription installed after the turn settled would miss it.
+    AgentTestHelpers.subscribe_to_agent(space_id, name)
+
     Sandbox.allow(Nest.Repo, self(), pid)
 
-    :sys.replace_state(pid, fn st ->
-      %{st | client_config: %{st.client_config | client: MockClient}}
-    end)
+    :sys.replace_state(
+      pid,
+      fn st ->
+        %{st | client_config: %{st.client_config | client: MockClient}}
+      end,
+      1_000
+    )
 
     MockClient.start_link(pid)
     Enum.each(pending, &MockClient.put_pending(pid, &1))
@@ -153,38 +155,38 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   end
 
   @doc """
-  Whether the agent's machine has settled to `:idle`.
-  """
-  @spec idle?(pid()) :: boolean()
-  def idle?(pid), do: Machine.status_for(:sys.get_state(pid).live.machine) == :idle
+  Wait for every given agent to end its turn, on the frame that decides it:
+  that agent's own `{:chat_status, %{name: name, status: "idle"}}` broadcast.
 
-  @doc """
-  Wait until every given agent has settled to `:idle`.
+  One `assert_receive` per agent, and the arrival of its frame is the whole
+  decision — never a poll of `Machine.status_for/1`, which re-reads the state
+  the frame already announced and would let a broadcast regression pass as
+  success.
 
-  Polls the machine's own status rather than the `chat:status` broadcast: a
-  missed or reordered broadcast can never be the reason a test fails, and the
-  condition waited on is exactly the one the test-teardown invariant checks.
-  (Not a timing change — over 118 samples the broadcast is delivered at or
-  before the phase flips, so the two observe the same instant.)
+  The test pid must already be subscribed to every named agent's topic:
+  `AgentTestHelpers.start_agent/1` does that for the agents it starts, and
+  `start_mocked_specialist/3` does it for the specialists it spawns. A
+  subscription installed after a turn settled would miss the frame it waits
+  for, so it has to be in place before the turn.
   """
-  @spec await_idle([pid()] | pid()) :: true
-  def await_idle(pids) when is_list(pids) do
-    assert Eventually.eventually(
-             fn -> Enum.all?(pids, &idle?/1) end,
-             timeout: @turn_fence_ms
-           )
+  @spec await_idle([String.t()] | String.t()) :: :ok
+  def await_idle(names) when is_list(names) do
+    Enum.each(names, &await_idle/1)
   end
 
-  def await_idle(pid), do: await_idle([pid])
+  def await_idle(name) do
+    assert_receive {:chat_status, %{name: ^name, status: "idle"}}, @idle_fence_ms
+    :ok
+  end
 
   @doc """
   The `agents-query` tool results the coordinator's transcript holds.
   """
   @spec query_results(pid()) :: [Part.ToolResult.t()]
   def query_results(pid) do
-    state = :sys.get_state(pid)
+    messages = Nest.Agents.Agent.get_messages(pid, 1_000)
 
-    Enum.flat_map(state.chat_state.messages, fn
+    Enum.flat_map(messages, fn
       {:tool, %{parts: parts}} ->
         Enum.filter(parts, &match?(%Part.ToolResult{name: "agents-query"}, &1))
 
@@ -198,9 +200,9 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   """
   @spec agent_texts(pid()) :: [String.t()]
   def agent_texts(pid) do
-    state = :sys.get_state(pid)
+    messages = Nest.Agents.Agent.get_messages(pid, 1_000)
 
-    for {:user, %{parts: parts}} <- state.chat_state.messages, do: parts_text(parts)
+    for {:user, %{parts: parts}} <- messages, do: parts_text(parts)
   end
 
   # The text of a message's parts. Private on purpose: `AgentTurnTestHelpers`

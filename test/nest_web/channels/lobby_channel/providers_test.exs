@@ -3,13 +3,21 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
   Tests for the LobbyChannel `providers/0` serializer and the
   `save_providers` handler.
 
-  `async: false` because the handler (a) calls into the shared
-  `Nest.Models` singleton and (b) points the writer at an
-  isolated temp `local.toml` via the global `:local_config_file`
-  app env — both must not race other tests.
+  Runs `async: true`. Neither dependency is a global:
+
+    * The model-cache `rescan/0` is stubbed per-test and made visible
+      to the channel process with `Mimic.allow/3`, the same private-mode
+      pattern the other lobby channel tests use.
+    * The writer's target `local.toml` path is injected by stubbing
+      `Nest.DotConfig.local_file/0`, instead of setting the
+      process-global `:local_config_file` app env (which leaked the
+      temp file into every concurrently-running `DotConfig.load/0`
+      caller).
+
+  Each test gets its own uniquely-named temp file, removed on exit.
   """
 
-  use NestWeb.ChannelCase, async: false
+  use NestWeb.ChannelCase, async: true
 
   alias Nest.Accounts
   alias Nest.Accounts.Invite, as: InviteSchema
@@ -23,10 +31,10 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
     local_file =
       Path.join(System.tmp_dir!(), "providers_#{System.unique_integer([:positive])}.toml")
 
-    Application.put_env(:nest, :local_config_file, local_file)
+    Mimic.stub(Nest.DotConfig, :local_file, fn -> local_file end)
     on_exit(fn -> File.rm(local_file) end)
-    on_exit(fn -> Application.delete_env(:nest, :local_config_file) end)
-    :ok
+
+    {:ok, local_file: local_file}
   end
 
   describe "providers/0" do
@@ -43,7 +51,9 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       assert is_list(pegasus["models"])
     end
 
-    test "persists expose_models through the writer and re-serializes it" do
+    test "persists expose_models through the writer and re-serializes it", %{
+      local_file: local_file
+    } do
       providers = [
         %Provider{
           name: "exposed",
@@ -63,7 +73,6 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       exposed = Enum.find(Providers.providers(), &(&1["name"] == "exposed"))
       assert exposed["expose_models"] == true
 
-      local_file = Application.get_env(:nest, :local_config_file)
       assert File.read!(local_file) =~ "expose-models"
     end
 
@@ -118,26 +127,37 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       assert_push "init", _
       assert_push "broken_agents_updated", _
 
+      # The handler runs in the channel process; make this test's stubs
+      # (`Nest.DotConfig.local_file/0`, `Nest.Models.rescan/0`) visible
+      # there.
+      Mimic.allow(Nest.DotConfig, self(), socket.channel_pid)
+      Mimic.allow(Nest.Models, self(), socket.channel_pid)
+
       {:ok, socket: socket, user: user}
     end
 
     test "persists the providers to local.toml and broadcasts providers_updated", %{
-      socket: socket
+      socket: socket,
+      local_file: local_file
     } do
       # Stub the model cache rescan so it doesn't broadcast a racy
       # `models_updated` ahead of the handler's `providers_updated`.
-      # Global mode is required because the handler runs in the channel
-      # process, not the test process.
-      Mimic.set_mimic_global()
+      # The `Mimic.allow/3` in `setup` makes the stub visible in the
+      # channel process, where the handler runs.
       Mimic.expect(Nest.Models, :rescan, fn -> :ok end)
 
-      local_file = Application.get_env(:nest, :local_config_file)
       refute File.exists?(local_file)
 
       ref = push(socket, "save_providers", %{"providers" => [%{"name" => "acme"}]})
 
-      assert_reply ref, :ok
-      assert_push "providers_updated", %{providers: providers}
+      # This handler writes `local.toml`, parses it back through
+      # `DotConfig.load/0` and broadcasts before it replies, so it is the
+      # slowest `handle_in` in this file and flaked under `mix test --cover`.
+      # The reply and the `providers_updated` push are the events that decide
+      # these two assertions: each carries its own real bound, rather than
+      # synchronising on the channel process to read them with a `0` fence.
+      assert_reply ref, :ok, %{}, 1_000
+      assert_push "providers_updated", %{providers: providers}, 1_000
 
       assert Enum.any?(providers, &(&1["name"] == "acme"))
       assert File.exists?(local_file)

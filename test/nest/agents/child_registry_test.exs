@@ -23,8 +23,6 @@ defmodule Nest.Agents.ChildRegistryTest do
   """
   use ExUnit.Case, async: true
 
-  import Eventually
-
   alias Nest.Agents.ChildRegistry
   alias Nest.Agents.Registry, as: AgentsRegistry
 
@@ -123,6 +121,14 @@ defmodule Nest.Agents.ChildRegistryTest do
       # resolving `AgentsRegistry.via_tuple(space_id, name)`.
       # Start the dummy process under that exact address — a
       # bare `Agent` GenServer keyed by the unique name.
+      # Register the test pid itself as the parent so the registry's
+      # `GenServer.cast/2` lands in this process's mailbox as a raw
+      # `{:"$gen_cast", ...}`. That cast *is* the event that the child was
+      # terminated, so there is nothing to poll: `parent_of/2` is a
+      # `GenServer.call`, and it is ordered after the handler that both casts
+      # and updates the table.
+      {:ok, _} = Registry.register(Nest.Agents.Registry, {space_id, parent}, nil)
+
       start_supervised!(
         {Agent, fn -> :ok end},
         id: {AgentsRegistry, child},
@@ -137,9 +143,7 @@ defmodule Nest.Agents.ChildRegistryTest do
 
       stop_supervised!({AgentsRegistry, child})
 
-      # Registry self-cleans on DOWN — no `unregister/2`
-      # from us. Wait briefly for the DOWN to arrive.
-      assert eventually(fn -> ChildRegistry.parent_of(space_id, child) == nil end, timeout: 1000)
+      assert_receive {:"$gen_cast", {:child_terminated, ^child, _reason}}, 1_000
 
       refute child in ChildRegistry.children_of(space_id, parent)
     end

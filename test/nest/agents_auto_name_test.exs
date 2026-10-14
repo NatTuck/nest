@@ -2,21 +2,22 @@ defmodule Nest.AgentsAutoNameTest do
   @moduledoc """
   Tests the no-name path of `Agents.create_agent/2` — when the
   caller doesn't pass a name, the function delegates to
-  `Supervisor.generate_unique_name/0` which produces an
+  `Supervisor.generate_unique_name_for_space/1`, which produces an
   adjective-animal pair (e.g. "clever-raven") that doesn't
   collide with any agent in the supervisor's `Registry` or
   the DB.
 
-  Lives in its own `async: false` file because the auto-name
-  check reads `Registry.list()` + `Persistence.list_agent_names()`,
-  both of which are per-BEAM / per-transaction. Running
-  concurrently with other tests' agents (or their on_exit
-  cleanups) creates a race window where the generator could
-  return a name that collides with a parallel test's
-  agent. Serialized here so the path is deterministically
-  exercised.
+  Concurrent-safe because the uniqueness check is scoped to the *space*, not
+  the BEAM: `generate_unique_name_for_space/1` builds its taken-name set from
+  `Registry.list_for_space/1` (the Registry is keyed `{space_id, name}`) plus
+  `Persistence.list_agent_names_for_space/1` (`where: space_id == ^space_id`),
+  and `create_test_space/0` gives each test its own space. That space's row is
+  uncommitted, so a concurrent test's agents are both a different registry key
+  and invisible to this test's sandbox transaction. The supervisor-spawned
+  agent pid performs no DB work by hard rule (`Agent.init/1`), and every DB
+  call in these bodies runs in the test pid, which owns the connection.
   """
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import ExUnit.Callbacks
   import ExUnit.CaptureLog
@@ -56,7 +57,7 @@ defmodule Nest.AgentsAutoNameTest do
       # Pass a model with provider but no `:name` (the model's
       # `:name` is the LLM identifier, not the agent's registry
       # key). `Agents.create_agent/2` falls back to
-      # `Supervisor.generate_unique_name/0`. The model's `:name`
+      # `Supervisor.generate_unique_name_for_space/1`. The model's `:name`
       # is omitted on purpose — leaving it nil forces the agent
       # into `:model_missing` state and exercises the diagnostic
       # log below; the test's actual assertion is the

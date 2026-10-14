@@ -26,11 +26,11 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   """
   use Nest.DataCase, async: true
 
-  import Eventually
   import Nest.Test.TmpCleanup
 
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Agents.AgentTestLifecycle
   alias Nest.Agents.ChildRegistry
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
@@ -130,8 +130,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
       {:ok, child_name} = Supervisor.start_agent_with_parent(parent_state, "do it", override)
 
-      child_state = :sys.get_state(via_registry(child_name))
-      assert child_state.model == override
+      assert Nest.Agents.Agent.get_public_info(via_registry(child_name), 1_000).model == override
 
       space_id = AgentTestHelpers.current_space_id()
       on_exit(fn -> safe_stop(space_id, child_name) end)
@@ -143,8 +142,8 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
       {:ok, child_name} = Supervisor.start_agent_with_parent(parent_state, "do it")
 
-      child_state = :sys.get_state(via_registry(child_name))
-      assert child_state.model == parent_state.model
+      assert Nest.Agents.Agent.get_public_info(via_registry(child_name), 1_000).model ==
+               parent_state.model
 
       space_id = AgentTestHelpers.current_space_id()
       on_exit(fn -> safe_stop(space_id, child_name) end)
@@ -160,7 +159,15 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       {:ok, child_a} = Supervisor.start_agent_with_parent(parent_state, "a")
       {:ok, child_b} = Supervisor.start_agent_with_parent(parent_state, "b")
 
+      # `Supervisor.stop_agent/2` fires `Process.exit/2` and returns before the
+      # process is gone, so the parent's own `:DOWN` — monitored first, so the
+      # event can't be missed — is the fence that proves it died. The registry
+      # miss below is only meaningful once that death is decided.
+      parent_ref = Process.monitor(parent_pid)
+
       :ok = Supervisor.stop_agent(space_id, parent_name)
+
+      assert_receive {:DOWN, ^parent_ref, :process, ^parent_pid, _reason}, 1_000
 
       assert_registry_misses(parent_name)
       # Idle children (not in `pending_children`) are left running.
@@ -270,7 +277,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
         parent_pid = pid
 
         Mimic.allow(Nest.LLM.MockClient, self(), parent_pid)
-        :sys.replace_state(parent_pid, &swap_to_mock/1)
+        :sys.replace_state(parent_pid, &swap_to_mock/1, 1_000)
 
         # Parent cleanup: register the same DOWN-blocking
         # teardown that `AgentTestHelpers.start_agent/1` uses.
@@ -335,14 +342,21 @@ defmodule Nest.Agents.SupervisorSubagentTest do
     }
   end
 
+  # The caller has already fenced on the agent's `:DOWN`, so the process is
+  # provably gone. Its `Nest.Agents.Registry` entry, though, is dropped by the
+  # registry partition server's *link* `:EXIT` handler, which is asynchronous
+  # and announces nothing: `:sys.get_state/2` on that partition is the barrier
+  # that drains it (the `:EXIT` is enqueued before the `:DOWN` the caller waited
+  # on), so the lookup below reads a decided state instead of polling for it.
+  #
+  # The partition name is `Registry.Partition.pid_name/2`'s: `Nest.Agents.Registry`
+  # is a single-partition unique registry (`child_spec/0` passes no `:partitions`).
   defp assert_registry_misses(name) do
-    assert eventually(
-             fn ->
-               AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name) ==
-                 {:error, :not_found}
-             end,
-             timeout: 1000
-           )
+    # allowlist: registry — partition cleanup announces nothing
+    _ = :sys.get_state(Nest.Agents.Registry.PIDPartition0, 1_000)
+
+    assert AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name) ==
+             {:error, :not_found}
   end
 
   defp assert_registry_hits(name) do
@@ -364,16 +378,16 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   # here would fail with `DBConnection.OwnershipError`.
   # `Supervisor.stop_agent/2` terminates the GenServer only;
   # the DB row is cleaned up by `DataCase`'s sandbox rollback
-  # at test exit. The single-message `:DOWN` wait is delegated
-  # to `AgentTestHelpers.wait_for_pid_down/2` so the
-  # parallel-test ownership race window is closed (the agent's
-  # mailbox can't fire DB calls after `terminate/2` finishes).
+  # at test exit. The single-message `:DOWN` wait is the cleanup
+  # bound (`AgentTestLifecycle.cleanup_ms/0`), not the tight detector
+  # `wait_for_pid_down/2` defaults to: this is cleanup, so it must not
+  # fail a passing test because a dying agent was a moment slow.
   defp agent_count(space_id) do
     Nest.Repo.one(from(a in "agents", where: a.space_id == ^space_id, select: count(a.id)))
   end
 
   defp safe_stop(space_id, name) do
     _ = Supervisor.stop_agent(space_id, name)
-    AgentTestHelpers.wait_for_pid_down(space_id, name)
+    AgentTestHelpers.wait_for_pid_down(space_id, name, AgentTestLifecycle.cleanup_ms())
   end
 end

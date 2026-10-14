@@ -48,9 +48,10 @@ defmodule Nest.Agents.Agent.WatchTest do
   defp agent(name, status), do: %{name: name, status: status}
 
   # Drive `list_agents_info_for_space/1` from a FIFO of snapshots; the last
-  # sticks. The watcher reads the listing once up front and again on each
-  # slice, so a frame can flip a target busy → idle. `Elixir.Agent` is the
-  # stdlib queue process — `Agent` here is `Nest.Agents.Agent`.
+  # sticks. The wait reads the listing for its reference partition, once more
+  # after subscribing, and again on each event it is woken by, so a frame can
+  # flip a target busy → idle. `Elixir.Agent` is the stdlib queue process —
+  # `Agent` here is `Nest.Agents.Agent`.
   defp stub_listing(frames) do
     id = {:watch_listing, System.unique_integer([:positive])}
     queue = start_supervised!({Elixir.Agent, fn -> frames end}, id: id)
@@ -63,37 +64,48 @@ defmodule Nest.Agents.Agent.WatchTest do
   defp next_listing([last]), do: {last, [last]}
   defp next_listing([head | rest]), do: {head, rest}
 
-  defp watchers(pid), do: :sys.get_state(pid).live.watches
+  defp watchers(pid), do: Agent.get_watches(pid, 1_000)
 
-  # The notice drains into a turn; wait for it to finish so the
-  # test-lifecycle check sees an idle agent.
+  # The notice drains into a turn; the turn's own idle status frame is the
+  # event that says it finished, and the status read confirms the agent is
+  # settled idle for the test-lifecycle check.
   defp await_idle(pid) do
-    assert Eventually.eventually(
-             fn -> Machine.status_for(:sys.get_state(pid).live.machine) == :idle end,
-             timeout: 500
-           )
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
+
+    assert Agent.get_public_info(pid, 1_000).status == :idle
   end
 
   defp set_busy(pid) do
-    :sys.replace_state(pid, fn state ->
-      %{
-        state
-        | live: %{state.live | machine: Machine.status_to_machine(state.live.machine, :streaming)}
-      }
-    end)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :streaming)
+            }
+        }
+      end,
+      1_000
+    )
   end
 
   defp reset_to_idle(pid) do
-    :sys.replace_state(pid, fn state ->
-      %{
-        state
-        | live: %{state.live | machine: Machine.status_to_machine(state.live.machine, :idle)}
-      }
-    end)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        %{
+          state
+          | live: %{state.live | machine: Machine.status_to_machine(state.live.machine, :idle)}
+        }
+      end,
+      1_000
+    )
   end
 
   defp notices(pid) do
-    :sys.get_state(pid).chat_state.messages
+    Agent.get_messages(pid, 1_000)
     |> Enum.flat_map(fn
       {:user, %{parts: parts}} -> Enum.map(parts, & &1.text)
       _ -> []
@@ -116,7 +128,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     # A watch is registered, and the agent never left idle (issue #54): the
     # tool returned without blocking a turn.
     assert map_size(watchers(pid)) == 1
-    assert Machine.status_for(:sys.get_state(pid).live.machine) == :idle
+    assert Agent.get_public_info(pid, 1_000).status == :idle
   end
 
   test "an already-idle-only wait registers nothing", %{pid: pid, name: name, space_id: space_id} do
@@ -143,12 +155,12 @@ defmodule Nest.Agents.Agent.WatchTest do
     assert %ToolResult{is_error: false} = wait(pid, name, space_id, %{"names" => ["bob"]})
 
     # The notice is delivered while the agent is idle, so it drains and starts
-    # a turn with the bare synchronisation text — never a payload.
-    assert Eventually.eventually(
-             fn -> Enum.any?(notices(pid), &(&1 =~ "Agents now idle")) end,
-             timeout: 500
-           )
+    # a turn with the bare synchronisation text — never a payload. That turn's
+    # own user-message broadcast is the event; the transcript reads below are
+    # reads, not waits.
+    assert_receive {:chat_message, {:user, _}}, 1_000
 
+    assert Enum.any?(notices(pid), &(&1 =~ "Agents now idle"))
     assert Enum.any?(notices(pid), &(&1 =~ "bob"))
     assert watchers(pid) == %{}
     await_idle(pid)
@@ -165,10 +177,10 @@ defmodule Nest.Agents.Agent.WatchTest do
     assert %ToolResult{is_error: false} =
              wait(pid, name, space_id, %{"names" => ["bob"], "timeout" => 50})
 
-    assert Eventually.eventually(
-             fn -> Enum.any?(notices(pid), &(&1 =~ "Timed out after 50ms")) end,
-             timeout: 500
-           )
+    # The notice drains into a turn; that turn's own user-message broadcast is
+    # the event that says the notice landed.
+    assert_receive {:chat_message, {:user, _}}, 1_000
+    assert Enum.any?(notices(pid), &(&1 =~ "Timed out after 50ms"))
 
     await_idle(pid)
   end
@@ -219,9 +231,10 @@ defmodule Nest.Agents.Agent.WatchTest do
     [{_ref, %{pid: task}}] = Map.to_list(watchers(pid))
     mref = Process.monitor(task)
 
-    state = :sys.get_state(pid)
+    # allowlist: harness — Watch.stop_all/1's argument
+    state = :sys.get_state(pid, 1_000)
     assert Watch.stop_all(state).live.watches == %{}
-    assert_receive {:DOWN, ^mref, :process, ^task, _reason}, 500
+    assert_receive {:DOWN, ^mref, :process, ^task, _reason}, 1_000
   end
 
   test "the watcher dies with its caller" do
@@ -239,12 +252,12 @@ defmodule Nest.Agents.Agent.WatchTest do
 
     ref = make_ref()
 
-    {:ok, task} = Watch.start(caller, ref, {:agent_idle, 1, ["bob"], 60_000, false})
+    {:ok, task} = Watch.start(caller, ref, {:agent_idle, 1, ["bob"], 2_000, false})
     mref = Process.monitor(task)
 
     Process.exit(caller, :kill)
 
-    assert_receive {:DOWN, ^mref, :process, ^task, _reason}, 500
+    assert_receive {:DOWN, ^mref, :process, ^task, _reason}, 1_000
   end
 
   test "stopping the agent kills its watchers", %{pid: pid, name: name, space_id: space_id} do
@@ -260,7 +273,7 @@ defmodule Nest.Agents.Agent.WatchTest do
 
     _ = Supervisor.stop_agent(space_id, name)
 
-    assert_receive {:DOWN, ^mref, :process, ^task, _reason}, 500
+    assert_receive {:DOWN, ^mref, :process, ^task, _reason}, 1_000
   end
 
   # The headline for #62 + #54: the caller registers, returns, goes idle; the
@@ -282,9 +295,10 @@ defmodule Nest.Agents.Agent.WatchTest do
     stub_listing([
       # resolve: the target is busy, so a watch is registered
       [agent(name, :idle), agent("bob", :streaming)],
-      # the watcher's initial read: still busy
+      # the watcher's reference read, then its authoritative read: still busy
       [agent(name, :idle), agent("bob", :streaming)],
-      # the watcher's recheck: bob is idle now, so it fires
+      [agent(name, :idle), agent("bob", :streaming)],
+      # the recheck the target's status frame drives: bob is idle now, so it fires
       [agent(name, :idle), agent("bob", :idle)]
     ])
 
@@ -296,18 +310,41 @@ defmodule Nest.Agents.Agent.WatchTest do
     # starts its turn.
     assert {:ok, :delivered} = Agent.deliver_internal(pid, "bob", "the report", :agent)
 
-    # The watcher fires within a slice and finds the watch satisfied: the caller
-    # is not woken a second time. `fired/3` unregisters before delivering, so
-    # assert the wake itself too — exactly one user turn (the report), no bare
-    # notice in the transcript or still queued.
-    assert Eventually.eventually(fn -> watchers(pid) == %{} end, timeout: 500)
+    # Then the target's own status frame — the event the wait is woken by. It
+    # fires, finds the watch satisfied by that delivery, and is skipped: the
+    # caller is not woken a second time. `fired/3` unregisters before
+    # delivering, so assert the wake itself too — exactly one user turn (the
+    # report), no bare notice in the transcript or still queued.
+    #
+    # The frame is delivered to the watcher task directly rather than broadcast
+    # on the target's topic: the watcher subscribes inside its own task, so a
+    # broadcast sent from here could land before that subscription, while a
+    # direct frame waits in the task's mailbox for the loop that matches it
+    # (`WaitForIdle.loop/8` matches the frame, not its sender).
+    [{_ref, %{pid: task}}] = Map.to_list(watchers(pid))
+    mref = Process.monitor(task)
+    send(task, {:chat_status, %{status: "idle"}})
+
+    # `watch_fired/3` is a call, so the task cannot exit until the watch has
+    # been unregistered: the `:DOWN` proves the wake landed and the map is
+    # clear.
+    assert_receive {:DOWN, ^mref, :process, ^task, _reason}, 1_000
+    assert watchers(pid) == %{}
+
     await_idle(pid)
 
     texts = notices(pid)
     assert length(texts) == 1
     assert Enum.count(texts, &(&1 =~ "the report")) == 1
     refute Enum.any?(texts, &(&1 =~ "Agents now idle"))
-    refute Enum.any?(:sys.get_state(pid).live.inbox, &(&1.kind == :notice))
+
+    # Access, not a `match?`: a malformed entry raises loudly here, where a
+    # pattern would silently mismatch and leave the `refute` vacuous (the
+    # serialized key itself is pinned by `last_message_test`'s patterns).
+    refute Enum.any?(
+             Agent.get_public_info(pid, 1_000).pending_messages,
+             &(&1["kind"] == "notice")
+           )
   end
 
   # The second variant: the caller is busy when the report arrives, so it
@@ -320,8 +357,11 @@ defmodule Nest.Agents.Agent.WatchTest do
     space_id: space_id
   } do
     stub_listing([
+      # resolve, then the watcher's reference read, then its authoritative read
       [agent(name, :idle), agent("bob", :streaming)],
       [agent(name, :idle), agent("bob", :streaming)],
+      [agent(name, :idle), agent("bob", :streaming)],
+      # the recheck the target's status frame drives
       [agent(name, :idle), agent("bob", :idle)]
     ])
 
@@ -331,8 +371,14 @@ defmodule Nest.Agents.Agent.WatchTest do
     set_busy(pid)
     assert {:ok, :queued} = Agent.deliver_internal(pid, "bob", "the report", :agent)
 
-    # The watch fires satisfied: no bare notice.
-    assert Eventually.eventually(fn -> watchers(pid) == %{} end, timeout: 500)
+    # The target's status frame wakes the watch; it fires satisfied, so no bare
+    # notice is delivered on top of the queued body. The frame goes to the
+    # watcher task directly, for the reason in the test above.
+    [{_ref, %{pid: task}}] = Map.to_list(watchers(pid))
+    mref = Process.monitor(task)
+    send(task, {:chat_status, %{status: "idle"}})
+    assert_receive {:DOWN, ^mref, :process, ^task, _reason}, 1_000
+    assert watchers(pid) == %{}
 
     [%ToolResult{content: content, is_error: false}] =
       ToolLoop.execute(ctx(pid, name, space_id), nil, [
@@ -340,7 +386,7 @@ defmodule Nest.Agents.Agent.WatchTest do
       ])
 
     assert content =~ "the report"
-    assert [%{retrieved: true}] = :sys.get_state(pid).live.inbox
+    assert [%{"retrieved" => true}] = Agent.get_public_info(pid, 1_000).pending_messages
     reset_to_idle(pid)
   end
 
@@ -351,11 +397,11 @@ defmodule Nest.Agents.Agent.WatchTest do
   } do
     # `shell-wait` follows the same shape as `agents-wait-for-idle`: register,
     # return, go idle, and deliver the job's result as a notice.
-    state = :sys.get_state(pid)
+    info = Agent.get_public_info(pid, 1_000)
     key = {space_id, name}
 
     {:ok, _} =
-      ShellCmd.execute("echo done", Mounts.new(state.workspace_path, state.tmp_path), nil,
+      ShellCmd.execute("echo done", Mounts.new(info.workspace_path, info.tmp_path), nil,
         background: true,
         agent_key: key,
         grace_ms: 0
@@ -367,11 +413,55 @@ defmodule Nest.Agents.Agent.WatchTest do
     assert {:ok, content} = Watch.register_shell_call(ctx(pid, name, space_id), id, 500)
     assert content =~ "Watching background job #{id}"
 
-    assert Eventually.eventually(
-             fn -> Enum.any?(notices(pid), &(&1 =~ "exited with code 0")) end,
-             timeout: 2_000
-           )
+    # The notice drains into a turn; that turn's own user-message broadcast is
+    # the event that says the notice landed.
+    assert_receive {:chat_message, {:user, _}}, 1_000
+    assert Enum.any?(notices(pid), &(&1 =~ "exited with code 0"))
 
+    await_idle(pid)
+  end
+
+  # A job the manager dropped with its agent (`ShellJobs.drop_agent/2` sends
+  # `{:shell_job_gone, id}` to the job's waiters) must be reported as gone: not
+  # as an exit, because no exit was observed and the log goes with the agent's
+  # tmp directory, and not as the `:not_found` a *missing* job gets, because
+  # this job existed and its owner stopped. The message is delivered to the
+  # watcher task directly: `drop_agent/2`'s own send to a waiter is pinned in
+  # `test/nest/sandbox/shell_jobs_test.exs`.
+  test "the watcher reports a job whose agent stopped as gone, not as an exit", %{
+    pid: pid,
+    name: name,
+    space_id: space_id
+  } do
+    info = Agent.get_public_info(pid, 1_000)
+    key = {space_id, name}
+
+    {:ok, _} =
+      ShellCmd.execute("sleep 30", Mounts.new(info.workspace_path, info.tmp_path), nil,
+        background: true,
+        agent_key: key,
+        grace_ms: 0
+      )
+
+    [%{id: id}] = ShellJobs.list(key)
+    MockClient.set_response("acknowledged")
+
+    assert {:ok, content} = Watch.register_shell_call(ctx(pid, name, space_id), id, 5_000)
+    assert content =~ "Watching background job #{id}"
+
+    assert [{_ref, %{pid: task}}] = Map.to_list(watchers(pid))
+    send(task, {:shell_job_gone, id})
+
+    # The notice drains into a turn; that turn's own user-message broadcast is
+    # the event that says the notice landed.
+    assert_receive {:chat_message, {:user, _}}, 1_000
+
+    texts = notices(pid)
+    assert Enum.any?(texts, &(&1 =~ "the agent that owned it stopped"))
+    assert Enum.any?(texts, &(&1 =~ "Background job #{id} is gone"))
+    refute Enum.any?(texts, &(&1 =~ "exited with code"))
+    refute Enum.any?(texts, &(&1 =~ "no longer exists"))
+    assert watchers(pid) == %{}
     await_idle(pid)
   end
 
@@ -379,7 +469,8 @@ defmodule Nest.Agents.Agent.WatchTest do
     # The action is emitted by the pure stop; `Turn.Executor`'s clause reads
     # `live.watches`. Asserting the action here keeps the Stop contract pinned
     # without driving a whole turn.
-    state = :sys.get_state(pid)
+    # allowlist: harness — Machine.step/2's argument
+    state = :sys.get_state(pid, 1_000)
     machine = Machine.status_to_machine(state.live.machine, :streaming)
     {:ok, actions, _machine} = Machine.step(machine, {:stop, nil})
 

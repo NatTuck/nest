@@ -1,15 +1,15 @@
 defmodule Nest.HostnameTest do
   @moduledoc """
-  Tests for `Nest.Hostname.get/0`.
+  Tests for `Nest.Hostname.get/0` and the injected `Nest.Hostname.get/1`.
   """
 
-  # `get/0` reads the global `:nest, :hostname` config, which the root layout
-  # also reads via `NestWeb.Layouts.root/1`. Mutating it must not overlap the
-  # conn tests that render that layout. Those conn tests are `async: true`
-  # (`test/nest_web/controllers/page_controller_test.exs`), and ExUnit runs
-  # every sync module only after the whole async phase is finished, so this
-  # writer is still serialised against them by construction.
-  use ExUnit.Case, async: false
+  # `get/0` reads the `:nest, :hostname` application env, which the root layout
+  # also reads (`root.html.heex`). *Reading* it concurrently is fine — the
+  # problem was *mutating* it, which the fallback cases used to do with
+  # `Application.put_env/delete_env`. They now go through `get/1`, which takes
+  # the override directly, so this file has no global left and is concurrent.
+  # `get/0`'s own read of the real config is still covered below.
+  use ExUnit.Case, async: true
 
   alias Nest.Hostname
 
@@ -19,21 +19,23 @@ defmodule Nest.HostnameTest do
       # hostname of the machine they run on.
       assert Hostname.get() == "testhost"
     end
+  end
 
-    test "falls back to the machine hostname when the override is absent or blank" do
-      original = Application.get_env(:nest, :hostname)
-      on_exit(fn -> restore_hostname(original) end)
+  describe "get/1" do
+    test "returns the configured override, falling back to the system hostname when it is unset or blank" do
+      assert Hostname.get("vampire") == "vampire"
 
-      Application.delete_env(:nest, :hostname)
-      unset = Hostname.get()
+      # `get/1` takes the override as an argument, so the fallback is exercised
+      # without touching the global. The *integration* read of the real config
+      # on that path is therefore not covered here — and cannot be, since
+      # `config/test.exs` pins `:nest, :hostname` and unsetting it is exactly
+      # the global write this seam removed. Only `get/0`'s happy path (above)
+      # reads the real config.
+      unset = Hostname.get(nil)
       assert is_binary(unset) and unset != ""
 
-      Application.put_env(:nest, :hostname, "")
-      blank = Hostname.get()
+      blank = Hostname.get("")
       assert is_binary(blank) and blank != ""
     end
   end
-
-  defp restore_hostname(nil), do: Application.delete_env(:nest, :hostname)
-  defp restore_hostname(value), do: Application.put_env(:nest, :hostname, value)
 end

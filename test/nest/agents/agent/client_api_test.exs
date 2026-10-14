@@ -71,14 +71,36 @@ defmodule Nest.Agents.Agent.ClientAPITest do
         |> Streaming.start_tool_call("call_abc", "shell-cmd")
         |> Streaming.append_tool_call_args("call_abc", ~s({"command":))
 
-      :sys.replace_state(pid, fn state ->
-        %{state | live: %{state.live | streaming_acc: acc}}
-      end)
+      :sys.replace_state(
+        pid,
+        fn state ->
+          %{state | live: %{state.live | streaming_acc: acc}}
+        end,
+        1_000
+      )
 
       info = ClientAPI.get_public_info(pid)
 
       assert info.partial["currentType"] == ["tool_use", "call_abc"]
       assert_wire_encodable!(info.partial, "agent partial")
+    end
+
+    test "the optional timeout is the call's failure bound, and the default is unchanged" do
+      {pid, _name} =
+        AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus", provider: "model-studio"}})
+
+      # Suspended, the agent's loop cannot answer, so a short bound *is* the
+      # caller's exit. That is what makes the `1_000` the converted `#21` test
+      # sites pass a real bound rather than a decorative one.
+      :sys.suspend(pid, 1_000)
+
+      assert catch_exit(ClientAPI.get_public_info(pid, 50)) ==
+               {:timeout, {GenServer, :call, [pid, :get_public_info, 50]}}
+
+      :sys.resume(pid, 1_000)
+
+      # ...and the default is OTP's, unchanged for production callers.
+      assert ClientAPI.get_public_info(pid).status == :idle
     end
   end
 

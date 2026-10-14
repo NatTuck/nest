@@ -43,16 +43,16 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       # User messages no longer carry request api_logs after finalization
       # (they're rebuilt on demand when the user expands the API logs widget).
-      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 500
+      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 1_000
       assert user_api_logs == [], "User message should have empty api_logs"
 
-      assert_receive {:chat_status, %{status: "streaming"}}, 500
-      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_status, %{status: "streaming"}}, 1_000
+      assert_receive {:chat_delta, _}, 1_000
 
       # The assistant message is stored complete: the response log is
       # attached before it is appended, so the single broadcast carries it.
-      assert_receive {:chat_message, {:assistant, %{api_logs: [assistant_response]}}}, 500
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_message, {:assistant, %{api_logs: [assistant_response]}}}, 1_000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       assert assistant_response.type == :response, "Assistant message should have response log"
 
@@ -68,7 +68,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
         })
 
       :ok = Agent.chat(pid, "Hello")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # Read back through the DB, not the live agent, to prove the
       # response log was stored with the message rather than only
@@ -100,25 +100,27 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       :ok = Agent.chat(pid, "Run a command")
 
-      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 500
+      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 1_000
       assert user_api_logs == [], "User message should have empty api_logs"
 
-      assert_receive {:chat_status, %{status: "streaming"}}, 500
-      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_status, %{status: "streaming"}}, 1_000
+      assert_receive {:chat_delta, _}, 1_000
 
       # The tool-call assistant is stored complete with its response log.
-      assert_receive {:chat_message, {:assistant, %{api_logs: [asst1_log]}}}, 500
+      assert_receive {:chat_message, {:assistant, %{api_logs: [asst1_log]}}}, 1_000
       assert asst1_log.type == :response
 
-      assert_receive {:chat_message, {:tool, %{api_logs: tool_api_logs}}}, 500
+      assert_receive {:chat_message, {:tool, %{api_logs: tool_api_logs}}}, 1_000
       assert tool_api_logs == [], "Tool message should have empty api_logs"
 
-      # Wait for the final assistant with a response log
-      asst2 = wait_for_final_assistant_api_logs(5_000)
+      # The turn's end is the fence: the `idle` frame is emitted after the
+      # turn's last append, so the final assistant's response log is then
+      # readable from the transcript.
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
+
+      asst2 = final_assistant_api_logs(chat_messages(pid))
       assert asst2 != nil
       [asst2_log] = asst2
-
-      assert_receive {:chat_status, %{status: "idle"}}, 500
 
       assert asst2_log.type == :response, "Final assistant message should have response log"
 
@@ -143,27 +145,30 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       :ok = Agent.chat(pid, "List files")
 
-      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 500
+      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 1_000
       assert user_api_logs == [], "User message should have empty api_logs"
 
-      assert_receive {:chat_status, %{status: "streaming"}}, 500
-      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_status, %{status: "streaming"}}, 1_000
+      assert_receive {:chat_delta, _}, 1_000
 
-      # Drain to the first assistant (tool-call). Match by
-      # content; the synthetic "Context?" assistant may
+      # The turn's end is the fence: the `idle` frame is emitted after the
+      # turn's last append, so the whole turn is then readable from the
+      # transcript. Match by content; the synthetic "Context?" assistant may
       # precede the tool-call assistant.
-      asst1 = wait_for_assistant_with_tool(5_000)
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
+
+      messages = chat_messages(pid)
+
+      asst1 = assistant_with_tool(messages)
       assert asst1 != nil
       [asst1_log] = asst1.api_logs
 
-      assert_receive {:chat_message, {:tool, %{api_logs: tool_api_logs}}}, 500
+      assert_receive {:chat_message, {:tool, %{api_logs: tool_api_logs}}}, 1_000
       assert tool_api_logs == [], "Tool message should have empty api_logs"
 
-      asst2 = wait_for_final_assistant_api_logs(5_000)
+      asst2 = final_assistant_api_logs(messages)
       assert asst2 != nil
       [asst2_log] = asst2
-
-      assert_receive {:chat_status, %{status: "idle"}}, 500
 
       # The api_log id is `<message_index>.<sequence>`. At this low
       # usage no context-notice pair fires, so the tool-call
@@ -199,7 +204,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
     ref = Process.monitor(pid)
     Agent.terminate(pid)
 
-    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
+    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
   end
 
   describe "context limit (configured)" do
@@ -224,19 +229,16 @@ defmodule Nest.Agents.AgentObservabilityTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      # :sys.get_state/1 is a synchronous call — by the time it
-      # returns, the GenServer has finished processing any
-      # init-time work (including any (incorrectly) spawned probe
-      # task). Confirm the configured context_limit is what
-      # public_info reports and that the source is :config, not
-      # :probe or :default.
-      # No broadcast carries the internal context_limit_source field
-      # directly; the init push carries it as a wire string. The
-      # internal atom is only observable via state — kept as
-      # legitimate :sys.get_state use.
-      state = :sys.get_state(pid)
-      assert state.llm_metrics.context_limit == 512_000
-      assert state.llm_metrics.context_limit_source == :config
+      # `Agent.get_public_info/2` is a synchronous call — by the time it
+      # returns, the GenServer has finished processing any init-time work
+      # (including any (incorrectly) spawned probe task). Confirm the
+      # configured context_limit is what public_info reports and that the
+      # source is :config, not :probe or :default. (No broadcast carries the
+      # internal `context_limit_source` field directly — the init push carries
+      # it as a wire string — so the accessor is the observable here.)
+      info = Agent.get_public_info(pid, 1_000)
+      assert info.context_limit == 512_000
+      assert info.context_limit_source == :config
 
       Agent.terminate(pid)
     end
@@ -302,7 +304,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
         })
 
       :ok = Agent.chat(pid, "First")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # usage is exposed via the public API as a GenServer call.
       info1 = Agent.get_public_info(pid)
@@ -311,7 +313,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
       assert info1.usage.last_output == 50
 
       :ok = Agent.chat(pid, "Second")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       info2 = Agent.get_public_info(pid)
       assert info2.usage.output_tokens == 150
@@ -354,7 +356,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
       log =
         capture_log(fn ->
           :ok = Agent.chat(pid, "Run a command")
-          assert_receive {:chat_status, %{status: "idle"}}, 500
+          assert_receive {:chat_status, %{status: "idle"}}, 1_000
         end)
 
       info = Agent.get_public_info(pid)
@@ -392,14 +394,14 @@ defmodule Nest.Agents.AgentObservabilityTest do
         })
 
       :ok = Agent.chat(pid, "First")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       info1 = Agent.get_public_info(pid)
       assert info1.usage.output_tokens == 25
       assert info1.usage.input_tokens == 50
 
       :ok = Agent.chat(pid, "Second")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       info2 = Agent.get_public_info(pid)
       assert info2.usage.output_tokens == 25
@@ -410,62 +412,39 @@ defmodule Nest.Agents.AgentObservabilityTest do
     end
   end
 
-  # Drain assistant messages until one carries a `Part.ToolUse`
-  # AND has api_logs populated.
-  defp wait_for_assistant_with_tool(timeout) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-    do_wait_for_assistant_with_tool(deadline)
+  # The turn's transcript, read synchronously. `MessageAppender.append_stamped/2`
+  # appends each message before the settle loop broadcasts the `idle` status, so
+  # once the turn's `idle` frame has arrived the whole turn is readable from the
+  # state: every message of the turn is already appended, whether or not this
+  # process happened to receive that message's own frame.
+  defp chat_messages(pid), do: Agent.get_messages(pid, 1_000)
+
+  # The first assistant in `messages` that carries a `Part.ToolUse` AND has
+  # api_logs populated; nil when there is none.
+  defp assistant_with_tool(messages) do
+    Enum.find_value(messages, fn
+      {:assistant, msg} ->
+        if has_tool_use?(msg) and has_api_logs?(msg), do: msg
+
+      _other ->
+        nil
+    end)
   end
 
-  defp do_wait_for_assistant_with_tool(deadline) do
-    if System.monotonic_time(:millisecond) >= deadline do
-      nil
-    else
-      receive do
-        {:chat_message, {:assistant, msg}} ->
-          has_tool_use = Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1))
-          has_api_logs = msg.api_logs != nil and msg.api_logs != []
+  # The api_logs of the final assistant in `messages`: the first assistant
+  # with no `Part.ToolUse` of its own that has api_logs populated; nil when
+  # the turn recorded none.
+  defp final_assistant_api_logs(messages) do
+    Enum.find_value(messages, fn
+      {:assistant, msg} ->
+        if not has_tool_use?(msg) and has_api_logs?(msg), do: msg.api_logs
 
-          if has_tool_use and has_api_logs do
-            msg
-          else
-            do_wait_for_assistant_with_tool(deadline)
-          end
-      after
-        100 -> do_wait_for_assistant_with_tool(deadline)
-      end
-    end
+      _other ->
+        nil
+    end)
   end
 
-  # Drain assistant messages until we find the final one
-  # (no tool_use, with api_logs populated). Returns the api_logs.
-  defp wait_for_final_assistant_api_logs(timeout) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-    do_wait_for_final_assistant_api_logs(deadline)
-  end
+  defp has_tool_use?(msg), do: Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1))
 
-  defp do_wait_for_final_assistant_api_logs(deadline) do
-    if System.monotonic_time(:millisecond) >= deadline do
-      nil
-    else
-      receive do
-        {:chat_message, {:assistant, msg}} ->
-          has_tool_use = Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1))
-          has_api_logs = msg.api_logs != nil and msg.api_logs != []
-
-          cond do
-            has_tool_use ->
-              do_wait_for_final_assistant_api_logs(deadline)
-
-            not has_api_logs ->
-              do_wait_for_final_assistant_api_logs(deadline)
-
-            true ->
-              msg.api_logs
-          end
-      after
-        100 -> do_wait_for_final_assistant_api_logs(deadline)
-      end
-    end
-  end
+  defp has_api_logs?(msg), do: msg.api_logs != nil and msg.api_logs != []
 end

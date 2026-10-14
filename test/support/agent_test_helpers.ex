@@ -13,9 +13,11 @@ defmodule Nest.Agents.AgentTestHelpers do
   via `current_space_id/0`; everything else routes through it
   implicitly (the agent's session itself carries the `space_id`).
 
-  The on-exit cleanup walks the agent's Supervisor child tree to
-  terminate the GenServer; the `spaces` row is rolled back
-  automatically by the sandbox when the test exits.
+  The in-process teardown (`AgentTestLifecycle.stop_test_agents/0`)
+  stops every agent the test started, before the sandbox connection is
+  checked in; the `spaces` row is rolled back automatically by the
+  sandbox when the test exits. The `on_exit` hooks only watch (see
+  `AgentTestLifecycle.detect_leaked_agent/2`).
 
   ## Helpers split out
 
@@ -49,11 +51,26 @@ defmodule Nest.Agents.AgentTestHelpers do
   alias Nest.Vocations
 
   defdelegate text_from_parts(parts), to: AgentTestAssertions
-  defdelegate assert_unique_message_indices(state), to: AgentTestAssertions
+  defdelegate assert_unique_message_indices(messages), to: AgentTestAssertions
   defdelegate record_read_file(pid, path, opts \\ []), to: AgentTestAssertions
-  defdelegate wait_for_pid_down(space_id, name, timeout \\ 100), to: AgentTestLifecycle
+  # One default, one owner: the 2-arity form delegates to `AgentTestLifecycle`'s
+  # 2-arity form, so both spellings use the same `@stop_ms` bound. That bound is
+  # the tight *detector* — for a caller fencing a test body on an agent that must
+  # already be idle. A caller that is *cleaning up* (an `on_exit`) wants the
+  # generous cleanup bound instead, and says so by passing
+  # `AgentTestLifecycle.cleanup_ms/0` as the third argument rather than silently
+  # inheriting the detector's 10 ms.
+  defdelegate wait_for_pid_down(space_id, name), to: AgentTestLifecycle
+  defdelegate wait_for_pid_down(space_id, name, timeout), to: AgentTestLifecycle
 
   @space_id_key :nest_test_space_id
+
+  # Every per-agent PubSub topic this test pid is subscribed to, newest first.
+  # A test may wait on more than one agent (a coordinator and its specialist, an
+  # agent and a peer it owes a reply to), and a wait is a fence on the frame that
+  # decides it — so the test pid has to be subscribed to *every* agent it waits
+  # on, not just the last one `start_agent/1` happened to start.
+  @subscribed_topics_key :nest_test_subscribed_topics
 
   @doc """
   Returns the `space_id` stored in the test process dict by the
@@ -154,24 +171,28 @@ defmodule Nest.Agents.AgentTestHelpers do
 
     # Put the machine into the compactor's generating phase with an empty
     # staged request and a live worker ref, then deliver the HTTP response.
-    :sys.replace_state(agent_pid, fn state ->
-      machine = state.live.machine
+    :sys.replace_state(
+      agent_pid,
+      fn state ->
+        machine = state.live.machine
 
-      machine = %{
-        machine
-        | kind: :compaction,
-          phase: :generating,
-          entry: {:compaction, [], carried_entry},
-          work: %{
-            machine.work
-            | worker_kind: :http,
-              worker_ref: ref,
-              active_message_index: state.chat_state.next_message_index
-          }
-      }
+        machine = %{
+          machine
+          | kind: :compaction,
+            phase: :generating,
+            entry: {:compaction, [], carried_entry},
+            work: %{
+              machine.work
+              | worker_kind: :http,
+                worker_ref: ref,
+                active_message_index: state.chat_state.next_message_index
+            }
+        }
 
-      %{state | live: %{state.live | machine: machine}}
-    end)
+        %{state | live: %{state.live | machine: machine}}
+      end,
+      1_000
+    )
 
     send(
       agent_pid,
@@ -223,8 +244,8 @@ defmodule Nest.Agents.AgentTestHelpers do
     # matches `assert_received` patterns prematurely. The
     # bug surfaces most visibly in `agent_compaction_test.exs:82`
     # under parallel coverage runs.
-    drop_stale_pubsub_subscription()
-    subscribe_to_agent_topic(space_id, name)
+    drop_stale_pubsub_subscriptions()
+    subscribe_to_agent(space_id, name)
 
     # Move pre-`start_agent/1` queued items from the test pid's
     # queue to the per-agent queue, then point `:nest_test_agent_pid`
@@ -253,23 +274,17 @@ defmodule Nest.Agents.AgentTestHelpers do
   cases that want raw `Process.flag(:trap_exit, true)` +
   `Process.exit(pid, :shutdown)` semantics.
 
-  Registers `on_exit(fn -> wait_for_pid_down(space_id, name) end)`.
-  The `wait_for_pid_down/3` helper sends
-  `Process.exit(pid, :shutdown)` and BLOCKS on a single
-  `:DOWN` message (NOT a drain loop — see comment on
-  `wait_for_pid_down/3`). This guarantees the agent
-  GenServer has fully terminated (mailbox can no longer
-  fire DB calls) before the test exits the cleanup
-  callback — closing the parallel-test ownership race
-  window.
-
-  Note: this helper does NOT delete the `agents` DB row.
-  The `DataCase` setup's automatic sandbox rollback already
-  covers that — running a DB write in the on_exit process
-  would fail with `DBConnection.OwnershipError` because
-  the on_exit runner doesn't own the test's sandbox
-  checkout. The supervisor stop is what prevents the
-  next test from racing against a ghost pid's DB calls.
+  Registers the cleanup that is safe *after* the test process (the
+  SQL-sandbox connection owner) has exited: dropping this test's subscription
+  to the agent's PubSub topic, and the leak check
+  (`AgentTestLifecycle.detect_leaked_agent/2`) for the path where the test was
+  killed at its per-test deadline. The agent itself is stopped by the test
+  body's teardown (`AgentTestLifecycle.stop_test_agents/0`), which discovers
+  every agent whose space is visible in this test's sandbox transaction — so an
+  `on_exit` stop here would be redundant, and it would run `terminate/2` (and
+  its DB work) on a connection whose owner has already exited. That is the
+  `DBConnection.ConnectionError: owner ... exited` this helper used to be able
+  to produce; see `register_on_exit_cleanup/3` for the full reasoning.
 
   Pair with `vocation_id_for_test/0` for tests that need
   a vocation but don't want the full `start_agent/1` setup.
@@ -285,10 +300,15 @@ defmodule Nest.Agents.AgentTestHelpers do
   def ensure_cleanup(name) do
     space_id = current_space_id()
 
-    on_exit(fn ->
-      _ = Supervisor.stop_agent(space_id, name)
-      AgentTestLifecycle.wait_for_pid_down(space_id, name)
-    end)
+    on_exit(fn -> Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{space_id}:#{name}") end)
+
+    # The in-process teardown (`AgentTestLifecycle.stop_test_agents/0`) stops
+    # this agent on the normal path, but a test killed at its per-test deadline
+    # skips the wrapper entirely — and an agent this helper started is *not*
+    # linked to the test process, so without this it would leak with nothing to
+    # notice it. `detect_leaked_agent/2` only watches, and issues no query, which
+    # is what makes it safe in an `on_exit`.
+    on_exit(fn -> AgentTestLifecycle.detect_leaked_agent(space_id, name) end)
   end
 
   @doc """
@@ -479,11 +499,26 @@ defmodule Nest.Agents.AgentTestHelpers do
   # processes and need explicit access to stubs set on
   # `Mimic.expect(Req, :get, ...)` etc. No-op for tests that
   # don't use Mimic.
+  #
+  # "No-op for tests that don't use Mimic" is now literal. `allow/3` is a
+  # `GenServer.call` to the one global `Mimic.Coordinator`, and an allowance
+  # row for a module this test owns no stub for cannot do anything: the
+  # dispatch path resolves the owner and then finds no stub, so it runs the
+  # original anyway. Measured on this suite: **all 377** `start_agent/1`
+  # calls in a run own none of the three, so 1131 of the run's 1209
+  # `allow/3` calls were provably inert — 94% of the last global rendezvous
+  # in the start path. `Mimic.Coordinator` is the public ETS table Mimic
+  # itself reads ownership rows from, and `{pid, module}` is the row
+  # `Mimic.Server.register_owner/4` inserts for `stub`/`expect`/`reject`;
+  # if Mimic ever changes either, this reads `false` and the allowances the
+  # tests actually need stop being made — a loud failure, not a silent one.
   defp allow_mimic_stubs(pid) do
-    Mimic.allow(OpenAIClient, self(), pid)
-    Mimic.allow(Req, self(), pid)
-    Mimic.allow(DotConfig, self(), pid)
+    [OpenAIClient, Req, DotConfig]
+    |> Enum.filter(&owns_stubs?/1)
+    |> Enum.each(&Mimic.allow(&1, self(), pid))
   end
+
+  defp owns_stubs?(module), do: :ets.member(Mimic.Coordinator, {self(), module})
 
   # Swap the agent's client_config.client to MockClient and start
   # a per-agent queue. The agent threads its pid through
@@ -491,9 +526,13 @@ defmodule Nest.Agents.AgentTestHelpers do
   # calls MockClient.run/2 and finds this test's queue via
   # `opts[:agent_pid]`.
   defp swap_to_mock_client(pid) do
-    :sys.replace_state(pid, fn state ->
-      %{state | client_config: %{state.client_config | client: MockClient}}
-    end)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        %{state | client_config: %{state.client_config | client: MockClient}}
+      end,
+      1_000
+    )
   end
 
   # Transfer any pre-existing queued items from the test-pid queue
@@ -521,67 +560,115 @@ defmodule Nest.Agents.AgentTestHelpers do
 
   # on_exit runs after the test's last assertion, in a SEPARATE
   # ExUnit runner process that does NOT own the test pid's
-  # sandbox checkout — so any DB write here would fail with
-  # `DBConnection.OwnershipError`. `Supervisor.stop_agent/2`
-  # is the right cleanup: it terminates the GenServer, and the
-  # sandbox's checkin (registered by `DataCase.setup_sandbox/2`)
-  # rolls back the agent row automatically. `Agents.delete_agent/2`
-  # (which also drops the DB row) is therefore reserved for
-  # test bodies where the test pid still owns the connection.
+  # sandbox checkout — so any DB work here runs on a connection
+  # whose owner has already exited.
+  #
+  # The agent is stopped by the test body's teardown
+  # (`AgentTestLifecycle.stop_test_agents/0`), which runs while the
+  # checkout is still live. This hook therefore deliberately does NOT stop it:
+  # `Supervisor.stop_agent/2` and `wait_for_pid_down/2` both run `terminate/2`
+  # (which queries — e.g. a child's reply give-up), on that dead connection —
+  # exactly the `DBConnection.ConnectionError: owner ... exited` this file used
+  # to produce. Keep only what is safe once the owner is gone.
   #
   # Order: unlink the agent first so a normal terminate doesn't
-  # propagate `:EXIT` to the (already-dead) test pid. Then
-  # stop the agent via the supervisor, wait for the agent
-  # GenServer to fully terminate before returning (so its
-  # mailbox can't fire DB calls after the test pid has
-  # exited), and unsubscribe from its PubSub topic.
+  # propagate `:EXIT` to the (already-dead) test pid, then stop the mock
+  # client's queue, then unsubscribe from the agent's PubSub topic.
   #
   # Note: this on_exit runs in a SEPARATE ExUnit runner process,
   # so it CANNOT mutate the test process's process dict. Any
-  # attempt to restore `:nest_test_agent_pid` / `:nest_test_subscribed_topic`
+  # attempt to restore `:nest_test_agent_pid` / `:nest_test_subscribed_topics`
   # here would be dead code (the write wouldn't reach the test
   # pid). Those keys are instead refreshed at the start of the
-  # next `start_agent/1` (see `drop_stale_pubsub_subscription/0`
-  # and the `Process.put` in `bridge_test_to_agent/3`).
-  #
-  # The wait-for-DOWN is a SINGLE-MESSAGE receive — not a
-  # drain loop. The drain loop used to live here was killed
-  # with fire and can *NEVER EVER* come back.
-  defp register_on_exit_cleanup(pid, space_id, agent_id) do
-    on_exit(fn ->
-      Process.unlink(pid)
-      MockClient.stop(pid)
-      _ = Supervisor.stop_agent(space_id, agent_id)
-      AgentTestLifecycle.wait_for_pid_down(space_id, agent_id)
-      Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{space_id}:#{agent_id}")
-    end)
+  # next `start_agent/1` (see `drop_stale_pubsub_subscriptions/0`
+  # and the `Process.put` in `bridge_test_to_agent/3`). The
+  # `unsubscribe/2` below is therefore the same kind of no-op for
+  # the test pid — it only unsubscribes this runner process — and is
+  # kept as the belt to `drop_stale_pubsub_subscriptions/0`'s braces.
+  # The two per-test on_exit *closures*, as named functions. The registered
+  # callbacks are exactly what these return, so a test can invoke the callback
+  # that is really registered rather than a lookalike — a stop re-added to
+  # either body is then exercised instead of escaping — and can find them by
+  # their keys (`cleanup_key/2`, `leak_key/2`). Both must issue no query: they
+  # run in a process that does not own this test's sandbox connection.
+  @doc false
+  @spec per_test_on_exit_cleanup(pid(), integer(), String.t()) :: (-> :ok)
+  def per_test_on_exit_cleanup(pid, space_id, agent_id) do
+    fn -> on_exit_cleanup(pid, space_id, agent_id) end
   end
+
+  @doc false
+  @spec per_test_on_exit_leak_check(integer(), String.t()) :: (-> term())
+  def per_test_on_exit_leak_check(space_id, agent_id) do
+    fn -> AgentTestLifecycle.detect_leaked_agent(space_id, agent_id) end
+  end
+
+  defp on_exit_cleanup(pid, space_id, agent_id) do
+    Process.unlink(pid)
+    MockClient.stop(pid)
+    Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{space_id}:#{agent_id}")
+  end
+
+  defp register_on_exit_cleanup(pid, space_id, agent_id) do
+    on_exit(cleanup_key(space_id, agent_id), per_test_on_exit_cleanup(pid, space_id, agent_id))
+    on_exit(leak_key(space_id, agent_id), per_test_on_exit_leak_check(space_id, agent_id))
+  end
+
+  @doc false
+  def cleanup_key(space_id, agent_id), do: {__MODULE__, :cleanup, space_id, agent_id}
+
+  @doc false
+  def leak_key(space_id, agent_id), do: {__MODULE__, :leak_check, space_id, agent_id}
 
   def get_system_prompt(pid) do
     GenServer.call(pid, :get_system_prompt)
   end
 
-  # Drop any leftover PubSub subscription left over from a
+  # Drop every PubSub subscription left over from a
   # prior test in this same pid. `on_exit` runs in a separate
   # ExUnit runner process and can't unsubscribe the test pid,
-  # so each `start_agent/1` clears any topic the test pid
+  # so each `start_agent/1` clears every topic the test pid
   # still holds before subscribing to the new agent's topic.
-  # The current topic is recorded in the `:nest_test_subscribed_topic`
+  # The current topics are recorded in the `:nest_test_subscribed_topics`
   # process-dict key; absence means nothing to drop.
-  defp drop_stale_pubsub_subscription do
-    case Process.get(:nest_test_subscribed_topic) do
-      nil -> :ok
-      old_topic -> Phoenix.PubSub.unsubscribe(Nest.PubSub, old_topic)
-    end
+  defp drop_stale_pubsub_subscriptions do
+    Enum.each(subscribed_topics(), &Phoenix.PubSub.unsubscribe(Nest.PubSub, &1))
 
-    Process.delete(:nest_test_subscribed_topic)
+    Process.delete(@subscribed_topics_key)
   end
 
-  defp subscribe_to_agent_topic(space_id, name) do
+  @doc """
+  Subscribe this test pid to `space_id`/`name`'s per-agent topic and record it
+  so the next `start_agent/1` can drop it.
+
+  `start_agent/1` calls this for the agent it starts. A test that starts an
+  agent by another path — `SubAgentToolsHelpers.start_mocked_specialist/3`'s
+  `Supervisor.spawn_agent_in_space/3`, or a hand-rolled peer — must call it at
+  that call site, *before* the turn it is going to wait on: the idle fence is
+  an arrival (`assert_receive` on `{:chat_status, %{name: name, status:
+  "idle"}}`), so a subscription installed after the turn settled would miss the
+  frame it is waiting for.
+
+  The status payload is self-identifying (`name`, `space_id`), so a test
+  subscribed to several agents' topics fences on the one it is waiting for.
+  """
+  @spec subscribe_to_agent(integer(), String.t()) :: String.t()
+  def subscribe_to_agent(space_id, name) do
     topic = "agent:#{space_id}:#{name}"
-    Phoenix.PubSub.subscribe(Nest.PubSub, topic)
-    Process.put(:nest_test_subscribed_topic, topic)
+
+    # Idempotent: a second `Phoenix.PubSub.subscribe/2` to the same topic
+    # delivers every frame twice and leaks the extra subscription, so the
+    # already-subscribed case is a no-op rather than a re-subscribe.
+    if topic in subscribed_topics() do
+      topic
+    else
+      Phoenix.PubSub.subscribe(Nest.PubSub, topic)
+      Process.put(@subscribed_topics_key, [topic | subscribed_topics()])
+      topic
+    end
   end
+
+  defp subscribed_topics, do: Process.get(@subscribed_topics_key, [])
 
   # Run the agent through the supervisor path (the standard
   # caller interface). Pure data shaping — no DB writes, no

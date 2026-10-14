@@ -90,7 +90,9 @@ defmodule Nest.Agents.Agent.Init do
   # stays under the credo ABC cap.
   defp build_vocation_pipeline(attrs) do
     model = Map.fetch!(attrs, :model)
-    {context_limit, context_limit_source} = initial_context_limit(model)
+    # Internal/test-only cache-tier override; see `initial_context_limit/2`.
+    cache_lookup = Map.get(attrs, :context_limit_lookup, &Nest.Models.context_limit/2)
+    {context_limit, context_limit_source} = initial_context_limit(model, cache_lookup)
 
     {system_prompt, mode, tool_names, cached_vocation} =
       SystemPrompt.compose_vocation_config(
@@ -185,6 +187,27 @@ defmodule Nest.Agents.Agent.Init do
       preloaded,
       last_compaction_index,
       inherited_compaction_count
+    )
+  end
+
+  @doc """
+  Build the live state for a starting agent: the struct from attrs, then
+  the persisted message sequence hydrated into it. No DB access, no
+  broadcasts, no logging (see the hard rule in `Nest.Agents.Agent.init/1`).
+
+  Both callers build state outside the child process: `init/1` (the happy
+  path) and `Agent.PreSpawn.apply_load_heal/2`, which needs a state to run
+  the load-time heal against before the child exists.
+  """
+  @spec build_active_state(map(), Nest.LLM.ClientConfig.t()) :: Nest.Agents.Agent.t()
+  def build_active_state(attrs, client_config) do
+    state = build_state(attrs, client_config)
+
+    seed_from_db(
+      state,
+      Map.get(attrs, :preloaded_messages, []),
+      Map.get(attrs, :last_compaction_index, -1),
+      Map.get(attrs, :compaction_count, 0)
     )
   end
 
@@ -294,15 +317,24 @@ defmodule Nest.Agents.Agent.Init do
   lookup only runs when the previous tier missed — calling
   `Nest.Models.context_limit/2` once costs a `GenServer.call`,
   and `DotConfig.load/0` reads + parses TOML.
+
+  `cache_lookup` defaults to `Nest.Models.context_limit/2`. The
+  `:context_limit_lookup` attr (read by `build_vocation_pipeline/1`)
+  overrides the cache tier only, because that lookup runs inside the
+  agent's `init/1` process — a supervisor child has no `$callers`
+  chain back to the caller, so a caller-side stub is invisible there.
   """
-  @spec initial_context_limit(map()) :: {non_neg_integer(), atom()}
-  def initial_context_limit(model) do
+  @spec initial_context_limit(
+          map(),
+          (String.t() | nil, String.t() | nil -> {atom(), pos_integer()} | nil)
+        ) :: {non_neg_integer(), atom()}
+  def initial_context_limit(model, cache_lookup \\ &Nest.Models.context_limit/2) do
     provider = model[:provider] || model["provider"]
     model_name = model_name(model)
 
     context_limit_layer(
       fn -> Config.configured_context_limit(model_name) end,
-      fn -> Nest.Models.context_limit(provider, model_name) end,
+      fn -> cache_lookup.(provider, model_name) end,
       fn -> Config.configured_provider_default_context_limit(provider) end
     )
   end

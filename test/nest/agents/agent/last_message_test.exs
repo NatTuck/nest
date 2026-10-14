@@ -38,28 +38,36 @@ defmodule Nest.Agents.Agent.LastMessageTest do
 
   # Put the agent in a busy status so a delivery queues rather than draining.
   defp set_busy(pid) do
-    :sys.replace_state(pid, fn state ->
-      %{
-        state
-        | live: %{
-            state.live
-            | machine: Machine.status_to_machine(state.live.machine, :streaming)
-          }
-      }
-    end)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :streaming)
+            }
+        }
+      end,
+      1_000
+    )
   end
 
   # Return the agent to idle so the test-lifecycle check sees nothing in flight.
   defp reset_to_idle(pid) do
-    :sys.replace_state(pid, fn state ->
-      %{
-        state
-        | live: %{
-            state.live
-            | machine: Machine.status_to_machine(state.live.machine, :idle)
-          }
-      }
-    end)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :idle)
+            }
+        }
+      end,
+      1_000
+    )
   end
 
   test "returns the pending delivery, with its id, and consumes it", %{
@@ -70,19 +78,21 @@ defmodule Nest.Agents.Agent.LastMessageTest do
     set_busy(pid)
     assert {:ok, :queued} = Agent.deliver_message(pid, "bob", "the report", :agent)
 
-    [entry] = :sys.get_state(pid).live.inbox
-    assert entry.retrieved == false
+    [entry] = Agent.get_public_info(pid, 1_000).pending_messages
+    assert entry["retrieved"] == false
 
     result = fetch(pid, name, space_id, %{"name" => "bob"})
 
     assert %ToolResult{name: "agents-last-message", is_error: false, content: content} = result
     assert content =~ "the report"
     assert content =~ "bob"
-    assert content =~ entry.id
+    assert content =~ entry["id"]
 
     # The entry is consumed in place: the drain will skip it.
-    assert [%{retrieved: true, id: id}] = :sys.get_state(pid).live.inbox
-    assert id == entry.id
+    assert [%{"retrieved" => true, "id" => id}] =
+             Agent.get_public_info(pid, 1_000).pending_messages
+
+    assert id == entry["id"]
     reset_to_idle(pid)
   end
 
@@ -108,7 +118,9 @@ defmodule Nest.Agents.Agent.LastMessageTest do
     assert %ToolResult{is_error: false, content: content} = result
     assert content == "No undelivered message from agent bob."
     # The human's entry is untouched.
-    assert [%{kind: :user, retrieved: false}] = :sys.get_state(pid).live.inbox
+    assert [%{"kind" => "user", "retrieved" => false}] =
+             Agent.get_public_info(pid, 1_000).pending_messages
+
     reset_to_idle(pid)
   end
 
@@ -134,16 +146,16 @@ defmodule Nest.Agents.Agent.LastMessageTest do
       set_busy(pid)
       assert {:ok, :queued} = Agent.deliver_message(pid, "bob", "report #{n}", :agent)
       assert %ToolResult{is_error: false} = fetch(pid, name, space_id, %{"name" => "bob"})
-      assert [%{retrieved: true}] = :sys.get_state(pid).live.inbox
+      assert [%{"retrieved" => true}] = Agent.get_public_info(pid, 1_000).pending_messages
 
       # The turn ends: the stop path's drain must prune the retrieved entry
-      # rather than leave it queued.
+      # rather than leave it queued. `stop_chat/2` only arms the bounded
+      # fallback timer, so the drain (and its `chat_inbox` broadcast) is a
+      # genuine later event; wait for that frame, not for the state it writes.
       Agent.stop_chat(pid, self())
 
-      assert Eventually.eventually(
-               fn -> :sys.get_state(pid).live.inbox == [] end,
-               timeout: 500
-             )
+      assert_receive {:chat_inbox, %{count: 0, messages: []}}, 1_000
+      assert Agent.get_public_info(pid, 1_000).pending_messages == []
     end)
   end
 

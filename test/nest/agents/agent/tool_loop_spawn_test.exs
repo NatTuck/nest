@@ -18,7 +18,6 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
   import ExUnit.CaptureLog
   import Mimic
 
-  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.PersistedAgent
@@ -205,7 +204,8 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
       assert delivered =~ "the answer"
 
       # The child's usage merged into the parent's descendant totals.
-      assert :sys.get_state(parent_pid).llm_metrics.descendant_usage.output_tokens == 42
+      assert Nest.Agents.Agent.get_public_info(parent_pid, 1_000).descendant_usage.output_tokens ==
+               42
     end
 
     test "a child stopped before it answered reaches the parent as a bare notice", %{vid: vid} do
@@ -370,30 +370,25 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
   # delivery started, so no background process touches the sandbox after the
   # test ends. Returns every matching delivered text, so a caller can assert
   # there is *exactly one* (a duplicate delivery must fail the test).
+  #
+  # The fence is the idle frame that ends the delivery's own turn. A bare
+  # `status: "idle"` would not do: the child event's settle rebroadcasts the
+  # status *before* it drains the delivery it just queued, so that first idle
+  # frame still counts the delivery as pending. The turn's end is the idle
+  # frame whose inbox the drain has emptied.
   defp await_delivery(parent_pid, needle) do
-    Eventually.eventually(
-      fn -> delivered_when_idle(parent_pid, needle) end,
-      timeout: 500
-    )
+    assert_receive {:chat_status, %{status: "idle", pendingMessageCount: 0}}, 1_000
+    delivered(Nest.Agents.Agent.get_messages(parent_pid, 1_000), needle)
   end
 
-  defp delivered_when_idle(parent_pid, needle) do
-    state = :sys.get_state(parent_pid)
-
-    case {Machine.status_for(state.live.machine), delivered(state, needle)} do
-      {:idle, [_ | _] = delivered} -> delivered
-      _ -> nil
-    end
-  end
-
-  defp delivered(state, needle) do
-    state.chat_state.messages
+  defp delivered(messages, needle) do
+    messages
     |> Enum.flat_map(&user_texts/1)
     |> Enum.filter(&(&1 =~ needle))
   end
 
   defp parent_texts(parent_pid) do
-    :sys.get_state(parent_pid).chat_state.messages |> Enum.flat_map(&user_texts/1)
+    Nest.Agents.Agent.get_messages(parent_pid, 1_000) |> Enum.flat_map(&user_texts/1)
   end
 
   defp user_texts({:user, %{parts: parts}}) do

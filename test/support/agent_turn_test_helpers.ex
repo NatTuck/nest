@@ -6,10 +6,10 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   `Nest.Agents.Agent.CloneAgentFlowTest`, `TimelineEmittersTest`,
   `ReplyDebtTest`).
 
-  `statuses_until_idle/1` is an *ordered* collector, not a drain: it stops
-  at the first `idle`, so a test can assert the whole sequence and an `idle`
-  anywhere before the end fails. `assert_request/0` reads the request lists
-  the caller's `MockClient` spy sent.
+  `statuses_until_idle/2` is an *ordered* collector, not a drain: it stops
+  at the first `idle` (for the agent it is named), so a test can assert the
+  whole sequence and an `idle` anywhere before the end fails. `assert_request/0`
+  reads the request lists the caller's `MockClient` spy sent.
 
   `park_llm_requests/1` + `next_request/0` + `release_llm/1` are the
   *parked* variant of the same observation: each request is held until the
@@ -17,8 +17,16 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   transcript) at a specific point of a turn is not racing the HTTP worker
   for the agent's mailbox.
 
-  Both fences are 500 ms, the project's cap for test fences: a turn here is
-  two mock HTTP calls plus one in-memory tool batch.
+  `await_delivery/1` is the fence for a *delivery* rather than for a turn: it
+  consumes this test pid's frames up to the `{:chat_message, {:user, …}}` frame
+  that carries a given text, so a test can then fence on the `idle` frame that
+  ends the turn that delivery started — even when an earlier turn's `idle` is
+  still queued.
+
+  The frame waits (`statuses_until_idle/2` and `await_delivery/1`, both 1000 ms —
+  the suite's fence bound, since both wait on an `idle` frame) bound a frame the
+  turn is already producing; `assert_request/0` and `next_request/0` are 500 ms
+  and 1000 ms. A turn here is two mock HTTP calls plus one in-memory tool batch.
   """
 
   import ExUnit.Assertions
@@ -27,19 +35,26 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
 
-  # Collect the `chat:status` sequence up to (and including) the first
-  # `idle`. `start_agent/1` subscribes the test pid to the agent's topic.
-  @spec statuses_until_idle([String.t()]) :: [String.t()]
-  def statuses_until_idle(acc \\ []) do
+  # Collect the `chat:status` sequence *for one agent* up to (and including)
+  # the first `idle`, bounded at 1000 ms — the suite's fence bound, because this
+  # wait's own frame is an `idle` frame. `start_agent/1` subscribes the test pid
+  # to the agent's topic, and a test may also be subscribed to a peer's or a
+  # specialist's, so the sequence is filtered by the payload's own `name`:
+  # without it, a second agent's frames would interleave with this agent's and
+  # the asserted sequence would be a fiction.
+  @spec statuses_until_idle(String.t(), [String.t()]) :: [String.t()]
+  def statuses_until_idle(name, acc \\ []) do
     receive do
-      {:chat_status, %{status: "idle"}} ->
+      {:chat_status, %{name: ^name, status: "idle"}} ->
         Enum.reverse(["idle" | acc])
 
-      {:chat_status, %{status: status}} ->
-        statuses_until_idle([status | acc])
+      {:chat_status, %{name: ^name, status: status}} ->
+        statuses_until_idle(name, [status | acc])
     after
-      500 ->
-        flunk("no idle status within 500ms; statuses so far: #{inspect(Enum.reverse(acc))}")
+      1_000 ->
+        flunk(
+          "no idle status for #{name} within 1000ms; statuses so far: #{inspect(Enum.reverse(acc))}"
+        )
     end
   end
 
@@ -75,12 +90,70 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
     Mimic.stub(MockClient, :run, fn request, opts ->
       send(test_pid, {:llm_request, request.messages, self()})
 
+      # This closure runs in the agent's HTTP worker, so `self()` here is that
+      # worker; `test_pid` is the process that called `park_llm_requests/1`
+      # (the test). We monitor the *test*, because the test going away is the
+      # only reason to give up the park.
+      #
+      # No `after` clause: release is the test's `release_llm/1` or the test
+      # process's own `:DOWN`, both events. See `park/3` for why the timer this
+      # replaced was a hazard rather than a safety net.
+      ref = Process.monitor(test_pid)
+
       receive do
         :release_llm -> :ok
-      after
-        # Safety valve only: it exists so a failing test cannot leave the HTTP
-        # worker (and with it the turn) parked for long.
-        1_000 -> :ok
+        {:DOWN, ^ref, :process, ^test_pid, _reason} -> :ok
+      end
+
+      Process.demonitor(ref, [:flush])
+
+      Mimic.call_original(MockClient, :run, [request, opts])
+    end)
+
+    Mimic.allow(MockClient, self(), pid)
+  end
+
+  @doc """
+  Park the **next** LLM request only, then let every later request run.
+
+  `park_llm_requests/1`'s one-shot sibling, for a test that has to read the
+  agent's state at one point of a turn but must not control how many turns the
+  rest of the test starts — that count is a scheduling outcome, and a test that
+  had to release every request would be asserting it.
+
+  The first request after installation parks and reports
+  `{:llm_request, messages, worker}` exactly as `park_llm_requests/1` does, so
+  `next_request/0` and `release_llm/1` work unchanged; every request after it
+  goes straight through to the original. The claim is taken with `:counters`
+  because the stub runs in whichever process makes the call, and successive
+  requests need not be the same one.
+
+  **Mutually exclusive with `park_llm_requests/1`.** Both replace
+  `MockClient.run/2` with `Mimic.stub/3`, so installing the second silently
+  replaces the first and drops its park with no error — use one or the other,
+  never both.
+  """
+  @spec park_next_llm_request(pid()) :: :ok
+  def park_next_llm_request(pid) do
+    test_pid = self()
+    taken = :counters.new(1, [])
+
+    Mimic.stub(MockClient, :run, fn request, opts ->
+      :counters.add(taken, 1, 1)
+
+      if :counters.get(taken, 1) == 1 do
+        send(test_pid, {:llm_request, request.messages, self()})
+
+        # As in `park_llm_requests/1`: the only reason to give up the park is
+        # the test going away, which is an event, not a clock.
+        ref = Process.monitor(test_pid)
+
+        receive do
+          :release_llm -> :ok
+          {:DOWN, ^ref, :process, ^test_pid, _reason} -> :ok
+        end
+
+        Process.demonitor(ref, [:flush])
       end
 
       Mimic.call_original(MockClient, :run, [request, opts])
@@ -96,7 +169,7 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   """
   @spec next_request() :: {[term()], pid()}
   def next_request do
-    assert_receive {:llm_request, messages, worker}, 500
+    assert_receive {:llm_request, messages, worker}, 1_000
     {messages, worker}
   end
 
@@ -113,10 +186,9 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   `hold_result: true` it parks a second time *after* it, sending
   `{:send_delivered, worker}` and waiting for `:release_result` — so the batch is
   still in flight while the delivered message's turn runs, which is the shape
-  where the batch's own result arrives only once that turn has ended. Each park's
-  `after` is a safety valve (3 s — see `park/3`) so a failing test cannot leave
-  the worker parked for long; release a decisive park within one fence, as the
-  invariant on `park/3` requires.
+  where the batch's own result arrives only once that turn has ended. Each park
+  ends on the test's release or on the test process's own `:DOWN`, so a failing
+  test cannot leave the worker parked (see `park/3`).
   """
   @spec park_agent_sends(pid(), keyword()) :: :ok
   def park_agent_sends(pid, opts \\ []) do
@@ -154,8 +226,8 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   the caller's batch is still in flight — the batch is backgrounded, not the
   answer queued behind it.
 
-  Both parks use the 3 s safety valve documented on `park/3`; release a decisive
-  park within one fence, as the invariant there requires.
+  Both parks end on the test's release or on the test process's own `:DOWN` —
+  see `park/3`; there is no timer on either path.
   """
   @spec park_agent_queries(pid(), keyword()) :: :ok
   def park_agent_queries(pid, opts \\ []) do
@@ -178,27 +250,74 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
     Mimic.allow(Nest.Agents, self(), pid)
   end
 
-  # Park the worker until the test releases it.
+  # Park the worker until the test releases it — or until the test process
+  # itself ends.
   #
-  # The 3 s `after` is a safety valve, not a timing assumption — it only ever
-  # fires for a test that has already failed — and it is deliberately longer than
-  # a turn fence (2 s, `Nest.Agents.SubAgentToolsHelpers.turn_fence_ms/0`) so a
-  # slow host fails a fence instead of silently flipping the outcome a park pins;
-  # it stays under ExUnit's 5 s per-test timeout.
+  # Both exits are events, and there is deliberately **no timer**. The `after`
+  # clause this used to carry was a valve whose only job was "the owner went
+  # away"; the owner going away is directly observable, so a timer there was
+  # never a safety net — it was a race. It could fire while the owner was still
+  # running and let the worker proceed, silently flipping the outcome a decisive
+  # park pins instead of letting the test's own fence report the failure. A
+  # monitor cannot do that: `:DOWN` arrives only once the owner is gone.
   #
-  # INVARIANT (do not break this when editing a parked test): a *decisive* park —
-  # one whose release decides which outcome the test observes — must be released
-  # within one fence, and this valve must stay longer than that fence. Inserting
-  # an extra wait (an `eventually`, another `assert_receive`) between a decisive
-  # park and its release spends the margin between the fence and the valve, and
-  # then a slow host flips the pinned outcome instead of failing the fence.
-  defp park(test_pid, blocked, release, timeout \\ 3_000) do
+  # HISTORY (kept because the reason it was fragile still explains the shape of
+  # a parked test, but it is no longer a live constraint on any number): the
+  # valve was 3 s and had to stay *strictly longer* than a whole-turn fence
+  # (`Nest.Agents.SubAgentToolsHelpers.await_idle/1`, 2 s at the time), so that a
+  # slow host failed the fence rather than silently flipping a pinned outcome.
+  # `#21` caps every test-side timeout at 2 s, which made "valve > fence"
+  # impossible to satisfy. Removing the timer removes the constraint instead of
+  # trading one number against another.
+  #
+  # What still matters when editing a parked test: a *decisive* park — one whose
+  # release decides which outcome the test observes — must be released by the
+  # test itself. An extra wait (an `eventually`, another `assert_receive`)
+  # between a decisive park and its release is fine; a park whose release the
+  # test never reaches is now a loud ExUnit timeout rather than a quiet flip.
+  defp park(test_pid, blocked, release) do
     send(test_pid, {blocked, self()})
+
+    ref = Process.monitor(test_pid)
 
     receive do
       ^release -> :ok
+      {:DOWN, ^ref, :process, ^test_pid, _reason} -> :ok
+    end
+
+    Process.demonitor(ref, [:flush])
+  end
+
+  @doc """
+  Consume this test pid's frames up to the `{:chat_message, {:user, …}}` frame
+  whose text carries `needle`, and return that text.
+
+  The frames broadcast *before* a delivery — the turn that caused it, and the
+  `{:broadcast, :status, nil}` every child event emits while the agent is idle —
+  are already in this mailbox, and `assert_receive/2` scans it from the front. So
+  a test that fences on the `idle` frame that ends the delivery's turn has to get
+  past them first, or it matches the earlier `idle` and reads the transcript a
+  turn too soon.
+
+  Consumed on the way: earlier `{:user, …}` frames (the test's own chat, or an
+  earlier delivery) and **every `idle` `chat:status` frame, whichever agent
+  broadcast it** — a frame carries its own agent's name, but the collector has no
+  name to filter on, so it is for a test that waits on one agent's deliveries.
+  Every other frame is left where it is.
+  """
+  @spec await_delivery(String.t()) :: String.t()
+  def await_delivery(needle) do
+    receive do
+      {:chat_message, {:user, %{parts: parts}}} ->
+        case for %Part.Text{text: text} <- parts || [], is_binary(text), text =~ needle, do: text do
+          [] -> await_delivery(needle)
+          [text | _] -> text
+        end
+
+      {:chat_status, %{status: "idle"}} ->
+        await_delivery(needle)
     after
-      timeout -> :ok
+      1_000 -> flunk("no delivered message containing #{inspect(needle)} within 1000ms")
     end
   end
 

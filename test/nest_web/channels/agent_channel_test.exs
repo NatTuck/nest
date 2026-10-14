@@ -171,14 +171,15 @@ defmodule NestWeb.AgentChannelTest do
          }}
       )
 
-      assert_push "chat:delta", %{"content" => "x"}, 500
+      assert_push "chat:delta", %{"content" => "x"}, 1_000
 
       # A duplicate would come from the *same* PubSub delivery (a doubled
       # subscription), so it is already in this mailbox once the channel has
       # handled the broadcast. `:sys.get_state/1` is a synchronous call to the
       # channel process, so the check below is deterministic rather than a
       # 200 ms window.
-      _ = :sys.get_state(socket.channel_pid)
+      # allowlist: barrier — anchor for refute_push "chat:delta"
+      _ = :sys.get_state(socket.channel_pid, 1_000)
       refute_push "chat:delta", %{"content" => "x"}, 0
     end
   end
@@ -195,16 +196,16 @@ defmodule NestWeb.AgentChannelTest do
       # after the rejoin matches the *new* channel's init, not the
       # stale one. Without this, the assertion sees the setup's
       # messageCount = 0 and the test would pass for the wrong reason.
-      assert_push "init", _setup_init, 2000
+      assert_push "init", _setup_init, 1_000
 
       # Push one user message; the agent will respond, leaving 2 persisted messages.
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # Drop the first channel and wait for it to actually terminate
       # before rejoining. Monitor + :DOWN is the synchronous Erlang
@@ -223,7 +224,7 @@ defmodule NestWeb.AgentChannelTest do
       {:ok, _, _new_socket} =
         subscribe_and_join(connected, NestWeb.AgentChannel, "agent:#{space_id}:#{id}")
 
-      assert_push "init", payload, 2000
+      assert_push "init", payload, 1_000
       assert payload["messageCount"] == 3
     end
   end
@@ -235,9 +236,9 @@ defmodule NestWeb.AgentChannelTest do
 
       # Wait for the user message to be broadcast so the LLM Task is
       # actively using the stub before the test exits.
-      assert_push "chat:message", %{"role" => "user"}, 500
+      assert_push "chat:message", %{"role" => "user"}, 1_000
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "accepts a mode field in the payload", %{socket: socket} do
@@ -246,17 +247,17 @@ defmodule NestWeb.AgentChannelTest do
 
       # The user message broadcast includes the mode (which gets stored
       # in the User struct's metadata).
-      assert_push "chat:message", %{"role" => "user"}, 500
+      assert_push "chat:message", %{"role" => "user"}, 1_000
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "omitting mode is allowed (defaults to chat)", %{socket: socket} do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
-      assert_push "chat:message", %{"role" => "user"}, 500
+      assert_push "chat:message", %{"role" => "user"}, 1_000
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "broadcasts user message with index", %{socket: socket} do
@@ -264,16 +265,16 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref, :ok, %{}
 
       # Receive user message broadcast first
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
 
       # Then receive streaming deltas
-      assert_push "chat:delta", payload, 500
+      assert_push "chat:delta", payload, 1_000
       assert is_integer(payload["index"])
       assert is_binary(payload["content"])
       assert is_integer(payload["charsStart"])
       assert is_integer(payload["charsEnd"])
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "chat:status broadcast carries currentMode (sticky mode)", %{socket: socket} do
@@ -288,12 +289,12 @@ defmodule NestWeb.AgentChannelTest do
       # finalizes with a chat:status: idle. Drain intermediate
       # broadcasts with `assert_push` and `assert_receive` and
       # then assert the final status carries `currentMode`.
-      assert_push "chat:message", %{"role" => "user"}, 500
+      assert_push "chat:message", %{"role" => "user"}, 1_000
 
       # Drain the streaming path. We don't care about each
       # delta — just make sure the assistant message and the
       # idle status both arrive.
-      assert_push "chat:message", %{"role" => "assistant"}, 500
+      assert_push "chat:message", %{"role" => "assistant"}, 1_000
 
       # The broadcast carries the queued count too (here 0: nothing is queued).
       assert_push "chat:status",
@@ -311,21 +312,21 @@ defmodule NestWeb.AgentChannelTest do
       # broadcast; we use non-blocking receive with `after 0`
       # to drain any extra deltas that landed between the
       # user message and the assistant.
-      assert_push "chat:message", %{"role" => "user"}, 500
+      assert_push "chat:message", %{"role" => "user"}, 1_000
 
       # Each chat:delta is a known broadcast. The mock returns
       # one text event → one delta. Verify its shape.
-      assert_push "chat:delta", delta, 500
+      assert_push "chat:delta", delta, 1_000
       assert is_integer(delta["index"])
       assert is_binary(delta["content"])
       assert is_integer(delta["charsStart"])
       assert is_integer(delta["charsEnd"])
       assert delta["charsEnd"] > delta["charsStart"]
 
-      assert_push "chat:message", %{"role" => "assistant", "index" => idx}, 500
+      assert_push "chat:message", %{"role" => "assistant", "index" => idx}, 1_000
       assert idx >= 0
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 
@@ -401,7 +402,7 @@ defmodule NestWeb.AgentChannelTest do
 
       # Starting a job broadcasts the new list to the channel. PubSub
       # payloads keep their atom keys on the test socket.
-      assert_push "shell:jobs", %{jobs: [job]}, 500
+      assert_push "shell:jobs", %{jobs: [job]}, 1_000
       assert job.status == :running
 
       ref = push(socket, "shell:list", %{})
@@ -443,7 +444,7 @@ defmodule NestWeb.AgentChannelTest do
                  grace_ms: 0
                )
 
-      assert_push "shell:jobs", %{jobs: [job]}, 500
+      assert_push "shell:jobs", %{jobs: [job]}, 1_000
 
       # Fill the job's on-disk log well past the frame cap, with an
       # invalid byte inside the kept head (raw binary output must not
@@ -471,7 +472,7 @@ defmodule NestWeb.AgentChannelTest do
       seed_archive(space_id, name)
 
       ref = push_history(socket, %{"limit" => 2})
-      assert_reply ref, :ok, %{"messages" => page}, 0
+      assert_reply ref, :ok, %{"messages" => page}, 1_000
       # Ascending order; the newest page sits at the boundary.
       assert Enum.map(page, & &1["index"]) == [3, 4]
 
@@ -479,7 +480,7 @@ defmodule NestWeb.AgentChannelTest do
       # the human-tagged row. Index 2 is a delivered peer message (user role,
       # no `origin`) and must not be recalled.
       ref = push_history(socket, %{"role" => "user"})
-      assert_reply ref, :ok, %{"messages" => users}, 0
+      assert_reply ref, :ok, %{"messages" => users}, 1_000
       assert Enum.map(users, & &1["index"]) == [1]
       assert Enum.all?(users, &(&1["role"] == "user"))
     end
@@ -492,39 +493,36 @@ defmodule NestWeb.AgentChannelTest do
       seed_archive(space_id, name)
 
       ref = push_history(socket, %{"before" => 2, "limit" => 2})
-      assert_reply ref, :ok, %{"messages" => page}, 0
+      assert_reply ref, :ok, %{"messages" => page}, 1_000
       assert Enum.map(page, & &1["index"]) == [0, 1]
 
       ref = push_history(socket, %{"before" => 0})
-      assert_reply ref, :ok, %{"messages" => []}, 0
+      assert_reply ref, :ok, %{"messages" => []}, 1_000
     end
 
     test "rejects invalid before / limit / role", %{socket: socket} do
       ref = push_history(socket, %{"before" => -1})
-      assert_reply ref, :error, %{"reason" => "invalid_before"}, 0
+      assert_reply ref, :error, %{"reason" => "invalid_before"}, 1_000
 
       ref = push_history(socket, %{"limit" => 0})
-      assert_reply ref, :error, %{"reason" => "invalid_limit"}, 0
+      assert_reply ref, :error, %{"reason" => "invalid_limit"}, 1_000
 
       ref = push_history(socket, %{"role" => "bogus"})
-      assert_reply ref, :error, %{"reason" => "invalid_role"}, 0
+      assert_reply ref, :error, %{"reason" => "invalid_role"}, 1_000
     end
 
     test "returns [] for a never-compacted agent", %{socket: socket} do
       ref = push_history(socket, %{})
-      assert_reply ref, :ok, %{"messages" => []}, 0
+      assert_reply ref, :ok, %{"messages" => []}, 1_000
     end
   end
 
-  # Push `chat:history` and wait for the channel to handle it: `gen_server`
-  # handles this system message only after the push, and the channel sends the
-  # reply before answering it, so the reply is already in our mailbox and the
-  # 0 ms `assert_reply` below is a mailbox read, not a race. The reply is
-  # DB-backed with a rare 130-160 ms tail under 24-way concurrency.
+  # Push `chat:history` and return its ref. The reply is the event that decides
+  # the read: it is DB-backed, with a rare 130-160 ms tail under the suite's
+  # 24-way concurrency, so every caller gives `assert_reply` a real bound rather
+  # than synchronising on the channel process to read it with a `0` fence.
   defp push_history(socket, payload) do
-    ref = push(socket, "chat:history", payload)
-    _ = :sys.get_state(socket.channel_pid)
-    ref
+    push(socket, "chat:history", payload)
   end
 
   describe "handle_in(change_model)" do
@@ -580,7 +578,7 @@ defmodule NestWeb.AgentChannelTest do
           # drop the repair banner. The PubSub payload uses atom
           # keys (it doesn't transit through JSON encoding — JS
           # reads those maps via React's normal serialization).
-          assert_receive {:chat_status, payload}, 500
+          assert_receive {:chat_status, payload}, 1_000
           assert payload.status == "idle"
           assert payload.model["name"] == "qwen3.5-plus"
         end)

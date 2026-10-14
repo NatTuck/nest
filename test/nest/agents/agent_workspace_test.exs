@@ -99,7 +99,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       {pid, _vid, _old} = workspace_agent!()
       new = new_ws("new")
 
-      system_before = List.first(:sys.get_state(pid).chat_state.messages)
+      system_before = List.first(Nest.Agents.Agent.get_messages(pid, 1_000))
 
       :ok =
         Agents.edit_agent(
@@ -109,7 +109,8 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
           new
         )
 
-      state = :sys.get_state(pid)
+      # allowlist: snapshot — workspace_path + tools + messages
+      state = :sys.get_state(pid, 1_000)
       assert state.workspace_path == new
 
       # Tool closures rebuilt against the new path.
@@ -143,7 +144,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
                )
 
       # The agent's workspace is unchanged.
-      assert :sys.get_state(pid).workspace_path == old
+      assert Nest.Agents.Agent.get_public_info(pid, 1_000).workspace_path == old
     end
 
     test "rejects a missing workspace and an under-/tmp workspace" do
@@ -165,22 +166,26 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
                  "/tmp/under"
                )
 
-      assert :sys.get_state(pid).workspace_path == old
+      assert Nest.Agents.Agent.get_public_info(pid, 1_000).workspace_path == old
     end
 
     test "refuses while the agent is busy" do
       {pid, _vid, _old} = workspace_agent!()
       new = new_ws("new")
 
-      :sys.replace_state(pid, fn state ->
-        %{
-          state
-          | live: %{
-              state.live
-              | machine: Machine.status_to_machine(state.live.machine, :streaming)
-            }
-        }
-      end)
+      :sys.replace_state(
+        pid,
+        fn state ->
+          %{
+            state
+            | live: %{
+                state.live
+                | machine: Machine.status_to_machine(state.live.machine, :streaming)
+              }
+          }
+        end,
+        1_000
+      )
 
       assert {:error, :agent_busy} =
                Agents.edit_agent(
@@ -193,15 +198,19 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       # The `:streaming` status was fabricated for the refusal check
       # (there is no real turn). Restore idle so the teardown's
       # zero-in-flight-agents assertion holds.
-      :sys.replace_state(pid, fn state ->
-        %{
-          state
-          | live: %{
-              state.live
-              | machine: Machine.status_to_machine(state.live.machine, :idle)
-            }
-        }
-      end)
+      :sys.replace_state(
+        pid,
+        fn state ->
+          %{
+            state
+            | live: %{
+                state.live
+                | machine: Machine.status_to_machine(state.live.machine, :idle)
+              }
+          }
+        end,
+        1_000
+      )
     end
   end
 
@@ -217,7 +226,8 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
           new
         )
 
-      state = :sys.get_state(pid)
+      # allowlist: snapshot — workspace_path + messages
+      state = :sys.get_state(pid, 1_000)
       assert state.workspace_path == new
       assert {:assistant, %{parts: parts}} = List.last(state.chat_state.messages)
       assert Enum.any?(parts, &(&1.text == "Workspace directory change confirmed."))
@@ -233,7 +243,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       assert {:error, :workspace_under_tmp} =
                Agents.change_workspace(space_id, agent_name(pid), "/tmp/under")
 
-      assert :sys.get_state(pid).workspace_path == old
+      assert Nest.Agents.Agent.get_public_info(pid, 1_000).workspace_path == old
     end
 
     test "reapplies the max-depth spawn exclusion when tools are rebuilt" do
@@ -270,15 +280,15 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
 
       # Below max depth the spawn tools survive the rebuild.
       :ok = Agents.change_workspace(space_id, agent_name(pid), second)
-      assert Enum.any?(:sys.get_state(pid).tools, &(&1.name == "agents-spawn"))
+      assert Enum.any?(Nest.Agents.Agent.get_tools(pid, 1_000), &(&1.name == "agents-spawn"))
 
       # At max depth they are dropped, matching Init/compaction.
       max = Config.configured_max_depth()
-      :sys.replace_state(pid, fn state -> %{state | depth: max} end)
+      :sys.replace_state(pid, fn state -> %{state | depth: max} end, 1_000)
 
       :ok = Agents.change_workspace(space_id, agent_name(pid), third)
 
-      tools = :sys.get_state(pid).tools
+      tools = Nest.Agents.Agent.get_tools(pid, 1_000)
       refute Enum.any?(tools, &(&1.name in ["agents-spawn", "agents-batch"]))
       assert Enum.any?(tools, &(&1.name == "file-read"))
     end
@@ -298,7 +308,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
     end
   end
 
-  defp agent_name(pid), do: :sys.get_state(pid).name
+  defp agent_name(pid), do: Nest.Agents.Agent.get_public_info(pid, 1_000).name
 
   defp test_model, do: %{name: "qwen3.5-plus", provider: "model-studio"}
 end

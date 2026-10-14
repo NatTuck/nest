@@ -192,14 +192,25 @@ defmodule Nest.Agents.AgentAgentsMdTest do
         {:user, %Nest.Messages.User{index: 1, parts: [%Part.Text{text: "hi"}], api_logs: []}}
       ]
 
-      :sys.replace_state(pid, fn state ->
-        %{state | chat_state: %{state.chat_state | messages: messages}}
-      end)
+      :sys.replace_state(
+        pid,
+        fn state ->
+          %{state | chat_state: %{state.chat_state | messages: messages}}
+        end,
+        1_000
+      )
 
       send_compaction_done(pid, "Summary text.", nil)
-      _ = :sys.get_state(pid)
 
-      final_messages = :sys.get_state(pid).chat_state.messages
+      # The commit broadcasts `chat:compaction` inline from the agent while it
+      # handles the response, after the marker and the regenerated messages are
+      # in the state — so the frame is the happens-after event for the commit,
+      # and the read below (a call to the same process) is ordered behind it.
+      # The marker payload is the pin: a fence that could be satisfied by
+      # anything other than a commit would fail here.
+      assert_receive {:chat_compaction, %{marker: %{"role" => "compaction"}}}, 1_000
+
+      final_messages = Nest.Agents.Agent.get_messages(pid, 1_000)
 
       assert match?({:system, _}, Enum.at(final_messages, 0)),
              "expected system message at messages[0]"
@@ -211,7 +222,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
       # The `nil` continuation resumes the post-compaction LLM turn;
       # finish it so the agent is idle when the test ends (the
       # teardown asserts zero in-flight agents).
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 end

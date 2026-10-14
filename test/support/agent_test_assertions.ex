@@ -43,7 +43,7 @@ defmodule Nest.Agents.AgentTestAssertions do
   end
 
   @doc """
-  Assert every message in `state.chat_state.messages` has a
+  Assert every message in the given message list has a
   unique `index` field. Regression guard for the
   dual-counter bug class: a budget reminder and the next
   response used to share an index, causing the UI's
@@ -52,13 +52,18 @@ defmodule Nest.Agents.AgentTestAssertions do
   chat-flow integration test that drives a turn to
   completion.
 
+  Takes the message list itself (not an agent state), so the
+  assertion reads exactly what it checks: callers pass
+  `Agent.get_messages(pid)`, or `state.chat_state.messages`
+  when they already hold a snapshot for another reason.
+
   Compaction markers (which are `{:compaction, _}` tuples
   with their own `index` field) are ignored — only the four
   persisted message roles are asserted.
   """
-  def assert_unique_message_indices(state) do
+  def assert_unique_message_indices(messages) do
     indices =
-      state.chat_state.messages
+      messages
       |> Enum.flat_map(fn
         {_, %{index: idx}} -> [idx]
         _ -> []
@@ -97,9 +102,13 @@ defmodule Nest.Agents.AgentTestAssertions do
       size: Keyword.get(opts, :size, size)
     }
 
-    :sys.replace_state(pid, fn state ->
-      new_cache = Map.put(state.chat_state.read_files, path, recorded)
-      %{state | chat_state: %{state.chat_state | read_files: new_cache}}
-    end)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        new_cache = Map.put(state.chat_state.read_files, path, recorded)
+        %{state | chat_state: %{state.chat_state | read_files: new_cache}}
+      end,
+      1_000
+    )
   end
 end

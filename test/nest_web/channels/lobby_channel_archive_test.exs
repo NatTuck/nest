@@ -54,8 +54,8 @@ defmodule NestWeb.LobbyChannelArchiveTest do
       assert Enum.any?(init.spaces, &(&1.id == space_id))
       refute Enum.any?(init.archived_spaces, &(&1.id == space_id))
 
-      ref = push_and_settle(socket, "archive_space", %{"space_id" => space_id})
-      assert_reply ref, :ok, %{}, 0
+      ref = push(socket, "archive_space", %{"space_id" => space_id})
+      assert_reply ref, :ok, %{}, 1_000
       # #41: the frame rides the per-user topic and is pushed to this
       # client, not broadcast on the shared "lobby" topic.
       assert_push "space:archived", %{"space_id" => ^space_id}
@@ -64,8 +64,8 @@ defmodule NestWeb.LobbyChannelArchiveTest do
       assert Spaces.list_for_user(user.id) |> Enum.map(& &1.id) |> Enum.member?(space_id) == false
       assert Spaces.list_archived_for_user(user.id) |> Enum.map(& &1.id) == [space_id]
 
-      ref = push_and_settle(socket, "unarchive_space", %{"space_id" => space_id})
-      assert_reply ref, :ok, %{}, 0
+      ref = push(socket, "unarchive_space", %{"space_id" => space_id})
+      assert_reply ref, :ok, %{}, 1_000
       # #41: the frame rides the per-user topic and is pushed to this
       # client, not broadcast on the shared "lobby" topic.
       assert_push "space:unarchived", %{"space_id" => ^space_id}
@@ -87,21 +87,21 @@ defmodule NestWeb.LobbyChannelArchiveTest do
 
       {socket, _init} = join_lobby()
 
-      ref = push_and_settle(socket, "archive_space", %{"space_id" => space_id})
-      assert_reply ref, :error, %{"reason" => "forbidden"}, 0
+      ref = push(socket, "archive_space", %{"space_id" => space_id})
+      assert_reply ref, :error, %{"reason" => "forbidden"}, 1_000
 
-      ref = push_and_settle(socket, "unarchive_space", %{"space_id" => space_id})
-      assert_reply ref, :error, %{"reason" => "forbidden"}, 0
+      ref = push(socket, "unarchive_space", %{"space_id" => space_id})
+      assert_reply ref, :error, %{"reason" => "forbidden"}, 1_000
     end
 
     test "returns not_found for a missing space" do
       {socket, _init} = join_lobby()
 
-      ref = push_and_settle(socket, "archive_space", %{"space_id" => -1})
-      assert_reply ref, :error, %{"reason" => "not_found"}, 0
+      ref = push(socket, "archive_space", %{"space_id" => -1})
+      assert_reply ref, :error, %{"reason" => "not_found"}, 1_000
 
-      ref = push_and_settle(socket, "unarchive_space", %{"space_id" => -1})
-      assert_reply ref, :error, %{"reason" => "not_found"}, 0
+      ref = push(socket, "unarchive_space", %{"space_id" => -1})
+      assert_reply ref, :error, %{"reason" => "not_found"}, 1_000
     end
 
     test "returns invalid_payload for a missing space_id" do
@@ -109,21 +109,21 @@ defmodule NestWeb.LobbyChannelArchiveTest do
 
       # `archive_space` — no `space_id` key (pattern fails to match
       # the integer-guarded head).
-      ref = push_and_settle(socket, "archive_space", %{})
-      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 0
+      ref = push(socket, "archive_space", %{})
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
 
       # `archive_space` — `space_id` present but not an integer
       # (guard fails, falls through to the catch-all head).
-      ref = push_and_settle(socket, "archive_space", %{"space_id" => "not-an-int"})
-      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 0
+      ref = push(socket, "archive_space", %{"space_id" => "not-an-int"})
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
 
       # `unarchive_space` — no `space_id` key.
-      ref = push_and_settle(socket, "unarchive_space", %{})
-      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 0
+      ref = push(socket, "unarchive_space", %{})
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
 
       # `unarchive_space` — `space_id` present but not an integer.
-      ref = push_and_settle(socket, "unarchive_space", %{"space_id" => "not-an-int"})
-      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 0
+      ref = push(socket, "unarchive_space", %{"space_id" => "not-an-int"})
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
     end
 
     test "change_model is rejected on an archived space", %{user: user} do
@@ -135,26 +135,26 @@ defmodule NestWeb.LobbyChannelArchiveTest do
       {socket, _init} = join_lobby()
 
       ref =
-        push_and_settle(socket, "change_model", %{
+        push(socket, "change_model", %{
           "name" => "any-agent",
           "space_id" => space_id,
           "model" => %{"name" => "yolo", "provider" => "yolo"}
         })
 
-      assert_reply ref, :error, %{"reason" => "space_archived"}, 0
+      assert_reply ref, :error, %{"reason" => "space_archived"}, 1_000
     end
 
     test "change_model on a nonexistent space returns not_found" do
       {socket, _init} = join_lobby()
 
       ref =
-        push_and_settle(socket, "change_model", %{
+        push(socket, "change_model", %{
           "name" => "any-agent",
           "space_id" => 9_999_999,
           "model" => %{"name" => "yolo", "provider" => "yolo"}
         })
 
-      assert_reply ref, :error, %{"reason" => "not_found"}, 0
+      assert_reply ref, :error, %{"reason" => "not_found"}, 1_000
     end
 
     test "change_model on a nonexistent agent in a valid space returns not_found", %{user: user} do
@@ -166,13 +166,13 @@ defmodule NestWeb.LobbyChannelArchiveTest do
       {socket, _init} = join_lobby()
 
       ref =
-        push_and_settle(socket, "change_model", %{
+        push(socket, "change_model", %{
           "name" => "no-such-agent",
           "space_id" => space_id,
           "model" => %{"name" => "yolo", "provider" => "yolo"}
         })
 
-      assert_reply ref, :error, %{"reason" => "not_found"}, 0
+      assert_reply ref, :error, %{"reason" => "not_found"}, 1_000
     end
   end
 
@@ -199,9 +199,9 @@ defmodule NestWeb.LobbyChannelArchiveTest do
       {socket, _init} = join_lobby()
 
       ref =
-        push_and_settle(socket, "unarchive_agent", %{"name" => name, "space_id" => space_id})
+        push(socket, "unarchive_agent", %{"name" => name, "space_id" => space_id})
 
-      assert_reply ref, :ok, %{}, 0
+      assert_reply ref, :ok, %{}, 1_000
 
       {:ok, row} = Nest.Persistence.fetch_agent(space_id, name)
       assert row.archived == false
@@ -232,9 +232,9 @@ defmodule NestWeb.LobbyChannelArchiveTest do
       {socket, _init} = join_lobby()
 
       ref =
-        push_and_settle(socket, "unarchive_agent", %{"name" => name, "space_id" => space_id})
+        push(socket, "unarchive_agent", %{"name" => name, "space_id" => space_id})
 
-      assert_reply ref, :error, %{"reason" => "forbidden"}, 0
+      assert_reply ref, :error, %{"reason" => "forbidden"}, 1_000
 
       {:ok, row} = Nest.Persistence.fetch_agent(space_id, name)
       assert row.archived == true
@@ -266,9 +266,9 @@ defmodule NestWeb.LobbyChannelArchiveTest do
       {socket, _init} = join_lobby()
 
       ref =
-        push_and_settle(socket, "unarchive_agent", %{"name" => name, "space_id" => space_id})
+        push(socket, "unarchive_agent", %{"name" => name, "space_id" => space_id})
 
-      assert_reply ref, :error, %{"reason" => "shared_read_only"}, 0
+      assert_reply ref, :error, %{"reason" => "shared_read_only"}, 1_000
     end
 
     test "returns parent_archived (naming the parent) for a child under an archived parent", %{
@@ -311,12 +311,12 @@ defmodule NestWeb.LobbyChannelArchiveTest do
       {socket, _init} = join_lobby()
 
       ref =
-        push_and_settle(socket, "unarchive_agent", %{"name" => child, "space_id" => space_id})
+        push(socket, "unarchive_agent", %{"name" => child, "space_id" => space_id})
 
       # The refusal names the parent so the UI can say what to restore
       # instead of silently doing nothing (the sidebar nests the child
       # under the archived parent, so a restored child would look inert).
-      assert_reply ref, :error, %{"reason" => "parent_archived", "parent" => ^parent}, 0
+      assert_reply ref, :error, %{"reason" => "parent_archived", "parent" => ^parent}, 1_000
 
       {:ok, row} = Nest.Persistence.fetch_agent(space_id, child)
       assert row.archived == true
@@ -326,33 +326,33 @@ defmodule NestWeb.LobbyChannelArchiveTest do
       {socket, _init} = join_lobby()
 
       ref =
-        push_and_settle(
+        push(
           socket,
           "unarchive_agent",
           %{"name" => "no-such-agent", "space_id" => 9_999_999}
         )
 
-      assert_reply ref, :error, %{"reason" => "not_found"}, 0
+      assert_reply ref, :error, %{"reason" => "not_found"}, 1_000
     end
 
     test "returns invalid_payload for a malformed payload" do
       {socket, _init} = join_lobby()
 
       # No `name` key.
-      ref = push_and_settle(socket, "unarchive_agent", %{"space_id" => 1})
-      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 0
+      ref = push(socket, "unarchive_agent", %{"space_id" => 1})
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
 
       # `name` present but not a binary.
       ref =
-        push_and_settle(socket, "unarchive_agent", %{"name" => 42, "space_id" => 1})
+        push(socket, "unarchive_agent", %{"name" => 42, "space_id" => 1})
 
-      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 0
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
 
       # `space_id` present but not an integer.
       ref =
-        push_and_settle(socket, "unarchive_agent", %{"name" => "a", "space_id" => "not-an-int"})
+        push(socket, "unarchive_agent", %{"name" => "a", "space_id" => "not-an-int"})
 
-      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 0
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
     end
   end
 
@@ -380,25 +380,5 @@ defmodule NestWeb.LobbyChannelArchiveTest do
     assert_push "init", init_payload, 0
     assert_push "broken_agents_updated", %{broken_agents: _list}, 1_000
     {socket, init_payload}
-  end
-
-  # Push an event and return its ref only once the channel has *handled* it, so
-  # the reply can be read with a non-blocking `assert_reply` 0 ms fence.
-  # `gen_server` drains its mailbox in order (`gen_server:loop/7` ->
-  # `decode_msg/9`), so this system message is handled only after the push — and
-  # the channel sends the reply to this process before it answers the system
-  # message, so the reply is already in the mailbox.
-  #
-  # These handlers (`archive_space` / `unarchive_space` / `change_model`) answer
-  # from the database: the channel process is a sandbox proxy, so each reply
-  # costs an ownership handshake plus SQL, and the 100 ms default fence is not a
-  # bound on anything real. The same-shaped `chat:history` path on the agent
-  # channel was measured with a rare 130-160 ms tail under the suite's 24-way
-  # concurrency (see notes/test-runs/flake-*.log), so a 0 ms fence — a plain
-  # mailbox read — is the honest way to await it.
-  defp push_and_settle(socket, event, payload) do
-    ref = push(socket, event, payload)
-    _ = :sys.get_state(socket.channel_pid)
-    ref
   end
 end

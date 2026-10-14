@@ -124,7 +124,7 @@ defmodule Nest.Agents.VisibilityTest do
     # pid (the agent was started linked via `start_agent/1`).
     Process.flag(:trap_exit, true)
     Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
-    assert_receive {:EXIT, _, _}, 500
+    assert_receive {:EXIT, _, _}, 1_000
 
     visible = Visibility.list_visible_agents_for(AgentTestHelpers.current_space_id(), alice.id)
     assert Enum.all?(visible, &(&1.name != name))
@@ -146,7 +146,7 @@ defmodule Nest.Agents.VisibilityTest do
     # the linked agent's stop doesn't kill the test pid.
     Process.flag(:trap_exit, true)
     :ok = Supervisor.archive_agent(AgentTestHelpers.current_space_id(), name)
-    assert_receive {:EXIT, _, _}, 500
+    assert_receive {:EXIT, _, _}, 1_000
 
     visible = Visibility.list_visible_agents_for(AgentTestHelpers.current_space_id(), alice.id)
     assert Enum.all?(visible, &(&1.name != name))
@@ -177,6 +177,9 @@ defmodule Nest.Agents.VisibilityTest do
 
     AgentTestHelpers.ensure_cleanup(stopped_name)
     Supervisor.stop_agent(space_id, stopped_name)
+    # The tight detector bound (the `wait_for_pid_down/2` default): this is a
+    # body fence — the listing below is only meaningful once the stopped agent
+    # is gone — not cleanup, so it does not want the generous cleanup bound.
     AgentTestHelpers.wait_for_pid_down(space_id, stopped_name)
 
     # An archived row must never appear.

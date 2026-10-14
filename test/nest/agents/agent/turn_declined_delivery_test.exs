@@ -54,28 +54,32 @@ defmodule Nest.Agents.Agent.TurnDeclinedDeliveryTest do
     ref = make_ref()
     transcript = [system(0), user(1), assistant_tool(2)]
 
-    :sys.replace_state(pid, fn state ->
-      machine = %{
-        state.live.machine
-        | kind: :chat,
-          phase: :executing_tools,
-          work: %{
-            state.live.machine.work
-            | worker_kind: :tools,
-              worker_ref: ref,
-              active_worker: worker
-          }
-      }
+    :sys.replace_state(
+      pid,
+      fn state ->
+        machine = %{
+          state.live.machine
+          | kind: :chat,
+            phase: :executing_tools,
+            work: %{
+              state.live.machine.work
+              | worker_kind: :tools,
+                worker_ref: ref,
+                active_worker: worker
+            }
+        }
 
-      %{
-        state
-        | chat_state: %{state.chat_state | messages: transcript},
-          live: %{state.live | machine: machine},
-          # A context the delivered message cannot fit, so the boundary's own
-          # decision is what declines it.
-          llm_metrics: %{state.llm_metrics | context_limit: 100}
-      }
-    end)
+        %{
+          state
+          | chat_state: %{state.chat_state | messages: transcript},
+            live: %{state.live | machine: machine},
+            # A context the delivered message cannot fit, so the boundary's own
+            # decision is what declines it.
+            llm_metrics: %{state.llm_metrics | context_limit: 100}
+        }
+      end,
+      1_000
+    )
 
     # The fixture's own decision, asserted so the test cannot pass on a limit
     # that happens to fit.
@@ -94,7 +98,8 @@ defmodule Nest.Agents.Agent.TurnDeclinedDeliveryTest do
                     }},
                    500
 
-    state = :sys.get_state(pid)
+    # allowlist: snapshot — inbox + messages
+    state = :sys.get_state(pid, 1_000)
 
     # Queued: the W1 invariant. The entry is in the queue, and it is not in the
     # transcript either — never in neither.
@@ -113,16 +118,20 @@ defmodule Nest.Agents.Agent.TurnDeclinedDeliveryTest do
 
     # Leave the agent idle for the teardown, with the entry dropped: the
     # decline, not the fabricated batch, is what this test pins.
-    :sys.replace_state(pid, fn state ->
-      %{
-        state
-        | live: %{
-            state.live
-            | inbox: [],
-              machine: Machine.status_to_machine(state.live.machine, :idle)
-          }
-      }
-    end)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        %{
+          state
+          | live: %{
+              state.live
+              | inbox: [],
+                machine: Machine.status_to_machine(state.live.machine, :idle)
+            }
+        }
+      end,
+      1_000
+    )
 
     Process.exit(worker, :kill)
   end

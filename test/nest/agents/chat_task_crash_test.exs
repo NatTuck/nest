@@ -35,7 +35,6 @@ defmodule Nest.Agents.ChatTaskCrashTest do
   alias Nest.Agents.Agent.Machine
 
   import ExUnit.CaptureLog
-  import Eventually
   import Mimic
 
   alias Nest.Agents.Agent
@@ -85,13 +84,15 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
 
-        # Fence on idle: 500ms accounts for preflight BPE init
-        # (cl100k count_tokens is a DirtyCpu NIF; the
-        # first call on each of BEAM's 32 dirty CPU threads pays
-        # a 200-325ms init cost). Once the fence passes, every
-        # earlier message in the chat pipeline has already
-        # arrived in the test's mailbox.
-        assert_receive {:chat_status, %{status: "idle"}}, 500
+        # Fence on idle: 500ms is the project's standard fence for a whole
+        # turn. This comment used to justify the value with a ~200-325ms BPE
+        # vocabulary build paid once per dirty CPU scheduler thread; that
+        # mechanism was DELETED when the project moved from `tiktoken` to
+        # `tokenizers`, which builds the vocabulary once and shares it across
+        # threads via `:persistent_term` (see `Nest.Tokens.Tokenizer`). Once
+        # the fence passes, every earlier message in the chat pipeline has
+        # already arrived in the test's mailbox.
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
         # The user message is broadcast first (the agent builds
         # it before the turn starts).
@@ -119,10 +120,11 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # used to broadcast chat:error directly AND send
         # {:llm_error, msg} to the Agent, which would broadcast
         # again. Now the worker only sends the message; the
-        # Agent is the single source. refute_receive can't be
-        # converted to refute_received (which checks the current
-        # mailbox snapshot), so it stays as a timed wait.
-        refute_receive {:chat_error, _}, 500
+        # Agent is the single source. The one error frame is
+        # already in this mailbox (`assert_received` above), so
+        # a second one would be too — `refute_received` is the
+        # snapshot check, and it needs no wait at all.
+        refute_received {:chat_error, _}
       end)
     end
 
@@ -142,11 +144,12 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # Agent's `chat_crashed/3` handler broadcasts
         # `chat:status: idle` after finalizing the partial
         # and transitioning out of `:streaming`.
-        assert_receive {:chat_status, %{status: "idle"}}, 2000
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
-      # The agent is still alive and queryable.
-      assert Process.alive?(pid)
+      # The agent is still alive and queryable. The `get_public_info/1`
+      # call is itself the proof of liveness, so a separate
+      # `Process.alive?/1` would be redundant (and AGENTS.md discourages it).
       assert {:ok, _info} = Agent.get_public_info(pid) |> then(&{:ok, &1})
     end
 
@@ -170,7 +173,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
 
-        assert_receive {:chat_error, %{content: content}}, 500
+        assert_receive {:chat_error, %{content: content}}, 1_000
 
         # The original exception message is at the top.
         assert content =~ "unique_pin_marker_12345"
@@ -209,7 +212,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # Fence on idle (see comment in the test above for
         # the 500ms rationale — preflight + crash recovery
         # under concurrent test load).
-        assert_receive {:chat_status, %{status: "idle"}}, 500
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
         # Wait for the user message first.
         assert_received {:chat_message, {:user, %{index: 1}}}
@@ -239,10 +242,16 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       # `Process.monitor/1` and report `:noproc` instead of the real exit
       # reason; blocking makes the monitor-DOWN reason deterministic.
       Mimic.stub(MockClient, :run, fn _request, _opts ->
-        send(parent, :worker_blocked)
+        send(parent, {self(), :worker_blocked})
 
         receive do
           :never -> :ok
+        after
+          # Safety valve: without this, a failure in either wait below leaves
+          # this stub blocked forever under `TaskSupervisor` for the rest of
+          # the run. Never fires on the passing path (the worker is killed
+          # well before it).
+          2_000 -> :ok
         end
       end)
 
@@ -251,10 +260,11 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
 
-        assert_receive :worker_blocked, 500
-
-        worker =
-          eventually(fn -> :sys.get_state(pid).live.machine.work.active_worker end, timeout: 500)
+        # The worker sends us its own pid, so there is nothing to poll: the agent
+        # recorded `active_worker` before the worker could run, and a synchronous
+        # read is ordered after that write.
+        assert_receive {worker, :worker_blocked}, 1_000
+        assert Agent.get_work(pid, 1_000).active_worker == worker
 
         # A raw exit signal (not trappable by the worker's own try/catch)
         # kills the worker before it can send a result. The turn's
@@ -262,12 +272,13 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # otherwise the turn hangs in `:streaming` forever.
         Process.exit(worker, :boom)
 
-        assert_receive {:chat_status, %{status: "idle"}}, 500
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
         assert_received {:chat_error, %{content: content}}
         assert content =~ "boom"
       end)
 
-      state = :sys.get_state(pid)
+      # allowlist: snapshot — status + work
+      state = :sys.get_state(pid, 1_000)
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil
     end
@@ -287,16 +298,16 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         assert content =~ "no content"
       end)
 
-      state = :sys.get_state(pid)
+      messages = Agent.get_messages(pid, 1_000)
 
       # No message in the list is empty.
-      refute Enum.any?(state.chat_state.messages, fn
+      refute Enum.any?(messages, fn
                {_role, %{parts: []}} -> true
                _ -> false
              end)
 
       # The turn still produced a non-empty assistant error message.
-      assert Enum.any?(state.chat_state.messages, fn
+      assert Enum.any?(messages, fn
                {:assistant, %Assistant{parts: [_ | _]}} -> true
                _ -> false
              end)

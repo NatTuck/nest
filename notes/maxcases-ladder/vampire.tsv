@@ -1,0 +1,9 @@
+label	cases	sha	load1	failures	detector	timeouts	errorlogs	other	wall_s	user_s	sys_s	exit	mixsrc
+vampire	2	5a7a5c3	9.27	1	0	0	0	1	10.275	60.729	5.581	2	path
+vampire	4	5a7a5c3	9.74	0	0	0	0	0	6.740	63.525	5.849	0	path
+vampire	6	5a7a5c3	10.42	0	0	0	0	0	5.893	66.417	6.263	0	path
+vampire	8	5a7a5c3	11.11	0	0	0	0	0	5.493	66.877	6.543	0	path
+vampire	12	5a7a5c3	12.06	0	0	0	0	0	4.886	67.024	6.454	0	path
+vampire	16	5a7a5c3	13.34	0	0	0	0	0	4.693	66.391	6.534	0	path
+vampire	24	5a7a5c3	13.79	0	0	0	0	0	4.666	66.703	6.419	0	path
+vampire	32	5a7a5c3	13.97	0	0	0	0	0	4.793	66.889	6.517	0	path

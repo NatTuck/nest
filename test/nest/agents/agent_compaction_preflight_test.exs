@@ -74,21 +74,29 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       # matches the API log scenario. The default for
       # qwen3.5-plus is much larger, so the system prompt
       # would otherwise fit.
-      :sys.replace_state(pid, fn s ->
-        %{s | llm_metrics: %{s.llm_metrics | context_limit: 10_000}}
-      end)
+      :sys.replace_state(
+        pid,
+        fn s ->
+          %{s | llm_metrics: %{s.llm_metrics | context_limit: 10_000}}
+        end,
+        1_000
+      )
 
       # And inflate the system prompt so the projected total
       # (system + user + 8192 reserve) exceeds 10k even after
       # the empty-head compaction short-circuit.
-      :sys.replace_state(pid, fn s ->
-        [{:system, sys_struct} | rest] = s.chat_state.messages
+      :sys.replace_state(
+        pid,
+        fn s ->
+          [{:system, sys_struct} | rest] = s.chat_state.messages
 
-        inflated_system =
-          {:system, %{sys_struct | parts: [%Part.Text{text: String.duplicate("z", 7_000)}]}}
+          inflated_system =
+            {:system, %{sys_struct | parts: [%Part.Text{text: String.duplicate("z", 7_000)}]}}
 
-        %{s | chat_state: %{s.chat_state | messages: [inflated_system | rest]}}
-      end)
+          %{s | chat_state: %{s.chat_state | messages: [inflated_system | rest]}}
+        end,
+        1_000
+      )
 
       log =
         ExUnit.CaptureLog.capture_log(fn ->
@@ -97,13 +105,13 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
           # The chat pipeline detects `:cannot_compact` and sets
           # the new status, broadcasts the error with the actual
           # numbers, and does NOT spawn a chat turn.
-          assert_receive {:chat_status, %{status: "context_overflow"}}, 500
+          assert_receive {:chat_status, %{status: "context_overflow"}}, 1_000
 
           # The chat:error is broadcast with `compactionError`
           # NOT set (so the JS routes it to `setAgentError`,
           # not `setCompactionError`) and carries the actual
           # numbers (limit, system prompt size, reserve).
-          assert_receive {:chat_error, payload}, 500
+          assert_receive {:chat_error, payload}, 1_000
           refute Map.get(payload, :compactionError) == true
           assert payload.content =~ "context limit (10000)"
           assert payload.content =~ "system prompt"
@@ -114,7 +122,8 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       assert log =~ "context_overflow" or log =~ "context limit"
 
       # The agent stays idle (no chat turn was spawned).
-      state_after = :sys.get_state(pid)
+      # allowlist: snapshot — status + pending_user_message + messages
+      state_after = :sys.get_state(pid, 1_000)
       assert Machine.status_for(state_after.live.machine) == :context_overflow
       assert state_after.live.machine.pending_user_message == nil
 
@@ -141,11 +150,13 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       Agent.chat(pid, "Hello")
 
       # The user message is broadcast, the chat turn starts,
-      # and the LLM responds. No context_overflow status.
-      assert_receive {:chat_message, {:user, _}}, 500
-      refute_receive {:chat_status, %{status: "context_overflow"}}, 200
+      # and the LLM responds. No context_overflow status. The idle
+      # broadcast is emitted last, so it is the fence that proves the turn
+      # (and with it any `context_overflow` frame) is finished.
+      assert_receive {:chat_message, {:user, _}}, 1_000
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
+      refute_received {:chat_status, %{status: "context_overflow"}}
 
       Agent.terminate(pid)
     end
@@ -167,15 +178,23 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       # then calls the LLM; finish it so the agent is idle at test end.
       tool_call_msg = compact_tool_call_msg(1)
 
-      :sys.replace_state(pid, fn s ->
-        %{s | chat_state: %{s.chat_state | messages: old_messages, next_message_index: 2}}
-      end)
+      :sys.replace_state(
+        pid,
+        fn s ->
+          %{s | chat_state: %{s.chat_state | messages: old_messages, next_message_index: 2}}
+        end,
+        1_000
+      )
 
       send_compaction_done(pid, summary_text, {:tool_call, tool_call_msg, 3, 30})
 
-      _ = :sys.get_state(pid)
-
-      assert_receive {:chat_compaction, payload}
+      # `send_compaction_done/3` sends the `{:http_response, _}` as a plain
+      # message. The commit that handles it broadcasts `chat:compaction` inline
+      # (after the marker and the regenerated messages are in the state), so the
+      # frame is both the happens-after event for the commit and the payload
+      # under test. Wait on it rather than on a mailbox barrier, and assert the
+      # payload so the fence cannot be satisfied by a non-commit frame.
+      assert_receive {:chat_compaction, payload}, 1_000
 
       assert payload.marker["role"] == "compaction"
       # The two pre-seeded messages plus the committed summary assistant
@@ -185,7 +204,28 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       # The archive is fetched lazily over `chat:history`, not pushed.
       refute Map.has_key?(payload, :history)
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
+    end
+
+    test "the fence is the commit's frame: a plain turn broadcasts none" do
+      # The pin for the converted barrier above. `{:chat_compaction, _}` is
+      # emitted only by a commit (`Broadcasts.compaction/2`'s two callers are
+      # both inside the commit path), so a fence that could be satisfied by
+      # ambient traffic would pass on the plain turn below when it must not.
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      MockClient.set_response("hello")
+      :ok = Agent.chat(pid, "hi")
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
+
+      refute_received {:chat_compaction, _}
+
+      # ...and the commit's own frame is the one that decides it, carrying the
+      # marker the commit appended.
+      MockClient.set_response("done")
+      send_compaction_done(pid, "a summary", nil)
+      assert_receive {:chat_compaction, %{marker: %{"role" => "compaction"}}}, 1_000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 

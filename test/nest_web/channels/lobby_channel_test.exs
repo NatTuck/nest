@@ -13,6 +13,7 @@ defmodule NestWeb.LobbyChannelTest do
   alias Nest.Agents.Supervisor
   alias Nest.Blueprints
   alias Nest.Repo
+  alias Nest.TestSupport.ChannelQuiescence
   alias Nest.Vocations
 
   # The `:after_join` spawns a supervised `Task` for `broken_agents`;
@@ -59,6 +60,33 @@ defmodule NestWeb.LobbyChannelTest do
     Process.put(:lobby_test_user_id, user.id)
 
     {:ok, %{user: user, token: token, space_id: space_id}}
+  end
+
+  describe "teardown quiescence" do
+    # The channel half of the zero-remaining invariant. A channel a test joins
+    # borrows the test's sandbox connection (it inherits `$callers`) and dies
+    # with the test process, so a channel still processing a message when the
+    # body ends is killed mid-query and `DBConnection.Ownership.Proxy` logs
+    # "owner … exited" at `:error`. The teardown can only drain it if the join
+    # recorded it — that is what this pins.
+    test "a joined channel is recorded for the teardown to drain" do
+      {socket, _payload} = join_lobby()
+
+      assert is_pid(socket.channel_pid)
+      assert {socket.channel_pid, socket.topic} in Process.get(:nest_joined_channels, [])
+    end
+
+    test "draining with nothing joined is a no-op, and a channel that is gone is tolerated" do
+      assert ChannelQuiescence.drain() == :ok
+
+      dead = spawn(fn -> :ok end)
+      ref = Process.monitor(dead)
+      assert_receive {:DOWN, ^ref, :process, ^dead, _reason}
+
+      Process.put(:nest_joined_channels, [{dead, "lobby"}])
+
+      assert ChannelQuiescence.drain() == :ok
+    end
   end
 
   describe "join/3" do
@@ -268,18 +296,12 @@ defmodule NestWeb.LobbyChannelTest do
 
       ref = push(socket, "create_invite", %{})
 
-      # Synchronise on the channel process, not on a wall clock. `push/3` is a
-      # `send/2` to `socket.channel_pid` from this process, so a
-      # `:sys.get_state/1` from here is queued behind it and returns only after
-      # the handler has run — by which time its `invite:created` push and its
-      # reply are already in this process's mailbox (the channel sends both to
-      # this pid, so they are FIFO ahead of the system reply). The handler's DB
-      # insert can exceed the default `assert_reply` window under the parallel
-      # channel-test load; a longer window would only widen the race instead of
-      # removing it.
-      _ = :sys.get_state(socket.channel_pid)
-
-      assert_reply ref, :ok, public
+      # The reply is the event that decides this read. The handler's DB insert
+      # can exceed the default `assert_reply` window under the parallel
+      # channel-test load, so give it a real bound rather than synchronising on
+      # the channel process to read it with the default one — a longer window
+      # on a `0` fence would only widen the race instead of removing it.
+      assert_reply ref, :ok, public, 1_000
       assert is_integer(public.id)
       assert is_binary(public.token)
       assert byte_size(public.token) == 43

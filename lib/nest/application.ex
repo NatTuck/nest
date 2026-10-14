@@ -14,10 +14,48 @@ defmodule Nest.Application do
     # Check system dependencies first
     check_system_dependencies!()
 
-    # Load the cl100k_base tokenizer once, before any agent can size
-    # a context window. `:persistent_term` makes the hot-path
-    # `Estimator` reads lock-free.
-    Tokenizer.load()
+    # Start the cl100k_base vocabulary build here and await it last.
+    #
+    # `Tokenizer.load/0` is ~95ms of Rust-side work (parse the bundled
+    # JSON, build the BPE vocabulary) and it is independent of the
+    # supervision tree below it, so running it concurrently means boot
+    # pays the *larger* of the two instead of their sum: `:nest`'s whole
+    # start drops by ~46ms (interleaved warm runs measured 209.5ms ->
+    # 163.6ms here and 264.4ms -> 218.0ms on a second host; the delta is
+    # the claim, the absolute figures are host-dependent).
+    # `:persistent_term` keeps the hot-path `Estimator` reads lock-free.
+    #
+    # The invariant this rests on is narrower than "nothing can observe a
+    # half-loaded app", which is false. Children start in order, so
+    # `NestWeb.Endpoint` binds its listener as soon as the tree start
+    # returns (~46ms in) while the await below is still pending (~94ms
+    # in): the endpoint is live, and serving, for roughly the last 48ms
+    # of the load — and for as long as the 60s bound below if the load is
+    # slow.
+    #
+    # So the real invariant is: *nothing may read the tokenizer before
+    # `start/2` returns*. That covers more than a child's `init/1` — it
+    # covers every runtime path reachable in that window, i.e. HTTP and
+    # channel traffic and any `handle_continue`. `Nest.Tokens.Estimator`
+    # enforces the consequence rather than trusting the constraint: with
+    # the tokenizer unloaded it re-raises instead of falling back, so a
+    # violation is a loud error and never a quietly wrong `chars/4` count.
+    # Only `Estimator` reaches `Tokenizer.count/1`.
+    #
+    # The failure path's decision is covered directly: its body is
+    # `Nest.Tokens.Estimator.fallback_or_reraise/4`, which takes the
+    # `Tokenizer.loaded?/0` boolean as an argument, and both branches are
+    # asserted in `test/nest/tokens/estimator_test.exs`. What is still not
+    # covered end to end is the arrangement — erase the `:persistent_term`
+    # key, then read through `Estimator` — which needs global state, hence
+    # an `async: false` module plus a reload. The premise that boot *does*
+    # load the tokenizer is pinned by the `Tokenizer.loaded?()` assertion
+    # in `test/nest/tokens/tokenizer_test.exs`.
+    #
+    # The await is bounded so a hung load cannot wedge boot forever; 60s
+    # is ~600x the measured load, so a load slow enough to hit it is a
+    # real failure, not a slow machine.
+    tokenizer_task = Task.async(&Tokenizer.load/0)
 
     base_children = [
       NestWeb.Telemetry,
@@ -49,7 +87,11 @@ defmodule Nest.Application do
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Nest.Supervisor]
-    Supervisor.start_link(children, opts)
+    result = Supervisor.start_link(children, opts)
+
+    :ok = Task.await(tokenizer_task, 60_000)
+
+    result
   end
 
   # Tell Phoenix to update the endpoint configuration

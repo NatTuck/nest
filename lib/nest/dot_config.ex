@@ -129,16 +129,8 @@ defmodule Nest.DotConfig do
   from the in-app Providers screen. `local.toml` is merged over
   `config.toml` (local wins per provider); `config.toml` is never
   modified by the app.
-
-  The path can be overridden for testing via the application env
-  key `:local_config_file`.
   """
-  def local_file do
-    case Application.get_env(:nest, :local_config_file) do
-      nil -> default_local_file()
-      path -> path
-    end
-  end
+  def local_file, do: default_local_file()
 
   defp default_local_file do
     if Mix.env() == :test do
@@ -164,7 +156,20 @@ defmodule Nest.DotConfig do
         @config_file
       end
 
-    merge_loads(load(base), load(local_file()))
+    # `__MODULE__.local_file()` is a remote self-call on purpose: Mimic
+    # copies `Nest.DotConfig` by renaming the original to
+    # `Nest.DotConfig.Mimic.Original.Module` and installing a proxy under
+    # `Nest.DotConfig`. A bare local `local_file()` would bind to the
+    # renamed original and bypass the proxy, so this *internal* read of
+    # `load/0` would ignore the `Mimic.stub(Nest.DotConfig, :local_file, ...)`
+    # that `lobby_channel/providers_test.exs` sets and silently fall back to
+    # `config.toml` (`test/data/local.toml` does not exist). The writer is
+    # unaffected: `dot_config/writer.ex` reaches the proxy through its own
+    # remote `DotConfig.local_file()`. This relies on `local_file/0` staying
+    # public — private is a loud compile warning (an error under
+    # `--warnings-as-errors`), but dropping the `__MODULE__.` prefix is a
+    # silent re-break of that test.
+    merge_loads(load(base), load(__MODULE__.local_file()))
   end
 
   # Merge the base (config.toml) and overlay (local.toml) parses. Missing

@@ -27,14 +27,55 @@ defmodule Nest.Agents.Agent.WaitForIdle do
   listing). Both paths use the listing, so a given agent gets the same
   disposition however it is named.
 
-  ## Bounded by elapsed time, never by a message count
+  ## Woken by events, bounded by the caller's deadline
 
-  The target's own streaming traffic (`chat:delta`, `chat_message`,
+  The wait is woken by the events that can change a target's disposition,
+  and by nothing else:
+
+    * a target's `{:chat_status, %{status: "idle"}}` frame on its own
+      topic — the status broadcast `Turn.run/6` emits whenever the derived
+      status changes. *Every* status change wakes the wait, not only the
+      idle one: a target that goes busy after the read is a target worth
+      watching, and its own busy frame is the only notice that it is;
+    * a target's `:DOWN`. A target that is stopped or archived emits no
+      frame at all (the topic is keyed by name and a process that is gone
+      broadcasts nothing), so its monitor is the only event that reports it;
+    * the caller's own deadline, which is reported as an ordinary timeout
+      result.
+
+  The ordering is established by construction, never guessed: the
+  subscription happens **before** the authoritative status read, so a
+  change made before that read is already visible to it and a change made
+  after it is delivered as an event. There is no window between the two in
+  which a target could go idle unobserved, which is what a poll would be
+  papering over — so there is no poll, and no `receive ... after` slice
+  other than the time left on the deadline.
+
+  The monitors are the same argument for the event that has no frame. Every
+  target the read reports **busy** is monitored, and every re-read
+  re-installs the monitors, so a process that takes a target's name after
+  the first read is watched too (the map is keyed by pid for exactly that
+  reason; a `{:via, Registry, …}` tuple would resolve the name once, at
+  monitor time). A target that is *idle* needs no monitor: its death cannot
+  change any decision — `partition/2` reports a name with no live process
+  as `:idle` or `gone`, both of which are "not busy" — and the disposition
+  text comes from the read taken when the wait fires, so it is honest
+  either way.
+
+  ## The immediate decision is the authoritative read's
+
+  A wait that is already satisfied at the authoritative read returns at
+  once, and *that* read decides it. So a target that the caller's own read
+  saw idle but which is busy by then blocks the wait (`all: true`
+  especially: returning `Idle: …` for a target that is running is a lie),
+  and the partition a caller is handed is the fresh one, never the read the
+  caller took before the subscription.
+
+  Bounding the wait by received messages would be wrong for a different
+  reason: the target's own streaming traffic (`chat:delta`, `chat_message`,
   `shell:jobs`, ...) is broadcast on the same PubSub topic this process
-  subscribes to, so bounding the wait by received messages would let a
-  chatty target exhaust a long timeout in seconds (issue #20). The wait
-  is bounded only by a `System.monotonic_time/1` deadline; each
-  `receive ... after` slice is capped at the time remaining.
+  subscribes to, so a chatty target could exhaust a long timeout in seconds
+  (issue #20). The deadline is `System.monotonic_time/1`.
 
   Reaching the deadline is a normal result, not an error. The listing
   re-read is the authority, never the broadcast payload: a status broadcast
@@ -51,7 +92,11 @@ defmodule Nest.Agents.Agent.WaitForIdle do
   alias Nest.Messages.ToolCall
 
   @default_wait_ms 300_000
-  @wait_slice_ms 250
+
+  # The largest value `receive ... after` accepts. `:timeout` itself has no
+  # upper limit, so a wait longer than this re-arms rather than reporting an
+  # expiry it has not reached (see `loop/8`). Mirrors `ShellCmd`'s ceiling.
+  @max_after_ms 4_294_967_295
 
   @type partition :: %{
           idle: [String.t()],
@@ -118,24 +163,77 @@ defmodule Nest.Agents.Agent.WaitForIdle do
   idle (or gone); true waits until every target is idle (or gone). `monitor`
   is an optional caller monitor: a `:DOWN` aborts with `:caller_down` so an
   async watcher never outlives its agent.
+
+  The subscription is installed **before** the authoritative status read, so a
+  disposition change made after that read is delivered as an event and one
+  made before it is already visible to it; the targets the read finds busy are
+  monitored, and every re-read re-installs those monitors, so a process that
+  takes a target's name later is watched too. See the moduledoc.
+
+  `initial` — the caller's own read, taken before the subscription — is the
+  reference for what `any` waits for: a target that was busy when the call was
+  made and is idle now is exactly the change `any` reports, however the two
+  reads are spaced. Everything else (the immediate decision, and the partition
+  the caller is handed) comes from the authoritative read.
+
+  The caller's own `timeout` is the only wall-clock value involved: it bounds
+  the wait, and its expiry is the `{:timeout, partition}` result.
   """
   @spec await(integer(), [String.t()], pos_integer(), boolean(), partition(), reference() | nil) ::
           {:ok, partition()} | {:timeout, partition()} | :caller_down
   def await(space_id, names, timeout, all?, initial, monitor \\ nil) do
-    deadline = System.monotonic_time(:millisecond) + timeout
     subscribe(space_id, names)
 
-    try do
-      initial_busy = MapSet.new(initial.still_busy)
+    initial_busy = MapSet.new(initial.still_busy)
+    deadline = System.monotonic_time(:millisecond) + timeout
 
-      if met?(initial, initial_busy, all?) do
-        {:ok, initial}
-      else
-        loop(space_id, names, initial_busy, deadline, timeout, all?, monitor)
-      end
-    after
-      unsubscribe(space_id, names)
+    # The first read is a `check/8` like any other — it is the authoritative
+    # read, it installs the monitors for whatever it finds busy, and it takes
+    # the immediate decision.
+    {result, monitors} =
+      check(space_id, names, initial_busy, deadline, timeout, all?, monitor, %{})
+
+    # Dropped here rather than in the `after`: a `try`'s `after` cannot see a
+    # value bound in its body, and the monitor set grows as the wait re-reads.
+    # The `after` owns the subscription, which is keyed by name and so needs no
+    # state to undo. Nothing in this body raises, so there is no path that
+    # reaches the `after` with monitors still installed.
+    demonitor_all(monitors)
+    result
+  after
+    unsubscribe(space_id, names)
+  end
+
+  # Monitor every target that has a live process, keyed by pid so a target whose
+  # process is replaced is monitored again rather than mistaken for one we
+  # already hold.
+  #
+  # Every target, not only the ones the last read called busy, and run **before**
+  # the read that decides (see `check/8`). A name can be busy while the process
+  # answering for it is not one we hold: the listing reads each name's status
+  # from a live process, so a name it calls busy had a live process *at that
+  # read*, and the process it had may be a replacement for the one we monitored.
+  # Monitoring first means the process the read is about is already watched
+  # whenever the read can see it, and a replacement cannot slip between the two
+  # — its predecessor's death would have delivered a `:DOWN` and its own start
+  # a status frame, so either way this runs again.
+  #
+  # A persisted-only target has no process to monitor and the listing reports it
+  # `:idle`, so there is nothing to watch for — and nothing to start: the wait
+  # never brings an agent up (see "A read-only wait" above).
+  defp monitor_targets(space_id, names, monitors) do
+    Enum.reduce(names, monitors, &monitor_one(space_id, &1, &2))
+  end
+
+  defp monitor_one(space_id, name, monitors) do
+    case Nest.Agents.Registry.lookup(space_id, name) do
+      {:ok, pid} -> Map.put_new_lazy(monitors, pid, fn -> Process.monitor(pid) end)
+      {:error, :not_found} -> monitors
     end
+  end
+
+  defp demonitor_all(monitors) do
+    Enum.each(monitors, fn {_pid, ref} -> Process.demonitor(ref, [:flush]) end)
   end
 
   # The event is "the busy set shrank" for `any` and "the busy set is empty"
@@ -152,38 +250,67 @@ defmodule Nest.Agents.Agent.WaitForIdle do
     end
   end
 
-  defp loop(space_id, names, initial_busy, deadline, timeout, all?, monitor) do
+  # The event loop. Every wake-up is either a real event or the caller's
+  # deadline: the `after` value is the time left on the deadline, so a wake-up
+  # that is not an event *is* the expiry. There is no poll slice.
+  #
+  # It returns `{result, monitors}`: the monitor set grows as targets are
+  # re-read, so the caller owns dropping it.
+  defp loop(space_id, names, initial_busy, deadline, timeout, all?, monitor, monitors) do
     remaining = deadline - System.monotonic_time(:millisecond)
 
     if remaining <= 0 do
-      {:timeout, partition(space_id, names)}
+      {{:timeout, partition(space_id, names)}, monitors}
     else
+      # Deliberately *no* catch-all: this is a selective receive. The target's
+      # own streaming traffic (`chat:delta`, `chat_message`, `shell:jobs`, …)
+      # lands on the same topic and so can a late delivery meant for a sibling
+      # call — but none of it can change a target's disposition, so the
+      # runtime skips it and leaves it in the mailbox. A `_other` clause here
+      # would be a drain loop: it would take every non-matching message out of
+      # the mailbox and re-`receive` just to discard it.
       receive do
         {:DOWN, ^monitor, :process, _pid, _reason} ->
-          :caller_down
+          {:caller_down, monitors}
 
-        {:chat_status, %{status: "idle"}} ->
-          recheck(space_id, names, initial_busy, deadline, timeout, all?, monitor)
+        # A target died, or changed status; both mean the same thing here —
+        # re-read the authority (and re-install monitors for whatever is busy
+        # now). A target that is stopped or archived broadcasts nothing, so its
+        # monitor is the only event that reports it. Every other `:DOWN` in this
+        # mailbox (a stale one, or one this process took for another reason)
+        # costs nothing but the read.
+        {:DOWN, _ref, :process, _pid, _reason} ->
+          check(space_id, names, initial_busy, deadline, timeout, all?, monitor, monitors)
 
-        # Every non-status message is discarded. The target's own streaming
-        # traffic lands on this topic too, and so can a late delivery meant
-        # for a sibling call. None of them changes a target's status.
-        _other ->
-          loop(space_id, names, initial_busy, deadline, timeout, all?, monitor)
+        {:chat_status, _payload} ->
+          check(space_id, names, initial_busy, deadline, timeout, all?, monitor, monitors)
       after
-        min(wait_slice_ms(), remaining) ->
-          recheck(space_id, names, initial_busy, deadline, timeout, all?, monitor)
+        min(remaining, @max_after_ms) ->
+          # `remaining` is positive here, so this is either the caller's
+          # deadline or the `receive` ceiling: a wait longer than `after`
+          # accepts re-arms rather than reporting an expiry it has not reached.
+          if remaining > @max_after_ms do
+            loop(space_id, names, initial_busy, deadline, timeout, all?, monitor, monitors)
+          else
+            {{:timeout, partition(space_id, names)}, monitors}
+          end
       end
     end
   end
 
-  defp recheck(space_id, names, initial_busy, deadline, timeout, all?, monitor) do
-    partition = partition(space_id, names)
+  # The authoritative read and the decision it drives, in one place so the first
+  # read and every event-driven re-read cannot drift. The monitors go on first,
+  # so the read cannot see a process nothing is watching (see `monitor_targets/3`).
+  # Returns `{result, monitors}`: the monitor set grows here, so the caller owns
+  # dropping it.
+  defp check(space_id, names, initial_busy, deadline, timeout, all?, monitor, monitors) do
+    monitors = monitor_targets(space_id, names, monitors)
+    current = partition(space_id, names)
 
-    if met?(partition, initial_busy, all?) do
-      {:ok, partition}
+    if met?(current, initial_busy, all?) do
+      {{:ok, current}, monitors}
     else
-      loop(space_id, names, initial_busy, deadline, timeout, all?, monitor)
+      loop(space_id, names, initial_busy, deadline, timeout, all?, monitor, monitors)
     end
   end
 
@@ -383,8 +510,4 @@ defmodule Nest.Agents.Agent.WaitForIdle do
   # The default wall-clock wait, in milliseconds.
   @spec default_wait_ms() :: pos_integer()
   def default_wait_ms, do: @default_wait_ms
-
-  # The `receive ... after` slice used while polling for a wait, in milliseconds.
-  @spec wait_slice_ms() :: pos_integer()
-  defp wait_slice_ms, do: @wait_slice_ms
 end

@@ -29,7 +29,13 @@ defmodule NestWeb.AgentChannelChatStopTest do
       ref = push(socket, "chat:stop", %{})
       assert_reply ref, :ok, %{}
 
-      refute_receive %Phoenix.Socket.Message{event: "chat:status"}, 50
+      # `:sys.get_state/1` is a synchronous call to the channel: it drains
+      # the channel's mailbox, so any `chat:status` the agent broadcast during
+      # the stop has already been pushed to this process before it answers.
+      # The check below is therefore deterministic rather than a 50 ms window.
+      # allowlist: barrier — anchor for refute_received %Phoenix.Socket.Message{}
+      _ = :sys.get_state(socket.channel_pid, 1_000)
+      refute_received %Phoenix.Socket.Message{event: "chat:status"}
     end
 
     test "stop mid-stream does not crash the channel", %{socket: socket} do
@@ -45,14 +51,14 @@ defmodule NestWeb.AgentChannelChatStopTest do
       ref_msg = push(socket, "chat:message", %{"content" => "Start"})
       assert_reply ref_msg, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
-      assert_push "chat:delta", _, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:delta", _, 1_000
 
       ref_stop = push(socket, "chat:stop", %{})
       assert_reply ref_stop, :ok, %{}
 
       # The interrupted turn finalizes and the agent returns to idle.
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # The channel survived the `:stopped` ack: it still answers.
       ref_probe = push(socket, "chat:status", %{})
@@ -71,9 +77,9 @@ defmodule NestWeb.AgentChannelChatStopTest do
       ref_msg = push(socket, "chat:message", %{"content" => "First"})
       assert_reply ref_msg, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
-      assert_push "chat:status", %{status: "idle"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
+      assert_push "chat:status", %{status: "idle"}, 1_000
 
       # No-op stop on an idle agent.
       ref_stop = push(socket, "chat:stop", %{})
@@ -84,7 +90,7 @@ defmodule NestWeb.AgentChannelChatStopTest do
       ref2 = push(socket, "chat:message", %{"content" => "Second"})
       assert_reply ref2, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 3, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 3, "role" => "user"}, 1_000
 
       assert_push "chat:message",
                   %{"index" => 4, "role" => "assistant", "parts" => parts},
@@ -94,7 +100,7 @@ defmodule NestWeb.AgentChannelChatStopTest do
       assert content == "After the stop"
 
       # Fence the second turn on its own idle before the test exits.
-      assert_push "chat:status", %{status: "idle"}, 2000
+      assert_push "chat:status", %{status: "idle"}, 1_000
 
       # Sanity: agent still queryable after stop.
       assert {:ok, %{name: ^id}} = Agents.get_info(space_id, id)

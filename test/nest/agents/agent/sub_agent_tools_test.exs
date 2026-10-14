@@ -49,7 +49,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
   end
 
   test "agents-spawn tool creates a specialist and returns its name", %{vid: vid} do
-    {coordinator_pid, _name} =
+    {coordinator_pid, coordinator_name} =
       AgentTestHelpers.start_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
         vocation_id: vid
@@ -78,22 +78,24 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     MockClient.set_response("coordinator done")
 
     :ok = Agent.chat(coordinator_pid, "spin up a specialist")
-    await_idle(coordinator_pid)
+    await_idle(coordinator_name)
 
     # The live-add broadcast carries the space_id the sidebar groups by.
-    assert_receive {:agent_created, %{"name" => ^specialist_name, "space_id" => ^space_id}},
-                   500
+    # `await_idle/1` is the fence: the coordinator's own `idle` frame is
+    # broadcast after its spawn handler has run, so the `agent_created` frame is
+    # already in this mailbox.
+    assert_received {:agent_created, %{"name" => ^specialist_name, "space_id" => ^space_id}}
 
     # The specialist exists in the space.
     assert {:ok, _info} = Nest.Agents.get_info(space_id, specialist_name)
     on_exit(fn -> _ = Supervisor.stop_agent(space_id, specialist_name) end)
 
     # The coordinator's tool message carries the spawn result.
-    coordinator_state = :sys.get_state(coordinator_pid)
-    AgentTestHelpers.assert_unique_message_indices(coordinator_state)
+    coordinator_messages = Agent.get_messages(coordinator_pid, 1_000)
+    AgentTestHelpers.assert_unique_message_indices(coordinator_messages)
 
     {:tool, tool_msg} =
-      Enum.find(coordinator_state.chat_state.messages, fn
+      Enum.find(coordinator_messages, fn
         {:tool, %{parts: parts}} ->
           Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-spawn"}, &1))
 
@@ -113,7 +115,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
   end
 
   test "agents-spawn with a model argument spawns the child on that model", %{vid: vid} do
-    {coordinator_pid, _name} =
+    {coordinator_pid, coordinator_name} =
       AgentTestHelpers.start_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
         vocation_id: vid
@@ -140,18 +142,19 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     MockClient.set_response("coordinator done")
 
     :ok = Agent.chat(coordinator_pid, "spin up a specialist on pegasus")
-    await_idle(coordinator_pid)
+    await_idle(coordinator_name)
 
     space_id = AgentTestHelpers.current_space_id()
     {:ok, specialist_pid} = Supervisor.get_agent(space_id, specialist_name)
-    child_state = :sys.get_state(specialist_pid)
-    assert child_state.model == %{name: "pegasus-default-only", provider: "pegasus"}
+
+    assert Agent.get_public_info(specialist_pid, 1_000).model ==
+             %{name: "pegasus-default-only", provider: "pegasus"}
 
     on_exit(fn -> _ = Supervisor.stop_agent(space_id, specialist_name) end)
   end
 
   test "agents-spawn with an unparseable model argument reports an error", %{vid: vid} do
-    {coordinator_pid, _name} =
+    {coordinator_pid, coordinator_name} =
       AgentTestHelpers.start_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
         vocation_id: vid
@@ -173,16 +176,16 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     log =
       capture_log(fn ->
         :ok = Agent.chat(coordinator_pid, "spin up a specialist on a bad model")
-        await_idle(coordinator_pid)
+        await_idle(coordinator_name)
       end)
 
     assert log =~ "is_error=true tool result"
 
-    coordinator_state = :sys.get_state(coordinator_pid)
-    AgentTestHelpers.assert_unique_message_indices(coordinator_state)
+    coordinator_messages = Agent.get_messages(coordinator_pid, 1_000)
+    AgentTestHelpers.assert_unique_message_indices(coordinator_messages)
 
     {:tool, tool_msg} =
-      Enum.find(coordinator_state.chat_state.messages, fn
+      Enum.find(coordinator_messages, fn
         {:tool, %{parts: parts}} ->
           Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-spawn"}, &1))
 
@@ -204,7 +207,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
   test "agents-list tool returns the space's running and persisted non-archived agents", %{
     vid: vid
   } do
-    {coordinator_pid, _name} =
+    {coordinator_pid, coordinator_name} =
       AgentTestHelpers.start_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
         vocation_id: vid
@@ -259,13 +262,13 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     MockClient.set_response("coordinator done")
 
     :ok = Agent.chat(coordinator_pid, "who is here?")
-    await_idle(coordinator_pid)
+    await_idle(coordinator_name)
 
-    coordinator_state = :sys.get_state(coordinator_pid)
-    AgentTestHelpers.assert_unique_message_indices(coordinator_state)
+    coordinator_messages = Agent.get_messages(coordinator_pid, 1_000)
+    AgentTestHelpers.assert_unique_message_indices(coordinator_messages)
 
     {:tool, tool_msg} =
-      Enum.find(coordinator_state.chat_state.messages, fn
+      Enum.find(coordinator_messages, fn
         {:tool, %{parts: parts}} ->
           Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-list"}, &1))
 
@@ -318,12 +321,12 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     MockClient.set_response("coordinator done")
 
     :ok = Agent.chat(coordinator_pid, "hand this off")
-    await_idle(coordinator_pid)
+    await_idle(coordinator_name)
 
-    coordinator_state = :sys.get_state(coordinator_pid)
+    coordinator_messages = Agent.get_messages(coordinator_pid, 1_000)
 
     {:tool, tool_msg} =
-      Enum.find(coordinator_state.chat_state.messages, fn
+      Enum.find(coordinator_messages, fn
         {:tool, %{parts: parts}} ->
           Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-send"}, &1))
 
@@ -337,9 +340,9 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     assert content =~ "Message delivered to #{specialist_name}"
 
     {:ok, specialist_pid} = Nest.Agents.Registry.lookup(space_id, specialist_name)
-    specialist_state = :sys.get_state(specialist_pid)
+    specialist_messages = Agent.get_messages(specialist_pid, 1_000)
 
-    assert Enum.any?(specialist_state.chat_state.messages, fn
+    assert Enum.any?(specialist_messages, fn
              {:user, %{parts: parts}} ->
                Enum.any?(parts, fn
                  %Part.Text{text: text} ->
@@ -353,11 +356,11 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
                false
            end)
 
-    await_idle(specialist_pid)
+    await_idle(specialist_name)
   end
 
   test "agents-send to a missing agent reports an error", %{vid: vid} do
-    {coordinator_pid, _name} =
+    {coordinator_pid, coordinator_name} =
       AgentTestHelpers.start_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
         vocation_id: vid
@@ -379,15 +382,15 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     log =
       capture_log(fn ->
         :ok = Agent.chat(coordinator_pid, "try to send")
-        await_idle(coordinator_pid)
+        await_idle(coordinator_name)
       end)
 
     assert log =~ "is_error=true tool result"
 
-    coordinator_state = :sys.get_state(coordinator_pid)
+    coordinator_messages = Agent.get_messages(coordinator_pid, 1_000)
 
     {:tool, tool_msg} =
-      Enum.find(coordinator_state.chat_state.messages, fn
+      Enum.find(coordinator_messages, fn
         {:tool, %{parts: parts}} ->
           Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-send"}, &1))
 
@@ -424,13 +427,13 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     MockClient.set_response("coordinator done")
 
     :ok = Agent.chat(coordinator_pid, "wait for the specialist")
-    await_idle(coordinator_pid)
+    await_idle(coordinator_name)
 
-    coordinator_state = :sys.get_state(coordinator_pid)
-    AgentTestHelpers.assert_unique_message_indices(coordinator_state)
+    coordinator_messages = Agent.get_messages(coordinator_pid, 1_000)
+    AgentTestHelpers.assert_unique_message_indices(coordinator_messages)
 
     {:tool, tool_msg} =
-      Enum.find(coordinator_state.chat_state.messages, fn
+      Enum.find(coordinator_messages, fn
         {:tool, %{parts: parts}} ->
           Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-wait-for-idle"}, &1))
 

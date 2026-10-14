@@ -132,7 +132,13 @@ defmodule Nest.ModelsRescanTest do
 
   describe "scan deadline" do
     test "finalizing a scan cancels its deadline timer" do
-      timer = Process.send_after(self(), :deadline_should_be_cancelled, 60_000)
+      # The deadline is a *far future* value that the test proves gets
+      # cancelled, so this is a timer, not a wait. It is capped at 2s
+      # (#21: no test timeout over 2000ms) — which makes the
+      # `refute_received :deadline_should_be_cancelled` below sensitive to
+      # this test taking longer than 2s under load. See
+      # `notes/sketchy-slow-tests.md`.
+      timer = Process.send_after(self(), :deadline_should_be_cancelled, 2_000)
       state = state(scan(["a"], %{}, %{}, timer: timer))
 
       state =
@@ -144,7 +150,13 @@ defmodule Nest.ModelsRescanTest do
     end
 
     test "the deadline marks completion without ending the scan" do
-      timer = Process.send_after(self(), :deadline_should_be_cancelled, 60_000)
+      # The deadline is a *far future* value that the test proves gets
+      # cancelled, so this is a timer, not a wait. It is capped at 2s
+      # (#21: no test timeout over 2000ms) — which makes the
+      # `refute_received :deadline_should_be_cancelled` below sensitive to
+      # this test taking longer than 2s under load. See
+      # `notes/sketchy-slow-tests.md`.
+      timer = Process.send_after(self(), :deadline_should_be_cancelled, 2_000)
       state = state(scan(["a"], %{}, %{}, timer: timer))
 
       assert {:noreply, next} = Models.handle_info(:models_scan_deadline, state)

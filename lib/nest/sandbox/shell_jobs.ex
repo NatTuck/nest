@@ -26,10 +26,11 @@ defmodule Nest.Sandbox.ShellJobs do
 
   At most `caps["shell"]["background"]` jobs (default 1) may run
   concurrently per agent; `0` disables background jobs. Jobs are keyed
-  by `{space_id, agent_name}` and die when their agent dies (the manager
-  monitors the agent pid) or when `stop_all/1` runs at agent terminate.
-  Finished jobs are retained (bounded) so `shell-wait` and `shell-list`
-  can still report them.
+  by `{space_id, agent_name}` and die when their agent dies — the manager
+  monitors the agent pid and drops the agent's jobs on its `:DOWN` — or
+  when a caller invokes `stop_all/1`/`stop_all_async/2`. A drop also removes
+  the agent's scratch directory, after the jobs are stopped. Finished jobs
+  are kept (bounded) for `shell-wait`/`shell-list`.
 
   ## Events
 
@@ -42,17 +43,28 @@ defmodule Nest.Sandbox.ShellJobs do
   This GenServer never blocks for an unknown amount of time. Every
   callback does bounded, local work: `:exec.run`/`:exec.kill` are
   synchronous OS calls, and the only file I/O is `File.write` of a
-  streamed chunk and `File.read` of a job's log (proportional to that
-  log's size; logs are not capped on disk by design). It never waits on
-  an agent, an LLM, or another process, so a `GenServer.call/3` to it is
-  ordinary synchronous communication, not a blocking hand-off.
+  streamed chunk, `File.read` of a job's log (proportional to that
+  log's size; logs are not capped on disk by design), and the
+  `File.rm_rf` of a dropped agent's scratch directory. It never waits
+  on an agent, an LLM, or another process, so a `GenServer.call/3` to
+  it is ordinary synchronous communication, not a blocking hand-off.
+
+  The `rm_rf` is the one cost this process carries that scales with the
+  agent's own data (the uncapped logs under its scratch). It stays here
+  rather than moving to a task: the removal's whole point is that it is
+  ordered *after* the job kills, so it must run in the process that did
+  the killing, and a task spawned from here could outlive the manager.
+  The work is bounded by one agent's scratch and runs on a path (the
+  agent going away) where the manager has nothing else queued for it.
   """
 
   use GenServer
 
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.PubSub
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
+  alias Nest.Sandbox.ShellJobs.Waiters
   alias Nest.Tools.Exec
   alias Nest.Tools.ShellCmd
 
@@ -156,13 +168,54 @@ defmodule Nest.Sandbox.ShellJobs do
   def unsubscribe(agent_key, job_id, pid),
     do: GenServer.call(@name, {:unsubscribe, agent_key, job_id, pid})
 
+  @doc """
+  The pids registered as waiters for `job_id`, in registration order (newest
+  first).
+
+  Test-only introspection: the manager owns the waiter list, and a test that
+  asserts "this caller is not left registered" needs to read it rather than
+  race an OS kill against a fixed receive timeout.
+
+  `timeout` is the `GenServer.call/3` failure bound; the default is OTP's
+  (5 s). A converted test site passes the suite's 1 s bound instead.
+  """
+  @spec waiters(job_id(), timeout()) :: [pid()]
+  def waiters(job_id, timeout \\ 5_000), do: GenServer.call(@name, {:waiters, job_id}, timeout)
+
   @doc "Kill a running job. Its exit code is reported once the process dies."
   @spec kill(agent_key(), job_id()) :: :ok | {:error, :not_found}
   def kill(agent_key, job_id), do: GenServer.call(@name, {:kill, agent_key, job_id})
 
-  @doc "Stop every job belonging to `agent_key` (used at agent terminate)."
+  @doc """
+  Stop every job for `agent_key` synchronously, then remove the agent's scratch
+  directory (see `drop_agent/3`).
+
+  **Narrowed contract:** this form names no incarnation — it passes `owner:
+  nil` — so the removal refuses while *any* live agent is registered under the
+  key (`Nest.Agents.Agent.TmpSpace.cleanup_agent_key/2`). It is the
+  administrative/test form; its callers in this tree are the shell-jobs tests.
+  An agent's own `terminate/2` uses `stop_all_async/2`, which carries `self()`
+  and so may remove the scratch its own incarnation owns.
+  """
   @spec stop_all(agent_key()) :: :ok
   def stop_all(agent_key), do: GenServer.call(@name, {:stop_all, agent_key}, 10_000)
+
+  @doc """
+  Ask the manager to stop every job belonging to `agent_key`, without waiting
+  for it to happen. `owner` is the agent's pid — the incarnation the stop is
+  for; see `Nest.Agents.Agent.TmpSpace.cleanup_agent_key/2` for why it travels
+  with the request.
+
+  The non-blocking form of `stop_all/1`, for `Nest.Agents.Agent.terminate/2`:
+  the manager is a process-global rendezvous that every agent's teardown passes
+  through, so a synchronous stop there puts a shared process's queue latency
+  inside every agent's exit — the same rendezvous that can leave a *dying*
+  agent unable to answer a call for hundreds of milliseconds. A cast returns
+  immediately; the manager still stops the jobs and removes the scratch, and it
+  already monitors the agent pid (`track_agent/3`), so they die with the agent.
+  """
+  @spec stop_all_async(agent_key(), pid()) :: :ok
+  def stop_all_async(agent_key, owner), do: GenServer.cast(@name, {:stop_all, agent_key, owner})
 
   @doc """
   The result text for a finished job, shared by the blocking `shell-wait` and
@@ -173,6 +226,18 @@ defmodule Nest.Sandbox.ShellJobs do
 
   def result_text(id, code, output),
     do: "Background job #{id} exited with code #{code}:\n#{output}"
+
+  @doc """
+  The result text for a job whose agent stopped, shared by the blocking
+  `shell-wait` and the async watcher for the same reason as `result_text/3`.
+
+  Deliberately not `result_text/3`'s shape: the job did not exit, it was
+  dropped with its agent (`drop_agent/2`), so there is no exit code to report
+  and the log may already be gone with the agent's tmp directory. Wording it as
+  an exit would be a lie about what happened.
+  """
+  @spec gone_text(job_id()) :: String.t()
+  def gone_text(id), do: "Background job #{id} is gone: the agent that owned it stopped."
 
   # ---- Server callbacks ----
 
@@ -228,8 +293,7 @@ defmodule Nest.Sandbox.ShellJobs do
         {:reply, :ok, state}
 
       {:ok, _running} ->
-        waiters = Map.update(state.waiters, job_id, [pid], &[pid | &1])
-        {:reply, :ok, %{state | waiters: waiters}}
+        {:reply, :ok, %{state | waiters: Waiters.add(state.waiters, job_id, pid)}}
 
       :error ->
         {:reply, {:error, :not_found}, state}
@@ -237,7 +301,11 @@ defmodule Nest.Sandbox.ShellJobs do
   end
 
   def handle_call({:unsubscribe, _agent_key, job_id, pid}, _from, state) do
-    {:reply, :ok, remove_waiter(state, job_id, pid)}
+    {:reply, :ok, %{state | waiters: Waiters.remove(state.waiters, job_id, pid)}}
+  end
+
+  def handle_call({:waiters, job_id}, _from, state) do
+    {:reply, Waiters.get(state.waiters, job_id), state}
   end
 
   def handle_call({:kill, agent_key, job_id}, _from, state) do
@@ -266,7 +334,15 @@ defmodule Nest.Sandbox.ShellJobs do
   end
 
   def handle_call({:stop_all, agent_key}, _from, state) do
-    {:reply, :ok, drop_agent(agent_key, state)}
+    # No incarnation to name: the sync form is a caller that only wants the
+    # jobs gone (in this tree, the shell-jobs tests), so any live owner of the
+    # key refuses the scratch removal. See `TmpSpace.cleanup_agent_key/2`.
+    {:reply, :ok, drop_agent(agent_key, state, nil)}
+  end
+
+  @impl true
+  def handle_cast({:stop_all, agent_key, owner}, state) do
+    {:noreply, drop_agent(agent_key, state, owner)}
   end
 
   @impl true
@@ -278,9 +354,14 @@ defmodule Nest.Sandbox.ShellJobs do
 
   def handle_info({:DOWN, _ref, :process, pid, reason}, state) do
     cond do
-      job = job_by_erl_pid(state, pid) -> {:noreply, finish_job(job, reason, state)}
-      agent_key = agent_key_by_monitor(state, pid) -> {:noreply, drop_agent(agent_key, state)}
-      true -> {:noreply, state}
+      job = job_by_erl_pid(state, pid) ->
+        {:noreply, finish_job(job, reason, state)}
+
+      agent_key = agent_key_by_monitor(state, pid) ->
+        {:noreply, drop_agent(agent_key, state, pid)}
+
+      true ->
+        {:noreply, state}
     end
   end
 
@@ -382,7 +463,7 @@ defmodule Nest.Sandbox.ShellJobs do
 
     state =
       state
-      |> notify_waiters(job.id, code)
+      |> Map.update!(:waiters, &Waiters.notify_exit(&1, job.id, code))
       |> put_job(%{job | status: {:exited, code}, exit_code: code})
       |> trim(job.agent_key)
 
@@ -415,26 +496,49 @@ defmodule Nest.Sandbox.ShellJobs do
     end
   end
 
-  defp drop_agent(agent_key, state) do
+  defp drop_agent(agent_key, state, owner) do
     jobs = state.jobs |> Map.values() |> Enum.filter(&(&1.agent_key == agent_key))
+    ids = Enum.map(jobs, & &1.id)
 
-    Enum.each(jobs, fn job ->
-      if job.status == :running, do: stop_os_process(job)
-      remove_script(job)
-    end)
+    Enum.each(jobs, &stop_job/1)
+
+    # Say so before the waiter lists go with the jobs: this is the only path
+    # that ends a job without an exit, and a waiter that outlives its agent
+    # would otherwise wait out its whole timeout and then report the job as
+    # still running. See `Waiters.notify_gone/2`.
+    Waiters.notify_gone(state.waiters, ids)
+
+    # The jobs above are stopped, so the scratch directory can go now; removing
+    # it first would let a running job recreate files under a deleted path.
+    # `owner` is the incarnation this drop is for, so a stale monitor for a
+    # previous one cannot delete the scratch a live agent is using.
+    TmpSpace.cleanup_agent_key(agent_key, owner)
 
     case Map.get(state.agents, agent_key) do
       %{ref: ref} -> Process.demonitor(ref, [:flush])
       _ -> :ok
     end
 
-    %{
+    state = %{
       state
-      | jobs: Map.drop(state.jobs, Enum.map(jobs, & &1.id)),
+      | jobs: Map.drop(state.jobs, ids),
         agents: Map.delete(state.agents, agent_key),
-        waiters: Map.drop(state.waiters, Enum.map(jobs, & &1.id))
+        waiters: Map.drop(state.waiters, ids)
     }
+
+    # The agent's jobs are gone, so the frame that says so is this one: every
+    # other state change broadcasts, and a client watching this agent would
+    # otherwise keep rendering jobs that were just killed. A no-op for an
+    # `agent_key` that is not `{space_id, name}`.
+    broadcast(state, agent_key)
   end
+
+  defp stop_job(%{status: :running} = job) do
+    stop_os_process(job)
+    remove_script(job)
+  end
+
+  defp stop_job(job), do: remove_script(job)
 
   # SIGKILL the running external process. Plain `:exec.stop/1` sends
   # SIGTERM first and only escalates to SIGKILL after ~5s; bwrap (PID 1 in
@@ -444,30 +548,6 @@ defmodule Nest.Sandbox.ShellJobs do
     :exec.kill(os_pid, :sigkill)
   catch
     _kind, _ -> :ok
-  end
-
-  # ---- Waiters ----
-
-  defp notify_waiters(state, job_id, code) do
-    pids = Map.get(state.waiters, job_id, [])
-
-    Enum.each(pids, &send(&1, {:shell_job_exit, job_id, code}))
-    update_in(state.waiters, &Map.delete(&1, job_id))
-  end
-
-  # Drop a single waiter without notifying it. Removes the job's key
-  # entirely once its list empties.
-  defp remove_waiter(state, job_id, pid) do
-    case Map.get(state.waiters, job_id) do
-      nil ->
-        state
-
-      pids ->
-        case List.delete(pids, pid) do
-          [] -> %{state | waiters: Map.delete(state.waiters, job_id)}
-          remaining -> %{state | waiters: Map.put(state.waiters, job_id, remaining)}
-        end
-    end
   end
 
   # ---- Retention / cleanup ----

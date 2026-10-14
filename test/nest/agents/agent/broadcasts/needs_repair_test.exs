@@ -22,7 +22,7 @@ defmodule Nest.Agents.Agent.Broadcasts.NeedsRepairTest do
         "mix nest.repair_messages --space clever-raven"
       )
 
-      assert_receive {:chat_status, payload}, 500
+      assert_receive {:chat_status, payload}, 1_000
       assert payload.status == "needs_repair"
       assert payload.sequenceViolations == violations
       assert payload.repairCommand == "mix nest.repair_messages --space clever-raven"

@@ -18,7 +18,6 @@ defmodule Nest.Tools.ShellCmdTest do
 
   use ExUnit.Case, async: true
 
-  import Eventually
   import ExUnit.CaptureLog
   import Nest.Test.TmpCleanup
 
@@ -206,7 +205,7 @@ defmodule Nest.Tools.ShellCmdTest do
   # `timeout: 50` rather than the `shell-cmd` tool's 1-second minimum: the
   # whole suite shares a 5s wall-clock budget, and the tool path would spend
   # a full second here for the same mailbox. The stale `:DOWN` is waited for
-  # (peeked, never received) so the second call's outcome is deterministic
+  # by arrival and then re-sent, so the second call's outcome is deterministic
   # rather than a race against its arrival, which is measured at ~5-15ms
   # after `:exec.stop/1`.
   @tag :bwrap
@@ -217,7 +216,13 @@ defmodule Nest.Tools.ShellCmdTest do
                  ShellCmd.execute("echo first; sleep 5", Mounts.new(ws, nil), nil, timeout: 50)
 
         assert first =~ "[Command timed out after 50ms]"
-        assert eventually(fn -> stale_down_pending?() end, timeout: 500, interval: 10)
+
+        # `:exec.stop/1` is asynchronous, so the killed command's `:DOWN` is a
+        # real arrival rather than a frame already in the mailbox. Taking it and
+        # re-sending it puts the stale `:DOWN` ahead of anything call 2's own
+        # command adds, so "call 2 ignores it" is a fact, not a race.
+        assert_receive {:DOWN, _ref, :process, _pid, _reason} = stale_down, 1000
+        send(self(), stale_down)
 
         # Call 2's own output. With the stale `:DOWN` it is the empty-output
         # placeholder instead, returned before its command had finished.
@@ -495,12 +500,5 @@ defmodule Nest.Tools.ShellCmdTest do
 
     assert {:ok, _} = ShellCmd.execute("cat > big.bin", Mounts.new(ws, nil), nil, stdin: payload)
     assert File.stat!(Path.join(ws, "big.bin")).size == byte_size(payload)
-  end
-
-  # Peek at the mailbox without consuming from it: `true` once a `:DOWN` is
-  # pending. Only this test's own bwrap processes can have sent one.
-  defp stale_down_pending? do
-    {:messages, messages} = Process.info(self(), :messages)
-    Enum.any?(messages, &match?({:DOWN, _ref, :process, _pid, _reason}, &1))
   end
 end

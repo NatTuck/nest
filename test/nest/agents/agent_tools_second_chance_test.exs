@@ -74,16 +74,16 @@ defmodule Nest.Agents.AgentToolsSecondChanceTest do
                        750
 
         assert_receive {:chat_status, %{status: "idle"}}, 750
-        refute_receive {:chat_error, _}, 200
+        refute_received {:chat_error, _}
       end)
 
       # The synthetic error tool results are the evidence that the
       # second-chance path ran at all — without them the turn would have
       # finalized on the obedient path, exactly as it did before the
       # overflow round was scripted as events.
-      state = :sys.get_state(pid)
+      messages = Nest.Agents.Agent.get_messages(pid, 1_000)
 
-      assert Enum.any?(state.chat_state.messages, fn
+      assert Enum.any?(messages, fn
                {:tool, %Tool{parts: parts}} ->
                  Enum.any?(parts, fn
                    %Part.ToolResult{is_error: true, content: content} ->

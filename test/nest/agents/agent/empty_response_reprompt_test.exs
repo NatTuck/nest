@@ -52,13 +52,13 @@ defmodule Nest.Agents.Agent.EmptyResponseRepromptTest do
 
     :ok = Agent.chat(pid, "Analyze the lab")
 
-    assert_receive {:chat_message, {:user, %{index: 1}}}, 500
+    assert_receive {:chat_message, {:user, %{index: 1}}}, 1_000
 
     # The silent assistant (thinking only) is still shown...
-    assert_receive {:chat_message, {:assistant, %{index: 2, parts: [%Part.Thinking{}]}}}, 500
+    assert_receive {:chat_message, {:assistant, %{index: 2, parts: [%Part.Thinking{}]}}}, 1_000
 
     # ...but the model is asked to actually speak.
-    assert_receive {:chat_message, {:user, %{index: 3, parts: [%Part.Text{text: nudge}]}}}, 500
+    assert_receive {:chat_message, {:user, %{index: 3, parts: [%Part.Text{text: nudge}]}}}, 1_000
     assert nudge =~ "empty response"
 
     # And this time it replies with real text.
@@ -67,7 +67,7 @@ defmodule Nest.Agents.Agent.EmptyResponseRepromptTest do
 
     assert Enum.any?(parts, &match?(%Part.Text{text: "Here is my actual reply."}, &1))
 
-    assert_receive {:chat_status, %{status: "idle"}}, 500
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
   end
 
   test "after the retry cap the turn finalizes with a warning (no infinite loop)" do
@@ -81,14 +81,22 @@ defmodule Nest.Agents.Agent.EmptyResponseRepromptTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Analyze the lab")
 
-        assert_receive {:chat_message, {:user, %{index: 1}}}, 500
-        assert_receive {:chat_message, {:assistant, %{index: 2, parts: [%Part.Thinking{}]}}}, 500
-        assert_receive {:chat_message, {:user, %{index: 3}}}, 500
-        assert_receive {:chat_message, {:assistant, %{index: 4, parts: [%Part.Thinking{}]}}}, 500
-        assert_receive {:chat_message, {:user, %{index: 5}}}, 500
-        assert_receive {:chat_message, {:assistant, %{index: 6, parts: [%Part.Thinking{}]}}}, 500
+        assert_receive {:chat_message, {:user, %{index: 1}}}, 1_000
 
-        assert_receive {:chat_status, %{status: "idle"}}, 500
+        assert_receive {:chat_message, {:assistant, %{index: 2, parts: [%Part.Thinking{}]}}},
+                       1_000
+
+        assert_receive {:chat_message, {:user, %{index: 3}}}, 1_000
+
+        assert_receive {:chat_message, {:assistant, %{index: 4, parts: [%Part.Thinking{}]}}},
+                       1_000
+
+        assert_receive {:chat_message, {:user, %{index: 5}}}, 1_000
+
+        assert_receive {:chat_message, {:assistant, %{index: 6, parts: [%Part.Thinking{}]}}},
+                       1_000
+
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
     assert log =~ "Empty assistant response finalized after 2 re-prompt(s)"
@@ -101,14 +109,15 @@ defmodule Nest.Agents.Agent.EmptyResponseRepromptTest do
 
     :ok = Agent.chat(pid, "Analyze the lab")
 
-    assert_receive {:chat_message, {:user, %{index: 1}}}, 500
-    assert_receive {:chat_message, {:assistant, %{parts: parts}}}, 500
+    assert_receive {:chat_message, {:user, %{index: 1}}}, 1_000
+    assert_receive {:chat_message, {:assistant, %{parts: parts}}}, 1_000
 
     assert Enum.any?(parts, &match?(%Part.Text{text: "A perfectly normal reply."}, &1))
 
-    # No nudge user message appears (the only user message is index 1).
-    refute_receive {:chat_message, {:user, %{index: 2}}}, 100
-
-    assert_receive {:chat_status, %{status: "idle"}}, 500
+    # No nudge user message appears (the only user message is index 1). The
+    # idle broadcast is emitted last, so asserting it first settles the mailbox
+    # and a nudge frame would already be here.
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
+    refute_received {:chat_message, {:user, %{index: 2}}}
   end
 end

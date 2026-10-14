@@ -1,0 +1,31 @@
+host	burners	burners_actual	run_queue	schedulers	op	samples	mean_us	p50_us	p99_us	max_us
+celedyr	0	0
+0	0	24	gen_server_call	15	15.9	12	39	39
+celedyr	0	0
+0	1	24	mimic_stub	15	32.9	30	80	80
+celedyr	0	0
+0	1	24	mimic_allow	15	18.9	17	38	38
+celedyr	0	0
+0	1	24	postgres_query	15	2224.1	584	24764	24764
+celedyr	8	8	0	24	gen_server_call	15	20.1	12	69	69
+celedyr	8	8	0	24	mimic_stub	15	46.7	38	102	102
+celedyr	8	8	1	24	mimic_allow	15	22.4	20	50	50
+celedyr	8	8	1	24	postgres_query	15	384.1	359	827	827
+celedyr	16	16	0	24	gen_server_call	15	9.7	8	20	20
+celedyr	16	16	1	24	mimic_stub	15	24.1	21	61	61
+celedyr	16	16	1	24	mimic_allow	15	14.2	13	25	25
+celedyr	16	16	1	24	postgres_query	15	366.1	333	733	733
+celedyr	32	32	0	24	gen_server_call	15	10.7	8	29	29
+celedyr	32	32	1	24	mimic_stub	15	26.7	21	68	68
+celedyr	32	32	1	24	mimic_allow	15	12.5	12	24	24
+celedyr	32	32	1	24	postgres_query	15	598.3	326	3982	3982
+celedyr	48	48	0	24	gen_server_call	15	10.0	8	22	22
+celedyr	48	48	1	24	mimic_stub	15	23.1	21	60	60
+celedyr	48	48	1	24	mimic_allow	15	12.9	12	23	23
+celedyr	48	48	1	24	postgres_query	15	1666.9	339	16474	16474
+celedyr	64	64	0	24	gen_server_call	15	11.5	10	29	29
+celedyr	64	64	1	24	mimic_stub	15	22.5	21	55	55
+celedyr	64	64	1	24	mimic_allow	15	12.7	12	24	24
+celedyr	64	64	1	24	postgres_query	15	1642.8	333	11926	11926
+# loadavg 	10.39 8.80 9.19 2/625 1002683
+# schedulers 	24

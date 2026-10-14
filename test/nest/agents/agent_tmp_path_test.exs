@@ -231,36 +231,17 @@ defmodule Nest.Agents.AgentTmpPathTest do
     end
   end
 
-  # Wait for the monitored process to go down, discarding any
-  # unrelated messages (e.g. a sibling async test's `{:EXIT, _, _}`
-  # leaking into this test's `trap_exit` mailbox). A short fixed
-  # timeout is flaky under concurrent load, so poll with a
-  # generous deadline instead. Pass `reason = :_` to accept any.
+  # Wait for the monitored process to go down. `assert_receive/2` is a
+  # selective receive, so unrelated messages (e.g. a sibling async
+  # test's `{:EXIT, _, _}` leaking into this test's `trap_exit`
+  # mailbox) are left in the mailbox and ignored — no drain loop is
+  # needed. The `:DOWN` is the event and the 1s fence is only the
+  # failure bound. Pass `reason = :_` to accept any reason.
+  defp wait_for_down(ref, pid, :_) do
+    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+  end
+
   defp wait_for_down(ref, pid, reason) do
-    deadline = System.monotonic_time(:millisecond) + 2_000
-    do_wait_for_down(ref, pid, reason, deadline)
-  end
-
-  defp do_wait_for_down(ref, pid, reason, deadline) do
-    receive do
-      {:DOWN, ^ref, :process, ^pid, ^reason} -> :ok
-      {:DOWN, ^ref, :process, ^pid, _} when reason == :_ -> :ok
-      _ -> maybe_wait_more(ref, pid, reason, deadline)
-    after
-      50 ->
-        if System.monotonic_time(:millisecond) >= deadline do
-          flunk("agent #{inspect(pid)} did not go down within 2s")
-        else
-          maybe_wait_more(ref, pid, reason, deadline)
-        end
-    end
-  end
-
-  defp maybe_wait_more(ref, pid, reason, deadline) do
-    if System.monotonic_time(:millisecond) >= deadline do
-      flunk("agent #{inspect(pid)} did not go down within 2s")
-    else
-      do_wait_for_down(ref, pid, reason, deadline)
-    end
+    assert_receive {:DOWN, ^ref, :process, ^pid, ^reason}, 1_000
   end
 end

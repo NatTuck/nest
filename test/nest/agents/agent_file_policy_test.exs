@@ -258,14 +258,18 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
       full_path = Path.join(workspace_root(pid), "capped.txt")
       File.write!(full_path, "data\n")
 
-      :sys.replace_state(pid, fn state ->
-        # Simulate the streaming handler's record call with
-        # the :is_error true result. The handler skips the
-        # record for failed results, so the cache stays
-        # empty.
-        new_state = put_in(state.chat_state.read_files, %{}) |> then(fn s -> s end)
-        new_state
-      end)
+      :sys.replace_state(
+        pid,
+        fn state ->
+          # Simulate the streaming handler's record call with
+          # the :is_error true result. The handler skips the
+          # record for failed results, so the cache stays
+          # empty.
+          new_state = put_in(state.chat_state.read_files, %{}) |> then(fn s -> s end)
+          new_state
+        end,
+        1_000
+      )
 
       # Cache is still empty — failed reads don't sneak in.
       assert read_files(pid) == %{}
@@ -298,9 +302,13 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
       seed_cache(pid, %{"foo.txt" => %{mtime: 0, size: 0}})
       assert map_size(read_files(pid)) == 1
 
-      :sys.replace_state(pid, fn state ->
-        %{state | chat_state: %{state.chat_state | read_files: %{}}}
-      end)
+      :sys.replace_state(
+        pid,
+        fn state ->
+          %{state | chat_state: %{state.chat_state | read_files: %{}}}
+        end,
+        1_000
+      )
 
       assert read_files(pid) == %{}
     end
@@ -340,7 +348,7 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
   defp unique_int, do: System.unique_integer([:positive])
 
   defp workspace_root(pid) do
-    :sys.get_state(pid).workspace_path
+    Nest.Agents.Agent.get_public_info(pid, 1_000).workspace_path
   end
 
   defp read_files(pid) do
@@ -348,11 +356,15 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
   end
 
   defp seed_cache(pid, map) do
-    :sys.replace_state(pid, fn state ->
-      new = Map.merge(state.chat_state.read_files, map)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        new = Map.merge(state.chat_state.read_files, map)
 
-      %{state | chat_state: %{state.chat_state | read_files: new}}
-    end)
+        %{state | chat_state: %{state.chat_state | read_files: new}}
+      end,
+      1_000
+    )
   end
 
   # Materialize a workspace-relative file with the given

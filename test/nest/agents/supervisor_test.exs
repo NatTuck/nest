@@ -22,8 +22,6 @@ defmodule Nest.Agents.SupervisorTest do
   """
   use Nest.DataCase, async: true
 
-  import Eventually
-
   alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Registry
@@ -176,17 +174,29 @@ defmodule Nest.Agents.SupervisorTest do
       assert {:ok, pid} = Registry.lookup(AgentTestHelpers.current_space_id(), name)
       assert Process.alive?(pid)
 
+      # `stop_agent/2` fires `Process.exit/2` and returns before the process
+      # is gone, so the `:DOWN` — subscribed before the stop, so it cannot be
+      # missed — is the event that says the process has actually exited.
+      ref = Process.monitor(pid)
       :ok = Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1_000
 
-      # The registry's auto-cleanup happens asynchronously after the
-      # process exits, so poll until the lookup reflects the removal.
-      assert eventually(
-               fn ->
-                 Registry.lookup(AgentTestHelpers.current_space_id(), name) ==
-                   {:error, :not_found}
-               end,
-               timeout: 1000
-             )
+      # The registry's auto-cleanup runs in the partition server's
+      # `handle_info({:EXIT, pid, _})`: asynchronous, announcing nothing, and
+      # not ordered by the `:DOWN` above (measured: ~27% of exits are still in
+      # the table right after it). `:sys.get_state/2` on that partition is the
+      # barrier that drains it — the link `:EXIT` is enqueued before the
+      # `:DOWN` we waited on — so the lookup below reads a decided state
+      # instead of polling for it.
+      #
+      # The partition name is `Registry.Partition.pid_name/2`'s; the registry
+      # is single-partition (`Nest.Agents.Registry.child_spec/0` passes no
+      # `:partitions`).
+      # allowlist: registry — partition cleanup announces nothing
+      _ = :sys.get_state(Nest.Agents.Registry.PIDPartition0, 1_000)
+
+      assert Registry.lookup(AgentTestHelpers.current_space_id(), name) ==
+               {:error, :not_found}
     end
 
     test "returns error for non-existent agent" do

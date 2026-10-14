@@ -29,12 +29,21 @@ defmodule Mix.Tasks.Nest.RepairMessages do
 
   @switches [space: :string, all: :boolean, apply: :boolean, verbose: :boolean]
 
+  @doc """
+  Runs the repair task, writing its report to `shell` (default `Mix.shell/0`).
+
+  Injecting the shell keeps the output assertion — the report still arrives as a
+  `{:mix_shell, :info, _}` message from `Mix.Shell.Process` — without touching
+  the VM-global `Mix.shell/1` slot in `Mix.State`, so the test can stay
+  `async: true`.
+  """
   @impl Mix.Task
-  def run(args) do
+  @spec run([String.t()], module() | pid()) :: :ok
+  def run(args, shell \\ Mix.shell()) do
     Mix.Task.run("app.start")
 
     case parse_args(args) do
-      {:ok, target, opts} -> execute(target, opts)
+      {:ok, target, opts} -> execute(target, opts, shell)
       {:error, message} -> Mix.raise(message)
     end
   end
@@ -74,10 +83,10 @@ defmodule Mix.Tasks.Nest.RepairMessages do
 
   defp flags(parsed), do: [apply: parsed[:apply] == true, verbose: parsed[:verbose] == true]
 
-  defp execute(target, opts) do
+  defp execute(target, opts, shell) do
     case MessageRepair.run(target, opts) do
       {:ok, plan, agents} ->
-        Mix.shell().info(MessageRepair.format_report(plan, agents, opts[:verbose]))
+        shell.info(MessageRepair.format_report(plan, agents, opts[:verbose]))
         enforce_exit(plan, opts)
 
       {:error, reason} ->

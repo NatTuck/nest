@@ -104,7 +104,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
         {:agent_status, %{space_id: foreign_space_id, name: "theirs", status: "streaming"}}
       )
 
-      refute_push "agent:status", _, 200
+      settle(socket)
+      refute_push "agent:status", _, 0
 
       # ...and the frame for the user's own space still arrives, so the
       # `refute_push` above is not vacuous.
@@ -137,7 +138,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
 
       assert_push "agent:status", %{name: "child", status: "executing_tools"}
 
-      refute_receive %Phoenix.Socket.Broadcast{event: "agent:status"}, 200
+      settle(socket)
+      refute_received %Phoenix.Socket.Broadcast{event: "agent:status"}
 
       settle(socket)
     end
@@ -208,7 +210,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
           {unquote(tag), %{"name" => "theirs", "space_id" => foreign_space_id}}
         )
 
-        refute_push unquote(event), _, 200
+        settle(socket)
+        refute_push unquote(event), _, 0
 
         settle(socket)
       end
@@ -226,7 +229,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
         )
 
         assert_push unquote(event), %{"name" => "child", "space_id" => ^space_id}
-        refute_receive %Phoenix.Socket.Broadcast{event: unquote(event)}, 200
+        settle(socket)
+        refute_received %Phoenix.Socket.Broadcast{event: unquote(event)}
 
         settle(socket)
       end
@@ -289,7 +293,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
       assert_reply ref, :ok, %{}, 500
 
       assert_push "space:archived", %{"space_id" => ^space_id}
-      refute_receive %Phoenix.Socket.Broadcast{event: "space:archived"}, 200
+      settle(socket)
+      refute_received %Phoenix.Socket.Broadcast{event: "space:archived"}
 
       _ = Spaces.unarchive_space(space_id)
 
@@ -329,7 +334,7 @@ defmodule NestWeb.LobbyChannelScopingTest do
             {:agent_status, %{space_id: space_id, name: "still-here", status: "idle"}}
           )
 
-          assert_push "agent:status", %{name: "still-here"}, 500
+          assert_push "agent:status", %{name: "still-here"}, 1_000
         end)
 
       assert log =~ "ignoring unknown PubSub frame"
@@ -358,7 +363,7 @@ defmodule NestWeb.LobbyChannelScopingTest do
             {:agent_status, %{space_id: space_id, name: "still-here", status: "idle"}}
           )
 
-          assert_push "agent:status", %{name: "still-here"}, 500
+          assert_push "agent:status", %{name: "still-here"}, 1_000
         end)
 
       assert log =~ "ignoring unknown PubSub frame"
@@ -407,8 +412,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
       # One push per session. The second session reconciled synchronously in
       # `handle_in("create_space")`; the first can only have got here through
       # the user-topic frame.
-      assert_push "agent:status", %{space_id: ^new_space_id, name: ^new_name}, 500
-      assert_push "agent:status", %{space_id: ^new_space_id, name: ^new_name}, 500
+      assert_push "agent:status", %{space_id: ^new_space_id, name: ^new_name}, 1_000
+      assert_push "agent:status", %{space_id: ^new_space_id, name: ^new_name}, 1_000
 
       settle(first)
       settle(second)
@@ -431,9 +436,10 @@ defmodule NestWeb.LobbyChannelScopingTest do
       )
 
       # A's socket gets it exactly once...
-      assert_push "agent:status", %{name: "secret", status: "streaming"}, 500
+      assert_push "agent:status", %{name: "secret", status: "streaming"}, 1_000
       # ...and B's socket must not produce a second copy.
-      refute_push "agent:status", _, 300
+      settle(bob_socket)
+      refute_push "agent:status", _, 0
 
       # Same for an agent lifecycle frame.
       Phoenix.PubSub.broadcast(
@@ -442,8 +448,9 @@ defmodule NestWeb.LobbyChannelScopingTest do
         {:agent_created, %{"name" => "secret-child", "space_id" => space.id}}
       )
 
-      assert_push "agent:created", %{"name" => "secret-child"}, 500
-      refute_push "agent:created", _, 300
+      assert_push "agent:created", %{"name" => "secret-child"}, 1_000
+      settle(bob_socket)
+      refute_push "agent:created", _, 0
 
       # And for a space-lifecycle frame on A's per-user topic.
       Phoenix.PubSub.broadcast(
@@ -452,8 +459,9 @@ defmodule NestWeb.LobbyChannelScopingTest do
         {:space_created, %{"agentName" => "x", "space" => %{"id" => space.id}}}
       )
 
-      assert_push "space:created", %{"agentName" => "x"}, 500
-      refute_push "space:created", _, 300
+      assert_push "space:created", %{"agentName" => "x"}, 1_000
+      settle(bob_socket)
+      refute_push "space:created", _, 0
 
       settle(alice_socket)
       settle(bob_socket)
@@ -471,8 +479,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
 
       Phoenix.PubSub.broadcast(Nest.PubSub, "models", {:models_updated, [%{"name" => "m1"}]})
 
-      assert_push "models_updated", _, 500
-      assert_push "models_updated", _, 500
+      assert_push "models_updated", _, 1_000
+      assert_push "models_updated", _, 1_000
 
       settle(alice_socket)
       settle(bob_socket)
@@ -493,12 +501,14 @@ defmodule NestWeb.LobbyChannelScopingTest do
       assert_reply ref, :ok, %{"name" => new_name}, 500
       AgentTestHelpers.ensure_cleanup(new_name)
 
-      assert_push "space:created", %{"agentName" => ^new_name}, 500
-      refute_push "space:created", _, 300
+      assert_push "space:created", %{"agentName" => ^new_name}, 1_000
+      settle(bob_socket)
+      refute_push "space:created", _, 0
 
       # The root agent's creation frame rides the new space's topic.
-      assert_push "agent:created", %{"name" => ^new_name}, 500
-      refute_push "agent:created", _, 300
+      assert_push "agent:created", %{"name" => ^new_name}, 1_000
+      settle(bob_socket)
+      refute_push "agent:created", _, 0
 
       settle(alice_socket)
       settle(bob_socket)
@@ -520,7 +530,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
   # is answered only after every frame queued before it — the same barrier
   # `NestWeb.LobbyChannelArchiveTest.push_and_settle/3` uses, applied at the
   # end of the test rather than around a single push.
-  defp settle(socket), do: :sys.get_state(socket.channel_pid)
+  # allowlist: barrier — settle/1 orders the channel's post-assertion DB work
+  defp settle(socket), do: :sys.get_state(socket.channel_pid, 1_000)
 
   # A real space owned by `user` — unlike the fabricated id above, this one
   # exists in the owner's visible set, so an over-broad subscription would

@@ -173,24 +173,33 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   end
 
   @doc """
-  The `{:kill, pid}` actions that stop every backgrounded batch (the Stop
-  transition's half of the kill list).
+  The pids of every batch this machine is running in the background.
 
-  **Sorted** — the map's iteration order is arbitrary, so the action list would
-  otherwise differ from run to run — and **distinct**, because two entries can
-  share a pid (the same batch backgrounded under two refs) where one kill is
-  enough. Every kill routes through the executor's `{:kill, pid}`, whose
-  `{:stop_chat, self()}` handshake is what lets a `shell-cmd` worker clean up
-  its `bwrap` OS process before it goes.
+  **Sorted** — the map's iteration order is arbitrary, so a caller building an
+  action list from this would otherwise differ from run to run — and
+  **distinct**, because two entries can share a pid (the same batch
+  backgrounded under two refs) where one stop is enough. The Stop transition
+  turns these into kills; the agent's `terminate/2` stops them directly, since
+  a dying agent runs no transition at all.
   """
-  @spec kill_actions(Machine.t()) :: [{:kill, pid()}]
-  def kill_actions(m) do
+  @spec pids(Machine.t()) :: [pid()]
+  def pids(m) do
     m.work.backgrounded
     |> Enum.map(fn {_ref, %{pid: pid}} -> pid end)
     |> Enum.uniq()
     |> Enum.sort()
-    |> Enum.map(&{:kill, &1})
   end
+
+  @doc """
+  The `{:kill, pid}` actions that stop every backgrounded batch (the Stop
+  transition's half of the kill list).
+
+  Every kill routes through the executor's `{:kill, pid}`, whose
+  `{:stop_chat, self()}` handshake is what lets a `shell-cmd` worker clean up
+  its `bwrap` OS process before it goes.
+  """
+  @spec kill_actions(Machine.t()) :: [{:kill, pid()}]
+  def kill_actions(m), do: Enum.map(pids(m), &{:kill, &1})
 
   @doc """
   The actions that deliver a backgrounded batch's outcome.

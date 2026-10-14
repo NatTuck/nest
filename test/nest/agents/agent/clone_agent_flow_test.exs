@@ -53,7 +53,6 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.LLM.MockClient
@@ -74,9 +73,9 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   # 500 ms is not enough for that under load: the same shape measured p50
   # 18.7 ms / max 34.3 ms across 40 samples in the full suite, but p50 926 ms /
   # max 1534 ms (39 of 40 over 500 ms) under 48 CPU burners. 2000 ms is ~100x
-  # the in-suite median and stays under ExUnit's 5 s per-test timeout, so a
-  # genuinely stuck turn still fails — as a stuck turn, not as a flake.
-  @turn_fence_ms 2_000
+  # the in-suite median and is also the `#21` cap on every test-side timeout, so
+  # a genuinely stuck turn still fails — as a stuck turn, not as a flake.
+  @turn_fence_ms 1_000
 
   test "a spawn's tool result is backgrounded, and the child's answer arrives as a message",
        %{vid: vid} do
@@ -126,9 +125,9 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     Phoenix.PubSub.subscribe(Nest.PubSub, space_topic())
 
     assert_receive {:agent_created, %{"name" => child_name, "parentName" => ^parent_name}},
-                   5_000
+                   2_000
 
-    assert_receive {:child_chat_blocked, parent_pid}, 5_000
+    assert_receive {:child_chat_blocked, parent_pid}, 1_000
 
     space_id = AgentTestHelpers.current_space_id()
     {:ok, child_pid} = AgentsRegistry.lookup(space_id, child_name)
@@ -142,12 +141,12 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     {second, llm2} = next_request()
 
-    mid = :sys.get_state(parent_pid)
+    mid = Agent.get_messages(parent_pid, 1_000)
     AgentTestHelpers.assert_unique_message_indices(mid)
 
     # The child's answer is already in the transcript, behind the machine's
     # synthetic result and ack, and the batch's real result has not arrived.
-    assert Enum.map(mid.chat_state.messages, &elem(&1, 0)) ==
+    assert Enum.map(mid, &elem(&1, 0)) ==
              [:system, :user, :assistant, :tool, :assistant, :user]
 
     assert [synthetic] = tool_results(mid, "agents-spawn")
@@ -167,23 +166,31 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     # The batch returns: its real result has no live worker to settle it, so it
     # arrives as a queued notice.
-    assert_receive {:chat_inbox, %{count: 1}}, 500
+    assert_receive {:chat_inbox, %{count: 1}}, 1_000
 
     # The response to the request the delivered answer rode in on, then the
     # notice's own turn.
     release_llm(llm2)
+
+    # Consume *this* turn's idle frame before the notice's turn starts: the
+    # final `await_idle/0` below must fence on the notice's turn (the one that
+    # answers with "after the answer"), and without this it would match this
+    # earlier, still-pending idle and read the transcript a turn too soon.
+    await_idle()
+
     {_third, llm3} = next_request()
     release_llm(llm3)
 
-    await_idle(parent_pid)
+    await_idle()
 
-    parent_state = :sys.get_state(parent_pid)
-    AgentTestHelpers.assert_unique_message_indices(parent_state)
+    # allowlist: snapshot — messages + descendant_usage
+    parent_state = :sys.get_state(parent_pid, 1_000)
+    AgentTestHelpers.assert_unique_message_indices(parent_state.chat_state.messages)
 
     # The real confirmation arrives later as a message, and it names the child
     # and says where the answer goes: the spawn's promise is kept, just not by
     # the tool result the model read mid-batch.
-    assert [notice] = delivered_texts(parent_state, "Spawned agent")
+    assert [notice] = delivered_texts(parent_state.chat_state.messages, "Spawned agent")
 
     assert notice =~ child_name
     assert notice =~ "arrive as a message"
@@ -205,7 +212,8 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     # The clone's fork notice carries its name and depth (its system message is
     # inherited verbatim from the parent, so this user-visible notice is the
     # only place to state the clone's true identity/depth).
-    child_state = :sys.get_state(child_pid)
+    # allowlist: snapshot — depth + messages
+    child_state = :sys.get_state(child_pid, 1_000)
     assert child_state.depth == parent_state.depth + 1
 
     ack_text =
@@ -242,17 +250,16 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     assert fork_notice =~ "Your own scratch directory is `/tmp/#{child_name}/`"
   end
 
-  # Wait until the agent has settled to `:idle`, on the machine's own status.
-  #
-  # Polling the authoritative status rather than waiting for the `chat:status`
-  # broadcast means a missed or reordered broadcast can never be the reason this
-  # fails, and the condition waited on is exactly the one the test-teardown
-  # invariant checks. See `@turn_fence_ms` for the budget.
-  defp await_idle(pid) do
-    assert Eventually.eventually(
-             fn -> Machine.status_for(:sys.get_state(pid).live.machine) == :idle end,
-             timeout: @turn_fence_ms
-           )
+  # Wait for the turn to end, on the `chat:status` frame the machine emits when
+  # it settles back to `:idle` (`Turn.run/6` broadcasts on every status change).
+  # `AgentTestHelpers.start_agent/1` subscribes this test pid to the agent's
+  # topic, so the frame is the event that decides when the turn is over;
+  # `@turn_fence_ms` is only the failure bound. Polling
+  # `Nest.Agents.Agent.Machine.status_for/1` instead would re-read the state
+  # this frame already announced, and would let a broadcast regression pass as
+  # success.
+  defp await_idle do
+    assert_receive {:chat_status, %{status: "idle"}}, @turn_fence_ms
   end
 
   # Cast `:child_completed` to the parent, mimicking what the child's idle
@@ -281,14 +288,14 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     GenServer.cast(parent_pid, {:child_completed, child_name, response, usage})
   end
 
-  defp tool_results(state, tool_name) do
-    for {:tool, %{parts: parts}} <- state.chat_state.messages,
+  defp tool_results(messages, tool_name) do
+    for {:tool, %{parts: parts}} <- messages,
         %Part.ToolResult{name: ^tool_name} = result <- parts,
         do: result
   end
 
-  defp delivered_texts(state, needle) do
-    for {:user, %{parts: parts}} <- state.chat_state.messages,
+  defp delivered_texts(messages, needle) do
+    for {:user, %{parts: parts}} <- messages,
         %Part.Text{text: text} <- parts,
         text =~ needle,
         do: text

@@ -29,14 +29,13 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
   # mocked LLM call. 500 ms is not a bound for that under load — a whole mocked
   # turn measured p50 18.7 ms / max 34.3 ms across 40 samples in the full
   # suite, but p50 926 ms / max 1534 ms (39 of 40 over 500 ms) under 48 CPU
-  # burners. 2000 ms is ~100x the in-suite median and stays under ExUnit's 5 s
-  # per-test timeout, so a genuinely stuck turn still fails — as a stuck turn,
-  # not as a flake. (Measured on the spawn turn in `sub_agent_tools_test.exs`;
+  # burners. 2000 ms is ~100x the in-suite median and is also the `#21` cap on
+  # every test-side timeout, so a genuinely stuck turn still fails — as a stuck
+  # turn, not as a flake. (Measured on the spawn turn in `sub_agent_tools_test.exs`;
   # the turns in this file are the same class.)
-  @turn_fence_ms 2_000
+  @turn_fence_ms 1_000
 
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.Machine
 
   alias Nest.LLM.MockClient
   alias Nest.LLM.RunResponse
@@ -117,15 +116,17 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "List the files")
 
-          await_idle(pid)
+          await_idle()
 
-          msg1 = wait_for_assistant_with_tool_use(5_000)
+          messages = chat_messages(pid)
+
+          msg1 = assistant_with_tool_use(messages)
           assert msg1 != nil
 
           assert Enum.any?(msg1.parts, &match?(%Part.ToolUse{}, &1)),
                  "expected first turn assistant to have a Part.ToolUse"
 
-          msg2 = wait_for_assistant_with_text_and_thinking(5_000)
+          msg2 = assistant_with_text_and_thinking(messages)
           assert msg2 != nil
 
           text = only_text(msg2.parts)
@@ -142,82 +143,47 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       MockClient.clear()
     end
 
-    defp wait_for_assistant_with_thinking(wanted_prefix, timeout) do
-      deadline = System.monotonic_time(:millisecond) + timeout
+    # The turn's transcript. `MessageAppender.append_stamped/2` appends and
+    # broadcasts each message before the settle loop broadcasts the `idle`
+    # status, so after `await_idle/0` the whole turn is readable from the state.
+    defp chat_messages(pid), do: Agent.get_messages(pid, 1_000)
 
-      do_wait_for_assistant_with_thinking(wanted_prefix, deadline)
+    # The first `{:assistant, msg}` in `messages` satisfying `predicate`; nil
+    # when none does.
+    defp find_assistant(messages, predicate) do
+      Enum.find_value(messages, fn
+        {:assistant, msg} ->
+          if predicate.(msg), do: msg
+
+        _other ->
+          nil
+      end)
     end
 
-    defp do_wait_for_assistant_with_thinking(_prefix, deadline) do
-      if System.monotonic_time(:millisecond) >= deadline do
-        nil
-      else
-        receive do
-          {:chat_message, {:assistant, msg}} ->
-            has_thinking =
-              Enum.any?(msg.parts, fn
-                %Part.Thinking{thinking: text} ->
-                  String.starts_with?(text, "The user wants a count.")
+    # The assistant message whose thinking opens with the expected prefix.
+    defp assistant_with_thinking(messages) do
+      find_assistant(messages, fn msg ->
+        Enum.any?(msg.parts, fn
+          %Part.Thinking{thinking: text} ->
+            String.starts_with?(text, "The user wants a count.")
 
-                _ ->
-                  false
-              end)
-
-            if has_thinking do
-              msg
-            else
-              do_wait_for_assistant_with_thinking("The user wants a count.", deadline)
-            end
-        after
-          100 -> do_wait_for_assistant_with_thinking("The user wants a count.", deadline)
-        end
-      end
+          _ ->
+            false
+        end)
+      end)
     end
 
-    defp wait_for_assistant_with_tool_use(timeout) do
-      deadline = System.monotonic_time(:millisecond) + timeout
-
-      do_wait_for_assistant_with_tool_use(deadline)
+    # The assistant message that carries a tool call.
+    defp assistant_with_tool_use(messages) do
+      find_assistant(messages, fn msg ->
+        Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1))
+      end)
     end
 
-    defp do_wait_for_assistant_with_tool_use(deadline) do
-      if System.monotonic_time(:millisecond) >= deadline do
-        nil
-      else
-        receive do
-          {:chat_message, {:assistant, msg}} ->
-            if Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1)) do
-              msg
-            else
-              do_wait_for_assistant_with_tool_use(deadline)
-            end
-        after
-          100 -> do_wait_for_assistant_with_tool_use(deadline)
-        end
-      end
-    end
-
-    defp wait_for_assistant_with_text_and_thinking(timeout) do
-      deadline = System.monotonic_time(:millisecond) + timeout
-
-      do_wait_for_assistant_with_text_and_thinking(deadline)
-    end
-
-    defp do_wait_for_assistant_with_text_and_thinking(deadline) do
-      if System.monotonic_time(:millisecond) >= deadline do
-        nil
-      else
-        receive do
-          {:chat_message, {:assistant, msg}} ->
-            if matches_text_and_thinking?(msg) do
-              msg
-            else
-              do_wait_for_assistant_with_text_and_thinking(deadline)
-            end
-        after
-          100 -> do_wait_for_assistant_with_text_and_thinking(deadline)
-        end
-      end
+    # The post-tool assistant message: visible text and thinking from the same
+    # turn, with no tool call of its own.
+    defp assistant_with_text_and_thinking(messages) do
+      find_assistant(messages, &matches_text_and_thinking?/1)
     end
 
     defp matches_text_and_thinking?(msg) do
@@ -233,34 +199,16 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       has_text and has_thinking and not has_tool_use
     end
 
-    defp wait_for_final_assistant_api_logs(timeout) do
-      deadline = System.monotonic_time(:millisecond) + timeout
-
-      do_wait_for_final_assistant_api_logs(deadline)
-    end
-
-    defp do_wait_for_final_assistant_api_logs(deadline) do
-      if System.monotonic_time(:millisecond) >= deadline do
-        nil
-      else
-        receive do
-          {:chat_message, {:assistant, msg}} ->
-            has_tool_use = Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1))
-            has_api_logs = msg.api_logs != nil and msg.api_logs != []
-
-            cond do
-              has_tool_use ->
-                do_wait_for_final_assistant_api_logs(deadline)
-
-              not has_api_logs ->
-                do_wait_for_final_assistant_api_logs(deadline)
-
-              true ->
-                msg.api_logs
-            end
-        after
-          100 -> do_wait_for_final_assistant_api_logs(deadline)
-        end
+    # The api_logs of the turn's final assistant message: the first assistant
+    # message after the tool call (no `Part.ToolUse` of its own) that carries a
+    # recorded API log; nil when the turn recorded none.
+    defp final_assistant_api_logs(messages) do
+      case find_assistant(messages, fn msg ->
+             not Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1)) and
+               msg.api_logs != nil and msg.api_logs != []
+           end) do
+        nil -> nil
+        msg -> msg.api_logs
       end
     end
 
@@ -309,7 +257,9 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "Run it")
 
-          logs = wait_for_final_assistant_api_logs(5_000)
+          await_idle()
+
+          logs = final_assistant_api_logs(chat_messages(pid))
           assert logs != nil and logs != []
 
           response_log = Enum.find(logs, fn log -> log.type == :response end)
@@ -319,8 +269,6 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
 
           assert response_log.payload.content == "Result: success"
           refute response_log.payload.content =~ "interpret"
-
-          await_idle(pid)
         end)
 
       # `call_x` arguments `{}` fails shell_cmd validation. The
@@ -376,17 +324,16 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "How many?")
 
-          # Drain to find the assistant with the expected thinking
-          # content. The context-notice synthetic pair may shift the
-          # exact index, so match by content.
-          thinking_msg = wait_for_assistant_with_thinking("The user wants a count.", 5_000)
+          # The turn's end is the fence: the idle frame is emitted after the
+          # turn's last append, so it decides that the transcript is complete.
+          await_idle()
+
+          # The context-notice synthetic pair may shift the exact index, so
+          # find the assistant by its thinking content.
+          thinking_msg = assistant_with_thinking(chat_messages(pid))
 
           assert thinking_msg != nil
           assert Enum.any?(thinking_msg.parts, &match?(%Part.Thinking{}, &1))
-
-          # Wait for the final message before asserting the terminal
-          # status; racing a short timeout up front is flaky under load.
-          await_idle(pid)
 
           MockClient.clear()
         end)
@@ -455,7 +402,9 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "List the files")
 
-          tool_assistant = wait_for_assistant_with_tool_use(5_000)
+          await_idle()
+
+          tool_assistant = assistant_with_tool_use(chat_messages(pid))
           assert tool_assistant != nil
           parts = tool_assistant.parts
 
@@ -465,8 +414,6 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
                    "Let me check the directory listing. I'll run ls."
 
           assert Enum.any?(parts, &match?(%Part.ToolUse{}, &1))
-
-          await_idle(pid)
         end)
 
       # Same incidental shell_cmd validation failure.
@@ -476,14 +423,14 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
     end
   end
 
-  # Wait until the agent has settled to `:idle`, on the machine's own status
-  # rather than the `chat:status` broadcast: a missed or reordered broadcast can
-  # never be the reason this fails, and the condition waited on is exactly the
-  # one the test-teardown invariant checks. See `@turn_fence_ms` for the budget.
-  defp await_idle(pid) do
-    assert Eventually.eventually(
-             fn -> Machine.status_for(:sys.get_state(pid).live.machine) == :idle end,
-             timeout: @turn_fence_ms
-           )
+  # Wait for the turn to end, on the `chat:status` frame the machine emits when
+  # it settles back to `:idle`. `AgentTestHelpers.start_agent/1` subscribes this
+  # test pid to the agent's topic, so the frame is the event that decides the
+  # turn is over; `@turn_fence_ms` is only the failure bound. Polling
+  # `Nest.Agents.Agent.Machine.status_for/1` instead would re-read the state this
+  # frame already announced, and would let a broadcast regression pass as
+  # success.
+  defp await_idle do
+    assert_receive {:chat_status, %{status: "idle"}}, @turn_fence_ms
   end
 end

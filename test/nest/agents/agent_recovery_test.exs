@@ -87,7 +87,8 @@ defmodule Nest.Agents.Agent.RecoveryTest do
 
           assert Process.alive?(pid)
 
-          state = :sys.get_state(pid)
+          # allowlist: snapshot — client config + status + model
+          state = :sys.get_state(pid, 1_000)
           assert Machine.status_for(state.live.machine) == :model_missing
           assert state.client_config.client == RecoveryClient
           assert state.model == %{name: "ghost-model"}
@@ -122,9 +123,10 @@ defmodule Nest.Agents.Agent.RecoveryTest do
           # stays at the initial `[{:system, _}]`.
           _ref = Agent.chat(pid, "hello?")
           # Yield to the GenServer so the cast has been handled.
-          _ = :sys.get_state(pid)
-          state = :sys.get_state(pid)
-          assert Enum.all?(state.chat_state.messages, &match?({:system, _}, &1))
+          # allowlist: barrier — a dropped cast in :model_missing broadcasts nothing
+          _ = :sys.get_state(pid, 1_000)
+          messages = Agent.get_messages(pid, 1_000)
+          assert Enum.all?(messages, &match?({:system, _}, &1))
         end)
 
       assert log =~ "could not resolve model"

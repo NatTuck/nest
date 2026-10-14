@@ -2,27 +2,27 @@ defmodule Nest.Agents.AgentContextLimitTest do
   @moduledoc """
   Tests for the Agent's context-limit resolution at init.
 
-  These tests stub `Nest.Models.context_limit/2` (rather than
-  `Req.get/2`) since the per-agent async probe has been
-  consolidated into the `Nest.Models` cache. They use
-  `Mimic.expect/3` against `Nest.Models` so the call inside
-  `Init.initial_context_limit/1` is intercepted. Cannot
-  run as `async: true` — Mimic stubs are per-test-process
-  by default and the agent's `init/1` runs in a child of
-  the test process.
+  The cache tier of `Init.initial_context_limit/2` is injected
+  through the `:context_limit_lookup` attr (see `start_probe_agent/1`)
+  rather than stubbed globally. The lookup runs inside the agent's
+  `init/1` process, which the supervisor spawned and which therefore
+  has no `$callers` chain back to the test pid, so a per-test stub
+  would not be visible to it. The injected closure runs in that child
+  process and messages the test pid, so each test can assert both the
+  resolved limit and that the lookup actually ran.
+
+  Runs `async: true`: the DB work (`create_test_space/0`,
+  `vocation_id_for_test/0`) happens in the test pid's own sandboxed
+  transaction, agent names / space ids / MockClient names are
+  per-test unique, and `Init.build_state/2` plus `Agent.terminate/2`
+  do no DB work.
   """
 
-  use Nest.DataCase, async: false
-
-  import Mimic
+  use Nest.DataCase, async: true
 
   alias Nest.Agents.Agent
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
-  alias Nest.Models
-
-  setup :set_mimic_global
-  setup :verify_on_exit!
 
   setup do
     {:ok, _space_id} = AgentTestHelpers.create_test_space()
@@ -42,14 +42,14 @@ defmodule Nest.Agents.AgentContextLimitTest do
     attrs = Map.merge(defaults, attrs)
     pid = start_supervised!({Agent, attrs})
 
-    # The cache lookup happens during the agent's `init/1`. The
-    # test process owns the Mimic stub (set in each test), and
-    # the stub applies globally (see `set_mimic_global` in
-    # `setup`) so the agent's `init/1` sees it without an
-    # explicit `Mimic.allow/3`.
-    :sys.replace_state(pid, fn state ->
-      %{state | client_config: %{state.client_config | client: MockClient}}
-    end)
+    # The injected `:context_limit_lookup` closure runs inside the
+    # agent's `init/1` process and messages the test pid; no stub is
+    # set globally.
+    :sys.replace_state(
+      pid,
+      fn state -> %{state | client_config: %{state.client_config | client: MockClient}} end,
+      1_000
+    )
 
     MockClient.start_link(pid)
 
@@ -61,41 +61,37 @@ defmodule Nest.Agents.AgentContextLimitTest do
   test "uses the cached discovered context-limit when no config value is set" do
     test_pid = self()
 
-    Mimic.expect(Models, :context_limit, fn _provider, model_name ->
-      send(test_pid, {:cache_lookup, model_name})
-      {:openrouter, 200_000}
-    end)
-
     agent_name = "probe-anthropic-#{System.unique_integer([:positive])}"
 
     {pid, _} =
       start_probe_agent(%{
         name: agent_name,
-        model: %{name: "claude-3-opus-20240229"}
+        model: %{name: "claude-3-opus-20240229"},
+        context_limit_lookup: fn _provider, model_name ->
+          send(test_pid, {:cache_lookup, model_name})
+          {:openrouter, 200_000}
+        end
       })
 
-    state = :sys.get_state(pid)
-    assert state.llm_metrics.context_limit == 200_000
-    assert state.llm_metrics.context_limit_source == :openrouter
+    info = Agent.get_public_info(pid, 1_000)
+    assert info.context_limit == 200_000
+    assert info.context_limit_source == :openrouter
     assert_received {:cache_lookup, "claude-3-opus-20240229"}
 
     Agent.terminate(pid)
   end
 
   test "falls back to the 128k default when cache, config, and provider default are all nil" do
-    Mimic.expect(Models, :context_limit, fn _provider, _model ->
-      nil
-    end)
-
     {pid, _agent_name} =
       start_probe_agent(%{
         name: "probe-missing-#{System.unique_integer([:positive])}",
-        model: %{name: "claude-3-opus-20240229"}
+        model: %{name: "claude-3-opus-20240229"},
+        context_limit_lookup: fn _provider, _model -> nil end
       })
 
-    state = :sys.get_state(pid)
-    assert state.llm_metrics.context_limit == 128_000
-    assert state.llm_metrics.context_limit_source == :default
+    info = Agent.get_public_info(pid, 1_000)
+    assert info.context_limit == 128_000
+    assert info.context_limit_source == :default
 
     Agent.terminate(pid)
   end
@@ -103,23 +99,20 @@ defmodule Nest.Agents.AgentContextLimitTest do
   test "uses the provider's `default-context-limit` when per-model config and cache are both nil" do
     # `[providers.pegasus]` in `test/data/config.toml` has
     # `default-context-limit = 512000` but no static entry for the
-    # test model name, so per-model returns nil. The cache
-    # stub returns nil. The provider default kicks in.
-    Mimic.expect(Models, :context_limit, fn _provider, _model ->
-      nil
-    end)
-
+    # test model name, so per-model returns nil. The injected cache
+    # lookup returns nil. The provider default kicks in.
     agent_name = "probe-provider-default-#{System.unique_integer([:positive])}"
 
     {pid, _} =
       start_probe_agent(%{
         name: agent_name,
-        model: %{name: "pegasus-default-only", provider: "pegasus"}
+        model: %{name: "pegasus-default-only", provider: "pegasus"},
+        context_limit_lookup: fn _provider, _model -> nil end
       })
 
-    state = :sys.get_state(pid)
-    assert state.llm_metrics.context_limit == 512_000
-    assert state.llm_metrics.context_limit_source == :provider_default
+    info = Agent.get_public_info(pid, 1_000)
+    assert info.context_limit == 512_000
+    assert info.context_limit_source == :provider_default
 
     Agent.terminate(pid)
   end
@@ -130,9 +123,9 @@ defmodule Nest.Agents.AgentContextLimitTest do
     # same provider has `default-context-limit = 512000`. The
     # per-model value wins per the resolution precedence.
     #
-    # No `Models.context_limit/2` stub here: the per-model hit
-    # short-circuits the resolution chain, so the cache closure
-    # is captured but never invoked.
+    # No `context_limit_lookup` is injected here: the per-model hit
+    # short-circuits the resolution chain, so the cache tier is
+    # captured but never invoked.
     agent_name = "probe-per-model-wins-#{System.unique_integer([:positive])}"
 
     {pid, _} =
@@ -141,9 +134,9 @@ defmodule Nest.Agents.AgentContextLimitTest do
         model: %{name: "pegasus-per-model-test", provider: "pegasus"}
       })
 
-    state = :sys.get_state(pid)
-    assert state.llm_metrics.context_limit == 32_000
-    assert state.llm_metrics.context_limit_source == :config
+    info = Agent.get_public_info(pid, 1_000)
+    assert info.context_limit == 32_000
+    assert info.context_limit_source == :config
 
     Agent.terminate(pid)
   end
@@ -151,46 +144,33 @@ defmodule Nest.Agents.AgentContextLimitTest do
   test "propagates an Olla-extracted context-limit from the cache" do
     # The typhon /olla gateway returns `max_context_length` under
     # the `olla` namespace rather than at the model root, which
-    # Discover now extracts as `{:olla, N}`. This pins the full
-    # chain: Discover → Nest.Models cache → Init.initial_context_limit
-    # → Agent.llm_metrics. Without the Olla branch, this case
-    # would fall through to provider default and (with the typhon
-    # provider not configured in test/data/config.toml) end up
-    # with `context_limit: nil`.
+    # Discover now extracts as `{:olla, N}`. This pins the cache-tier
+    # lookup → Init.initial_context_limit → Agent.llm_metrics.
+    #
+    # The model name resolves against the static config (the
+    # anthropic entry) so the agent starts on the real path, while
+    # `:provider` stays `"typhon"` as the cache key: per-model config
+    # is nil for that name and the typhon provider has no
+    # `default-context-limit`, so the injected Olla value is the one
+    # that survives. Without the Olla branch, this case would fall
+    # through to the 128k default.
     test_pid = self()
-
-    Models
-    |> stub(:context_limit, fn _provider, _model_name ->
-      send(test_pid, {:cache_lookup, "typhon"})
-      {:olla, 224_000}
-    end)
-
-    # Stub `create_client_config` so the agent starts despite
-    # the typhon provider not being in test/data/config.toml.
-    # The model-resolution side-effect is what we care about.
-    Nest.Agents.Agent.Config
-    |> stub(:create_client_config, fn _model ->
-      {:ok,
-       %Nest.LLM.ClientConfig{
-         client: Nest.LLM.OpenAIClient,
-         base_url: "http://typhon:4040/olla",
-         api_key: "none",
-         model: "Qwen/Qwen3.6-27B-FP8",
-         receive_timeout: 5000
-       }}
-    end)
 
     agent_name = "probe-olla-#{System.unique_integer([:positive])}"
 
     {pid, _} =
       start_probe_agent(%{
         name: agent_name,
-        model: %{name: "Qwen/Qwen3.6-27B-FP8", provider: "typhon"}
+        model: %{name: "claude-3-opus-20240229", provider: "typhon"},
+        context_limit_lookup: fn _provider, _model_name ->
+          send(test_pid, {:cache_lookup, "typhon"})
+          {:olla, 224_000}
+        end
       })
 
-    state = :sys.get_state(pid)
-    assert state.llm_metrics.context_limit == 224_000
-    assert state.llm_metrics.context_limit_source == :olla
+    info = Agent.get_public_info(pid, 1_000)
+    assert info.context_limit == 224_000
+    assert info.context_limit_source == :olla
     assert_received {:cache_lookup, "typhon"}
 
     Agent.terminate(pid)

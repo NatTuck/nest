@@ -7,7 +7,16 @@ defmodule Nest.Agents.AgentToolsIterationsTest do
   runs on its own ExUnit worker.
   """
   use Nest.DataCase, async: true
-  alias Nest.Agents.Agent.Machine
+
+  # `Agent.chat/2` is a `GenServer.cast`, so a fence placed after it covers the
+  # *whole* turn: here three sequential LLM calls plus real tool execution
+  # through the GenServer/DB pipeline. 500 ms is not a bound for that under
+  # load, and the end of the turn is decided by arrival, not by the clock:
+  # `AgentTestHelpers.start_agent/1` subscribes this test pid to the agent's
+  # topic, so the machine's `idle` `chat:status` frame — broadcast when the
+  # settle loop leaves the turn — is the event that ends it. `@turn_fence_ms` is
+  # only the failure bound.
+  @turn_fence_ms 1_000
 
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
@@ -22,7 +31,6 @@ defmodule Nest.Agents.AgentToolsIterationsTest do
     :ok
   end
 
-  import Eventually
   import Nest.Agents.AgentTestHelpers
 
   describe "iterations below the cap" do
@@ -50,17 +58,12 @@ defmodule Nest.Agents.AgentToolsIterationsTest do
 
       :ok = Agent.chat(pid, "Brief loop")
 
-      # Wait for the turn to actually finish by polling the agent's status
-      # rather than a fixed wall-clock window: this turn drives three
-      # sequential LLM calls plus tool execution through the GenServer/DB
-      # pipeline under 24-way async concurrency, so a 500ms receive is not a
-      # deterministic bound.
-      assert eventually(
-               fn ->
-                 Machine.status_for(:sys.get_state(pid).live.machine) == :idle
-               end,
-               timeout: 1_000
-             )
+      # `Agent.chat/5` is a cast, so the `idle` `chat:status` frame is the
+      # arrival-decided end of this turn. This turn drives three sequential LLM
+      # calls plus tool execution through the GenServer/DB pipeline under
+      # 24-way async concurrency, so `@turn_fence_ms` is the failure bound, not
+      # the synchronisation.
+      assert_receive {:chat_status, %{status: "idle"}}, @turn_fence_ms
 
       # Below the cap, `max_iterations` is never broadcast. If it ever were,
       # it would be emitted before idle, so this non-blocking check is

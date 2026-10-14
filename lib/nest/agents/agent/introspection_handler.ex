@@ -60,6 +60,19 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
     {:reply, state.live.machine.loop_count, state}
   end
 
+  # Test-harness lifecycle (issue #21): the teardown's status question. It is
+  # answered *here*, in this process, from this process's own machine, so the
+  # caller never samples a state the agent has already left behind — and a
+  # caller that gets no answer learns only that this process was not there to
+  # give one (already gone, or already dying), never that it was busy.
+  #
+  # A turn runs in a worker task, never in this loop, so a genuinely mid-turn
+  # agent answers with `:streaming`/`:executing_tools`/`:compacting`: the status
+  # *value* is the in-flight signal, not a failure to answer.
+  def handle(:get_status, _from, state) do
+    {:reply, Machine.status_for(state.live.machine), state}
+  end
+
   def handle(:get_public_info, _from, state) do
     build_public_info(state)
   end
@@ -87,6 +100,46 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
 
   def handle(:get_crossed_thresholds, _from, state) do
     {:reply, state.live.crossed_thresholds, state}
+  end
+
+  # The raw children sub-machine (`Machine.Children`): the per-child entry
+  # map `Children.target/2` needs. `:get_pending_children` does not serve
+  # it — that narrows to the `:running` names, which is a different value.
+  def handle(:get_children, _from, state) do
+    {:reply, state.live.machine.children, state}
+  end
+
+  # The machine's turn-scoped working set (`Machine.Work`): the active
+  # worker/ref, the backgrounded batches, the compaction focus. Read as
+  # one value so a caller that inspects several of its fields sees one
+  # snapshot rather than one per field.
+  def handle(:get_work, _from, state) do
+    {:reply, state.live.machine.work, state}
+  end
+
+  # The LLM client configuration: the client module plus the per-call
+  # opts. Deliberately not a `get_public_info/1` field — `client` is an
+  # internal module atom the UI has no use for.
+  def handle(:get_client_config, _from, state) do
+    {:reply, state.client_config, state}
+  end
+
+  # The registered tool closures. Test-only by construction: a closure
+  # cannot be serialized, so this can never be a wire field.
+  def handle(:get_tools, _from, state) do
+    {:reply, state.tools, state}
+  end
+
+  # The cached Vocation struct (see `build_public_info/1` for why the
+  # runtime never broadcasts it).
+  def handle(:get_vocation, _from, state) do
+    {:reply, state.vocation, state}
+  end
+
+  # The outstanding watch registrations (issue #54), keyed by the
+  # watcher's ref: `%{pid: pid | nil, spec: term(), satisfied: boolean}`.
+  def handle(:get_watches, _from, state) do
+    {:reply, state.live.watches, state}
   end
 
   def handle(:get_next_index, _from, state) do

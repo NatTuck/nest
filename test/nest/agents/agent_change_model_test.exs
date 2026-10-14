@@ -87,8 +87,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
           vocation_id: vid()
         })
 
-      state_before = :sys.get_state(pid)
-      assert state_before.client_config.client == OpenAIClient
+      assert Agent.get_client_config(pid, 1_000).client == OpenAIClient
 
       :ok =
         Agent.set_model(pid, %{
@@ -96,7 +95,8 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
           provider: "anthropic-provider"
         })
 
-      state = :sys.get_state(pid)
+      # allowlist: snapshot — client config + model
+      state = :sys.get_state(pid, 1_000)
       assert state.client_config.client == AnthropicClient
 
       assert state.model == %{
@@ -122,7 +122,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
       Agent.set_model(pid, %{name: "claude-3-opus-20240229", provider: "anthropic-provider"})
 
-      assert_receive {:chat_status, payload}, 500
+      assert_receive {:chat_status, payload}, 1_000
       assert payload.status == "idle"
 
       assert payload.model == %{
@@ -142,17 +142,22 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
         })
 
       # Force the agent into :streaming without an actual LLM call.
-      :sys.replace_state(pid, fn state ->
-        %{
-          state
-          | live: %{
-              state.live
-              | machine: Machine.status_to_machine(state.live.machine, :streaming)
-            }
-        }
-      end)
+      :sys.replace_state(
+        pid,
+        fn state ->
+          %{
+            state
+            | live: %{
+                state.live
+                | machine: Machine.status_to_machine(state.live.machine, :streaming)
+              }
+          }
+        end,
+        1_000
+      )
 
-      state_before = :sys.get_state(pid)
+      # allowlist: snapshot — client config + model
+      state_before = :sys.get_state(pid, 1_000)
 
       result =
         Agent.set_model(pid, %{
@@ -162,7 +167,8 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
       assert result == {:error, :agent_busy}
 
-      state_after = :sys.get_state(pid)
+      # allowlist: snapshot — client config + model + status
+      state_after = :sys.get_state(pid, 1_000)
       assert state_after.client_config.client == state_before.client_config.client
       assert state_after.model == state_before.model
       assert Machine.status_for(state_after.live.machine) == :streaming
@@ -170,15 +176,19 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
       # The `:streaming` status was fabricated for the refusal check
       # (there is no real turn). Restore idle so the teardown's
       # zero-in-flight-agents assertion holds.
-      :sys.replace_state(pid, fn state ->
-        %{
-          state
-          | live: %{
-              state.live
-              | machine: Machine.status_to_machine(state.live.machine, :idle)
-            }
-        }
-      end)
+      :sys.replace_state(
+        pid,
+        fn state ->
+          %{
+            state
+            | live: %{
+                state.live
+                | machine: Machine.status_to_machine(state.live.machine, :idle)
+              }
+          }
+        end,
+        1_000
+      )
     end
 
     test "rejects an unknown model with :invalid_model" do
@@ -189,13 +199,12 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
           vocation_id: vid()
         })
 
-      state_before = :sys.get_state(pid)
+      model_before = Agent.get_public_info(pid, 1_000).model
 
       result = Agent.set_model(pid, %{name: "ghost-model-from-nowhere", provider: "nope"})
       assert {:error, {:invalid_model, %Nest.ChatModel.ModelNotFoundError{}}} = result
 
-      state_after = :sys.get_state(pid)
-      assert state_after.model == state_before.model
+      assert Agent.get_public_info(pid, 1_000).model == model_before
     end
   end
 
@@ -242,7 +251,8 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
               vocation_id: vid()
             })
 
-          state = :sys.get_state(pid)
+          # allowlist: snapshot — client config + status
+          state = :sys.get_state(pid, 1_000)
           assert Machine.status_for(state.live.machine) == :model_missing
           assert state.client_config.client == RecoveryClient
 
@@ -253,7 +263,8 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
               provider: "anthropic-provider"
             })
 
-          state = :sys.get_state(pid)
+          # allowlist: snapshot — client config + status + model
+          state = :sys.get_state(pid, 1_000)
           assert Machine.status_for(state.live.machine) == :idle
           assert state.client_config.client == AnthropicClient
 
@@ -298,7 +309,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
       # State must not have been mutated. Model is stored as a
       # string-keyed map (jsonb JSON wire format).
-      assert :sys.get_state(pid).model["name"] == "qwen3.5-plus"
+      assert Agent.get_public_info(pid, 1_000).model["name"] == "qwen3.5-plus"
     end
 
     test "preserves the MapSet invariant on crossed_thresholds" do
@@ -320,15 +331,19 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
       # `apply_new_model/3` actually rewrites a non-empty
       # value — the bug was a plain `%{}` landing where a
       # `MapSet` was expected.
-      :sys.replace_state(pid, fn state ->
-        %{
-          state
-          | live: %{
-              state.live
-              | crossed_thresholds: MapSet.put(MapSet.new(), :p25)
-            }
-        }
-      end)
+      :sys.replace_state(
+        pid,
+        fn state ->
+          %{
+            state
+            | live: %{
+                state.live
+                | crossed_thresholds: MapSet.put(MapSet.new(), :p25)
+              }
+          }
+        end,
+        1_000
+      )
 
       :ok =
         Agent.set_model(pid, %{
@@ -336,8 +351,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
           provider: "anthropic-provider"
         })
 
-      state = :sys.get_state(pid)
-      crossed = state.live.crossed_thresholds
+      crossed = Agent.get_crossed_thresholds(pid, 1_000)
 
       assert is_struct(crossed, MapSet),
              "crossed_thresholds must be a MapSet (got #{inspect(crossed)})"

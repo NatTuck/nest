@@ -1,16 +1,18 @@
 defmodule Nest.Sandbox.ShellJobsTest do
   use ExUnit.Case, async: true
 
-  import Eventually
-
   import Nest.Test.TmpCleanup
 
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.Sandbox.Mounts
   alias Nest.Sandbox.ShellJobs
   alias Nest.Tools.ShellCmd
 
   setup do
-    key = {:test, "agent-#{System.unique_integer([:positive])}"}
+    # A real space id: the manager's job-list broadcast is keyed by
+    # `{space_id, name}`, so a key whose first element is not an integer would
+    # silently disable it.
+    key = {1, "agent-#{System.unique_integer([:positive])}"}
     root = Path.join(System.tmp_dir!(), "nest_jobs_#{System.unique_integer([:positive])}")
     tmp = Path.join([root, "space-1", elem(key, 1)])
     File.mkdir_p!(tmp)
@@ -39,7 +41,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
   # The manager owns the waiter list, so read it directly instead of
   # racing an OS kill against a fixed receive timeout.
-  defp waiters(id), do: Map.get(:sys.get_state(ShellJobs).waiters, id, [])
+  defp waiters(id), do: ShellJobs.waiters(id, 1_000)
 
   test "starts a job running, lists it, and kills it", %{key: key, tmp: tmp} do
     id = start_running!("sleep 30", tmp, key)
@@ -47,7 +49,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     assert :ok = ShellJobs.kill(key, id)
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, _code}, 500
+    assert_receive {:shell_job_exit, ^id, _code}, 1_000
     assert [%{id: ^id, status: :exited, killed: true}] = ShellJobs.list(key)
   end
 
@@ -65,7 +67,9 @@ defmodule Nest.Sandbox.ShellJobsTest do
   end
 
   test "removes the staged script from the host once the job exits (nested tmp)" do
-    key = {:test, "script-cleanup-#{System.unique_integer([:positive])}"}
+    # A real space id: `broadcast/2` is guarded on `is_integer(space_id)`, and
+    # the job-list broadcast is the fence below.
+    key = {1, "script-cleanup-#{System.unique_integer([:positive])}"}
 
     # The real scratch shape is <root>/space-<id>/<agent-name>. With a
     # flat scratch dir the script's path inside the sandbox happens to equal
@@ -84,11 +88,16 @@ defmodule Nest.Sandbox.ShellJobsTest do
     {:ok, _message} = start_background("true", tmp, key)
     assert [%{id: id}] = ShellJobs.list(key)
 
-    # Wait for the job to exit, then synchronize with the manager so its
-    # `finish_job/3` (which removes the host script) has run to completion.
+    # `finish_job/3` removes the host script and *then* broadcasts the job list,
+    # so the broadcast is the happens-after event for "the script is gone".
+    # Subscribe after the start (whose broadcast would be a different frame), so
+    # the only frame this can match is the finish's; the payload names the job
+    # and its exit, which is what pins the fence to that event.
+    {space_id, name} = key
+    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, 0}, 500
-    _ = :sys.get_state(ShellJobs)
+    assert_receive {:shell_job_exit, ^id, 0}, 1_000
+    assert_receive {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}, 1_000
 
     assert Path.wildcard(Path.join(tmp, ".nest-cmd-*.sh"), match_dot: true) == []
   end
@@ -101,7 +110,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     assert :ok = ShellJobs.kill(key, id)
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, _code}, 500
+    assert_receive {:shell_job_exit, ^id, _code}, 1_000
 
     assert {:ok, _} = start_background("sleep 30", tmp, key)
   end
@@ -115,7 +124,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
     id = start_running!("sleep 0.2; echo late", tmp, key)
 
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, 0}, 500
+    assert_receive {:shell_job_exit, ^id, 0}, 1_000
     assert {:ok, "late\n"} = ShellJobs.output(key, id)
   end
 
@@ -142,16 +151,78 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert ShellJobs.list(key) == []
   end
 
-  test "jobs die with their agent", %{key: key, tmp: tmp} do
+  test "keeps the scratch while a live agent owns the key, then removes it" do
+    # `TmpSpace.create` builds the real scratch path (`/tmp/nest-<pid>/space-<id>/<name>`),
+    # which is the path `cleanup_agent_key/2` derives from the key — unlike the
+    # fixture `tmp`, so the manager's removal is observable here.
+    space_id = System.unique_integer([:positive])
+    name = "incarnation-#{System.unique_integer([:positive])}"
+    key = {space_id, name}
+    tmp = TmpSpace.create(space_id, name)
+    test_pid = self()
+
+    on_exit(fn -> TmpSpace.cleanup(space_id, name) end)
+
+    # A live incarnation registered under the key. The scratch path is derived
+    # from the key, so a monitor for a *previous* incarnation can fire after this
+    # one starts; the removal must refuse while a live agent owns the path.
+    owner =
+      spawn(fn ->
+        {:ok, _} = Elixir.Registry.register(Nest.Agents.Registry, key, nil)
+        send(test_pid, :registered)
+
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    assert_receive :registered
+    assert File.dir?(tmp)
+
+    # The manager's removal path, refused because the key has a live owner.
+    assert :ok = ShellJobs.stop_all(key)
+    assert File.dir?(tmp)
+
+    ref = Process.monitor(owner)
+    send(owner, :stop)
+    assert_receive {:DOWN, ^ref, :process, ^owner, :normal}, 1_000
+
+    # With no live owner, the same path removes it.
+    assert :ok = ShellJobs.stop_all(key)
+    refute File.exists?(tmp)
+  end
+
+  test "jobs die with their agent, which says so to its waiters and its clients", %{
+    key: {space_id, name} = key,
+    tmp: tmp
+  } do
     agent = spawn(fn -> receive do: (:never -> :ok) end)
 
     assert {:ok, _} = start_background("sleep 30", tmp, key, agent_pid: agent)
+    assert [%{id: id}] = ShellJobs.list(key)
+
+    # A waiter that outlives the agent: the tool worker behind a blocking
+    # `shell-wait` is a task under `Nest.Agents.TaskSupervisor`, a sibling of
+    # the agent supervisor, so the test process stands in for it.
+    assert :ok = ShellJobs.subscribe(key, id, self())
+    assert self() in waiters(id)
+
+    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
 
     ref = Process.monitor(agent)
     Process.exit(agent, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^agent, :killed}, 500
+    assert_receive {:DOWN, ^ref, :process, ^agent, :killed}, 1_000
 
-    assert eventually(fn -> ShellJobs.list(key) == [] end, timeout: 500)
+    # The job is gone, and both notifications are the evidence: the frame is
+    # broadcast after the drop, and the waiter is told why rather than left to
+    # wait out its timeout. `{:shell_job_exit, …}` would be a lie — there is no
+    # exit code.
+    assert_receive {:shell_jobs, %{jobs: []}}, 500
+    assert_receive {:shell_job_gone, ^id}, 500
+    refute_received {:shell_job_exit, ^id, _code}
+
+    assert ShellJobs.list(key) == []
+    assert waiters(id) == []
   end
 
   test "unknown job ids report :not_found", %{key: key} do
@@ -219,9 +290,14 @@ defmodule Nest.Sandbox.ShellJobsTest do
     Phoenix.PubSub.subscribe(Nest.PubSub, "agent:7:#{name}")
 
     id = start_running!("sleep 30", tmp, key)
-    assert_receive {:shell_jobs, %{jobs: [%{id: ^id}]}}, 500
+    assert_receive {:shell_jobs, %{jobs: [%{id: ^id}]}}, 1_000
+
+    # The pin for the converted barrier in the nested-tmp test: the broadcast is
+    # the happens-after event for `finish_job/3`'s script removal, so no
+    # `:exited` frame exists while the job is still running.
+    refute_received {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}
 
     assert :ok = ShellJobs.kill(key, id)
-    assert_receive {:shell_jobs, %{jobs: [%{id: ^id, killed: true}]}}, 500
+    assert_receive {:shell_jobs, %{jobs: [%{id: ^id, killed: true}]}}, 1_000
   end
 end

@@ -23,20 +23,20 @@ defmodule NestWeb.AgentChannelMessagingTest do
       # After the system message at position 0, the user lands at
       # index 1 and the assistant at index 2. Verify the
       # assistant's index is exactly one more than the user's.
-      assert_push "chat:message", %{"index" => user_idx, "role" => "user"}, 500
-      assert_push "chat:message", %{"index" => asst_idx, "role" => "assistant"}, 500
+      assert_push "chat:message", %{"index" => user_idx, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => asst_idx, "role" => "assistant"}, 1_000
 
       assert asst_idx == user_idx + 1
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "messageCount is highest complete (non-partial) message", %{socket: socket} do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
 
       ref_status = push(socket, "chat:status", %{"lastIndex" => -1})
       assert_reply ref_status, :ok, %{"messageCount" => final_count}
@@ -44,7 +44,7 @@ defmodule NestWeb.AgentChannelMessagingTest do
       # System + user + assistant = 3 messages
       assert final_count == 3
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 
@@ -67,16 +67,16 @@ defmodule NestWeb.AgentChannelMessagingTest do
 
       # Each delta is a known broadcast. Match them discretely in
       # the order they were scripted.
-      assert_push "chat:delta", %{"content" => "First ", "index" => first_idx}, 500
-      assert_push "chat:delta", %{"content" => "second "}, 500
-      assert_push "chat:delta", %{"content" => "third "}, 500
-      assert_push "chat:delta", %{"content" => "fourth"}, 500
+      assert_push "chat:delta", %{"content" => "First ", "index" => first_idx}, 1_000
+      assert_push "chat:delta", %{"content" => "second "}, 1_000
+      assert_push "chat:delta", %{"content" => "third "}, 1_000
+      assert_push "chat:delta", %{"content" => "fourth"}, 1_000
 
       assert is_integer(first_idx)
 
       MockClient.clear()
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "delta charsStart and charsEnd represent content slice", %{socket: socket} do
@@ -97,7 +97,7 @@ defmodule NestWeb.AgentChannelMessagingTest do
       assert end_pos > start_pos
       assert String.length(content) == end_pos - start_pos
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 
@@ -117,7 +117,7 @@ defmodule NestWeb.AgentChannelMessagingTest do
       assert_reply ref, :ok, %{}
 
       # First client receives user + assistant.
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
 
       assert_push "chat:message",
                   %{"index" => idx, "role" => "assistant"} = assistant_payload,
@@ -127,29 +127,29 @@ defmodule NestWeb.AgentChannelMessagingTest do
       assert is_list(assistant_payload["parts"])
 
       # Second client also receives both.
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
-      assert_push "chat:message", %{"index" => idx2, "role" => "assistant"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => idx2, "role" => "assistant"}, 1_000
 
       assert idx2 == 2
 
       Process.unlink(socket2.channel_pid)
       GenServer.stop(socket2.channel_pid, :normal)
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "assistant message has correct index and role", %{socket: socket} do
       ref = push(socket, "chat:message", %{"content" => "Test"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
-      assert_push "chat:message", %{"index" => idx, "role" => "assistant"} = payload, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => idx, "role" => "assistant"} = payload, 1_000
 
       assert is_list(payload["parts"])
       assert idx >= 1
       assert idx == 2
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 
@@ -168,13 +168,13 @@ defmodule NestWeb.AgentChannelMessagingTest do
       assert_reply ref2, :ok, %{}
 
       # Wait for chat completion via known broadcasts.
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
 
       ref3 = push(socket, "chat:status", %{"lastIndex" => -1})
       assert_reply ref3, :ok, %{"status" => "idle"}
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 
@@ -205,14 +205,14 @@ defmodule NestWeb.AgentChannelMessagingTest do
       # Collect a few known deltas. We don't care about the exact
       # count of deltas received before disconnect; we just need
       # at least one to be in the mailbox.
-      assert_push "chat:delta", %{"content" => "First "}, 500
-      assert_push "chat:delta", %{"content" => "second "}, 500
+      assert_push "chat:delta", %{"content" => "First "}, 1_000
+      assert_push "chat:delta", %{"content" => "second "}, 1_000
 
       channel_pid = socket.channel_pid
       mon = Process.monitor(channel_pid)
       Process.unlink(channel_pid)
       GenServer.stop(channel_pid, :normal)
-      assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 500
+      assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 1_000
 
       {:ok, new_conn} =
         connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
@@ -221,7 +221,7 @@ defmodule NestWeb.AgentChannelMessagingTest do
         subscribe_and_join(new_conn, NestWeb.AgentChannel, "agent:#{space_id}:#{id}")
 
       # The new channel's join pushes the init synchronously.
-      assert_push "init", init_payload, 500
+      assert_push "init", init_payload, 1_000
 
       partial = init_payload["partial"]
 
@@ -238,7 +238,7 @@ defmodule NestWeb.AgentChannelMessagingTest do
 
       MockClient.clear()
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "mid-stream join does not trigger delta gap warnings", %{
@@ -268,15 +268,15 @@ defmodule NestWeb.AgentChannelMessagingTest do
 
       # Wait for at least 3 known deltas. The exact count when we
       # disconnect is timing-dependent; we just need >=3.
-      assert_push "chat:delta", %{"content" => "Hello "}, 500
-      assert_push "chat:delta", %{"content" => "world "}, 500
-      assert_push "chat:delta", %{"content" => "this "}, 500
+      assert_push "chat:delta", %{"content" => "Hello "}, 1_000
+      assert_push "chat:delta", %{"content" => "world "}, 1_000
+      assert_push "chat:delta", %{"content" => "this "}, 1_000
 
       channel_pid = socket.channel_pid
       mon = Process.monitor(channel_pid)
       Process.unlink(channel_pid)
       GenServer.stop(channel_pid, :normal)
-      assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 500
+      assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 1_000
 
       {:ok, new_conn} =
         connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
@@ -284,7 +284,7 @@ defmodule NestWeb.AgentChannelMessagingTest do
       {:ok, _, new_socket} =
         subscribe_and_join(new_conn, NestWeb.AgentChannel, "agent:#{space_id}:#{id}")
 
-      assert_push "init", init_payload, 500
+      assert_push "init", init_payload, 1_000
 
       partial = init_payload["partial"]
 
@@ -294,14 +294,14 @@ defmodule NestWeb.AgentChannelMessagingTest do
         # At least one more delta should arrive with charsStart >=
         # the previous charsEnd (no gap). Assert on the first
         # remaining delta's chars_start.
-        assert_push "chat:delta", %{"charsStart" => chars_start}, 500
+        assert_push "chat:delta", %{"charsStart" => chars_start}, 1_000
         assert chars_start >= init_chars_end || chars_start <= init_chars_end + 5
       end
 
       Process.unlink(new_socket.channel_pid)
       GenServer.stop(new_socket.channel_pid, :normal)
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 
@@ -352,34 +352,21 @@ defmodule NestWeb.AgentChannelMessagingTest do
       assert p2["toolCallId"] == "call_stream_1"
       assert p2["content"] == "{\"command\":\"ls\"}"
 
-      # The assistant message with the parsed tool_use part
-      # arrives after the deltas (not before).
-      # Drain until we see the assistant message whose
-      # `parts` carries the parsed tool_use (the synthetic
-      # "Context?" budget-reminder pair injected between the
-      # tool result and the final assistant lands first and
-      # would otherwise satisfy `assert_push` with empty parts).
-      tool_use_parts =
-        Stream.unfold(nil, fn _ ->
-          receive do
-            %Phoenix.Socket.Message{
-              event: "chat:message",
-              payload: %{"role" => "assistant", "parts" => parts}
-            } ->
-              {parts, parts}
+      # The assistant message with the parsed tool_use part arrives after the
+      # deltas (not before). It is the first assistant `chat:message` push, so
+      # a selective receive is enough: `assert_receive` skips the user push,
+      # the deltas and the raw PubSub broadcasts, and the 1_000ms is only a
+      # failure bound, not the synchronisation.
+      assert_receive %Phoenix.Socket.Message{
+                       event: "chat:message",
+                       payload: %{"role" => "assistant", "parts" => parts}
+                     },
+                     1_000
 
-            _other ->
-              {:skip, nil}
-          after
-            2000 -> nil
-          end
-        end)
-        |> Stream.filter(&match?([_ | _], &1))
-        |> Enum.find_value(fn parts ->
-          Enum.find(parts, fn
-            %{"kind" => "tool_use"} = p -> p
-            _ -> nil
-          end)
+      tool_use_parts =
+        Enum.find(parts, fn
+          %{"kind" => "tool_use"} = p -> p
+          _ -> nil
         end)
 
       assert tool_use_parts != nil,
@@ -390,7 +377,7 @@ defmodule NestWeb.AgentChannelMessagingTest do
 
       MockClient.clear()
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 end

@@ -8,7 +8,6 @@ defmodule Nest.Agents.ChatTaskCleanupTest do
   own ExUnit worker.
   """
   use Nest.DataCase, async: true
-  alias Nest.Agents.Agent.Machine
 
   import ExUnit.CaptureLog
   import Mimic
@@ -61,7 +60,7 @@ defmodule Nest.Agents.ChatTaskCleanupTest do
 
       # Wait for the silent shutdown to complete: the Agent transitions to
       # `:idle` without a `chat:error` broadcast.
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # The benign exit stayed silent in the only sense that is assertable:
       # no `chat:error` broadcast (the user-visible error path is reserved for
@@ -69,12 +68,11 @@ defmodule Nest.Agents.ChatTaskCleanupTest do
       # assertable — `capture_log` collects every process's logs, including
       # other tests' agents and their late-terminating Tasks — so it is left to
       # this suite's "tests must not print" rule instead of a log assertion.
-      refute_receive {:chat_error, _}, 200
+      refute_received {:chat_error, _}
 
       # The agent finalized cleanly — still alive, in :idle.
       assert Process.alive?(pid)
-      state = :sys.get_state(pid)
-      assert Machine.status_for(state.live.machine) == :idle
+      assert Agent.get_public_info(pid, 1_000).status == :idle
     end
 
     test "a {:noproc, {GenServer, :call, _}} exit (target already gone) is also silent", %{} do
@@ -87,11 +85,11 @@ defmodule Nest.Agents.ChatTaskCleanupTest do
       Mimic.allow(MockClient, self(), pid)
 
       :ok = Agent.chat(pid, "Hello")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # Silent in the only assertable sense: no `chat:error` broadcast. See the
       # first test in this describe for why the log is not asserted.
-      refute_receive {:chat_error, _}, 200
+      refute_received {:chat_error, _}
     end
 
     test "a bare :normal raise still surfaces (not silenced)", %{} do
@@ -116,7 +114,7 @@ defmodule Nest.Agents.ChatTaskCleanupTest do
 
           # Real crashes still surface — Agent transitions to
           # :idle after broadcasting chat:error.
-          assert_receive {:chat_status, %{status: "idle"}}, 500
+          assert_receive {:chat_status, %{status: "idle"}}, 1_000
         end)
 
       # Filter to this test's agent (see comment in the
