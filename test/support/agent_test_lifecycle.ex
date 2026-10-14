@@ -82,8 +82,8 @@ defmodule Nest.Agents.AgentTestLifecycle do
   # `agent_test_lifecycle_test.exs` pins that boundary as a test rather than a
   # comment. It stays at 250 — the value of the `:sys.get_state` probe it
   # replaces — so the *answer* half of what one agent can cost the teardown
-  # (`@answer_ms` + `@stop_ms`) is unchanged. The stop half is not: it is now
-  # the 10 ms detector (`@stop_ms`), not the multi-second bound the probe used
+  # (`@answer_ms` + `@stop_ms`) is unchanged. The stop half is not: it is now the
+  # 150 ms liveness bound (`@stop_ms`), not the multi-second bound the probe used
   # to be paired with, so the total is far lower.
   #
   # The one measurement behind it is a single, right-censored run: 473 answers at
@@ -440,7 +440,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
           "failure is being re-raised unchanged"
       )
 
-      %{owned: 0, in_flight: [], not_stopped: []}
+      %{owned: 0, in_flight: [], not_stopped: [], diag: []}
   end
 
   # The body's exception is the one that is raised (see
