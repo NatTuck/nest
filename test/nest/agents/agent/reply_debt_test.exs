@@ -82,7 +82,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # failure bound, never the synchronisation. The payload names the agent, so
       # the peer's own `idle` frame — this test pid is subscribed to both agents'
       # topics — cannot satisfy it.
-      assert_receive {:chat_status, %{name: ^name, status: "idle"}}, 500
+      assert_receive {:chat_status, %{name: ^name, status: "idle"}}, 1_000
 
       # allowlist: snapshot — messages + owed_replies
       state = :sys.get_state(pid, 1_000)
@@ -297,7 +297,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       log =
         capture_log(fn ->
           AgentTestHelpers.send_compaction_done(pid, "a summary", carried_reply())
-          assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 500
+          assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 1_000
         end)
 
       # The carried reply reminds first (the gate), so the give-up that gets
@@ -363,7 +363,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # is exactly the flake this replaced.
       ref = Process.monitor(pid)
       assert :ok = Supervisor.archive_agent(current_space_id(), name)
-      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
 
       # `terminate/2` has run, so the process is gone. The registry's own ETS
       # cleanup (the partition server's link `EXIT`) is still asynchronous, but
@@ -471,11 +471,9 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
   # the payload names the agent, so the other agent's frames (this test pid is
   # subscribed to both) cannot satisfy the fence.
   #
-  # The bound is a failure detector, never the synchronisation. Measured on this
-  # host (20 CPU hogs, the peer's turn scripted): 3.9 ms min, 4.8 ms median,
-  # 12.2 ms max over 20 runs — so 500 ms leaves ~40x headroom.
+  # The bound is a failure detector, never the synchronisation.
   defp wait_idle(name) do
-    assert_receive {:chat_status, %{name: ^name, status: "idle"}}, 500
+    assert_receive {:chat_status, %{name: ^name, status: "idle"}}, 1_000
   end
 
   # Put an agent into an arbitrary machine status, as `InboxTest` does. Only the

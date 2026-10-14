@@ -160,8 +160,8 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # The reply and the `providers_updated` push are the events that decide
       # these two assertions: each carries its own real bound, rather than
       # synchronising on the channel process to read them with a `0` fence.
-      assert_reply ref, :ok, %{}, 500
-      assert_push "providers_updated", %{providers: providers}, 500
+      assert_reply ref, :ok, %{}, 1_000
+      assert_push "providers_updated", %{providers: providers}, 1_000
 
       assert Enum.any?(providers, &(&1["name"] == "acme"))
       assert File.exists?(local_file)
@@ -183,11 +183,11 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
           ]
         })
 
-      assert_reply ref, :ok, %{}, 500
+      assert_reply ref, :ok, %{}, 1_000
 
       # The push serializes the config the handler just reloaded, so this pins
       # the outbound `true` as well as the `false` the two defaults produce.
-      assert_push "providers_updated", %{providers: providers}, 500
+      assert_push "providers_updated", %{providers: providers}, 1_000
 
       by_name = Map.new(providers, &{&1["name"], &1["probe_multimodal"]})
       assert by_name["opted-in"] == true

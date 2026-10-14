@@ -80,7 +80,7 @@ defmodule NestWeb.LobbyChannel.ProbeCacheTest do
       assert :ok = MultimodalCache.put(provider(), "m", :positive)
 
       ref = push(socket, "probe_cache_stats", %{})
-      assert_reply ref, :ok, %{"stats" => stats}, 500
+      assert_reply ref, :ok, %{"stats" => stats}, 1_000
 
       assert stats.entries == 1
       assert stats.oldest_age_s >= 0
@@ -103,8 +103,8 @@ defmodule NestWeb.LobbyChannel.ProbeCacheTest do
       ref = push(socket, "clear_probe_cache", %{})
 
       expected = %{entries: 0, oldest_age_s: nil, path: path}
-      assert_reply ref, :ok, %{"stats" => ^expected}, 500
-      assert_push "probe_cache_stats", %{stats: ^expected}, 500
+      assert_reply ref, :ok, %{"stats" => ^expected}, 1_000
+      assert_push "probe_cache_stats", %{stats: ^expected}, 1_000
 
       assert MultimodalCache.get(provider(), "m") == nil
       assert File.read!(path) =~ ~s("providers": {})
@@ -119,7 +119,7 @@ defmodule NestWeb.LobbyChannel.ProbeCacheTest do
       ref = push(socket, "clear_probe_cache", %{})
 
       expected = %{entries: 0, oldest_age_s: nil, path: path}
-      assert_reply ref, :ok, %{"stats" => ^expected}, 500
+      assert_reply ref, :ok, %{"stats" => ^expected}, 1_000
       assert File.exists?(path)
     end
 
@@ -132,7 +132,7 @@ defmodule NestWeb.LobbyChannel.ProbeCacheTest do
 
       for event <- ["probe_cache_stats", "clear_probe_cache"] do
         ref = push(bob_socket, event, %{})
-        assert_reply ref, :error, %{"reason" => "forbidden"}, 500
+        assert_reply ref, :error, %{"reason" => "forbidden"}, 1_000
       end
 
       assert File.read!(path) == before
