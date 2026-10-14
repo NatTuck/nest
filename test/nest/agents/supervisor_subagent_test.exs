@@ -30,6 +30,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Agents.AgentTestLifecycle
   alias Nest.Agents.ChildRegistry
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
@@ -377,16 +378,16 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   # here would fail with `DBConnection.OwnershipError`.
   # `Supervisor.stop_agent/2` terminates the GenServer only;
   # the DB row is cleaned up by `DataCase`'s sandbox rollback
-  # at test exit. The single-message `:DOWN` wait is delegated
-  # to `AgentTestHelpers.wait_for_pid_down/2` so the
-  # parallel-test ownership race window is closed (the agent's
-  # mailbox can't fire DB calls after `terminate/2` finishes).
+  # at test exit. The single-message `:DOWN` wait is the cleanup
+  # bound (`AgentTestLifecycle.cleanup_ms/0`), not the tight detector
+  # `wait_for_pid_down/2` defaults to: this is cleanup, so it must not
+  # fail a passing test because a dying agent was a moment slow.
   defp agent_count(space_id) do
     Nest.Repo.one(from(a in "agents", where: a.space_id == ^space_id, select: count(a.id)))
   end
 
   defp safe_stop(space_id, name) do
     _ = Supervisor.stop_agent(space_id, name)
-    AgentTestHelpers.wait_for_pid_down(space_id, name)
+    AgentTestHelpers.wait_for_pid_down(space_id, name, AgentTestLifecycle.cleanup_ms())
   end
 end
