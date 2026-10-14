@@ -22,13 +22,17 @@ defmodule NestWeb.ChannelCase do
       Postgrex.Protocol (#PID<…>) disconnected: ** (DBConnection.ConnectionError)
       owner #PID<…> exited
 
-  The `subscribe_and_join/2,3,4` wrappers below record each joined channel in
-  the test process, and `Nest.TestSupport.ChannelQuiescence.drain/0` — called
-  by the test teardown, while the sandbox checkout is still alive — lets those
-  channels finish the message they were processing. The wrappers are explicit
-  clauses rather than defaults so that shadowing the imported functions cannot
-  collide with the arities `Phoenix.ChannelTest` derives from its own default
-  argument.
+  The `subscribe_and_join/2,3,4` wrappers below record each joined channel —
+  pid and topic — in the test process, and
+  `Nest.TestSupport.ChannelQuiescence.drain/0`, called by the test teardown
+  while the sandbox checkout is still alive, lets those channels finish the
+  message they were processing. The wrappers are explicit clauses rather than
+  defaults so that shadowing the imported functions cannot collide with the
+  arities `Phoenix.ChannelTest` derives from its own default argument.
+
+  The record lives in the *calling* process's dictionary, so a channel joined
+  from inside a spawned process is not recorded and not drained; see that
+  module for what the drain does and does not cover.
   """
 
   use ExUnit.CaseTemplate
@@ -82,9 +86,14 @@ defmodule NestWeb.ChannelCase do
 
   defp record({:ok, reply, socket}) do
     if is_pid(socket.channel_pid) do
+      # `{pid, topic}`: the topic is what a give-up log has to name, and it is
+      # only reachable here — a channel that will not answer the drain cannot be
+      # asked for it. Recorded in the *calling* process, so a channel joined
+      # from inside a spawned process is not recorded (see
+      # `Nest.TestSupport.ChannelQuiescence`).
       Process.put(
         :nest_joined_channels,
-        [socket.channel_pid | Process.get(:nest_joined_channels, [])]
+        [{socket.channel_pid, socket.topic} | Process.get(:nest_joined_channels, [])]
       )
     end
 

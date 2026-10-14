@@ -16,10 +16,26 @@ defmodule Nest.TestSupport.ChannelQuiescence do
       Postgrex.Protocol (#PID<…>) disconnected: ** (DBConnection.ConnectionError)
       owner #PID<…> exited
 
-  That is `:error` output from a test run, which this repo does not allow, and
-  it is the same invariant `AgentTestLifecycle.assert_zero_remaining!/1`
-  enforces for agents — a test may not finish with an outstanding child. A
-  channel is such a child, and the teardown's agent discovery cannot see it.
+  That is `:error` output from a test run, which this repo does not allow. The
+  channel is an outstanding child of the test, so it falls under the invariant
+  `AgentTestLifecycle.assert_zero_remaining!/1` *enforces* for agents — a test
+  may not finish with an outstanding child — but the teardown's agent discovery
+  cannot see a channel. Draining is this module's half of *serving* that
+  invariant; it does not enforce it, because a drain is best effort (below).
+
+  ## What this covers, and what it does not
+
+  It covers channels joined through `NestWeb.ChannelCase.subscribe_and_join/2,3,4`
+  **from the test process**, because that is where the wrapper records them:
+  the record goes into the calling process's dictionary, and `drain/0` reads the
+  dictionary of the process the teardown runs in. A channel joined from inside a
+  spawned process is therefore neither recorded nor drained.
+
+  So this closes the window for the class it covers, not for every way a process
+  can borrow the sandbox connection. A `Task.Supervisor` child that queries the
+  owner's connection is still able to outlive the test body; that class needs the
+  same treatment (a registry the teardown can read), and until it has one it is
+  unguarded.
 
   ## Why a synchronous call and not an event
 
@@ -32,13 +48,19 @@ defmodule Nest.TestSupport.ChannelQuiescence do
   the call returns only once every message queued before it has been handled,
   which is exactly "this channel is idle now".
 
-  Best effort on purpose: a channel that will not answer inside the bound is
+  ## The bound, and what a give-up does
+
+  `@drain_ms` bounds **one channel**, and `drain/0` drains them sequentially, so
+  the worst case for a single test is one bound per channel it joined — there is
+  no single bound for the drain as a whole.
+
+  Best effort on purpose: a channel that will not answer inside its bound is
   left alone rather than turned into a new teardown failure — a drain is a
   quiescence aid, not an assertion, and the assertion is
   `assert_zero_remaining!/1`. But it is never *silent*: a give-up is logged at
-  `:error` naming the channel and the bound, because a give-up means the
-  channel may still be mid-query when the owner exits, which is the exact state
-  that produces the disconnect this module exists to prevent. A clean run
+  `:error`, naming the channel's topic and the bound, because a give-up means
+  the channel may still be mid-query when the owner exits, which is the exact
+  state that produces the disconnect this module exists to prevent. A clean run
   therefore has no such line, and a run that does has said why.
   """
 
@@ -52,16 +74,16 @@ defmodule Nest.TestSupport.ChannelQuiescence do
   """
   @spec drain() :: :ok
   def drain do
-    for pid <- Process.get(:nest_joined_channels, []),
+    for {pid, topic} <- Process.get(:nest_joined_channels, []),
         is_pid(pid),
         Process.alive?(pid) do
-      drain_one(pid)
+      drain_one(pid, topic)
     end
 
     :ok
   end
 
-  defp drain_one(pid) do
+  defp drain_one(pid, topic) do
     # allowlist: barrier — the channel's mailbox is drained so it cannot be
     # killed mid-query when this test process (the sandbox owner) exits; there
     # is no event to wait for, because the reconcile emits no frame.
@@ -79,9 +101,9 @@ defmodule Nest.TestSupport.ChannelQuiescence do
       # a give-up has to leave a trace in the run's output.
       if Process.alive?(pid) do
         Logger.error(
-          "channel drain gave up after #{@drain_ms} ms on #{inspect(pid)} " <>
-            "(#{inspect(Process.info(pid, :initial_call))}): it may still be using " <>
-            "this test's sandbox connection when the owner exits. " <>
+          "channel drain gave up after #{@drain_ms} ms on channel #{inspect(topic)} " <>
+            "(#{inspect(pid)}, #{inspect(Process.info(pid, :initial_call))}): it may " <>
+            "still be using this test's sandbox connection when the owner exits. " <>
             "Reason: #{inspect(reason)}"
         )
       end

@@ -73,7 +73,7 @@ defmodule NestWeb.LobbyChannelTest do
       {socket, _payload} = join_lobby()
 
       assert is_pid(socket.channel_pid)
-      assert socket.channel_pid in Process.get(:nest_joined_channels, [])
+      assert {socket.channel_pid, socket.topic} in Process.get(:nest_joined_channels, [])
     end
 
     test "draining with nothing joined is a no-op, and a channel that is gone is tolerated" do
@@ -83,7 +83,7 @@ defmodule NestWeb.LobbyChannelTest do
       ref = Process.monitor(dead)
       assert_receive {:DOWN, ^ref, :process, ^dead, _reason}
 
-      Process.put(:nest_joined_channels, [dead])
+      Process.put(:nest_joined_channels, [{dead, "lobby"}])
 
       assert ChannelQuiescence.drain() == :ok
     end
