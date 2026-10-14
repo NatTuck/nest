@@ -14,8 +14,13 @@ defmodule Nest.Tokens.TokenizerTest do
 
   describe "load/0" do
     test "loads the bundled cl100k_base tokenizer and is idempotent" do
-      # `Nest.Application` already loaded the tokenizer at app start;
-      # an explicit reload must still work and leave `count/1` usable.
+      # `Nest.Application` already loaded the tokenizer at app start, so
+      # by the time any test runs it must already be present — that is
+      # the premise `Nest.Tokens.Estimator` sizes context windows on, so
+      # pin it before reloading.
+      assert Tokenizer.loaded?()
+
+      # An explicit reload must still work and leave `count/1` usable.
       assert :ok = Tokenizer.load()
       assert Tokenizer.count("Hello, world!") == 4
     end

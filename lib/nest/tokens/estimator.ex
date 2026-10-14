@@ -72,15 +72,28 @@ defmodule Nest.Tokens.Estimator do
 
   def raw_count(_), do: 0
 
-  # cl100k_base count, with a heuristic fallback on any tokenizer
-  # failure. `Nest.Tokens.Tokenizer.count/1` reads a pre-loaded
-  # tokenizer from `:persistent_term`; the only expected failure is
-  # invalid UTF-8, which the caller already filters with
-  # `String.valid?/1`. The rescue stays as a safety net.
+  # cl100k_base count, with a heuristic fallback on a genuine
+  # tokenizer failure. `Nest.Tokens.Tokenizer.count/1` reads a
+  # pre-loaded tokenizer from `:persistent_term`; the only expected
+  # failure is invalid UTF-8, which the caller already filters with
+  # `String.valid?/1`. The rescue stays as a safety net for that.
+  #
+  # An *unloaded* tokenizer is not a tokenization failure and must not
+  # fall back. `Nest.Application` loads it concurrently with the
+  # supervision tree, and the endpoint binds its listener before the
+  # load is awaited, so this is reachable while the tokenizer is still
+  # absent. Falling back there returns a `chars/4` count that is quietly
+  # wrong — no error, no failing test, just a wrong context budget.
+  # Re-raise instead: a boot-ordering bug has to be loud.
   defp count_tokens(text) do
     Tokenizer.count(text)
   rescue
-    _ -> char_estimate(text)
+    error ->
+      if Tokenizer.loaded?() do
+        char_estimate(text)
+      else
+        reraise error, __STACKTRACE__
+      end
   end
 
   # Invalid-UTF-8 fallback. Byte-based because the standard

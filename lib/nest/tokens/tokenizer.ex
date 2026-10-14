@@ -36,6 +36,16 @@ defmodule Nest.Tokens.Tokenizer do
     :ok
   end
 
+  @doc """
+  Whether the tokenizer has been loaded into `:persistent_term`.
+
+  Lets a caller tell a boot-ordering bug — nothing has loaded it yet —
+  apart from a genuine tokenization failure. The two need different
+  handling; see `Nest.Tokens.Estimator.count_tokens/1`.
+  """
+  @spec loaded?() :: boolean()
+  def loaded?, do: :persistent_term.get(@key, nil) != nil
+
   @doc false
   @spec count(String.t()) :: non_neg_integer()
   def count(text) when is_binary(text) do
