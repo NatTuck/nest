@@ -24,6 +24,9 @@ const AT_BOTTOM_EPSILON_PX = 2;
  * - On new content (controlled by the caller via the `trigger` value),
  *   auto-scrolls to the end if the user is at the bottom, or surfaces
  *   `hasNewContent = true` if the user is scrolled up.
+ * - `jumpToBottom()` re-pins the view and clears the pending flag, then
+ *   smooth-scrolls to the end. The re-pin is what makes it stick: without it
+ *   the next message re-surfaces the button instead of being followed.
  * - Resets to "at bottom, no pending content" whenever `id` changes
  *   (e.g. navigating to a different conversation), so the new view
  *   starts at the latest message and the button does not flash.
@@ -165,10 +168,20 @@ export function useScrollToBottom(
     messagesEndEl.scrollIntoView({ behavior: "auto", block: "end" });
   }, [id, messagesEndEl]);
 
+  // Re-pin BEFORE the smooth scroll rather than relying on the animation to do
+  // it. `isAtBottom` is what the new-content effect above reads, so leaving it
+  // false sends the next message down that effect's `else` branch — it
+  // re-surfaces the button instead of following along. The animation's own
+  // `scroll` events do re-pin, but only if the final one lands inside
+  // `AT_BOTTOM_EPSILON_PX` of the bottom, which it does not when content
+  // arrives mid-animation and moves the target. That intermittency is the
+  // reported symptom: the button appeared not to work until a small manual
+  // scroll produced a `scroll` event that re-pinned.
   const jumpToBottom = () => {
     if (!messagesEndEl) return;
-    messagesEndEl.scrollIntoView({ behavior: "smooth", block: "end" });
+    setIsAtBottom(true);
     setHasNewContent(false);
+    messagesEndEl.scrollIntoView({ behavior: "smooth", block: "end" });
   };
 
   return { isAtBottom, hasNewContent, jumpToBottom };

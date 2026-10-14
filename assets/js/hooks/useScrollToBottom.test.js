@@ -10,7 +10,7 @@
  * - Auto-scroll when at the bottom
  * - hasNewContent flips to true when scrolled up and a new trigger arrives
  * - hasNewContent clears when the user scrolls back to the bottom
- * - jumpToBottom smooth-scrolls and clears the flag
+ * - jumpToBottom re-pins, smooth-scrolls, and clears the flag
  * - Changing the id resets the hook state and scrolls to the bottom
  */
 
@@ -399,13 +399,13 @@ describe("useScrollToBottom", () => {
   });
 
   describe("jumpToBottom", () => {
-    it("smooth-scrolls to the bottom and clears hasNewContent", () => {
+    it("re-pins, smooth-scrolls to the bottom, and follows the next message", () => {
       const scrollIntoView = vi.fn();
       const original = Element.prototype.scrollIntoView;
       Element.prototype.scrollIntoView = scrollIntoView;
 
       try {
-        const { result, container } = renderHookWithContainer(
+        const { result, container, rerender } = renderHookWithContainer(
           "agent-1",
           "token-1",
         );
@@ -413,6 +413,7 @@ describe("useScrollToBottom", () => {
           fireEvent.wheel(container, { deltaY: -100 });
         });
         expect(result.current.hasNewContent).toBe(true);
+        expect(result.current.isAtBottom).toBe(false);
 
         scrollIntoView.mockClear();
         act(() => {
@@ -422,6 +423,19 @@ describe("useScrollToBottom", () => {
         expect(scrollIntoView).toHaveBeenCalledWith(
           expect.objectContaining({ behavior: "smooth" }),
         );
+        expect(result.current.hasNewContent).toBe(false);
+        // The click re-pins immediately. Regression for issue #88: without
+        // this, the pin depended on the smooth animation's own `scroll` event
+        // landing inside the 2px epsilon, which it does not when content
+        // arrives mid-animation and moves the target.
+        expect(result.current.isAtBottom).toBe(true);
+
+        // The observable the issue is actually about: a message arriving after
+        // the click is followed, instead of re-surfacing the button.
+        scrollIntoView.mockClear();
+        rerender({ id: "agent-1", trigger: "token-2" });
+
+        expect(scrollIntoView).toHaveBeenCalled();
         expect(result.current.hasNewContent).toBe(false);
       } finally {
         Element.prototype.scrollIntoView = original;

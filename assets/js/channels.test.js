@@ -60,6 +60,9 @@ describe("channels", () => {
       await vi.waitFor(() => {
         assert.strictEqual(useStore.getState().isConnected, true);
       });
+      // A successful dial clears the failure flag, so the two are mutually
+      // exclusive and the gate at `/` cannot both navigate and redirect.
+      assert.strictEqual(useStore.getState().connectionFailed, false);
     });
 
     it("should update store.isConnected to false when socket disconnects", async () => {
@@ -90,6 +93,38 @@ describe("channels", () => {
       await vi.waitFor(() => {
         assert.strictEqual(useStore.getState().isConnected, false);
       });
+      // A dial that errored without connecting is exactly what the gate at `/`
+      // turns into a redirect to /login (issue #95): `isConnected` alone
+      // cannot express it, because it is also false before the handshake lands.
+      assert.strictEqual(useStore.getState().connectionFailed, true);
+    });
+
+    it("registers the socket lifecycle handlers once, however often it is called", async () => {
+      // Phoenix's client does NOT dedupe these. Each `onOpen`/`onClose`/
+      // `onError` pushes another `[ref, callback]` pair into its own list, and
+      // `off/1` is the only removal. `initChannels` is called from two mount
+      // effects (`RootGate` and `Layout`), and React StrictMode runs each mount
+      // effect twice in development, so without the off-then-register in
+      // `initChannels` one socket event would run four handlers.
+      //
+      // The store setter is spied on rather than the mock's registration list:
+      // the observable is "one event, one handler run", and the closure
+      // resolves `store.setIsConnected` off the captured state object at call
+      // time, so a spy installed before `initChannels` is the one it calls.
+      const store = useStore.getState();
+      const spy = vi.spyOn(store, "setIsConnected");
+
+      initChannels();
+      initChannels();
+
+      connectSocket();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(spy.mock.calls.length, 1);
+      });
+      // ...and the surviving handler is still wired to the store, i.e. the
+      // off-then-register did not simply drop every handler.
+      assert.strictEqual(useStore.getState().isConnected, true);
     });
 
     describe("token-gated connect", () => {

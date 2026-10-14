@@ -11,9 +11,12 @@
  * Login/register pages intentionally don't check
  * `currentUser` or `isConnected` to bounce already-authed
  * users: if you landed here, you wanted to log in or
- * register. The RootGate at `/` handles "you had a token
- * but the connection failed" by staying on its loading
- * screen; logout's destination is explicitly `/login`, so
+ * register. The RootGate at `/` sends a user whose socket
+ * could not connect here (issue #95) and leaves
+ * `connectionFailed` set, which is why this page says so
+ * rather than presenting a bare form — that user did not
+ * choose to sign out, and a silent form would hide why they
+ * arrived. Logout's destination is explicitly `/login`, so
  * a re-login flow is always reachable.
  */
 
@@ -23,9 +26,11 @@ import { useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { login } from "../api/auth";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
+import { useStore } from "../store";
 
 export function LoginPage() {
   const navigate = useNavigate();
+  const connectionFailed = useStore((s) => s.connectionFailed);
 
   useDocumentTitle(["Sign in"]);
 
@@ -79,6 +84,13 @@ export function LoginPage() {
             className="mt-1 block w-full rounded border border-gray-300 px-3 py-2 text-gray-900 outline-none focus:border-blue-500"
           />
         </label>
+
+        {connectionFailed ? (
+          <p className="mb-3 rounded bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            Your session could not be established: the server did not accept the
+            connection. Sign in again, or refresh to retry.
+          </p>
+        ) : null}
 
         {error ? (
           <p className="mb-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700">
