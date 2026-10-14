@@ -221,9 +221,10 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   # describes where the number came from (`:config` for
   # DotConfig, the provider shape that `Nest.Models` resolved
   # from the `/models` endpoint — `:vllm`, `:openrouter`,
-  # `:olla`, `:llama_cpp` — or the `:default` 128k floor). The
-  # `{nil, _}` clause is retained defensively for direct callers
-  # that pass a nil limit explicitly.
+  # `:context_window`, `:olla`, `:llama_cpp` — or the
+  # `:default` 128k floor). The `{nil, _}` clause is retained
+  # defensively for direct callers that pass a nil limit
+  # explicitly.
   defp context_limit_section({nil, _}), do: ""
 
   defp context_limit_section({limit, source}) do

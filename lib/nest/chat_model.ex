@@ -23,6 +23,11 @@ defmodule Nest.ChatModel do
     defexception [:message]
   end
 
+  # The provider-shape atoms `Discover.extract_limit_from_model/1` reports.
+  # Re-exported rather than re-listed so the union keeps one definition; see
+  # `t:Nest.LLM.Discover.source/0`.
+  @type source :: Discover.source()
+
   @doc """
   Creates a client config for the given model specification.
 

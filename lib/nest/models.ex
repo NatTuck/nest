@@ -85,7 +85,7 @@ defmodule Nest.Models do
   alias Nest.DotConfig
   alias Nest.Models.MultiModal
 
-  @type source :: :vllm | :openrouter | :llama_cpp
+  @type source :: Nest.LLM.Discover.source()
 
   @default_deadline_ms 5_000
 
@@ -164,8 +164,8 @@ defmodule Nest.Models do
   Look up the cached context-limit source + value for a model.
 
   Returns `{source, limit}` when known, or `nil` when unknown.
-  Sources are provider-shape atoms (`:vllm`, `:openrouter`,
-  `:llama_cpp`).
+  Sources are the provider shapes that `Nest.LLM.Discover`
+  recognizes; see `t:Nest.LLM.Discover.source/0`.
 
   Reads the synchronous cache; never blocks on a network call.
   """

@@ -81,16 +81,10 @@ with {:ok, content} <- File.read(cfg_path) |> then(fn
         IO.puts("  keys: #{inspect(Map.keys(first))}")
         IO.puts("  raw : #{inspect(first)}")
 
-        limit_field =
-          cond do
-            is_integer(first["max_model_len"]) -> {:vllm, first["max_model_len"]}
-            is_integer(first["context_length"]) -> {:openrouter, first["context_length"]}
-            is_map(first["meta"]) and is_integer(first["meta"]["n_ctx"]) ->
-              {:llama_cpp, first["meta"]["n_ctx"]}
-            is_map(first["meta"]) and is_integer(first["meta"]["n_ctx_train"]) ->
-              {:llama_cpp, first["meta"]["n_ctx_train"]}
-            true -> nil
-          end
+        # Delegate to the function this script exists to demonstrate, so the
+        # diagnostic cannot disagree with it: the local copy this replaced was
+        # already missing `:olla` (and, later, `:context_window`).
+        limit_field = Discover.extract_limit_from_model(first)
 
         IO.puts("")
         IO.puts("Recognized limit field on first entry: #{inspect(limit_field)}")

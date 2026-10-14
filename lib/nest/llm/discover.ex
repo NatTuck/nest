@@ -9,6 +9,10 @@ defmodule Nest.LLM.Discover do
   - **vLLM** — top-level `max_model_len` per model
   - **OpenRouter** — top-level `context_length` per model,
     `architecture.input_modalities` for input support
+  - **DeepSeek** — top-level `context_window` per model (the
+    same body publishes `input_modalities`, which the
+    atlascloud shape below already reads: one field mapped
+    from that body, the other used to be dropped)
   - **Olla** — `olla.max_context_length` (Olla wraps upstream
     providers with an OpenAI-shaped `/models` body; the
     context length lives under the `olla` namespace rather
@@ -57,7 +61,7 @@ defmodule Nest.LLM.Discover do
   @image_input %{"input" => ["image"]}
   @text_only %{"input" => []}
 
-  @type source :: :vllm | :openrouter | :llama_cpp | :olla
+  @type source :: :vllm | :openrouter | :context_window | :llama_cpp | :olla
 
   @doc """
   Probe a provider's `/v1/models` endpoint for the
@@ -96,6 +100,17 @@ defmodule Nest.LLM.Discover do
   @spec extract_limit_from_model(map() | nil) :: {source(), pos_integer()} | nil
   def extract_limit_from_model(nil), do: nil
 
+  # Field precedence, most specific first: vLLM's `max_model_len`,
+  # then OpenRouter's `context_length`, then DeepSeek's
+  # `context_window`, then the nested namespaces (Olla, llama.cpp).
+  # `context_window` sits *after* `context_length` on purpose: no
+  # measured body publishes both, but if one ever does, OpenRouter's
+  # field is the narrower claim and keeps priority.
+  #
+  # `max_input_tokens` is deliberately not read. It is ambiguous
+  # (input-only vs. total context), and raven-ferrus — the only
+  # provider publishing it — also publishes `context_length`, so it
+  # is already covered by the branch above.
   def extract_limit_from_model(%{} = model) do
     cond do
       is_integer(model["max_model_len"]) ->
@@ -103,6 +118,9 @@ defmodule Nest.LLM.Discover do
 
       is_integer(model["context_length"]) ->
         {:openrouter, model["context_length"]}
+
+      is_integer(model["context_window"]) ->
+        {:context_window, model["context_window"]}
 
       olla_limit = olla_limit(model) ->
         olla_limit
