@@ -127,6 +127,11 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   goes straight through to the original. The claim is taken with `:counters`
   because the stub runs in whichever process makes the call, and successive
   requests need not be the same one.
+
+  **Mutually exclusive with `park_llm_requests/1`.** Both replace
+  `MockClient.run/2` with `Mimic.stub/3`, so installing the second silently
+  replaces the first and drops its park with no error — use one or the other,
+  never both.
   """
   @spec park_next_llm_request(pid()) :: :ok
   def park_next_llm_request(pid) do
