@@ -16,6 +16,14 @@
  * Working statuses pulse so a glance distinguishes "doing something" from
  * "sitting still"; blocked statuses are a static red — a stall is a fact to
  * read, not an activity to watch.
+ *
+ * One entry is not a machine status at all: `stopped` (#73). An agent that has
+ * stopped has no process, so it has no phase for the server to report, and the
+ * frame that says so is a lifecycle event (`agent:stopped`), not a status
+ * broadcast. The row carries it as its status because a row's status is this
+ * dot's only input. Without it a stopped agent keeps the neutral `idle` that a
+ * row with no live process is given by default — the same lie `catalog.js`'s
+ * `applyAgentStatuses` documents for `model_missing`.
  */
 
 /** Dot classes and label for each known status. */
@@ -35,6 +43,9 @@ const STATUS_DOTS = {
     className: "bg-red-500",
     label: "Compaction loop detected",
   },
+  // Flat, and outside both the idle grey and the unknown violet: a stopped
+  // agent is a fact to read, like a blocked one, but it is not a stall.
+  stopped: { className: "bg-slate-500", label: "Stopped" },
 };
 
 /**

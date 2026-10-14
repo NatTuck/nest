@@ -452,6 +452,18 @@ defmodule NestWeb.LobbyChannelScopingTest do
       settle(bob_socket)
       refute_push "agent:created", _, 0
 
+      # And a stop frame, which rides the same topic to the same audience
+      # (#73).
+      Phoenix.PubSub.broadcast(
+        Nest.PubSub,
+        "space:#{space.id}",
+        {:agent_stopped, %{"name" => "secret-child", "space_id" => space.id}}
+      )
+
+      assert_push "agent:stopped", %{"name" => "secret-child"}, 1_000
+      settle(bob_socket)
+      refute_push "agent:stopped", _, 0
+
       # And for a space-lifecycle frame on A's per-user topic.
       Phoenix.PubSub.broadcast(
         Nest.PubSub,

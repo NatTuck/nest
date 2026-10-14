@@ -163,6 +163,32 @@ export function catalogSetters(set) {
     },
 
     /**
+     * Mark an agent stopped (#73).
+     *
+     * The server emits `agent:stopped` from the agent's own `terminate/2`, so
+     * the row is marked only once the process is really gone. Without it a
+     * stopped agent keeps the neutral `idle` that `normalizeAgent` gives a row
+     * with no live process — the same lie `applyAgentStatuses` documents for
+     * `model_missing`: a row with no process is not idle, and rendering it as
+     * idle tells the user the opposite of the truth.
+     *
+     * A row that is not in `agents` is deliberately left alone. An archived
+     * agent is also stopped, so its stop frame is redundant rather than
+     * contradictory, and it arrives after `archiveAgent` has already moved the
+     * row into `archivedAgents`; matching against the active list is what stops
+     * that late frame from pulling the row back.
+     */
+    markAgentStopped: ({ space_id, name }) => {
+      set((state) => ({
+        agents: state.agents.map((a) =>
+          a.name === name && a.space_id === space_id
+            ? { ...a, status: "stopped" }
+            : a,
+        ),
+      }));
+    },
+
+    /**
      * Stamp the lobby's `broken_agents` statuses onto the flat agent list
      * (#53).
      *

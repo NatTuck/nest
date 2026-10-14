@@ -69,6 +69,17 @@ export function joinLobby(onOk, onError) {
     getStore().addAgent(payload);
   });
 
+  // A stop is carried as the row's status (#73). The frame is emitted by the
+  // agent itself as it dies, so for an archived agent it can arrive *after*
+  // `agent:archived` — `markAgentStopped` only touches rows still in the active
+  // list, which is what makes that ordering harmless instead of a
+  // resurrection.
+  lobbyChannel.on("agent:stopped", (payload) => {
+    if (payload?.name != null && payload?.space_id != null) {
+      getStore().markAgentStopped(payload);
+    }
+  });
+
   lobbyChannel.on("agent:archived", (payload) => {
     if (payload?.name != null && payload?.space_id != null) {
       getStore().archiveAgent(payload);
