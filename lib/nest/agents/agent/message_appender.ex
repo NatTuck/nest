@@ -64,6 +64,7 @@ defmodule Nest.Agents.Agent.MessageAppender do
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Agents.Agent.Repair
   alias Nest.Messages.Sanitize
+  alias Nest.Messages.User
   alias Nest.Tokens.PreFlight
 
   # A turn owns the sequence while the machine is `:generating` or
@@ -257,8 +258,23 @@ defmodule Nest.Agents.Agent.MessageAppender do
     {role, %{msg | index: index}}
   end
 
-  defp progress_message?({role, _}) when role in [:user, :assistant, :tool], do: true
+  # Genuine progress resets the loop breaker. The compaction request is a
+  # `:user` row (that is what the wire can carry — see `Nest.Messages.User`'s
+  # moduledoc) but it is the *runtime* asking for a summary, not progress:
+  # counting it would reset the counter on every attempt and disarm
+  # `@max_consecutive_compactions`, which is the only thing bounding a
+  # compaction that keeps failing.
+  defp progress_message?({:user, %User{metadata: metadata}}) do
+    not compaction_request?(metadata)
+  end
+
+  defp progress_message?({role, _}) when role in [:assistant, :tool], do: true
   defp progress_message?(_), do: false
+
+  defp compaction_request?(metadata) when is_map(metadata),
+    do: Map.get(metadata, "origin") == User.compaction_origin()
+
+  defp compaction_request?(_metadata), do: false
 
   defp reset_consecutive(state) do
     %{state | live: %{state.live | machine: %{state.live.machine | loop_count: 0}}}

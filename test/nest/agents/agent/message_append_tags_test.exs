@@ -276,6 +276,52 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
 
   # ---- helpers (shared with `AppendPairingBridgeTest`) ----
 
+  describe "the compaction request is not progress" do
+    test "appending it does not reset the consecutive-compaction counter" do
+      # The compaction request is a `:user` row — that is what every provider's
+      # wire format can carry — so without a named origin the progress rule
+      # would reset `loop_count` on every attempt and disarm
+      # `@max_consecutive_compactions`, which is the only thing bounding a
+      # compaction that keeps failing. `handle_single/2` is the entry point the
+      # executor's `{:append, message}` action uses, so this is the real path.
+      name = unique_name("compact-progress")
+      {:ok, _} = Persistence.insert_agent(agent_attrs(name))
+
+      initial = [system(0), assistant_text(1)]
+      insert_messages(name, initial)
+
+      state = state(name, initial)
+      state = %{state | live: %{state.live | machine: %{state.live.machine | loop_count: 3}}}
+
+      request =
+        {:user,
+         %User{
+           index: nil,
+           parts: [%Part.Text{text: "[mode: compact] Summarize the conversation."}],
+           metadata: User.compaction_metadata(),
+           api_logs: []
+         }}
+
+      assert {:ok, _stamped, after_request} = MessageAppender.handle_single(state, request)
+      assert after_request.live.machine.loop_count == 3
+
+      # An ordinary human message *is* progress and does reset it — so the
+      # assertion above is about the origin, not about the append being a
+      # no-op.
+      human =
+        {:user,
+         %User{
+           index: nil,
+           parts: [%Part.Text{text: "[mode: chat]\nhello"}],
+           metadata: User.human_metadata(),
+           api_logs: []
+         }}
+
+      assert {:ok, _stamped, after_human} = MessageAppender.handle_single(after_request, human)
+      assert after_human.live.machine.loop_count == 0
+    end
+  end
+
   defp state(name, messages) do
     %Agent{
       name: name,

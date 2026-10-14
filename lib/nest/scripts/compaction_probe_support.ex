@@ -34,6 +34,7 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   alias Nest.LLM.RunResponse
   alias Nest.LLM.StreamConsumer
   alias Nest.Messages.Part
+  alias Nest.Messages.User
 
   require Logger
 
@@ -62,8 +63,13 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   end
 
   @doc """
-  Build the `{:user, _}` tuple the compactor appends to its
-  request's messages. Wraps `compaction_suffix/2`.
+  Build the `{:user, _}` compaction request message. Wraps
+  `compaction_suffix/2`.
+
+  The machine appends the result to the message history through
+  `MessageAppender`: it is the **committed** request, not a request-only
+  addition, which is what makes the compactor's request the ordinary
+  message list.
   """
   @spec suffix_system_message(non_neg_integer(), String.t() | nil) ::
           {:user, Nest.Messages.User.t()}
@@ -72,6 +78,7 @@ defmodule Nest.Scripts.CompactionProbeSupport do
      %Nest.Messages.User{
        parts: [%Part.Text{text: compaction_suffix(remaining_tokens, optional_guidance)}],
        timestamp: DateTime.utc_now(),
+       metadata: User.compaction_metadata(),
        api_logs: []
      }}
   end

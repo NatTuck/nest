@@ -32,14 +32,35 @@ first and the message is recorded afterward.
    commit. Nothing uncommitted ever gets an index or a DB row. No live path
    updates, deletes, or re-indexes a committed row. `chat_state.messages` is
    exactly the persisted active window (`index > last_compaction_index`).
-3. **Compaction is a transaction.** Its request additions (assistant bridge
-   when needed + `[mode: compact]` suffix) and its response (summary
-   assistant) are staged and persisted once on success; on failure they are
-   discarded (with the response log). A failed attempt is the ONLY sanctioned
-   sent-but-not-persisted sequence.
-4. **Sent => persisted, and alternation holds.** No request-only messages on
-   the live path; the persisted non-system wire sequence never has two
-   consecutive `user` roles and every `tool_use` is answered.
+3. **Compaction is not a transaction.** The compaction request — the
+   `[mode: compact]` message, plus the assistant bridge the append path
+   inserts before it when the wire tail needs one — is **committed before the
+   compactor is dispatched**, through `MessageAppender`, exactly like any
+   other message. The summary and its marker are committed afterwards, on
+   success. A failed compaction therefore leaves the request in the
+   transcript, permanently: nothing is removed, because nothing can be.
+
+   This replaced a design that staged the request and the bridge as
+   request-only additions and discarded them on failure — *"a failed attempt
+   is the ONLY sanctioned sent-but-not-persisted sequence"*. That exception
+   was the defect issue #98 reported: the model read a sequence that appeared
+   nowhere, so the transcript and the request disagreed about what had
+   happened.
+4. **Sent => persisted, and alternation holds.** No request-only messages
+   anywhere, on any path. The persisted non-system wire sequence never has
+   two consecutive `user` roles and every `tool_use` is answered — including
+   the compaction request, which is a `user` row separated from whatever
+   preceded it by the same `MessageList.pairing_bridge/2` every other append
+   uses.
+5. **A pending compaction admits nothing else.** Once the request is committed
+   and the compaction has not succeeded, the agent may only send or re-send
+   that sequence. The `:compacting` and `:compaction_failed` phases accept no
+   other event, and a retry (`Compaction.retry/1`) re-sends the committed
+   messages rather than re-planning — so a retry cannot change the request,
+   and cannot append a second one. The consecutive-compaction loop breaker is
+   the only exit, which is why the request's own append must **not** reset it:
+   the request is a `user` row but it is not progress
+   (`MessageAppender.progress_message?/1`, `User.compaction_origin/0`).
 
 ## Sizing basis (resolved)
 

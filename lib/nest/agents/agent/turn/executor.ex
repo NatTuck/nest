@@ -616,7 +616,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
 
     {state, system_prompt} = refresh_vocation_and_tools(state)
 
-    case MessageAppender.append_in_process(state, data.staged ++ [data.summary_assistant]) do
+    case MessageAppender.append_in_process(state, [data.summary_assistant]) do
       {:ok, _stamped, state} -> commit_active_segment(state, summary_text, data, system_prompt)
       {:invalid, reason, state} -> {state, {:follow, {:commit_error, reason}}}
     end

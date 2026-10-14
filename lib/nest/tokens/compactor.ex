@@ -71,6 +71,7 @@ defmodule Nest.Tokens.Compactor do
   alias Nest.Messages.Message
   alias Nest.Messages.Part
   alias Nest.Messages.ThinkTags
+  alias Nest.Messages.User
   alias Nest.Scripts.CompactionProbeSupport
   alias Nest.Tokens.Budget
   alias Nest.Tokens.Estimator
@@ -268,12 +269,14 @@ defmodule Nest.Tokens.Compactor do
     end
   end
 
-  # Render the compaction request as a `{:user, _}` tuple the
-  # compactor's LLM call appends to its request. Wraps
-  # `CompactionProbeSupport.compaction_suffix/2` in a User
-  # struct. The `index` field is `nil` — the suffix is an LLM-call
-  # input element, not a persisted message. Receivers that need a
-  # real index (e.g., for sequence IDs) reassign later.
+  # Render the compaction request as a `{:user, _}` tuple. Wraps
+  # `CompactionProbeSupport.compaction_suffix/2` in a User struct.
+  #
+  # The `index` is `nil` because this builder cannot know it: the machine
+  # appends the returned message through `MessageAppender`, which stamps it
+  # like any other row. The request **is** a persisted message — it is
+  # committed *before* the compactor is dispatched, so a failure leaves it
+  # visible rather than discarding a sequence the model has already seen.
   defp render_suffix(n, guidance)
        when is_binary(guidance) and guidance != "" do
     text = CompactionProbeSupport.compaction_suffix(n, guidance)
@@ -291,6 +294,7 @@ defmodule Nest.Tokens.Compactor do
        index: nil,
        parts: [%Part.Text{text: text}],
        timestamp: DateTime.utc_now(),
+       metadata: User.compaction_metadata(),
        api_logs: []
      }}
   end

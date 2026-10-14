@@ -503,7 +503,6 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
     test "commit_compaction with an empty summary returns commit_error" do
       data = %{
         summary_text: "",
-        staged: [],
         summary_assistant: {:assistant, %Nest.Messages.Assistant{parts: [], api_logs: []}},
         carried_entry: nil
       }
@@ -588,11 +587,15 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       # compaction plan cannot be staged at all when there is no system message
       # and no vocation (`{:error, :reserve_exhausted}`), which is the arm's
       # precondition.
+      #
+      # Driven from `:idle` through a *fresh* plan, because a retry no longer
+      # re-plans — it re-sends the committed request — so `:retry_compaction`
+      # can no longer reach this arm at all.
       base = %{state() | vocation: nil}
 
       machine = %{
         base.live.machine
-        | phase: :compaction_failed,
+        | phase: :idle,
           pending_user_message:
             {:user_message, Dispatch.build_user_message("held message", "chat")}
       }
@@ -604,7 +607,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       # went through `MessageAppender`.
       log =
         capture_log(fn ->
-          {:ok, settled} = Turn.settle(state, :retry_compaction)
+          {:ok, settled} = Turn.settle(state, {:compact_request, nil})
           send(self(), {:settled, settled})
         end)
 

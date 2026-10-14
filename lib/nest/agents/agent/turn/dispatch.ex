@@ -6,16 +6,20 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
   `step/2` transitions and the executor.
 
   `tool_config_for_iteration/1`, the max-token arithmetic, the request
-  message list (persisted messages plus any staged compaction additions),
-  and the compaction plan all derive purely from the machine's `work` /
-  `entry`, so the decision about *what* to send never depends on a side
-  effect. The executor only performs the spawn.
+  message list, and the compaction plan all derive purely from the
+  machine's `work` / `entry`, so the decision about *what* to send never
+  depends on a side effect. The executor only performs the spawn.
+
+  There is no compaction-specific request assembly. The compaction request
+  is a **committed message** — `Nest.Agents.Agent.Machine.Compaction`
+  appends it through `MessageAppender` before the call — so the
+  compactor's request is the ordinary `work.ctx.messages`, bridges
+  included.
   """
 
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.LLM.GenerationDefaults
-  alias Nest.Messages.MessageList
   alias Nest.Messages.Part
   alias Nest.Messages.User
   alias Nest.Tokens.Budget
@@ -29,7 +33,7 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
   compactor always sends `tools: nil, tool_choice: :none`.
   """
   @spec tool_config_for_iteration(Machine.t()) :: {list() | nil, :auto | :none}
-  def tool_config_for_iteration(%Machine{entry: {:compaction, _, _}}), do: {nil, :none}
+  def tool_config_for_iteration(%Machine{entry: {:compaction, _}}), do: {nil, :none}
 
   def tool_config_for_iteration(%Machine{work: work}) do
     if work.iteration > work.max_iterations,
@@ -38,18 +42,15 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
   end
 
   @doc """
-  The message list for the current LLM request. The compactor's request
-  is the persisted active messages (minus a trailing unpaired tool call)
-  followed by the staged additions; every other request is the messages
-  list as-is.
+  The message list for the current LLM request: the persisted active
+  messages, for **every** request including the compactor's.
+
+  There is nothing to append here. The compaction request is a committed
+  message by the time this runs, and the append path already dropped any
+  trailing unpaired tool call (`MessageList.pairing_bridge/2` answers it
+  before the request lands).
   """
   @spec request_messages(Machine.t()) :: [term()]
-  def request_messages(%Machine{entry: {:compaction, staged, _}, work: work}) do
-    work.ctx.messages
-    |> MessageList.drop_trailing_unpaired_tool_call()
-    |> Kernel.++(staged)
-  end
-
   def request_messages(%Machine{work: work}), do: work.ctx.messages
 
   @doc """
@@ -58,7 +59,7 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
   resolved `max_tokens`.
   """
   @spec spawn_ctx(Machine.t(), [term()]) :: map()
-  def spawn_ctx(%Machine{entry: {:compaction, _, _}} = machine, messages) do
+  def spawn_ctx(%Machine{entry: {:compaction, _}} = machine, messages) do
     put_spawn(machine, messages, compactor_max_tokens(machine, messages))
   end
 
@@ -142,16 +143,24 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
   end
 
   @doc """
-  Pure compaction plan: `{:ok, staged}` when the compactor can run, or
-  `{:error, :system_oversized | :reserve_exhausted}`.
+  Pure compaction plan: `{:ok, request_message}` when the compactor can
+  run, or `{:error, :system_oversized | :reserve_exhausted}`.
 
-  `staged` is the request-only additions (assistant bridge when the wire
-  tail is `:user`, then the `[mode: compact]` suffix). Nothing is
-  persisted here. The caller sets the machine's entry from `staged` before
-  building the spawn context with `spawn_ctx/2`.
+  `request_message` is the `[mode: compact]` request the caller **appends
+  through `MessageAppender`** before dispatching the compactor. It is a
+  committed message, not a request-only addition, so the compactor's
+  request is the ordinary message list — there is no alternation bridge to
+  build here. The appender's own `MessageList.pairing_bridge/2` inserts one
+  if the tail needs it, and persists it, so nothing is sent that is not in
+  the transcript.
+
+  The budget is computed against the messages as they are **before** the
+  append, deliberately: `compute_summary_budget/4` accounts for the
+  request's own size explicitly, so appending it first would double-count
+  it.
   """
   @spec compaction_plan(Machine.t()) ::
-          {:ok, [term()]} | {:error, :system_oversized | :reserve_exhausted}
+          {:ok, term()} | {:error, :system_oversized | :reserve_exhausted}
   def compaction_plan(%Machine{work: work}) do
     messages = work.ctx.messages || []
     system_prompt = system_prompt(work.ctx, messages)
@@ -173,7 +182,7 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
                messages,
                work.focus
              ) do
-          {:ok, _n, suffix} -> {:ok, stage_request(messages, suffix)}
+          {:ok, _n, request_message} -> {:ok, request_message}
           {:error, :reserve_exhausted} -> {:error, :reserve_exhausted}
         end
     end
@@ -207,27 +216,6 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
 
   defp text_or_empty(%Part.Text{text: text}), do: text || ""
   defp text_or_empty(_), do: ""
-
-  defp stage_request(messages, suffix) do
-    base = MessageList.drop_trailing_unpaired_tool_call(messages)
-
-    if MessageList.last_wire_role(base) == :user do
-      [synthetic_assistant_bridge(), suffix]
-    else
-      [suffix]
-    end
-  end
-
-  # The request-only alternation bridge; persisted with the summary on a
-  # successful commit.
-  defp synthetic_assistant_bridge do
-    {:assistant,
-     %Nest.Messages.Assistant{
-       parts: [%Part.Text{text: "Let me pause to summarize."}],
-       timestamp: DateTime.utc_now(),
-       api_logs: []
-     }}
-  end
 
   defp sane_default(ctx) do
     GenerationDefaults.default_max_tokens(ctx.client_config.model) || 32_000

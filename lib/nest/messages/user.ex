@@ -10,6 +10,13 @@ defmodule Nest.Messages.User do
   reminders are user-role rows too, and the filter is fail-closed — anything
   not marked `"human"` is excluded. `to_json/1` exposes the key only when
   present, so an untagged row's wire payload is unchanged.
+
+  One non-human origin is *named*, because more than presentation depends on
+  it: `"compaction"` marks the runtime's compaction request (see
+  `compaction_metadata/0`). It is a `user` row because that is what every
+  provider's wire format can carry, but it is **not** progress and must not
+  reset the consecutive-compaction counter — see
+  `Nest.Agents.Agent.MessageAppender.progress_message?/1`.
   """
 
   alias Nest.Messages.Message
@@ -18,6 +25,9 @@ defmodule Nest.Messages.User do
   # The metadata key/value marking a user message as the human's own words.
   @origin_key "origin"
   @human_origin "human"
+
+  # The origin marking the runtime's compaction request.
+  @compaction_origin "compaction"
 
   defstruct [:index, :parts, :timestamp, :metadata, :api_logs, :tokens]
 
@@ -42,6 +52,22 @@ defmodule Nest.Messages.User do
   """
   @spec human_metadata() :: map()
   def human_metadata, do: %{@origin_key => @human_origin}
+
+  @doc """
+  The `metadata` marking a user message as the runtime's compaction request.
+
+  The runtime is asking the model to summarise; the human did not type this.
+  Merge into the metadata of the request message (`Nest.Tokens.Compactor`'s
+  `render_suffix/2`), so the row is excluded from the recall list *and* from
+  `MessageAppender.progress_message?/1` — it is not progress, and counting it
+  as progress would disarm the consecutive-compaction loop breaker.
+  """
+  @spec compaction_metadata() :: map()
+  def compaction_metadata, do: %{@origin_key => @compaction_origin}
+
+  @doc "The `origin` value marking the runtime's compaction request."
+  @spec compaction_origin() :: String.t()
+  def compaction_origin, do: @compaction_origin
 
   @doc """
   Convert to JSON-compatible map for wire format.

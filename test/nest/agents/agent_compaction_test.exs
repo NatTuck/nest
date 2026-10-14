@@ -210,7 +210,12 @@ defmodule Nest.Agents.AgentCompactionTest do
         {:user, %User{index: 0, parts: [%Part.Text{text: "First"}], api_logs: []}},
         {:assistant, %Assistant{index: 1, parts: [%Part.Text{text: "A1"}], api_logs: []}},
         {:user, %User{index: 2, parts: [%Part.Text{text: "Second"}], api_logs: []}},
-        {:assistant, %Assistant{index: 3, parts: [%Part.Text{text: "A2"}], api_logs: []}}
+        {:assistant, %Assistant{index: 3, parts: [%Part.Text{text: "A2"}], api_logs: []}},
+        # The compaction request the machine appended *before* dispatching the
+        # compactor. It is committed history — not a request-only addition —
+        # so the commit archives it along with the segment it summarises.
+        {:user,
+         %User{index: 4, parts: [%Part.Text{text: "[mode: compact] summarize"}], api_logs: []}}
       ]
 
       # The compactor LLM's response text. The regenerator wraps
@@ -229,14 +234,10 @@ defmodule Nest.Agents.AgentCompactionTest do
       :sys.replace_state(
         pid,
         fn s ->
-          %{s | chat_state: %{s.chat_state | messages: old_messages, next_message_index: 4}}
+          %{s | chat_state: %{s.chat_state | messages: old_messages, next_message_index: 5}}
         end,
         1_000
       )
-
-      suffix =
-        {:user,
-         %User{index: nil, parts: [%Part.Text{text: "[mode: compact] summarize"}], api_logs: []}}
 
       carried_entry = {:tool_call, tool_call_msg, 3, 30}
       ref = make_ref()
@@ -250,7 +251,7 @@ defmodule Nest.Agents.AgentCompactionTest do
             machine
             | kind: :compaction,
               phase: :generating,
-              entry: {:compaction, [suffix], carried_entry},
+              entry: {:compaction, carried_entry},
               work: %{
                 machine.work
                 | worker_kind: :http,
@@ -563,6 +564,64 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert suffix_count == 1, "expected exactly one [mode: compact] suffix; got #{suffix_count}"
 
       Agent.terminate(pid)
+    end
+  end
+
+  describe "the compaction request is a committed message (#98)" do
+    test "/compact commits the request before the compactor runs, and a failure leaves it visible" do
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
+
+      # An empty summary is rejected by the commit path
+      # (`TokensCompactor.validate_summary/1` → `:llm_returned_empty`), so this
+      # drives the *failure* branch: the request went out, and the compaction
+      # did not succeed. That is the branch where the old design sent a
+      # sequence and persisted nothing.
+      MockClient.set_response("")
+
+      log =
+        capture_log(fn ->
+          _ = Agent.compact(pid, "keep the API decisions")
+
+          # The failure frame is the happens-after event for the failed
+          # compaction (the status broadcast follows it).
+          assert_receive {:chat_error, %{compactionError: true}}, 1_000
+        end)
+
+      assert log =~ "Compaction failed"
+
+      # allowlist: snapshot — messages
+      state = :sys.get_state(pid, 1_000)
+
+      requests =
+        for {:user, %User{parts: [%Part.Text{text: text}]} = user} <- state.chat_state.messages,
+            String.contains?(text, "[mode: compact]"),
+            do: {user, text}
+
+      # Exactly one: the failed attempt did not append a second request, and
+      # the request is committed history rather than a request-only addition.
+      assert [{request, text}] = requests
+
+      # A real index — the row was stamped like any other message, which is
+      # what makes it visible in the transcript and on the wire.
+      assert is_integer(request.index)
+
+      # The operator's `/compact <focus>` guidance rides in this message's
+      # text, which is why the slash command needs no row of its own.
+      assert text =~ "keep the API decisions"
+
+      # ... and it is on the payload the client reads, not only in the agent's
+      # own state.
+      assert Enum.any?(Agent.get_messages(pid, 1_000), fn
+               {:user, %User{parts: [%Part.Text{text: text}]}} ->
+                 String.contains?(text, "[mode: compact]")
+
+               _ ->
+                 false
+             end)
     end
   end
 

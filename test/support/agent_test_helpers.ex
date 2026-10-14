@@ -162,15 +162,18 @@ defmodule Nest.Agents.AgentTestHelpers do
   @doc """
   Deliver a compaction result to an agent by driving the production
   compaction entry: put the machine into the compactor's `:generating`
-  phase with `entry = {:compaction, [], carried_entry}`, then send the
+  phase with `entry = {:compaction, carried_entry}`, then send the
   `{:http_response, ref, %RunResponse{}}` the executor's commit path
   consumes (via `Compaction.commit_compaction/2`).
   """
   def send_compaction_done(agent_pid, summary_text, carried_entry) do
     ref = make_ref()
 
-    # Put the machine into the compactor's generating phase with an empty
-    # staged request and a live worker ref, then deliver the HTTP response.
+    # Put the machine into the compactor's generating phase with a live
+    # worker ref, then deliver the HTTP response. `active_message_index` is
+    # the index the *summary* will be stamped with; the request message is
+    # not fabricated here — in production the machine appends it before
+    # dispatching the compactor, and this helper starts after that point.
     :sys.replace_state(
       agent_pid,
       fn state ->
@@ -180,7 +183,7 @@ defmodule Nest.Agents.AgentTestHelpers do
           machine
           | kind: :compaction,
             phase: :generating,
-            entry: {:compaction, [], carried_entry},
+            entry: {:compaction, carried_entry},
             work: %{
               machine.work
               | worker_kind: :http,

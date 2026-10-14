@@ -135,15 +135,12 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # --- blocked exits ---
 
-  def do_step(%{phase: :compaction_failed} = m, :retry_compaction) do
-    case m.mid_turn_entry do
-      # No mid-turn continuation: a post-turn retry resumes the held user
-      # message after the compaction (the pending field is carried on the
-      # machine, not as the compaction continuation).
-      nil -> Compaction.stage(%{m | mid_turn_entry: nil}, nil, nil)
-      entry -> Compaction.stage(%{m | mid_turn_entry: nil}, entry.entry, nil)
-    end
-  end
+  # A retry **re-sends** the existing sequence; it does not re-plan. The
+  # request message is committed, so calling `Compaction.stage/3` here would
+  # append a second request with a different remaining-token count and
+  # double-count the request's own size. `Compaction.retry/1` owns both the
+  # re-send and the loop breaker that bounds the retries.
+  def do_step(%{phase: :compaction_failed} = m, :retry_compaction), do: Compaction.retry(m)
 
   def do_step(%{phase: :compaction_loop_detected} = m, :loop_ack) do
     # The loop breaker must not swallow a message the machine was holding, and
@@ -421,13 +418,18 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
       else: {:ignore, :stale_result, m}
   end
 
-  # The staged compaction request was assembled; spawn the compactor.
+  # The compaction request is committed; spawn the compactor over the
+  # ordinary message list.
   def do_step(%{phase: :generating, kind: :compaction} = m, :iterate) do
     messages = Dispatch.request_messages(m)
 
     case Preflight.validate_request(messages) do
       :ok ->
-        provisional = m.work.active_message_index
+        # The *summary's* index, read from the context `prepare/1` rebuilt at
+        # the start of this step: the request message — and the bridge, if the
+        # append path inserted one — are already committed and hold their real
+        # indices, so the next free index is exactly where the summary lands.
+        provisional = m.work.ctx.next_message_index
         ctx = Dispatch.spawn_ctx(m, messages)
         {:ok, [{:set_streaming, provisional}, {:stage_compaction, ctx}], m}
 
@@ -442,7 +444,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # --- committing ---
 
-  def do_step(%{phase: :committing, entry: {:compaction, _, _}} = m, {:commit_done}),
+  def do_step(%{phase: :committing, entry: {:compaction, _}} = m, {:commit_done}),
     do: Compaction.resume(m)
 
   def do_step(%{phase: :committing} = m, {:commit_done}), do: {:ignore, :no_compaction, m}

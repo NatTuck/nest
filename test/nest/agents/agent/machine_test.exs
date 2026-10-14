@@ -230,7 +230,7 @@ defmodule MachineTest do
 
   describe "compaction decisions" do
     test "the loop-breaker blocks after the consecutive cap" do
-      m = %{state_at(:idle) | loop_count: 3, entry: {:compaction, [], nil}}
+      m = %{state_at(:idle) | loop_count: 3, entry: {:compaction, nil}}
       {:ok, actions, next} = Machine.Compaction.stage(m, nil, nil)
 
       assert next.phase == :compaction_loop_detected
@@ -248,7 +248,7 @@ defmodule MachineTest do
 
     test "resume emits the deferred workspace notice pair" do
       base = state_at(:idle)
-      m = %{base | entry: {:compaction, [], nil}, work: %{base.work | pending_notice: "/tmp/x"}}
+      m = %{base | entry: {:compaction, nil}, work: %{base.work | pending_notice: "/tmp/x"}}
       {:ok, actions, next} = Machine.Compaction.resume(m)
 
       assert next.phase == :idle
@@ -264,30 +264,38 @@ defmodule MachineTest do
 
       assert :iterate in actions
       assert next.kind == :compaction and next.phase == :generating
-      assert {:compaction, staged, nil} = next.entry
-      assert is_list(staged)
+      assert {:compaction, nil} = next.entry
+
+      # The request is appended before the compactor runs.
+      assert Enum.any?(actions, &match?({:append, {:user, _}}, &1))
+
       Machine.validate!(next)
     end
 
-    test "threads the focus onto work and into the compaction request suffix" do
+    test "threads the focus onto work and into the compaction request message" do
       # intentional: `/compact <focus>` carries the operator's guidance
       # onto `work.focus`; `Dispatch.compaction_plan/1` renders it into the
-      # `[mode: compact]` suffix so the summary preserves the right things.
-      {:ok, _actions, next} =
+      # `[mode: compact]` request message, which the machine then appends.
+      {:ok, actions, next} =
         Machine.step(state_at(:idle), {:compact_request, "keep the API decisions"})
 
       assert next.work.focus == "keep the API decisions"
-      assert {:compaction, [suffix], nil} = next.entry
-      assert {:user, %{parts: [%Part.Text{text: text}]}} = suffix
+      assert {:compaction, nil} = next.entry
+
+      # The focus rides in the request message's own text, which is why
+      # `/compact <focus>` needs no row of its own in the transcript.
+      assert {:append, {:user, %{parts: [%Part.Text{text: text}]}}} =
+               Enum.find(actions, &match?({:append, _}, &1))
+
       assert text =~ "keep the API decisions"
     end
 
     test "renders no guidance when the focus is nil" do
       # intentional: a bare `/compact` (nil focus) renders the plain
       # budget suffix with no trailing guidance.
-      {:ok, [suffix]} = Dispatch.compaction_plan(state_at(:idle))
+      {:ok, request_message} = Dispatch.compaction_plan(state_at(:idle))
 
-      assert {:user, %{parts: [%Part.Text{text: text}]}} = suffix
+      assert {:user, %{parts: [%Part.Text{text: text}]}} = request_message
       refute text =~ "keep the API decisions"
       assert text =~ "remaining tokens"
     end
@@ -326,35 +334,29 @@ defmodule MachineTest do
   end
 
   describe "context-compact tool focus" do
-    test "the tool call's focus rides onto work and into the staged suffix" do
+    test "the tool call's focus rides onto work and into the request message" do
       # intentional: the LLM's optional `context-compact` `focus` arg is
-      # threaded the same way `/compact <focus>` is — onto `work.focus`,
-      # which `Dispatch.compaction_plan/1` renders into the request suffix.
-      call = %ToolCall{
-        id: "c1",
-        name: "context-compact",
-        arguments: %{"focus" => "keep the API decisions"}
-      }
+      # threaded the same way `/compact <focus>` is — onto `work.focus`, which
+      # `Dispatch.compaction_plan/1` renders into the request message the
+      # machine appends. An empty arguments map leaves the focus nil, so the
+      # plain budget request is rendered with no guidance.
+      cases = [
+        {%{"focus" => "keep the API decisions"}, "keep the API decisions", true},
+        {%{}, nil, false}
+      ]
 
-      {:ok, _actions, next} =
-        Response.dispatch(state_at(:generating), response(tool_calls: [call]))
+      for {arguments, expected_focus, guided?} <- cases do
+        call = %ToolCall{id: "c1", name: "context-compact", arguments: arguments}
 
-      assert next.work.focus == "keep the API decisions"
-      assert {:compaction, [suffix], {:compact_tool, _, 0, 10}} = next.entry
-      assert suffix |> inspect() =~ "keep the API decisions"
-    end
+        {:ok, actions, next} =
+          Response.dispatch(state_at(:generating), response(tool_calls: [call]))
 
-    test "a tool call with no focus renders no guidance" do
-      # intentional: the focus arg is optional; an empty arguments map
-      # leaves `work.focus` nil so the plain budget suffix is rendered.
-      call = %ToolCall{id: "c1", name: "context-compact", arguments: %{}}
+        assert next.work.focus == expected_focus
+        assert {:compaction, {:compact_tool, _, 0, 10}} = next.entry
 
-      {:ok, _actions, next} =
-        Response.dispatch(state_at(:generating), response(tool_calls: [call]))
-
-      assert next.work.focus == nil
-      assert {:compaction, [suffix], {:compact_tool, _, 0, 10}} = next.entry
-      refute suffix |> inspect() =~ "keep the API decisions"
+        assert {:append, {:user, _} = request} = Enum.find(actions, &match?({:append, _}, &1))
+        assert inspect(request) =~ "keep the API decisions" == guided?
+      end
     end
   end
 
@@ -382,8 +384,8 @@ defmodule MachineTest do
       # intentional: the observable consequence of the reset — the next
       # compaction plan renders the plain budget suffix, with no stale
       # operator guidance in it.
-      assert {:ok, [suffix]} = Dispatch.compaction_plan(resumed)
-      assert {:user, %{parts: [%Part.Text{text: text}]}} = suffix
+      assert {:ok, request_message} = Dispatch.compaction_plan(resumed)
+      assert {:user, %{parts: [%Part.Text{text: text}]}} = request_message
       refute text =~ "keep the API decisions"
       assert text =~ "remaining tokens"
     end
@@ -400,13 +402,15 @@ defmodule MachineTest do
       assert failed.phase == :compaction_failed
       assert failed.work.focus == "keep the API decisions"
 
-      {:ok, _actions, retried} = Machine.step(failed, :retry_compaction)
+      {:ok, actions, retried} = Machine.step(failed, :retry_compaction)
 
-      # intentional: the retry re-stages the compaction turn with the same
-      # operator guidance, so its suffix still carries the focus.
-      assert {:compaction, [suffix], nil} = retried.entry
-      assert {:user, %{parts: [%Part.Text{text: text}]}} = suffix
-      assert text =~ "keep the API decisions"
+      # intentional: a retry re-sends the existing sequence — it does not
+      # re-plan, so it appends nothing and `work.focus` survives.
+      assert retried.kind == :compaction and retried.phase == :generating
+      assert retried.work.focus == "keep the API decisions"
+      assert {:compaction, nil} = retried.entry
+      refute Enum.any?(actions, &match?({:append, _}, &1))
+      assert :iterate in actions
     end
   end
 
@@ -500,7 +504,7 @@ defmodule MachineTest do
       assert :iterate in actions
       assert next.kind == :compaction and next.phase == :generating
 
-      assert {:compaction, _staged, {:assistant_response, {:assistant, _}, 0, 10}} = next.entry
+      assert {:compaction, {:assistant_response, {:assistant, _}, 0, 10}} = next.entry
     end
   end
 
@@ -517,7 +521,7 @@ defmodule MachineTest do
         Machine.new(
           phase: :committing,
           kind: :compaction,
-          entry: {:compaction, [], carried}
+          entry: {:compaction, carried}
         )
 
       {:ok, actions, next} = Machine.step(machine, {:commit_done})

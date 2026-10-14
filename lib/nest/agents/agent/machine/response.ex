@@ -75,7 +75,7 @@ defmodule Nest.Agents.Agent.Machine.Response do
   @doc "Dispatch an HTTP response in the chat `:generating` phase."
   @spec dispatch(Machine.t(), RunResponse.t()) :: {:ok, [term()], Machine.t()}
   def dispatch(m, response) do
-    compactor? = match?({:compaction, _, _}, m.entry)
+    compactor? = match?({:compaction, _}, m.entry)
     {assistant_msg, sequences} = assistant_with_log(m, response)
 
     {notice_actions, m} =
@@ -91,11 +91,10 @@ defmodule Nest.Agents.Agent.Machine.Response do
   # --- branches ---
 
   defp branch(:compaction, m, _response, assistant_msg, base) do
-    {:compaction, staged, carried_entry} = m.entry
+    {:compaction, carried_entry} = m.entry
 
     data = %{
       summary_text: assistant_text(assistant_msg),
-      staged: staged,
       summary_assistant: assistant_msg,
       carried_entry: carried_entry
     }
@@ -278,7 +277,7 @@ defmodule Nest.Agents.Agent.Machine.Response do
 
   defp classify(m, response, assistant_msg) do
     ResponseClassifier.classify_response(%{
-      compactor?: match?({:compaction, _, _}, m.entry),
+      compactor?: match?({:compaction, _}, m.entry),
       force_finalize: m.work.force_finalize,
       has_tool_calls: RunResponse.has_tool_calls?(response),
       iteration: m.work.iteration,

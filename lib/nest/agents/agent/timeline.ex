@@ -472,9 +472,9 @@ defmodule Nest.Agents.Agent.Timeline do
 
   # The carried continuation's tag, or nil for a compaction with nothing to
   # carry. `entry` is a `Machine.entry()` (`{:assistant_response, _, _, _}` …).
-  defp carried(%Machine{entry: {:compaction, _staged, nil}}), do: nil
+  defp carried(%Machine{entry: {:compaction, nil}}), do: nil
 
-  defp carried(%Machine{entry: {:compaction, _staged, entry}}) when is_tuple(entry),
+  defp carried(%Machine{entry: {:compaction, entry}}) when is_tuple(entry),
     do: elem(entry, 0)
 
   defp carried(_machine), do: nil
