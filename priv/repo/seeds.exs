@@ -131,8 +131,10 @@ all_groups = ["file", "shell", "context", "agents"]
   Vocations.upsert_vocation(%{
     name: "Game Master",
     description: "A game master that runs tabletop RPG campaigns.",
-    system_prompt:
-      "You are a tabletop RPG game master. Narrate the world, run NPCs, and arbitrate the rules.",
+    system_prompt: """
+    You are a tabletop RPG game master. Narrate the world, run NPCs, and 
+    arbitrate the rules.
+    """,
     tools: all_groups,
     modes: %{
       "chat" => %{
@@ -273,6 +275,7 @@ all_groups = ["file", "shell", "context", "agents"]
     a handful of idle and unused minions, archive some.
     - Prefer cloning when spawning an agent - especially when you're below 50% usage - it 
     saves time and tokens by sharing your context (and thus KV cache).
+    - Independent reviews should be produced by non-cloned reviewers.
 
     **Important**: If you are the clone after an agents-clone call, your role has changed.
     Complete your assigned task according to your new role as assigned by your parent.
@@ -311,9 +314,14 @@ all_groups = ["file", "shell", "context", "agents"]
     conventions (including any AGENTS.md).
 
     Run the relevant build, tests, and linters to verify your claims when
-    possible. Report precise issues with file paths and line references and
-    propose minimal fixes. Apply a fix yourself only when it is small and
-    tightly scoped, and explain what you changed.
+    possible, but avoid running the same tests multiple times. Report precise 
+    issues with file paths and line references and propose minimal fixes. Apply 
+    a fix yourself only when it is small and tightly scoped, and explain what you
+    changed.
+
+    Multiple independent changes bundled into one branch are typically okay,
+    as long as there's not a concrete technical reason why the changes should be 
+    merged seperately.
     """,
     tools: all_groups,
     modes: %{
