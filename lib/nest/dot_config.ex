@@ -611,41 +611,23 @@ defmodule Nest.DotConfig do
   # config errors surface at startup, not on the first LLM call.
   defp parse_timeout(nil, _provider_name), do: @default_timeout_seconds
 
-  defp parse_timeout(seconds, _provider_name) when is_integer(seconds) and seconds > 0 do
-    seconds
-  end
-
-  defp parse_timeout(seconds, provider_name) do
-    raise "Provider #{provider_name}: invalid timeout #{inspect(seconds)}: must be a positive integer (seconds)"
-  end
+  defp parse_timeout(seconds, provider_name),
+    do: ModelValidation.validate_timeout(seconds, provider_name)
 
   # Parses and validates the optional `default-context-limit` for a
   # provider. Returns `nil` when the key is absent (no provider-wide
   # fallback). Raises on invalid values so config errors surface at
   # startup, not on the first chat turn.
-  defp parse_default_context_limit(nil, _provider_name), do: nil
-
-  defp parse_default_context_limit(limit, _provider_name)
-       when is_integer(limit) and limit > 0 do
-    limit
-  end
-
-  defp parse_default_context_limit(limit, provider_name) do
-    raise "Provider #{provider_name}: invalid default-context-limit #{inspect(limit)}: must be a positive integer"
-  end
+  defp parse_default_context_limit(limit, provider_name),
+    do: ModelValidation.validate_default_context_limit(limit, provider_name)
 
   # Parses and validates a provider's `tags`: absent means no tags, a list of
   # names is kept, and anything else raises. `tags = "abc"` used to reach
   # `Enum.member?/2` in `get_providers_by_tag/2`, which raises on a binary.
   defp parse_tags(nil, _provider_name), do: []
 
-  defp parse_tags(tags, provider_name) do
-    if is_list(tags) and Enum.all?(tags, &is_binary/1) do
-      tags
-    else
-      raise "Provider #{provider_name}: invalid tags #{inspect(tags)}: must be a list of strings"
-    end
-  end
+  defp parse_tags(tags, provider_name),
+    do: ModelValidation.validate_tags(tags, provider_name)
 
   defp parse_model(model_data, provider_name) do
     name = ModelValidation.validate_name(Map.get(model_data, "name"), provider_name)

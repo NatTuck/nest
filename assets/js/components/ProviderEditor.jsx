@@ -107,6 +107,8 @@ export function ProviderEditor({ provider, onChange, onRemove }) {
         <Field label="Default Context Limit">
           <input
             type="number"
+            min="1"
+            step="1"
             value={provider.default_context_limit ?? ""}
             onChange={(e) =>
               set(

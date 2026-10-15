@@ -15,6 +15,7 @@ defmodule NestWeb.LobbyChannel.Providers do
 
   alias Nest.DotConfig
   alias Nest.DotConfig.Model
+  alias Nest.DotConfig.ModelValidation
   alias Nest.DotConfig.Provider
   alias Nest.DotConfig.Writer
   alias Nest.Models
@@ -89,21 +90,52 @@ defmodule NestWeb.LobbyChannel.Providers do
   end
 
   defp provider_from_map(m) do
+    name = m["name"]
+
     %Provider{
-      name: m["name"],
+      name: name,
       base_url: m["base_url"],
-      api_key: m["api_key"],
+      api_key: api_key(m["api_key"], name),
       protocol: m["protocol"] || "openai",
       auto_models: m["auto_models"] || false,
-      tags: m["tags"] || [],
-      timeout_seconds: m["timeout_seconds"],
-      default_context_limit: m["default_context_limit"],
+      models: Enum.map(m["models"] || [], &model_from_map(&1, name))
+    }
+    |> Map.merge(validated_fields(m, name))
+  end
+
+  # The provider fields the reader can raise on, validated against the same
+  # rules the reader uses. Kept apart from the map literal above so the literal
+  # stays a list of fields and this stays the set of rules — and so
+  # `provider_from_map/1` stays under credo's ABC cap.
+  #
+  # Every one of these runs **before** `Writer.save_providers/1`, so a refusal
+  # writes nothing and the function-level `rescue` in `save/2` answers
+  # `invalid_payload`. The GUI inputs they defend against, each measured:
+  #
+  #   * `default_context_limit` — a bare `type="number"` with no `min` and no
+  #     `step`, so `0` and `0.5` are both typable and `Number()` keeps them.
+  #   * `timeout_seconds` — no GUI field today; kept here so the two sides stay
+  #     defined in one place rather than drifting apart when one is added.
+  #   * `tags` — preserved by the GUI, so a malformed list can arrive from a
+  #     client that built one itself.
+  #   * `api_key` — not a value rule: a reference-shaped key (`${ENV}` / `file:`)
+  #     is resolved at load by `KeyValidation`, and the password field can hold
+  #     one whose target does not exist.
+  #
+  # The rules live in `Nest.DotConfig.ModelValidation`, shared with the reader,
+  # because the defect they prevent is the two sides disagreeing — which is how
+  # a config the app writes for itself becomes one it refuses to read, and that
+  # read is on `Models.init/1`'s boot path.
+  defp validated_fields(m, name) do
+    %{
+      tags: tags(m["tags"], name),
+      timeout_seconds: timeout_seconds(m["timeout_seconds"], name),
+      default_context_limit: default_context_limit(m["default_context_limit"], name),
       default_thinking_effort: parse_effort(m["default_thinking_effort"]),
       probe_base_url: m["probe_base_url"],
       auto_probe: if(is_boolean(m["auto_probe"]), do: m["auto_probe"], else: true),
       expose_models: if(is_boolean(m["expose_models"]), do: m["expose_models"], else: false),
-      probe_multimodal: parse_probe_multimodal(m["probe_multimodal"]),
-      models: Enum.map(m["models"] || [], &model_from_map/1)
+      probe_multimodal: parse_probe_multimodal(m["probe_multimodal"])
     }
   end
 
@@ -120,11 +152,13 @@ defmodule NestWeb.LobbyChannel.Providers do
     raise "invalid probe_multimodal #{inspect(value)}: must be a boolean"
   end
 
-  defp model_from_map(m) do
+  defp model_from_map(m, provider_name) do
+    name = model_name(m, provider_name)
+
     %Model{
-      name: model_name(m),
+      name: name,
       context_limit: m["context_limit"],
-      multi_modal: m["multi_modal"],
+      multi_modal: multi_modal(m["multi_modal"], provider_name, name),
       thinking_effort: parse_effort(m["thinking_effort"])
     }
   end
@@ -145,11 +179,62 @@ defmodule NestWeb.LobbyChannel.Providers do
   # `Writer.save_providers/1` — **no file is written**. Without this the write
   # succeeded and the raise came later from the re-read, so the operator got an
   # error *and* a bad config on disk.
-  defp model_name(%{"name" => name}) when is_binary(name) and name != "", do: name
-
-  defp model_name(m) do
-    raise "invalid model name #{inspect(m["name"])}: must be a non-empty string"
+  #
+  # This is one of the guards described under `default_context_limit/2`.
+  defp model_name(m, provider_name) do
+    ModelValidation.validate_name(m["name"], provider_name)
   end
+
+  # The rules themselves live in `Nest.DotConfig.ModelValidation`, shared with
+  # the reader; only the write side's own concern — `nil` means "omit the key",
+  # not "use the default" — is decided here. See `validated_fields/2` for the
+  # set and why it is validated on this side at all.
+  defp default_context_limit(nil, _provider_name), do: nil
+
+  defp default_context_limit(limit, provider_name) do
+    ModelValidation.validate_default_context_limit(limit, provider_name)
+  end
+
+  defp timeout_seconds(nil, _provider_name), do: nil
+
+  defp timeout_seconds(seconds, provider_name) do
+    ModelValidation.validate_timeout(seconds, provider_name)
+  end
+
+  defp tags(nil, _provider_name), do: []
+
+  defp tags(tags, provider_name) do
+    ModelValidation.validate_tags(tags, provider_name)
+  end
+
+  defp multi_modal(nil, _provider_name, _model_name), do: nil
+
+  defp multi_modal(claim, provider_name, model_name) do
+    ModelValidation.validate_multi_modal(claim, provider_name, model_name)
+  end
+
+  # A reference-shaped api-key is resolved when the config is **read**
+  # (`Nest.DotConfig.KeyValidation`, on `load/0` — which is what `Models.init/1`
+  # and every rescan call), and an unresolvable one raises there. The api-key
+  # field is free text, so an operator can type a `file:` path or a `${ENV}`
+  # name whose target does not exist, and the write would succeed before the
+  # read refused it.
+  #
+  # Refusing it here costs nothing that was working: `resolve_api_key/1` is the
+  # same resolver the reader uses, a literal key (including the documented
+  # `api-key = "none"` opt-out) resolves to itself and passes, and an absent or
+  # empty key is not a reference. This is deliberately a *resolution* check
+  # rather than a value rule — the target may legitimately not exist yet while
+  # the operator is typing, which is why the error names the key so they can
+  # correct it.
+  defp api_key(nil, _provider_name), do: nil
+
+  defp api_key(key, _provider_name) when is_binary(key) do
+    _ = DotConfig.resolve_api_key(key)
+    key
+  end
+
+  defp api_key(key, _provider_name), do: key
 
   defp parse_effort(nil), do: nil
   defp parse_effort(""), do: nil

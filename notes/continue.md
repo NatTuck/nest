@@ -99,7 +99,16 @@ first and the message is recorded afterward.
    (`MessageAppender.progress_message?/1`, `User.compaction_origin/0`).
    Counting it would reset the counter on every attempt and disarm
    `@max_consecutive_compactions`, which is what bounds a compaction that
-   keeps failing.
+   keeps failing. The heal row above is excluded the same way
+   (`Tool.heal_metadata/0`), since the refused-batch path emits it on every
+   attempt too.
+
+   **Scope of the breaker**, because it is narrower than "bounds compaction":
+   it bounds the *retry chain* — compact, fail, retry, fail, … — not the commit
+   cycle. A compaction that succeeds is genuine progress (the conversation
+   shrank), and its commit appends an unmarked assistant and an unmarked user,
+   so `loop_count` returns to zero and the next batch refusal is a fresh
+   situation rather than a continuation of a loop.
 
 
 ## Sizing basis (resolved)

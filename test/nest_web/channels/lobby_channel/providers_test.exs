@@ -310,6 +310,135 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       refute File.exists?(local_file)
     end
 
+    test "replies invalid_payload for a provider default-context-limit the reader rejects", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # The GUI's context-limit input is a bare `type="number"` with no `min`
+      # and no `step`, so `0` and `0.5` are both typable and `Number()` keeps
+      # them. `DotConfig.parse_default_context_limit/2` raises on either, and
+      # that raise happens on the *rescan* — after `Writer.save_providers/1`
+      # has already written the value. So before this guard the operator got a
+      # dead `Models` GenServer, no reply, and a `local.toml` that made the next
+      # boot fail.
+      for bad <- [0, 0.5, -1] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [
+              %{"name" => "acme", "auto_models" => false, "default_context_limit" => bad}
+            ]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}
+
+        # The property that matters: nothing is written, so the config the app
+        # reloads is still one it can read.
+        refute File.exists?(local_file)
+      end
+    end
+
+    test "replies invalid_payload for a provider tags value the reader rejects", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # The GUI preserves tags it was handed, so a malformed list can arrive
+      # from a client that built one. `parse_tags/2` raises on a non-list or a
+      # list with a non-string element.
+      for bad <- ["abc", [1, 2], [%{"a" => 1}]] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [%{"name" => "acme", "auto_models" => false, "tags" => bad}]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}
+        refute File.exists?(local_file)
+      end
+    end
+
+    test "replies invalid_payload for a model multi-modal the reader rejects", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # `multi_modal` is preserved but not edited by the model row, so a `false`
+      # can arrive from a client that built one. The reader rejects it: an
+      # explicit negative is a startup error, not a silent "no claim".
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [
+            %{
+              "name" => "acme",
+              "auto_models" => false,
+              "models" => [%{"name" => "m", "multi_modal" => false}]
+            }
+          ]
+        })
+
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}
+      refute File.exists?(local_file)
+    end
+
+    test "replies invalid_payload for an api-key reference that cannot be resolved", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # A reference-shaped key is resolved when the config is *read*
+      # (`KeyValidation` on `load/0`, which is what `Models.init/1` and every
+      # rescan call), and an unresolvable one raises there. The api-key field is
+      # free text, so the operator can type a path or a variable name whose
+      # target does not exist — and the write would succeed before the read
+      # refused it.
+      for bad <- ["file:/nonexistent/nest-probe-key", "${NEST_PROBE_UNSET_VAR}"] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [%{"name" => "acme", "auto_models" => false, "api_key" => bad}]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}
+        refute File.exists?(local_file)
+      end
+    end
+
+    test "still saves a literal api-key, which resolves to itself", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # The premise of the api-key refusal: a literal key — including the
+      # documented `api-key = "none"` opt-out — is not a reference and passes
+      # untouched. Without this the guard could be refusing every key and the
+      # test above would not notice.
+      Mimic.expect(Nest.Models, :rescan, fn -> :ok end)
+
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [%{"name" => "acme", "auto_models" => false, "api_key" => "none"}]
+        })
+
+      assert_reply ref, :ok, %{}, 1_000
+      assert File.read!(local_file) =~ ~s(api-key = "none")
+    end
+
+    test "saves a provider whose optional fields are absent", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # The other half of the guards: every field they touch is optional, so a
+      # provider that omits them all must still save. This is what would fail if
+      # a guard started treating "absent" as "invalid".
+      Mimic.expect(Nest.Models, :rescan, fn -> :ok end)
+
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [%{"name" => "acme", "auto_models" => false}]
+        })
+
+      assert_reply ref, :ok, %{}, 1_000
+
+      toml = File.read!(local_file)
+      assert toml =~ "acme"
+      refute toml =~ "default-context-limit"
+      refute toml =~ "timeout"
+    end
+
     test "saves a model with a usable name", %{socket: socket, local_file: local_file} do
       # The premise of the two tests above: a well-named model still saves, so
       # the refusals are about the name and not about models in general.
