@@ -198,6 +198,30 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
       refute Enum.any?(actions, &match?({:finalize, _}, &1))
       assert next.phase == :generating
 
+      # ...and because the turn is *not* over, a reply the agent owes is not
+      # given up with it. That is the second thing the drain branch buys, beside
+      # the absent transient `:idle`, and it is what makes an undeliverable
+      # entry's handoff to the boundary decision (`:needs_compaction` stages the
+      # compaction, `:cannot_compact` blocks) a *continuing* turn: the agent is
+      # still working and may still answer.
+      #
+      # The contrast is the rest branch on the same setup with an empty queue:
+      # there the resting funnel gives the debt up with the turn, which is its
+      # rule for every rest (`Machine.Phase.rest/4`).
+      queued_owing = Machine.owe_replies(state_at(:executing_tools, ctx: queued_ctx), ["peer"])
+
+      {:ok, actions, _next} =
+        Machine.step(queued_owing, {:tool_results, queued_owing.work.worker_ref, [wait]})
+
+      refute Enum.any?(actions, &match?({:give_up_replies, _}, &1))
+
+      resting_owing = Machine.owe_replies(state_at(:executing_tools, ctx: ctx), ["peer"])
+
+      {:ok, actions, _next} =
+        Machine.step(resting_owing, {:tool_results, resting_owing.work.worker_ref, [wait]})
+
+      assert {:give_up_replies, :waiting} in actions
+
       # An ordinary batch is untouched: it appends and iterates.
       ordinary = %ToolResult{
         tool_call_id: "call_1",
