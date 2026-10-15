@@ -20,7 +20,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Backgrounding
   alias Nest.Agents.Agent.Machine.Boundary
-  alias Nest.Agents.Agent.Machine.Children
+  alias Nest.Agents.Agent.Machine.ChildEvents
   alias Nest.Agents.Agent.Machine.Compaction
   alias Nest.Agents.Agent.Machine.Delivery
   alias Nest.Agents.Agent.Machine.Failure
@@ -53,28 +53,20 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # --- child events (any phase) ---
 
-  def do_step(%Machine{} = m, {:child_spawned, name, archive, target}) do
-    case Children.register(m.children, name, archive, target) do
-      {:ok, _actions, children} -> {:ok, [], %{m | children: children}}
-      {:ignore, reason, children} -> {:ignore, reason, %{m | children: children}}
-    end
-  end
+  def do_step(%Machine{} = m, {:child_spawned, _, _, _} = event),
+    do: ChildEvents.transition(m, event)
 
-  def do_step(%Machine{} = m, {:child_completed, name, response, usage}) do
-    child_event(m, {:completed, name, response, usage})
-  end
+  def do_step(%Machine{} = m, {:child_completed, _, _, _} = event),
+    do: ChildEvents.transition(m, event)
 
-  def do_step(%Machine{} = m, {:child_failed, name, reason}) do
-    child_event(m, {:failed, name, reason})
-  end
+  def do_step(%Machine{} = m, {:child_failed, _, _} = event),
+    do: ChildEvents.transition(m, event)
 
-  def do_step(%Machine{} = m, {:child_terminated, name, reason}) do
-    child_event(m, {:terminated, name, reason})
-  end
+  def do_step(%Machine{} = m, {:child_terminated, _, _} = event),
+    do: ChildEvents.transition(m, event)
 
-  def do_step(%Machine{} = m, {:abandon_child, name}) do
-    child_event(m, {:abandoned, name})
-  end
+  def do_step(%Machine{} = m, {:abandon_child, _} = event),
+    do: ChildEvents.transition(m, event)
 
   # --- stop guards ---
 
@@ -309,13 +301,15 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   def do_step(%{phase: :generating, kind: :chat} = m, {:http_ok, ref, response})
       when is_map(response) do
-    if valid_ref?(m, ref), do: Response.dispatch(m, response), else: {:ignore, :stale_result, m}
+    if Machine.valid_ref?(m, ref),
+      do: Response.dispatch(m, response),
+      else: {:ignore, :stale_result, m}
   end
 
   # A dedicated stream-error path: persist the partial + error text as the
   # assistant message, then idle. Distinct from a turn crash (repair).
   def do_step(%{phase: :generating, kind: :chat} = m, {:llm_error, ref, msg}) do
-    if valid_ref?(m, ref) do
+    if Machine.valid_ref?(m, ref) do
       Phase.rest(clear_worker(m), :chat, :llm_error, [{:llm_error, msg}, {:drain_inbox}])
     else
       {:ignore, :stale_result, m}
@@ -323,11 +317,13 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   end
 
   def do_step(%{phase: :generating, kind: :chat} = m, {:http_error, ref, reason}) do
-    if valid_ref?(m, ref), do: Failure.fail_turn(m, reason, []), else: {:ignore, :stale_result, m}
+    if Machine.valid_ref?(m, ref),
+      do: Failure.fail_turn(m, reason, []),
+      else: {:ignore, :stale_result, m}
   end
 
   def do_step(%{phase: :generating, kind: :chat} = m, {:worker_crashed, ref, exception, st}) do
-    if valid_ref?(m, ref),
+    if Machine.valid_ref?(m, ref),
       do: Failure.fail_turn(m, exception, st),
       else: {:ignore, :stale_result, m}
   end
@@ -397,7 +393,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     do: Backgrounding.step(m, entries, content)
 
   def do_step(%{phase: :executing_tools} = m, {:tool_results, ref, results}) do
-    if valid_ref?(m, ref), do: tool_results(m, results), else: {:ignore, :stale_result, m}
+    if Machine.valid_ref?(m, ref), do: tool_results(m, results), else: {:ignore, :stale_result, m}
   end
 
   def do_step(%{phase: :executing_tools} = m, {:append_result, :invalid, reason}) do
@@ -412,76 +408,11 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # --- compaction (generating) ---
 
-  def do_step(%{phase: :generating, kind: :compaction} = m, {:http_ok, ref, response}) do
-    if valid_ref?(m, ref),
-      do: Compaction.commit_compaction(m, response),
-      else: {:ignore, :stale_result, m}
-  end
-
-  def do_step(%{phase: :generating, kind: :compaction} = m, {:compaction_error, reason, carried}) do
-    Compaction.compaction_failed(m, reason, carried)
-  end
-
-  def do_step(%{phase: :generating, kind: :compaction} = m, {:http_error, ref, reason}) do
-    if valid_ref?(m, ref),
-      do: Compaction.compaction_failed(m, reason, Compaction.carried(m)),
-      else: {:ignore, :stale_result, m}
-  end
-
-  def do_step(%{phase: :generating, kind: :compaction} = m, {:worker_crashed, ref, ex, _st}) do
-    if valid_ref?(m, ref),
-      do: Compaction.compaction_failed(m, ex, Compaction.carried(m)),
-      else: {:ignore, :stale_result, m}
-  end
-
-  # The request was **not** committed, so nothing may be sent: a refused append
-  # is a `{:follow, …}` that halts the action list and the phase has no worker
-  # left to answer, so the default clause would wedge the agent forever.
-  # `Failure.fail_turn` is the visible failure instead.
-  #
-  # Deliberately *not* `:compaction_failed`: a retry re-sends the committed
-  # sequence, and this sequence has no request row in it — the compactor would
-  # be asked to summarize with no instruction. Unreachable by construction (the
-  # `{:refuse, _}` clause heals the tail before staging); it is the backstop.
-  def do_step(%{phase: :generating, kind: :compaction} = m, {:append_result, :invalid, reason}) do
-    Failure.fail_turn(m, %ArgumentError{message: reason}, [])
-  end
-
-  # Unreachable by construction, and deliberately NOT a `fail_turn`: `:stale`
-  # comes only from `Repair.classify_live/2`'s `tool_result?` arm, and the
-  # compaction request is a `{:user, _}` — so a stale outcome here would mean
-  # the request was not what this phase appends. Ignoring it matches the
-  # `:generating`/`:chat` sibling and cannot mask a failed append, because
-  # `:invalid` (the only outcome a user append can actually produce) is above.
-  def do_step(%{phase: :generating, kind: :compaction} = m, {:append_result, :stale, _}),
-    do: {:ignore, :stale_append, m}
-
-  # The compaction request is committed; spawn the compactor over the
-  # ordinary message list.
-  def do_step(%{phase: :generating, kind: :compaction} = m, :iterate) do
-    messages = Dispatch.request_messages(m)
-
-    case Preflight.validate_request(messages) do
-      :ok ->
-        # The *summary's* index, from the context `prepare/1` just rebuilt: the
-        # request and any bridge are already committed with real indices, so the
-        # next free index is where the summary lands. Written onto `work` as
-        # well as emitted, like `do_dispatch_http/1`, because
-        # `Response.assistant_with_log/2` stamps the response's API-log id from
-        # it — unset, the compactor's log carried the last chat dispatch's index.
-        provisional = m.work.ctx.next_message_index
-        ctx = Dispatch.spawn_ctx(m, messages)
-        machine = %{m | work: %{m.work | active_message_index: provisional}}
-        {:ok, [{:set_streaming, provisional}, {:stage_compaction, ctx}], machine}
-
-      {:error, violations} ->
-        Compaction.compaction_failed(
-          m,
-          Preflight.format_violations(violations),
-          Compaction.carried(m)
-        )
-    end
-  end
+  # The whole `(kind: :compaction, phase: :generating)` slice of the table —
+  # the compactor's result/error/death handling and the request dispatch —
+  # lives in `Machine.Compaction` with the rest of the compaction decisions.
+  def do_step(%{phase: :generating, kind: :compaction} = m, event),
+    do: Compaction.transition(m, event)
 
   # --- committing ---
 
@@ -663,31 +594,5 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   defp unowned_worker_down(m, pid, reason), do: worker_down(m, pid, reason)
 
-  defp valid_ref?(m, ref) do
-    not Machine.stopping?(m) and is_reference(m.work.worker_ref) and m.work.worker_ref == ref
-  end
-
   defp messages(m), do: m.work.ctx.messages
-
-  # A child's outcome is delivered into this agent's own inbox (§2.1). When the
-  # machine is already idle, nothing else would ever drain it: a peer's message
-  # wakes an idle agent (`Inbox.handle_delivery/4` drains it), and a child's
-  # answer has to as well — otherwise a parent that ended its turn before its
-  # child answered would leave the answer sitting in the queue until something
-  # else woke it. While the parent is `:generating` the `:iterate` turn boundary
-  # drains it instead. `:executing_tools` needs the drain too (issue #36): an
-  # internal enqueue never passes through the delivery path, so this is the only
-  # thing that can background the parent's batch and deliver the answer now.
-  defp child_event(m, event) do
-    case Children.step(m.children, event) do
-      {:ok, actions, children} ->
-        actions = actions ++ [{:broadcast, :status, nil}]
-
-        drain = if m.phase in [:idle, :executing_tools], do: [{:drain_inbox}], else: []
-        {:ok, actions ++ drain, %{m | children: children}}
-
-      {:ignore, reason, children} ->
-        {:ignore, reason, %{m | children: children}}
-    end
-  end
 end

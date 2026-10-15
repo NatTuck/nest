@@ -27,12 +27,14 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Boundary
+  alias Nest.Agents.Agent.Machine.Failure
   alias Nest.Agents.Agent.Machine.Phase
   alias Nest.Agents.Agent.Machine.ReplyReminder
   alias Nest.Agents.Agent.Machine.Response
   alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.Agent.WorkspaceHandler
+  alias Nest.LLM.Preflight
 
   @max_consecutive_compactions 3
 
@@ -232,6 +234,90 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   @spec carried(Machine.t()) :: Machine.entry() | nil
   def carried(%{entry: {:compaction, carried}}), do: carried
   def carried(%{entry: _}), do: nil
+
+  # --- the `(kind: :compaction, phase: :generating)` transition table ---
+
+  # `Machine.Transitions` dispatches every event for a machine generating a
+  # compaction here, so the compactor's result/error/death handling and its
+  # request dispatch sit with the rest of the compaction decisions. An event
+  # this slice does not name answers `{:ignore, :not_applicable, m}` — exactly
+  # what `Transitions`' default clause gave it before the split.
+  @doc """
+  Apply one event to a machine generating a compaction.
+
+  Split out of `Machine.Transitions` for the credo file cap; pure like the rest
+  of the transition table.
+  """
+  @spec transition(Machine.t(), term()) ::
+          {:ok, [term()], Machine.t()} | {:ignore, atom(), Machine.t()}
+  def transition(%Machine{} = m, {:http_ok, ref, response}) do
+    if Machine.valid_ref?(m, ref),
+      do: commit_compaction(m, response),
+      else: {:ignore, :stale_result, m}
+  end
+
+  def transition(%Machine{} = m, {:compaction_error, reason, carried}) do
+    compaction_failed(m, reason, carried)
+  end
+
+  def transition(%Machine{} = m, {:http_error, ref, reason}) do
+    if Machine.valid_ref?(m, ref),
+      do: compaction_failed(m, reason, carried(m)),
+      else: {:ignore, :stale_result, m}
+  end
+
+  def transition(%Machine{} = m, {:worker_crashed, ref, ex, _st}) do
+    if Machine.valid_ref?(m, ref),
+      do: compaction_failed(m, ex, carried(m)),
+      else: {:ignore, :stale_result, m}
+  end
+
+  # The request was **not** committed, so nothing may be sent: a refused append
+  # is a `{:follow, …}` that halts the action list and the phase has no worker
+  # left to answer, so the default clause would wedge the agent forever.
+  # `Failure.fail_turn` is the visible failure instead.
+  #
+  # Deliberately *not* `:compaction_failed`: a retry re-sends the committed
+  # sequence, and this sequence has no request row in it — the compactor would
+  # be asked to summarize with no instruction. Unreachable by construction (the
+  # `{:refuse, _}` clause heals the tail before staging); it is the backstop.
+  def transition(%Machine{} = m, {:append_result, :invalid, reason}) do
+    Failure.fail_turn(m, %ArgumentError{message: reason}, [])
+  end
+
+  # Unreachable by construction, and deliberately NOT a `fail_turn`: `:stale`
+  # comes only from `Repair.classify_live/2`'s `tool_result?` arm, and the
+  # compaction request is a `{:user, _}` — so a stale outcome here would mean
+  # the request was not what this phase appends. Ignoring it matches the
+  # `:generating`/`:chat` sibling and cannot mask a failed append, because
+  # `:invalid` (the only outcome a user append can actually produce) is above.
+  def transition(%Machine{} = m, {:append_result, :stale, _}),
+    do: {:ignore, :stale_append, m}
+
+  # The compaction request is committed; spawn the compactor over the
+  # ordinary message list.
+  def transition(%Machine{} = m, :iterate) do
+    messages = Dispatch.request_messages(m)
+
+    case Preflight.validate_request(messages) do
+      :ok ->
+        # The *summary's* index, from the context `prepare/1` just rebuilt: the
+        # request and any bridge are already committed with real indices, so the
+        # next free index is where the summary lands. Written onto `work` as
+        # well as emitted, like `do_dispatch_http/1`, because
+        # `Response.assistant_with_log/2` stamps the response's API-log id from
+        # it — unset, the compactor's log carried the last chat dispatch's index.
+        provisional = m.work.ctx.next_message_index
+        ctx = Dispatch.spawn_ctx(m, messages)
+        machine = %{m | work: %{m.work | active_message_index: provisional}}
+        {:ok, [{:set_streaming, provisional}, {:stage_compaction, ctx}], machine}
+
+      {:error, violations} ->
+        compaction_failed(m, Preflight.format_violations(violations), carried(m))
+    end
+  end
+
+  def transition(%Machine{} = m, _event), do: {:ignore, :not_applicable, m}
 
   @doc "Enter the retryable `:compaction_failed` state after a failure."
   @spec compaction_failed(Machine.t(), term(), Machine.entry() | nil) ::
