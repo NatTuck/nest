@@ -30,6 +30,7 @@ defmodule Nest.Agents.Agent.Machine.Response do
   alias Nest.Agents.Agent.Turn.Messages
   alias Nest.LLM.RunResponse
   alias Nest.Messages.Assistant
+  alias Nest.Messages.NoticeTag
   alias Nest.Messages.Part
   alias Nest.Messages.Tool
   alias Nest.Messages.ToolCall
@@ -128,7 +129,7 @@ defmodule Nest.Agents.Agent.Machine.Response do
   defp branch(kind, m, _response, assistant_msg, base) when kind in [:truncated, :silent] do
     case reprompt_decision(m, kind) do
       {:reprompt, nudge} ->
-        nudge_msg = ContextReminder.build_user_notice(nudge, nil)
+        nudge_msg = ContextReminder.build_user_notice(NoticeTag.tag(nudge), nil)
         machine = Phase.enter(m, :chat, :generating, :http)
         {:ok, base ++ [{:append, assistant_msg}, {:append, nudge_msg}, :iterate], machine}
 
@@ -169,8 +170,10 @@ defmodule Nest.Agents.Agent.Machine.Response do
           #
           # The reminder is a synthetic user message — no sender label, no
           # `[mode: X]` prefix, no metadata — because the runtime is not a
-          # peer and must not read as one.
-          reminder = ContextReminder.build_user_notice(text, nil)
+          # peer and must not read as one. It carries the `[nest notice]`
+          # marker, because it is the runtime's own words and a bare user row
+          # would read as a human's or a peer's.
+          reminder = ContextReminder.build_user_notice(NoticeTag.tag(text), nil)
           machine = Phase.enter(m, :chat, :generating, :http)
           {:ok, base ++ [{:append, assistant_msg}, {:append, reminder}, :iterate], machine}
 
@@ -413,7 +416,11 @@ defmodule Nest.Agents.Agent.Machine.Response do
     limit = m.work.ctx.context_limit
 
     if is_integer(limit) and limit > 0 do
-      pair_size = Estimator.estimate(spec.attention) + Estimator.estimate(spec.notice)
+      # The pair is `[assistant(attention), user(tag(notice))]`, so the marker
+      # the injector adds is part of what it costs.
+      pair_size =
+        Estimator.estimate(spec.attention) + Estimator.estimate(NoticeTag.tag(spec.notice))
+
       Budget.remaining(messages, limit) < pair_size
     else
       false
@@ -472,9 +479,15 @@ defmodule Nest.Agents.Agent.Machine.Response do
     if over_budget?, do: :finalize, else: {:reprompt, text}
   end
 
+  # Counts how many of `texts` the transcript already carries. The nudges are
+  # persisted tagged (they are runtime notices), so the comparison is against
+  # the tagged form: the retry bound is a count of what was actually appended,
+  # and a bare comparison would never match and re-prompt forever.
   defp count_prior(messages, texts) do
+    tagged = Enum.map(texts, &NoticeTag.tag/1)
+
     Enum.count(messages, fn
-      {:user, %{parts: [%Part.Text{text: text}]}} when is_binary(text) -> text in texts
+      {:user, %{parts: [%Part.Text{text: text}]}} when is_binary(text) -> text in tagged
       _ -> false
     end)
   end

@@ -8,9 +8,12 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   line (`combine/1`), and each entry contributes its own body:
 
     * a `:user` entry (a human's words) and a `:notice` (the runtime speaking
-      for itself) render **bare** — no agent said either, and a
+      for itself) render with **no agent label** — no agent said either, and a
       `[Message from agent "X"]` label on a notice would impersonate `X`
-      (issue #31 decision 9);
+      (issue #31 decision 9) — and the notice additionally carries the
+      `[nest notice]` marker at the head of its text (`NoticeTag.tag/1`), the
+      wire-level signal that this body is the runtime's own (the client strips
+      it on render, so only the model reads it);
     * every other kind keeps its `[Message from agent "X"]` label, which is
       what disambiguates a batch of peer messages from each other and from a
       human's (issue #31 decision 7 for a `:query`, whose requester really is
@@ -22,6 +25,18 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   to the agent's scratch dir and replaced by a short pointer naming the file,
   so the model reads it back there instead of the whole batch riding the
   prompt.
+
+  ## Where the marker sits
+
+  The marker heads the notice **body**, not the delivered message: a batch is
+  its bodies joined by a blank line, so a notice behind a peer's entry puts
+  the marker at the head of the second body, and the re-delivery tag
+  (`@redelivery_tag`, issue #62) is a line in front of the body it wraps. The
+  client's strip is therefore a marker-at-the-head-of-any-body removal rather
+  than a single leading-prefix removal
+  (`assets/js/utils/stripNoticePrefix.js`); this module's contract is only
+  that a notice's own body starts with it, which `render_entry/1` guarantees
+  by tagging the entry's content before the re-delivery tag wraps it.
 
   `build_drained_message/3` is the seam's other half: the one place a drained
   batch becomes the message the transcript carries, so the batch's metadata —
@@ -37,6 +52,7 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   alias Nest.Agents.Agent.Inbox.Delivery
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Messages.MessageList
+  alias Nest.Messages.NoticeTag
   alias Nest.Messages.User
   alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Estimator
@@ -83,11 +99,14 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   # `Dispatch.build_user_message/2` adds — because a queued human message must
   # read exactly like one that arrived while the agent was idle (issue #31
   # decision 8): the model never has to reason about whether it was queued.
-  # A `:notice` is bare for a different reason: it is the runtime speaking,
-  # and a `[Message from agent "X"]` label would impersonate X (decision 9).
-  # Every other kind keeps its `[Message from agent "X"]` label, which is what
-  # disambiguates a batch of peer messages (from each other and from a human's)
-  # — including a `:query`, whose requester really is that agent (decision 7).
+  # A `:notice` keeps no `[Message from agent "X"]` label either — it is the
+  # runtime speaking, and the label would impersonate X (decision 9) — but it
+  # does carry the `[nest notice]` marker at the head of its own text, which is
+  # what tells the model (and, once the client strips it, only the model) that
+  # this body is the runtime's own. Every other kind keeps its
+  # `[Message from agent "X"]` label, which is what disambiguates a batch of
+  # peer messages (from each other and from a human's) — including a `:query`,
+  # whose requester really is that agent (decision 7).
   defp combine(entries) do
     Enum.map_join(entries, "\n\n", &render_entry/1)
   end
@@ -96,7 +115,10 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   # reach here, so this is the safety net issue #62 requirement 5 asks for: if
   # both channels ever carry the body, the second copy is explicitly a
   # re-delivery and can never read as a fresh human turn.
-  defp render_entry(%{kind: kind, content: content} = entry) when kind in [:user, :notice],
+  defp render_entry(%{kind: :notice, content: content} = entry),
+    do: tag_redelivery(entry, NoticeTag.tag(content))
+
+  defp render_entry(%{kind: :user, content: content} = entry),
     do: tag_redelivery(entry, content)
 
   defp render_entry(%{content: content} = entry),

@@ -7,6 +7,7 @@ defmodule Nest.Messages.MessageList do
 
   alias Nest.LLM.Client
   alias Nest.Messages.Assistant
+  alias Nest.Messages.NoticeTag
   alias Nest.Messages.Part
   alias Nest.Messages.Tool
   alias Nest.Messages.ToolCall
@@ -575,6 +576,12 @@ defmodule Nest.Messages.MessageList do
   @doc """
   The synthetic user message inserted between two consecutive
   assistant wire roles, so the sequence alternates again.
+
+  It is a row the runtime wrote to the model — it reports what happened to the
+  previous turn and asks the model to continue — so it carries the
+  `[nest notice]` marker (`NoticeTag.tag/1`), exactly like every other notice.
+  Without it the row would read as a human's message. The assistant bridges
+  (`repair_ack/0`, `idle_bridge_ack/1`) are acknowledgements and stay untagged.
   """
   @spec continuation_prompt() :: term()
   def continuation_prompt do
@@ -583,8 +590,10 @@ defmodule Nest.Messages.MessageList do
        parts: [
          %Part.Text{
            text:
-             "An earlier assistant turn did not complete cleanly. " <>
-               "Please continue from here."
+             NoticeTag.tag(
+               "An earlier assistant turn did not complete cleanly. " <>
+                 "Please continue from here."
+             )
          }
        ]
      }}

@@ -35,6 +35,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.LLM.Preflight
+  alias Nest.Messages.NoticeTag
 
   @max_consecutive_compactions 3
 
@@ -369,7 +370,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
     # messages are what the reminder would be appended to.
     case ReplyReminder.decision(m) do
       {:remind, text, m} ->
-        reminder = ContextReminder.build_user_notice(text, nil)
+        reminder = ContextReminder.build_user_notice(NoticeTag.tag(text), nil)
         machine = Phase.init_turn(Phase.enter(m, :chat, :generating, :http), carried)
         {:ok, [{:append, reminder}, :iterate], machine}
 

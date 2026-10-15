@@ -175,7 +175,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       assert notice_text =~ "Context at 25%"
 
       assert {:assistant, %Assistant{parts: [%Part.Text{text: ack_text}]}} = notice_ack
-      assert ack_text =~ "plenty of space"
+      assert ack_text == "Okay, context noted."
 
       assert {:user, %User{parts: [%Part.Text{text: text}]}} = delivered
       assert text == "[mode: chat]\nthe question"

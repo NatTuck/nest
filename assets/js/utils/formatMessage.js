@@ -12,7 +12,9 @@
  *     (`MessageContent` / `SystemMessageContent`; see its docs) — the
  *     clipboard shows what that renderer shows. User messages also have
  *     their `[mode: X]\n` prefix stripped (the mode badge is rendered
- *     separately in the UI; the user does not want it re-pasted). Tool
+ *     separately in the UI; the user does not want it re-pasted), and a
+ *     runtime notice has its `[nest notice]\n` marker stripped wherever it
+ *     sits (a user row or the fused assistant row). Tool
  *     calls and tool results have no natural markdown form, so they are
  *     rendered as a bold header plus a fenced code block; a part kind this
  *     build does not recognise is called out in the output rather than
@@ -25,6 +27,7 @@
  */
 
 import { stripModePrefix } from "./stripModePrefix.js";
+import { stripNoticePrefix } from "./stripNoticePrefix.js";
 import { splitThinkFromParts } from "./thinkTags.js";
 import { mediaSummary } from "./media.js";
 
@@ -166,11 +169,14 @@ function stripsThinkTags(role) {
 /**
  * The visible body text for a role, matching that role's body renderer:
  * the `user`'s own text with the mode prefix stripped, a `system` message
- * verbatim, and everyone else with `<think>` reasoning split out.
+ * verbatim, and everyone else with `<think>` reasoning split out. A synthetic
+ * runtime notice carries the `[nest notice]` marker at the head of its text
+ * (on a user row or on the fused `assistant(notice + ack)` row), which is
+ * stripped here too — the clipboard shows what the renderer shows.
  */
 function visibleForRole(text, role, mode) {
-  if (role === "user") return stripModePrefix(text, mode);
-  return stripsThinkTags(role) ? visibleText(text) : text;
+  if (role === "user") return stripNoticePrefix(stripModePrefix(text, mode));
+  return stripNoticePrefix(stripsThinkTags(role) ? visibleText(text) : text);
 }
 
 /**
