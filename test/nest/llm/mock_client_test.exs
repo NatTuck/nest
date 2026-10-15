@@ -366,7 +366,9 @@ defmodule Nest.LLM.MockClientTest do
     test "a request with no tools at all omits the tools key" do
       # `nil` and `[]` are both "no tools" — the mock is total over the two
       # shapes — and neither puts a `tools` key on the wire.
-      refute Map.has_key?(MockClient.format_request_payload(%RunRequest{tools: nil}), "tools")
+      for tools <- [nil, []] do
+        refute Map.has_key?(MockClient.format_request_payload(%RunRequest{tools: tools}), "tools")
+      end
     end
   end
 

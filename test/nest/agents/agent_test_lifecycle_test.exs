@@ -202,7 +202,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
           end
         end)
 
-      assert_receive {:registered, ^pid}
+      assert_receive {:registered, ^pid}, 1_000
 
       result = AgentTestLifecycle.stop_test_agents()
 
@@ -330,7 +330,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
           end
         end)
 
-      assert_receive {:registered, ^pid}
+      assert_receive {:registered, ^pid}, 1_000
 
       log =
         capture_log(fn ->
@@ -370,7 +370,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
           end
         end)
 
-      assert_receive {:registered, ^pid}
+      assert_receive {:registered, ^pid}, 1_000
 
       detector =
         Task.async(fn -> AgentTestLifecycle.detect_leaked_agent(space_id, name, 1_000) end)
@@ -472,7 +472,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
             end
           end)
 
-          assert_receive {:raised, "body boom"}
+          assert_receive {:raised, "body boom"}, 1_000
         end)
 
       assert log =~ "test teardown raised"
