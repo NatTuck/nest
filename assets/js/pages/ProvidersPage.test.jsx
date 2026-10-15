@@ -228,7 +228,8 @@ describe("ProvidersPage", () => {
     saveProviders.mockImplementation((_providers, _onOk, onError) =>
       onError({
         reason: "invalid_payload",
-        message: 'Provider acme: invalid probe-base-url "": must be a non-empty string',
+        message:
+          'Provider acme: invalid probe-base-url "": must be a non-empty string',
       }),
     );
 
