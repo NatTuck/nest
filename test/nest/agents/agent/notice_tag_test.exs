@@ -30,10 +30,13 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Inbox.Render
+  alias Nest.Agents.Agent.Machine.GiveUp
   alias Nest.Agents.Agent.NoticePairInjector
+  alias Nest.Agents.Agent.SubAgentResults
   alias Nest.Agents.Agent.Turn.Backgrounded
   alias Nest.Agents.Agent.Turn.BudgetReminder
   alias Nest.Agents.Agent.Turn.ContextReminder
+  alias Nest.Agents.Agent.WaitForIdle
   alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
@@ -108,14 +111,22 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
 
   describe "the drain's :notice entry" do
     test "renders the marker at the head of the notice body" do
-      # A backgrounded batch's outcome, a give-up, a sub-agent result and a
-      # watch event all arrive as a `:notice` entry and render here.
-      for {label, outcome} <- [
-            {"a backgrounded result", {:results, [%{name: "shell-cmd", content: "done"}]}},
-            {"a worker death", {:worker_down, :killed}}
-          ] do
-        content = Backgrounded.notice(outcome)
+      # Every producer that queues a `:notice` entry reaches the same
+      # `render_entry/1` clause, so one content per producer is driven here: a
+      # backgrounded outcome (its result and its worker's death), a give-up, a
+      # sub-agent result and a watch event.
+      assert {sub_agent_result, :notice} = SubAgentResults.child_message("kid", {:ok, ""})
 
+      cases = [
+        {"a backgrounded result",
+         Backgrounded.notice({:results, [%{name: "shell-cmd", content: "done"}]})},
+        {"a backgrounded worker's death", Backgrounded.notice({:worker_down, :killed})},
+        {"a give-up", GiveUp.notice_text("peer")},
+        {"a sub-agent result", sub_agent_result},
+        {"a watch event", WaitForIdle.notice_text(%{idle: ["a"], still_busy: [], gone: []})}
+      ]
+
+      for {label, content} <- cases do
         assert Render.combine_and_offload([entry(:notice, content)], %Agent{tmp_path: nil}) ==
                  NoticeTag.tag(content),
                label
