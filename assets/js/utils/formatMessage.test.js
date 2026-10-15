@@ -350,7 +350,7 @@ describe("messageToMarkdown — whole message from parts", () => {
     expect(out).toContain("boom");
   });
 
-  it("labels a backgrounded tool result and keeps a header-only result non-empty", () => {
+  it("labels a backgrounded or waiting tool result and keeps a header-only result non-empty", () => {
     expect(
       messageToMarkdown({
         role: "tool",
@@ -365,6 +365,23 @@ describe("messageToMarkdown — whole message from parts", () => {
         ],
       }),
     ).toBe("**Tool result: `shell-cmd` — Backgrounded**");
+
+    // A wait tool's result is the same kind of value: the call registered a
+    // watch and its real result arrives later as a message (issue #54).
+    expect(
+      messageToMarkdown({
+        role: "tool",
+        parts: [
+          {
+            kind: "tool_result",
+            toolCallId: "c2",
+            name: "agents-wait",
+            content: "",
+            state: "waiting",
+          },
+        ],
+      }),
+    ).toBe("**Tool result: `agents-wait` — Waiting**");
   });
 
   it("renders an unrecognised tool-result state verbatim", () => {

@@ -44,6 +44,7 @@ defmodule Nest.Agents.Agent.Machine.GiveUp do
   | `:cannot_compact` | 1 | nothing fits and no compaction can help, so the agent blocks |
   | `:empty_assistant` | 1 | the model returned no content |
   | `:no_reminder` | 1 | a final reply that fits, once the gate can no longer remind |
+  | `:waiting` | 1 | a wait tool's batch ends the turn (issue #54) |
   | `:compaction_loop` | 1 | consecutive compactions hit the cap |
   | `:system_oversized` | 1 | the system prompt alone is too big |
   | `:reserve_exhausted` | 3 | the reserve cannot hold the compaction: a held message, a queued batch, or nothing |
@@ -94,6 +95,7 @@ defmodule Nest.Agents.Agent.Machine.GiveUp do
       sites: 1,
       why: "a final reply that fits, once the gate can no longer remind"
     },
+    %{reason: :waiting, sites: 1, why: "a wait tool's batch ends the turn (issue #54)"},
     %{reason: :compaction_loop, sites: 1, why: "consecutive compactions hit the cap"},
     %{reason: :system_oversized, sites: 1, why: "the system prompt alone is too big"},
     %{

@@ -176,7 +176,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
       # notice, and the `{:drain_inbox}` is what starts its own turn. Both
       # outcomes a backgrounded batch can produce need it — its result and its
       # worker's death — or the notice would sit in the queue forever and an
-      # `agents-wait-for-idle` would resolve with the pre-result answer.
+      # `agents-wait` would resolve with the pre-result answer.
       ref = make_ref()
 
       machine =

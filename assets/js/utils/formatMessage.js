@@ -225,6 +225,7 @@ function toolResultBody(part) {
 /** The outcome label for a tool result, matching `ToolResults.jsx`. */
 function resultLabel(part) {
   if (part.state === "backgrounded") return "Backgrounded";
+  if (part.state === "waiting") return "Waiting";
   if (part.state) return `Unknown state (${part.state})`;
   return part.isError ? "Error" : "Success";
 }

@@ -109,19 +109,25 @@ defmodule Nest.Tools.SchemaTest do
 
     test "the wait and fetch schemas" do
       # Issue #62: the wait is synchronisation only and the fetch consumes;
-      # issue #54: the wait is non-blocking by default with an explicit
-      # blocking mode. An empty `names` is meaningful, so nothing is required.
-      wait = Tools.get_function("agents-wait-for-idle", Mounts.new("/tmp", nil))
+      # issue #54: the wait never blocks, so it offers no way to block — no
+      # `block` property at all, not merely a `false` default. An empty
+      # `names` is meaningful, so nothing is required.
+      wait = Tools.get_function("agents-wait", Mounts.new("/tmp", nil))
       props = wait.parameters_schema["properties"]
-      assert wait.name == "agents-wait-for-idle"
+      assert wait.name == "agents-wait"
       assert props["names"]["type"] == "array"
       assert props["names"]["items"]["type"] == "string"
       assert props["timeout"]["type"] == "integer"
-      assert {props["all"]["type"], props["block"]["type"]} == {"boolean", "boolean"}
+      assert props["all"]["type"] == "boolean"
+      refute Map.has_key?(props, "block")
+      refute wait.description =~ "block"
       assert (wait.parameters_schema["required"] || []) == []
       assert wait.description =~ "carries NO message content"
       assert wait.description =~ "returns immediately"
       assert wait.description =~ "not an error"
+      # The wait ends the caller's turn whenever it leaves a watch outstanding;
+      # the description has to say so, because the model cannot undo it.
+      assert wait.description =~ "ends your turn"
       # Only a peer this agent queried owes it anything; a peer that owes
       # someone else nothing relevant to this caller may be idle too.
       assert wait.description =~ "owes no replies"
@@ -130,6 +136,14 @@ defmodule Nest.Tools.SchemaTest do
       # a refusal is recorded, not promised away.
       assert wait.description =~ "give-up reaches you as a runtime notice"
       assert wait.description =~ "only records the refusal"
+
+      # `shell-wait` is the same shape: a watch, never a block.
+      shell_wait = Tools.get_function("shell-wait", Mounts.new("/tmp", nil))
+      shell_props = shell_wait.parameters_schema["properties"]
+      refute Map.has_key?(shell_props, "block")
+      refute shell_wait.description =~ "block"
+      assert shell_props["timeout"]["type"] == "integer"
+      assert shell_wait.parameters_schema["required"] == ["id"]
 
       fetch = Tools.get_function("agents-last-message", Mounts.new("/tmp", nil))
       assert fetch.name == "agents-last-message"

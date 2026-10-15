@@ -85,13 +85,18 @@ defmodule Nest.Agents.Agent.Turn.Messages do
      }}
   end
 
+  # `state` rides the conversion: it is what the machine reads to tell a batch
+  # whose result is still outstanding (a wait tool's, issue #54) from an
+  # ordinary one, and the panel badges it ("Waiting") rather than reading it as
+  # a success.
   defp tool_result_to_part(%ToolResult{} = tr) do
     %Part.ToolResult{
       tool_call_id: tr.tool_call_id,
       name: tr.name,
       content: tr.content,
       arguments: tr.arguments,
-      is_error: tr.is_error || false
+      is_error: tr.is_error || false,
+      state: tr.state
     }
   end
 

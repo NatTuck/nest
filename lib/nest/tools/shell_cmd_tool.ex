@@ -82,7 +82,7 @@ defmodule Nest.Tools.ShellCmdTool do
         "Wall-clock limit in seconds on how long the command may run " <>
           "before it is killed and the call returns its output so far " <>
           "(default #{default_timeout_seconds()}). This one is in seconds; " <>
-          "the `timeout` of agents-wait-for-idle and agents-batch is in milliseconds. " <>
+          "the `timeout` of agents-wait and agents-batch is in milliseconds. " <>
           "The deadline is fixed when the command starts, so a command " <>
           "that keeps writing output cannot extend it. There is no upper " <>
           "limit. Not applied with `background: true` (a background job " <>
@@ -122,7 +122,7 @@ defmodule Nest.Tools.ShellCmdTool do
 
   # The `timeout` argument is seconds of wall-clock time, and a positive
   # integer is the only accepted form. A non-positive or non-integer value
-  # is rejected as a tool error (the shape `agents-wait-for-idle`'s `timeout` uses)
+  # is rejected as a tool error (the shape `agents-wait`'s `timeout` uses)
   # rather than silently falling back to the default, so the model is told
   # what it got wrong.
   defp shell_timeout_ms(nil), do: {:ok, nil}

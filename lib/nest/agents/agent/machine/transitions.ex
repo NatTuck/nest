@@ -33,6 +33,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.LLM.Preflight
   alias Nest.Messages.MessageList
+  alias Nest.Messages.ToolResult
 
   # Compile-time copies of the blocked phases so guards stay valid.
   @blocked [
@@ -365,7 +366,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # The boundary delivery (issue #15): a drained inbox message lands here as a
   # user turn and the turn continues in place — the same body as the `:idle`
   # clause, but the phase stays `:generating`, so no transient idle is ever
-  # broadcast (an idle-based `agents-wait-for-idle` would resolve early, and a
+  # broadcast (an idle-based `agents-wait` would resolve early, and a
   # `{:finalize, :clean}` would report a partial result to a parent).
   def do_step(%{phase: :generating, kind: :chat} = m, {:inbox_drain, entries, content}),
     do: deliver_inbox(m, entries, content)
@@ -562,8 +563,63 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     machine = enter(m, :chat, :generating, :http)
     machine = %{machine | work: %{machine.work | pending_notice: nil}}
 
-    {:ok, [{:append, tool_msg}, {:record_file_access}, :iterate], machine}
+    if waiting?(results) do
+      wait_rest(machine, tool_msg)
+    else
+      {:ok, [{:append, tool_msg}, {:record_file_access}, :iterate], machine}
+    end
   end
+
+  # A batch whose results carry a wait tool's `state: "waiting"` (issue #54)
+  # ends the turn instead of iterating. The tool layer reports only the fact —
+  # the call registered a watch and its real result arrives later as a message
+  # — and the machine decides what that means, exactly as it owns every other
+  # action: rest in `:idle`, so the agent stops (with no further request) and a
+  # human can message it.
+  #
+  # Three details are load-bearing:
+  #
+  #   * the synthetic assistant acknowledgement after the result. A `{:tool, _}`
+  #     is a wire-`user` message, so resting on one would leave the idle agent
+  #     on a user role — the shape `Repair.classify_load/1` and the compaction
+  #     commit both heal — and the wake's own message would need the live
+  #     bridge. The ack restores alternation *before* the idle, and
+  #     `{:record_file_access}` runs ahead of it so it still reads the batch's
+  #     own message (a mixed batch may carry a `file-read`).
+  #   * `{:finalize, :waiting}`, not `{:finalize, :clean}`: the turn is over but
+  #     nothing is complete, so the parent is *not* told the child finished.
+  #     The agent will report when the message it is waiting for arrives and its
+  #     own turn ends for real. It is emitted *before* the drain, so a drain
+  #     that produces a follow event cannot skip it.
+  #   * a queued message is not stranded, and is not delivered through a
+  #     transient `:idle` either: with one waiting the machine stays where it is
+  #     and the drain's `{:inbox_drain, …}` starts the delivered message's turn
+  #     in place — the rule `Transitions.iterate/1` applies at every other turn
+  #     boundary (issue #15). `force_finalize` keeps its "wrap this turn up now"
+  #     meaning, exactly as it does there.
+  defp wait_rest(machine, tool_msg) do
+    actions = [
+      {:append, tool_msg},
+      {:record_file_access},
+      {:append, MessageList.waiting_ack()}
+    ]
+
+    if Boundary.inbox_count(machine.work.ctx) > 0 and not machine.work.force_finalize do
+      # The turn continues with the queued message: the live working set is
+      # left alone, exactly as it is at every other boundary that continues a
+      # turn (`Transitions.iterate/1`), and the next dispatch resets it.
+      {:ok, actions ++ [{:drain_inbox}], machine}
+    else
+      Phase.rest(machine, :chat, :waiting, actions ++ [{:finalize, :waiting}, {:drain_inbox}])
+    end
+  end
+
+  # True when any result of the batch is one the tool layer marked as having no
+  # verdict yet. `BatchSizer` stamps `state: "waiting"` from its `:waiting`
+  # entry kind, which is what a wait tool's `{:waiting, content}` return becomes
+  # — so the machine tells a wait result from an ordinary one by the result
+  # itself, and a batch mixing a wait with ordinary tools ends the turn too.
+  defp waiting?(results), do: Enum.any?(results, &match?(%ToolResult{state: "waiting"}, &1))
 
   # --- worker death / terminal ---
 

@@ -131,7 +131,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       #
       #   * the reply obligation a delivered `:query` incurs (issue #31 §1.3).
       #     Without it a later failure, block or restart gives up nothing for
-      #     the requester, whose `agents-wait-for-idle` then just times out.
+      #     the requester, whose `agents-wait` then just times out.
       #   * the context-threshold notice, which has to land *between* the
       #     synthetic batch and the delivered message: a notice pair is
       #     assistant-shaped, so after the user message the request would end on

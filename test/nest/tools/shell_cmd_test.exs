@@ -174,7 +174,7 @@ defmodule Nest.Tools.ShellCmdTest do
   # and `handle_timeout`/`:exec.stop` never ran, leaving the bwrap process
   # running with nothing left to stop it. 86400000 is one day expressed in
   # *milliseconds* — the number a model that learned the unit from
-  # `agents-wait-for-idle`/`agents-batch` (both milliseconds) passes by habit — so
+  # `agents-wait`/`agents-batch` (both milliseconds) passes by habit — so
   # this is the reachable form of the bug: 8.64e10 ms of bound.
   @tag :bwrap
   test "a `timeout` past `receive`'s `after` ceiling still runs the command", %{ws: ws} do
@@ -281,7 +281,7 @@ defmodule Nest.Tools.ShellCmdTest do
 
     # The model-visible contract: seconds, default 60, no cap, and optional
     # (omitting it is what applies the default). The unit is spelled out
-    # because `agents-wait-for-idle` and `agents-batch` take milliseconds.
+    # because `agents-wait` and `agents-batch` take milliseconds.
     assert timeout["type"] == "integer"
     assert timeout["description"] =~ "Wall-clock limit in seconds"
     assert timeout["description"] =~ "default #{default_seconds}"
@@ -296,7 +296,7 @@ defmodule Nest.Tools.ShellCmdTest do
     function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
 
     # Rejected before anything runs, so the tool error is the whole result.
-    # The shape is the one `agents-wait-for-idle`'s `timeout` rejection uses, so the
+    # The shape is the one `agents-wait`'s `timeout` rejection uses, so the
     # model is told what it got wrong instead of silently getting the
     # default.
     for bad <- [0, -1, 1.5, "5", true] do

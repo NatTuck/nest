@@ -207,7 +207,7 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   `{:deliver_backgrounded, …}` only *enqueues* the notice. When the turn that
   backgrounded the batch has already ended, the machine is `:idle` and nothing
   else would ever wake it — the notice would sit in the queue forever, and an
-  `agents-wait-for-idle` on the idle agent would resolve with the pre-result answer
+  `agents-wait` on the idle agent would resolve with the pre-result answer
   (breaking issue #36's headline promise and invariant 1). The `{:drain_inbox}`
   is what starts the notice's own turn, exactly as `Transitions.child_event/2`
   drains a child's answer into an idle parent. Every other phase either has a

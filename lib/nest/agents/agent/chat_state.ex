@@ -67,8 +67,8 @@ defmodule Nest.Agents.Agent.ChatState do
   Outstanding child agents spawned via `agents-spawn` (with a
   `query`) are tracked by the machine's
   `Nest.Agents.Agent.Machine.Children` sub-machine, not here:
-  each entry carries the waiting caller's pid (the blocking tool
-  worker, or the async waiter it started) and the `archive` flag,
+  each entry carries the waiting caller's pid (the tool
+  worker, or the async watcher it started) and the `archive` flag,
   and transitions exactly once to a terminal state. See
   `Nest.Agents.Agent.SubAgent`.
 
@@ -185,7 +185,7 @@ defmodule Nest.Agents.Agent.ChatState.Live do
             # mode selector / `change_mode`.
             mode: "chat",
             # The outstanding interest registrations (issue #54): a
-            # `agents-wait-for-idle` or `shell-wait` call that returned
+            # `agents-wait` or `shell-wait` call that returned
             # immediately and left the agent idle. Keyed by a `make_ref/0`
             # the tool worker minted; each entry is
             # `%{pid: pid | nil, spec: term(), satisfied: boolean}`. The

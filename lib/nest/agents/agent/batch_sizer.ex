@@ -98,7 +98,12 @@ defmodule Nest.Agents.Agent.BatchSizer do
   # a tagged media part for a `file-read` that attached an image. The shape is
   # tagged rather than the string type being widened, so `ToolResult.content`
   # stays `String.t()` and every `is_binary` branch below keeps working.
-  @type entry :: {ToolCall.t(), :ok | :error, String.t() | {:media, Part.Media.t()}}
+  #
+  # The second element is the result's *kind*: `:error` for a refusal, and
+  # `:waiting` for a result that is not a verdict at all — a wait tool's, whose
+  # real result arrives later as a message (issue #54). `:waiting` sizes
+  # exactly like `:ok` and differs only in the `state` the part is stamped with.
+  @type entry :: {ToolCall.t(), :ok | :error | :waiting, String.t() | {:media, Part.Media.t()}}
 
   @doc """
   Run a batch of tool calls through preflight → execute →
@@ -264,6 +269,9 @@ defmodule Nest.Agents.Agent.BatchSizer do
       {:ok, content} ->
         {tc, :ok, ensure_non_empty(content)}
 
+      {:waiting, content} ->
+        {tc, :waiting, ensure_non_empty(content)}
+
       {:error, reason} ->
         # Permanent diagnostic. The tool returned an error tuple
         # rather than crashing. The LLM is going to see this as
@@ -351,17 +359,26 @@ defmodule Nest.Agents.Agent.BatchSizer do
     [tool_result_part(tc, media_summary(part), false), part]
   end
 
+  # A wait tool's result carries `state: "waiting"`: the call registered a watch
+  # and its real result arrives later as a message (issue #54). It is not an
+  # error — the call did what it was asked — and it is not a verdict either, so
+  # the panel badges it as outstanding and the machine reads it to end the turn.
+  defp entry_parts(tc, :waiting, content) do
+    [tool_result_part(tc, content, false, "waiting")]
+  end
+
   defp entry_parts(tc, kind, content) do
     [tool_result_part(tc, content, kind == :error)]
   end
 
-  defp tool_result_part(tc, content, is_error?) do
+  defp tool_result_part(tc, content, is_error?, state \\ nil) do
     %ToolResult{
       tool_call_id: tc.id,
       name: tc.name,
       arguments: tc.arguments,
       content: content,
-      is_error: is_error?
+      is_error: is_error?,
+      state: state
     }
   end
 
@@ -426,6 +443,14 @@ defmodule Nest.Agents.Agent.BatchSizer do
   defp apply_one_with_acc({tc, :error, reason}, _ctx, acc) do
     error_size = Estimator.estimate(reason) + per_message_overhead()
     {{tc, :error, reason}, advance(acc, error_size)}
+  end
+
+  # A wait tool's result is sized exactly like an ordinary text result — it is a
+  # short confirmation — and only the kind is re-tagged, so `entry_parts/3` can
+  # stamp the part's `state` (issue #54).
+  defp apply_one_with_acc({tc, :waiting, content}, ctx, acc) do
+    {{tc, _ok, cooked}, acc} = apply_one_with_acc({tc, :ok, content}, ctx, acc)
+    {{tc, :waiting, cooked}, acc}
   end
 
   # The original post-execution sizing path for text tool results.

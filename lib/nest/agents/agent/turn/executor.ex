@@ -221,6 +221,14 @@ defmodule Nest.Agents.Agent.Turn.Executor do
     {state, :continue}
   end
 
+  # The wait rest (issue #54): the turn is over, but nothing is complete — the
+  # agent is idle waiting for a message that will wake it. `clear_live/1` runs
+  # (so the next turn starts clean), and the parent is deliberately NOT told the
+  # child finished: reporting a completion here would answer a query the child
+  # never answered, and the child reports for real when it wakes and ends a
+  # turn.
+  defp execute({:finalize, :waiting}, state), do: {clear_live(state), :continue}
+
   defp execute({:finalize, metadata}, state) when is_map(metadata) do
     state = finalize_partial(state, metadata)
     state = clear_live(state)

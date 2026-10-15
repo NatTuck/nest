@@ -391,7 +391,7 @@ defmodule Nest.Agents.Agent.Inbox do
   Two kinds of loss, both in-process state that goes away with the process:
 
     * a **debt** (`Machine.owed_replies`) — a query that was delivered, so the
-      requester is owed an answer and its `agents-wait-for-idle` simply times out;
+      requester is owed an answer and its `agents-wait` simply times out;
     * a **queued `:query` entry** — a query that was never delivered, so it set
       no debt at all (issue #31 §1.3: the obligation is incurred at delivery)
       and no give-up will ever fire for it. The requester waits for an answer

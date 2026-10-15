@@ -9,6 +9,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
   import Nest.TestSupport.ExecutorTestHelpers
 
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.TreePosition
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.Agent.Turn.Executor
@@ -222,6 +223,35 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
 
     test "finalize clean completes a turn" do
       assert {_state, nil} = run({:finalize, :clean})
+    end
+
+    test "finalize waiting ends the turn without reporting a completion" do
+      # The wait rest (issue #54) is not a completion: the agent is idle waiting
+      # for the message that will wake it, not finished. Its parent must not be
+      # told it answered — a parent that spawned it `archive: true` would
+      # archive a child that is still working (`Machine.Children`'s terminal
+      # clause archives on `:completed` only, and this would look like one).
+      #
+      # `{:finalize, :clean}` is the contrast that keeps the assertion from
+      # being vacuous: it *does* report to the parent.
+      state = state()
+      parent_name = "parent-#{System.unique_integer([:positive])}"
+      parent = register_parent(state.space_id, parent_name)
+
+      child = %{state | tree_position: %TreePosition{parent_name: parent_name}}
+      child = %{child | live: %{child.live | streaming_acc: :stale}}
+
+      {settled, nil} = run({:finalize, :waiting}, child)
+
+      # Read directly rather than waiting for a forward: the cast is a local
+      # send, so it is in the parent's mailbox before `run/2` returns.
+      assert parent_messages(parent) == []
+      assert settled.live.streaming_acc == nil
+
+      {_state, nil} = run({:finalize, :clean}, child)
+
+      assert [{:"$gen_cast", {:child_completed, name, _, _}}] = parent_messages(parent)
+      assert name == child.name
     end
 
     test "finalize stopped recovery appends nothing without a partial" do
