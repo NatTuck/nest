@@ -15,7 +15,6 @@ defmodule Nest.TimelineTestHelpers do
 
   import Nest.Agents.AgentTestHelpers, only: [programmer_vocation_id_for_test: 0]
 
-  alias Nest.Agents.Agent.Machine
   alias Nest.Timeline
   alias Nest.Vocations
 
@@ -69,20 +68,9 @@ defmodule Nest.TimelineTestHelpers do
     %{model: %{name: "qwen3.5-plus"}, vocation_id: programmer_vocation_id_for_test()}
   end
 
-  @doc "Force an agent's observable status (test-only; see `Machine.status_to_machine/2`)."
-  @spec set_status(pid(), atom()) :: :ok
-  def set_status(pid, status) do
-    :sys.replace_state(
-      pid,
-      fn state ->
-        %{
-          state
-          | live: %{state.live | machine: Machine.status_to_machine(state.live.machine, status)}
-        }
-      end,
-      1_000
-    )
-  end
+  # The status fixture is the inbox tests' too; one definition lives in
+  # `Nest.Agents.AgentStateHelpers`.
+  defdelegate set_status(pid, status), to: Nest.Agents.AgentStateHelpers
 
   @doc "Fill an agent's inbox with `count` queued peer entries."
   @spec fill_inbox(pid(), non_neg_integer()) :: :ok

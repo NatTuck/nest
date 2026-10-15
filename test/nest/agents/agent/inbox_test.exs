@@ -12,13 +12,14 @@ defmodule Nest.Agents.Agent.InboxTest do
   alias Nest.Agents.Agent.Machine
 
   import ExUnit.CaptureLog
+  import Nest.Agents.AgentStateHelpers, only: [set_status: 2, wait_idle: 1, replace_state: 2]
+  import Nest.Agents.AgentTurnTestHelpers, only: [text_of: 1, user_texts: 1]
 
   alias Nest.Agents
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
-  alias Nest.Messages.Part
 
   setup do
     # Modes `plan` and `review` on top of the `chat` default, so the
@@ -36,7 +37,7 @@ defmodule Nest.Agents.Agent.InboxTest do
 
   test "delivery to an idle agent starts a turn with the message as a user message", %{pid: pid} do
     assert {:ok, :delivered} = Agent.deliver_message(pid, "peer", "do the thing")
-    # allowlist: snapshot — messages + tmp_path
+    # allowlist: snapshot — inbox + messages
     state = :sys.get_state(pid, 1_000)
 
     assert Enum.any?(
@@ -78,7 +79,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     # stop timer owns the terminal transition, so the drain's own consume frame
     # is the fence, and it is the last one due — the queue is empty after it.
     assert_receive {:chat_inbox, %{count: 0}}, 1_000
-    # allowlist: snapshot — messages + tmp_path
+    # allowlist: snapshot — inbox + messages
     state = :sys.get_state(pid, 1_000)
 
     assert state.live.inbox == []
@@ -100,7 +101,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     # no `[Message from agent …]` label — and drained through the turn executor
     # when the target is idle, exactly like a peer delivery.
     assert {:ok, :delivered} = Agent.deliver_internal(pid, "agents-batch", ~s(["done"]), :notice)
-    # allowlist: snapshot — messages + tmp_path
+    # allowlist: snapshot — inbox + messages
     state = :sys.get_state(pid, 1_000)
     assert [text] = Enum.filter(user_texts(state.chat_state.messages), &(&1 =~ ~s(["done"])))
     refute text =~ "Message from agent"
@@ -535,18 +536,6 @@ defmodule Nest.Agents.Agent.InboxTest do
     end
   end
 
-  defp set_status(pid, status) do
-    replace_state(pid, fn state ->
-      %{
-        state
-        | live: %{
-            state.live
-            | machine: Machine.status_to_machine(state.live.machine, status)
-          }
-      }
-    end)
-  end
-
   # Undo a fabricated busy status (and its queued entries) so a test that
   # only inspects the queue leaves the agent idle for the teardown.
   defp reset_to_idle(pid) do
@@ -593,30 +582,6 @@ defmodule Nest.Agents.Agent.InboxTest do
     }
   end
 
-  # Wait for the agent to settle, on the frame that decides it: the `idle`
-  # broadcast that ends the turn. A bare `idle` frame is not the fence — a stop,
-  # and any turn end that drains, publishes the transient
-  # `streaming -> idle -> streaming` of issue #15 first — so the fence is the
-  # idle that carries an empty queue. An empty queue is also exactly the state
-  # no further drain can start from, which is what the teardown invariant
-  # checks; the status read that follows is a read of the settled state, not a
-  # wait.
-  defp wait_idle(pid) do
-    assert_receive {:chat_status, %{status: "idle", pendingMessageCount: 0}}, 1_000
-
-    assert Agent.get_public_info(pid, 1_000).status == :idle
-  end
-
-  defp user_texts(messages) do
-    Enum.flat_map(messages, fn
-      {:user, %{parts: parts}} -> [parts_text(parts)]
-      _ -> []
-    end)
-  end
-
-  defp text_of({_tag, %{parts: parts}}), do: parts_text(parts)
-  defp text_of(_message), do: ""
-
   # The `[mode: X]` prefix `Dispatch.build_user_message/2` puts on a delivered
   # message, or nil when the message has none. Any mode name (dashes, uppercase)
   # is accepted, so the helper cannot silently report nil for a real mode.
@@ -626,16 +591,4 @@ defmodule Nest.Agents.Agent.InboxTest do
       nil -> nil
     end
   end
-
-  defp parts_text(parts) do
-    Enum.map_join(parts, "", fn
-      %Part.Text{text: text} -> text || ""
-      _ -> ""
-    end)
-  end
-
-  # `:sys.replace_state/3` with the suite's explicit 500 ms timeout, kept as a
-  # helper so the call stays on one line (the three-argument form pushes
-  # these files past the 700-line cap once `mix format` expands it).
-  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 1_000)
 end
