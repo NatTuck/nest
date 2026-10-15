@@ -89,12 +89,17 @@ defmodule Nest.Agents.Agent.Inbox do
   batch actually delivered — the executor applies it when it peeks the queue,
   and a peek that cannot deliver (a compaction) is re-resolved when the resume
   re-drains, so a newer human message that arrives while the agent is compacting
-  is delivered in its own mode rather than under an older batch's.
+  is delivered in its own mode rather than under an older batch's. An attempt
+  that delivers nothing — declined because the context cannot hold the message,
+  parked on a compaction, or blocked — puts the mode back
+  (`Turn.restore_undelivered_mode/3`), so the winner never sticks for an entry
+  that is still queued.
 
   The executor applies the winning mode when it drains — never when the
   entry is queued, because `state.live.mode` feeds `ctx.mode`/`ctx.caps`,
   which are rebuilt on every settle; setting it on arrival would re-resolve
-  the caps of the *ongoing* turn's remaining tool calls.
+  the caps of the *ongoing* turn's remaining tool calls. An attempt that
+  delivers nothing leaves the mode as it was, for the same reason.
 
   The inbox is in-memory (`ChatState.Live`), so a BEAM restart drops
   undrained messages. `@max_inbox_size` bounds a runaway *peer* producer

@@ -22,13 +22,18 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
   """
   use Nest.DataCase, async: true
 
-  alias Nest.Agents.Agent.Machine
-
-  import Mimic
-
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.BatchSizer
+  alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Turn
+  alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
+  alias Nest.Messages.ToolCall
+  alias Nest.Tokens.ConversationSize
+  alias Nest.Tokens.Reserve
+
+  import Mimic
 
   setup :verify_on_exit!
 
@@ -160,5 +165,125 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
     assert late =~ "Message queued for #{name} (busy)"
 
     AgentTestHelpers.assert_unique_message_indices(state.chat_state.messages)
+  end
+
+  test "a batch-start delivery the context cannot hold stays queued and leaves the mode alone" do
+    # The other half of the deferral armed at the batch's start: it runs the same
+    # `Backgrounding.step/3` the arrival path runs, so a delivery the context
+    # cannot hold is *declined* — and a decline must leave nothing behind. The
+    # mode in particular: `Executor.peek_inbox/1` applies the queued batch's mode
+    # (the message the machine appends is built from `ctx.mode`, and the mode
+    # frame a subscriber sees while a batch is still executing is read from
+    # `state.live.mode`), so a drain that delivers nothing has to put it back —
+    # otherwise `Turn.prepare/1` rebuilds `ctx.mode`/`ctx.caps` for the ongoing
+    # turn from a message that was never delivered (issue #103).
+    {pid, name} =
+      start_agent(%{
+        model: %{name: "qwen3.5-plus"},
+        vocation_id: multi_mode_vocation_id_for_test()
+      })
+
+    park_llm_requests(pid)
+    park_agent_sends(pid)
+
+    MockClient.set_tool_response(%{
+      text: "Sending",
+      tool_calls: [
+        %{id: "send_1", name: "agents-send", arguments: %{"name" => name, "message" => "note"}}
+      ]
+    })
+
+    # A limit between the two decisions, derived from the fixture's own numbers
+    # rather than hard-coded. The batch's preflight projects
+    # `size(messages) + projected(call)` — a tool call's projection is tiny —
+    # while the delivery projects `size(messages ++ [user])`, i.e. it carries the
+    # queued message itself. So a limit one third of that message above
+    # `size + reserve` starts the batch and declines the delivery, by a margin
+    # that does not depend on the estimator's exact chars-per-token. The `+ 100`
+    # is the assistant row the response appends, which the delivery's projection
+    # also carries. The message is kept well under the async-message cap so the
+    # delivery carries its text rather than a scratch-file pointer (a pointer
+    # would be small enough to fit and would make this test vacuous).
+    queued = Enum.map_join(1..1_700, " ", &"note #{&1}")
+
+    :ok = Agent.chat(pid, "start the turn")
+    {_first, llm1} = next_request()
+
+    delivered = Dispatch.build_user_message(queued, "plan")
+
+    limit =
+      ConversationSize.size(Agent.get_messages(pid, 1_000)) + 100 + 8_192 +
+        div(ConversationSize.size([delivered]), 3)
+
+    # Under 40_960, so the reserve the two decisions use is its 8_192 floor.
+    assert Reserve.compaction_reserve(limit) == 8_192
+    assert limit < 40_960
+
+    set_context_limit(pid, limit)
+
+    # The human's message — in a mode the agent is not in — arrives while the
+    # model is still streaming, so it queues: the streaming arm must queue it.
+    :ok = Agent.chat(pid, queued, "plan", "alice", true)
+    assert_receive {:chat_inbox, %{count: 1}}, 500
+
+    # The response asks for the tool batch, whose worker parks inside its call:
+    # the batch starts, and the deferral armed there runs the drain — which this
+    # context declines.
+    release_llm(llm1)
+    assert_receive {:send_blocked, tool}, 500
+
+    # allowlist: snapshot — status + work + mode + inbox + messages
+    state = :sys.get_state(pid, 1_000)
+
+    # The fixture's own decisions, asserted so the test cannot pass on a limit
+    # that happens to fit. The second is the one the decline reads:
+    # `Backgrounding.fits?/2` runs this same `Dispatch.preflight_decision/2`.
+    assert :needs_compaction =
+             Dispatch.preflight_decision(state.chat_state.messages ++ [delivered], limit)
+
+    assert {:fits, _} =
+             BatchSizer.preflight(
+               [%ToolCall{id: "send_1", name: "agents-send", arguments: %{}}],
+               Turn.build_ctx(state)
+             )
+
+    # Nothing was delivered: the entry is still queued, the batch was not moved
+    # to the background, and the transcript gained no message at all (the
+    # assistant row the response appended is its last).
+    assert Machine.status_for(state.live.machine) == :executing_tools
+    assert [%{content: ^queued, kind: :user, mode: "plan"}] = state.live.inbox
+    assert state.live.machine.work.backgrounded == %{}
+    assert state.live.machine.work.active_worker == tool
+    assert Enum.map(state.chat_state.messages, &elem(&1, 0)) == [:system, :user, :assistant]
+
+    # ... and the mode did not stick. The peek published the queued message's
+    # mode while the batch was still executing — that frame's timing is pinned
+    # by `TurnBackgroundingTest` 1.1.10, because `currentMode` is read from
+    # `state.live.mode` — and the undelivered attempt published the agent's own
+    # mode again, so the UI is not left showing a mode that never took effect.
+    assert state.live.mode == "chat"
+    assert_receive {:chat_status, %{currentMode: "plan"}}, 500
+    assert_receive {:chat_status, %{currentMode: "chat"}}, 500
+
+    # Leave the agent idle for the teardown, with the entry dropped: the decline,
+    # not the fabricated limit, is what this test pins.
+    :sys.replace_state(
+      pid,
+      fn state -> %{state | live: %{state.live | inbox: [], machine: Machine.new()}} end,
+      1_000
+    )
+
+    Process.exit(tool, :kill)
+  end
+
+  # The context limit the fixture's two decisions are taken against. Set after
+  # the turn opens, so the request that asks for the batch is sized against it
+  # too — which is what makes the batch start and the delivery decline.
+  defp set_context_limit(pid, limit) do
+    :sys.replace_state(
+      pid,
+      fn state -> %{state | llm_metrics: %{state.llm_metrics | context_limit: limit}} end,
+      1_000
+    )
   end
 end
