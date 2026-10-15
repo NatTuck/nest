@@ -222,6 +222,18 @@ defmodule Nest.Agents.Agent.Machine do
   def stopping?(%__MODULE__{phase: :stopping}), do: true
   def stopping?(%__MODULE__{}), do: false
 
+  @doc """
+  True when `ref` is the machine's live worker ref and no stop is in flight.
+
+  A worker result is applied only when its ref still matches the worker the
+  machine is waiting on, so a result whose worker was replaced — or whose stop
+  has already begun — is stale.
+  """
+  @spec valid_ref?(t(), term()) :: boolean()
+  def valid_ref?(%__MODULE__{} = m, ref) do
+    not stopping?(m) and is_reference(m.work.worker_ref) and m.work.worker_ref == ref
+  end
+
   # --- children readers ---
 
   @doc "The running children, as a `%{name => true}` map (test/status view)."
