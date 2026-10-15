@@ -13,6 +13,7 @@ defmodule Nest.Tools.ShellCmdTool do
   alias Nest.LLM.Tool
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
+  alias Nest.Tools.ShellBackground
   alias Nest.Tools.ShellCmd
   alias Nest.Tools.ShellPipes
 
@@ -96,6 +97,7 @@ defmodule Nest.Tools.ShellCmdTool do
     caps = caps_from_context(context)
 
     with :ok <- ShellPipes.check(command),
+         :ok <- ShellBackground.check(command),
          {:ok, timeout} <- shell_timeout_ms(args["timeout"]) do
       Logger.info(
         "Tool shell-cmd: #{command} (workspace: #{Mounts.workspace(mounts) || "none"}, " <>
