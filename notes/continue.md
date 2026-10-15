@@ -54,13 +54,51 @@ first and the message is recorded afterward.
    uses.
 5. **A pending compaction admits nothing else.** Once the request is committed
    and the compaction has not succeeded, the agent may only send or re-send
-   that sequence. The `:compacting` and `:compaction_failed` phases accept no
-   other event, and a retry (`Compaction.retry/1`) re-sends the committed
+   that sequence. A retry (`Compaction.retry/1`) re-sends the committed
    messages rather than re-planning — so a retry cannot change the request,
-   and cannot append a second one. The consecutive-compaction loop breaker is
-   the only exit, which is why the request's own append must **not** reset it:
-   the request is a `user` row but it is not progress
+   and cannot append a second one.
+
+   Stated precisely, because the earlier wording of this invariant was false
+   and the falseness mattered: `:compacting` is **not a phase**. It is the
+   status `Machine.status_for(:generating, kind: :compaction)` — the phase is
+   `:generating`, and it accepts plenty of other events (`{:stop, _}`,
+   `{:worker_started, _}`, `{:worker_down, _}`, `{:child_*}`, `{:reply_sent, _}`,
+   a backgrounded `{:tool_results, …}`). What actually holds the line is:
+
+   * `:compaction_failed` accepts only `:retry_compaction`, `:loop_ack` and
+     `{:unblocked}`; everything else is refused by its blocked catch-all.
+   * The compaction phase **ignores** any other event rather than acting on it —
+     **including a refused append**, which is exactly why the request's append
+     must be one that cannot be refused (see invariant 6).
+
+   The exits are therefore more than one: `:loop_ack` (the loop breaker's
+   acknowledgement), `{:unblocked}` (a model change), and the operator's own
+   `/compact`, which deliberately resets the counter because three manual
+   requests are a decision, not the automatic loop the breaker guards against.
+   The loop breaker bounds an *automatic or retry* chain; it is not a claim
+   that compaction is the only thing that can ever happen next.
+
+6. **The compaction request append cannot be refused, so a compaction cannot
+   wedge.** The request is a `user` row, and `Repair.classify_live/2` refuses a
+   `user` append while any `tool_use` is unanswered — which is the state
+   `Response.regular/5` leaves behind whenever a tool batch is about to run.
+   Since a refused append is a `{:follow, …}` that halts the action list, the
+   machine would sit in the compaction phase with no worker and no exit. So the
+   `{:preflight_result, {:refuse, _}}` clause — the refused-batch path, which is
+   the near-the-limit case compaction exists for — answers the unanswered tail
+   first (`MessageList.unpaired_tail_tool_uses/1` →
+   `interrupted_tool_result/1`), and the request append that follows is legal
+   and gets a `pairing_bridge/2` like any other. The
+   `{:append_result, :invalid, _}` clause for the compaction phase is the
+   backstop: a visible turn failure, never a silent hang.
+
+   And the request's own append must **not** reset the loop breaker: it is a
+   `user` row, but it is not progress
    (`MessageAppender.progress_message?/1`, `User.compaction_origin/0`).
+   Counting it would reset the counter on every attempt and disarm
+   `@max_consecutive_compactions`, which is what bounds a compaction that
+   keeps failing.
+
 
 ## Sizing basis (resolved)
 

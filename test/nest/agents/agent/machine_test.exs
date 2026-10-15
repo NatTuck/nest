@@ -5,9 +5,13 @@ defmodule MachineTest do
 
   use ExUnit.Case, async: true
 
+  import Nest.TestSupport.MachineTestHelpers
+
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Compaction
   alias Nest.Agents.Agent.Machine.Response
+  alias Nest.Agents.Agent.Machine.Turn
+  alias Nest.Agents.Agent.Repair
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Messages.Part
   alias Nest.Messages.ToolCall
@@ -254,6 +258,111 @@ defmodule MachineTest do
       assert next.phase == :idle
       assert Enum.any?(actions, &match?({:append_many, _}, &1))
     end
+
+    # BLOCKER, found by the PR #101 review. A refused batch is the
+    # near-the-limit case compaction exists for, and `Response.regular/5` has
+    # already appended the assistant carrying that batch's `tool_use` parts.
+    # `Repair.classify_live/2` refuses a `user` append while any are pending,
+    # so the compaction request could not be committed — and because a refused
+    # append is a `{:follow, …}` that halts the action list, the phase's
+    # default clause swallowed it and the agent sat in `:compacting` with no
+    # worker, no timer and no exit but stop/archive/restart.
+    test "a refused batch answers its tool tail before staging, so the request can be committed" do
+      ctx = %{ctx() | messages: [system_message(), assistant_with_tool_use()]}
+      # `preflight` is set by `Response.regular/5` before the refusal arrives;
+      # the clause reads `continuation` off it. A nil preflight is
+      # `{:ignore, :no_preflight}`.
+      m = state_at(:generating, ctx: ctx, preflight: %{calls: [], continuation: nil})
+
+      {:ok, actions, next} = Machine.step(m, {:preflight_result, {:refuse, :too_big}})
+
+      # The heal comes FIRST, and it is a real append action — not a promise.
+      assert [{:append_many, [heal]} | _] = actions
+      assert {:tool, %{parts: [%Part.ToolResult{tool_call_id: "call_1", is_error: true}]}} = heal
+
+      # intentional: the heal answers the tail, so the request append that
+      # follows is legal — it gets the compaction bridge rather than the
+      # `{:invalid, …}` refusal that wedged the machine.
+      assert {:repair, [bridge]} =
+               Repair.decide(:live, ctx.messages ++ [heal], {:user, compaction_request()})
+
+      assert {:assistant, %{parts: [%Part.Text{text: "Let me pause to summarize."}]}} = bridge
+
+      assert next.kind == :compaction and next.phase == :generating
+      assert Enum.any?(actions, &match?({:append, _}, &1))
+    end
+
+    # The backstop for the same blocker: if the request append IS refused for
+    # some reason nobody foresaw, it must be a visible turn failure rather
+    # than the silent hang the default clause produced.
+    test "a refused compaction-request append fails the turn instead of wedging" do
+      m = state_at(:generating, kind: :compaction)
+
+      {:ok, actions, next} = Machine.step(m, {:append_result, :invalid, "boom"})
+
+      assert Enum.any?(actions, &match?({:fail_turn, %ArgumentError{message: "boom"}, _}, &1))
+      assert next.phase == :idle
+      assert next.entry == nil
+
+      # intentional: NOT `:compaction_failed`. A retry re-sends the committed
+      # sequence, and this sequence has no request row in it — the compactor
+      # would be asked to summarize with no instruction.
+      refute next.phase == :compaction_failed
+    end
+
+    # BLOCKER, found by the same review. `entry` is turn-scoped for a
+    # compaction, and leaving one behind is not cosmetic:
+    # `Response.dispatch/2` sets `compactor? = match?({:compaction, _}, m.entry)`
+    # and `Machine.Turn.classify_response/1` checks that FIRST and
+    # unconditionally — so the next chat turn's reply would be classified
+    # `:compaction`, and `commit_compaction/2` would archive the whole active
+    # segment and persist that reply as the summary.
+    test "a compaction entry does not survive into the next chat turn" do
+      failed = %{state_at(:compaction_failed, kind: :compaction) | entry: {:compaction, nil}}
+      {:ok, _actions, looped} = Machine.step(%{failed | loop_count: 3}, :retry_compaction)
+
+      assert looped.phase == :compaction_loop_detected
+      # intentional: the entry SURVIVES here — `:compaction_failed` is entered
+      # through `enter_blocked/2`, and `Compaction.retry/1` needs it.
+      assert looped.entry == {:compaction, nil}
+
+      {:ok, _actions, acked} = Machine.step(looped, :loop_ack)
+
+      # intentional: `:loop_ack` gives up on the compaction, so the entry goes
+      # with it. This is the assertion that was missing.
+      assert acked.phase == :idle
+      assert acked.entry == nil
+
+      # intentional: the observable consequence — the reply to the operator's
+      # next message is a CHAT reply, not a compaction summary.
+      assert classify(acked.entry) == :finalize
+      refute classify(acked.entry) == :compaction
+    end
+
+    test "a compaction entry does not survive an unblock either" do
+      m = %{state_at(:needs_repair, kind: :compaction) | entry: {:compaction, nil}}
+
+      {:ok, _actions, unblocked} = Machine.step(m, {:unblocked})
+
+      assert unblocked.phase == :idle
+      assert unblocked.entry == nil
+      assert classify(unblocked.entry) == :finalize
+    end
+  end
+
+  # `Machine.Turn.classify_response/1`'s full option set, with only
+  # `compactor?` varying — so the assertion isolates the entry's effect.
+  defp classify(entry) do
+    Turn.classify_response(%{
+      compactor?: match?({:compaction, _}, entry),
+      force_finalize: false,
+      has_tool_calls: false,
+      iteration: 0,
+      max_iterations: 10,
+      empty_assistant?: false,
+      truncated?: false,
+      silent?: false
+    })
   end
 
   describe "manual compaction (:compact_request)" do
@@ -582,118 +691,4 @@ defmodule MachineTest do
       assert Enum.any?(actions, &match?({:spawn_http, _}, &1))
     end
   end
-
-  # --- helpers ---
-
-  defp action_tag(:iterate), do: :iterate
-  defp action_tag({tag}), do: tag
-  defp action_tag({tag, _}), do: tag
-  defp action_tag({tag, _, _}), do: tag
-  defp action_tag({tag, _, _, _}), do: tag
-
-  defp kind_for(:committing), do: :compaction
-  defp kind_for(_), do: :chat
-
-  defp user do
-    %Nest.Messages.User{index: nil, parts: [%Nest.Messages.Part.Text{text: "hi"}], api_logs: []}
-  end
-
-  defp response(overrides \\ []) do
-    struct(
-      %Nest.LLM.RunResponse{
-        text: "",
-        thinking: nil,
-        tool_calls: [],
-        refusal: nil,
-        stop_reason: :end_turn,
-        model: "m",
-        usage: %{}
-      },
-      overrides
-    )
-  end
-
-  defp system_message do
-    {:system,
-     %Nest.Messages.System{
-       index: 0,
-       parts: [%Nest.Messages.Part.Text{text: "sys"}],
-       api_logs: []
-     }}
-  end
-
-  defp ctx do
-    %{
-      agent_pid: self(),
-      agent_name: "a",
-      space_id: 1,
-      client_config: %Nest.LLM.ClientConfig{client: Nest.LLM.MockClient, model: "m"},
-      tools: [],
-      tool_choice: :auto,
-      caps: %{},
-      context_limit: 100_000,
-      context_limit_source: :default,
-      messages: [system_message()],
-      tmp_path: nil,
-      workspace_path: nil,
-      mode: "chat",
-      next_message_index: 1,
-      crossed_thresholds: %MapSet{},
-      context_projection: nil,
-      api_log_sequences: %{},
-      vocation: nil,
-      depth: 0
-    }
-  end
-
-  defp state_at(phase) do
-    Machine.new(
-      phase: phase,
-      kind: kind_for(phase),
-      work: %Machine.Work{
-        worker_kind: worker_kind_for(phase),
-        worker_ref: ref_for(phase),
-        ctx: ctx(),
-        max_iterations: 10
-      }
-    )
-  end
-
-  defp worker_kind_for(:generating), do: :http
-  defp worker_kind_for(:executing_tools), do: :tools
-  defp worker_kind_for(_), do: nil
-
-  defp ref_for(p) when p in [:generating, :executing_tools, :stopping], do: make_ref()
-  defp ref_for(_), do: nil
-
-  defp sample_event(:chat_request), do: {:chat_request, {:user_message, user()}}
-  defp sample_event(:iterate), do: :iterate
-  defp sample_event(:inbox_drain), do: {:inbox_drain, [], "queued"}
-  defp sample_event(:http_ok), do: {:http_ok, make_ref(), response()}
-  defp sample_event(:http_error), do: {:http_error, make_ref(), :boom}
-  defp sample_event(:worker_crashed), do: {:worker_crashed, make_ref(), %RuntimeError{}, []}
-  defp sample_event(:worker_down), do: {:worker_down, self(), :killed}
-  defp sample_event(:worker_started), do: {:worker_started, make_ref(), self(), :http}
-  defp sample_event(:llm_error), do: {:llm_error, make_ref(), "boom"}
-  defp sample_event(:append_result), do: {:append_result, :stale, nil}
-  defp sample_event(:preflight_result), do: {:preflight_result, :fits}
-  defp sample_event(:stop), do: {:stop, self()}
-  defp sample_event(:stop_timer), do: :stop_timer
-  defp sample_event(:timer_armed), do: {:timer_armed, :stop_timer, make_ref()}
-  defp sample_event(:commit_done), do: {:commit_done}
-  defp sample_event(:commit_error), do: {:commit_error, :boom}
-  defp sample_event(:compaction_error), do: {:compaction_error, :boom, nil}
-  defp sample_event(:retry_compaction), do: :retry_compaction
-  defp sample_event(:compact_request), do: {:compact_request, nil}
-  defp sample_event(:loop_ack), do: :loop_ack
-  defp sample_event(:blocked), do: {:blocked, :needs_repair, nil}
-  defp sample_event(:unblocked), do: {:unblocked}
-  defp sample_event(:workspace_notice), do: :workspace_notice
-  defp sample_event(:tool_results), do: {:tool_results, make_ref(), []}
-  defp sample_event(:reply_sent), do: {:reply_sent, "peer"}
-  defp sample_event(:child_spawned), do: {:child_spawned, "kid", false, nil}
-  defp sample_event(:child_completed), do: {:child_completed, "kid", "resp", %{}}
-  defp sample_event(:child_failed), do: {:child_failed, "kid", :crashed}
-  defp sample_event(:child_terminated), do: {:child_terminated, "kid", :killed}
-  defp sample_event(:abandon_child), do: {:abandon_child, "kid"}
 end

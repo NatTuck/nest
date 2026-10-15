@@ -42,6 +42,7 @@ defmodule Nest.Agents.Agent.Machine.Phase do
       m
       | kind: kind,
         phase: phase,
+        entry: turn_entry(kind, phase, m.entry),
         work: %{
           m.work
           | worker_kind: worker_kind,
@@ -52,6 +53,30 @@ defmodule Nest.Agents.Agent.Machine.Phase do
         }
     })
   end
+
+  # `entry` is turn-scoped for a compaction, for the same reason `focus` is: a
+  # `{:compaction, carried}` entry exists only for the compaction turn it was
+  # staged for. Leaving one behind is not cosmetic — `Response.dispatch/2` sets
+  # `compactor? = match?({:compaction, _}, m.entry)` and
+  # `Machine.Turn.classify_response/1` checks that **first and unconditionally**,
+  # so the very next chat turn's reply would be classified `:compaction` and
+  # `commit_compaction/2` would archive the whole active segment and persist that
+  # reply as the summary.
+  #
+  # It is cleared here rather than at the sites because *every* route out of a
+  # compaction reaches `enter/4`: `Phase.rest/4` (`:loop_ack`, `{:unblocked}`,
+  # `:llm_error`, `:stopped`, the failure funnel) and `Phase.block/4` all go
+  # through it, and `enter_blocked/2` deliberately does not — which is what keeps
+  # a `:compaction_failed` retry's entry alive for `Compaction.retry/1`.
+  #
+  # The two clauses mirror `turn_focus/3`: `:idle` covers a stop during a
+  # compaction (`m.kind` stays `:compaction`), and any non-`:compaction` kind
+  # covers the rest. A non-compaction `entry` (the carried user message
+  # `Compaction.resume_with_pending/1` rides into a chat turn) is left alone.
+  defp turn_entry(_kind, :idle, {:compaction, _}), do: nil
+  defp turn_entry(:compaction, _phase, entry), do: entry
+  defp turn_entry(_kind, _phase, {:compaction, _}), do: nil
+  defp turn_entry(_kind, _phase, entry), do: entry
 
   # `focus` is turn-scoped: it exists only for the compaction turn it was
   # staged for. Entering a chat turn — or any `:idle` phase — ends that
