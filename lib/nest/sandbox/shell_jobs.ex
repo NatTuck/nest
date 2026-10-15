@@ -62,8 +62,7 @@ defmodule Nest.Sandbox.ShellJobs do
 
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.PubSub
-  alias Nest.Sandbox
-  alias Nest.Sandbox.Mounts
+  alias Nest.Sandbox.ShellJobs.Launcher
   alias Nest.Sandbox.ShellJobs.Waiters
   alias Nest.Tools.Exec
   alias Nest.Tools.ShellCmd
@@ -74,8 +73,6 @@ defmodule Nest.Sandbox.ShellJobs do
   # How long after a kill to force a terminal state if the exec port's
   # DOWN never arrives (SIGKILL + monitor should make it prompt).
   @kill_finalize_ms 5_000
-  # The subdirectory the job logs live in beneath the agent's own dir.
-  @log_subdir "shell-jobs"
 
   @type job_id :: String.t()
   @type agent_key :: {term(), term()}
@@ -390,60 +387,14 @@ defmodule Nest.Sandbox.ShellJobs do
         {:error, cap_reached_msg(max_jobs)}
 
       true ->
-        case launch(attrs, agent_key, state) do
-          {:ok, job, log_path} -> {:ok, job.id, log_path, put_job(state, job)}
+        job_id = "job-#{state.next_id}"
+
+        case Launcher.launch(attrs, agent_key, job_id) do
+          {:ok, job, log_path} -> {:ok, job_id, log_path, put_job(state, job)}
           {:error, reason} -> {:error, reason}
         end
     end
   end
-
-  defp launch(attrs, agent_key, state) do
-    job_id = "job-#{state.next_id}"
-    scratch = attrs |> Map.fetch!(:mounts) |> Mounts.scratch()
-    log_dir = Path.join(scratch, @log_subdir)
-    log_path = Path.join(log_dir, "#{job_id}.log")
-
-    sandbox_log_path =
-      Path.join([Sandbox.sandbox_tmp_path(scratch), @log_subdir, "#{job_id}.log"])
-
-    with :ok <- File.mkdir_p(log_dir),
-         :ok <- File.write(log_path, ""),
-         {:ok, erl_pid, os_pid} <- run_process(Map.fetch!(attrs, :bwrap)) do
-      job = %{
-        id: job_id,
-        agent_key: agent_key,
-        command: Map.fetch!(attrs, :command),
-        script_path: Map.get(attrs, :script_path),
-        log_path: log_path,
-        sandbox_log_path: sandbox_log_path,
-        erl_pid: erl_pid,
-        os_pid: os_pid,
-        status: :running,
-        exit_code: nil,
-        killed: false,
-        started_at: DateTime.utc_now()
-      }
-
-      {:ok, job, sandbox_log_path}
-    else
-      {:error, reason} ->
-        # Don't leave the empty log file (or partial dir) behind when the
-        # process never started.
-        File.rm(log_path)
-        {:error, start_error(reason)}
-    end
-  end
-
-  defp run_process(bwrap) do
-    :exec.run(
-      to_charlist(bwrap),
-      [:stdout, :stderr, :monitor, {:stdin, :null}, {:kill_timeout, 5000}]
-    )
-  end
-
-  defp start_error(reason) when is_atom(reason), do: "Failed to start process: #{reason}"
-  defp start_error({:error, reason}), do: start_error(reason)
-  defp start_error(reason), do: "Failed to start process: #{inspect(reason)}"
 
   # ---- Output / completion ----
 
