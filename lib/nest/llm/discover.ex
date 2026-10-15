@@ -111,15 +111,22 @@ defmodule Nest.LLM.Discover do
   # (input-only vs. total context), and raven-ferrus — the only
   # provider publishing it — also publishes `context_length`, so it
   # is already covered by the branch above.
+  #
+  # Every guard requires the value to be **positive**, which is what the `@spec`
+  # has always claimed. A published `0` (or a negative) is not a context limit,
+  # and passing it through put it straight into `Reserve.compaction_reserve/1`'s
+  # `limit > 0` guard clause, which raises on every agent start. A body that
+  # publishes one is treated as publishing nothing, so the search falls through
+  # to the next field and finally to the default — the safe direction.
   def extract_limit_from_model(%{} = model) do
     cond do
-      is_integer(model["max_model_len"]) ->
+      positive_integer?(model["max_model_len"]) ->
         {:vllm, model["max_model_len"]}
 
-      is_integer(model["context_length"]) ->
+      positive_integer?(model["context_length"]) ->
         {:openrouter, model["context_length"]}
 
-      is_integer(model["context_window"]) ->
+      positive_integer?(model["context_window"]) ->
         {:context_window, model["context_window"]}
 
       olla_limit = olla_limit(model) ->
@@ -135,15 +142,19 @@ defmodule Nest.LLM.Discover do
 
   def extract_limit_from_model(_), do: nil
 
-  defp olla_limit(%{"olla" => %{"max_context_length" => limit}}) when is_integer(limit),
-    do: {:olla, limit}
+  defp positive_integer?(value), do: is_integer(value) and value > 0
+
+  defp olla_limit(%{"olla" => %{"max_context_length" => limit}})
+       when is_integer(limit) and
+              limit > 0,
+       do: {:olla, limit}
 
   defp olla_limit(_), do: nil
 
-  defp meta_limit(%{"meta" => %{"n_ctx" => limit}}) when is_integer(limit),
+  defp meta_limit(%{"meta" => %{"n_ctx" => limit}}) when is_integer(limit) and limit > 0,
     do: {:llama_cpp, limit}
 
-  defp meta_limit(%{"meta" => %{"n_ctx_train" => limit}}) when is_integer(limit),
+  defp meta_limit(%{"meta" => %{"n_ctx_train" => limit}}) when is_integer(limit) and limit > 0,
     do: {:llama_cpp, limit}
 
   defp meta_limit(_), do: nil

@@ -3,6 +3,7 @@ defmodule Nest.DotConfig do
   Loads and manages XDG-compliant configuration from ~/.config/nest/config.toml
   """
 
+  alias Nest.DotConfig.FieldValidation
   alias Nest.DotConfig.KeyValidation
   alias Nest.DotConfig.ModelValidation
   alias Nest.ParseCache
@@ -565,14 +566,16 @@ defmodule Nest.DotConfig do
   # surface as a probe HTTP error rather than a startup crash, but
   # `parse_default_context_limit`'s stricter convention (raise on
   # nonsense) doesn't fit here — the URL is a string, not a number.
+  #
+  # The rule is shared with the write side (`FieldValidation.non_empty_string`)
+  # so the two cannot disagree: the write side used to pass this field through
+  # unvalidated, so a `probe-base-url = ""` written from a channel client was
+  # persisted and then raised here on the re-read — killing `Models`, and with it
+  # the next boot.
   defp parse_probe_base_url(nil, _provider_name), do: nil
 
-  defp parse_probe_base_url(url, _provider_name) when is_binary(url) and url != "",
-    do: url
-
-  defp parse_probe_base_url(value, provider_name) do
-    raise "Provider #{provider_name}: invalid probe-base-url #{inspect(value)}: must be a non-empty string"
-  end
+  defp parse_probe_base_url(url, provider_name),
+    do: FieldValidation.non_empty_string(url, provider_name, "probe-base-url")
 
   # Parses the optional `auto-probe` flag (endpoint auto-detection).
   # Defaults to `true` when absent.
@@ -635,7 +638,12 @@ defmodule Nest.DotConfig do
     %Model{
       name: name,
       provider_name: nil,
-      context_limit: Map.get(model_data, "context-limit"),
+      context_limit:
+        ModelValidation.validate_context_limit(
+          Map.get(model_data, "context-limit"),
+          provider_name,
+          name
+        ),
       multi_modal:
         ModelValidation.validate_multi_modal(
           Map.get(model_data, "multi-modal"),

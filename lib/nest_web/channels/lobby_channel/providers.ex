@@ -54,7 +54,17 @@ defmodule NestWeb.LobbyChannel.Providers do
         {:reply, {:error, %{"reason" => "failed_to_save"}}, socket}
     end
   rescue
-    _ -> {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
+    error ->
+      {:reply, {:error, %{"reason" => "invalid_payload", "message" => Exception.message(error)}},
+       socket}
+  catch
+    # A `GenServer.call` to a server that dies inside its callback exits rather
+    # than raising, and `rescue` does not catch an exit — so without this the
+    # channel process died and the operator got no reply at all. That is what
+    # made a bad `probe-base-url` strictly worse than a refused one: the write
+    # had already landed, and the only signal was a dead channel.
+    :exit, _ ->
+      {:reply, {:error, %{"reason" => "failed_to_save"}}, socket}
   end
 
   def save(_payload, socket) do
@@ -112,8 +122,12 @@ defmodule NestWeb.LobbyChannel.Providers do
   # writes nothing and the function-level `rescue` in `save/2` answers
   # `invalid_payload`. The GUI inputs they defend against, each measured:
   #
-  #   * `default_context_limit` — a bare `type="number"` with no `min` and no
-  #     `step`, so `0` and `0.5` are both typable and `Number()` keeps them.
+  #   * `default_context_limit` — a `type="number"` input, and `Number()` keeps a
+  #     typed `0` (`e.target.value` is the string `"0"`, which is truthy, so the
+  #     `? … : null` guard does not catch it). The input carries `min="1"` and
+  #     `step="1"`, but that is a courtesy only: there is no enclosing `<form>`
+  #     and nothing calls `checkValidity()`, so the attribute does not stop the
+  #     value from being submitted. The refusal here is the guarantee.
   #   * `timeout_seconds` — no GUI field today; kept here so the two sides stay
   #     defined in one place rather than drifting apart when one is added.
   #   * `tags` — preserved by the GUI, so a malformed list can arrive from a
@@ -132,11 +146,24 @@ defmodule NestWeb.LobbyChannel.Providers do
       timeout_seconds: timeout_seconds(m["timeout_seconds"], name),
       default_context_limit: default_context_limit(m["default_context_limit"], name),
       default_thinking_effort: parse_effort(m["default_thinking_effort"]),
-      probe_base_url: m["probe_base_url"],
+      probe_base_url: probe_base_url(m["probe_base_url"], name),
       auto_probe: if(is_boolean(m["auto_probe"]), do: m["auto_probe"], else: true),
       expose_models: if(is_boolean(m["expose_models"]), do: m["expose_models"], else: false),
       probe_multimodal: parse_probe_multimodal(m["probe_multimodal"])
     }
+  end
+
+  # `probe-base-url` is the field that made the class-closure claim false: the
+  # reader raises on it (`parse_probe_base_url/2`) and this side passed it
+  # through, so a channel client sending `""` (or `7`) had it persisted before
+  # any read refused it — and the raise then came from the re-read inside
+  # `Models.rescan/0`, which dies without a rescue and takes the next boot with
+  # it. A well-behaved browser coerces `""` to `null`, but the rule must not
+  # depend on one client's coercion.
+  defp probe_base_url(nil, _provider_name), do: nil
+
+  defp probe_base_url(url, provider_name) do
+    ModelValidation.validate_probe_base_url(url, provider_name)
   end
 
   # The opt-in is a boolean, and it is persisted: a non-boolean in the payload
@@ -157,7 +184,7 @@ defmodule NestWeb.LobbyChannel.Providers do
 
     %Model{
       name: name,
-      context_limit: m["context_limit"],
+      context_limit: context_limit(m["context_limit"], provider_name, name),
       multi_modal: multi_modal(m["multi_modal"], provider_name, name),
       thinking_effort: parse_effort(m["thinking_effort"])
     }
@@ -173,12 +200,14 @@ defmodule NestWeb.LobbyChannel.Providers do
   # default (`emptyModel()` returns `name: ""`), which makes it a config the
   # app writes for itself.
   #
-  # Refusing it here is what keeps the writer and the reader a coherent pair:
-  # the function-level `rescue` in `save/2` answers `invalid_payload`, so the
-  # operator gets a visible error and — because this runs before
-  # `Writer.save_providers/1` — **no file is written**. Without this the write
-  # succeeded and the raise came later from the re-read, so the operator got an
-  # error *and* a bad config on disk.
+  # Refusing it here is part of keeping the writer and the reader a coherent
+  # pair — this is one of the guards in `validated_fields/2`, and the reason they
+  # all exist is the same: the reader raises on a value, so the writer must not
+  # accept it. The function-level `rescue` in `save/2` answers
+  # `invalid_payload`, so the operator gets a visible error and — because this
+  # runs before `Writer.save_providers/1` — **no file is written**. Without this
+  # the write succeeded and the raise came later from the re-read, so the
+  # operator got an error *and* a bad config on disk.
   #
   # This is one of the guards described under `default_context_limit/2`.
   defp model_name(m, provider_name) do
@@ -213,6 +242,18 @@ defmodule NestWeb.LobbyChannel.Providers do
     ModelValidation.validate_multi_modal(claim, provider_name, model_name)
   end
 
+  # A model's `context-limit` is refused here for the same reason the provider's
+  # `default-context-limit` is: `ProviderModelRow`'s `type="number"` sends
+  # `Number("0")` for a typed `0` (the string `"0"` is truthy, so the
+  # `e.target.value ? … : null` guard does not catch it), and `0` is not "no
+  # limit" — it reaches `Reserve.compaction_reserve/1`'s `limit > 0` guard and
+  # raises on **every** agent start. See `ModelValidation.validate_context_limit/3`.
+  defp context_limit(nil, _provider_name, _model_name), do: nil
+
+  defp context_limit(limit, provider_name, model_name) do
+    ModelValidation.validate_context_limit(limit, provider_name, model_name)
+  end
+
   # A reference-shaped api-key is resolved when the config is **read**
   # (`Nest.DotConfig.KeyValidation`, on `load/0` — which is what `Models.init/1`
   # and every rescan call), and an unresolvable one raises there. The api-key
@@ -225,16 +266,22 @@ defmodule NestWeb.LobbyChannel.Providers do
   # `api-key = "none"` opt-out) resolves to itself and passes, and an absent or
   # empty key is not a reference. This is deliberately a *resolution* check
   # rather than a value rule — the target may legitimately not exist yet while
-  # the operator is typing, which is why the error names the key so they can
-  # correct it.
+  # the operator is typing.
+  #
+  # The resolver is only *asked*; its result is discarded, so the secret is never
+  # written. What is persisted is the reference the operator typed.
+  #
+  # A non-binary is refused rather than passed through: the reader tolerates one
+  # (`KeyValidation` only acts `when is_binary(key)`), so boot is fine, but
+  # `resolve_api_key/1` calls `String.starts_with?/2` on it at chat time and
+  # raises `FunctionClauseError`.
   defp api_key(nil, _provider_name), do: nil
 
-  defp api_key(key, _provider_name) when is_binary(key) do
+  defp api_key(key, provider_name) do
+    key = ModelValidation.validate_api_key(key, provider_name)
     _ = DotConfig.resolve_api_key(key)
     key
   end
-
-  defp api_key(key, _provider_name), do: key
 
   defp parse_effort(nil), do: nil
   defp parse_effort(""), do: nil

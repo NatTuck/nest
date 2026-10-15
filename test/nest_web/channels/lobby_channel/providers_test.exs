@@ -314,13 +314,14 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       socket: socket,
       local_file: local_file
     } do
-      # The GUI's context-limit input is a bare `type="number"` with no `min`
-      # and no `step`, so `0` and `0.5` are both typable and `Number()` keeps
-      # them. `DotConfig.parse_default_context_limit/2` raises on either, and
-      # that raise happens on the *rescan* — after `Writer.save_providers/1`
-      # has already written the value. So before this guard the operator got a
-      # dead `Models` GenServer, no reply, and a `local.toml` that made the next
-      # boot fail.
+      # The GUI's context-limit input is a `type="number"` and `Number()` keeps a
+      # typed `0` (the string `"0"` is truthy, so the `? … : null` guard does not
+      # catch it). The input's `min="1"` is a courtesy, not a guard: there is no
+      # enclosing `<form>` and nothing calls `checkValidity()`, so it does not
+      # stop the value being submitted. `DotConfig` raises on it, and that raise
+      # happens on the *rescan* — after `Writer.save_providers/1` has already
+      # written the value. So before this guard the operator got a dead `Models`
+      # GenServer, no reply, and a `local.toml` that made the next boot fail.
       for bad <- [0, 0.5, -1] do
         ref =
           push(socket, "save_providers", %{
@@ -437,6 +438,105 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       assert toml =~ "acme"
       refute toml =~ "default-context-limit"
       refute toml =~ "timeout"
+    end
+
+    test "replies invalid_payload for a probe-base-url the reader rejects", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # `probe-base-url` is the field that made the "the two sides cannot
+      # disagree" claim false. `parse_probe_base_url/2` raises on anything that
+      # is not `nil` or a non-empty binary, and this side used to pass the value
+      # straight through — so a channel client sending `""` had it written to
+      # `local.toml` and then raised on the *re-read* inside `Models.rescan/0`.
+      # That killed the `Models` GenServer (no rescue), and because a call to a
+      # server that dies inside its callback exits rather than raises, the
+      # operator got no reply at all — worse than the refusals above. The next
+      # boot then could not start.
+      #
+      # The browser coerces `""` to `null` (`e.target.value || null`), so a
+      # well-behaved session cannot produce `""` — but the rule must not depend
+      # on one client's coercion, and `7` is reachable too.
+      for bad <- ["", 7, [], %{}] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [%{"name" => "acme", "auto_models" => false, "probe_base_url" => bad}]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}
+        refute File.exists?(local_file)
+      end
+    end
+
+    test "replies invalid_payload for a model context-limit the runtime rejects", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # The reader does *not* raise on this one — it passed the value straight
+      # through, which is why the earlier sweep missed it. The runtime raises:
+      # `Init.context_limit_layer/3` keeps any integer, and
+      # `Reserve.compaction_reserve/1` guards `is_integer(limit) and limit > 0`.
+      # So `context-limit = 0` is not "no limit" — it is a
+      # `FunctionClauseError` on **every** agent start, from
+      # `Init.build_vocation_pipeline/1` and `PreSpawn.build_initial_system_message/1`
+      # alike.
+      #
+      # Reachable from the GUI today: `ProviderModelRow` sends `Number("0")` for
+      # a typed `0` (the string `"0"` is truthy, so the `e.target.value ? … : null`
+      # guard does not catch it), and the `min="1"` added alongside it is inert —
+      # there is no enclosing `<form>` and nothing calls `checkValidity()`.
+      for bad <- [0, 0.5, -1] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [
+              %{
+                "name" => "acme",
+                "auto_models" => false,
+                "models" => [%{"name" => "m", "context_limit" => bad}]
+              }
+            ]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}
+        refute File.exists?(local_file)
+      end
+    end
+
+    test "replies invalid_payload for a non-string api-key", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # A non-binary key is tolerated by the *reader* — `KeyValidation` only acts
+      # `when is_binary(key)`, so boot succeeds — and then raises at chat time,
+      # where `resolve_api_key/1` calls `String.starts_with?/2` on it.
+      for bad <- [7, %{}, []] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [%{"name" => "acme", "auto_models" => false, "api_key" => bad}]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}
+        refute File.exists?(local_file)
+      end
+    end
+
+    test "the refusal carries a reason the operator can act on", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # `invalid_payload` alone says nothing about *which* field or value is
+      # wrong, and every guard raises a message that names both. The reply now
+      # carries it, and `errorText` prefers `message` — so the operator is told
+      # what to fix rather than being handed a bare enum.
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [%{"name" => "acme", "auto_models" => false, "probe_base_url" => ""}]
+        })
+
+      assert_reply ref, :error, %{"reason" => "invalid_payload", "message" => message}
+      assert message =~ "probe-base-url"
+      assert message =~ "acme"
+      refute File.exists?(local_file)
     end
 
     test "saves a model with a usable name", %{socket: socket, local_file: local_file} do

@@ -55,4 +55,38 @@ defmodule Nest.DotConfig.FieldValidation do
               "must be a list of strings"
     end
   end
+
+  @doc """
+  A non-empty string, or a raise.
+
+  Used for a provider's `probe-base-url`. `nil` is the caller's business — the
+  reader substitutes the default, the writer omits the key — so each caller
+  handles it before calling here.
+  """
+  @spec non_empty_string(term(), String.t() | nil, String.t()) :: String.t()
+  def non_empty_string(value, provider_name, field) do
+    if is_binary(value) and value != "" do
+      value
+    else
+      raise "Provider #{provider_name}: invalid #{field} #{inspect(value)}: " <>
+              "must be a non-empty string"
+    end
+  end
+
+  @doc """
+  Any string, or a raise.
+
+  Used for a provider's `api-key`, whose only *value* rule is that it is text —
+  an empty string and the documented `api-key = "none"` opt-out are both
+  legitimate. Whether a reference-shaped key resolves is a separate question,
+  answered by `Nest.DotConfig.KeyValidation` on the read side.
+  """
+  @spec string(term(), String.t() | nil, String.t()) :: String.t()
+  def string(value, provider_name, field) do
+    if is_binary(value) do
+      value
+    else
+      raise "Provider #{provider_name}: invalid #{field} #{inspect(value)}: must be a string"
+    end
+  end
 end

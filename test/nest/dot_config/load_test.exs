@@ -215,7 +215,90 @@ defmodule Nest.DotConfig.LoadTest do
     end
   end
 
+  describe "provider probe-base-url" do
+    # The reader raised on this before the write side guarded it, which is how a
+    # `probe-base-url = ""` from a channel client became a config the app wrote
+    # for itself and then refused to read.
+    test "keeps a non-empty binary, is nil when absent, and raises otherwise" do
+      kept = """
+      [providers.acme]
+      probe-base-url = "https://probe.example/v1"
+      """
+
+      absent = """
+      [providers.acme]
+      base-url = "https://acme.example/v1"
+      """
+
+      assert load_probe_base_url(kept) == "https://probe.example/v1"
+      assert load_probe_base_url(absent) == nil
+
+      for {label, line} <- [
+            {"empty", ~s(probe-base-url = "")},
+            {"number", "probe-base-url = 7"},
+            {"table", "probe-base-url = { a = 1 }"}
+          ] do
+        path = tmp_toml_file("probe_url_#{label}")
+        File.write!(path, "[providers.acme]\n" <> line <> "\n")
+
+        assert_raise RuntimeError, ~r/Provider acme: invalid probe-base-url/, fn ->
+          DotConfig.load(path)
+        end
+      end
+    end
+  end
+
+  describe "model context-limit" do
+    # The reader passed this through unvalidated, so it never raised — which is
+    # why the earlier sweep missed it. It is refused now because the value is not
+    # "no limit": `Init.context_limit_layer/3` keeps any integer and
+    # `Reserve.compaction_reserve/1` guards `limit > 0`, so `0` raises on every
+    # agent start.
+    test "keeps a positive integer, is nil when absent, and raises otherwise" do
+      assert load_model_context_limit("") == nil
+      assert load_model_context_limit("context-limit = 1000") == 1000
+
+      for {label, line} <- [
+            {"zero", "context-limit = 0"},
+            {"negative", "context-limit = -1"},
+            {"fractional", "context-limit = 0.5"}
+          ] do
+        path = tmp_toml_file("model_limit_#{label}")
+
+        File.write!(path, """
+        [[providers.foo.models]]
+        name = "m"
+        #{line}
+        """)
+
+        assert_raise RuntimeError, ~r/Provider foo: invalid context-limit/, fn ->
+          DotConfig.load(path)
+        end
+      end
+    end
+  end
+
   # --- fixtures ---
+
+  defp load_probe_base_url(toml) do
+    path = tmp_toml_file("probe_url_ok")
+    File.write!(path, toml)
+    {:ok, config} = DotConfig.load(path)
+    config.providers["acme"].probe_base_url
+  end
+
+  defp load_model_context_limit(line) do
+    path = tmp_toml_file("model_limit_ok")
+
+    File.write!(path, """
+    [[providers.foo.models]]
+    name = "m"
+    #{line}
+    """)
+
+    {:ok, config} = DotConfig.load(path)
+    hd(config.providers["foo"].models).context_limit
+  end
 
   defp provider(name) do
     %Provider{name: name, base_url: "https://cache.example/v1", models: []}

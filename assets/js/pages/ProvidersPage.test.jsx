@@ -218,6 +218,31 @@ describe("ProvidersPage", () => {
     );
   });
 
+  it("prefers the server's message over its bare reason", async () => {
+    // A refused config value replies `{reason: "invalid_payload", message: …}`
+    // where the message names the field and the offending value. The bare enum
+    // says nothing an operator can act on, so `errorText` prefers the message —
+    // and this pins that the page shows it rather than the enum.
+    setStore({ providers: [sampleProvider] });
+
+    saveProviders.mockImplementation((_providers, _onOk, onError) =>
+      onError({
+        reason: "invalid_payload",
+        message: 'Provider acme: invalid probe-base-url "": must be a non-empty string',
+      }),
+    );
+
+    await renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/invalid probe-base-url/i)).toBeInTheDocument(),
+    );
+
+    expect(screen.queryByText(/^invalid_payload$/)).not.toBeInTheDocument();
+  });
+
   it("shows Saving... while a save is in flight", async () => {
     setStore({ providers: [sampleProvider] });
 

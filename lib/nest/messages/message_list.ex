@@ -260,8 +260,11 @@ defmodule Nest.Messages.MessageList do
   missing `tool_use`, plus an assistant acknowledgement when
   `incoming` is a user message (wire role `user`). Returns `[]`
   when there is nothing to repair. Shared by the live append
-  bridge (`pairing_bridge/2`) and the offline repair tool so the
+  bridge (`pairing_bridge/2`) and the live load heal, so the
   synthetic shape and wording stay identical.
+
+  The offline repair tool does **not** call this: its planner builds the same
+  results one level lower, through `unpaired_tool_result/1`.
   """
   @spec repair_messages([Part.ToolUse.t()], term()) :: [term()]
   def repair_messages([], _incoming), do: []

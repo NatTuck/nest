@@ -85,15 +85,80 @@ defmodule Nest.DotConfig.ModelValidation do
   @doc """
   The provider's `default-context-limit`, or a raise. `nil` means unset.
 
-  Also called on the write side: the GUI's context-limit input is a bare
-  `type="number"` with no `min`, so typing `0` — or `0.5`, which has no `step`
-  to stop it — produces a value the reader rejects.
+  Also called on the write side: the GUI's context-limit input is a
+  `type="number"`, and `Number()` keeps a typed `0` — `e.target.value` is the
+  string `"0"`, which is truthy, so the `? … : null` guard does not catch it. Its
+  `min="1"` is a courtesy rather than a guard (no enclosing `<form>`, no
+  `checkValidity()` call), so this is what actually refuses the value.
   """
   @spec validate_default_context_limit(term(), String.t() | nil) :: pos_integer() | nil
   def validate_default_context_limit(nil, _provider_name), do: nil
 
   def validate_default_context_limit(limit, provider_name) do
     FieldValidation.positive_integer(limit, provider_name, "default-context-limit")
+  end
+
+  @doc """
+  A model's `context-limit`, or a raise. `nil` means unset.
+
+  `nil` is not the same as `0`. An absent key leaves the limit to be resolved
+  later (the discovery cache, then the provider default, then `@default_limit`),
+  but a **present** value is used as-is: `Init.context_limit_layer/3` keeps any
+  integer, and `Reserve.compaction_reserve/1` guards `is_integer(limit) and
+  limit > 0`. So `context-limit = 0` does not mean "no limit" — it means every
+  agent start raises `FunctionClauseError` in the reserve arithmetic, from
+  `Init.build_vocation_pipeline/1` and `PreSpawn.build_initial_system_message/1`
+  alike. That is why this is validated rather than passed through.
+
+  Both sides call it. The writer has to, because `ProviderModelRow`'s
+  `type="number"` sends `Number("0")` for a typed `0` — the string `"0"` is
+  truthy, so the `e.target.value ? … : null` guard does not catch it — and the
+  value would otherwise be written to `local.toml` before any read refused it.
+  """
+  @spec validate_context_limit(term(), String.t() | nil, String.t() | nil) :: pos_integer() | nil
+  def validate_context_limit(nil, _provider_name, _model_name), do: nil
+
+  def validate_context_limit(limit, provider_name, model_name) do
+    FieldValidation.positive_integer(
+      limit,
+      provider_name,
+      "context-limit#{subject(model_name)}"
+    )
+  end
+
+  @doc """
+  The provider's `probe-base-url`, or a raise. `nil` means unset.
+
+  Also called on the write side, and it is the field that made the "the class is
+  closed" claim false: the reader raised on it while the write side passed it
+  through, so a `probe-base-url = ""` from a channel client was persisted and
+  then raised on the re-read — inside `Models.rescan/0`, which has no rescue, so
+  the `Models` process died, the operator got no reply at all, and the next boot
+  could not start. The browser coerces `""` to `null`, but the rule must not rest
+  on one client's coercion.
+  """
+  @spec validate_probe_base_url(term(), String.t() | nil) :: String.t() | nil
+  def validate_probe_base_url(nil, _provider_name), do: nil
+
+  def validate_probe_base_url(url, provider_name) do
+    FieldValidation.non_empty_string(url, provider_name, "probe-base-url")
+  end
+
+  @doc """
+  The provider's `api-key`, or a raise. `nil` means unset.
+
+  The rule is only that the value is text: an empty string and the documented
+  `api-key = "none"` opt-out are both legitimate, and whether a reference-shaped
+  key *resolves* is a separate question answered by
+  `Nest.DotConfig.KeyValidation` on the read side.
+
+  A non-binary is refused because the reader tolerates one — `KeyValidation` only
+  acts `when is_binary(key)`, so boot succeeds — while `resolve_api_key/1` calls
+  `String.starts_with?/2` on it at chat time and raises `FunctionClauseError`.
+  """
+  @spec validate_api_key(term(), String.t() | nil) :: String.t()
+  def validate_api_key(key, provider_name) do
+    FieldValidation.string(key, provider_name, "api-key")
   end
 
   @doc """
