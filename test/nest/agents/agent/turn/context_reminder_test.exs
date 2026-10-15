@@ -3,8 +3,9 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
   Tests for the mid-iteration context-usage reminder logic.
 
   These are unit tests of `ContextReminder.highest_unannounced/3`,
-  `ContextReminder.format/4`, and `ContextReminder.build_message/3`.
-  The in-process turn wiring (the context spec injected by the
+  `ContextReminder.build_message/2`, and `ContextReminder.format/4` — the
+  legacy verbose formatter, superseded by `notice_text/2` and reachable only
+  from this file. The in-process turn wiring (the context spec injected by the
   user-notice / response path, the set persisted on the Agent's
   `live.crossed_thresholds`, and the set cleared on successful
   compaction in `Machine.Compaction`) is covered by the regression
@@ -29,6 +30,7 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
 
   alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.LLM.ClientConfig
+  alias Nest.Messages.NoticeTag
   alias Nest.Messages.User
 
   # A 200k-limit model with the standard 40k reserve has a
@@ -134,38 +136,30 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
     end
   end
 
-  describe "build_message/3" do
-    test "returns a {:user, %User{}} tuple with the formatted content" do
-      assert {:user,
-              %User{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
-               ContextReminder.build_message(:p50, 80_000, @limit)
+  describe "build_message/2" do
+    test "builds the decided notice row, carrying the marker, for every threshold" do
+      # The row is the one the live paths announce: the decided text on a
+      # `{:user, _}` row carrying the `[nest notice]` marker. It used to be the
+      # legacy verbose counts form and carried no marker, which made this the
+      # one builder that could produce an untagged runtime notice row.
+      for {atom, compact?} <- [{:p25, true}, {:p50, true}, {:p75, true}, {:p75, false}] do
+        assert {:user,
+                %User{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
+                 ContextReminder.build_message(atom, compact?)
 
-      assert content =~ "50%"
-      assert content =~ "80000"
-      assert content =~ "#{@working_budget}"
-    end
-  end
-
-  describe "build_message/4" do
-    test "returns a {:user, %User{}} tuple with the formatted content" do
-      config = %ClientConfig{}
-
-      assert {:user,
-              %User{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
-               ContextReminder.build_message(:p50, 80_000, @limit, config)
-
-      assert content =~ "50%"
-      assert content =~ "80000"
+        assert content == NoticeTag.tag(ContextReminder.notice_text(atom, compact?))
+      end
     end
 
-    test "accepts nil config" do
-      assert {:user,
-              %User{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
-               ContextReminder.build_message(:p75, 120_000, @limit, nil)
+    test "agrees with the spec the response path injects, marker and all" do
+      # `spec/4` is what `Machine.Response` announces; `build_message/2` must
+      # produce the same row text for the same threshold.
+      spec = ContextReminder.spec(80_001, @limit, MapSet.new())
 
-      assert content =~ "75%"
-      assert content =~ "120000"
-      assert content =~ "context"
+      assert {:user, %User{parts: [%Nest.Messages.Part.Text{text: content}]}} =
+               ContextReminder.build_message(spec.threshold)
+
+      assert content == NoticeTag.tag(spec.notice)
     end
   end
 

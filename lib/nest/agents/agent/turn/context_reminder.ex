@@ -9,6 +9,7 @@ defmodule Nest.Agents.Agent.Turn.ContextReminder do
   """
 
   alias Nest.LLM.ClientConfig
+  alias Nest.Messages.NoticeTag
   alias Nest.Messages.Part
   alias Nest.Messages.User
   alias Nest.Tokens.ConversationSize
@@ -168,18 +169,21 @@ defmodule Nest.Agents.Agent.Turn.ContextReminder do
   end
 
   @doc """
-  Build the reminder message for the given threshold atom.
-  Kept for callers that need the legacy shape.
-  """
-  @spec build_message(atom(), non_neg_integer(), pos_integer(), ClientConfig.t() | nil) ::
-          {:user, User.t()}
-  def build_message(atom, used, limit, client_config) do
-    build_user_notice(format(atom, used, limit), client_config)
-  end
+  Build the context-notice row for the given threshold atom.
 
-  @spec build_message(atom(), non_neg_integer(), pos_integer()) :: {:user, User.t()}
-  def build_message(atom, used, limit),
-    do: build_message(atom, used, limit, %ClientConfig{})
+  The row is exactly the one the live paths announce: the decided text
+  (`notice_text/2`) on the `{:user, _}` row `build_user_notice/3` builds,
+  carrying the `[nest notice]` marker (`NoticeTag.tag/1`). `compact?` picks the
+  75% variant, as it does for the text itself.
+
+  It takes no counts because the decided wording carries none — the used and
+  effective token counts were the *legacy* verbose form's (`format/4`), and a
+  parameter that no longer reaches the row would read as if it still did.
+  """
+  @spec build_message(atom(), boolean()) :: {:user, User.t()}
+  def build_message(atom, compact? \\ true) do
+    build_user_notice(NoticeTag.tag(notice_text(atom, compact?)), nil)
+  end
 
   @doc false
   @spec format(atom(), non_neg_integer(), pos_integer(), boolean()) :: String.t()
