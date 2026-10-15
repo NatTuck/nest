@@ -45,8 +45,13 @@ defmodule Nest.Agents.Agent.Inbox do
       the message is queued on `state.live.inbox`. A target executing a tool
       batch is the one exception (issue #36): the batch is moved to the
       background, the message is delivered immediately, and the batch's own
-      result arrives later as a `:notice`. Otherwise the machine drains the
-      queue at the next turn boundary: `Transitions.iterate/1` emits the
+      result arrives later as a `:notice`. That deferral is armed from the
+      batch's own side too (`Machine.Backgrounding.deferred_actions/1`): a
+      batch that *starts* while messages are queued backgrounds itself and
+      delivers them (issue #103), so a message that arrived while the model was
+      still streaming the response asking for the batch is not left waiting for
+      the next arrival. Otherwise the machine drains the queue at the next turn
+      boundary: `Transitions.iterate/1` emits the
       `:drain_inbox` action from `:generating`/`:chat` once the wire
       sequence is complete and nothing is in flight (issue #15), and
       anything still queued when the target reaches `:idle` is drained by
@@ -122,6 +127,10 @@ defmodule Nest.Agents.Agent.Inbox do
   # the message is delivered *now* (issue #36): a tool batch has no partial
   # state worth waiting for — its real result arrives as a notice either way —
   # while a streaming response and a compaction both keep their message queued.
+  # The machine arms the same deferral from the batch's own side, at the moment
+  # the batch becomes interruptible (`Machine.Backgrounding.deferred_actions/1`,
+  # issue #103), so a message that queued before the batch existed is not left
+  # waiting for the next arrival.
   @backgroundable_statuses [:executing_tools]
 
   # Hard cap on queued agent-sourced messages. When full the sender gets

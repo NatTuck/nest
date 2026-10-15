@@ -218,11 +218,23 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     {:ok, [{:kill, pid}], m}
   end
 
+  # The batch's worker is registered, so the batch is now interruptible: any
+  # message that queued *before* it existed — one that arrived while the model
+  # was still streaming the response that asks for this batch — is delivered
+  # now, backgrounding the batch, rather than waiting for the next arrival
+  # (issue #103). `Backgrounding.deferred_actions/1` owns that decision, and it
+  # is empty for every worker that is not an interruptible batch (the HTTP
+  # worker of an in-flight request and the compactor's), so this never
+  # interrupts a request in flight.
   def do_step(%{phase: p} = m, {:worker_started, ref, pid, kind})
       when p in [:generating, :executing_tools] do
     if m.work.worker_kind == kind do
-      {:ok, [],
-       %{m | work: %{m.work | worker_ref: ref, active_worker: pid, active_worker_kind: kind}}}
+      machine = %{
+        m
+        | work: %{m.work | worker_ref: ref, active_worker: pid, active_worker_kind: kind}
+      }
+
+      {:ok, Backgrounding.deferred_actions(machine), machine}
     else
       {:ok, [{:kill, pid}], m}
     end
