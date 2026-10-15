@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const AT_BOTTOM_EPSILON_PX = 2;
 
@@ -61,6 +61,31 @@ export function useScrollToBottom(
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasNewContent, setHasNewContent] = useState(false);
 
+  // The pin, mirrored into a ref so the new-content effect can read it WITHOUT
+  // depending on it. That dependency was the bug this ref removes: `jumpToBottom`
+  // re-pins and then smooth-scrolls, and an effect that depended on `isAtBottom`
+  // re-ran on that state change and issued its own `behavior: "auto"` scroll —
+  // landing the view instantly and superseding the animation it was meant to
+  // accompany. Every write goes through `setPinned` so the state and the ref
+  // cannot drift.
+  const isAtBottomRef = useRef(true);
+
+  const setPinned = (value) => {
+    isAtBottomRef.current = value;
+    setIsAtBottom(value);
+  };
+
+  // Leaving the bottom is a user gesture, and it surfaces the "jump to latest"
+  // button immediately: the button is the affordance for "there is more below
+  // you than you are looking at", and it should not wait for the next token.
+  // The new-content effect used to raise it as a side effect of re-running when
+  // `isAtBottom` changed; now that the effect deliberately does not depend on
+  // the pin (see `setPinned`), the un-pin paths raise it themselves.
+  const unpin = () => {
+    setPinned(false);
+    setHasNewContent(true);
+  };
+
   // Attach the listeners that decide "is the user at the bottom?".
   // We do not run an initial check: the hook assumes "at bottom" on
   // first mount (the useLayoutEffect below scrolls there), and only
@@ -83,10 +108,10 @@ export function useScrollToBottom(
       const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
 
       if (distanceFromBottom <= AT_BOTTOM_EPSILON_PX) {
-        setIsAtBottom(true);
+        setPinned(true);
         setHasNewContent(false);
       } else if (scrollTop < lastScrollTop) {
-        setIsAtBottom(false);
+        unpin();
       }
 
       lastScrollTop = scrollTop;
@@ -96,9 +121,9 @@ export function useScrollToBottom(
     // unambiguous intent to leave the bottom, regardless of how far it
     // moved (a few pixels is enough).
     const handleWheel = (event) => {
-      if (event.deltaY < 0) setIsAtBottom(false);
+      if (event.deltaY < 0) unpin();
     };
-    const handleTouchMove = () => setIsAtBottom(false);
+    const handleTouchMove = () => unpin();
 
     // Keyboard scroll-ups. The composer textarea usually holds focus, so
     // listen on `window` rather than the container.
@@ -116,7 +141,7 @@ export function useScrollToBottom(
 
     const handleKeyDown = (event) => {
       if (event.key === "PageUp") {
-        setIsAtBottom(false);
+        unpin();
         return;
       }
 
@@ -124,7 +149,7 @@ export function useScrollToBottom(
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (isEditableTarget(event.target)) return;
 
-      setIsAtBottom(false);
+      unpin();
     };
 
     scrollContainerEl.addEventListener("scroll", handleScroll, {
@@ -148,15 +173,20 @@ export function useScrollToBottom(
 
   // Auto-scroll on new content, but only if the user is already at the bottom.
   // If the user has scrolled up, surface hasNewContent for a "Jump to latest" button.
+  //
+  // The pin is read from `isAtBottomRef` rather than from `isAtBottom` state, and
+  // the state is deliberately NOT a dependency. This effect is about *new
+  // content*; re-running it because the pin changed is what made
+  // `jumpToBottom`'s smooth scroll land instantly instead (see `setPinned`).
   // biome-ignore lint/correctness/useExhaustiveDependencies: trigger is the caller-supplied re-run signal
   useEffect(() => {
     if (!messagesEndEl) return;
-    if (isAtBottom) {
+    if (isAtBottomRef.current) {
       messagesEndEl.scrollIntoView({ behavior: "auto", block: "end" });
     } else {
       setHasNewContent(true);
     }
-  }, [trigger, isAtBottom, messagesEndEl]);
+  }, [trigger, messagesEndEl]);
 
   // On mount and id change, jump to the bottom of the new conversation
   // (useLayoutEffect to avoid a flash of un-scrolled content).
@@ -164,22 +194,26 @@ export function useScrollToBottom(
   useLayoutEffect(() => {
     if (!messagesEndEl) return;
     setHasNewContent(false);
-    setIsAtBottom(true);
+    setPinned(true);
     messagesEndEl.scrollIntoView({ behavior: "auto", block: "end" });
   }, [id, messagesEndEl]);
 
   // Re-pin BEFORE the smooth scroll rather than relying on the animation to do
-  // it. `isAtBottom` is what the new-content effect above reads, so leaving it
-  // false sends the next message down that effect's `else` branch — it
-  // re-surfaces the button instead of following along. The animation's own
-  // `scroll` events do re-pin, but only if the final one lands inside
-  // `AT_BOTTOM_EPSILON_PX` of the bottom, which it does not when content
-  // arrives mid-animation and moves the target. That intermittency is the
-  // reported symptom: the button appeared not to work until a small manual
-  // scroll produced a `scroll` event that re-pinned.
+  // it. The pin is what the new-content effect above reads, so leaving it false
+  // sends the next message down that effect's `else` branch — it re-surfaces the
+  // button instead of following along. The animation's own `scroll` events do
+  // re-pin, but only if the final one lands inside `AT_BOTTOM_EPSILON_PX` of the
+  // bottom, which it does not when content arrives mid-animation and moves the
+  // target. That intermittency is the reported symptom: the button appeared not
+  // to work until a small manual scroll produced a `scroll` event that re-pinned.
+  //
+  // Re-pinning here must NOT perform a second scroll, and with the pin read
+  // through `isAtBottomRef` it cannot: the effect above does not depend on the
+  // state, so this write does not re-run it. The smooth scroll below is the only
+  // scroll this click performs.
   const jumpToBottom = () => {
     if (!messagesEndEl) return;
-    setIsAtBottom(true);
+    setPinned(true);
     setHasNewContent(false);
     messagesEndEl.scrollIntoView({ behavior: "smooth", block: "end" });
   };

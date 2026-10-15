@@ -97,17 +97,28 @@ defmodule Nest.Agents.Agent.ToolLoopArchiveTest do
       assert log =~ "is_error=true tool result"
     end
 
-    test "an empty list and a malformed element are both rejected loudly" do
+    test "an empty list, a malformed element, and a blank name are all rejected loudly" do
       {:ok, _pid} = start_parent("archive-bad")
 
       # An empty list is far likelier to be a malformed call than a request to
       # archive nothing, and a non-string element must not be dropped: either
-      # would leave an agent the caller asked to clean up still running.
+      # would leave an agent the caller asked to clean up still running. A blank
+      # name is the same class — it is a typo, not an agent, and looking it up
+      # would report `:not_found`, which reads as "that agent is gone".
       {results, log} = with_log(fn -> archive_from("archive-bad", []) end)
 
       assert [%ToolResult{is_error: true, content: empty_content}] = results
 
       assert empty_content == "name must be an agent name or a list of agent names; got []."
+
+      assert log =~ "is_error=true tool result"
+
+      {results, log} = with_log(fn -> archive_from("archive-bad", " ") end)
+
+      assert [%ToolResult{is_error: true, content: blank_content}] = results
+
+      assert blank_content ==
+               ~s(name must be an agent name or a list of agent names; got " ".)
 
       assert log =~ "is_error=true tool result"
 

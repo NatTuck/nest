@@ -9,7 +9,7 @@ defmodule Nest.Scripts.CompactionProbeSupport do
     1. Resolve a provider block from `~/.config/nest/config.toml`
        and build a `Nest.LLM.ClientConfig`.
     2. Build a `Nest.LLM.RunRequest` whose `messages` ends with a
-       `[mode: compact] Summarize in your <N> remaining tokens.`
+       `[mode: compact]\nSummarize in your <N> remaining tokens.`
        suffix (the agent recognizes the prefix; the
        summarization contract itself lives in the `[Available modes]`
        list under the `compact` entry — see
@@ -46,13 +46,19 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   command) appended when present.
 
   Format:
-      [mode: compact] Summarize the conversation in your <N>
-      remaining tokens. <optional_guidance?>
+      [mode: compact]
+      Summarize the conversation in your <N> remaining tokens. <optional_guidance?>
+
+  The tag is on its own line, exactly like the `[mode: <name>]\\n` prefix every
+  human row carries. That is what lets the client's `stripModePrefix` remove it
+  on render and show a `mode: compact` badge instead: this row is committed to
+  the transcript (it is the request the model is answering), so without the
+  standard form the user would read the raw wire tag.
   """
   @spec compaction_suffix(non_neg_integer(), String.t() | nil) :: String.t()
   def compaction_suffix(remaining_tokens, optional_guidance) do
     base =
-      "[mode: compact] Summarize the conversation in your " <>
+      "[mode: compact]\nSummarize the conversation in your " <>
         "#{remaining_tokens} remaining tokens."
 
     case optional_guidance do

@@ -187,6 +187,34 @@ defmodule Nest.DotConfig.LoadTest do
     end
   end
 
+  describe "model name" do
+    # The name is the model's id. `[[providers.x.models]] name = { a = 1 }` used
+    # to reach the `models-list` formatter's `"#{provider}/#{name}"` and raise
+    # `String.Chars` inside a tool call; a missing name was silently accepted and
+    # rendered as a bare `/`.
+    test "raises on a name that is not a non-empty string, or is absent" do
+      for {label, name_line} <- [
+            {"table", ~s(name = { a = 1 })},
+            {"number", "name = 3"},
+            {"empty", ~s(name = "")},
+            {"absent", ""}
+          ] do
+        toml = """
+        [[providers.foo.models]]
+        #{name_line}
+        context-limit = 1000
+        """
+
+        path = tmp_toml_file("model_name_#{label}")
+        File.write!(path, toml)
+
+        assert_raise RuntimeError, ~r/Provider foo: .*name/, fn ->
+          DotConfig.load(path)
+        end
+      end
+    end
+  end
+
   # --- fixtures ---
 
   defp provider(name) do

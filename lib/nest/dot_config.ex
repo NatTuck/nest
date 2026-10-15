@@ -4,6 +4,7 @@ defmodule Nest.DotConfig do
   """
 
   alias Nest.DotConfig.KeyValidation
+  alias Nest.DotConfig.ModelValidation
   alias Nest.ParseCache
 
   @config_dir :filename.basedir(:user_config, "nest")
@@ -646,49 +647,19 @@ defmodule Nest.DotConfig do
     end
   end
 
-  # Parses and validates a model's optional `multi-modal` claim. `nil` means
-  # "no claim made", which is not a negative — see `Nest.Models.MultiModal`
-  # for the three-valued vocabulary. A table whose `input` is a list of names
-  # is kept; everything else raises, so an explicit `multi-modal = false` is a
-  # startup error rather than being silently discarded into "no claim",
-  # matching `parse_timeout` and `parse_default_context_limit`.
-  #
-  # A table with no `input` key is kept as-is: it is not a claim this system
-  # can read, and `models-list` reports that honestly as `input: invalid`.
-  defp parse_multi_modal(nil, _provider_name, _model_name), do: nil
-
-  defp parse_multi_modal(%{} = claim, provider_name, model_name) do
-    case Map.get(claim, "input") do
-      nil ->
-        claim
-
-      input ->
-        if is_list(input) and Enum.all?(input, &is_binary/1) do
-          claim
-        else
-          raise invalid_modalities_message(input, provider_name, model_name)
-        end
-    end
-  end
-
-  defp parse_multi_modal(value, provider_name, model_name) do
-    raise "Provider #{provider_name}, model #{model_name}: invalid multi-modal " <>
-            "#{inspect(value)}: must be a table"
-  end
-
-  defp invalid_modalities_message(input, provider_name, model_name) do
-    "Provider #{provider_name}, model #{model_name}: invalid multi-modal input " <>
-      "#{inspect(input)}: must be a list of strings"
-  end
-
   defp parse_model(model_data, provider_name) do
-    name = Map.get(model_data, "name")
+    name = ModelValidation.validate_name(Map.get(model_data, "name"), provider_name)
 
     %Model{
       name: name,
       provider_name: nil,
       context_limit: Map.get(model_data, "context-limit"),
-      multi_modal: parse_multi_modal(Map.get(model_data, "multi-modal"), provider_name, name),
+      multi_modal:
+        ModelValidation.validate_multi_modal(
+          Map.get(model_data, "multi-modal"),
+          provider_name,
+          name
+        ),
       thinking_effort: parse_thinking_effort(Map.get(model_data, "thinking-effort"))
     }
   end

@@ -135,7 +135,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       # fact.
       ref = Process.monitor(pid)
       :ok = Supervisor.stop_agent(space_id, name)
-      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
 
       result = AgentTestLifecycle.stop_test_agents()
 

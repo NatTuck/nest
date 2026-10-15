@@ -42,11 +42,18 @@ defmodule Nest.Agents.Agent.Archive do
   # One parent call per name: `Supervisor.archive_agent/2` already archives a
   # whole subtree, so a name is the right granularity, and doing them one at a
   # time keeps one refusal from abandoning the names after it.
+  #
+  # A dead parent *exits* the call rather than replying, and that would abandon
+  # every name after the first — the opposite of the design above. The exit is
+  # turned into this name's failure so the rest still run and the content says
+  # what happened.
   defp archive_one(parent, name) do
     case GenServer.call(parent, {:archive_agent_request, self(), name}) do
       {:ok, archived} -> {:ok, archived}
       {:error, reason} -> {:error, {name, reason}}
     end
+  catch
+    :exit, reason -> {:error, {name, {:parent_unavailable, reason}}}
   end
 
   # The single-name forms are byte-identical to what this tool produced before
@@ -55,14 +62,16 @@ defmodule Nest.Agents.Agent.Archive do
   defp sentence({:error, {name, reason}}), do: "Could not archive #{name}: #{inspect(reason)}"
 
   # `name` takes one agent name or a list of them. A non-string, a list with a
-  # non-string element, and an empty list are all rejected loudly rather than
-  # filtered: silently dropping a name would leave an agent the caller asked to
-  # clean up running, and an empty list is far more likely to be a malformed
-  # call than a request to archive nothing.
+  # non-string element, a blank name, and an empty list are all rejected loudly
+  # rather than filtered: silently dropping a name would leave an agent the
+  # caller asked to clean up running, and an empty list is far more likely to be
+  # a malformed call than a request to archive nothing.
   defp archive_names(args) when is_map(args), do: names_from(Map.get(args, "name"))
   defp archive_names(_args), do: {:error, names_error(nil)}
 
-  defp names_from(name) when is_binary(name) and name != "", do: {:ok, [name]}
+  defp names_from(name) when is_binary(name) do
+    if blank?(name), do: {:error, names_error(name)}, else: {:ok, [name]}
+  end
 
   defp names_from(names) when is_list(names) do
     if valid_names?(names), do: {:ok, names}, else: {:error, names_error(names)}
@@ -71,8 +80,13 @@ defmodule Nest.Agents.Agent.Archive do
   defp names_from(other), do: {:error, names_error(other)}
 
   defp valid_names?(names) do
-    names != [] and Enum.all?(names, &(is_binary(&1) and &1 != ""))
+    names != [] and Enum.all?(names, &(is_binary(&1) and not blank?(&1)))
   end
+
+  # A whitespace-only name is a typo, not an agent. `GenServer.call` would look
+  # up the registry with it and report `:not_found`, which reads as "that agent
+  # is gone" rather than "that is not a name".
+  defp blank?(name), do: String.trim(name) == ""
 
   defp names_error(value) do
     "name must be an agent name or a list of agent names; got #{inspect(value)}."

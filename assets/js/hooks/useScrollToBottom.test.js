@@ -420,6 +420,13 @@ describe("useScrollToBottom", () => {
           result.current.jumpToBottom();
         });
 
+        // Exactly one scroll, and it is the smooth one. Asserting only that a
+        // smooth call happened hid a second `behavior: "auto"` scroll: re-pinning
+        // changed `isAtBottom`, which was a dependency of the new-content effect,
+        // so that effect re-ran on the state change and landed the view
+        // instantly, superseding the animation. Counting the calls is what makes
+        // this test able to see it.
+        expect(scrollIntoView).toHaveBeenCalledTimes(1);
         expect(scrollIntoView).toHaveBeenCalledWith(
           expect.objectContaining({ behavior: "smooth" }),
         );

@@ -1,5 +1,14 @@
 # W5 / #98 — the `/compact` request as a visible message: BLOCKED
 
+> **SUPERSEDED.** This note records a *blocked* attempt and recommends option
+> (B) — "make the planner's base and the request's base agree". The design that
+> actually landed is different and larger: the compaction request is now a
+> committed message (`05b7160`), which removes the transaction exception
+> entirely, so there is no `staged` list to keep in step and no bridge decision
+> to reconcile. The failure below is still the reason that path was abandoned,
+> and `notes/continue.md`'s invariants 3–5 now describe the shipped design. Keep
+> this as the record of what was tried and why it did not work.
+
 **Outcome: stopped and reported, per the brief.** The change was implemented, and
 it **breaks compaction**. Production code is restored; the attempted diff, the
 reproduction test and the failing log are in this directory.

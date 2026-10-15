@@ -44,9 +44,14 @@ defmodule Nest.Agents.Agent.MessageAppender do
 
   ## Loop-breaker reset
 
-  Both single and batch handlers reset `consecutive_compaction_count` to
-  zero when an appended message is genuine progress (`:user`,
-  `:assistant`, or `:tool`). Repair messages are part of the requested
+  Both single and batch handlers reset `loop_count` to zero when an appended
+  message is genuine progress (`:user`, `:assistant`, or `:tool`), with one
+  exception: the runtime's compaction request is a `user` row — that is what the
+  wire can carry — but it is **not** progress. Counting it would reset the
+  breaker on every attempt and disarm the only bound on a compaction that keeps
+  failing, since the request is committed and can never be removed.
+  `Nest.Messages.User.compaction_metadata/0` marks the row and
+  `progress_message?/1` excludes it. Repair messages are part of the requested
   append and do not change the reset decision.
 
   ## In-process entry points

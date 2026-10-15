@@ -29,6 +29,12 @@ defmodule Nest.Messages.User do
   # The origin marking the runtime's compaction request.
   @compaction_origin "compaction"
 
+  # The `mode` the request carries, matching the `[mode: compact]` tag
+  # `CompactionProbeSupport.compaction_suffix/2` puts on the row's first line.
+  # The client strips that tag by matching it against this key and renders a
+  # badge instead, so the user sees what the row is rather than raw wire text.
+  @compaction_mode "compact"
+
   defstruct [:index, :parts, :timestamp, :metadata, :api_logs, :tokens]
 
   @type t :: %__MODULE__{
@@ -61,9 +67,15 @@ defmodule Nest.Messages.User do
   `render_suffix/2`), so the row is excluded from the recall list *and* from
   `MessageAppender.progress_message?/1` — it is not progress, and counting it
   as progress would disarm the consecutive-compaction loop breaker.
+
+  The `"mode"` key is set too, and it is not cosmetic: the row's text begins
+  with the `[mode: compact]` tag, and the client strips that tag on render by
+  matching it against this key. Without it the user reads the raw wire tag.
   """
   @spec compaction_metadata() :: map()
-  def compaction_metadata, do: %{@origin_key => @compaction_origin}
+  def compaction_metadata do
+    %{@origin_key => @compaction_origin, "mode" => @compaction_mode}
+  end
 
   @doc "The `origin` value marking the runtime's compaction request."
   @spec compaction_origin() :: String.t()

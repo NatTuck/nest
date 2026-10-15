@@ -33,11 +33,17 @@ defmodule Nest.Tokens.Compactor do
   reshape the response.
 
   The LLM call is set up by the caller. It sends a request whose
-  messages END with a `[mode: compact]` system suffix carrying
-  the dynamic budget hint:
+  messages END with a `[mode: compact]` suffix — a `user` row, because
+  that is what every provider's wire format can carry — on its own
+  line, carrying the dynamic budget hint:
 
-      [mode: compact] Summarize the conversation in your
-      <N> remaining tokens. <optional_guidance?>
+      [mode: compact]
+      Summarize the conversation in your <N> remaining tokens.
+      <optional_guidance?>
+
+  That row is committed to the transcript before this call, so the tag is
+  on its own line exactly like the `[mode: <name>]\n` prefix every human
+  row carries: the client strips it on render and shows a badge instead.
 
   The agent's initial system prompt carries a `[mode: compact]`
   paragraph explaining the summarization contract. Together,

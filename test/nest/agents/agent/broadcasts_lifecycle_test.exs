@@ -95,8 +95,10 @@ defmodule Nest.Agents.Agent.BroadcastsLifecycleTest do
       # the frame is emitted from inside `Agent.terminate/2`, which runs before
       # the process exits, so it is already in this mailbox by the time the
       # `:DOWN` arrives. No clock is involved, and no polling is needed — the
-      # assertion below is `assert_received`, not `assert_receive`.
-      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+      # assertion below is `assert_received`, not `assert_receive`. The bound on
+      # the `:DOWN` is therefore only a failure detector, and it is the 500 ms
+      # SMELLS.md cap rather than a second.
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
 
       assert_received {:agent_stopped, %{"space_id" => ^space_id, "name" => ^name}}
     end
@@ -110,7 +112,10 @@ defmodule Nest.Agents.Agent.BroadcastsLifecycleTest do
 
       ref = Process.monitor(pid)
       assert :ok = Supervisor.archive_agent(space_id, name)
-      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+      # The bound is a failure detector only: the frame this test asserts is
+      # emitted inside `terminate/2`, before the exit, so it is in the mailbox by
+      # the time the `:DOWN` arrives. 500 ms is the SMELLS.md cap.
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
 
       # An archive ends the agent, so it reports the stop *and* the archive.
       # The pair is not contradictory — an archived agent is also a stopped one
