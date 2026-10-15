@@ -267,15 +267,26 @@ defmodule Nest.Agents.Agent.HistoryTest do
                "start_index 3 with length 4 runs past the end: agent #{name} has 5 " <>
                  "messages (indices 0..4), so at most 2 can be read from index 3."
 
+      # A negative start resolves once and the window runs forward, so `-1` with
+      # a length above 1 runs off the end — the plausible misreading of the
+      # "last N" idiom the description teaches (`-N` with `length: N`).
+      {negative_past_end, _log} = run(space_id, name, %{"start_index" => -1, "length" => 5})
+
+      assert %ToolResult{is_error: true, content: content} = negative_past_end
+
+      assert content ==
+               "start_index -1 with length 5 runs past the end: agent #{name} has 5 " <>
+                 "messages (indices 0..4), so at most 1 can be read from index 4."
+
       {bad_length, _log} = run(space_id, name, %{"length" => 0})
 
       assert %ToolResult{is_error: true, content: content} = bad_length
-      assert content == "Invalid `length` argument: expected a positive integer, got 0."
+      assert content == "Invalid `length` argument: expected a positive integer, got: 0."
 
       {bad_index, _log} = run(space_id, name, %{"start_index" => "2"})
 
       assert %ToolResult{is_error: true, content: content} = bad_index
-      assert content == ~s(Invalid `start_index` argument: expected an integer, got "2".)
+      assert content == ~s(Invalid `start_index` argument: expected an integer, got: "2".)
 
       {both_modes, _log} = run(space_id, name, %{"search" => "report", "start_index" => -1})
 
@@ -285,18 +296,44 @@ defmodule Nest.Agents.Agent.HistoryTest do
       {bad_search, _log} = run(space_id, name, %{"search" => 5})
 
       assert %ToolResult{is_error: true, content: content} = bad_search
-      assert content == "Invalid `search` argument: expected a non-empty string, got 5."
+      assert content == "Invalid `search` argument: expected a non-empty string, got: 5."
     end
 
-    test "an unknown name is an error, and a call with no calling agent has nothing to default to",
-         %{pid: pid, name: name, space_id: space_id} do
+    test "resolves `name`: absent means the caller, a malformed one is refused", %{
+      pid: pid,
+      name: name,
+      space_id: space_id
+    } do
       seed_conversation(pid)
 
-      {ghost, log} = run(space_id, name, %{"name" => "ghost"})
+      # Absent, explicitly empty, and no arguments map at all all mean the
+      # caller itself.
+      for args <- [%{}, %{"name" => ""}, nil] do
+        {result, _log} = run(space_id, name, args)
+
+        assert %ToolResult{name: "agents-history", is_error: false, content: content} = result
+        assert content =~ "[4] assistant:\nthe report is ready"
+      end
+
+      # Present but not a string is a typo, not a default: reading the caller's
+      # own history in its place would answer a question the model did not ask.
+      for {bad, rendered} <- [{123, "123"}, {%{}, "%{}"}, {["bob"], ~s(["bob"])}, {nil, "nil"}] do
+        {result, log} = run(space_id, name, %{"name" => bad})
+
+        assert %ToolResult{is_error: true, content: content} = result
+
+        assert content ==
+                 "Invalid `name` argument: expected a string, got: #{rendered}. " <>
+                   "Omit it to target yourself."
+
+        assert log =~ "BatchSizer produced is_error=true tool result"
+      end
+
+      # A string that names nothing in this space is still a lookup failure.
+      {ghost, _log} = run(space_id, name, %{"name" => "ghost"})
 
       assert %ToolResult{name: "agents-history", is_error: true, content: content} = ghost
       assert content == "Agent ghost not found in this space."
-      assert log =~ "BatchSizer produced is_error=true tool result"
 
       # `ctx.agent_name` is the caller's own name in production; a call that has
       # neither a name nor a caller is refused rather than reading something

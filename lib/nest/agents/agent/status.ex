@@ -93,9 +93,13 @@ defmodule Nest.Agents.Agent.Status do
   defp compaction_line(-1), do: "  last compaction index: -1 (never compacted)"
   defp compaction_line(index), do: "  last compaction index: #{index}"
 
+  # One row, not the whole table: this is a single id's slug. A row that is gone
+  # (a dangling `vocation_id`) is reported as what it is rather than as a slug.
   defp vocation(vocation_id) do
-    slugs = Vocations.list_vocations() |> Map.new(&{&1.id, &1.slug})
-    Map.get(slugs, vocation_id, "unknown (id #{inspect(vocation_id)})")
+    case Vocations.get_vocation(vocation_id) do
+      nil -> "unknown (id #{inspect(vocation_id)})"
+      vocation -> vocation.slug
+    end
   end
 
   # A live-only field is reported as unknown when there is no process to ask,

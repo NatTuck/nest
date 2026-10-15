@@ -231,6 +231,45 @@ defmodule Nest.Agents.Agent.StatusTest do
     assert content =~ "  owed replies: unknown (the live process did not answer)"
   end
 
+  test "resolves `name`: absent means the caller, a malformed one is refused", %{
+    name: name,
+    space_id: space_id
+  } do
+    # Absent means the caller itself.
+    {self_report, _log} = run(space_id, name, %{})
+
+    assert %ToolResult{is_error: false, content: content} = self_report
+    assert content =~ "Agent \"#{name}\": idle (running)"
+
+    # Present but not a string is a typo, not a default: reporting the caller's
+    # own status in its place would answer a question the model did not ask.
+    for {bad, rendered} <- [{123, "123"}, {%{}, "%{}"}, {nil, "nil"}] do
+      {result, log} = run(space_id, name, %{"name" => bad})
+
+      assert %ToolResult{is_error: true, content: content} = result
+
+      assert content ==
+               "Invalid `name` argument: expected a string, got: #{rendered}. " <>
+                 "Omit it to target yourself."
+
+      assert log =~ "BatchSizer produced is_error=true tool result"
+    end
+  end
+
+  test "a vocation row that is gone is reported as unknown, not as a slug", %{
+    space_id: space_id,
+    name: caller
+  } do
+    # A dangling `vocation_id` (the FK cannot make one, but a deleted row or a
+    # hand-written one can): the report says what it is rather than crashing.
+    Mimic.stub(Nest.Vocations, :get_vocation, fn _id -> nil end)
+
+    {result, _log} = run(space_id, caller, %{})
+
+    assert %ToolResult{is_error: false, content: content} = result
+    assert content =~ ~r/^  vocation: unknown \(id \d+\)$/m
+  end
+
   test "an unknown name and an archived agent are refusals", %{
     pid: pid,
     name: name,
