@@ -137,7 +137,12 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
   end
 
   describe "Compaction staging refuses compaction when the rendered system exceeds 25% budget" do
-    test "the agent transitions to :context_overflow and stays there" do
+    test "the agent transitions to :context_overflow and spawns no chat worker" do
+      # Two observables of one outcome, so one test. From the first name: the
+      # agent lands in `:context_overflow` and stays there — it does not fall
+      # back to idle, and no turn is started for it. From the second: the
+      # oversized path spawns no chat worker, because the refusal happens before
+      # any compaction request is dispatched.
       vocation = oversized_vocation()
 
       # Build a minimal state struct (no Agent process): `Compaction.stage/2`
@@ -149,16 +154,21 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       refute Machine.status_for(state_before.live.machine) == :context_overflow
 
       # The `{:overflow, :system_oversized, _}` broadcast → `Overflow.broadcast/5`
-      # → `Broadcasts.error/4` which calls `Logger.error/2`. AGENTS.md
-      # line 84-92 forbids tests from printing to the console;
-      # `with_log/2` captures the log AND returns the function's
-      # result so we can assert the in-memory state shape.
-      {state_after, _log} =
-        with_log(fn ->
-          post_turn(state_before)
-        end)
+      # → `Broadcasts.error/4`, which logs the wording and broadcasts the same
+      # text. The log is captured *and asserted* — a capture nobody asserts on
+      # can only hide prints (`SMELLS.md`) — and `with_log/2` returns the
+      # function's result, so the state shape is asserted too.
+      {state_after, log} = with_log(fn -> post_turn(state_before) end)
 
       assert Machine.status_for(state_after.live.machine) == :context_overflow
+
+      assert is_nil(state_after.live.machine.work.active_worker),
+             "the oversized-system path must not have spawned a chat worker"
+
+      assert log =~ "chat:error"
+      assert log =~ "Cannot compact:"
+      assert log =~ "25% safety budget"
+      assert log =~ "source=Turn.Executor"
     end
 
     test "the broadcast carries the oversized-system wording" do
@@ -167,10 +177,10 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
 
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
 
-      # Capture the Logger.error that the broadcast path emits; the
-      # test asserts the PubSub broadcast content separately, so the
-      # log is just noise.
-      _ = capture_log(fn -> post_turn(state) end)
+      # `Broadcasts.error/4` logs the wording and broadcasts the same text, so
+      # the capture is asserted rather than merely silencing, and the broadcast
+      # below is the other observable (the one the UI sees).
+      log = capture_log(fn -> post_turn(state) end)
 
       assert_receive {:chat_error, %{content: msg}}
 
@@ -180,18 +190,13 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
 
       refute msg =~ "compaction reserve",
              "oversized path should not use the reserve_exhausted wording"
-    end
 
-    test "no compaction chat turn is spawned" do
-      vocation = oversized_vocation()
-      state = build_minimal_state(vocation)
-
-      {state_after, _log} = with_log(fn -> post_turn(state) end)
-
-      assert Machine.status_for(state_after.live.machine) == :context_overflow
-
-      assert is_nil(state_after.live.machine.work.active_worker),
-             "the oversized-system path must not have spawned a chat worker"
+      # The frame and the log line carry the same wording, and each names the
+      # call site its own way: the broadcast appends a `[Source: …]` tag, the
+      # log line records `source=`.
+      assert msg =~ "[Source: Turn.Executor]"
+      assert log =~ "Cannot compact:"
+      assert log =~ "source=Turn.Executor"
     end
   end
 
@@ -207,7 +212,10 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # choke point when compaction staging appends its request suffix.
       state_before = build_minimal_state(vocation, 100_000)
 
-      {state_after, _log} = with_log(fn -> post_turn(state_before) end)
+      # No capture: staging a compaction for an under-budget vocation logs
+      # nothing, and a capture nobody asserts on can only hide prints
+      # (`SMELLS.md`), so the one that used to sit here is gone.
+      state_after = post_turn(state_before)
 
       # A normal vocation should NOT trigger the oversized path —
       # agent should NOT have transitioned to :context_overflow
@@ -238,11 +246,10 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
 
       state = agent_state(pid)
 
-      # `start_agent/1` already staged a compaction (via
-      # `ChatPipeline.handle_chat/3`), which can broadcast a
-      # `chat:error` for the nil-vocation case. Capture so the test
-      # output stays clean.
-      {state_after, _log} = with_log(fn -> post_turn(state) end)
+      # No capture: the nil-vocation fallback stages the compaction without
+      # logging, so there is no line to assert and nothing to hide — the
+      # defensive capture that used to sit here is gone (`SMELLS.md`).
+      state_after = post_turn(state)
 
       assert Machine.status_for(state_after.live.machine) == :compacting,
              "expected :compacting, got #{inspect(Machine.status_for(state_after.live.machine))}"
