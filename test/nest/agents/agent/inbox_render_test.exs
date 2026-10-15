@@ -20,15 +20,15 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
 
   use Nest.DataCase, async: true
 
+  import Nest.Agents.AgentStateHelpers, only: [set_status: 2, wait_idle: 1]
+  import Nest.Agents.AgentTurnTestHelpers, only: [user_texts: 1]
   import Nest.Test.TmpCleanup
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Inbox.Render
-  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Messages.MessageList
-  alias Nest.Messages.Part
 
   # A big-enough body to exceed the default 8000-token cap.
   @oversized String.duplicate("hello world ", 4_000)
@@ -236,50 +236,6 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       wait_idle(pid)
     end
   end
-
-  defp set_status(pid, status) do
-    replace_state(pid, fn state ->
-      %{
-        state
-        | live: %{
-            state.live
-            | machine: Machine.status_to_machine(state.live.machine, status)
-          }
-      }
-    end)
-  end
-
-  # Wait for the agent to settle, on the frame that decides it: the `idle`
-  # broadcast that ends the turn. A bare `idle` frame is not the fence — a stop,
-  # and any turn end that drains, publishes the transient
-  # `streaming -> idle -> streaming` of issue #15 first — so the fence is the
-  # idle that carries an empty queue. An empty queue is also exactly the state
-  # no further drain can start from; the status read that follows is a read of
-  # the settled state, not a wait.
-  defp wait_idle(pid) do
-    assert_receive {:chat_status, %{status: "idle", pendingMessageCount: 0}}, 1_000
-
-    assert Agent.get_public_info(pid, 1_000).status == :idle
-  end
-
-  defp user_texts(messages) do
-    Enum.flat_map(messages, fn
-      {:user, %{parts: parts}} -> [parts_text(parts)]
-      _ -> []
-    end)
-  end
-
-  defp parts_text(parts) do
-    Enum.map_join(parts, "", fn
-      %Part.Text{text: text} -> text || ""
-      _ -> ""
-    end)
-  end
-
-  # `:sys.replace_state/3` with the suite's explicit 1 s timeout, kept as a
-  # helper so the call stays on one line (the three-argument form pushes these
-  # files past the 700-line cap once `mix format` expands it).
-  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 1_000)
 
   defp entry(kind, from, content, mode \\ nil, id \\ nil, human? \\ false) do
     %{
