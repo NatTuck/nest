@@ -28,7 +28,7 @@ defmodule Nest.Tools.LastMessage do
           "query). Call this mid-turn to act on a result without ending your " <>
           "turn. The message is consumed: it will not be delivered again at your " <>
           "next turn boundary. Returns that there is nothing pending when the " <>
-          "agent has no undelivered message for you. Use `agents-wait-for-idle` " <>
+          "agent has no undelivered message for you. Use `agents-wait` " <>
           "first to know when the agent has finished.",
       parameters_schema: %{
         "type" => "object",

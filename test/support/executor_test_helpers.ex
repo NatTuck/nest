@@ -26,6 +26,8 @@ defmodule Nest.TestSupport.ExecutorTestHelpers do
   warning for an `:agent_row_reused` one.
   """
 
+  import ExUnit.Assertions
+  import ExUnit.Callbacks
   import Nest.PersistenceTestHelpers
 
   alias Nest.Agents.Agent
@@ -71,6 +73,39 @@ defmodule Nest.TestSupport.ExecutorTestHelpers do
         "review" => %{"caps" => %{}}
       }
     }
+  end
+
+  @doc """
+  A process registered as `{space_id, name}` — the parent a `{:finalize, …}`
+  action reports to, so a test can assert whether it was told anything.
+
+  `send_parent/2` casts through `Registry.via_tuple/2`, so the payload lands in
+  this process's mailbox, where `parent_messages/1` reads it. Spawned rather
+  than registered from the test process itself: the registry links every
+  process it holds, so a test process registered there dies with the registry.
+  """
+  def register_parent(space_id, name) do
+    test_pid = self()
+
+    parent =
+      spawn(fn ->
+        {:ok, _} = Registry.register(Nest.Agents.Registry, {space_id, name}, nil)
+        send(test_pid, {:parent_registered, self()})
+
+        receive do
+          :never -> :ok
+        end
+      end)
+
+    assert_receive {:parent_registered, ^parent}
+    on_exit(fn -> Process.exit(parent, :kill) end)
+    parent
+  end
+
+  @doc "The messages `register_parent/2`'s process has been sent, oldest first."
+  def parent_messages(parent) do
+    {:messages, messages} = Process.info(parent, :messages)
+    messages
   end
 
   @doc "The turn context the executor reads its world from."

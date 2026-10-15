@@ -1,14 +1,16 @@
 defmodule Nest.Tools.WaitForIdle do
   @moduledoc """
-  The `agents-wait-for-idle` tool spec.
+  The `agents-wait` tool spec.
 
   Kept in its own module (like `FileTools`, `InspectFile`, and
   `ShellJobs`) so `Nest.Tools`'s own functions stay small.
 
   The `function` here is a stub: real execution lives in
-  `Nest.Agents.Agent.ToolLoop.run_wait_for_idle/2`, which either runs the
-  blocking wait (`Nest.Agents.Agent.WaitForIdle`) in the turn's tool worker or
-  registers a watch (`Nest.Agents.Agent.Watch`) and returns immediately.
+  `Nest.Agents.Agent.ToolLoop.run_wait_for_idle/2`, which registers a watch
+  (`Nest.Agents.Agent.Watch`) and returns immediately. The call never waits on
+  the caller's side (issue #54): when there is something to wait for, the watch
+  is what the machine reads off the result (`state: "waiting"`) to end the
+  caller's turn, and the notice it delivers is what wakes the idle agent.
 
   This tool is **synchronisation only** (issue #62): it never carries the
   watched agent's message. The body comes from the inbox delivery, or from
@@ -18,21 +20,25 @@ defmodule Nest.Tools.WaitForIdle do
   alias Nest.LLM.Tool
 
   @doc """
-  The `agents-wait-for-idle` `Nest.LLM.Tool` struct.
+  The `agents-wait` `Nest.LLM.Tool` struct.
   """
   @spec function() :: Tool.t()
   def function do
     %Tool{
-      name: "agents-wait-for-idle",
+      name: "agents-wait",
       description:
         "Wait for peer agents in this space to finish their turns, and report " <>
           "which are idle and which are still busy. Pass a list of agent names, " <>
           "or an empty list for every other agent in this workspace. " <>
-          "By default this returns immediately and leaves you idle so a human " <>
-          "can message you: you will be sent a notice when the agents go idle. " <>
-          "Pass `block: true` to block the turn instead (the wait is then " <>
-          "bounded by `timeout` milliseconds; reaching it is a normal result, " <>
-          "not an error). Pass `all: true` to wait for every named agent rather " <>
+          "This call returns immediately and, when there is something to wait " <>
+          "for, ends your turn: you go idle and are woken by a message when the " <>
+          "agents go idle. Nothing waits for them on your side — put anything " <>
+          "else you want done now in this same batch, and do not poll. " <>
+          "When every target is already idle, or the space holds no other " <>
+          "agent, there is nothing to watch: the partition is reported in this " <>
+          "result and your turn continues. `timeout` bounds the watch, not the " <>
+          "call — reaching it is a normal result, delivered as a message, not " <>
+          "an error. Pass `all: true` to wait for every named agent rather " <>
           "than the first. " <>
           "This call carries NO message content — use `agents-last-message` to " <>
           "read an agent's message once it is idle. An idle peer owes no " <>
@@ -58,18 +64,12 @@ defmodule Nest.Tools.WaitForIdle do
               "When true, wait until every named agent is idle. Defaults to " <>
                 "false: fire as soon as the first busy agent goes idle."
           },
-          "block" => %{
-            "type" => "boolean",
-            "description" =>
-              "When true, block this turn until the event fires instead of " <>
-                "returning immediately. Defaults to false (non-blocking: you go " <>
-                "idle and a notice arrives later)."
-          },
           "timeout" => %{
             "type" => "integer",
             "description" =>
-              "Maximum milliseconds to wait. Defaults to 300000 (5 minutes). " <>
-                "Reaching it is a normal result, not an error."
+              "Maximum milliseconds to watch for the agents to go idle. " <>
+                "Defaults to 300000 (5 minutes). Reaching it is a normal " <>
+                "result, delivered as a message, not an error."
           },
           "max_result_tokens" => Nest.Tools.max_result_tokens_schema()
         },

@@ -451,6 +451,26 @@ defmodule Nest.Messages.MessageList do
     )
   end
 
+  @doc """
+  The synthetic assistant acknowledgement that follows a wait tool's result
+  (issue #54).
+
+  Same family as `idle_bridge_ack/1` and `backgrounded_ack/0`: an assistant text
+  message with no `index` (the append path stamps it) and no `api_logs`. It is
+  what keeps the wire valid when the wait ends the turn — the wait's result is a
+  `{:tool, _}`, a wire-`user` message, so without an assistant after it the idle
+  agent would end on a user role, the one shape `Repair.classify_load/1` and the
+  compaction commit exist to prevent. It also tells the model what is happening:
+  the call registered a watch, the turn is over, and the result will arrive as a
+  message.
+  """
+  @spec waiting_ack() :: term()
+  def waiting_ack do
+    build_idle_bridge_ack(
+      "Understood. I'll wait; I'll continue when the result arrives as a message."
+    )
+  end
+
   @lost_promise_key "backgrounded_lost_ids"
   @fulfilled_promise_key "backgrounded_fulfilled_ids"
 

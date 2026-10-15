@@ -90,11 +90,15 @@ defmodule Nest.Messages.Part do
 
     `state` is the wire's own word for a result that is not a
     verdict at all: `"backgrounded"` is the machine's synthetic
-    answer to a call it moved to the background (issue #36), whose
-    real result arrives later as a message. It is `nil` for a
-    result a tool produced, and the value is kept verbatim — a
-    value this version does not know is the panel's to render
-    explicitly, not this module's to map away.
+    answer to a call it moved to the background (issue #36), and
+    `"waiting"` is a wait tool's answer for a call that registered
+    a watch (`agents-wait`/`shell-wait`, issue #54). Both mean the
+    same thing to a reader — the call's real result has not
+    arrived and will arrive later as a message — and the panel
+    badges both rather than reading either as a verdict. It is
+    `nil` for a result a tool produced, and the value is kept
+    verbatim — a value this version does not know is the panel's
+    to render explicitly, not this module's to map away.
     """
     defstruct [:tool_call_id, :name, :content, :arguments, :is_error, :state]
 

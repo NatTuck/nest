@@ -103,7 +103,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   def project(%ToolCall{name: "agents-send"}, _ctx),
     do: estimator_overhead("Message queued for clever-raven.")
 
-  def project(%ToolCall{name: "agents-wait-for-idle"}, _ctx),
+  def project(%ToolCall{name: "agents-wait"}, _ctx),
     do: summary_baseline_size() * @safety_padding
 
   def project(%ToolCall{name: "agents-last-message"}, _ctx),
@@ -149,7 +149,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
     file-read shell-cmd file-write file-edit file-inspect context-check
     shell-wait shell-list shell-kill
     agents-spawn agents-query agents-batch agents-list agents-list-archived models-list
-    agents-archive agents-unarchive agents-send agents-wait-for-idle agents-last-message
+    agents-archive agents-unarchive agents-send agents-wait agents-last-message
     agents-history agents-status
   )
 

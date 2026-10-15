@@ -38,11 +38,6 @@ defmodule Nest.Tools.ShellJobsTest do
 
   defp invoke(tool, args, context), do: tool.function.(args, context)
 
-  # The tool's caller must not be left registered for the job's exit.
-  # The manager owns the waiter list, so read it directly instead of
-  # racing an OS kill against a fixed receive timeout.
-  defp waiters(id), do: ShellJobs.waiters(id, 1_000)
-
   # `echo` is fast, but the OS decides when it exits. Wait for the manager's
   # exit event instead of polling its status; `subscribe/3` sends the frame
   # immediately for a job that has already exited, so nothing can be missed.
@@ -72,68 +67,18 @@ defmodule Nest.Tools.ShellJobsTest do
     id = start_job!("echo done", tmp, key)
     wait_until_exited(key, id)
 
+    # A job that has already finished reports its output in the result: there
+    # is nothing to wait for, so the tool answers inline (issue #54) and the
+    # caller's turn continues.
     assert {:ok, text} =
              invoke(
                Tools.get_function("shell-wait", Mounts.new(nil, nil)),
-               %{"id" => id, "timeout" => 500, "block" => true},
+               %{"id" => id, "timeout" => 500},
                context
              )
 
     assert text =~ "exited with code 0"
     assert text =~ "done"
-  end
-
-  test "shell-wait abandons the wait on stop_chat without killing the job", %{
-    key: key,
-    tmp: tmp,
-    context: context
-  } do
-    id = start_job!("sleep 30", tmp, key)
-    send(self(), {:stop_chat, self()})
-
-    assert {:ok, text} =
-             invoke(
-               Tools.get_function("shell-wait", Mounts.new(nil, nil)),
-               %{"id" => id, "timeout" => 500, "block" => true},
-               context
-             )
-
-    assert text =~ "Stopped waiting"
-    assert [%{id: ^id, status: :running}] = ShellJobs.list(key)
-    refute self() in waiters(id)
-  end
-
-  test "shell-wait reports the timeout and a gone job without leaving the caller registered", %{
-    key: key,
-    tmp: tmp,
-    context: context
-  } do
-    id = start_job!("sleep 30", tmp, key)
-
-    assert {:ok, text} =
-             invoke(
-               Tools.get_function("shell-wait", Mounts.new(nil, nil)),
-               %{"id" => id, "timeout" => 10, "block" => true},
-               context
-             )
-
-    assert text =~ "Timed out"
-    refute self() in waiters(id)
-
-    # The job's agent stopped, so the manager dropped the job and said so
-    # (`ShellJobs.drop_agent/2`). The wait must report that as what it is: a
-    # job that went with its agent, never as an exit (there is no exit code)
-    # and never as a timeout (the job is not "still running").
-    send(self(), {:shell_job_gone, id})
-
-    assert {:ok, text} =
-             invoke(
-               Tools.get_function("shell-wait", Mounts.new(nil, nil)),
-               %{"id" => id, "timeout" => 500, "block" => true},
-               context
-             )
-
-    assert text == "Background job #{id} is gone: the agent that owned it stopped."
   end
 
   test "shell-kill stops a running job", %{key: key, tmp: tmp, context: context} do

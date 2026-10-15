@@ -23,7 +23,7 @@ defmodule Nest.Tools.ShellJobs do
       description:
         "List your background shell jobs (started with `shell-cmd`'s " <>
           "`background: true`), with each job's status, exit code, and log " <>
-          "path. Use `shell-wait` to block for one to finish and `shell-kill` " <>
+          "path. Use `shell-wait` to watch for one to finish and `shell-kill` " <>
           "to stop one.",
       parameters_schema: %{
         "type" => "object",
@@ -43,25 +43,22 @@ defmodule Nest.Tools.ShellJobs do
       name: "shell-wait",
       description:
         "Wait for a background shell job to finish and report its output and " <>
-          "exit code. By default this returns immediately and leaves you idle so " <>
-          "a human can message you: the job's result is delivered as a message " <>
-          "when it exits. Pass `block: true` to block this turn instead (bounded " <>
-          "by `timeout` ms, default #{@default_wait_ms}); if it times out the job " <>
-          "keeps running.",
+          "exit code. A job that has already finished reports its output now, " <>
+          "in this result. A job that is still running ends your turn: the job's " <>
+          "result is delivered as a message when it exits, and nothing you do " <>
+          "waits for it. The `timeout` bounds the watch, not the call: if it " <>
+          "expires you are woken by a message saying so, and the job keeps " <>
+          "running.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
           "id" => %{"type" => "string", "description" => "The background job id."},
-          "block" => %{
-            "type" => "boolean",
-            "description" =>
-              "When true, block this turn until the job exits instead of " <>
-                "returning immediately. Defaults to false (non-blocking: you go " <>
-                "idle and the result arrives as a message)."
-          },
           "timeout" => %{
             "type" => "integer",
-            "description" => "Maximum milliseconds to wait. Defaults to #{@default_wait_ms}."
+            "description" =>
+              "Maximum milliseconds to watch for the job to exit. Defaults to " <>
+                "#{@default_wait_ms}. Reaching it is a normal result, delivered as " <>
+                "a message, not an error."
           },
           "max_result_tokens" => Nest.Tools.max_result_tokens_schema()
         },
@@ -90,58 +87,35 @@ defmodule Nest.Tools.ShellJobs do
 
   # ---- Implementations ----
 
-  # Non-blocking by default (issue #54): validate the job exists, then register
-  # a watch and return. The result is delivered as a notice when the job exits.
-  # `block: true` keeps the old in-worker wait.
+  # `shell-wait` never waits on the caller's side (issue #54). A job that has
+  # already finished reports its output inline, like any tool whose answer is
+  # already known; a running job registers a watch — reported as `{:waiting, …}`,
+  # which the machine reads and ends the caller's turn for — and the job's
+  # result arrives as a notice when it exits.
+  #
+  # The already-exited check is not an optimisation. `ShellJobs.subscribe/3`
+  # sends `{:shell_job_exit, …}` immediately for an exited job, so a watch on
+  # one fires while the caller's tool batch is still settling: the delivery can
+  # land in the caller's inbox before the batch's own results do, and the
+  # machine then backgrounds the batch instead of ending the turn. Reading the
+  # status first makes both paths deterministic.
   defp wait(%{"id" => id} = args, context) do
     timeout = max_timeout(args["timeout"])
-
-    if args["block"] == true do
-      blocking_wait(id, context, timeout)
-    else
-      async_wait(id, context, timeout)
-    end
-  end
-
-  defp async_wait(id, context, timeout) do
-    case ShellJobs.status(agent_key(context), id) do
-      {:error, :not_found} ->
-        {:error, "No such background job: #{id}"}
-
-      {:ok, _status} ->
-        Watch.register_shell_call(context, id, timeout)
-    end
-  end
-
-  defp blocking_wait(id, context, timeout) do
     key = agent_key(context)
 
-    case ShellJobs.subscribe(key, id, self()) do
-      {:error, :not_found} ->
-        {:error, "No such background job: #{id}"}
+    case ShellJobs.status(key, id) do
+      {:error, :not_found} -> {:error, "No such background job: #{id}"}
+      {:ok, {:exited, code}} -> {:ok, ShellJobs.result_text(id, code, output(key, id))}
+      {:ok, :running} -> Watch.register_shell_call(context, id, timeout)
+    end
+  end
 
-      :ok ->
-        receive do
-          {:shell_job_exit, ^id, code} ->
-            {:ok, output} = ShellJobs.output(key, id)
-            wait_result(id, code, output)
-
-          # The job's agent stopped, so the job went with it (`drop_agent/2`).
-          # Not a timeout and not an exit: there is no exit code, and the job
-          # is no longer tracked. A tool worker is a task under
-          # `Nest.Agents.TaskSupervisor`, not a child of the agent, so it can
-          # outlive the agent that owns the job it is waiting on.
-          {:shell_job_gone, ^id} ->
-            {:ok, ShellJobs.gone_text(id)}
-
-          {:stop_chat, _from} ->
-            ShellJobs.unsubscribe(key, id, self())
-            {:ok, "Stopped waiting; background job #{id} is still running."}
-        after
-          timeout ->
-            ShellJobs.unsubscribe(key, id, self())
-            {:ok, "Timed out waiting for background job #{id}; it is still running."}
-        end
+  # The job's captured output. A log the manager dropped with its agent reads
+  # as empty; the exit code is what carries the verdict either way.
+  defp output(key, id) do
+    case ShellJobs.output(key, id) do
+      {:ok, output} -> output
+      {:error, _} -> ""
     end
   end
 
@@ -168,8 +142,6 @@ defmodule Nest.Tools.ShellJobs do
         {:ok, "Killed background job #{id}."}
     end
   end
-
-  defp wait_result(id, code, output), do: {:ok, ShellJobs.result_text(id, code, output)}
 
   defp render([]), do: "No background jobs."
 

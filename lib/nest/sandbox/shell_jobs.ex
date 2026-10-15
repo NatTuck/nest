@@ -215,8 +215,9 @@ defmodule Nest.Sandbox.ShellJobs do
   def stop_all_async(agent_key, owner), do: GenServer.cast(@name, {:stop_all, agent_key, owner})
 
   @doc """
-  The result text for a finished job, shared by the blocking `shell-wait` and
-  the async watcher (issue #54) so the two wordings cannot drift.
+  The result text for a finished job, shared by `shell-wait`'s inline answer
+  (issue #54: a job that had already exited) and the watcher that delivers the
+  exit as a message, so the two wordings cannot drift.
   """
   @spec result_text(job_id(), integer(), binary()) :: String.t()
   def result_text(id, 0, ""), do: "Background job #{id} exited 0 with no output."
@@ -225,8 +226,8 @@ defmodule Nest.Sandbox.ShellJobs do
     do: "Background job #{id} exited with code #{code}:\n#{output}"
 
   @doc """
-  The result text for a job whose agent stopped, shared by the blocking
-  `shell-wait` and the async watcher for the same reason as `result_text/3`.
+  The result text for a job whose agent stopped, delivered by the watcher
+  (`Nest.Agents.Agent.Watch`) — the only place a job can be found gone.
 
   Deliberately not `result_text/3`'s shape: the job did not exit, it was
   dropped with its agent (`drop_agent/2`), so there is no exit code to report

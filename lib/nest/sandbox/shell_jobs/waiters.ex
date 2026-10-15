@@ -47,12 +47,12 @@ defmodule Nest.Sandbox.ShellJobs.Waiters do
   The manager's `drop_agent/3` is reached from the agent's `:DOWN` (a crash, an
   archive, a supervisor shutdown) and from `stop_all/1` / `stop_all_async/2`
   (the agent's own `terminate/2`), so the agent is always going away — but a
-  waiter need not go with it. The tool worker behind `shell-wait` with
-  `block: true` is a task under `Nest.Agents.TaskSupervisor`, a sibling of the
-  agent supervisor, so it survives its agent: without this it sits in its
-  `receive` for the whole `timeout` and then reports "Timed out waiting for
-  background job <id>; it is still running", which is false twice over. (The
-  async watcher is not a concern: it monitors its caller and exits on the DOWN.)
+  waiter need not go with it. The waiter behind `shell-wait` is a watcher task
+  under `Nest.Agents.TaskSupervisor`, a sibling of the agent supervisor, so it
+  does not die *with* its agent: it monitors its caller and exits on that
+  `:DOWN`, which races this frame. A waiter that wins the race reports what
+  actually happened instead of sitting in its `receive` for the whole `timeout`
+  and then claiming the job "is still running" — false twice over.
 
   Deliberately *not* `{:shell_job_exit, id, code}`: no exit was observed, so
   there is no code to report, and `output/2` is `:not_found` for a job the

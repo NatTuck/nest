@@ -39,7 +39,7 @@ defmodule Nest.Agents.Agent.WatchTest do
   defp wait(pid, name, space_id, args) do
     [%ToolResult{} = result] =
       ToolLoop.execute(ctx(pid, name, space_id), nil, [
-        %ToolCall{id: "w1", name: "agents-wait-for-idle", arguments: args}
+        %ToolCall{id: "w1", name: "agents-wait", arguments: args}
       ])
 
     result
@@ -121,12 +121,16 @@ defmodule Nest.Agents.Agent.WatchTest do
 
     result = wait(pid, name, space_id, %{"names" => ["bob"]})
 
-    assert %ToolResult{name: "agents-wait-for-idle", is_error: false, content: content} = result
+    # The result reports the registration: `state: "waiting"` is what the
+    # machine reads to end the caller's turn (issue #54).
+    assert %ToolResult{name: "agents-wait", is_error: false, content: content, state: "waiting"} =
+             result
+
     assert content =~ "Watching"
     assert content =~ "bob"
 
-    # A watch is registered, and the agent never left idle (issue #54): the
-    # tool returned without blocking a turn.
+    # A watch is registered, and the tool itself returned without blocking a
+    # turn: `ToolLoop.execute/3` is called here with no turn around it.
     assert map_size(watchers(pid)) == 1
     assert Agent.get_public_info(pid, 1_000).status == :idle
   end
@@ -136,7 +140,9 @@ defmodule Nest.Agents.Agent.WatchTest do
 
     result = wait(pid, name, space_id, %{"names" => ["bob"]})
 
-    assert %ToolResult{is_error: false, content: content} = result
+    # Nothing to watch: the partition is reported inline, with no marker, so
+    # the machine lets the turn continue (issue #54).
+    assert %ToolResult{is_error: false, content: content, state: nil} = result
     assert content == "All agents are already idle: bob."
     assert watchers(pid) == %{}
   end
@@ -395,7 +401,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     name: name,
     space_id: space_id
   } do
-    # `shell-wait` follows the same shape as `agents-wait-for-idle`: register,
+    # `shell-wait` follows the same shape as `agents-wait`: register,
     # return, go idle, and deliver the job's result as a notice.
     # The mounts come from the agent's own state: `tmp_path` is a real host
     # directory, and #79 took it off the introspection payload.
@@ -413,13 +419,54 @@ defmodule Nest.Agents.Agent.WatchTest do
     [%{id: id}] = ShellJobs.list(key)
     MockClient.set_response("acknowledged")
 
-    assert {:ok, content} = Watch.register_shell_call(ctx(pid, name, space_id), id, 500)
+    assert {:waiting, content} = Watch.register_shell_call(ctx(pid, name, space_id), id, 500)
     assert content =~ "Watching background job #{id}"
 
     # The notice drains into a turn; that turn's own user-message broadcast is
     # the event that says the notice landed.
     assert_receive {:chat_message, {:user, _}}, 1_000
     assert Enum.any?(notices(pid), &(&1 =~ "exited with code 0"))
+
+    await_idle(pid)
+  end
+
+  # A watch that reaches its `timeout` is a normal result, delivered as a
+  # notice — never an error, and never a reason to keep the job: the job is
+  # still running, and the caller is left registered for nothing.
+  test "a shell watch that times out reports it and drops its registration", %{
+    pid: pid,
+    name: name,
+    space_id: space_id
+  } do
+    # allowlist: snapshot — workspace_path + tmp_path
+    state = :sys.get_state(pid, 1_000)
+    key = {space_id, name}
+
+    {:ok, _} =
+      ShellCmd.execute("sleep 30", Mounts.from_agent(state), nil,
+        background: true,
+        agent_key: key,
+        grace_ms: 0
+      )
+
+    [%{id: id}] = ShellJobs.list(key)
+    MockClient.set_response("acknowledged")
+
+    assert {:waiting, content} = Watch.register_shell_call(ctx(pid, name, space_id), id, 10)
+    assert content =~ "Watching background job #{id}"
+
+    # The timeout notice drains into a turn; that turn's own user-message
+    # broadcast is the event that says it landed.
+    assert_receive {:chat_message, {:user, _}}, 1_000
+
+    assert Enum.any?(
+             notices(pid),
+             &(&1 =~ "Timed out after 10ms waiting for background job #{id}")
+           )
+
+    # The watch unsubscribed on the way out, and the job is untouched.
+    assert ShellJobs.waiters(id, 1_000) == []
+    assert [%{id: ^id, status: :running}] = ShellJobs.list(key)
 
     await_idle(pid)
   end
@@ -450,7 +497,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     [%{id: id}] = ShellJobs.list(key)
     MockClient.set_response("acknowledged")
 
-    assert {:ok, content} = Watch.register_shell_call(ctx(pid, name, space_id), id, 5_000)
+    assert {:waiting, content} = Watch.register_shell_call(ctx(pid, name, space_id), id, 5_000)
     assert content =~ "Watching background job #{id}"
 
     assert [{_ref, %{pid: task}}] = Map.to_list(watchers(pid))

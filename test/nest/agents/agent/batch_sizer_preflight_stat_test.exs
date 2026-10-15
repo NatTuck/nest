@@ -289,17 +289,15 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
         assert ProjectedSize.project(call("c-#{name}", name, %{}), c) > 0
       end
 
-      # Issue #62 renamed the oracle's `agents-wait` into `agents-wait-for-idle`
-      # + `agents-last-message`, both keeping that clause's projection, so the
-      # name above is gone from this tree and the `names` list can no longer
-      # carry it. The oracle itself stays frozen at the pre-rename name (its
-      # moduledoc: do not "fix" it to track the real module), so the parity
-      # check is made *through* that name: each replacement must project exactly
-      # what the oracle's frozen `agents-wait` clause projects — not its
-      # catch-all — which is the comparison the old name used to make.
+      # The oracle is frozen at the pre-#62 name `agents-wait` (its moduledoc:
+      # do not "fix" it to track the real module). Issue #62 split that tool
+      # into the wait and the fetch, and issue #54 un-renamed the wait back to
+      # `agents-wait` — so both names this tree ships must project exactly what
+      # the oracle's `agents-wait` clause projects, never its catch-all. That is
+      # the comparison the frozen name makes possible.
       frozen_wait = ProjectedSizeOracle.project(call("c-wait", "agents-wait", %{}), c)
 
-      for name <- ~w(agents-wait-for-idle agents-last-message) do
+      for name <- ~w(agents-wait agents-last-message) do
         assert ProjectedSize.project(call("c-#{name}", name, %{}), c) == frozen_wait,
                "projection differs for #{name}"
       end

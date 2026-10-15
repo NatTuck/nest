@@ -78,7 +78,7 @@ defmodule Nest.Tools do
              "agents-unarchive",
              "agents-batch",
              "agents-send",
-             "agents-wait-for-idle",
+             "agents-wait",
              "agents-last-message",
              "agents-history",
              "agents-status",
@@ -105,7 +105,7 @@ defmodule Nest.Tools do
   defp sub_agent_tool_function("agents-unarchive"), do: ArchivedAgents.unarchive_function()
   defp sub_agent_tool_function("agents-batch"), do: batch_agent_function()
   defp sub_agent_tool_function("agents-send"), do: send_agent_function()
-  defp sub_agent_tool_function("agents-wait-for-idle"), do: WaitForIdle.function()
+  defp sub_agent_tool_function("agents-wait"), do: WaitForIdle.function()
   defp sub_agent_tool_function("agents-last-message"), do: LastMessage.function()
   defp sub_agent_tool_function("agents-history"), do: History.function()
   defp sub_agent_tool_function("agents-status"), do: Status.function()
@@ -342,13 +342,15 @@ defmodule Nest.Tools do
     }
   end
 
-  # The `agents-wait-for-idle` tool: register interest in the named agents
+  # The `agents-wait` tool: register interest in the named agents
   # (or, with an empty list, every other agent in this space) going idle, and
-  # return immediately (issue #54); `block: true` blocks the turn instead. It
-  # carries no payload (issue #62). The spec lives in `Nest.Tools.WaitForIdle`;
-  # execution lives in `Nest.Agents.Agent.ToolLoop.run_wait_for_idle/2`, which
-  # delegates to `Nest.Agents.Agent.Watch` (async) or
-  # `Nest.Agents.Agent.WaitForIdle` (blocking) in the turn's tool worker.
+  # return immediately (issue #54). It never blocks: when there is something to
+  # wait for, the machine ends the caller's turn so the agent goes idle and the
+  # watch's notice wakes it; when there is nothing to wait for the turn simply
+  # continues. It carries no payload (issue #62). The spec lives in
+  # `Nest.Tools.WaitForIdle`; execution lives in
+  # `Nest.Agents.Agent.ToolLoop.run_wait_for_idle/2`, which delegates to
+  # `Nest.Agents.Agent.Watch` in the turn's tool worker.
 
   # The `agents-last-message` tool: read the pending delivered message from a
   # named agent out of the caller's own inbox, mid-turn, and consume it (issue

@@ -1,20 +1,19 @@
 defmodule Nest.Agents.Agent.WaitForIdle do
   @moduledoc """
-  The wait-for-idle machinery shared by the `agents-wait-for-idle` tool's
-  two modes (issues #62 and #54).
+  The wait-for-idle machinery behind the `agents-wait` tool (issues #62 and
+  #54).
 
-  Both modes wait on the same event — a named peer agent going idle — and
-  share one loop, one status authority and one renderer so they cannot
-  drift:
+  A wait is one event — a named peer agent going idle — observed by one loop,
+  one status authority and one renderer, so the parts cannot drift:
 
-    * the **blocking** mode (`block: true`) runs `run/2` in the turn's tool
-      worker and returns the partition inline, with **no payload** (issue
-      #62: the payload is what made every report arrive twice);
-    * the **async** mode (the default) registers interest and returns
-      immediately; the `Nest.Agents.Agent.Watch` task runs `await/5` off the
-      agent's turn, and the agent goes idle (issue #54) so a human can
-      message it. When the event fires the caller gets a bare notice and can
-      fetch the body with `agents-last-message`.
+    * the tool worker registers interest and returns immediately, reporting
+      that a watch is outstanding (`Nest.Agents.Agent.Watch`); the machine
+      reads that off the result and ends the caller's turn, so the agent goes
+      idle (issue #54) and a human can message it;
+    * the watch's task runs `await/6` off the agent's turn. When the event
+      fires the caller is woken with a bare notice — no payload (issue #62:
+      the payload is what made every report arrive twice) — and can fetch the
+      body with `agents-last-message`.
 
   ## A read-only wait
 
@@ -86,8 +85,6 @@ defmodule Nest.Agents.Agent.WaitForIdle do
   broadcast would inherit the same transient-idle bug (#30).
   """
 
-  require Logger
-
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Messages.ToolCall
 
@@ -105,33 +102,10 @@ defmodule Nest.Agents.Agent.WaitForIdle do
         }
 
   @doc """
-  Run one **blocking** `agents-wait-for-idle` call. Returns `{:ok, content}`
-  for the immediate, event, and timeout results, and `{:error, content}` for
-  an invalid argument or a named target that does not exist.
-  """
-  @spec run(map(), ToolCall.t()) :: {:ok, String.t()} | {:error, String.t()}
-  def run(ctx, %ToolCall{} = tc) do
-    case resolve(ctx, tc) do
-      {:error, content} ->
-        {:error, content}
-
-      {:ok, [], _timeout, _all?, _initial} ->
-        {:ok, "No other agents in this space to wait for."}
-
-      {:ok, names, timeout, all?, initial} ->
-        case await(ctx.space_id, names, timeout, all?, initial) do
-          {:ok, partition} -> {:ok, result_text(partition)}
-          {:timeout, partition} -> timeout_result(partition, timeout)
-        end
-    end
-  end
-
-  @doc """
   Validate a call's arguments and resolve its target names against the space
-  listing, returning the initial partition too. Shared by the blocking path
-  (`run/2`) and the async registration (`Watch.register_call/2`) so both reject
-  the same malformed input, agree on which names exist, and start from one
-  status read.
+  listing, returning the initial partition too. `Watch.register_call/2` is the
+  only caller: it is what rejects a malformed argument, decides which names
+  exist, and takes the one status read the registration starts from.
   """
   @spec resolve(map(), ToolCall.t()) ::
           {:ok, [String.t()], pos_integer(), boolean(), partition()} | {:error, String.t()}
@@ -148,13 +122,6 @@ defmodule Nest.Agents.Agent.WaitForIdle do
   # other agent in the space for the empty-list form.
   defp names_for(_ctx, [], initial), do: initial.idle ++ initial.still_busy
   defp names_for(ctx, names, _initial), do: names |> Enum.uniq() |> List.delete(ctx.agent_name)
-
-  # The blocking timeout logs (the old `agents-wait` did); the async mode's
-  # timeout is a normal notice, not a warning.
-  defp timeout_result(partition, timeout) do
-    Logger.warning("agents-wait-for-idle: no target changed within #{timeout}ms")
-    {:ok, timeout_text(partition, timeout)}
-  end
 
   @doc """
   Wait for the event and return the partition, or `{:timeout, partition}`.
@@ -389,26 +356,9 @@ defmodule Nest.Agents.Agent.WaitForIdle do
   # -- rendering --
 
   @doc """
-  The blocking result: the partition, with no payload (issue #62).
-  """
-  @spec result_text(partition()) :: String.t()
-  def result_text(partition) do
-    "Idle: #{names_or_none(partition.idle)}. " <>
-      "Still busy: #{names_or_none(partition.still_busy)}." <> gone_suffix(partition.gone)
-  end
-
-  @doc "The blocking timeout result, distinguishable from a success."
-  @spec timeout_text(partition(), pos_integer()) :: String.t()
-  def timeout_text(partition, timeout) do
-    "Timed out after #{timeout}ms. " <>
-      "Idle: #{names_or_none(partition.idle)}. " <>
-      "Still busy: #{names_or_none(partition.still_busy)}." <> gone_suffix(partition.gone)
-  end
-
-  @doc """
-  The async confirmation the caller reads when interest is registered. It
-  names what is already idle and what is being watched, and says nothing
-  about the body (that arrives later, as a notice or a delivery).
+  The confirmation the caller reads when interest is registered. It names what
+  is already idle and what is being watched, and says nothing about the body
+  (that arrives later, as a notice or a delivery).
   """
   @spec watch_confirmation(partition()) :: String.t()
   def watch_confirmation(partition) do
@@ -422,8 +372,8 @@ defmodule Nest.Agents.Agent.WaitForIdle do
   end
 
   @doc """
-  The bare notice a fired async watch delivers (issue #54). No payload: the
-  body comes from the delivery or `agents-last-message`.
+  The bare notice a fired watch delivers (issue #54). No payload: the body
+  comes from the delivery or `agents-last-message`.
   """
   @spec notice_text(partition()) :: String.t()
   def notice_text(partition) do
@@ -431,7 +381,7 @@ defmodule Nest.Agents.Agent.WaitForIdle do
       "Still busy: #{names_or_none(partition.still_busy)}." <> gone_suffix(partition.gone)
   end
 
-  @doc "The bare notice an expired async watch delivers."
+  @doc "The bare notice an expired watch delivers."
   @spec timeout_notice_text(partition(), pos_integer()) :: String.t()
   def timeout_notice_text(partition, timeout) do
     "Timed out after #{timeout}ms waiting for agents to go idle. " <>

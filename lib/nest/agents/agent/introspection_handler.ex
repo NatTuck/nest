@@ -154,8 +154,8 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   end
 
   # Test-friendly: returns the running-children map (name => waiting
-  # caller pid — the blocking tool worker, or the async waiter it
-  # started) so a test can assert which callers are currently parked on
+  # caller pid — the tool worker, or the async watcher it started) so a
+  # test can assert which callers are currently parked on
   # an `agents-spawn` (with `query`) tool call. The bookkeeping lives in
   # the machine's `Children` sub-machine. Production code should use
   # `:get_total_usage` / `get_public_info` instead.
