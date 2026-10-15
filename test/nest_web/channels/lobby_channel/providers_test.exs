@@ -326,7 +326,17 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
           ]
         })
 
-      assert_reply ref, :ok, %{}
+      # An explicit bound, matching this file's other `:ok` assertions (the
+      # `:error` ones keep the default because those handlers do no work).
+      # `save_providers` writes `local.toml`, parses it back through
+      # `DotConfig.load/0` and re-serializes before it replies — the file's own
+      # comment on the sibling test calls it the slowest `handle_in` here.
+      #
+      # The bound is also not the whole story: the lobby channel subscribes to
+      # the global `"models"` topic, so a *concurrent* test's `rescan/0` can
+      # push `models_updated` into this mailbox at any moment. `assert_reply`
+      # matches past those, but it has to be given room to.
+      assert_reply ref, :ok, %{}, 1_000
       assert File.read!(local_file) =~ ~s(name = "gpt-x")
     end
   end
