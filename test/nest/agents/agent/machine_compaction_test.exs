@@ -16,7 +16,7 @@ defmodule MachineCompactionTest do
   describe "compaction decisions" do
     test "the loop-breaker blocks after the consecutive cap" do
       m = %{state_at(:idle) | loop_count: 3, entry: {:compaction, nil}}
-      {:ok, actions, next} = Machine.Compaction.stage(m, nil, nil)
+      {:ok, actions, next} = Machine.Compaction.stage(m, nil)
 
       assert next.phase == :compaction_loop_detected
       assert Enum.any?(actions, &match?({:broadcast, {:compaction_loop, _, _, _}, _}, &1))

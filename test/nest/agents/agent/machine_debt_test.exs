@@ -446,26 +446,26 @@ defmodule MachineDebtTest do
 
   defp reserve_exhausted_held(senders) do
     m = %{owed(reserve_state(), senders) | pending_user_message: {:user_message, user()}}
-    Compaction.stage(m, nil, nil)
+    Compaction.stage(m, nil)
   end
 
   # The inbox arm blocks instead of resting, because a drain there would re-stage
   # the failing compaction.
   defp reserve_exhausted_queued(senders) do
     m = owed(reserve_state(), senders)
-    Compaction.stage(%{m | work: %{m.work | ctx: Map.put(m.work.ctx, :inbox_count, 1)}}, nil, nil)
+    Compaction.stage(%{m | work: %{m.work | ctx: Map.put(m.work.ctx, :inbox_count, 1)}}, nil)
   end
 
   defp reserve_exhausted_empty(senders) do
-    Compaction.stage(owed(reserve_state(), senders), nil, nil)
+    Compaction.stage(owed(reserve_state(), senders), nil)
   end
 
   defp system_oversized(senders) do
-    Compaction.stage(owed(with_limit(state_at(:idle), 8), senders), nil, nil)
+    Compaction.stage(owed(with_limit(state_at(:idle), 8), senders), nil)
   end
 
   defp compaction_loop(senders) do
-    Compaction.stage(owed(%{state_at(:idle) | loop_count: 3}, senders), nil, nil)
+    Compaction.stage(owed(%{state_at(:idle) | loop_count: 3}, senders), nil)
   end
 
   defp compaction_failed(senders) do

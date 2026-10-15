@@ -321,7 +321,13 @@ defmodule Nest.Agents.Agent.Turn.Executor do
         # sequence" refusal. Consuming the batch on it would drop the message
         # with nothing in the transcript — the "in neither" state #26 exists to
         # eliminate — so the batch stays queued and the refusal rides back as a
-        # follow event, exactly as the `{:append, _}` clause's failure does.
+        # follow event, exactly as the `{:append, _}` clause's failure does. It
+        # is unreachable from here by construction: the batch's message is a
+        # `{:user, _}`, and `:stale` comes only from `Repair.classify_live/2`'s
+        # tool-result arm, which this action — emitted only by the `:loop_ack`
+        # rest, in `:idle` — cannot reach. The clause stays because an outcome
+        # that is not `{:ok, _}` must never consume the batch, and leaving the
+        # message queued is the only safe disposition for one.
         case MessageAppender.handle_single(state, user) do
           {:ok, _stamped, state} -> consume_inbox(state, batch)
           {:stale, state} -> {state, {:follow, {:append_result, :stale, nil}}}

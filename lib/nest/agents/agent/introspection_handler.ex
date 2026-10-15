@@ -18,7 +18,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   `:get_consecutive_compaction_count/0` clauses are test-only
   hooks for the loop-breaker counter. Production callers
   should not need them — the counter is managed internally
-  by `Machine.Compaction.stage/3` (the `loop_count` loop-breaker) and
+  by `Machine.Compaction.stage/2` (the `loop_count` loop-breaker) and
   resets via the append_message path in the agent's `handle_call/3`.
 
   The `:check_read_policy/2` clause is the synchronous

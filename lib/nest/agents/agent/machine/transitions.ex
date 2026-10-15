@@ -129,7 +129,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # --- blocked exits ---
 
   # A retry **re-sends** the existing sequence; it does not re-plan. The
-  # request message is committed, so calling `Compaction.stage/3` here would
+  # request message is committed, so calling `Compaction.stage/2` here would
   # append a second request with a different remaining-token count and
   # double-count the request's own size. `Compaction.retry/1` owns both the
   # re-send and the loop breaker that bounds the retries.
@@ -148,7 +148,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     #    `{:drain_inbox, :append}` shape, which builds the combined message and
     #    consumes it **without** `start_chat/3`. Under peek-then-consume (#26)
     #    a drain that needed a compaction left its entries queued, so a bare
-    #    `{:drain_inbox}` would re-preflight them and re-`stage/3` the failing
+    #    `{:drain_inbox}` would re-preflight them and re-`stage/2` the failing
     #    compaction — the loop the ack exists to break. It stays the shape for
     #    "nothing held and nothing queued", i.e. the empty-inbox no-op.
     actions =
@@ -254,7 +254,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # requests are deliberate, not the automatic loop the breaker guards against.
   # The optional `focus` rides on `work` into `Dispatch.compaction_plan/1`.
   def do_step(%{phase: :idle} = m, {:compact_request, focus}) do
-    Compaction.stage(%{m | loop_count: 0, work: %{m.work | focus: focus}}, nil, nil)
+    Compaction.stage(%{m | loop_count: 0, work: %{m.work | focus: focus}}, nil)
   end
 
   def do_step(%{phase: :idle} = m, {:inbox_drain, entries, content}),
@@ -294,7 +294,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
         )
 
       :needs_compaction ->
-        Compaction.stage(m, nil, nil)
+        Compaction.stage(m, nil)
 
       :cannot_compact ->
         actions = [{:broadcast, {:overflow, :reserve_exhausted, "start a conversation"}, nil}]
@@ -369,7 +369,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
       |> MessageList.unpaired_tail_tool_uses()
       |> MessageList.interrupted_tool_result()
 
-    {:ok, actions, machine} = Compaction.stage(m, m.work.preflight.continuation, nil)
+    {:ok, actions, machine} = Compaction.stage(m, m.work.preflight.continuation)
     {:ok, heal_tail(heal) ++ actions, machine}
   end
 
@@ -489,7 +489,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
         # queued (peek-then-consume), so the compaction's `resume/1` re-drains
         # them in place once the context has shrunk.
         parked = if inbox_entries in [nil, []], do: %{m | pending_user_message: entry}, else: m
-        Compaction.stage(parked, nil, nil)
+        Compaction.stage(parked, nil)
 
       :cannot_compact ->
         # The drained entries stay queued (nothing consumed them) and the agent

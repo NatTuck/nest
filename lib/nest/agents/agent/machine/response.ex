@@ -184,7 +184,7 @@ defmodule Nest.Agents.Agent.Machine.Response do
       continuation =
         {:assistant_response, assistant_msg, m.work.iteration, m.work.max_iterations}
 
-      {:ok, actions, machine} = Compaction.stage(m, continuation, nil)
+      {:ok, actions, machine} = Compaction.stage(m, continuation)
       {:ok, base ++ actions, machine}
     end
   end
@@ -226,7 +226,7 @@ defmodule Nest.Agents.Agent.Machine.Response do
     # The LLM's `focus` arg rides on `work` into
     # `Dispatch.compaction_plan/1`, which renders it into the suffix.
     m = %{m | work: %{m.work | focus: compact_focus(tool_call)}}
-    {:ok, actions, machine} = Compaction.stage(m, continuation, nil)
+    {:ok, actions, machine} = Compaction.stage(m, continuation)
     {:ok, base ++ actions, machine}
   end
 

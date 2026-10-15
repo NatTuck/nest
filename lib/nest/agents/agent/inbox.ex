@@ -535,10 +535,12 @@ defmodule Nest.Agents.Agent.Inbox do
   still batches: a run of leading non-human entries is delivered as one
   message. The selection never reorders anything; it only takes a prefix.
 
-  Total over any entry list on purpose: a future entry kind must not be
-  able to crash the drain inside the Agent process, so anything that is
-  not a human message batches exactly like a peer message does today —
-  `:agent`, `:query` and `:notice` entries all take the second clause.
+  Total over any entry *kind* on purpose: a future kind must not be able to
+  crash the drain inside the Agent process, so anything that is not a human
+  message batches exactly like a peer message does today — `:agent`, `:query`
+  and `:notice` entries all take the second clause. An entry map with no
+  `:kind` key raises rather than batching: that is the entry contract
+  (`put_entry/7` always sets it), not a shape the drain has to tolerate.
   """
   @spec batch([entry()]) :: [entry()]
   def batch(entries) do
@@ -584,8 +586,8 @@ defmodule Nest.Agents.Agent.Inbox do
   `kind: :query` entry in it (issue #31 decision 1 — a name, not a record:
   there is no query id and no requester-side state).
 
-  Total over any entry list, like `batch/1`, and `nil`-tolerant because the
-  chat-request path has no batch behind it. A query entry whose sender is
+  Total over any entry list — a missing `kind` or `from` contributes nothing —
+  and `nil`-tolerant because the chat-request path has no batch behind it. A query entry whose sender is
   missing or blank contributes nothing: the obligation is keyed by name
   (`Machine.owe_replies/2`), so an unnamed sender has no key to owe.
   """
@@ -633,17 +635,10 @@ defmodule Nest.Agents.Agent.Inbox do
     {%{state | live: %{state.live | inbox: state.live.inbox ++ [entry]}}, entry}
   end
 
-  @doc """
-  Broadcast the entries just appended to the queue (issue #27).
-
-  Public because three enqueue paths own their own append — the busy and idle
-  delivery arms and `enqueue_internal/4` — and each must publish exactly the
-  entry it added, not the queue it added it to.
-  """
-  @spec broadcast_append(Agent.t(), [entry()]) :: Agent.t()
-  def broadcast_append(state, entries) do
-    Broadcasts.inbox_append(state, serialize(entries))
-  end
+  # The append half of the delta protocol (issue #27): the three enqueue paths
+  # — the busy and idle delivery arms and `enqueue_internal/4` — each publish
+  # exactly the entry they added, never the queue they added it to.
+  defp broadcast_append(state, entries), do: Broadcasts.inbox_append(state, serialize(entries))
 
   @doc """
   Drop `batch` (plus every retrieved entry) from the queue and broadcast the
@@ -679,8 +674,7 @@ defmodule Nest.Agents.Agent.Inbox do
     end
   end
 
-  @doc false
-  # The removal half of the delta protocol: `ids` are entries the queue no
+  # The removal half of the delta protocol (issue #27): the ids the queue no
   # longer holds, in the order they went.
   defp broadcast_remove(state, ids), do: Broadcasts.inbox_remove(state, ids)
 end
