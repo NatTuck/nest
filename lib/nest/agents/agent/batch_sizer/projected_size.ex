@@ -109,6 +109,22 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   def project(%ToolCall{name: "agents-last-message"}, _ctx),
     do: summary_baseline_size() * @safety_padding
 
+  # `agents-history` returns a range read of arbitrary user/tool text, bounded
+  # by the per-call cap like the other response-bearing sub-agent tools, so it
+  # projects at the substitute minimum.
+  def project(%ToolCall{name: "agents-history"}, _ctx),
+    do: summary_baseline_size() * @safety_padding
+
+  # `agents-status` is a fixed set of lines; this is one representative report.
+  def project(%ToolCall{name: "agents-status"}, _ctx),
+    do:
+      estimator_overhead(
+        "Agent \"clever-raven\": idle (running)\n" <>
+          "  messages: 42 (indices 0..41)\n" <>
+          "  last compaction index: -1 (never compacted)\n" <>
+          "  owed replies: none; pending inbox: 0 message(s)"
+      )
+
   # Catch-all for tools the LLM hallucinates or spells
   # incorrectly. These calls never reach execution; they return
   # small error strings ("Unknown tool: X", "Tool X not
@@ -134,6 +150,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
     shell-wait shell-list shell-kill
     agents-spawn agents-query agents-batch agents-list agents-list-archived models-list
     agents-archive agents-unarchive agents-send agents-wait-for-idle agents-last-message
+    agents-history agents-status
   )
 
   @doc false

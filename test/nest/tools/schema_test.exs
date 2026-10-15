@@ -137,5 +137,62 @@ defmodule Nest.Tools.SchemaTest do
       assert fetch.parameters_schema["required"] == ["name"]
       assert fetch.description =~ "consumed"
     end
+
+    test "the history schema states its indexing rule and its search shape" do
+      # Issue #22. The negative-index rule and the search result's shape are
+      # behaviour the model has to know to use the tool at all, so they are
+      # pinned as text here, next to the other model-facing promises.
+      history = Tools.get_function("agents-history", Mounts.new("/tmp", nil))
+      props = history.parameters_schema["properties"]
+
+      assert history.name == "agents-history"
+      assert Enum.sort(Map.keys(props)) == ["length", "name", "search", "start_index"]
+      assert (history.parameters_schema["required"] || []) == []
+      assert {props["start_index"]["type"], props["length"]["type"]} == {"integer", "integer"}
+      assert props["search"]["type"] == "string"
+
+      # A bare read is the last message, which is what `start_index: -1` spells
+      # out; the window runs forward from the resolved index.
+      assert props["start_index"]["description"] =~ "Defaults to -1"
+      assert props["start_index"]["description"] =~ "Negative counts from the end"
+      assert history.description =~ "counts from the end"
+      assert history.description =~ "-1 is the last message"
+      assert history.description =~ "start_index: -5, length: 5"
+      assert history.description =~ "runs past the end"
+      assert history.description =~ "never a silent truncation"
+
+      # The search result's shape, key by key.
+      assert history.description =~ "case-insensitive literal substring"
+      assert history.description =~ ~s("matches")
+      assert history.description =~ ~s("index": N)
+      assert history.description =~ ~s("role")
+      assert history.description =~ ~s("text")
+      assert history.description =~ ~s("text_truncated")
+    end
+
+    test "the status schema reports the count, the boundary and the state" do
+      status = Tools.get_function("agents-status", Mounts.new("/tmp", nil))
+
+      assert status.name == "agents-status"
+      assert Map.keys(status.parameters_schema["properties"]) == ["name"]
+      assert (status.parameters_schema["required"] || []) == []
+
+      assert status.description =~ "how many messages its history holds"
+      assert status.description =~ "the index of its last compaction"
+      assert status.description =~ "not_running"
+      assert status.description =~ "never starts one"
+    end
+
+    test "the history and status tools take no result-size cap" do
+      # A range read is bounded by its own `length` and a status report is a
+      # fixed set of lines, so neither offers a second knob (the default cap
+      # still applies to both results).
+      for name <- ["agents-history", "agents-status"] do
+        function = Tools.get_function(name, Mounts.new("/tmp", nil))
+
+        refute Map.has_key?(function.parameters_schema["properties"], "max_result_tokens"),
+               "#{name} offers `max_result_tokens`, which bounds nothing it needs"
+      end
+    end
   end
 end
