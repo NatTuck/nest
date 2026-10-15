@@ -64,6 +64,13 @@ defmodule Nest.Agents.Agent.Turn do
   defp run(state, old_status, next, actions, depth, trace) do
     state = put_machine(state, next)
 
+    # The mode a drain's peek may apply, and the queue it peeked, so an attempt
+    # that consumed nothing can be undone (`restore_undelivered_mode/3`). The
+    # peek happens inside `run_all`, and it leaves the queue alone
+    # (peek-then-consume), so this is exactly the queue it peeked.
+    pre_mode = state.live.mode
+    pre_inbox = state.live.inbox
+
     # Effects land before the status change is announced, matching the old
     # driver (append the message, then broadcast idle/streaming). A status
     # broadcast that preceded the append would let a subscriber observe the
@@ -80,8 +87,52 @@ defmodule Nest.Agents.Agent.Turn do
     if Machine.status_for(state.live.machine) != old_status, do: Broadcasts.status(state)
 
     case follow do
-      nil -> {:ok, state}
-      event -> settle(state, event, depth + 1)
+      nil ->
+        {:ok, restore_undelivered_mode(state, pre_mode, pre_inbox)}
+
+      event ->
+        {:ok, settled} = settle(state, event, depth + 1)
+        {:ok, restore_undelivered_mode(settled, pre_mode, pre_inbox)}
+    end
+  end
+
+  # A drain that delivered nothing must not leave its mode applied (issue #103).
+  #
+  # `Executor.peek_inbox/1` applies the queued batch's mode when it peeks,
+  # because the message the machine appends is built from `ctx.mode` inside the
+  # transition (`Machine.Delivery.fits/4` -> `Inbox.build_drained_message/3`)
+  # and because the mode frame a subscriber sees while a batch is still
+  # executing is read from `state.live.mode` — both of which happen before the
+  # transition's outcome is known. A drain that consumes nothing — declined
+  # because the context cannot hold the message, parked on a compaction it
+  # needs, blocked, or refused — therefore has to put the mode back:
+  # `Turn.prepare/1` rebuilds `ctx.mode`/`ctx.caps` from `state.live.mode` on
+  # every settle, so a leaked mode re-resolves the ongoing turn for a message
+  # that was never delivered.
+  #
+  # The consume action is emitted only by the branch that appended the message
+  # (`Machine.Delivery.consume_actions/1`), so "the peeked batch is entirely
+  # still queued" is exactly "this drain delivered nothing". A delivery that
+  # consumed a strict prefix (a lone human message ahead of peer entries)
+  # consumed its batch and is not undone.
+  #
+  # The mode is the only thing a peek can write in `run_all`, so an unchanged
+  # mode means no peek ran and there is nothing to look at.
+  defp restore_undelivered_mode(state, pre_mode, _pre_inbox) when state.live.mode == pre_mode,
+    do: state
+
+  defp restore_undelivered_mode(state, pre_mode, pre_inbox) do
+    batch = Inbox.batch(pre_inbox)
+
+    if batch != [] and Enum.all?(batch, &(&1 in state.live.inbox)) do
+      state = %{state | live: %{state.live | mode: pre_mode}}
+
+      # The peek published the mode it applied; the UI must not be left showing
+      # a mode that never took effect.
+      Broadcasts.status(state)
+      state
+    else
+      state
     end
   end
 
@@ -226,6 +277,12 @@ defmodule Nest.Agents.Agent.Turn do
   this drain peeked, not from "the inbox is empty": under peek-then-consume
   (#26) the executor leaves the queue alone, so a delivery that did not consume
   anything must report `:queued`.
+
+  A drain that delivered nothing also leaves the agent's mode as it was: the
+  peek applies the queued batch's mode (`Executor.peek_inbox/1`), and an
+  attempt that consumed nothing undoes that application
+  (`restore_undelivered_mode/3`), so a mode never sticks for a message that is
+  still queued (issue #103).
   """
   @spec drain_inbox(Agent.t()) :: {Agent.t(), :delivered | :queued}
   def drain_inbox(state) do
@@ -239,12 +296,16 @@ defmodule Nest.Agents.Agent.Turn do
         {state, :delivered}
 
       entries ->
+        # The queue this drain peeked, and the mode before the peek may have
+        # applied the batch's: both are what an attempt that delivers nothing
+        # has to leave alone.
+        pre_mode = state.live.mode
         {state, follow} = Executor.run_all([{:drain_inbox}], state)
 
         state =
           if follow do
             {:ok, settled} = settle(state, follow)
-            settled
+            restore_undelivered_mode(settled, pre_mode, entries)
           else
             state
           end

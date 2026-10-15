@@ -299,6 +299,48 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
     end
   end
 
+  describe "the deferral armed at the batch's start (issue #103)" do
+    test "a batch that starts with messages queued drains them" do
+      # The reported window: a message arrives while the model is still
+      # streaming the response that asks for this batch, so the streaming arm
+      # queues it — there is no batch to background yet — and nothing asked
+      # again once the batch existed. The message then waited for the *next*
+      # arrival to land while the batch executed, so its delivery was one
+      # message late. The worker registering is the moment the batch becomes
+      # interruptible, so the same question belongs here.
+      base = queued_state()
+      ref = make_ref()
+
+      assert {:ok, [{:drain_inbox}], next} =
+               Machine.step(base, {:worker_started, ref, self(), :tools})
+
+      # The registration lands before the drain runs — the actions are executed
+      # against `next` — which is exactly what lets the drain background *this*
+      # batch instead of finding nothing to move.
+      assert next.work.worker_ref == ref
+      assert next.work.active_worker == self()
+      assert next.phase == :executing_tools
+    end
+
+    test "nothing is drained when there is nothing to defer" do
+      # A batch that starts with an empty queue: no message is waiting, so the
+      # worker registration stays action-free, exactly as it was before.
+      assert {:ok, [], _} =
+               Machine.step(executing_state(), {:worker_started, make_ref(), self(), :tools})
+
+      # A worker that is not an interruptible batch — the HTTP request in flight,
+      # which #15's rule never interrupts — arms nothing even with a queue full.
+      # The gate is the *phase* the machine is in, not the kind of worker that
+      # just started, so a compactor's worker (also `:http`) is covered by the
+      # same clause.
+      base = queued_state()
+      generating = %{base | phase: :generating, work: %{base.work | worker_kind: :http}}
+
+      assert {:ok, [], _} =
+               Machine.step(generating, {:worker_started, make_ref(), self(), :http})
+    end
+  end
+
   # --- helpers ---
 
   # Drive the machine through one model turn that asks for a tool batch and
@@ -332,6 +374,14 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
     # The turn that asked for the batch: the assistant carrying the calls, whose
     # ids the synthetic result has to answer.
     put_messages(machine, [system_message(), user_message(), assistant_tool_call()])
+  end
+
+  # The same interruptible batch, with messages already queued: the shape a
+  # batch starts in when the message that arrived while the model was still
+  # streaming has been waiting for it (issue #103).
+  defp queued_state do
+    base = executing_state()
+    %{base | work: %{base.work | ctx: Map.put(base.work.ctx, :inbox_count, 1)}}
   end
 
   # The same transcript, with the batch's call already answered (so there is

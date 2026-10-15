@@ -447,7 +447,10 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   # the vocation does not define. Applied here, never when the entry was queued:
   # `state.live.mode` feeds `ctx.mode`/`ctx.caps`, which `Turn.prepare/1`
   # rebuilds on every settle, so setting it on arrival would re-resolve the caps
-  # of the *ongoing* turn's remaining tool calls.
+  # of the *ongoing* turn's remaining tool calls. A drain that consumes nothing
+  # — a decline, a park, a block — undoes the application
+  # (`Turn.restore_undelivered_mode/3`) for that same reason: the entry is still
+  # queued, so the mode must not stick.
   defp applied_mode(state, entries) do
     case Inbox.drain_mode(entries) do
       nil ->
