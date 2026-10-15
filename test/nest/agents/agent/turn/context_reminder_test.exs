@@ -208,13 +208,11 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
     end
   end
 
-  describe "ack_text_for/2" do
-    test "every context threshold acknowledges identically" do
+  describe "ack_text/0" do
+    test "is one sentence for every context threshold" do
       # The ack is not where the model is steered — the notice is — so one
       # sentence covers all three thresholds and both 75% variants.
-      for atom <- [:p25, :p50, :p75], compact? <- [true, false] do
-        assert ContextReminder.ack_text_for(atom, compact?) == "Okay, context noted."
-      end
+      assert ContextReminder.ack_text() == "Okay, context noted."
     end
   end
 

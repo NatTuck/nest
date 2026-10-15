@@ -26,6 +26,18 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   so the model reads it back there instead of the whole batch riding the
   prompt.
 
+  ## Where the marker sits
+
+  The marker heads the notice **body**, not the delivered message: a batch is
+  its bodies joined by a blank line, so a notice behind a peer's entry puts
+  the marker at the head of the second body, and the re-delivery tag
+  (`@redelivery_tag`, issue #62) is a line in front of the body it wraps. The
+  client's strip is therefore a marker-at-the-head-of-any-body removal rather
+  than a single leading-prefix removal
+  (`assets/js/utils/stripNoticePrefix.js`); this module's contract is only
+  that a notice's own body starts with it, which `render_entry/1` guarantees
+  by tagging the entry's content before the re-delivery tag wraps it.
+
   `build_drained_message/3` is the seam's other half: the one place a drained
   batch becomes the message the transcript carries, so the batch's metadata —
   the `fulfilled_ids` a notice answers and the human recall marker — has a
@@ -38,9 +50,9 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Inbox.Delivery
-  alias Nest.Agents.Agent.NoticeTag
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Messages.MessageList
+  alias Nest.Messages.NoticeTag
   alias Nest.Messages.User
   alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Estimator

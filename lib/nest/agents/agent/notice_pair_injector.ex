@@ -48,10 +48,10 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
   simple leading-prefix removal.
   """
 
-  alias Nest.Agents.Agent.NoticeTag
   alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
+  alias Nest.Messages.NoticeTag
   alias Nest.Messages.Part
 
   @type spec :: %{

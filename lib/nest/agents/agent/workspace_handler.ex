@@ -24,6 +24,7 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   alias Nest.Agents.Agent.ToolFilter
   alias Nest.Agents.Agent.Turn
   alias Nest.Messages.Assistant
+  alias Nest.Messages.NoticeTag
   alias Nest.Messages.Part
   alias Nest.Messages.User
   alias Nest.Persistence
@@ -105,6 +106,11 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
 
   @doc """
   The notice user/assistant pair appended when the workspace changes.
+
+  The user row is the runtime speaking — it is a notice, not the human's words
+  — so it carries the `[nest notice]` marker after its `[mode: notice]` prefix
+  (the client strips both on render). The assistant row is the acknowledgement,
+  which is never tagged.
   """
   @spec notice_pair(String.t() | nil) :: [Agent.message()]
   def notice_pair(path) do
@@ -113,7 +119,11 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
        %User{
          index: nil,
          timestamp: DateTime.utc_now(),
-         parts: [%Part.Text{text: "[mode: notice]\nWorkspace changed to: #{path}"}],
+         parts: [
+           %Part.Text{
+             text: "[mode: notice]\n" <> NoticeTag.tag("Workspace changed to: #{path}")
+           }
+         ],
          metadata: %{"mode" => "notice"},
          api_logs: []
        }},

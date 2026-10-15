@@ -126,7 +126,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
 
       assert Enum.any?(
                user.parts,
-               &(&1.text == "[mode: notice]\nWorkspace changed to: #{new}")
+               &(&1.text == "[mode: notice]\n[nest notice]\nWorkspace changed to: #{new}")
              )
 
       assert Enum.any?(assistant.parts, &(&1.text == "Workspace directory change confirmed."))

@@ -18,6 +18,12 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
   in `ContextReminderTest` and `BudgetReminderTest`; this module pins where the
   marker sits relative to them, and the exact wording of the two kinds the
   marker must wrap without rewording.
+
+  The rows that do not go through the injector are pinned by the test that
+  already exercises them end to end: the re-prompt nudge
+  (`EmptyResponseRepromptTest`, `MaxTokensContinuationTest`) and the reply
+  obligation (`ReplyDebtTest`), both built inside `Machine.Response` /
+  `Machine.Compaction`.
   """
 
   use ExUnit.Case, async: true
@@ -25,11 +31,13 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Inbox.Render
   alias Nest.Agents.Agent.NoticePairInjector
-  alias Nest.Agents.Agent.NoticeTag
   alias Nest.Agents.Agent.Turn.Backgrounded
   alias Nest.Agents.Agent.Turn.BudgetReminder
   alias Nest.Agents.Agent.Turn.ContextReminder
+  alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.Messages.Assistant
+  alias Nest.Messages.MessageList
+  alias Nest.Messages.NoticeTag
   alias Nest.Messages.Part
   alias Nest.Messages.Tool
   alias Nest.Messages.User
@@ -115,6 +123,32 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
     end
   end
 
+  describe "the machine's own notice rows" do
+    test "a workspace change and a wire-repair continuation are tagged" do
+      # Neither goes through the injector: each builds its own row, so each is
+      # pinned here. Both are the runtime speaking, so both carry the marker —
+      # without it a user row reads as a human's or a peer's message. The
+      # workspace row's `[mode: notice]` prefix comes first (the row's mode is
+      # encoded exactly as every delivered row's is), so the marker heads the
+      # notice body after it.
+      assert [
+               {:user, %User{parts: [%Part.Text{text: workspace}]}},
+               {:assistant, %Assistant{parts: [%Part.Text{text: ack}]}}
+             ] = WorkspaceHandler.notice_pair("/tmp/ws")
+
+      assert workspace == "[mode: notice]\n" <> NoticeTag.tag("Workspace changed to: /tmp/ws")
+      assert ack == "Workspace directory change confirmed."
+
+      assert {:user, %User{parts: [%Part.Text{text: continuation}]}} =
+               MessageList.continuation_prompt()
+
+      assert continuation ==
+               NoticeTag.tag(
+                 "An earlier assistant turn did not complete cleanly. Please continue from here."
+               )
+    end
+  end
+
   describe "the untagged framing" do
     test "the attention texts are unchanged and untagged" do
       assert ContextReminder.spec(40_001, 200_000, MapSet.new()).attention == "Context?"
@@ -177,7 +211,7 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
          kind: :context,
          attention: "Context?",
          notice: ContextReminder.notice_text(atom, compact?),
-         ack: ContextReminder.ack_text_for(atom, compact?),
+         ack: ContextReminder.ack_text(),
          threshold: atom
        }}
     end

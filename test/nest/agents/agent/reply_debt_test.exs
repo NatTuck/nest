@@ -240,9 +240,15 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       refute Enum.any?(user_texts(first), &(&1 =~ "have not answered"))
 
       # The reminder is a second request whose context now carries the notice
-      # naming the debtor.
+      # naming the debtor, marked as the runtime's own words (`[nest notice]`):
+      # it is a user row, and without the marker it would read as a peer's or a
+      # human's message.
       second = assert_request()
-      assert Enum.any?(user_texts(second), &(&1 =~ "have not answered" and &1 =~ "peer"))
+
+      assert Enum.any?(
+               user_texts(second),
+               &(&1 =~ "have not answered" and &1 =~ "peer" and &1 =~ "[nest notice]")
+             )
 
       # The reminder itself caused no status frame (the phase never left
       # `:generating`), so the next frame is the give-up's idle.

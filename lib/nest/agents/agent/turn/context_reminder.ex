@@ -85,15 +85,14 @@ defmodule Nest.Agents.Agent.Turn.ContextReminder do
   def notice_text(atom, _compact?), do: Map.fetch!(@notice_texts, atom)
 
   @doc """
-  Assistant ack text that pairs with a given notice.
+  The assistant ack text that pairs with a context notice.
 
-  Every context threshold acknowledges identically now (`@ack_text`), so the
-  threshold atom and the `compact?` flag no longer select a variant. They are
-  still parameters so the call sites keep one shape for the notice and its
-  ack.
+  Every context threshold acknowledges identically — the ack is not where the
+  model is steered, the notice is — so there is one ack, not one per threshold
+  and no `compact?` variant.
   """
-  @spec ack_text_for(atom(), boolean()) :: String.t()
-  def ack_text_for(_atom, _compact? \\ true), do: @ack_text
+  @spec ack_text() :: String.t()
+  def ack_text, do: @ack_text
 
   @doc """
   Whether the agent owns the `context-compact` tool.
