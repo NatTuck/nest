@@ -8,7 +8,8 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
     * Split the batch by tool — sub-agent tools (`agents-spawn`,
       `agents-query`, `agents-send`, `agents-wait-for-idle`,
-      `agents-last-message`, `agents-list`, `agents-list-archived`,
+      `agents-last-message`, `agents-history`, `agents-status`,
+      `agents-list`, `agents-list-archived`,
       `agents-archive`, `agents-unarchive`, `agents-batch`,
       `models-list`) are routed through their `run_*` handlers, which run
       in this worker and never in the agent GenServer; everything else is
@@ -29,7 +30,9 @@ defmodule Nest.Agents.Agent.ToolLoop do
   alias Nest.Agents.Agent.Archive
   alias Nest.Agents.Agent.BatchCoordinator
   alias Nest.Agents.Agent.BatchSizer
+  alias Nest.Agents.Agent.History
   alias Nest.Agents.Agent.LastMessage
+  alias Nest.Agents.Agent.Status
   alias Nest.Agents.Agent.SubAgentResults
   alias Nest.Agents.Agent.ToolLoop.ModelEntry
   alias Nest.Agents.Agent.WaitForIdle
@@ -140,6 +143,8 @@ defmodule Nest.Agents.Agent.ToolLoop do
               "agents-send",
               "agents-wait-for-idle",
               "agents-last-message",
+              "agents-history",
+              "agents-status",
               "models-list"
             ],
        do: true
@@ -155,6 +160,11 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-last-message"} = tc),
     do: run_last_message(ctx, tc)
+
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-history"} = tc),
+    do: run_history(ctx, tc)
+
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-status"} = tc), do: run_status(ctx, tc)
 
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-list"} = tc), do: run_list_agents(ctx, tc)
 
@@ -537,6 +547,29 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
       {:error, content} ->
         build_tool_result(tc, "agents-last-message", content, true)
+    end
+  end
+
+  # `agents-history` (issue #22): a plain DB read of another agent's persisted
+  # sequence, so it is callable mid-turn and never touches the target's process.
+  # A range read of tool-heavy history can be arbitrarily large, so it goes
+  # through the same inline cap every response-bearing sub-agent result does.
+  defp run_history(ctx, %ToolCall{} = tc) do
+    case History.run(ctx, tc) do
+      {:ok, content} ->
+        build_tool_result(tc, "agents-history", SubAgentResults.bound(content, tc, ctx))
+
+      {:error, content} ->
+        build_tool_result(tc, "agents-history", content, true)
+    end
+  end
+
+  # `agents-status` (issue #22): the target's message count, compaction boundary
+  # and state. A fixed set of lines, so nothing to bound.
+  defp run_status(ctx, %ToolCall{} = tc) do
+    case Status.run(ctx, tc) do
+      {:ok, content} -> build_tool_result(tc, "agents-status", content)
+      {:error, content} -> build_tool_result(tc, "agents-status", content, true)
     end
   end
 

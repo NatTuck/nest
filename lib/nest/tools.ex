@@ -22,12 +22,14 @@ defmodule Nest.Tools do
   alias Nest.Tools.{
     ArchivedAgents,
     FileTools,
+    History,
     InspectFile,
     LastMessage,
     QueryAgent,
     ShellCmdTool,
     ShellJobs,
     SpawnAgent,
+    Status,
     WaitForIdle
   }
 
@@ -78,6 +80,8 @@ defmodule Nest.Tools do
              "agents-send",
              "agents-wait-for-idle",
              "agents-last-message",
+             "agents-history",
+             "agents-status",
              "models-list"
            ] ->
         sub_agent_tool_function(name)
@@ -103,6 +107,8 @@ defmodule Nest.Tools do
   defp sub_agent_tool_function("agents-send"), do: send_agent_function()
   defp sub_agent_tool_function("agents-wait-for-idle"), do: WaitForIdle.function()
   defp sub_agent_tool_function("agents-last-message"), do: LastMessage.function()
+  defp sub_agent_tool_function("agents-history"), do: History.function()
+  defp sub_agent_tool_function("agents-status"), do: Status.function()
 
   # Dispatch the models-list tool.
   defp sub_agent_tool_function("models-list"), do: models_list_function()
@@ -143,6 +149,14 @@ defmodule Nest.Tools do
   (Decision 14 named only `agents-query` and `agents-spawn` because
   that is where the analysis happened to be done; the rationale
   applies to every tool whose result stops being a tool result.)
+
+  `agents-history` and `agents-status` do not take it either: a range
+  read is bounded by its own `length`, a search result is bounded by
+  construction (one bounded snippet per matching message), and the
+  status report is a fixed set of lines, so there is no second knob to
+  offer. The default cap still applies to both results, through the
+  same `SubAgentResults.bound/3` every response-bearing sub-agent tool
+  goes through.
 
   The default is 80% of the remaining usable context window.
   The LLM may only lower the cap (e.g. to force a summary/error
