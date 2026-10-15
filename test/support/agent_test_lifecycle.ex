@@ -522,7 +522,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
   #     is left to run a turn. This is the race that produced the original false
   #     positive — a test body that already stopped its agent leaves it
   #     mid-`terminate/2`, and an agent that is being stopped is not in flight.
-  #   * the agent never answers -> `{:exit, :no_answer}` (dying behind a
+  #   * the agent never answers -> `{:exit, :timeout}` (dying behind a
   #     contended synchronous call, or wedged), which is also not a status. A
   #     process that will not stop is reported by `not_stopped` instead, which
   #     says what is actually wrong with it.
@@ -533,9 +533,12 @@ defmodule Nest.Agents.AgentTestLifecycle do
   end
 
   # A non-answer and a gone agent are different facts, and a failure message has
-  # to be able to say which one happened.
-  defp exit_tag({:timeout, _}), do: :no_answer
-  defp exit_tag({:noproc, _}), do: :gone
+  # to be able to say which one happened — so the tag is the reason's own name
+  # (`:timeout` for a bound that expired, `:noproc` for a process that was
+  # already gone, `:shutdown` for one that died during the call) rather than a
+  # collapsed "no answer". `GenServer.call/3` reports every one of them as
+  # `{reason, {GenServer, :call, …}}`.
+  defp exit_tag({reason, _}), do: reason
   defp exit_tag(other), do: other
 
   # What an agent was doing when it missed the stop bound. Only read on the

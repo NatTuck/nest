@@ -363,7 +363,7 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       # Per-iteration preflight compaction was removed in favor of the
       # BatchSizer preflight (`Machine.Response`) and staged compaction
-      # (`Machine.Compaction.stage/3`). The Agent
+      # (`Machine.Compaction.stage/2`). The Agent
       # must NOT have a handler for `{:preflight_request, _, _}` —
       # any such message lands in the Agent's mailbox unhandled
       # and is silently discarded.

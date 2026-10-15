@@ -2,7 +2,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
   @moduledoc """
   Tests for the 25% safety budget on the rendered system prompt.
 
-  `Machine.Compaction.stage/3` checks `SystemPrompt.within_size_budget?/2`
+  `Machine.Compaction.stage/2` checks `SystemPrompt.within_size_budget?/2`
   before computing the summary budget. If the rendered prompt exceeds 25%
   of the context window, compaction refuses with the
   `:system_oversized` error wording instead of the generic
@@ -77,23 +77,23 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
     create_vocation(%{})
   end
 
-  # allowlist: harness — Compaction.stage/3 + Executor.run_all/2 drive on the struct
+  # allowlist: harness — Compaction.stage/2 + Executor.run_all/2 drive on the struct
   defp agent_state(pid), do: :sys.get_state(pid, 1_000)
 
   # The post-turn compaction entry point: stage a compaction against an
-  # idle machine via the same pure `Compaction.stage/3` the machine uses.
+  # idle machine via the same pure `Compaction.stage/2` the machine uses.
   # The HTTP spawn is deferred via the mailbox, so a non-GenServer test
   # process never performs a real call.
   defp post_turn(state) do
     ctx = Turn.build_ctx(state)
     machine = %{state.live.machine | work: %{state.live.machine.work | ctx: ctx}}
-    {:ok, actions, machine} = Compaction.stage(machine, nil, nil)
+    {:ok, actions, machine} = Compaction.stage(machine, nil)
     state = %{state | live: %{state.live | machine: machine}}
     {state, _follow} = Executor.run_all(actions, state)
     state
   end
 
-  # Build a minimal state struct for the `Compaction.stage/3` tests.
+  # Build a minimal state struct for the `Compaction.stage/2` tests.
   # Staging reads `state.live.machine`, `state.llm_metrics`, and the turn
   # context (`Turn.build_ctx/1`). Spawning a real Agent is ~100ms
   # overhead per test; building the struct directly is <5ms. The test
@@ -140,7 +140,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
     test "the agent transitions to :context_overflow and stays there" do
       vocation = oversized_vocation()
 
-      # Build a minimal state struct (no Agent process): `Compaction.stage/3`
+      # Build a minimal state struct (no Agent process): `Compaction.stage/2`
       # reads only `state.live.machine` and the turn context. Spawning a
       # real Agent is ~100ms overhead per test; building the struct
       # directly is <5ms. The test verifies the in-memory state shape,

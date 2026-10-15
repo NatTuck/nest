@@ -3,13 +3,13 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   Pure compaction staging/resume/commit decisions.
 
   Split out of `Machine.Transitions` to keep that module within the
-  file-length budget. `stage/3` runs the loop-breaker and plans the
+  file-length budget. `stage/2` runs the loop-breaker and plans the
   request; `resume/1` dispatches the carried entry after a commit; and
   `compaction_failed/3` enters the retryable blocked state.
 
   ## Give-up paths and the drain shapes
 
-  Every `stage/3` caller can hit `{:error, :reserve_exhausted}`, and each arm
+  Every `stage/2` caller can hit `{:error, :reserve_exhausted}`, and each arm
   of that branch keeps the message that caused the attempt on a wire payload
   (issue #29) rather than stranding it. The shapes it and the loop breaker
   use are the action vocabulary's two ways of disposing of a queued message
@@ -39,10 +39,19 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
 
   @max_consecutive_compactions 3
 
-  @doc "Stage a compaction turn (loop-breaker checked)."
-  @spec stage(Machine.t(), Machine.entry() | nil, Machine.entry() | nil) ::
-          {:ok, [term()], Machine.t()}
-  def stage(m, carried_entry, pending_user) do
+  @doc """
+  Stage a compaction turn (loop-breaker checked).
+
+  `carried_entry` is the entry the compaction carries across the commit: the
+  refused batch's `{:tool_call, …}` continuation on the preflight path, or
+  `nil` for a turn that has nothing in flight. There is deliberately no
+  parameter for a pending user message — the chat-request path parks it on the
+  machine (`%{m | pending_user_message: entry}`) before calling this, and the
+  drain path under peek-then-consume (#26) never parks one at all, so a
+  parameter for it was always `nil` at every call site.
+  """
+  @spec stage(Machine.t(), Machine.entry() | nil) :: {:ok, [term()], Machine.t()}
+  def stage(m, carried_entry) do
     count = m.loop_count + 1
 
     case loop_breaker(m, count) do
@@ -50,13 +59,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
         result
 
       :ok ->
-        m = %{
-          m
-          | loop_count: count,
-            pending_user_message: pending_user || m.pending_user_message
-        }
-
-        do_stage(m, carried_entry)
+        do_stage(%{m | loop_count: count}, carried_entry)
     end
   end
 
@@ -169,7 +172,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
 
   # `:reserve_exhausted` means the model cannot fit the system prompt plus the
   # compaction request into its reserve, so re-draining would re-run
-  # `start_chat/3` → `:needs_compaction` → `stage/3` → here in a tight
+  # `start_chat/3` → `:needs_compaction` → `stage/2` → here in a tight
   # synchronous loop. Each arm keeps the message that caused the attempt on a
   # wire payload instead of stranding it (issue #29).
   defp reserve_exhausted(m) do
@@ -181,7 +184,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
       # anything else, and clear the slot so a later resume cannot append it
       # twice. Deliberately no trailing `{:drain_inbox}`: with a non-empty
       # queue a drain would re-preflight → `start_chat/3` →
-      # `:needs_compaction` → `stage/3` → this branch again.
+      # `:needs_compaction` → `stage/2` → this branch again.
       (user = Phase.held_user(m)) != nil ->
         Phase.rest(%{m | pending_user_message: nil}, :chat, :reserve_exhausted, [
           overflow,

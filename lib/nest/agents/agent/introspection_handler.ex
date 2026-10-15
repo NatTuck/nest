@@ -18,7 +18,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   `:get_consecutive_compaction_count/0` clauses are test-only
   hooks for the loop-breaker counter. Production callers
   should not need them — the counter is managed internally
-  by `Machine.Compaction.stage/3` (the `loop_count` loop-breaker) and
+  by `Machine.Compaction.stage/2` (the `loop_count` loop-breaker) and
   resets via the append_message path in the agent's `handle_call/3`.
 
   The `:check_read_policy/2` clause is the synchronous
@@ -324,6 +324,12 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
       # list for the UI viewer plus a count. See `Inbox`.
       pending_messages: Inbox.serialize(state.live.inbox),
       pending_message_count: length(state.live.inbox),
+      # The queue's frame sequence (issue #27): the full list above is the
+      # `op: "replace"` frame at this position, so a client that takes both from
+      # the same snapshot resumes the delta stream with no gap. Read here rather
+      # than recomputed so the list and its sequence can never be from different
+      # moments.
+      inbox_seq: state.live.inbox_seq,
       # The peers this agent still owes a reply to (issue #31 §1.8): the
       # debtors, sorted, `[]` when nothing is owed — never nil and never
       # absent, so a client cannot mistake "not serialized" for "no debt".

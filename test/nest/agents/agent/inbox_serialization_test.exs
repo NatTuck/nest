@@ -195,9 +195,12 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
         state = Inbox.enqueue_internal(state, "runtime", content, kind)
 
         assert length(state.live.inbox) == n
-        assert_receive {:chat_inbox, %{count: ^n, messages: messages}}
-        assert List.last(messages)["content"] == content
-        assert List.last(messages)["kind"] == Atom.to_string(kind)
+
+        # The frame is the delta for this enqueue: the one entry it appended
+        # (issue #27), not the 100 already queued.
+        assert_receive {:chat_inbox, %{op: "append", count: ^n, messages: [entry]}}
+        assert entry["content"] == content
+        assert entry["kind"] == Atom.to_string(kind)
 
         assert %{from: "runtime", content: ^content, kind: ^kind, mode: nil} =
                  List.last(state.live.inbox)
@@ -286,7 +289,11 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
 
       {left, taken} = Inbox.take_last([peer, bob, human, newest], "peer")
       assert taken.id == "d"
-      assert Enum.find(left, &(&1.id == "d")).retrieved == true
+      # The copy returned is the one the queue now holds, so a caller that
+      # publishes the change as the update frame (issue #27) serializes exactly
+      # what it wrote rather than re-deriving it.
+      assert taken == Enum.find(left, &(&1.id == "d"))
+      assert taken.retrieved == true
       assert Enum.find(left, &(&1.id == "a")).retrieved == false
 
       # A name with only a human entry has nothing to fetch: the human's words

@@ -134,7 +134,7 @@ defmodule MachineTest do
       # the physical HTTP worker is in flight.
       generating = state_at(:generating)
 
-      {:ok, actions, next} = Compaction.stage(generating, {:tool_call, %{}, 1, 10}, nil)
+      {:ok, actions, next} = Compaction.stage(generating, {:tool_call, %{}, 1, 10})
 
       assert next.kind == :compaction and next.phase == :generating
       assert :iterate in actions

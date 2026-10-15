@@ -50,7 +50,10 @@ defmodule Nest.Agents.Agent.Inbox.Delivery do
   @doc """
   The newest pending entry a caller may fetch for `name`: the last entry whose
   `from` is `name` and which is not a human message. Returns the entry list
-  with that entry marked retrieved, and the entry itself (or `nil`).
+  with that entry marked retrieved, and the entry as it now stands in that
+  list (`retrieved: true`) — the copy the queue holds, so a caller that
+  publishes the change serializes exactly what it wrote (issue #27) rather
+  than re-deriving it.
 
   A human message is never fetchable: `agents-last-message` is for a peer's or
   child's delivery, and a `:user` entry is the human speaking, which the caller
@@ -63,8 +66,8 @@ defmodule Nest.Agents.Agent.Inbox.Delivery do
         {entries, nil}
 
       i ->
-        entry = Enum.at(entries, i)
-        {List.replace_at(entries, i, %{entry | retrieved: true}), entry}
+        entry = %{Enum.at(entries, i) | retrieved: true}
+        {List.replace_at(entries, i, entry), entry}
     end
   end
 

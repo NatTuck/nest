@@ -321,7 +321,13 @@ defmodule Nest.Agents.Agent.Turn.Executor do
         # sequence" refusal. Consuming the batch on it would drop the message
         # with nothing in the transcript — the "in neither" state #26 exists to
         # eliminate — so the batch stays queued and the refusal rides back as a
-        # follow event, exactly as the `{:append, _}` clause's failure does.
+        # follow event, exactly as the `{:append, _}` clause's failure does. It
+        # is unreachable from here by construction: the batch's message is a
+        # `{:user, _}`, and `:stale` comes only from `Repair.classify_live/2`'s
+        # tool-result arm, which this action — emitted only by the `:loop_ack`
+        # rest, in `:idle` — cannot reach. The clause stays because an outcome
+        # that is not `{:ok, _}` must never consume the batch, and leaving the
+        # message queued is the only safe disposition for one.
         case MessageAppender.handle_single(state, user) do
           {:ok, _stamped, state} -> consume_inbox(state, batch)
           {:stale, state} -> {state, {:follow, {:append_result, :stale, nil}}}
@@ -431,10 +437,10 @@ defmodule Nest.Agents.Agent.Turn.Executor do
     # synchronously inside one settle, so nothing can be enqueued between the
     # peek and the consume, and anything the peek did not deliver stays queued.
     # A retrieved entry is dropped too (issue #62): `batch/1` skipped it, so the
-    # consume is the only thing that can clear it.
-    inbox = Inbox.consume(state.live.inbox, entries)
-    state = %{state | live: %{state.live | inbox: inbox}}
-    Broadcasts.inbox(state, Inbox.serialize(inbox))
+    # consume is the only thing that can clear it. The frame is the removal
+    # delta for exactly those ids (issue #27) — `Inbox.consume_and_broadcast/2`
+    # owns both the write and the frame so they cannot disagree.
+    state = Inbox.consume_and_broadcast(state, entries)
     Timeline.drained(state, entries)
     {state, :continue}
   end

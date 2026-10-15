@@ -48,10 +48,11 @@ defmodule Nest.Agents.Agent.InboxTest do
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
     # The delivery consumed the entry, so the only queue frame due is the
-    # consume's own empty one — never an enqueue frame (see the parked-drain
-    # test below for the other half of this contract).
+    # consume's own removal — never an append frame (see the parked-drain
+    # test below for the other half of this contract). The frame names the id
+    # that went, not the (empty) queue that is left.
     assert state.live.inbox == []
-    assert_receive {:chat_inbox, %{count: 0, messages: []}}
+    assert_receive {:chat_inbox, %{op: "remove", count: 0, ids: [_]}}
     refute_received {:chat_inbox, _}
   end
 
@@ -283,10 +284,14 @@ defmodule Nest.Agents.Agent.InboxTest do
 
       for {kind, n} <- Enum.with_index(kinds, 1) do
         assert {:ok, :queued} = Agent.deliver_message(pid, "peer", "msg #{n}", kind)
-        assert_receive {:chat_inbox, %{count: ^n, messages: messages}}, 1_000
 
-        assert Enum.map(messages, & &1["kind"]) ==
-                 kinds |> Enum.take(n) |> Enum.map(&Atom.to_string/1)
+        # The frame is the delta for this delivery alone (issue #27): the entry
+        # it appended, tagged with its kind, and the queue length it left
+        # behind — never the accumulated list, which the fetch below reads.
+        assert_receive {:chat_inbox, %{op: "append", count: ^n, messages: [entry]}}, 1_000
+
+        assert entry["kind"] == Atom.to_string(kind)
+        assert entry["content"] == "msg #{n}"
       end
 
       info = Agent.get_public_info(pid, 1_000)

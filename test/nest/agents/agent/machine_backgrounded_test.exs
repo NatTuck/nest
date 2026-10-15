@@ -121,7 +121,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
     test "is resolved during a compaction window, not swallowed" do
       ref = make_ref()
 
-      # `Compaction.stage/3` keeps `work`, so a backgrounded worker can die
+      # `Compaction.stage/2` keeps `work`, so a backgrounded worker can die
       # while the compactor is in flight. The `:compaction` arm would answer
       # `:unknown_worker_down` — no notice, and the entry leaks for good.
       machine =
