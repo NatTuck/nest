@@ -6,6 +6,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
   use Nest.DataCase, async: true
 
   import ExUnit.CaptureLog
+  import Nest.PersistenceTestHelpers
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
@@ -16,12 +17,32 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.User
+  alias Nest.Persistence
   alias Nest.Tokens.ConversationSize
 
+  # A hand-built session that owns a real `agents` row.
+  #
+  # These tests drive executor actions, not persistence, so the row is the
+  # smallest one that makes an append succeed: `append_message/3` resolves the
+  # name and refuses when it matches no row, logging "Failed to persist message
+  # ... :agent_not_found" for every append. That made the fixture's own state
+  # the source of console output, so every test here that drove an append had to
+  # wrap itself in `capture_log` to hide it — and the two tests that asserted the
+  # warning were racing every concurrent `capture_log` in the VM, which captures
+  # whole-VM output and can swallow the line they assert on.
+  #
+  # `chat_state.agent_row_id` is set to the row's id on purpose. The append path
+  # passes it as `expect_agent_row_id`, and an explicit `nil` there means "this
+  # session has no row" — it never matches, so leaving it nil would trade the
+  # `:agent_not_found` warning for an `:agent_row_reused` one.
   defp state do
+    name = "exec-#{System.unique_integer([:positive])}"
+    space_id = test_space_id()
+    {:ok, row} = Persistence.insert_agent(agent_attrs(name))
+
     %Agent{
-      name: "exec-#{System.unique_integer([:positive])}",
-      space_id: 1,
+      name: name,
+      space_id: space_id,
       model: %{name: "m"},
       client_config: %Nest.LLM.ClientConfig{client: Nest.LLM.MockClient, model: "m"},
       llm_metrics: %Agent.LlmMetrics{
@@ -30,6 +51,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
         usage_totals: Broadcasts.empty_usage_totals(),
         descendant_usage: Broadcasts.empty_usage_totals()
       },
+      chat_state: %Agent.ChatState{agent_row_id: row.id},
       live: %Agent.ChatState.Live{
         machine: %Machine{work: %Machine.Work{ctx: ctx()}}
       },
@@ -383,17 +405,15 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       state = inbox_state([peer], "chat")
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
 
-      # The fixture agent has no DB row, so the persist step warns; capturing it
-      # keeps the suite's console clean and pins that the append really went
-      # through `MessageAppender` rather than around it.
-      log =
-        capture_log(fn ->
-          {state, nil} = run({:drain_inbox, :append}, state)
-          send(self(), {:appended, state})
-        end)
+      # The append goes through `MessageAppender`, so its row lands in the DB —
+      # the real observable, and the one this test always meant. It used to
+      # assert the fixture's "Failed to persist message" warning instead, which
+      # was evidence only that the fixture owned no row, and racy: a concurrent
+      # test's `capture_log` captures whole-VM output, so it could swallow the
+      # very line being asserted on.
+      {state, nil} = run({:drain_inbox, :append}, state)
 
-      assert log =~ "Failed to persist message"
-      assert_receive {:appended, state}
+      assert length(Persistence.load_full_messages(state.space_id, state.name)) == 1
 
       assert state.live.inbox == []
 
@@ -602,17 +622,24 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
 
       state = %{base | live: %{base.live | machine: machine}}
 
-      # The fixture agent has no DB row, so the append's persist step warns;
-      # capturing it keeps the suite's console clean and pins that the append
-      # went through `MessageAppender`.
+      # The append goes through `MessageAppender`, so its row lands in the DB.
+      # This used to assert the fixture's "Failed to persist message" warning,
+      # which only showed the fixture owned no row — and a concurrent test's
+      # `capture_log` can swallow the line it asserted on.
+      #
+      # The `chat:error` line is the arm's own precondition — a compaction that
+      # cannot be planned — so it is captured *and asserted* rather than
+      # silenced: a capture whose result is unused can only hide output.
       log =
         capture_log(fn ->
           {:ok, settled} = Turn.settle(state, {:compact_request, nil})
           send(self(), {:settled, settled})
         end)
 
-      assert log =~ "Failed to persist message"
+      assert log =~ "Cannot compact"
       assert_receive {:settled, settled}
+
+      assert length(Persistence.load_full_messages(state.space_id, state.name)) == 1
 
       # A defined status, the slot cleared (so a later resume cannot append the
       # message twice) and the message in the transcript.
