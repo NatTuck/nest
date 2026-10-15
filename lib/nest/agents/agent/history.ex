@@ -213,7 +213,8 @@ defmodule Nest.Agents.Agent.History do
         end
 
       {:ok, other} ->
-        {:error, "Invalid `search` argument: expected a non-empty string, got #{inspect(other)}."}
+        {:error,
+         "Invalid `search` argument: expected a non-empty string, got: #{inspect(other)}."}
     end
   end
 
@@ -221,7 +222,7 @@ defmodule Nest.Agents.Agent.History do
     case Map.get(args, key) do
       nil -> {:ok, default}
       n when is_integer(n) -> {:ok, n}
-      other -> {:error, "Invalid `#{key}` argument: expected an integer, got #{inspect(other)}."}
+      other -> {:error, "Invalid `#{key}` argument: expected an integer, got: #{inspect(other)}."}
     end
   end
 
@@ -234,7 +235,8 @@ defmodule Nest.Agents.Agent.History do
         {:ok, n}
 
       other ->
-        {:error, "Invalid `length` argument: expected a positive integer, got #{inspect(other)}."}
+        {:error,
+         "Invalid `length` argument: expected a positive integer, got: #{inspect(other)}."}
     end
   end
 

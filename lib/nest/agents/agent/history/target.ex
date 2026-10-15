@@ -5,7 +5,8 @@ defmodule Nest.Agents.Agent.History.Target do
 
   Three rules, the first two of which are the security boundary:
 
-    * No `name` means the caller itself (`ctx.agent_name`).
+    * No `name` (or an explicitly empty one) means the caller itself
+      (`ctx.agent_name`).
     * A name is resolved against the caller's own `space_id` through
       `Nest.Persistence.fetch_agent/2`, which is space-scoped by construction.
       A name that exists only in another space is therefore "not found in this
@@ -15,6 +16,12 @@ defmodule Nest.Agents.Agent.History.Target do
       `agents-archive` documents an archived agent as no longer listed or
       queryable. The refusal names the state and what to do about it rather
       than reporting a retired agent's numbers as if it were in service.
+
+  A `name` that is *present but not a string* is a fourth case, and it is a
+  refusal rather than a default: `{"name": 123}` is a model typo, and quietly
+  reading the caller's own history in its place would answer a question the
+  model did not ask. The error names the argument (the shape
+  `Nest.Tools.ShellPipes` uses) and says how to mean "myself".
 
   The row is returned rather than just the name because both readers need its
   counters: `next_message_index` (the count of messages, and so the index the
@@ -32,11 +39,9 @@ defmodule Nest.Agents.Agent.History.Target do
   @spec resolve(map(), ToolCall.t()) ::
           {:ok, String.t(), PersistedAgent.t()} | {:error, String.t()}
   def resolve(ctx, %ToolCall{} = tc) do
-    fetch(ctx.space_id, name_from(ctx, tc))
-  end
-
-  defp fetch(_space_id, name) when not is_binary(name) or name == "" do
-    {:error, "Missing required argument: name (and this call has no calling agent)."}
+    with {:ok, name} <- target_name(ctx, tc) do
+      fetch(ctx.space_id, name)
+    end
   end
 
   defp fetch(space_id, name) do
@@ -55,20 +60,39 @@ defmodule Nest.Agents.Agent.History.Target do
   end
 
   # A missing (or empty) `name` is the caller itself, which is what both tools'
-  # descriptions say the default is.
-  defp name_from(ctx, %ToolCall{arguments: args}) do
+  # descriptions promise. Anything else present is either a name or a typo.
+  defp target_name(ctx, %ToolCall{arguments: args}) do
     case string_arg(args, "name") do
-      "" -> Map.get(ctx, :agent_name, "")
-      name -> name
+      :absent -> self_name(ctx)
+      {:ok, ""} -> self_name(ctx)
+      {:ok, name} -> {:ok, name}
+      {:error, _reason} = error -> error
     end
   end
 
+  defp self_name(ctx) do
+    case Map.get(ctx, :agent_name) do
+      name when is_binary(name) and name != "" -> {:ok, name}
+      _other -> {:error, "Missing required argument: name (and this call has no calling agent)."}
+    end
+  end
+
+  # `:absent` and `{:ok, value}` keep "not given" apart from "given as
+  # something unusable", which is the distinction the default turns on.
   defp string_arg(args, key) when is_map(args) do
-    case Map.get(args, key) do
-      value when is_binary(value) -> value
-      _ -> ""
+    case Map.fetch(args, key) do
+      :error ->
+        :absent
+
+      {:ok, value} when is_binary(value) ->
+        {:ok, value}
+
+      {:ok, other} ->
+        {:error,
+         "Invalid `#{key}` argument: expected a string, got: #{inspect(other)}. " <>
+           "Omit it to target yourself."}
     end
   end
 
-  defp string_arg(_args, _key), do: ""
+  defp string_arg(_args, _key), do: :absent
 end
