@@ -36,8 +36,19 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
   has **no** next safe boundary — the Stop cancellation record (issue
   #36, step 4) — so it resolves the `:deferred` tail instead of
   deferring.
+
+  ## Tagging
+
+  Every notice row the builders produce carries the `[nest notice]` marker at
+  the head of its text (`NoticeTag.tag/1`), in all four shapes — including the
+  fused `[assistant(notice + ack)]`, where the tag is at the head of the fused
+  row. The synthetic attention line and the acknowledgement are untagged: they
+  frame the notice, they are not the notice. So the tag is always at the head
+  of a row's text and never mid-text, which is what keeps the client's strip a
+  simple leading-prefix removal.
   """
 
+  alias Nest.Agents.Agent.NoticeTag
   alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
@@ -75,7 +86,7 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
        [
          build_attention_assistant(spec.attention),
          ContextReminder.build_user_notice(
-           spec.notice,
+           NoticeTag.tag(spec.notice),
            nil,
            ContextReminder.context_metadata(spec)
          )
@@ -106,7 +117,7 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
         {:ok,
          [
            build_single_assistant(
-             notice_text <> " " <> ack_text,
+             NoticeTag.tag(notice_text <> " " <> ack_text),
              ContextReminder.context_metadata(spec)
            )
          ]}
@@ -122,7 +133,7 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
         {:ok,
          [
            ContextReminder.build_user_notice(
-             spec.notice,
+             NoticeTag.tag(spec.notice),
              nil,
              ContextReminder.context_metadata(spec)
            ),
@@ -151,7 +162,7 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
 
     case build_pair(messages, spec, :user_agent) do
       {:ok, pair} -> pair
-      :deferred -> [build_single_assistant(notice <> " " <> ack)]
+      :deferred -> [build_single_assistant(NoticeTag.tag(notice <> " " <> ack))]
     end
   end
 
@@ -196,11 +207,15 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
      }}
   end
 
-  # Default ack text by spec kind. Mirrors the ack texts the
-  # original call sites used (context_reminder.ex and
-  # budget_reminder.ex) so the unified injector produces the
-  # same wire output as the old per-site builders.
-  defp ack_for_kind(:context), do: "Okay, noted."
+  # The default ack text by spec kind, used when a spec carries no explicit
+  # `:ack`. In `lib/` nothing reaches it: every caller that builds an ack
+  # (`Machine.Delivery.build_notice/5`) puts it on the spec, and the two
+  # remaining shapes (`:agent_user`, and `notice_record/3`'s own call) carry no
+  # ack at all. It is the fallback a hand-built spec lands on — the injector's
+  # test fixtures — so it is kept as a real default rather than an inline
+  # `Map.get` default, and the one kind it names is `:context`, whose decided
+  # ack is "Okay, context noted.".
+  defp ack_for_kind(:context), do: "Okay, context noted."
   defp ack_for_kind(:budget), do: "Okay, noted."
-  defp ack_for_kind(_), do: "Okay, noted."
+  defp ack_for_kind(_), do: "Okay."
 end

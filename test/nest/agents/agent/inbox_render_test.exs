@@ -34,13 +34,15 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
   @oversized String.duplicate("hello world ", 4_000)
 
   describe "combine_and_offload/2" do
-    test "a human entry and a runtime notice render bare, every other kind keeps its label" do
+    test "a human entry renders bare, a runtime notice carries the notice tag, every other kind keeps its label" do
       # intentional: the rendered text is LLM-facing. A human entry is its bare
       # content (its `[mode: X]` prefix is added when the message is built), so
       # a queued human message reads exactly like one that arrived while the
       # agent was idle. Agent entries keep `[Message from agent "X"]`, which is
       # what disambiguates a batch; a missing or blank sender drops the quoted
-      # name rather than printing `nil` or `""`.
+      # name rather than printing `nil` or `""`. A runtime notice has no label
+      # (no agent said it) but does carry the `[nest notice]` marker at the head
+      # of its own text, which is what tells the model the body is the runtime's.
       state = %Agent{tmp_path: nil}
 
       assert Render.combine_and_offload([entry(:user, "alice", "from a human", "plan")], state) ==
@@ -63,12 +65,13 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
 
       # A query is a peer's words and keeps the label (decision 7); a notice
       # is the runtime's own and must never be framed as an agent's (decision
-      # 9) — it renders bare, exactly like a human's.
+      # 9) — it carries no label, exactly like a human's, plus the notice
+      # marker the client strips on render.
       assert Render.combine_and_offload([entry(:query, "peer", "may I ask?")], state) ==
                "[Message from agent \"peer\"]\nmay I ask?"
 
       assert Render.combine_and_offload([entry(:notice, "peer", "peer never answered")], state) ==
-               "peer never answered"
+               "[nest notice]\npeer never answered"
     end
 
     test "a retrieved entry is tagged as a re-delivery" do
@@ -192,6 +195,45 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
 
         wait_idle(pid)
       end
+    end
+
+    test "an over-cap batch of two entries names the count in the plural pointer", %{pid: pid} do
+      # intentional: `pointer/2`'s plural clause. A batch is a run of leading
+      # non-human entries delivered as one message, so two oversized peer
+      # messages queue together and are offloaded as one batch. The pointer has
+      # to say how many bodies went to the file — the model reads them all back
+      # there, and "1 queued message" would understate what it is missing.
+      before = Agent.get_public_info(pid, 1_000).message_count
+      set_status(pid, :streaming)
+
+      assert {:ok, :queued} = Agent.deliver_message(pid, "alice", @oversized)
+      assert_receive {:chat_inbox, %{count: 1}}, 1_000
+      assert {:ok, :queued} = Agent.deliver_message(pid, "bob", @oversized)
+      assert_receive {:chat_inbox, %{count: 2}}, 1_000
+
+      Agent.stop_chat(pid, self())
+
+      # The drain appends the pointer before it consumes the entries, so the
+      # consume frame is the fence for the pointer being in the transcript.
+      assert_receive {:chat_inbox, %{count: 0}}, 1_000
+      # allowlist: snapshot — messages + tmp_path
+      state = :sys.get_state(pid, 1_000)
+
+      appended =
+        state.chat_state.messages
+        |> Enum.drop(before)
+        |> user_texts()
+
+      assert [pointer] = Enum.filter(appended, &(&1 =~ "queued message" and &1 =~ "saved to"))
+
+      assert pointer =~ "You have 2 queued messages"
+      assert pointer =~ "Read that file to see them"
+
+      # One scratch file for the whole batch, holding both entries' text.
+      assert [file] = Path.wildcard(Path.join(state.tmp_path, "agent-inbox-*.txt"))
+      assert File.read!(file) =~ "hello world"
+
+      wait_idle(pid)
     end
   end
 
