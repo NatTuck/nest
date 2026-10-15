@@ -3,7 +3,7 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
   The `[nest notice]` marker: which row carries it, and where.
 
   Every synthetic runtime notice is built from up to three messages, and each
-  has its own rule for the marker (`Nest.Agents.Agent.NoticeTag`):
+  has its own rule for the marker (`Nest.Messages.NoticeTag`):
 
     * the synthetic **request** — the attention line (`Context?`, `Tool
       limit?`) — is never tagged;
