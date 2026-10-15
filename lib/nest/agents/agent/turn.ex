@@ -64,10 +64,16 @@ defmodule Nest.Agents.Agent.Turn do
   defp run(state, old_status, next, actions, depth, trace) do
     state = put_machine(state, next)
 
-    # The mode a drain's peek may apply, and the queue it peeked, so an attempt
-    # that consumed nothing can be undone (`restore_undelivered_mode/3`). The
-    # peek happens inside `run_all`, and it leaves the queue alone
-    # (peek-then-consume), so this is exactly the queue it peeked.
+    # The mode a drain's peek may apply, and the queue it is compared against,
+    # so an attempt that consumed nothing can be undone
+    # (`restore_undelivered_mode/3`).
+    #
+    # `pre_inbox` is the queue *before* this action list ran, not the queue the
+    # peek saw: an action earlier in the list can enqueue before a later
+    # `{:drain_inbox}` runs (`{:deliver_backgrounded, …}`'s notice and
+    # `{:child_message, …}`'s delivery both do), so the peek can see a longer
+    # queue. `restore_undelivered_mode/3` states the invariant under which the
+    # two agree wherever the decision reads them.
     pre_mode = state.live.mode
     pre_inbox = state.live.inbox
 
@@ -115,6 +121,39 @@ defmodule Nest.Agents.Agent.Turn do
   # still queued" is exactly "this drain delivered nothing". A delivery that
   # consumed a strict prefix (a lone human message ahead of peer entries)
   # consumed its batch and is not undone.
+  #
+  # The check is `Inbox.batch/1` of `pre_inbox`, the queue *before* the action
+  # list ran — not the queue the peek saw, which an earlier action in the same
+  # list can have made longer (see `run/6`). The two agree wherever this
+  # decision reads them, and these are the properties that make it so:
+  #
+  #   * an action appends its entry (`Inbox.put_entry/7` appends to the queue),
+  #     so an earlier action can only ever put entries *behind* what was queued;
+  #   * a batch is a head prefix of the queue — a lone human message, or the run
+  #     of leading non-human entries (`Inbox.batch/1`), retrieved entries
+  #     rejected;
+  #   * the only entries an action earlier in the list adds today are mode-less
+  #     ones — `{:deliver_backgrounded, …}`'s outcome and `{:child_message, …}`'s
+  #     delivery both go through `Inbox.enqueue_internal/5`, which passes
+  #     `mode: nil` — so they cannot change the mode a drain applies.
+  #
+  # An append can therefore only *extend* a batch, and a batch that applies a
+  # mode is a lone human message at the head, which no append can change — so
+  # whenever the mode changed, the batch the peek saw is exactly
+  # `Inbox.batch(pre_inbox)`, and this check is exact in both directions. With
+  # `pre_inbox == []` the `batch != []` guard skips the restore, which is
+  # correct for the same reason: a queue with no `:user` entry applies no mode,
+  # so the short-circuit above already returned.
+  #
+  # What would break it: a new action that enqueued a *mode-carrying* entry
+  # before a drain in the same list (`Inbox.enqueue_internal/5` passes
+  # `mode: nil`, so only a `:user` enqueue carries one today), or one that
+  # inserted at the head instead of appending. Either would make the peek's
+  # batch differ from `Inbox.batch(pre_inbox)` — and the restore would then be
+  # skipped with `pre_inbox == []`, or tested against entries the peek never
+  # saw, leaking the applied mode. Making the check robust instead would mean
+  # threading the peeked batch out of `Executor.run_all/2`, which is not worth
+  # its return contract; this comment is the contract instead.
   #
   # The mode is the only thing a peek can write in `run_all`, so an unchanged
   # mode means no peek ran and there is nothing to look at.
