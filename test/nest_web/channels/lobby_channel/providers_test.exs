@@ -322,6 +322,15 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # happens on the *rescan* — after `Writer.save_providers/1` has already
       # written the value. So before this guard the operator got a dead `Models`
       # GenServer, no reply, and a `local.toml` that made the next boot fail.
+      #
+      # The `1_000` bound on the assertions in this guard family matches the two
+      # `:ok` assertions above, and for the same recorded reason: this handler is
+      # the slowest `handle_in` in the file. It is not a bound raised to make a
+      # test pass — the default was never a chosen value, it was simply what a
+      # bare `assert_reply` gets, and it is too tight here for the reason the
+      # `:ok` test's comment already gives. The refusal path additionally builds
+      # its message with `inspect/1`, which loads `Inspect` on first use; that is
+      # warmed in `test_helper.exs` so it does not land in this deadline.
       for bad <- [0, 0.5, -1] do
         ref =
           push(socket, "save_providers", %{
@@ -330,7 +339,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
             ]
           })
 
-        assert_reply ref, :error, %{"reason" => "invalid_payload"}
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
 
         # The property that matters: nothing is written, so the config the app
         # reloads is still one it can read.
@@ -351,7 +360,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
             "providers" => [%{"name" => "acme", "auto_models" => false, "tags" => bad}]
           })
 
-        assert_reply ref, :error, %{"reason" => "invalid_payload"}
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
         refute File.exists?(local_file)
       end
     end
@@ -374,7 +383,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
           ]
         })
 
-      assert_reply ref, :error, %{"reason" => "invalid_payload"}
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
       refute File.exists?(local_file)
     end
 
@@ -394,7 +403,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
             "providers" => [%{"name" => "acme", "auto_models" => false, "api_key" => bad}]
           })
 
-        assert_reply ref, :error, %{"reason" => "invalid_payload"}
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
         refute File.exists?(local_file)
       end
     end
@@ -463,7 +472,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
             "providers" => [%{"name" => "acme", "auto_models" => false, "probe_base_url" => bad}]
           })
 
-        assert_reply ref, :error, %{"reason" => "invalid_payload"}
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
         refute File.exists?(local_file)
       end
     end
@@ -497,7 +506,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
             ]
           })
 
-        assert_reply ref, :error, %{"reason" => "invalid_payload"}
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
         refute File.exists?(local_file)
       end
     end
@@ -515,7 +524,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
             "providers" => [%{"name" => "acme", "auto_models" => false, "api_key" => bad}]
           })
 
-        assert_reply ref, :error, %{"reason" => "invalid_payload"}
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
         refute File.exists?(local_file)
       end
     end
@@ -533,7 +542,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
           "providers" => [%{"name" => "acme", "auto_models" => false, "probe_base_url" => ""}]
         })
 
-      assert_reply ref, :error, %{"reason" => "invalid_payload", "message" => message}
+      assert_reply ref, :error, %{"reason" => "invalid_payload", "message" => message}, 1_000
       assert message =~ "probe-base-url"
       assert message =~ "acme"
       refute File.exists?(local_file)

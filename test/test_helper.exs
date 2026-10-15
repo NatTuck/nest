@@ -314,6 +314,47 @@ if not_loaded != [] do
   raise "TOML encoder warm-up did not load #{inspect(not_loaded)}"
 end
 
+# Warm the `Inspect` chain that a config refusal's *message* needs.
+#
+# `FieldValidation` and `ModelValidation` build their message with
+# `inspect(value)`, and `Inspect` is not loaded at boot. So the first refusal in
+# a VM pulls `Inspect`, `Inspect.Opts` and the value's `Inspect.*` implementation
+# through the shared code server — inside whichever test happens to refuse a
+# config value first, which is a `save_providers` assertion bounded at 100 ms.
+#
+# Measured: 639 us for the first refusal in an idle VM, 5 us for the second, and
+# **38 ms** for the first under 64 CPU burners against a 100 ms bound — which is
+# how `providers_test.exs`'s "replies invalid_payload for a model context-limit
+# the runtime rejects" flaked under the full suite while passing alone and under
+# the whole channel directory. Same class as the TOML warm-up above, and the
+# same remedy: pay it here, before any deadline.
+#
+# The value is an integer on purpose. `inspect/1` dispatches on the argument's
+# type, so warming with the wrong type would load `Inspect.Integer`'s siblings
+# and leave the one the guards actually use cold — the guards inspect integers
+# (`context-limit`), strings (`probe-base-url`, `tags`) and maps (`multi-modal`),
+# so all three protocols are warmed below.
+for value <- [0, "", %{}] do
+  try do
+    Nest.DotConfig.FieldValidation.positive_integer(value, "warmup", "warmup")
+  rescue
+    _ -> :ok
+  end
+end
+
+# Fail loudly if it did not take, like the warm-up above: `:code.is_loaded/1`
+# rather than `Code.ensure_loaded?/1`, so deleting the block above cannot leave
+# this check passing over a cold chain.
+not_loaded =
+  Enum.reject(
+    [Inspect, Inspect.Opts, Inspect.Integer, Inspect.BitString, Inspect.Map],
+    &:code.is_loaded/1
+  )
+
+if not_loaded != [] do
+  raise "Inspect warm-up did not load #{inspect(not_loaded)}"
+end
+
 # Warm the agent-start path (#21).
 #
 # `Agent.init/1` runs inside the supervisor's critical section —
