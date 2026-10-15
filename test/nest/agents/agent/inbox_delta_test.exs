@@ -29,6 +29,8 @@ defmodule Nest.Agents.Agent.InboxDeltaTest do
   # Enqueue one runtime entry and return the state, the entry, and its frame.
   defp enqueue(state, content) do
     state = Inbox.enqueue_internal(state, "peer", content, :agent)
+    # The suite's fence for `test/` (`test/test_helper.exs:157`); the frame is
+    # broadcast in this process, so the wait is already over.
     assert_receive {:chat_inbox, frame}, 1_000
     {state, List.last(state.live.inbox), frame}
   end
@@ -89,6 +91,8 @@ defmodule Nest.Agents.Agent.InboxDeltaTest do
     {state, marked} = Inbox.mark_retrieved(state, "peer")
     assert marked.id == second.id
     assert marked.retrieved == true
+    # The suite's fence for `test/` (`test/test_helper.exs:157`); the frame is
+    # broadcast in this process, so the wait is already over.
     assert_receive {:chat_inbox, frame3}, 1_000
     client = apply_frame(client, frame3)
 
@@ -103,6 +107,8 @@ defmodule Nest.Agents.Agent.InboxDeltaTest do
     before = state.live.inbox
     batch = Inbox.batch(before)
     state = Inbox.consume_and_broadcast(state, batch)
+    # The suite's fence for `test/` (`test/test_helper.exs:157`); the frame is
+    # broadcast in this process, so the wait is already over.
     assert_receive {:chat_inbox, frame4}, 1_000
     client = apply_frame(client, frame4)
 
@@ -125,10 +131,14 @@ defmodule Nest.Agents.Agent.InboxDeltaTest do
     {state, marked} = Inbox.mark_retrieved(state, "peer")
     assert marked.id == second.id
     assert marked.retrieved == true
+    # The suite's fence for `test/` (`test/test_helper.exs:157`); the frame is
+    # broadcast in this process, so the wait is already over.
     assert_receive {:chat_inbox, %{op: "update"}}, 1_000
 
     state = Inbox.prune_retrieved(state)
 
+    # The suite's fence for `test/` (`test/test_helper.exs:157`); the frame is
+    # broadcast in this process, so the wait is already over.
     assert_receive {:chat_inbox, %{op: "remove", count: 1, ids: [id]}}, 1_000
     assert id == marked.id
     assert Enum.map(state.live.inbox, & &1.content) == ["one"]

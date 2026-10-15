@@ -202,6 +202,11 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
           end
         end)
 
+      # 1000 ms is the suite's fence for `test/` (`test/test_helper.exs:157`).
+      # SMELLS.md's "as low as possible" rule is about a wait whose duration
+      # can be measured; this one awaits a *spawned* process that has to be
+      # scheduled and register itself, so the fence is the documented bound
+      # rather than a guess.
       assert_receive {:registered, ^pid}, 1_000
 
       result = AgentTestLifecycle.stop_test_agents()
@@ -330,6 +335,8 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
           end
         end)
 
+      # The same spawned-process ack, so the same suite fence
+      # (`test/test_helper.exs:157`).
       assert_receive {:registered, ^pid}, 1_000
 
       log =
@@ -370,6 +377,8 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
           end
         end)
 
+      # The same spawned-process ack, so the same suite fence
+      # (`test/test_helper.exs:157`).
       assert_receive {:registered, ^pid}, 1_000
 
       detector =
@@ -472,6 +481,9 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
             end
           end)
 
+          # The suite's fence for `test/` (`test/test_helper.exs:157`): this
+          # message comes from the spawned process above, after its `Repo.all/1`
+          # raised.
           assert_receive {:raised, "body boom"}, 1_000
         end)
 

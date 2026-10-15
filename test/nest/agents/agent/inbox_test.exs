@@ -52,6 +52,9 @@ defmodule Nest.Agents.Agent.InboxTest do
     # test below for the other half of this contract). The frame names the id
     # that went, not the (empty) queue that is left.
     assert state.live.inbox == []
+
+    # 1000 ms is the suite's fence for `test/` (`test/test_helper.exs:157`):
+    # this frame is broadcast by the agent process, not by this one.
     assert_receive {:chat_inbox, %{op: "remove", count: 0, ids: [_]}}, 1_000
     refute_received {:chat_inbox, _}
   end
