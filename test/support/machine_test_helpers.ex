@@ -6,8 +6,12 @@ defmodule Nest.TestSupport.MachineTestHelpers do
   was at 699 of its 700-line cap, so the fixtures moved out to leave space for
   the four new compaction tests (issue #80's remedy) — and so a second test
   file can drive the same machine without duplicating `ctx/0`, which is the
-  piece that is genuinely fiddly to rebuild. Everything here is pure; nothing
-  touches a process or the database.
+  piece that is genuinely fiddly to rebuild.
+
+  The fixtures are pure — none of them touches a process or the database —
+  except `send_compaction_done/3`, which drives a live agent's machine into the
+  compactor's phase and delivers the response. It lives here because it reaches
+  straight into the machine's fields, and `AgentTestHelpers` delegates to it.
 
   `sample_event/1` is the event vocabulary: `MachineTest` walks it to prove
   every declared event has a total transition, so a new event belongs here.
@@ -157,4 +161,48 @@ defmodule Nest.TestSupport.MachineTestHelpers do
   def sample_event(:child_failed), do: {:child_failed, "kid", :crashed}
   def sample_event(:child_terminated), do: {:child_terminated, "kid", :killed}
   def sample_event(:abandon_child), do: {:abandon_child, "kid"}
+
+  @doc """
+  Deliver a compaction result to an agent by driving the production
+  compaction entry: put the machine into the compactor's `:generating`
+  phase with `entry = {:compaction, carried_entry}`, then send the
+  `{:http_response, ref, %RunResponse{}}` the executor's commit path
+  consumes (via `Compaction.commit_compaction/2`).
+  """
+  def send_compaction_done(agent_pid, summary_text, carried_entry) do
+    ref = make_ref()
+
+    # Put the machine into the compactor's generating phase with a live
+    # worker ref, then deliver the HTTP response. `active_message_index` is
+    # the index the *summary* will be stamped with; the request message is
+    # not fabricated here — in production the machine appends it before
+    # dispatching the compactor, and this helper starts after that point.
+    :sys.replace_state(
+      agent_pid,
+      fn state ->
+        machine = state.live.machine
+
+        machine = %{
+          machine
+          | kind: :compaction,
+            phase: :generating,
+            entry: {:compaction, carried_entry},
+            work: %{
+              machine.work
+              | worker_kind: :http,
+                worker_ref: ref,
+                active_message_index: state.chat_state.next_message_index
+            }
+        }
+
+        %{state | live: %{state.live | machine: machine}}
+      end,
+      1_000
+    )
+
+    send(
+      agent_pid,
+      {:http_response, ref, %Nest.LLM.RunResponse{text: summary_text, usage: nil}}
+    )
+  end
 end
