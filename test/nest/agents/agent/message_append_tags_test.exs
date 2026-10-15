@@ -26,6 +26,7 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
   alias Nest.Agents.Agent.Repair
   alias Nest.Agents.Agent.Turn
   alias Nest.Messages.Assistant
+  alias Nest.Messages.MessageList
   alias Nest.Messages.Part
   alias Nest.Messages.System, as: MsgSystem
   alias Nest.Messages.Tool
@@ -327,6 +328,37 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
       # logs it, and the assertions above would still pass. Three rows land:
       # the request, and the bridge + human pair.
       assert length(Persistence.load_full_messages(test_space_id(), name)) == before + 3
+    end
+
+    test "appending the refused-batch heal does not reset the counter either" do
+      # The heal row is emitted by the same transition that stages the
+      # compaction request when `BatchSizer.preflight/2` refuses a batch — so
+      # it is appended on *every* attempt of the automatic "compact, still
+      # doesn't fit, refuse a batch, compact…" loop that
+      # `@max_consecutive_compactions` exists to bound. It is a `{:tool, _}`,
+      # which the progress rule counts as genuine progress, so without a
+      # marker it resets the breaker exactly as the unmarked request row did.
+      name = unique_name("heal-progress")
+      {:ok, _} = Persistence.insert_agent(agent_attrs(name))
+
+      initial = [system(0), assistant_text(1)]
+      insert_messages(name, initial)
+      before = length(Persistence.load_full_messages(test_space_id(), name))
+
+      state = state(name, initial)
+      state = %{state | live: %{state.live | machine: %{state.live.machine | loop_count: 2}}}
+
+      # Built by production code, so the test cannot drift from the real shape.
+      tool_uses = [
+        %Part.ToolUse{id: "call_1", name: "shell-cmd", arguments: %{}}
+      ]
+
+      heal = MessageList.interrupted_tool_result(tool_uses)
+      assert {:ok, _stamped, after_heal} = MessageAppender.handle_single(state, heal)
+      assert after_heal.live.machine.loop_count == 2
+
+      # ... and it really persisted, so this is not passing on a refused write.
+      assert length(Persistence.load_full_messages(test_space_id(), name)) == before + 1
     end
   end
 

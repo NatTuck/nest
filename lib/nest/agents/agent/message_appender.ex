@@ -69,6 +69,7 @@ defmodule Nest.Agents.Agent.MessageAppender do
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Agents.Agent.Repair
   alias Nest.Messages.Sanitize
+  alias Nest.Messages.Tool
   alias Nest.Messages.User
   alias Nest.Tokens.PreFlight
 
@@ -263,23 +264,31 @@ defmodule Nest.Agents.Agent.MessageAppender do
     {role, %{msg | index: index}}
   end
 
-  # Genuine progress resets the loop breaker. The compaction request is a
-  # `:user` row (that is what the wire can carry — see `Nest.Messages.User`'s
-  # moduledoc) but it is the *runtime* asking for a summary, not progress:
-  # counting it would reset the counter on every attempt and disarm
-  # `@max_consecutive_compactions`, which is the only thing bounding a
+  # Genuine progress resets the loop breaker. Two rows are excluded because
+  # they are emitted by the *same* transition that stages a compaction, so
+  # counting either would reset the counter on every attempt and disarm
+  # `@max_consecutive_compactions` — which is the only thing bounding a
   # compaction that keeps failing.
+  #
+  # The compaction request is a `:user` row (that is what the wire can carry —
+  # see `Nest.Messages.User`'s moduledoc) and it is the runtime asking for a
+  # summary, not progress. The heal row is a `{:tool, _}`, which the rule below
+  # counts as progress, and it is emitted on every refused-batch staging.
   defp progress_message?({:user, %User{metadata: metadata}}) do
-    not compaction_request?(metadata)
+    not marked?(metadata, User.compaction_origin())
+  end
+
+  defp progress_message?({:tool, %Tool{metadata: metadata}}) do
+    not marked?(metadata, Tool.heal_origin())
   end
 
   defp progress_message?({role, _}) when role in [:assistant, :tool], do: true
   defp progress_message?(_), do: false
 
-  defp compaction_request?(metadata) when is_map(metadata),
-    do: Map.get(metadata, "origin") == User.compaction_origin()
+  defp marked?(metadata, origin) when is_map(metadata),
+    do: Map.get(metadata, "origin") == origin
 
-  defp compaction_request?(_metadata), do: false
+  defp marked?(_metadata, _origin), do: false
 
   defp reset_consecutive(state) do
     %{state | live: %{state.live | machine: %{state.live.machine | loop_count: 0}}}

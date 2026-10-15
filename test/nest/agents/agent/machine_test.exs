@@ -322,8 +322,12 @@ defmodule MachineTest do
       {:ok, _actions, looped} = Machine.step(%{failed | loop_count: 3}, :retry_compaction)
 
       assert looped.phase == :compaction_loop_detected
-      # intentional: the entry SURVIVES here — `:compaction_failed` is entered
-      # through `enter_blocked/2`, and `Compaction.retry/1` needs it.
+      # intentional: the entry SURVIVES here. `:compaction_loop_detected` is
+      # the phase entered through `enter_blocked/2`, which deliberately skips
+      # the turn-scoping that clears it — so a `:compaction_failed` retry can
+      # still find it. (Note `Compaction.retry/1` itself reads
+      # `mid_turn_entry`, not `entry`; the entry is kept here for the retry
+      # path's own reasons, not because retry reads this field.)
       assert looped.entry == {:compaction, nil}
 
       {:ok, _actions, acked} = Machine.step(looped, :loop_ack)

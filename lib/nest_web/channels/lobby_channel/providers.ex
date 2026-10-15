@@ -122,11 +122,33 @@ defmodule NestWeb.LobbyChannel.Providers do
 
   defp model_from_map(m) do
     %Model{
-      name: m["name"],
+      name: model_name(m),
       context_limit: m["context_limit"],
       multi_modal: m["multi_modal"],
       thinking_effort: parse_effort(m["thinking_effort"])
     }
+  end
+
+  # A model's name must be usable, and it is refused **here** rather than left
+  # to the reader.
+  #
+  # `DotConfig.load/0` rejects a blank or absent name (`ModelValidation`), and
+  # that read is on `Nest.Models.init/1`'s boot path with no rescue — so a
+  # `local.toml` carrying one turns startup into a crash the supervisor
+  # exhausts into an application shutdown. A blank name is the GUI's own
+  # default (`emptyModel()` returns `name: ""`), which makes it a config the
+  # app writes for itself.
+  #
+  # Refusing it here is what keeps the writer and the reader a coherent pair:
+  # the function-level `rescue` in `save/2` answers `invalid_payload`, so the
+  # operator gets a visible error and — because this runs before
+  # `Writer.save_providers/1` — **no file is written**. Without this the write
+  # succeeded and the raise came later from the re-read, so the operator got an
+  # error *and* a bad config on disk.
+  defp model_name(%{"name" => name}) when is_binary(name) and name != "", do: name
+
+  defp model_name(m) do
+    raise "invalid model name #{inspect(m["name"])}: must be a non-empty string"
   end
 
   defp parse_effort(nil), do: nil

@@ -65,8 +65,10 @@ first and the message is recorded afterward.
    `{:worker_started, _}`, `{:worker_down, _}`, `{:child_*}`, `{:reply_sent, _}`,
    a backgrounded `{:tool_results, …}`). What actually holds the line is:
 
-   * `:compaction_failed` accepts only `:retry_compaction`, `:loop_ack` and
-     `{:unblocked}`; everything else is refused by its blocked catch-all.
+   * `:compaction_failed` accepts `:retry_compaction`, `{:blocked, _}` and
+     `{:unblocked}` (plus child and backgrounded events); everything else is
+     refused by its blocked catch-all. Note `:loop_ack` is **not** accepted
+     here — it is the exit from `:compaction_loop_detected`, the phase above.
    * The compaction phase **ignores** any other event rather than acting on it —
      **including a refused append**, which is exactly why the request's append
      must be one that cannot be refused (see invariant 6).

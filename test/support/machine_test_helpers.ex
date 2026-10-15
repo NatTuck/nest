@@ -2,10 +2,12 @@ defmodule Nest.TestSupport.MachineTestHelpers do
   @moduledoc """
   The fixtures `MachineTest` drives `Nest.Agents.Agent.Machine` with.
 
-  Extracted so `MachineTest` has room under the file-length cap (issue #80's
-  remedy) — and so a second test file can drive the same machine without
-  duplicating `ctx/0`, which is the piece that is genuinely fiddly to rebuild.
-  Everything here is pure; nothing touches a process or the database.
+  Extracted to make room for the machine tests this branch adds — `MachineTest`
+  was at 699 of its 700-line cap, so the fixtures moved out to leave space for
+  the four new compaction tests (issue #80's remedy) — and so a second test
+  file can drive the same machine without duplicating `ctx/0`, which is the
+  piece that is genuinely fiddly to rebuild. Everything here is pure; nothing
+  touches a process or the database.
 
   `sample_event/1` is the event vocabulary: `MachineTest` walks it to prove
   every declared event has a total transition, so a new event belongs here.

@@ -256,5 +256,78 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # this line.
       refute_push "providers_updated", _, 0
     end
+
+    test "replies invalid_payload for a model with a blank name", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # A blank name is the GUI's own default (`emptyModel()` returns
+      # `name: ""`), and the reader rejects it: `ModelValidation.validate_name/2`
+      # raises, `DotConfig.load/0` is on `Models.init/1`'s boot path, and the
+      # supervisor exhausts into an application shutdown. So a name the app
+      # wrote itself could render the app unbootable. The write path has to
+      # refuse it, which the same `rescue` turns into `invalid_payload`.
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [
+            %{
+              "name" => "acme",
+              "auto_models" => false,
+              "models" => [%{"name" => "", "context_limit" => 1000}]
+            }
+          ]
+        })
+
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}
+
+      # ... and nothing was written, so the config the app would reload is
+      # still the one it started with. This is the property that matters: a
+      # refused save must not leave a config behind that the reader rejects.
+      refute File.exists?(local_file)
+    end
+
+    test "replies invalid_payload for a model whose name is absent", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # A *missing* name is refused by the same guard, so it reports the same
+      # way. Before the guard it was caught one layer down by the TOML encoder
+      # ("nil is not supported in TOML") and came back as `failed_to_save` —
+      # also safe, but for a reason unrelated to the name, and only after
+      # `Writer.save_providers/1` had already run.
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [
+            %{
+              "name" => "acme",
+              "auto_models" => false,
+              "models" => [%{"name" => nil, "context_limit" => 1000}]
+            }
+          ]
+        })
+
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}
+      refute File.exists?(local_file)
+    end
+
+    test "saves a model with a usable name", %{socket: socket, local_file: local_file} do
+      # The premise of the two tests above: a well-named model still saves, so
+      # the refusals are about the name and not about models in general.
+      Mimic.expect(Nest.Models, :rescan, fn -> :ok end)
+
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [
+            %{
+              "name" => "acme",
+              "auto_models" => false,
+              "models" => [%{"name" => "gpt-x", "context_limit" => 1000}]
+            }
+          ]
+        })
+
+      assert_reply ref, :ok, %{}
+      assert File.read!(local_file) =~ ~s(name = "gpt-x")
+    end
   end
 end

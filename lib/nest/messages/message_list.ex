@@ -246,7 +246,10 @@ defmodule Nest.Messages.MessageList do
   def interrupted_tool_result([]), do: nil
 
   def interrupted_tool_result(tool_uses) do
-    List.first(repair_messages(tool_uses, :no_incoming))
+    case List.first(repair_messages(tool_uses, :no_incoming)) do
+      {:tool, %Tool{} = tool} -> {:tool, %{tool | metadata: Tool.heal_metadata()}}
+      other -> other
+    end
   end
 
   @doc """
