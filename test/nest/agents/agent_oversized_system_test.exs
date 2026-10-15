@@ -137,7 +137,12 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
   end
 
   describe "Compaction staging refuses compaction when the rendered system exceeds 25% budget" do
-    test "the agent transitions to :context_overflow and stays there" do
+    test "the agent transitions to :context_overflow and spawns no chat worker" do
+      # Two observables of one outcome, so one test. From the first name: the
+      # agent lands in `:context_overflow` and stays there — it does not fall
+      # back to idle, and no turn is started for it. From the second: the
+      # oversized path spawns no chat worker, because the refusal happens before
+      # any compaction request is dispatched.
       vocation = oversized_vocation()
 
       # Build a minimal state struct (no Agent process): `Compaction.stage/2`
@@ -152,14 +157,18 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # → `Broadcasts.error/4`, which logs the wording and broadcasts the same
       # text. The log is captured *and asserted* — a capture nobody asserts on
       # can only hide prints (`SMELLS.md`) — and `with_log/2` returns the
-      # function's result, so the in-memory state shape is asserted too.
+      # function's result, so the state shape is asserted too.
       {state_after, log} = with_log(fn -> post_turn(state_before) end)
 
       assert Machine.status_for(state_after.live.machine) == :context_overflow
 
+      assert is_nil(state_after.live.machine.work.active_worker),
+             "the oversized-system path must not have spawned a chat worker"
+
       assert log =~ "chat:error"
       assert log =~ "Cannot compact:"
       assert log =~ "25% safety budget"
+      assert log =~ "source=Turn.Executor"
     end
 
     test "the broadcast carries the oversized-system wording" do
@@ -187,23 +196,6 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # log line records `source=`.
       assert msg =~ "[Source: Turn.Executor]"
       assert log =~ "Cannot compact:"
-      assert log =~ "source=Turn.Executor"
-    end
-
-    test "no compaction chat turn is spawned" do
-      vocation = oversized_vocation()
-      state = build_minimal_state(vocation)
-
-      # The same capture, asserted for the same reason: this test's own
-      # observable is the worker, and the log line is the one it captures.
-      {state_after, log} = with_log(fn -> post_turn(state) end)
-
-      assert Machine.status_for(state_after.live.machine) == :context_overflow
-
-      assert is_nil(state_after.live.machine.work.active_worker),
-             "the oversized-system path must not have spawned a chat worker"
-
-      assert log =~ "chat:error"
       assert log =~ "source=Turn.Executor"
     end
   end
