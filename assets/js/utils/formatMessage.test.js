@@ -96,6 +96,21 @@ describe("messageToMarkdown — user messages", () => {
         ],
       }),
     ).toBe("Context at 25%. Okay, context noted.");
+
+    // A drain batch is its entries joined by a blank line, so a notice behind a
+    // peer's entry heads the second body — the marker goes there too.
+    expect(
+      messageToMarkdown({
+        role: "user",
+        mode: "chat",
+        parts: [
+          {
+            kind: "text",
+            text: '[mode: chat]\n[Message from agent "peer"]\nmay I ask?\n\n[nest notice]\nContext at 50%.',
+          },
+        ],
+      }),
+    ).toBe('[Message from agent "peer"]\nmay I ask?\n\nContext at 50%.');
   });
 });
 

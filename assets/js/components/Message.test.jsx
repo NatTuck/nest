@@ -97,43 +97,52 @@ describe("Message copy control placement", () => {
 describe("Message runtime notice rendering", () => {
   it("hides the `[nest notice]` wire marker the row carries", () => {
     // The raw wire content really carries the marker (that is what the model
-    // reads); the rendered bubble must not show it to the operator, on either
-    // notice row shape — a user row (`:agent_user` / the drain path) or the
-    // fused assistant row (`:user_agent`).
-    const userRaw =
-      "[mode: chat]\n[nest notice]\nContext at 50%. Do not stop due to context concerns, continue working through compaction.";
-    const assistantRaw = "[nest notice]\nContext at 25%. Okay, context noted.";
+    // reads); the rendered bubble must not show it to the operator, on any
+    // notice row shape — a user row (`:agent_user` / the drain path), the
+    // fused assistant row (`:user_agent`), or a notice batched behind a peer's
+    // entry (where the marker heads the second body, not the message).
+    const cases = [
+      {
+        label: "a user notice row",
+        text: "[mode: chat]\n[nest notice]\nContext at 50%. Do not stop due to context concerns, continue working through compaction.",
+        shown: /Context at 50%/,
+        role: "user",
+      },
+      {
+        label: "the fused assistant notice row",
+        text: "[nest notice]\nContext at 25%. Okay, context noted.",
+        shown: /Okay, context noted\./,
+        role: "assistant",
+      },
+      {
+        label: "a notice batched behind a peer's entry",
+        text: '[mode: chat]\n[Message from agent "peer"]\nmay I ask?\n\n[nest notice]\nContext at 50%.',
+        shown: /may I ask\?/,
+        role: "user",
+      },
+    ];
 
-    expect(userRaw.startsWith("[mode: chat]\n[nest notice]\n")).toBe(true);
-    expect(assistantRaw.startsWith("[nest notice]\n")).toBe(true);
+    for (const { label, text, shown, role } of cases) {
+      expect(text.includes("[nest notice]"), label).toBe(true);
 
-    const { unmount } = render(
-      <MessageBubble
-        agentName="test-agent"
-        message={{
-          index: 3,
-          role: "user",
-          mode: "chat",
-          parts: [{ kind: "text", text: userRaw }],
-          metadata: { mode: "chat" },
-        }}
-      />,
-    );
+      const message =
+        role === "user"
+          ? {
+              index: 3,
+              role: "user",
+              mode: "chat",
+              parts: [{ kind: "text", text }],
+              metadata: { mode: "chat" },
+            }
+          : assistantMessage({ parts: [{ kind: "text", text }] });
 
-    expect(screen.getByText(/Context at 50%/)).toBeInTheDocument();
-    expect(screen.queryByText(/nest notice/)).toBeNull();
-    unmount();
+      const { unmount } = render(
+        <MessageBubble agentName="test-agent" message={message} />,
+      );
 
-    render(
-      <MessageBubble
-        agentName="test-agent"
-        message={assistantMessage({
-          parts: [{ kind: "text", text: assistantRaw }],
-        })}
-      />,
-    );
-
-    expect(screen.getByText(/Okay, context noted\./)).toBeInTheDocument();
-    expect(screen.queryByText(/nest notice/)).toBeNull();
+      expect(screen.getByText(shown), label).toBeInTheDocument();
+      expect(screen.queryByText(/nest notice/), label).toBeNull();
+      unmount();
+    }
   });
 });
