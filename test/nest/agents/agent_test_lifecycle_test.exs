@@ -125,7 +125,17 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       AgentTestHelpers.ensure_cleanup(name)
 
       {:ok, pid} = Supervisor.get_agent(space_id, name)
+
+      # The `:DOWN` is the fence for "it really is gone", and it is needed
+      # rather than decorative. `stop_agent/2` fires an exit signal and returns,
+      # and the teardown discovers agents through the registry — which this
+      # agent empties inside `terminate/2`, before it dies — so an agent already
+      # past that point when the teardown looks is invisible to it, nothing
+      # waits for its death, and a bare aliveness read is a race rather than a
+      # fact.
+      ref = Process.monitor(pid)
       :ok = Supervisor.stop_agent(space_id, name)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
 
       result = AgentTestLifecycle.stop_test_agents()
 

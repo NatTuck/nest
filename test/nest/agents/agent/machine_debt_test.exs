@@ -511,7 +511,7 @@ defmodule MachineDebtTest do
     %{m | work: %{m.work | active_worker: self(), active_worker_kind: kind}}
   end
 
-  defp committing(carried), do: %{state_at(:committing) | entry: {:compaction, [], carried}}
+  defp committing(carried), do: %{state_at(:committing) | entry: {:compaction, carried}}
 
   defp carried, do: elem(Messages.assistant(response(text: "carried")), 1)
 

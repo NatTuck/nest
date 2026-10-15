@@ -4,6 +4,18 @@
  * All network responses are scheduled via setTimeout(..., 1)
  */
 
+// Monotonic refs for the socket lifecycle registrations. The real
+// `Socket.onOpen/onClose/onError` return a ref and store a
+// `[ref, callback]` pair, so a caller can hand the refs back to
+// `off/1`; the mock has to do the same or `initChannels`'s
+// off-then-register is untestable.
+let nextRef = 0;
+
+function makeRef() {
+  nextRef += 1;
+  return `ref-${nextRef}`;
+}
+
 // Private state
 const mockState = {
   connected: false,
@@ -98,7 +110,7 @@ export function simulateServerEvent(topic, event, payload) {
 export function connectSocket() {
   mockState.connected = true;
   setTimeout(() => {
-    for (const cb of mockState.socketCallbacks.onOpen) {
+    for (const [, cb] of mockState.socketCallbacks.onOpen) {
       cb();
     }
   }, 1);
@@ -111,7 +123,7 @@ export function connectSocket() {
 export function disconnectSocket() {
   mockState.connected = false;
   setTimeout(() => {
-    for (const cb of mockState.socketCallbacks.onClose) {
+    for (const [, cb] of mockState.socketCallbacks.onClose) {
       cb();
     }
   }, 1);
@@ -124,7 +136,7 @@ export function disconnectSocket() {
 export function errorSocket() {
   mockState.connected = false;
   setTimeout(() => {
-    for (const cb of mockState.socketCallbacks.onError) {
+    for (const [, cb] of mockState.socketCallbacks.onError) {
       cb();
     }
   }, 1);
@@ -266,15 +278,32 @@ function createMockChannel(topic) {
 function createSocketInstance(_endpoint, opts) {
   return {
     onOpen(callback) {
-      mockState.socketCallbacks.onOpen.push(callback);
+      const ref = makeRef();
+      mockState.socketCallbacks.onOpen.push([ref, callback]);
+      return ref;
     },
 
     onClose(callback) {
-      mockState.socketCallbacks.onClose.push(callback);
+      const ref = makeRef();
+      mockState.socketCallbacks.onClose.push([ref, callback]);
+      return ref;
     },
 
     onError(callback) {
-      mockState.socketCallbacks.onError.push(callback);
+      const ref = makeRef();
+      mockState.socketCallbacks.onError.push([ref, callback]);
+      return ref;
+    },
+
+    // Mirrors the real `Socket.off/1`: filter every lifecycle list by ref.
+    // Called with refs that are no longer registered — for instance ones taken
+    // before a `resetMockSocket()` — this is a no-op, exactly as in Phoenix.
+    off(refs) {
+      for (const key of Object.keys(mockState.socketCallbacks)) {
+        mockState.socketCallbacks[key] = mockState.socketCallbacks[key].filter(
+          ([ref]) => !refs.includes(ref),
+        );
+      }
     },
 
     isConnected() {

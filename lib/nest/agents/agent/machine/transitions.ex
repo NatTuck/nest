@@ -135,15 +135,12 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # --- blocked exits ---
 
-  def do_step(%{phase: :compaction_failed} = m, :retry_compaction) do
-    case m.mid_turn_entry do
-      # No mid-turn continuation: a post-turn retry resumes the held user
-      # message after the compaction (the pending field is carried on the
-      # machine, not as the compaction continuation).
-      nil -> Compaction.stage(%{m | mid_turn_entry: nil}, nil, nil)
-      entry -> Compaction.stage(%{m | mid_turn_entry: nil}, entry.entry, nil)
-    end
-  end
+  # A retry **re-sends** the existing sequence; it does not re-plan. The
+  # request message is committed, so calling `Compaction.stage/3` here would
+  # append a second request with a different remaining-token count and
+  # double-count the request's own size. `Compaction.retry/1` owns both the
+  # re-send and the loop breaker that bounds the retries.
+  def do_step(%{phase: :compaction_failed} = m, :retry_compaction), do: Compaction.retry(m)
 
   def do_step(%{phase: :compaction_loop_detected} = m, :loop_ack) do
     # The loop breaker must not swallow a message the machine was holding, and
@@ -347,8 +344,24 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     {:ok, [{:spawn_tools, machine.work.ctx, calls}], machine}
   end
 
+  # A refused batch is the near-the-limit case compaction exists for, and
+  # `Response.regular/5` has already appended the assistant carrying that
+  # batch's `tool_use` parts. `Repair.classify_live/2` refuses a `{:user, _}`
+  # append while any are pending, so the request could not be committed — and
+  # that refusal is a `{:follow, …}` that halts the action list, which the
+  # default clause swallows, wedging the agent in `:compacting` with no worker,
+  # no timer and no exit but stop/archive/restart.
+  #
+  # Answer the tail first. The result is a `{:tool, _}` — wire role `user` — so
+  # the request append that follows gets a `pairing_bridge/2`, not a refusal.
   def do_step(%{phase: :generating, kind: :chat} = m, {:preflight_result, {:refuse, _reason}}) do
-    Compaction.stage(m, m.work.preflight.continuation, nil)
+    heal =
+      m.work.ctx.messages
+      |> MessageList.unpaired_tail_tool_uses()
+      |> MessageList.interrupted_tool_result()
+
+    {:ok, actions, machine} = Compaction.stage(m, m.work.preflight.continuation, nil)
+    {:ok, heal_tail(heal) ++ actions, machine}
   end
 
   def do_step(%{phase: :generating, kind: :chat} = m, :iterate), do: iterate(m)
@@ -421,15 +434,45 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
       else: {:ignore, :stale_result, m}
   end
 
-  # The staged compaction request was assembled; spawn the compactor.
+  # The request was **not** committed, so nothing may be sent: a refused append
+  # is a `{:follow, …}` that halts the action list and the phase has no worker
+  # left to answer, so the default clause would wedge the agent forever.
+  # `Failure.fail_turn` is the visible failure instead.
+  #
+  # Deliberately *not* `:compaction_failed`: a retry re-sends the committed
+  # sequence, and this sequence has no request row in it — the compactor would
+  # be asked to summarize with no instruction. Unreachable by construction (the
+  # `{:refuse, _}` clause heals the tail before staging); it is the backstop.
+  def do_step(%{phase: :generating, kind: :compaction} = m, {:append_result, :invalid, reason}) do
+    Failure.fail_turn(m, %ArgumentError{message: reason}, [])
+  end
+
+  # Unreachable by construction, and deliberately NOT a `fail_turn`: `:stale`
+  # comes only from `Repair.classify_live/2`'s `tool_result?` arm, and the
+  # compaction request is a `{:user, _}` — so a stale outcome here would mean
+  # the request was not what this phase appends. Ignoring it matches the
+  # `:generating`/`:chat` sibling and cannot mask a failed append, because
+  # `:invalid` (the only outcome a user append can actually produce) is above.
+  def do_step(%{phase: :generating, kind: :compaction} = m, {:append_result, :stale, _}),
+    do: {:ignore, :stale_append, m}
+
+  # The compaction request is committed; spawn the compactor over the
+  # ordinary message list.
   def do_step(%{phase: :generating, kind: :compaction} = m, :iterate) do
     messages = Dispatch.request_messages(m)
 
     case Preflight.validate_request(messages) do
       :ok ->
-        provisional = m.work.active_message_index
+        # The *summary's* index, from the context `prepare/1` just rebuilt: the
+        # request and any bridge are already committed with real indices, so the
+        # next free index is where the summary lands. Written onto `work` as
+        # well as emitted, like `do_dispatch_http/1`, because
+        # `Response.assistant_with_log/2` stamps the response's API-log id from
+        # it — unset, the compactor's log carried the last chat dispatch's index.
+        provisional = m.work.ctx.next_message_index
         ctx = Dispatch.spawn_ctx(m, messages)
-        {:ok, [{:set_streaming, provisional}, {:stage_compaction, ctx}], m}
+        machine = %{m | work: %{m.work | active_message_index: provisional}}
+        {:ok, [{:set_streaming, provisional}, {:stage_compaction, ctx}], machine}
 
       {:error, violations} ->
         Compaction.compaction_failed(
@@ -442,7 +485,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # --- committing ---
 
-  def do_step(%{phase: :committing, entry: {:compaction, _, _}} = m, {:commit_done}),
+  def do_step(%{phase: :committing, entry: {:compaction, _}} = m, {:commit_done}),
     do: Compaction.resume(m)
 
   def do_step(%{phase: :committing} = m, {:commit_done}), do: {:ignore, :no_compaction, m}
@@ -461,6 +504,13 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   def do_step(%Machine{} = m, _event), do: {:ignore, :not_applicable, m}
 
   # --- chat start / preflight ---
+
+  # Answer an unanswered trailing `tool_use` before the compaction request is
+  # appended, so that append cannot be refused (see the
+  # `{:preflight_result, {:refuse, _}}` clause, which is the only caller).
+  # `nil` from `interrupted_tool_result/1` means there was nothing to answer.
+  defp heal_tail(nil), do: []
+  defp heal_tail(heal), do: [{:append_many, [heal]}]
 
   # Both `{:inbox_drain, …}` boundaries — `:idle` and the `:generating`/`:chat`
   # turn boundary from issue #15 — start the delivered message's turn the same

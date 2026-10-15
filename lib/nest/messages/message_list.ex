@@ -13,27 +13,6 @@ defmodule Nest.Messages.MessageList do
   alias Nest.Messages.User
 
   @doc """
-  Drop the trailing message if it's an assistant message
-  whose parts include a `Part.ToolUse` (an unsatisfied
-  tool call — Anthropic's `(2013)` validation rejects
-  unpaired `tool_use`).
-  """
-  @spec drop_trailing_unpaired_tool_call([term()]) :: [term()]
-  def drop_trailing_unpaired_tool_call(messages) do
-    case List.last(messages) do
-      {:assistant, %Assistant{parts: parts}} ->
-        if Enum.any?(parts, &match?(%Part.ToolUse{}, &1)) do
-          Enum.drop(messages, -1)
-        else
-          messages
-        end
-
-      _ ->
-        messages
-    end
-  end
-
-  @doc """
   Append the clone's own fork rows after the shared prefix.
 
   Fork semantics are those of Unix `fork/2`: the child shares the
@@ -211,12 +190,28 @@ defmodule Nest.Messages.MessageList do
         repair_messages(missing, incoming)
 
       {wire_user, _} when wire_user in [:user, :tool] ->
-        if match?({:user, _}, incoming), do: [idle_bridge_ack(:live)], else: []
+        if match?({:user, _}, incoming),
+          do: [idle_bridge_ack(bridge_ack_kind(incoming))],
+          else: []
 
       _ ->
         []
     end
   end
+
+  # The wording of the alternation bridge is case-specific, so it is chosen by
+  # what it is introducing rather than by the caller. The compaction request is
+  # a `user` row (see `Nest.Messages.User`'s `origin` metadata), and it is
+  # introducing the compactor's instruction — so the generic "continuing from
+  # here" reads wrong in front of it, while `:live` remains right for the
+  # turn-boundary inbox delivery this bridge was written for.
+  defp bridge_ack_kind({:user, %User{metadata: metadata}}) do
+    if is_map(metadata) and Map.get(metadata, "origin") == User.compaction_origin(),
+      do: :compaction_request,
+      else: :live
+  end
+
+  defp bridge_ack_kind(_incoming), do: :live
 
   @doc """
   The `Part.ToolUse` structs on the trailing assistant message, or `[]`
@@ -251,7 +246,10 @@ defmodule Nest.Messages.MessageList do
   def interrupted_tool_result([]), do: nil
 
   def interrupted_tool_result(tool_uses) do
-    List.first(repair_messages(tool_uses, :no_incoming))
+    case List.first(repair_messages(tool_uses, :no_incoming)) do
+      {:tool, %Tool{} = tool} -> {:tool, %{tool | metadata: Tool.heal_metadata()}}
+      other -> other
+    end
   end
 
   @doc """
@@ -262,8 +260,11 @@ defmodule Nest.Messages.MessageList do
   missing `tool_use`, plus an assistant acknowledgement when
   `incoming` is a user message (wire role `user`). Returns `[]`
   when there is nothing to repair. Shared by the live append
-  bridge (`pairing_bridge/2`) and the offline repair tool so the
+  bridge (`pairing_bridge/2`) and the live load heal, so the
   synthetic shape and wording stay identical.
+
+  The offline repair tool does **not** call this: its planner builds the same
+  results one level lower, through `unpaired_tool_result/1`.
   """
   @spec repair_messages([Part.ToolUse.t()], term()) :: [term()]
   def repair_messages([], _incoming), do: []
@@ -328,6 +329,9 @@ defmodule Nest.Messages.MessageList do
   The wording is case-specific so the ack reads sensibly in context:
 
     * `:compaction` — a compaction just finished;
+    * `:compaction_request` — the bridge in front of the compactor's
+      instruction, which `MessageList.pairing_bridge/2` inserts when the
+      compaction request follows a `user` wire tail;
     * `:load` — we were interrupted before an assistant response;
     * `:live` — the alternation bridge (`MessageList.pairing_bridge/2`),
       where nothing was interrupted: a second user message simply
@@ -348,13 +352,18 @@ defmodule Nest.Messages.MessageList do
     )
   end
 
+  def idle_bridge_ack(:compaction_request) do
+    build_idle_bridge_ack("Let me pause to summarize.")
+  end
+
   def idle_bridge_ack(:live) do
     build_idle_bridge_ack("Okay, continuing from here.")
   end
 
-  # The tag set is closed (`:compaction`, `:load`, `:live`). An unknown tag is
-  # a programming error, so fail loudly with a clear message rather than
-  # quietly picking a default wording for a case nobody thought about.
+  # The tag set is closed (`:compaction`, `:compaction_request`, `:load`,
+  # `:live`). An unknown tag is a programming error, so fail loudly with a clear
+  # message rather than quietly picking a default wording for a case nobody
+  # thought about.
   def idle_bridge_ack(other) do
     raise ArgumentError, "unknown idle_bridge_ack kind: #{inspect(other)}"
   end

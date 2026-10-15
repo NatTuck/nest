@@ -8,6 +8,12 @@
  */
 export const initialState = {
   isConnected: false,
+  // True once a socket dial has closed or errored without connecting. Distinct
+  // from `isConnected === false`, which is also the state before the handshake
+  // lands; the gate at `/` uses this to stop rendering a spinner forever
+  // (issue #95). It cannot distinguish a rejected token from an unreachable
+  // server — see `initChannels` in `channels.js`.
+  connectionFailed: false,
   agents: [],
   archivedAgents: [],
   spaces: [],

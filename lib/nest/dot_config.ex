@@ -3,7 +3,9 @@ defmodule Nest.DotConfig do
   Loads and manages XDG-compliant configuration from ~/.config/nest/config.toml
   """
 
+  alias Nest.DotConfig.FieldValidation
   alias Nest.DotConfig.KeyValidation
+  alias Nest.DotConfig.ModelValidation
   alias Nest.ParseCache
 
   @config_dir :filename.basedir(:user_config, "nest")
@@ -527,12 +529,12 @@ defmodule Nest.DotConfig do
   defp parse_provider(name, data) do
     %Provider{
       name: name,
-      base_url: Map.get(data, "base-url"),
-      api_key: Map.get(data, "api-key"),
+      base_url: ModelValidation.validate_base_url(Map.get(data, "base-url"), name),
+      api_key: ModelValidation.validate_api_key(Map.get(data, "api-key"), name),
       protocol: Map.get(data, "protocol", "openai"),
       auto_models: Map.get(data, "auto-models", false),
-      tags: Map.get(data, "tags", []),
-      models: parse_provider_models(data),
+      tags: parse_tags(Map.get(data, "tags"), name),
+      models: parse_provider_models(data, name),
       timeout_seconds: parse_timeout(Map.get(data, "timeout"), name),
       default_context_limit:
         parse_default_context_limit(Map.get(data, "default-context-limit"), name),
@@ -544,12 +546,24 @@ defmodule Nest.DotConfig do
     }
   end
 
-  # Parses the provider's explicit `models` list, returning `[]`
-  # when the key is absent or malformed.
-  defp parse_provider_models(data) do
+  # Parses the provider's explicit `models` list: absent means none, a list is
+  # parsed, and anything else raises.
+  #
+  # A malformed value used to fall through to `[]`, silently dropping the whole
+  # model list — the opposite of the "a bad value is a startup error" convention
+  # the rest of this module follows. The write side already raised on it
+  # (`Enum.map/2` on a non-list), so the two sides agree now.
+  defp parse_provider_models(data, provider_name) do
     case Map.get(data, "models") do
-      models_list when is_list(models_list) -> Enum.map(models_list, &parse_model/1)
-      _ -> []
+      nil ->
+        []
+
+      models_list when is_list(models_list) ->
+        Enum.map(models_list, &parse_model(&1, provider_name))
+
+      other ->
+        raise "Provider #{provider_name}: invalid models #{inspect(other)}: " <>
+                "must be an array of tables"
     end
   end
 
@@ -561,14 +575,16 @@ defmodule Nest.DotConfig do
   # surface as a probe HTTP error rather than a startup crash, but
   # `parse_default_context_limit`'s stricter convention (raise on
   # nonsense) doesn't fit here — the URL is a string, not a number.
+  #
+  # The rule is shared with the write side (`FieldValidation.non_empty_string`)
+  # so the two cannot disagree: the write side used to pass this field through
+  # unvalidated, so a `probe-base-url = ""` written from a channel client was
+  # persisted and then raised here on the re-read — killing `Models`, and with it
+  # the next boot.
   defp parse_probe_base_url(nil, _provider_name), do: nil
 
-  defp parse_probe_base_url(url, _provider_name) when is_binary(url) and url != "",
-    do: url
-
-  defp parse_probe_base_url(value, provider_name) do
-    raise "Provider #{provider_name}: invalid probe-base-url #{inspect(value)}: must be a non-empty string"
-  end
+  defp parse_probe_base_url(url, provider_name),
+    do: FieldValidation.non_empty_string(url, provider_name, "probe-base-url")
 
   # Parses the optional `auto-probe` flag (endpoint auto-detection).
   # Defaults to `true` when absent.
@@ -607,42 +623,42 @@ defmodule Nest.DotConfig do
   # config errors surface at startup, not on the first LLM call.
   defp parse_timeout(nil, _provider_name), do: @default_timeout_seconds
 
-  defp parse_timeout(seconds, _provider_name) when is_integer(seconds) and seconds > 0 do
-    seconds
-  end
-
-  defp parse_timeout(seconds, provider_name) do
-    raise "Provider #{provider_name}: invalid timeout #{inspect(seconds)}: must be a positive integer (seconds)"
-  end
+  defp parse_timeout(seconds, provider_name),
+    do: ModelValidation.validate_timeout(seconds, provider_name)
 
   # Parses and validates the optional `default-context-limit` for a
   # provider. Returns `nil` when the key is absent (no provider-wide
   # fallback). Raises on invalid values so config errors surface at
   # startup, not on the first chat turn.
-  defp parse_default_context_limit(nil, _provider_name), do: nil
+  defp parse_default_context_limit(limit, provider_name),
+    do: ModelValidation.validate_default_context_limit(limit, provider_name)
 
-  defp parse_default_context_limit(limit, _provider_name)
-       when is_integer(limit) and limit > 0 do
-    limit
-  end
+  # Parses and validates a provider's `tags`: absent means no tags, a list of
+  # names is kept, and anything else raises. `tags = "abc"` used to reach
+  # `Enum.member?/2` in `get_providers_by_tag/2`, which raises on a binary.
+  defp parse_tags(nil, _provider_name), do: []
 
-  defp parse_default_context_limit(limit, provider_name) do
-    raise "Provider #{provider_name}: invalid default-context-limit #{inspect(limit)}: must be a positive integer"
-  end
+  defp parse_tags(tags, provider_name),
+    do: ModelValidation.validate_tags(tags, provider_name)
 
-  defp parse_model(model_data) do
-    multi_modal =
-      case Map.get(model_data, "multi-modal") do
-        nil -> nil
-        mm when is_map(mm) -> mm
-        _ -> nil
-      end
+  defp parse_model(model_data, provider_name) do
+    name = ModelValidation.validate_name(Map.get(model_data, "name"), provider_name)
 
     %Model{
-      name: Map.get(model_data, "name"),
+      name: name,
       provider_name: nil,
-      context_limit: Map.get(model_data, "context-limit"),
-      multi_modal: multi_modal,
+      context_limit:
+        ModelValidation.validate_context_limit(
+          Map.get(model_data, "context-limit"),
+          provider_name,
+          name
+        ),
+      multi_modal:
+        ModelValidation.validate_multi_modal(
+          Map.get(model_data, "multi-modal"),
+          provider_name,
+          name
+        ),
       thinking_effort: parse_thinking_effort(Map.get(model_data, "thinking-effort"))
     }
   end

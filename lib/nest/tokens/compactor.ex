@@ -33,11 +33,17 @@ defmodule Nest.Tokens.Compactor do
   reshape the response.
 
   The LLM call is set up by the caller. It sends a request whose
-  messages END with a `[mode: compact]` system suffix carrying
-  the dynamic budget hint:
+  messages END with a `[mode: compact]` suffix — a `user` row, because
+  that is what every provider's wire format can carry — on its own
+  line, carrying the dynamic budget hint:
 
-      [mode: compact] Summarize the conversation in your
-      <N> remaining tokens. <optional_guidance?>
+      [mode: compact]
+      Summarize the conversation in your <N> remaining tokens.
+      <optional_guidance?>
+
+  That row is committed to the transcript before this call, so the tag is
+  on its own line exactly like the `[mode: <name>]\n` prefix every human
+  row carries: the client strips it on render and shows a badge instead.
 
   The agent's initial system prompt carries a `[mode: compact]`
   paragraph explaining the summarization contract. Together,
@@ -71,6 +77,7 @@ defmodule Nest.Tokens.Compactor do
   alias Nest.Messages.Message
   alias Nest.Messages.Part
   alias Nest.Messages.ThinkTags
+  alias Nest.Messages.User
   alias Nest.Scripts.CompactionProbeSupport
   alias Nest.Tokens.Budget
   alias Nest.Tokens.Estimator
@@ -268,12 +275,14 @@ defmodule Nest.Tokens.Compactor do
     end
   end
 
-  # Render the compaction request as a `{:user, _}` tuple the
-  # compactor's LLM call appends to its request. Wraps
-  # `CompactionProbeSupport.compaction_suffix/2` in a User
-  # struct. The `index` field is `nil` — the suffix is an LLM-call
-  # input element, not a persisted message. Receivers that need a
-  # real index (e.g., for sequence IDs) reassign later.
+  # Render the compaction request as a `{:user, _}` tuple. Wraps
+  # `CompactionProbeSupport.compaction_suffix/2` in a User struct.
+  #
+  # The `index` is `nil` because this builder cannot know it: the machine
+  # appends the returned message through `MessageAppender`, which stamps it
+  # like any other row. The request **is** a persisted message — it is
+  # committed *before* the compactor is dispatched, so a failure leaves it
+  # visible rather than discarding a sequence the model has already seen.
   defp render_suffix(n, guidance)
        when is_binary(guidance) and guidance != "" do
     text = CompactionProbeSupport.compaction_suffix(n, guidance)
@@ -291,6 +300,7 @@ defmodule Nest.Tokens.Compactor do
        index: nil,
        parts: [%Part.Text{text: text}],
        timestamp: DateTime.utc_now(),
+       metadata: User.compaction_metadata(),
        api_logs: []
      }}
   end

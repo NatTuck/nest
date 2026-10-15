@@ -199,6 +199,27 @@ describe("ProviderEditor", () => {
     expect(updated.default_context_limit).toBe(null);
   });
 
+  it("clears base url when the input is emptied", () => {
+    const onChange = vi.fn();
+    render(
+      <ProviderEditor
+        provider={provider}
+        onChange={onChange}
+        onRemove={() => {}}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "" },
+    });
+
+    const [updated] = onChange.mock.calls[0];
+    // `""` is not a URL, so the server refuses it; sending `null` means "unset"
+    // instead. Without this, clearing the field would be a refusal rather than
+    // removing the key.
+    expect(updated.base_url).toBe(null);
+  });
+
   it("clears probe base url when the input is emptied", () => {
     const onChange = vi.fn();
     render(

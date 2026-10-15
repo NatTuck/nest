@@ -20,6 +20,8 @@ export function ProviderModelRow({ model, onChange, onRemove }) {
       />
       <input
         type="number"
+        min="1"
+        step="1"
         value={model.context_limit ?? ""}
         onChange={(e) =>
           set("context_limit", e.target.value ? Number(e.target.value) : null)

@@ -31,7 +31,10 @@ describe("providerConstants", () => {
     expect(a).toEqual({
       id: expect.any(String),
       name: "",
-      base_url: "",
+      // `null`, not `""`. `""` is not a URL and the server refuses it, so a new
+      // provider could not be saved until the field was filled; `null` means
+      // "unset" and writes no key.
+      base_url: null,
       api_key: "",
       protocol: "openai",
       auto_models: false,

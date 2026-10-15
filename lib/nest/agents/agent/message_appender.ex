@@ -44,10 +44,27 @@ defmodule Nest.Agents.Agent.MessageAppender do
 
   ## Loop-breaker reset
 
-  Both single and batch handlers reset `consecutive_compaction_count` to
-  zero when an appended message is genuine progress (`:user`,
-  `:assistant`, or `:tool`). Repair messages are part of the requested
-  append and do not change the reset decision.
+  Both single and batch handlers reset `loop_count` to zero when an appended
+  message is genuine progress (`:user`, `:assistant`, or `:tool`), with two
+  exceptions — both `user`- or `tool`-role rows that are the *runtime's* work
+  rather than the operator's:
+
+    * the compaction request. It is a `user` row (that is what the wire can
+      carry) but it is **not** progress. Counting it would reset the breaker on
+      every attempt and disarm the bound on a compaction that keeps failing,
+      since the request is committed and can never be removed.
+      `Nest.Messages.User.compaction_metadata/0` marks it.
+    * the heal row `MessageList.interrupted_tool_result/1` builds for an
+      unanswered tool call. It is a `{:tool, _}`, which the rule above would
+      count as progress, and it is emitted unconditionally when a refused batch
+      stages a compaction — so counting it would disarm the same bound on the
+      "compact, still doesn't fit, refuse a batch, compact" loop.
+      `Nest.Messages.Tool.heal_metadata/0` marks it.
+
+  `progress_message?/1` excludes both. Note the bound is on a compaction that
+  keeps **failing**: a *succeeding* compaction legitimately counts as progress,
+  because the commit's own appends (`Turn.Executor.do_commit/3`,
+  `commit_active_segment/4`) are real rows and the conversation did shrink.
 
   ## In-process entry points
 
@@ -64,6 +81,8 @@ defmodule Nest.Agents.Agent.MessageAppender do
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Agents.Agent.Repair
   alias Nest.Messages.Sanitize
+  alias Nest.Messages.Tool
+  alias Nest.Messages.User
   alias Nest.Tokens.PreFlight
 
   # A turn owns the sequence while the machine is `:generating` or
@@ -257,8 +276,31 @@ defmodule Nest.Agents.Agent.MessageAppender do
     {role, %{msg | index: index}}
   end
 
-  defp progress_message?({role, _}) when role in [:user, :assistant, :tool], do: true
+  # Genuine progress resets the loop breaker. Two rows are excluded because
+  # they are emitted by the *same* transition that stages a compaction, so
+  # counting either would reset the counter on every attempt and disarm
+  # `@max_consecutive_compactions` — which is the only thing bounding a
+  # compaction that keeps failing.
+  #
+  # The compaction request is a `:user` row (that is what the wire can carry —
+  # see `Nest.Messages.User`'s moduledoc) and it is the runtime asking for a
+  # summary, not progress. The heal row is a `{:tool, _}`, which the rule below
+  # counts as progress, and it is emitted on every refused-batch staging.
+  defp progress_message?({:user, %User{metadata: metadata}}) do
+    not marked?(metadata, User.compaction_origin())
+  end
+
+  defp progress_message?({:tool, %Tool{metadata: metadata}}) do
+    not marked?(metadata, Tool.heal_origin())
+  end
+
+  defp progress_message?({role, _}) when role in [:assistant, :tool], do: true
   defp progress_message?(_), do: false
+
+  defp marked?(metadata, origin) when is_map(metadata),
+    do: Map.get(metadata, "origin") == origin
+
+  defp marked?(_metadata, _origin), do: false
 
   defp reset_consecutive(state) do
     %{state | live: %{state.live | machine: %{state.live.machine | loop_count: 0}}}

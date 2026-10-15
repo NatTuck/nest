@@ -314,6 +314,65 @@ if not_loaded != [] do
   raise "TOML encoder warm-up did not load #{inspect(not_loaded)}"
 end
 
+# Warm the `Inspect` chain that a config refusal's *message* needs.
+#
+# `FieldValidation` and `ModelValidation` build their message with
+# `inspect(value)`, and `Inspect` is not loaded at boot. So the first refusal in
+# a VM pulls `Inspect`, `Inspect.Opts` and the value's `Inspect.*` implementation
+# through the shared code server — inside whichever test happens to refuse a
+# config value first, which is a `save_providers` assertion bounded at 100 ms.
+#
+# Measured: 639 us for the first refusal in an idle VM, 5 us for the second, and
+# **38 ms** for the first under 64 CPU burners against a 100 ms bound — which is
+# how `providers_test.exs`'s "replies invalid_payload for a model context-limit
+# the runtime rejects" flaked under the full suite while passing alone and under
+# the whole channel directory. Same class as the TOML warm-up above, and the
+# same remedy: pay it here, before any deadline.
+#
+# **The honest limit, so this does not overclaim.** The *cost* is measured; the
+# gate failure it is meant to explain was never reproduced — at the failing seed
+# the channel directory plus controllers is green **with and without** this
+# block. So the warm-up rests on the measured load cost, not on a before/after,
+# and if that test ever fails again this diagnosis is falsified: reproduce at the
+# suite's real concurrency rather than with synthetic burners.
+#
+# The values are one per type a config value can actually have, because
+# `inspect/1` dispatches on the argument's type. A TOML file or a GUI JSON
+# payload can carry a string, an integer, a float, a boolean, a list, a map or
+# null, so all of those protocols are warmed below — an earlier version warmed
+# only Integer/BitString/Map and left `Inspect.List` cold, while
+# `providers_test.exs` refuses `api_key = []` and the `tags` / `multi-modal`
+# refusals inspect lists. (A tuple cannot arrive from either source.)
+for value <- [0, 0.5, "", true, [], %{}, nil] do
+  try do
+    Nest.DotConfig.FieldValidation.positive_integer(value, "warmup", "warmup")
+  rescue
+    _ -> :ok
+  end
+end
+
+# Fail loudly if it did not take, like the warm-up above: `:code.is_loaded/1`
+# rather than `Code.ensure_loaded?/1`, so deleting the block above cannot leave
+# this check passing over a cold chain.
+not_loaded =
+  Enum.reject(
+    [
+      Inspect,
+      Inspect.Opts,
+      Inspect.Integer,
+      Inspect.Float,
+      Inspect.BitString,
+      Inspect.Atom,
+      Inspect.List,
+      Inspect.Map
+    ],
+    &:code.is_loaded/1
+  )
+
+if not_loaded != [] do
+  raise "Inspect warm-up did not load #{inspect(not_loaded)}"
+end
+
 # Warm the agent-start path (#21).
 #
 # `Agent.init/1` runs inside the supervisor's critical section —

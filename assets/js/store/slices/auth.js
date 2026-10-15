@@ -12,6 +12,10 @@ export function authSetters(set) {
       set({ isConnected: connected });
     },
 
+    setConnectionFailed: (failed) => {
+      set({ connectionFailed: failed });
+    },
+
     setCurrentUser: (user) => {
       set({ currentUser: user });
     },

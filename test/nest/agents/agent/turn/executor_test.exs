@@ -6,9 +6,8 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
   use Nest.DataCase, async: true
 
   import ExUnit.CaptureLog
+  import Nest.TestSupport.ExecutorTestHelpers
 
-  alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Turn.Dispatch
@@ -16,63 +15,8 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.User
+  alias Nest.Persistence
   alias Nest.Tokens.ConversationSize
-
-  defp state do
-    %Agent{
-      name: "exec-#{System.unique_integer([:positive])}",
-      space_id: 1,
-      model: %{name: "m"},
-      client_config: %Nest.LLM.ClientConfig{client: Nest.LLM.MockClient, model: "m"},
-      llm_metrics: %Agent.LlmMetrics{
-        context_limit: 100_000,
-        context_limit_source: :config,
-        usage_totals: Broadcasts.empty_usage_totals(),
-        descendant_usage: Broadcasts.empty_usage_totals()
-      },
-      live: %Agent.ChatState.Live{
-        machine: %Machine{work: %Machine.Work{ctx: ctx()}}
-      },
-      vocation: vocation()
-    }
-  end
-
-  # A vocation defining the modes the drain tests request, so
-  # `ChatPipeline.resolve_mode_and_caps/3` resolves "plan" to "plan" and an
-  # unknown mode to the "chat" default.
-  defp vocation do
-    %Nest.Vocations.Vocation{
-      modes: %{
-        "chat" => %{"caps" => %{}},
-        "plan" => %{"caps" => %{}},
-        "review" => %{"caps" => %{}}
-      }
-    }
-  end
-
-  defp ctx do
-    %{
-      agent_pid: self(),
-      agent_name: "a",
-      space_id: 1,
-      client_config: %Nest.LLM.ClientConfig{client: Nest.LLM.MockClient, model: "m"},
-      tools: [],
-      tool_choice: :auto,
-      caps: %{},
-      context_limit: 100_000,
-      context_limit_source: :default,
-      messages: [],
-      tmp_path: nil,
-      workspace_path: nil,
-      mode: "chat",
-      next_message_index: 0,
-      crossed_thresholds: %MapSet{},
-      context_projection: nil,
-      api_log_sequences: %{},
-      vocation: nil,
-      depth: 0
-    }
-  end
 
   defp user_msg do
     {:user,
@@ -195,36 +139,36 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
 
   describe "sequence actions" do
     test "append and append_many persist and round-trip ok" do
-      capture_log(fn ->
-        {appended, nil} = run({:append, user_msg()})
-        assert [{:user, %{index: 0}}] = appended.chat_state.messages
+      # No capture: the fixture owns a real row, so these appends genuinely
+      # persist and the append path logs nothing.
+      {appended, nil} = run({:append, user_msg()})
+      assert [{:user, %{index: 0}}] = appended.chat_state.messages
 
-        {batch, nil} = run({:append_many, [user_msg()]}, appended)
+      {batch, nil} = run({:append_many, [user_msg()]}, appended)
 
-        # The terminal boundary bridges the double user role.
-        assert Enum.map(batch.chat_state.messages, &elem(&1, 0)) == [:user, :assistant, :user]
-      end)
+      # The terminal boundary bridges the double user role.
+      assert Enum.map(batch.chat_state.messages, &elem(&1, 0)) == [:user, :assistant, :user]
     end
 
     test "append result rides back on failure on the live path" do
-      capture_log(fn ->
-        live =
-          put_in(
-            state().live.machine,
-            Machine.status_to_machine(state().live.machine, :streaming)
-          )
+      # No capture: this branch is the appender's `:invalid` refusal, which
+      # happens in the repair table before any persist step, so nothing logs.
+      live =
+        put_in(
+          state().live.machine,
+          Machine.status_to_machine(state().live.machine, :streaming)
+        )
 
-        # Seed an assistant tail: the next assistant append is still a
-        # genuinely broken live sequence. (Only user-after-user is
-        # bridged on the live path; assistant-after-assistant fails
-        # loudly.)
-        {seeded, nil} = run({:append, assistant_msg()}, live)
+      # Seed an assistant tail: the next assistant append is still a
+      # genuinely broken live sequence. (Only user-after-user is
+      # bridged on the live path; assistant-after-assistant fails
+      # loudly.)
+      {seeded, nil} = run({:append, assistant_msg()}, live)
 
-        assert {_state, {:append_result, :invalid, reason}} =
-                 run({:append, assistant_msg()}, seeded)
+      assert {_state, {:append_result, :invalid, reason}} =
+               run({:append, assistant_msg()}, seeded)
 
-        assert reason =~ "second consecutive assistant"
-      end)
+      assert reason =~ "second consecutive assistant"
     end
 
     test "record_file_access is a no-op with no messages" do
@@ -264,10 +208,15 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       state = state()
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
 
-      capture_log(fn ->
-        {_state, nil} = run({:broadcast, {:overflow, :reserve_exhausted, "compact"}, nil}, state)
-      end)
+      # `Broadcasts.log_error` logs the frame it emits, so the capture asserts on
+      # that line rather than merely silencing it.
+      log =
+        capture_log(fn ->
+          {_state, nil} =
+            run({:broadcast, {:overflow, :reserve_exhausted, "compact"}, nil}, state)
+        end)
 
+      assert log =~ "chat:error"
       assert_receive {:chat_error, _}
     end
 
@@ -283,10 +232,15 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       state = state()
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
 
-      capture_log(fn ->
-        {_state, nil} = run({:fail_turn, %RuntimeError{message: "boom"}, []}, state)
-      end)
+      # `{:fail_turn, …}` logs `chat_crashed` and then broadcasts, which logs
+      # `chat:error`; the capture asserts on the first, so it is not merely
+      # silencing.
+      log =
+        capture_log(fn ->
+          {_state, nil} = run({:fail_turn, %RuntimeError{message: "boom"}, []}, state)
+        end)
 
+      assert log =~ "chat_crashed"
       assert_receive {:chat_error, %{content: content}}
       assert content =~ "boom"
     end
@@ -383,17 +337,15 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       state = inbox_state([peer], "chat")
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
 
-      # The fixture agent has no DB row, so the persist step warns; capturing it
-      # keeps the suite's console clean and pins that the append really went
-      # through `MessageAppender` rather than around it.
-      log =
-        capture_log(fn ->
-          {state, nil} = run({:drain_inbox, :append}, state)
-          send(self(), {:appended, state})
-        end)
+      # The append goes through `MessageAppender`, so its row lands in the DB —
+      # the real observable, and the one this test always meant. It used to
+      # assert the fixture's "Failed to persist message" warning instead, which
+      # was evidence only that the fixture owned no row, and racy: a concurrent
+      # test's `capture_log` captures whole-VM output, so it could swallow the
+      # very line being asserted on.
+      {state, nil} = run({:drain_inbox, :append}, state)
 
-      assert log =~ "Failed to persist message"
-      assert_receive {:appended, state}
+      assert length(Persistence.load_full_messages(state.space_id, state.name)) == 1
 
       assert state.live.inbox == []
 
@@ -494,16 +446,15 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
     end
 
     test "stop_child / archive_child tolerate unknown names" do
-      capture_log(fn ->
-        assert {_state, nil} = run({:stop_child, "missing"})
-        assert {_state, nil} = run({:archive_child, "missing"})
-      end)
+      # No capture: `stop_one/3`'s `{:error, :not_found}` arm logs nothing, so
+      # there is no line to assert on and a capture could only hide one.
+      assert {_state, nil} = run({:stop_child, "missing"})
+      assert {_state, nil} = run({:archive_child, "missing"})
     end
 
     test "commit_compaction with an empty summary returns commit_error" do
       data = %{
         summary_text: "",
-        staged: [],
         summary_assistant: {:assistant, %Nest.Messages.Assistant{parts: [], api_logs: []}},
         carried_entry: nil
       }
@@ -518,12 +469,17 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       {_state, nil} = run({:broadcast, {:notification, %{type: "x"}}, nil}, state)
       assert_receive {:chat_notification, %{type: "x"}}
 
-      capture_log(fn ->
-        {_state, nil} = run({:broadcast, {:error, 0, "oops"}, nil}, state)
-        {_state, nil} = run({:broadcast, {:compaction_error, "nope"}, nil}, state)
-        {_state, nil} = run({:broadcast, {:compaction_loop, "loop", 3, 3}, nil}, state)
-      end)
+      # All three of these go through `Broadcasts.log_error`, so the capture
+      # asserts on the lines it would otherwise only hide.
+      log =
+        capture_log(fn ->
+          {_state, nil} = run({:broadcast, {:error, 0, "oops"}, nil}, state)
+          {_state, nil} = run({:broadcast, {:compaction_error, "nope"}, nil}, state)
+          {_state, nil} = run({:broadcast, {:compaction_loop, "loop", 3, 3}, nil}, state)
+        end)
 
+      assert log =~ "chat:error"
+      assert log =~ "oops"
       assert_receive {:chat_error, %{content: "oops"}}
       assert_receive {:chat_error, %{compactionError: true}}
     end
@@ -535,10 +491,19 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
     end
 
     test "fail_turn formats a stacktrace snippet" do
-      capture_log(fn ->
-        {_state, nil} =
-          run({:fail_turn, %RuntimeError{message: "boom"}, [{__MODULE__, :test, 1, []}]}, state())
-      end)
+      # The formatted stacktrace goes into the `chat_crashed` log line, which is
+      # what this test is about — so assert on it rather than silencing it.
+      log =
+        capture_log(fn ->
+          {_state, nil} =
+            run(
+              {:fail_turn, %RuntimeError{message: "boom"}, [{__MODULE__, :test, 1, []}]},
+              state()
+            )
+        end)
+
+      assert log =~ "chat_crashed"
+      assert log =~ "boom"
     end
   end
 
@@ -588,28 +553,39 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       # compaction plan cannot be staged at all when there is no system message
       # and no vocation (`{:error, :reserve_exhausted}`), which is the arm's
       # precondition.
+      #
+      # Driven from `:idle` through a *fresh* plan, because a retry no longer
+      # re-plans — it re-sends the committed request — so `:retry_compaction`
+      # can no longer reach this arm at all.
       base = %{state() | vocation: nil}
 
       machine = %{
         base.live.machine
-        | phase: :compaction_failed,
+        | phase: :idle,
           pending_user_message:
             {:user_message, Dispatch.build_user_message("held message", "chat")}
       }
 
       state = %{base | live: %{base.live | machine: machine}}
 
-      # The fixture agent has no DB row, so the append's persist step warns;
-      # capturing it keeps the suite's console clean and pins that the append
-      # went through `MessageAppender`.
+      # The append goes through `MessageAppender`, so its row lands in the DB.
+      # This used to assert the fixture's "Failed to persist message" warning,
+      # which only showed the fixture owned no row — and a concurrent test's
+      # `capture_log` can swallow the line it asserted on.
+      #
+      # The `chat:error` line is the arm's own precondition — a compaction that
+      # cannot be planned — so it is captured *and asserted* rather than
+      # silenced: a capture whose result is unused can only hide output.
       log =
         capture_log(fn ->
-          {:ok, settled} = Turn.settle(state, :retry_compaction)
+          {:ok, settled} = Turn.settle(state, {:compact_request, nil})
           send(self(), {:settled, settled})
         end)
 
-      assert log =~ "Failed to persist message"
+      assert log =~ "Cannot compact"
       assert_receive {:settled, settled}
+
+      assert length(Persistence.load_full_messages(state.space_id, state.name)) == 1
 
       # A defined status, the slot cleared (so a later resume cannot append the
       # message twice) and the message in the transcript.

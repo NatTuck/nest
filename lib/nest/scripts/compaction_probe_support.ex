@@ -9,7 +9,7 @@ defmodule Nest.Scripts.CompactionProbeSupport do
     1. Resolve a provider block from `~/.config/nest/config.toml`
        and build a `Nest.LLM.ClientConfig`.
     2. Build a `Nest.LLM.RunRequest` whose `messages` ends with a
-       `[mode: compact] Summarize in your <N> remaining tokens.`
+       `[mode: compact]\nSummarize in your <N> remaining tokens.`
        suffix (the agent recognizes the prefix; the
        summarization contract itself lives in the `[Available modes]`
        list under the `compact` entry — see
@@ -34,6 +34,7 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   alias Nest.LLM.RunResponse
   alias Nest.LLM.StreamConsumer
   alias Nest.Messages.Part
+  alias Nest.Messages.User
 
   require Logger
 
@@ -45,13 +46,19 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   command) appended when present.
 
   Format:
-      [mode: compact] Summarize the conversation in your <N>
-      remaining tokens. <optional_guidance?>
+      [mode: compact]
+      Summarize the conversation in your <N> remaining tokens. <optional_guidance?>
+
+  The tag is on its own line, exactly like the `[mode: <name>]\\n` prefix every
+  human row carries. That is what lets the client's `stripModePrefix` remove it
+  on render and show a `mode: compact` badge instead: this row is committed to
+  the transcript (it is the request the model is answering), so without the
+  standard form the user would read the raw wire tag.
   """
   @spec compaction_suffix(non_neg_integer(), String.t() | nil) :: String.t()
   def compaction_suffix(remaining_tokens, optional_guidance) do
     base =
-      "[mode: compact] Summarize the conversation in your " <>
+      "[mode: compact]\nSummarize the conversation in your " <>
         "#{remaining_tokens} remaining tokens."
 
     case optional_guidance do
@@ -62,8 +69,13 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   end
 
   @doc """
-  Build the `{:user, _}` tuple the compactor appends to its
-  request's messages. Wraps `compaction_suffix/2`.
+  Build the `{:user, _}` compaction request message. Wraps
+  `compaction_suffix/2`.
+
+  The machine appends the result to the message history through
+  `MessageAppender`: it is the **committed** request, not a request-only
+  addition, which is what makes the compactor's request the ordinary
+  message list.
   """
   @spec suffix_system_message(non_neg_integer(), String.t() | nil) ::
           {:user, Nest.Messages.User.t()}
@@ -72,6 +84,7 @@ defmodule Nest.Scripts.CompactionProbeSupport do
      %Nest.Messages.User{
        parts: [%Part.Text{text: compaction_suffix(remaining_tokens, optional_guidance)}],
        timestamp: DateTime.utc_now(),
+       metadata: User.compaction_metadata(),
        api_logs: []
      }}
   end

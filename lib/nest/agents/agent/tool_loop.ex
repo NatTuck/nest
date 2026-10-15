@@ -26,10 +26,12 @@ defmodule Nest.Agents.Agent.ToolLoop do
   BatchSizer doesn't try to project a per-tool size for it.
   """
 
+  alias Nest.Agents.Agent.Archive
   alias Nest.Agents.Agent.BatchCoordinator
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.LastMessage
   alias Nest.Agents.Agent.SubAgentResults
+  alias Nest.Agents.Agent.ToolLoop.ModelEntry
   alias Nest.Agents.Agent.WaitForIdle
   alias Nest.Agents.Agent.Watch
   alias Nest.Agents.Registry
@@ -331,14 +333,17 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # (optional) provider filter.
   defp models_listing(provider) do
     case exposed_providers() do
-      exposed when map_size(exposed) == 0 ->
+      {:error, reason} ->
+        "No models are listed: the configuration could not be read (#{load_failure_text(reason)})."
+
+      {:ok, exposed} when map_size(exposed) == 0 ->
         "No models are listed: no configured provider has expose-models enabled."
 
-      exposed ->
+      {:ok, exposed} ->
         lines =
           Models.list()
           |> Enum.filter(&model_exposed?(&1, exposed, provider))
-          |> Enum.map(&format_model_entry(&1, exposed))
+          |> Enum.map(&ModelEntry.format(&1, exposed))
 
         case lines do
           [] -> "No models match the request."
@@ -347,20 +352,28 @@ defmodule Nest.Agents.Agent.ToolLoop do
     end
   end
 
-  # The providers configured with `expose_models: true`, keyed by name.
+  defp load_failure_text(reason) when is_binary(reason), do: reason
+  defp load_failure_text(reason), do: inspect(reason)
+
+  # The providers configured with `expose_models: true`, keyed by name, or the
+  # load failure itself — kept apart because only one of the two is a
+  # configuration state, and reporting "no provider has expose-models enabled"
+  # for a config we could not read tells the agent something false.
+  #
   # The struct is kept rather than just the name so a model entry can read
   # its provider's tags without a second lookup: tags are what
   # `agents-spawn`'s tag filter matches on, and they live on the provider.
   defp exposed_providers do
     case DotConfig.load() do
       {:ok, config} ->
-        config.providers
-        |> Map.values()
-        |> Enum.filter(& &1.expose_models)
-        |> Map.new(&{&1.name, &1})
+        {:ok,
+         config.providers
+         |> Map.values()
+         |> Enum.filter(& &1.expose_models)
+         |> Map.new(&{&1.name, &1})}
 
-      _ ->
-        %{}
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -372,77 +385,6 @@ defmodule Nest.Agents.Agent.ToolLoop do
   end
 
   defp model_exposed?(%{}, _exposed, _provider_filter), do: false
-
-  # One line per model: the `provider/model-name` string the caller feeds
-  # to `agents-spawn`'s `model` argument, then the fields that decide
-  # whether it is the *right* model. A field is rendered only when it
-  # carries information, so a model with nothing to say keeps the bare
-  # `provider/model-name` line and the listing does not widen.
-  defp format_model_entry(%{"provider" => provider, "name" => name} = entry, exposed) do
-    fields =
-      [input_field(entry), ctx_field(entry), tags_field(entry, exposed)]
-      |> Enum.reject(&is_nil/1)
-
-    Enum.join(["#{provider}/#{name}" | fields], "  ")
-  end
-
-  # `multi_modal` is a pass-through map — from TOML config, from the
-  # discovery cache, or from a static `DotConfig.Model` — so it is read
-  # with `Map.get/3` and never destructured: a model entry may carry no
-  # key at all, and a hand-written `multi-modal = { image = true }`
-  # reaches us verbatim. The canonical shape is `%{"input" => [...]}`.
-  # `"image"` is the only modality discovery reports, but static config
-  # may name others, so the list is joined rather than matched.
-  #
-  # `nil` renders nothing rather than an explicit "none": it means *no
-  # claim was made*, which is not the same as "cannot see images".
-  # `Discover.extract_multi_modal_from_model/1` keeps those apart — a
-  # provider that publishes a modality list without `"image"` reports
-  # `%{"input" => []}` (rendered `input: none` below), and only a body
-  # with no modality field we recognize reports `nil`.
-  # Rendering `input: none` for the latter would turn "we were not told"
-  # into a false negative.
-  defp input_field(entry) do
-    case Map.get(entry, "multi_modal") do
-      nil -> nil
-      %{"input" => []} -> "input: none"
-      %{"input" => list} when is_list(list) -> list_field(list, "input")
-      _malformed -> "input: invalid"
-    end
-  end
-
-  # Renders a list of names as `<prefix>: <a,b>`, or `<prefix>: invalid` when
-  # it is not one we can read — so a broken config never passes for a field
-  # that said nothing. Callers decide what an empty list means: `input`
-  # renders it `none`, `tags` omits the field.
-  defp list_field(list, prefix) when is_list(list) do
-    if joinable?(list), do: "#{prefix}: " <> Enum.join(list, ","), else: "#{prefix}: invalid"
-  end
-
-  defp list_field(_unreadable, prefix), do: "#{prefix}: invalid"
-
-  defp ctx_field(entry) do
-    case Map.get(entry, "context_limit") do
-      limit when is_integer(limit) -> "ctx: #{limit}"
-      _ -> nil
-    end
-  end
-
-  # Tags live on the provider, not the model. `Models.list/0` does not
-  # carry them — adding the key would change the lobby payload for every
-  # model, and `models.ex` is close to its line cap — so they are read
-  # from the provider struct this listing already loaded.
-  defp tags_field(entry, exposed) do
-    provider = Map.get(exposed, Map.get(entry, "provider"), %{})
-    tags = Map.get(provider, :tags)
-
-    unless tags in [nil, []], do: list_field(tags, "tags")
-  end
-
-  # `multi_modal` and `tags` reach us unvalidated from TOML, so an element
-  # that is not a name we can render — `input = [{ a = 1 }]`, `tags = [1]` —
-  # must not reach `Enum.join/2`, which raises on some non-binaries.
-  defp joinable?(values), do: Enum.all?(values, &is_binary/1)
 
   # `agents-query`: deliver a message to a peer in this space and mark that the
   # peer owes the caller a reply. Nothing waits — the call returns as soon as the
@@ -598,26 +540,13 @@ defmodule Nest.Agents.Agent.ToolLoop do
     end
   end
 
-  # `agents-archive`: stop + mark an existing agent in this
-  # space archived. Routes through the parent GenServer so the
-  # stop/DB write happens in the same process context as other
-  # lifecycle operations.
+  # `agents-archive`: stop + mark the agents a call names archived. Routes
+  # through the parent GenServer so the stop/DB write happens in the same
+  # process context as other lifecycle operations; the per-name loop and the
+  # result shaping live in `Nest.Agents.Agent.Archive`.
   defp run_archive_agent(ctx, %ToolCall{} = tc) do
-    target = extract_string_arg(tc, "name")
-    parent_via_tuple = Registry.via_tuple(ctx.space_id, ctx.agent_name)
-
-    case GenServer.call(parent_via_tuple, {:archive_agent_request, self(), target}) do
-      {:ok, archived_name} ->
-        build_tool_result(tc, "agents-archive", "Archived agent #{archived_name}.")
-
-      {:error, reason} ->
-        build_tool_result(
-          tc,
-          "agents-archive",
-          "Could not archive #{target}: #{inspect(reason)}",
-          true
-        )
-    end
+    {content, is_error} = Archive.run(ctx, tc)
+    build_tool_result(tc, "agents-archive", content, is_error)
   end
 
   # `agents-unarchive`: restore an archived agent in this space —

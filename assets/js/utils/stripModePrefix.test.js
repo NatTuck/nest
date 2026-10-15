@@ -10,6 +10,16 @@ describe("stripModePrefix", () => {
     expect(stripModePrefix("[mode: plan]\nLine 1\nLine 2", "plan")).toBe(
       "Line 1\nLine 2",
     );
+    // The runtime's compaction request is a committed `user` row, so it goes
+    // through this same stripper. Its mode is not one the operator can select,
+    // which is what made it easy to overlook: the row reached the transcript
+    // with `[mode: compact]` intact until it carried a `mode` to match.
+    expect(
+      stripModePrefix(
+        "[mode: compact]\nSummarize the conversation in your 4096 remaining tokens.",
+        "compact",
+      ),
+    ).toBe("Summarize the conversation in your 4096 remaining tokens.");
   });
 
   it("returns the content unchanged when the prefix is absent", () => {

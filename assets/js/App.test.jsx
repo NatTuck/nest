@@ -8,6 +8,10 @@
  *     loading screen and call `initChannels()`.
  *   - Token present + WS becomes connected → navigate to
  *     `/spaces`.
+ *   - Token present + the connection fails → navigate to
+ *     `/login`, keeping the token (issue #95). Before that
+ *     issue the gate stayed on the loading screen forever,
+ *     which was a deliberate choice recorded in `App.jsx`.
  *
  * We test `RootGate` in isolation with `renderWithRouter`
  * because the rest of `App.jsx` (the full router config
@@ -115,17 +119,35 @@ describe("RootGate", () => {
 
     expect(await screen.findByText(/spaces/i)).toBeInTheDocument();
     expect(screen.queryByText(/loading/i)).toBeNull();
+    // A successful handshake must not also land on /login: the two flags are
+    // mutually exclusive, because `initChannels` clears `connectionFailed` on
+    // open.
+    expect(screen.queryByText(/sign in/i)).toBeNull();
   });
 
-  it("stays on the loading screen if the WS never connects", async () => {
+  it("redirects to /login when the connection fails, keeping the token", async () => {
     localStorage.setItem("nest_token", "valid-token");
     await renderGate();
 
-    // isConnected stays false (default) → gate remains on
-    // the loading screen. We don't auto-redirect to /login
-    // here; only the server can decide the token is invalid.
+    // Still dialing: `connectionFailed` is false, so the gate waits.
     expect(screen.getByText(/loading/i)).toBeInTheDocument();
     expect(initChannels).toHaveBeenCalledTimes(1);
+
+    // The socket closed or errored without connecting, which `initChannels`
+    // records as `connectionFailed`. Before #95 the gate sat here forever.
+    await act(async () => {
+      useStore.setState({ connectionFailed: true });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/sign in/i)).toBeInTheDocument();
+    });
+
+    // The token is deliberately NOT cleared. The browser cannot tell a token
+    // the server rejected from a server it could not reach, so discarding it
+    // would throw away a session that may still be good; keeping it means a
+    // refresh recovers once the server is back.
+    expect(localStorage.getItem("nest_token")).toBe("valid-token");
   });
 });
 

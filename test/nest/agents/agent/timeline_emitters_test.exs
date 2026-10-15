@@ -641,13 +641,13 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
 
     assert models == ["m", "m", nil, nil]
 
-    # The compaction's carried continuation: the entry's tag when the staged
-    # request carries one, nil when it carries none or there is no compaction
-    # entry at all.
+    # The compaction's carried continuation: the entry's tag when the
+    # compaction entry carries one, nil when it carries none or there is no
+    # compaction entry at all.
     carried =
       for entry <- [
-            {:compaction, :staged, {:assistant_response, "text", []}},
-            {:compaction, :staged, nil},
+            {:compaction, {:assistant_response, "text", []}},
+            {:compaction, nil},
             nil
           ] do
         :sys.replace_state(

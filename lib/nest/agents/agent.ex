@@ -11,6 +11,7 @@ defmodule Nest.Agents.Agent do
 
   require Logger
 
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Callbacks
   alias Nest.Agents.Agent.ClientAPI
   alias Nest.Agents.Agent.Config
@@ -505,6 +506,14 @@ defmodule Nest.Agents.Agent do
 
     # Note: workspace is preserved for review/debugging (per design)
 
+    # Announce the stop (#73) before the process goes away, so a peer session
+    # learns that it stopped instead of inferring it from a status that will
+    # never change again. Emitted from here because this callback is the only
+    # place that knows the agent has *actually* stopped — `Supervisor.stop_agent/2`
+    # fires an exit signal and returns — and because every death path reaches
+    # here: a plain stop, an archive, a crash, a reload.
+    _ = announce_stop(state)
+
     # Give up this agent's registry name *before* the process dies, rather than
     # leaving it to the registry's own cleanup. See
     # `Nest.Agents.Registry.release/2`: that cleanup runs a scheduling hop after
@@ -520,6 +529,19 @@ defmodule Nest.Agents.Agent do
     _ = Registry.release(state.space_id, state.name)
 
     :ok
+  end
+
+  # Announce this agent's stop from inside the exit handshake (#73), tolerating
+  # a PubSub that is already gone: an application shutdown stops every agent,
+  # and a dying agent must not crash over it — the same reason
+  # `Registry.release/2` above reports its own failure instead of raising.
+  defp announce_stop(state) do
+    Broadcasts.agent_stopped(state.space_id, %{
+      "space_id" => state.space_id,
+      "name" => state.name
+    })
+  rescue
+    ArgumentError -> :error
   end
 
   @impl true

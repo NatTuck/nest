@@ -8,25 +8,19 @@ All browser JS and other assets are in ./assets. This is most of the UI.
 Our JavaScript/browser code lives exclusively in `./assets/`.
 
 - Our package manager is pnpm. Don't use npm or others.
-- **NEVER** run `pnpm` commands in the project root
-- **ALWAYS** `cd assets` first before running any JS package commands
+- **NEVER** run `pnpm` commands in the project root.
+- **ALWAYS** `cd assets` or use the --dir flag on pnpm when running any JS package commands
 - If you see `package.json`, `node_modules`, or other similar JS artifacts in the project
-root, something is wrong - delete them immediately
+root, something is wrong - clean them up immediately
 
 ## ⚠️ CRITICAL: Testing Protocol
 
-- **ABSOLUTELY NEVER** run a test command and throw away the output with grep,
-head, or tail. This behavior is **NEVER** acceptable. If you do it even once,
-stop running commands for *any reason*, explain how to avoid the error in the
-future, and stop.
-- **ABSOLUTELY NEVER** run the tests more than three times during a task unless
-the user explicitly requests it or you are in a run the test once, fix all newly
-discovered issues, repeat loop. We've lost *hours* to random "I'll just run the
-tests 20 times to collect stats" bullshit. Test run loops are **ABSOLUTELY
-prohibited**.
 - Do not run `mix precommit` except exactly once during a pre-commit or review.
 Do normal testing by running `mix test` and/or (`pnpm --dir assets test` or
-`/node_modules/.bin/vitest run`).
+`cd assets && ./node_modules/.bin/vitest run`).
+- Use as few test runs as you can. They take time.
+- Don't ever run the same test command repeatedly in a loop without an explicit
+human request to do exactly that.
 
 ## Important: Core Process Rules
 
@@ -69,11 +63,9 @@ not change except potentially on compaction.
 - The main system message explains things that will always be true for the
 current session. This includes a fixed vocation (and thus mode list) and a
 project root (and thus an AGENTS.md if present).
-- If stuff like vocation or project root were to change, that'd necessarily
-be a new session, although it could be built (like a compaction) from a previous
-session if that made sense.
 - User messages are tagged with a `[mode: $MODE]\n` prefix.
-- We are *very* careful with any sort of transient message.
+- Agent messages are tagged with a `[Message from agent "$NAME"]\n` prefix.
+- System notices should be tagged with a `[Nest notice]\n` prefix.
 
 ### UI Transparency
 
@@ -91,19 +83,20 @@ missing rather than nothing.
 ### Before Commit
 
 - Read SMELLS.md. Check the proposed changes for code stench.
-- Run `mix precommit` **exactly once** and read the *full* output. No
-head/tail/grep, read the whole thing. The time limit can fail due to excess
-load; if that's likely, report it - absolutely do not re-run.
 - There's no such thing as "out of scope" or "pre-existing issue" for this step.
 Either we're 100% clean (no fails, no warnings, no style suggestions, no test
 log prints, etc) or we're not.
 - **ABSOLUTELY NEVER** run `git stash`. NEVER. NOT FOR ANY REASON, NO EXCUSES.
+- You can use git worktrees, but any work from worktrees should be merged back
+into the active feature branch in the workspace and not pushed directly to any
+remote.
 
 ### During Development
 
 - Never run any dev servers, neither `mix phx.server` nor `npx vite`. The user will manage that manually.
-- Code must pass lints (credo, biome). Do not modify lint configs or bypass the lints. 
-FIX THE LINT ISSUES. ALWAYS. NO EXCUSES. IT DOES NOT MATTER IF IT WAS ALREADY THERE.
+- Code must pass lints (credo, biome). Do not modify lint configs (except when adding new high value
+lints or fixing clear bugs in lints) or bypass the lints. 
+- FIX THE LINT ISSUES. ALWAYS. NO EXCUSES. IT DOES NOT MATTER IF IT WAS ALREADY THERE.
 - Limit length and complexity of both functions and files. When complexity gets
   too great, first factor out potentially reusable components then factor out
   single-use helper functions if there isn't enough reusable logic to get the
@@ -122,12 +115,8 @@ explanation tool.
 
 - NO development work is done until `mix precommit` runs perfectly with no
 errors or warnings. NO EXCEPTIONS, NO EXCUSES.
-- **NEVER** run tests and throw away the output by piping to tail, head, grep or
-similar. If you expect long output, redirect to a temporary file (e.g.
-/tmp/opencode/test-runs/test-run.log).
-- **ALL** test run output should go under notes/test-runs.
-- The Elixir test suite must take less than 5 seconds to run. If it ever takes
-longer, that's a major issue that needs to be addressed immediately.
+- We care about test run speed. Don't significantly slow down the tests,
+especially by adding anti-patterns like long timeouts or wait loops.
 - If something noteworthy and bad happens or an unexpected error occurs, the program
 *should* log a warning or error to the console.
 - Tests must not print to the console except during debugging. If logger output
@@ -250,8 +239,6 @@ block constructs (`if`, `cond`, `case`, `for`) within tag bodies.
 - Ensure **clean typography, spacing, and layout balance** for a refined, premium look
 - Focus on **delightful details** like hover effects, loading states, and smooth page transitions
 
-<!-- usage-rules-start -->
-
 <!-- phoenix:elixir-start -->
 ## Elixir guidelines
 
@@ -301,22 +288,19 @@ block constructs (`if`, `cond`, `case`, `for`) within tag bodies.
 
 - **Always use `start_supervised!/1`** to start processes in tests as it guarantees cleanup between tests
 - **Avoid** `Process.sleep/1` and `Process.alive?/1` in tests
-  - Instead of sleeping to wait for a process to finish, **always** use `Process.monitor/1` and assert on the DOWN message:
+- Instead of sleeping to wait for a process to finish, **always** use `Process.monitor/1` and assert on the DOWN message:
 
       ref = Process.monitor(pid)
       assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
 
-  - Instead of sleeping to synchronize before the next call, **always** use `_ = :sys.get_state/1` to ensure the process has handled prior messages
+- Instead of sleeping to synchronize before the next call, **always** use `_ = :sys.get_state/1` to ensure the process has handled prior messages
 <!-- phoenix:elixir-end -->
 
 <!-- phoenix:phoenix-start -->
 ## Phoenix guidelines
 
-- Phoenix PubSub does *not* deduplicate multiple subscriptions to the same
-topic. Two subs means two copies of each message.
-
+- Phoenix PubSub does *not* deduplicate multiple subscriptions to the same topic. Two subs means two copies of each message.
 - Remember Phoenix router `scope` blocks include an optional alias which is prefixed for all routes within the scope. **Always** be mindful of this when creating routes within a scope to avoid duplicate module prefixes.
-
 - You **never** need to create your own `alias` for route definitions! The `scope` provides the alias, ie:
 
       scope "/admin", AppWeb.Admin do
@@ -329,16 +313,3 @@ topic. Two subs means two copies of each message.
 
 - `Phoenix.View` no longer is needed or included with Phoenix, don't use it
 <!-- phoenix:phoenix-end -->
-
-<!-- phoenix:ecto-start -->
-## Ecto Guidelines
-
-- **Always** preload Ecto associations in queries when they'll be accessed in templates, ie a message that needs to reference the `message.user.email`
-- Remember `import Ecto.Query` and other supporting modules when you write `seeds.exs`
-- `Ecto.Schema` fields always use the `:string` type, even for `:text`, columns, ie: `field :name, :string`
-- `Ecto.Changeset.validate_number/2` **DOES NOT SUPPORT the `:allow_nil` option**. By default, Ecto validations only run if a change for the given field exists and the change value is not nil, so such as option is never needed
-- You **must** use `Ecto.Changeset.get_field(changeset, :field)` to access changeset fields
-- Fields which are set programmatically, such as `user_id`, must not be listed in `cast` calls or similar for security purposes. Instead they must be explicitly set when creating the struct
-- **Always** invoke `mix ecto.gen.migration migration_name_using_underscores` when generating migration files, so the correct timestamp and conventions are applied
-<!-- phoenix:ecto-end -->
-<!-- usage-rules-end -->

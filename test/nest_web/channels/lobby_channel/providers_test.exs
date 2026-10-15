@@ -256,5 +256,402 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # this line.
       refute_push "providers_updated", _, 0
     end
+
+    test "replies invalid_payload for a model with a blank name", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # A blank name is the GUI's own default (`emptyModel()` returns
+      # `name: ""`), and the reader rejects it: `ModelValidation.validate_name/2`
+      # raises, `DotConfig.load/0` is on `Models.init/1`'s boot path, and the
+      # supervisor exhausts into an application shutdown. So a name the app
+      # wrote itself could render the app unbootable. The write path has to
+      # refuse it, which the same `rescue` turns into `invalid_payload`.
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [
+            %{
+              "name" => "acme",
+              "auto_models" => false,
+              "models" => [%{"name" => "", "context_limit" => 1000}]
+            }
+          ]
+        })
+
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}
+
+      # ... and nothing was written, so the config the app would reload is
+      # still the one it started with. This is the property that matters: a
+      # refused save must not leave a config behind that the reader rejects.
+      refute File.exists?(local_file)
+    end
+
+    test "replies invalid_payload for a model whose name is absent", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # A *missing* name is refused by the same guard, so it reports the same
+      # way. Before the guard it was caught one layer down by the TOML encoder
+      # ("nil is not supported in TOML") and came back as `failed_to_save` —
+      # also safe, but for a reason unrelated to the name, and only after
+      # `Writer.save_providers/1` had already run.
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [
+            %{
+              "name" => "acme",
+              "auto_models" => false,
+              "models" => [%{"name" => nil, "context_limit" => 1000}]
+            }
+          ]
+        })
+
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}
+      refute File.exists?(local_file)
+    end
+
+    test "replies invalid_payload for a provider default-context-limit the reader rejects", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # The GUI's context-limit input is a `type="number"` and `Number()` keeps a
+      # typed `0` (the string `"0"` is truthy, so the `? … : null` guard does not
+      # catch it). The input's `min="1"` is a courtesy, not a guard: there is no
+      # enclosing `<form>` and nothing calls `checkValidity()`, so it does not
+      # stop the value being submitted. `DotConfig` raises on it, and that raise
+      # happens on the *rescan* — after `Writer.save_providers/1` has already
+      # written the value. So before this guard the operator got a dead `Models`
+      # GenServer, no reply, and a `local.toml` that made the next boot fail.
+      #
+      # The `1_000` bound on the assertions in this guard family matches the two
+      # `:ok` assertions above, and for the same recorded reason: this handler is
+      # the slowest `handle_in` in the file. It is not a bound raised to make a
+      # test pass — the default was never a chosen value, it was simply what a
+      # bare `assert_reply` gets, and it is too tight here for the reason the
+      # `:ok` test's comment already gives. The refusal path additionally builds
+      # its message with `inspect/1`, which loads `Inspect` on first use; that is
+      # warmed in `test_helper.exs` so it does not land in this deadline.
+      for bad <- [0, 0.5, -1] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [
+              %{"name" => "acme", "auto_models" => false, "default_context_limit" => bad}
+            ]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
+
+        # The property that matters: nothing is written, so the config the app
+        # reloads is still one it can read.
+        refute File.exists?(local_file)
+      end
+    end
+
+    test "replies invalid_payload for a provider tags value the reader rejects", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # The GUI preserves tags it was handed, so a malformed list can arrive
+      # from a client that built one. `parse_tags/2` raises on a non-list or a
+      # list with a non-string element.
+      for bad <- ["abc", [1, 2], [%{"a" => 1}]] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [%{"name" => "acme", "auto_models" => false, "tags" => bad}]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
+        refute File.exists?(local_file)
+      end
+    end
+
+    test "replies invalid_payload for a model multi-modal the reader rejects", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # `multi_modal` is preserved but not edited by the model row, so a `false`
+      # can arrive from a client that built one. The reader rejects it: an
+      # explicit negative is a startup error, not a silent "no claim".
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [
+            %{
+              "name" => "acme",
+              "auto_models" => false,
+              "models" => [%{"name" => "m", "multi_modal" => false}]
+            }
+          ]
+        })
+
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
+      refute File.exists?(local_file)
+    end
+
+    test "replies invalid_payload for an api-key reference that cannot be resolved", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # A reference-shaped key is resolved when the config is *read*
+      # (`KeyValidation` on `load/0`, which is what `Models.init/1` and every
+      # rescan call), and an unresolvable one raises there. The api-key field is
+      # free text, so the operator can type a path or a variable name whose
+      # target does not exist — and the write would succeed before the read
+      # refused it.
+      for bad <- ["file:/nonexistent/nest-probe-key", "${NEST_PROBE_UNSET_VAR}"] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [%{"name" => "acme", "auto_models" => false, "api_key" => bad}]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
+        refute File.exists?(local_file)
+      end
+    end
+
+    test "still saves a literal api-key, which resolves to itself", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # The premise of the api-key refusal: a literal key — including the
+      # documented `api-key = "none"` opt-out — is not a reference and passes
+      # untouched. Without this the guard could be refusing every key and the
+      # test above would not notice.
+      Mimic.expect(Nest.Models, :rescan, fn -> :ok end)
+
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [%{"name" => "acme", "auto_models" => false, "api_key" => "none"}]
+        })
+
+      assert_reply ref, :ok, %{}, 1_000
+      assert File.read!(local_file) =~ ~s(api-key = "none")
+    end
+
+    test "saves a provider whose optional fields are absent", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # The other half of the guards: every field they touch is optional, so a
+      # provider that omits them all must still save. This is what would fail if
+      # a guard started treating "absent" as "invalid".
+      Mimic.expect(Nest.Models, :rescan, fn -> :ok end)
+
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [%{"name" => "acme", "auto_models" => false}]
+        })
+
+      assert_reply ref, :ok, %{}, 1_000
+
+      toml = File.read!(local_file)
+      assert toml =~ "acme"
+      refute toml =~ "default-context-limit"
+      refute toml =~ "timeout"
+      # `base-url` is a substring of `probe-base-url`, so this asserts that
+      # *neither* key was written — which is what the test is about.
+      refute toml =~ "base-url"
+      refute toml =~ "api-key"
+    end
+
+    test "replies invalid_payload for a probe-base-url the reader rejects", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # `probe-base-url` is the field that made the "the two sides cannot
+      # disagree" claim false. `parse_probe_base_url/2` raises on anything that
+      # is not `nil` or a non-empty binary, and this side used to pass the value
+      # straight through — so a channel client sending `""` had it written to
+      # `local.toml` and then raised on the *re-read* inside `Models.rescan/0`.
+      # That killed the `Models` GenServer (no rescue), and because a call to a
+      # server that dies inside its callback exits rather than raises, the
+      # operator got no reply at all — worse than the refusals above. The next
+      # boot then could not start.
+      #
+      # The browser coerces `""` to `null` (`e.target.value || null`), so a
+      # well-behaved session cannot produce `""` — but the rule must not depend
+      # on one client's coercion, and `7` is reachable too.
+      for bad <- ["", 7, [], %{}] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [%{"name" => "acme", "auto_models" => false, "probe_base_url" => bad}]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
+        refute File.exists?(local_file)
+      end
+    end
+
+    test "replies invalid_payload for a base-url the reader rejects", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # The last field of this class, and the same shape as `probe-base-url`
+      # above: neither side validated it, so the two *agreed* and no reader/
+      # writer drift existed — but the value is dereferenced on every chat, and a
+      # non-binary raises `FunctionClauseError` in `String.trim_trailing/2`
+      # (`OpenAIClient.normalize_endpoint/2`, `AnthropicClient`,
+      # `MultimodalProbe`) and in `EndpointProbe.probe/1`, plus an
+      # `ArgumentError` on `<>` in `ChatModel.discovery_url/1`.
+      #
+      # `7` is channel-reachable and used to be persisted. `""` is what the
+      # browser sends for a cleared field; it does not raise, but it is not a URL
+      # either, and this field's sibling `probe-base-url` already refuses it.
+      for bad <- [7, "", [], %{}] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [%{"name" => "acme", "auto_models" => false, "base_url" => bad}]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
+        refute File.exists?(local_file)
+      end
+    end
+
+    test "still saves a base-url and an api-key that are text", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # The premise of the base-url refusal: a non-empty URL is exactly what the
+      # field is for, so the guard must not be refusing the field itself.
+      Mimic.expect(Nest.Models, :rescan, fn -> :ok end)
+
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [
+            %{
+              "name" => "acme",
+              "auto_models" => false,
+              "base_url" => "https://acme.example/v1",
+              "api_key" => "sk-literal"
+            }
+          ]
+        })
+
+      assert_reply ref, :ok, %{}, 1_000
+
+      toml = File.read!(local_file)
+      assert toml =~ ~s(base-url = "https://acme.example/v1")
+      assert toml =~ ~s(api-key = "sk-literal")
+    end
+
+    test "replies invalid_payload for a provider name that is blank or absent", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # `{"name": ""}` and `{"name": null}` used to collapse onto the *same* key
+      # — `[providers.""]` — so two different payloads produced one
+      # unaddressable provider. The GUI's "add provider" starts a row at
+      # `name: ""`, so this is what makes the operator name it before saving.
+      for bad <- ["", nil, 7] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [%{"name" => bad, "auto_models" => false}]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
+        refute File.exists?(local_file)
+      end
+    end
+
+    test "replies invalid_payload for a model context-limit the runtime rejects", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # The reader does *not* raise on this one — it passed the value straight
+      # through, which is why the earlier sweep missed it. The runtime raises:
+      # `Init.context_limit_layer/3` keeps any integer, and
+      # `Reserve.compaction_reserve/1` guards `is_integer(limit) and limit > 0`.
+      # So `context-limit = 0` is not "no limit" — it is a
+      # `FunctionClauseError` on **every** agent start, from
+      # `Init.build_vocation_pipeline/1` and `PreSpawn.build_initial_system_message/1`
+      # alike.
+      #
+      # Reachable from the GUI today: `ProviderModelRow` sends `Number("0")` for
+      # a typed `0` (the string `"0"` is truthy, so the `e.target.value ? … : null`
+      # guard does not catch it), and the `min="1"` added alongside it is inert —
+      # there is no enclosing `<form>` and nothing calls `checkValidity()`.
+      for bad <- [0, 0.5, -1] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [
+              %{
+                "name" => "acme",
+                "auto_models" => false,
+                "models" => [%{"name" => "m", "context_limit" => bad}]
+              }
+            ]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
+        refute File.exists?(local_file)
+      end
+    end
+
+    test "replies invalid_payload for a non-string api-key", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # A non-binary key is tolerated by the *reader* — `KeyValidation` only acts
+      # `when is_binary(key)`, so boot succeeds — and then raises at chat time,
+      # where `resolve_api_key/1` calls `String.starts_with?/2` on it.
+      for bad <- [7, %{}, []] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [%{"name" => "acme", "auto_models" => false, "api_key" => bad}]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
+        refute File.exists?(local_file)
+      end
+    end
+
+    test "the refusal carries a reason the operator can act on", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # `invalid_payload` alone says nothing about *which* field or value is
+      # wrong, and every guard raises a message that names both. The reply now
+      # carries it, and `errorText` prefers `message` — so the operator is told
+      # what to fix rather than being handed a bare enum.
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [%{"name" => "acme", "auto_models" => false, "probe_base_url" => ""}]
+        })
+
+      assert_reply ref, :error, %{"reason" => "invalid_payload", "message" => message}, 1_000
+      assert message =~ "probe-base-url"
+      assert message =~ "acme"
+      refute File.exists?(local_file)
+    end
+
+    test "saves a model with a usable name", %{socket: socket, local_file: local_file} do
+      # The premise of the two tests above: a well-named model still saves, so
+      # the refusals are about the name and not about models in general.
+      Mimic.expect(Nest.Models, :rescan, fn -> :ok end)
+
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [
+            %{
+              "name" => "acme",
+              "auto_models" => false,
+              "models" => [%{"name" => "gpt-x", "context_limit" => 1000}]
+            }
+          ]
+        })
+
+      # An explicit bound, matching this file's other `:ok` assertions (the
+      # `:error` ones keep the default because those handlers do no work).
+      # `save_providers` writes `local.toml`, parses it back through
+      # `DotConfig.load/0` and re-serializes before it replies — the file's own
+      # comment on the sibling test calls it the slowest `handle_in` here.
+      #
+      # The bound is also not the whole story: the lobby channel subscribes to
+      # the global `"models"` topic, so a *concurrent* test's `rescan/0` can
+      # push `models_updated` into this mailbox at any moment. `assert_reply`
+      # matches past those, but it has to be given room to.
+      assert_reply ref, :ok, %{}, 1_000
+      assert File.read!(local_file) =~ ~s(name = "gpt-x")
+    end
   end
 end

@@ -157,7 +157,7 @@ defmodule Nest.Agents.Agent.Machine do
           | {:tool_call, Nest.Messages.Assistant.t(), non_neg_integer(), pos_integer()}
           | {:compact_tool, tool_pair(), non_neg_integer(), pos_integer()}
           | {:assistant_response, Nest.Messages.Assistant.t(), non_neg_integer(), pos_integer()}
-          | {:compaction, [tuple()], entry() | nil}
+          | {:compaction, entry() | nil}
 
   defstruct kind: :chat,
             phase: :idle,

@@ -26,6 +26,7 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
   alias Nest.Agents.Agent.Repair
   alias Nest.Agents.Agent.Turn
   alias Nest.Messages.Assistant
+  alias Nest.Messages.MessageList
   alias Nest.Messages.Part
   alias Nest.Messages.System, as: MsgSystem
   alias Nest.Messages.Tool
@@ -276,6 +277,91 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
 
   # ---- helpers (shared with `AppendPairingBridgeTest`) ----
 
+  describe "the compaction request is not progress" do
+    test "appending it does not reset the consecutive-compaction counter" do
+      # The compaction request is a `:user` row — that is what every provider's
+      # wire format can carry — so without a named origin the progress rule
+      # would reset `loop_count` on every attempt and disarm
+      # `@max_consecutive_compactions`, which is the only thing bounding a
+      # compaction that keeps failing. `handle_single/2` is the entry point the
+      # executor's `{:append, message}` action uses, so this is the real path.
+      name = unique_name("compact-progress")
+      {:ok, _} = Persistence.insert_agent(agent_attrs(name))
+
+      initial = [system(0), assistant_text(1)]
+      insert_messages(name, initial)
+      before = length(Persistence.load_full_messages(test_space_id(), name))
+
+      state = state(name, initial)
+      state = %{state | live: %{state.live | machine: %{state.live.machine | loop_count: 3}}}
+
+      request =
+        {:user,
+         %User{
+           index: nil,
+           parts: [%Part.Text{text: "[mode: compact] Summarize the conversation."}],
+           metadata: User.compaction_metadata(),
+           api_logs: []
+         }}
+
+      assert {:ok, _stamped, after_request} = MessageAppender.handle_single(state, request)
+      assert after_request.live.machine.loop_count == 3
+
+      # An ordinary human message *is* progress and does reset it — so the
+      # assertion above is about the origin, not about the append being a
+      # no-op.
+      human =
+        {:user,
+         %User{
+           index: nil,
+           parts: [%Part.Text{text: "[mode: chat]\nhello"}],
+           metadata: User.human_metadata(),
+           api_logs: []
+         }}
+
+      assert {:ok, _stamped, after_human} = MessageAppender.handle_single(after_request, human)
+      assert after_human.live.machine.loop_count == 0
+
+      # ... and both appends really persisted, rather than only updating the
+      # in-memory state. Without the fixture's `agent_row_id`,
+      # `append_message/3` refuses every write with `:agent_row_reused` and
+      # logs it, and the assertions above would still pass. Three rows land:
+      # the request, and the bridge + human pair.
+      assert length(Persistence.load_full_messages(test_space_id(), name)) == before + 3
+    end
+
+    test "appending the refused-batch heal does not reset the counter either" do
+      # The heal row is emitted by the same transition that stages the
+      # compaction request when `BatchSizer.preflight/2` refuses a batch — so
+      # it is appended on *every* attempt of the automatic "compact, still
+      # doesn't fit, refuse a batch, compact…" loop that
+      # `@max_consecutive_compactions` exists to bound. It is a `{:tool, _}`,
+      # which the progress rule counts as genuine progress, so without a
+      # marker it resets the breaker exactly as the unmarked request row did.
+      name = unique_name("heal-progress")
+      {:ok, _} = Persistence.insert_agent(agent_attrs(name))
+
+      initial = [system(0), assistant_text(1)]
+      insert_messages(name, initial)
+      before = length(Persistence.load_full_messages(test_space_id(), name))
+
+      state = state(name, initial)
+      state = %{state | live: %{state.live | machine: %{state.live.machine | loop_count: 2}}}
+
+      # Built by production code, so the test cannot drift from the real shape.
+      tool_uses = [
+        %Part.ToolUse{id: "call_1", name: "shell-cmd", arguments: %{}}
+      ]
+
+      heal = MessageList.interrupted_tool_result(tool_uses)
+      assert {:ok, _stamped, after_heal} = MessageAppender.handle_single(state, heal)
+      assert after_heal.live.machine.loop_count == 2
+
+      # ... and it really persisted, so this is not passing on a refused write.
+      assert length(Persistence.load_full_messages(test_space_id(), name)) == before + 1
+    end
+  end
+
   defp state(name, messages) do
     %Agent{
       name: name,
@@ -286,8 +372,24 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
         usage_totals: Broadcasts.empty_usage_totals(),
         descendant_usage: Broadcasts.empty_usage_totals()
       },
-      chat_state: %Agent.ChatState{messages: messages, next_message_index: next_index(messages)}
+      chat_state: %Agent.ChatState{
+        messages: messages,
+        next_message_index: next_index(messages),
+        agent_row_id: agent_row_id(name)
+      }
     }
+  end
+
+  # The row this session was started from. `append_message/3` passes this as
+  # `expect_agent_row_id`, and refuses a write whose name resolves to a
+  # *different* row (`:agent_row_reused`) — so a fixture that leaves it `nil`
+  # while a row exists drops and logs every append. A test that then asserted
+  # on the in-memory state alone would pass while nothing was persisted.
+  defp agent_row_id(name) do
+    case Persistence.fetch_agent(test_space_id(), name) do
+      {:ok, %{id: id}} -> id
+      _ -> nil
+    end
   end
 
   defp live(state, status) do

@@ -42,22 +42,83 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   def stage(m, carried_entry, pending_user) do
     count = m.loop_count + 1
 
+    case loop_breaker(m, count) do
+      {:blocked, result} ->
+        result
+
+      :ok ->
+        m = %{
+          m
+          | loop_count: count,
+            pending_user_message: pending_user || m.pending_user_message
+        }
+
+        do_stage(m, carried_entry)
+    end
+  end
+
+  @doc """
+  Retry a failed compaction by **re-sending the existing sequence**.
+
+  Nothing is appended and nothing is re-planned. The request message is
+  already committed, so a second plan would add a *second* request with a
+  different remaining-token count and double-count the request's own size
+  (`Dispatch.compaction_plan/1` computes the budget against the messages as
+  they are before the append, precisely so that cannot happen). The
+  compactor is simply asked again over the same messages, which is why a
+  retry cannot change the request.
+
+  The loop breaker still runs, so retries stay bounded: it is the only exit
+  from a compaction that keeps failing, since a committed request row can
+  never be removed.
+  """
+  @spec retry(Machine.t()) :: {:ok, [term()], Machine.t()}
+  def retry(m) do
+    count = m.loop_count + 1
+
+    case loop_breaker(m, count) do
+      {:blocked, result} -> result
+      :ok -> resend(m, count)
+    end
+  end
+
+  defp resend(m, count) do
+    carried =
+      case m.mid_turn_entry do
+        nil -> nil
+        entry -> entry.entry
+      end
+
+    machine =
+      Phase.enter(
+        %{m | loop_count: count, mid_turn_entry: nil, entry: {:compaction, carried}},
+        :compaction,
+        :generating,
+        :http
+      )
+
+    machine = %{machine | work: %{machine.work | iteration: 0, force_finalize: false}}
+
+    {:ok, [:iterate], machine}
+  end
+
+  defp loop_breaker(m, count) do
     if count > @max_consecutive_compactions do
       reason = "compaction isn't reducing the conversation"
 
-      Phase.block(m, :compaction_loop_detected, :compaction_loop, [
-        {:broadcast, {:compaction_loop, reason, m.loop_count, @max_consecutive_compactions}, nil}
-      ])
+      {:blocked,
+       Phase.block(m, :compaction_loop_detected, :compaction_loop, [
+         {:broadcast, {:compaction_loop, reason, m.loop_count, @max_consecutive_compactions}, nil}
+       ])}
     else
-      m = %{m | loop_count: count, pending_user_message: pending_user || m.pending_user_message}
-      do_stage(m, carried_entry)
+      :ok
     end
   end
 
   defp do_stage(m, carried_entry) do
     case Dispatch.compaction_plan(m) do
-      {:ok, staged} ->
-        stage_request(m, staged, carried_entry)
+      {:ok, request_message} ->
+        enter_compaction(m, request_message, carried_entry)
 
       {:error, :system_oversized} ->
         Phase.block(m, :context_overflow, :system_oversized, [
@@ -69,12 +130,22 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
     end
   end
 
-  defp stage_request(m, staged, carried_entry) do
-    provisional = m.work.ctx.next_message_index + length(staged)
-
+  # The request message is appended *before* the compactor is dispatched, so
+  # it is committed history from the moment it is sent. The compactor's
+  # request is therefore the ordinary message list, and a failure leaves the
+  # request visible instead of discarding a sequence the model has already
+  # seen.
+  #
+  # `active_message_index` is deliberately not set here. It is the index the
+  # *summary* will be stamped with, and the append that precedes the request
+  # has not happened yet — so the only honest value is read at `:iterate`
+  # (`Transitions`, `kind: :compaction`) from the refreshed context. The
+  # append path also inserts and persists the pairing bridge if the tail
+  # needs one, which is why no index arithmetic is done here at all.
+  defp enter_compaction(m, request_message, carried_entry) do
     machine =
       Phase.enter(
-        %{m | entry: {:compaction, staged, carried_entry}},
+        %{m | entry: {:compaction, carried_entry}},
         :compaction,
         :generating,
         :http
@@ -86,12 +157,11 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
           machine.work
           | iteration: 0,
             max_iterations: Config.configured_max_tool_iterations(),
-            force_finalize: false,
-            active_message_index: provisional
+            force_finalize: false
         }
     }
 
-    {:ok, [:iterate], machine}
+    {:ok, [{:append, request_message}, :iterate], machine}
   end
 
   # `:reserve_exhausted` means the model cannot fit the system prompt plus the
@@ -131,15 +201,20 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
     end
   end
 
-  @doc "Build the commit action set for a successful compactor response."
+  @doc """
+  Build the commit action set for a successful compactor response.
+
+  The request message is already committed (the staging append), so this
+  commits only the summary and its marker — and the bridge, if the append
+  path inserted one, is already in the segment being archived.
+  """
   @spec commit_compaction(Machine.t(), Nest.LLM.RunResponse.t()) :: {:ok, [term()], Machine.t()}
   def commit_compaction(m, response) do
-    {:compaction, staged, carried_entry} = m.entry
+    {:compaction, carried_entry} = m.entry
     {assistant_msg, sequences} = Response.assistant_with_log(m, response)
 
     data = %{
       summary_text: response.text || "",
-      staged: staged,
       summary_assistant: assistant_msg,
       carried_entry: carried_entry
     }
@@ -155,7 +230,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
 
   @doc "The carried entry of a compaction machine, or nil."
   @spec carried(Machine.t()) :: Machine.entry() | nil
-  def carried(%{entry: {:compaction, _staged, carried}}), do: carried
+  def carried(%{entry: {:compaction, carried}}), do: carried
   def carried(%{entry: _}), do: nil
 
   @doc "Enter the retryable `:compaction_failed` state after a failure."
@@ -180,7 +255,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
 
   @doc "Resume after a successful compaction commit."
   @spec resume(Machine.t()) :: {:ok, [term()], Machine.t()}
-  def resume(%{entry: {:compaction, _staged, carried}} = m) do
+  def resume(%{entry: {:compaction, carried}} = m) do
     cond do
       not is_nil(m.work.pending_notice) ->
         resume_notice(m)

@@ -20,7 +20,7 @@ defmodule Nest.Scripts.CompactionProbeSupportTest do
       suffix = CompactionProbeSupport.compaction_suffix(1500, nil)
 
       assert suffix ==
-               "[mode: compact] Summarize the conversation in your 1500 remaining tokens."
+               "[mode: compact]\nSummarize the conversation in your 1500 remaining tokens."
     end
 
     test "appends optional guidance when provided" do
@@ -32,7 +32,7 @@ defmodule Nest.Scripts.CompactionProbeSupportTest do
 
       assert String.starts_with?(
                suffix,
-               "[mode: compact] Summarize the conversation in your 1500 remaining tokens."
+               "[mode: compact]\nSummarize the conversation in your 1500 remaining tokens."
              )
 
       assert String.ends_with?(suffix, "focus on the test plan")

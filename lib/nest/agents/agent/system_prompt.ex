@@ -14,7 +14,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   The `[mode: compact]` paragraph is the SOLE source of
   compaction semantics in the agent's prompt. The
   compactor's per-call request appends a SUFFIX system
-  message of the form `[mode: compact] Summarize the
+  message of the form `[mode: compact]\nSummarize the
   conversation in your <N> remaining tokens.`; the agent
   recognizes that prefix and follows the paragraph's
   guidance. Centralizing the guidance here means
