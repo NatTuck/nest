@@ -12,7 +12,12 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
     * it appends the result and the synthetic acknowledgement in an order that
       leaves the wire valid (the result is a wire-`user` message, so an idle
       agent would otherwise rest on a user role);
-    * a queued inbox entry is drained rather than stranded by the turn ending;
+    * a message that is already queued is never stranded, and never delivered
+      through a transient `:idle` either: the rest's own drain keeps the turn
+      going for it, and a batch that is still interruptible never reaches the
+      rest at all — the batch-start deferral (issue #103) delivers the message
+      by backgrounding the batch, and the wait's real result then arrives as a
+      message;
     * the watched event wakes the idle agent with a message.
 
   Both tools are driven end to end: `agents-wait` against a stubbed space
@@ -21,6 +26,7 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
   use Nest.DataCase, async: true
 
   import Mimic
+  import Nest.Agents.AgentTurnTestHelpers
   import Nest.TestSupport.MachineTestHelpers
 
   alias Nest.Agents.Agent
@@ -74,11 +80,23 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
   # tool worker and the watcher task, so the agent is allowed explicitly: both
   # carry the agent in their `$callers` chain, which is what Mimic resolves
   # ownership through.
-  defp stub_listing(pid, frames) do
+  #
+  # `park: :first` parks the *first* read — the tool worker's own `resolve` —
+  # so a test can act while the batch is executing; every later read is served
+  # normally.
+  defp stub_listing(pid, frames, opts \\ []) do
     id = {:wait_turn_listing, System.unique_integer([:positive])}
     queue = start_supervised!({Elixir.Agent, fn -> frames end}, id: id)
+    test_pid = self()
+    reads = :counters.new(1, [])
+    park? = Keyword.get(opts, :park) == :first
 
     Mimic.stub(Nest.Agents, :list_agents_info_for_space, fn _space_id ->
+      :counters.add(reads, 1, 1)
+
+      if park? and :counters.get(reads, 1) == 1,
+        do: park(test_pid, :listing_read, :release_listing)
+
       Elixir.Agent.get_and_update(queue, &next_listing/1)
     end)
 
@@ -88,16 +106,32 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
   defp next_listing([last]), do: {last, [last]}
   defp next_listing([head | rest]), do: {head, rest}
 
-  # The notice drains into a turn; that turn's own idle status frame is the
-  # event that says it finished, and the status read confirms the agent is
-  # settled idle for the test-lifecycle check.
+  # Wait for the agent to settle, on the frame that decides it: the `idle`
+  # broadcast that ends the turn. A bare `idle` frame is not the fence — a stop,
+  # and any turn end that drains, publishes the transient
+  # `streaming -> idle -> streaming` of issue #15 first — so the fence is the
+  # idle that carries an empty queue. An empty queue is also exactly the state
+  # no further drain can start from; the status read that follows is a read of
+  # the settled state, not a wait.
   defp await_idle(pid) do
-    assert_receive {:chat_status, %{status: "idle"}}, 1_000
+    assert_receive {:chat_status, %{status: "idle", pendingMessageCount: 0}}, 1_000
 
     assert Agent.get_public_info(pid, 1_000).status == :idle
   end
 
   defp messages(pid), do: Agent.get_messages(pid, 1_000)
+
+  # The result a planted backgrounded batch delivers: the shape #36's late
+  # delivery carries (`BatchSizer`'s own `ToolResult`), whose rendering is the
+  # notice body.
+  defp other_result do
+    %ToolResult{
+      tool_call_id: "other",
+      name: "shell-cmd",
+      content: "backgrounded output",
+      is_error: false
+    }
+  end
 
   defp wait_tool_call(id, args), do: %{id: id, name: "agents-wait", arguments: args}
 
@@ -235,7 +269,10 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
       assert MockClient.take_pending(pid) == [{:text, "this must never be requested"}]
     end
 
-    test "drains a queued inbox entry instead of stranding it", %{pid: pid, name: name} do
+    test "a message queued before the batch starts is delivered, not stranded", %{
+      pid: pid,
+      name: name
+    } do
       stub_listing(pid, [[agent(name, :idle), agent("bob", :streaming)]])
 
       MockClient.set_tool_response(%{
@@ -244,30 +281,122 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
       })
 
       MockClient.set_response("the queued message's turn")
+      MockClient.set_response("the notice's turn")
 
       :ok = Agent.chat(pid, "wait for bob")
 
       # Queued, not delivered: the first message left the agent streaming, so
-      # this one lands on the inbox. It must be drained by the wait's rest, not
-      # left behind it.
+      # this one lands on the inbox. It arrives *before* the batch exists, so
+      # the streaming arm queues it and the batch-start deferral (issue #103)
+      # is what delivers it — by moving the wait's batch to the background, not
+      # by the wait rest. Either way the message is delivered and the wait's
+      # own result follows it as a message, which is what this test pins.
       :ok = Agent.chat(pid, "queued while busy")
+
+      notice = await_delivery("Your backgrounded command (agents-wait)")
+      assert notice =~ "Watching (you will be notified): bob"
 
       await_idle(pid)
 
       msgs = messages(pid)
+      backgrounded = Enum.find_index(msgs, &match?({:tool, _}, &1))
 
-      wait_index =
+      # The deferral's own shape: the synthetic result answers the wait call and
+      # says its real result arrives later, and the ack follows it — the same
+      # ordering the wait rest uses, because a `{:tool, _}` is a wire-`user`
+      # message either way.
+      assert {:tool, synthetic} = Enum.at(msgs, backgrounded)
+
+      assert [%Part.ToolResult{name: "agents-wait", state: "backgrounded", is_error: false}] =
+               synthetic.parts
+
+      assert hd(synthetic.parts).content =~ "moved to the background"
+      assert text_of(Enum.at(msgs, backgrounded + 1)) =~ "running in the background"
+
+      assert {:user, %{parts: [%Part.Text{text: drained}]}} = Enum.at(msgs, backgrounded + 2)
+      assert drained =~ "queued while busy"
+
+      # ...and the real result did arrive, as the notice the deferral promised:
+      # the watch was registered and its confirmation is in the transcript, not
+      # lost with the backgrounded batch.
+      assert Enum.any?(user_texts(msgs), &(&1 =~ "Watching (you will be notified): bob"))
+      assert Preflight.validate(msgs) == :ok
+      assert Agent.get_public_info(pid, 1_000).pending_messages == []
+      assert map_size(Agent.get_watches(pid, 1_000)) == 1
+    end
+
+    test "a notice enqueued during the wait's batch is delivered by the rest's drain", %{
+      pid: pid,
+      name: name
+    } do
+      # The one route left to the rest's drain rule: an *in-process* enqueue
+      # while the batch executes. A peer's or a human's message arriving here is
+      # backgrounded by the arrival path (issue #36), and one queued before the
+      # batch by the batch-start deferral (issue #103) — neither reaches the
+      # wait rest. `Inbox.enqueue_internal/5` (a backgrounded batch's outcome)
+      # asks neither, so its entry is still queued when the wait's result lands.
+      #
+      # The batch's worker is parked inside the wait tool's own listing read, so
+      # the notice lands deterministically while the batch executes. The
+      # backgrounded entry is planted — a batch with a live worker of its own is
+      # #36's subject, not this rule's — and everything from the enqueue on is
+      # the real path.
+      stub_listing(pid, [[agent(name, :idle), agent("bob", :streaming)]], park: :first)
+
+      MockClient.set_tool_response(%{
+        text: "waiting",
+        tool_calls: [wait_tool_call("w1", %{"names" => ["bob"]})]
+      })
+
+      MockClient.set_response("the notice's turn")
+
+      :ok = Agent.chat(pid, "wait for bob")
+      assert_receive {:listing_read, worker}, 1_000
+
+      # The settle that records the batch's worker has finished — the deferral
+      # read an empty queue and did nothing — so the notice cannot be raced by
+      # it. `get_public_info/2` is a synchronous read, so it is the barrier; the
+      # status it reports is the one the notice needs.
+      assert Agent.get_public_info(pid, 1_000).status == :executing_tools
+
+      ref = make_ref()
+
+      # The backgrounded batch whose outcome is enqueued: planted, because a
+      # batch with a live worker of its own is #36's subject, not this rule's.
+      :sys.replace_state(
+        pid,
+        fn state ->
+          put_in(state.live.machine.work.backgrounded, %{ref => %{pid: self(), ids: ["other"]}})
+        end,
+        1_000
+      )
+
+      send(pid, {:tool_results, ref, [other_result()]})
+
+      # Queued, not delivered: the machine is `:executing_tools`, and the
+      # backgrounded path only drains from `:idle`.
+      assert_receive {:chat_inbox, %{count: 1}}, 1_000
+
+      send(worker, :release_listing)
+
+      # The wait's result lands with the notice still queued, so the rest's
+      # drain delivers it — *in place*. No `idle` frame before the notice's own
+      # turn is what tells this apart from resting first and draining from
+      # `:idle`, which would publish `idle -> streaming` here.
+      assert statuses_until_idle(name) == ["streaming", "executing_tools", "streaming", "idle"]
+
+      msgs = messages(pid)
+
+      waiting =
         Enum.find_index(
           msgs,
           &match?({:tool, %{parts: [%Part.ToolResult{state: "waiting"}]}}, &1)
         )
 
-      # The rest's own order: the result, its acknowledgement, then the drained
-      # message's own turn.
-      assert {:assistant, _ack} = Enum.at(msgs, wait_index + 1)
+      assert {:assistant, _ack} = Enum.at(msgs, waiting + 1)
 
-      assert {:user, %{parts: [%Part.Text{text: drained}]}} = Enum.at(msgs, wait_index + 2)
-      assert drained =~ "queued while busy"
+      assert {:user, %{parts: [%Part.Text{text: drained}]}} = Enum.at(msgs, waiting + 2)
+      assert drained =~ "backgrounded output"
 
       assert Agent.get_public_info(pid, 1_000).pending_messages == []
     end

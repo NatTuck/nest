@@ -69,8 +69,13 @@ defmodule Nest.Agents.Agent.WatchTest do
   # The notice drains into a turn; the turn's own idle status frame is the
   # event that says it finished, and the status read confirms the agent is
   # settled idle for the test-lifecycle check.
+  # The notice drains into a turn; the turn's own idle status frame is the event
+  # that says it finished. A bare `idle` is not that fence: a turn end that
+  # drains publishes the transient `streaming -> idle -> streaming` of issue #15
+  # first, so the fence is the idle that carries an empty queue. The status read
+  # that follows is a read of the settled state, not a wait.
   defp await_idle(pid) do
-    assert_receive {:chat_status, %{status: "idle"}}, 1_000
+    assert_receive {:chat_status, %{status: "idle", pendingMessageCount: 0}}, 1_000
 
     assert Agent.get_public_info(pid, 1_000).status == :idle
   end

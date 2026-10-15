@@ -250,9 +250,6 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
     Mimic.allow(Nest.Agents, self(), pid)
   end
 
-  # Park the worker until the test releases it — or until the test process
-  # itself ends.
-  #
   # Both exits are events, and there is deliberately **no timer**. The `after`
   # clause this used to carry was a valve whose only job was "the owner went
   # away"; the owner going away is directly observable, so a timer there was
@@ -275,7 +272,15 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   # test itself. An extra wait (an `eventually`, another `assert_receive`)
   # between a decisive park and its release is fine; a park whose release the
   # test never reaches is now a loud ExUnit timeout rather than a quiet flip.
-  defp park(test_pid, blocked, release) do
+  @doc """
+  Park the calling process until `test_pid` sends `release`, or until it dies.
+
+  The `park_agent_*` harnesses' primitive, and usable on its own by a stub that
+  needs the test to decide when a worker may proceed: `blocked` is the frame the
+  test fences on. There is deliberately no timer — see the comment above.
+  """
+  @spec park(pid(), atom(), atom()) :: :ok
+  def park(test_pid, blocked, release) do
     send(test_pid, {blocked, self()})
 
     ref = Process.monitor(test_pid)
