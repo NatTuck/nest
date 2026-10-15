@@ -62,16 +62,17 @@ defmodule Nest.Agents.Agent.Inbox do
 
   `batch/1` selects what a drain delivers: a human message at the FIFO head is
   delivered **alone**, a run of leading non-human entries is delivered as one
-  batch. `combine/1` then renders the batch: a human entry is its bare content
-  (so a queued human message reads exactly like one that arrived while the
-  agent was idle, and its own `[mode: X]` prefix is added when the message is
-  built), a `:notice` is bare because the runtime — not an agent — said it,
-  while each `:agent`/`:query` entry keeps `[Message from agent "<from>"]` —
-  that label is what disambiguates a batch of peer messages — and an unknown
-  sender (`nil`) drops the quoted name rather than putting `nil` in the prompt.
-  A batch over `Config.configured_async_message_max_tokens/0` is written to
-  the agent's scratch dir and replaced by a short pointer telling the agent
-  how many messages there were and where to read them.
+  batch. `Nest.Agents.Agent.Inbox.Render` then renders the batch: a human entry
+  is its bare content (so a queued human message reads exactly like one that
+  arrived while the agent was idle, and its own `[mode: X]` prefix is added
+  when the message is built), a `:notice` is bare because the runtime — not an
+  agent — said it, while each `:agent`/`:query` entry keeps
+  `[Message from agent "<from>"]` — that label is what disambiguates a batch of
+  peer messages — and an unknown sender (`nil`) drops the quoted name rather
+  than putting `nil` in the prompt.
+  A batch over `Nest.Agents.Agent.Config.configured_async_message_max_tokens/0`
+  is written to the agent's scratch dir and replaced by a short pointer telling
+  the agent how many messages there were and where to read them.
 
   ## One mode per delivery
 
@@ -99,20 +100,15 @@ defmodule Nest.Agents.Agent.Inbox do
   """
 
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Inbox.Delivery
+  alias Nest.Agents.Agent.Inbox.Render
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Timeline
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Turn.Backgrounded
-  alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.Agent.Watch
-  alias Nest.Messages.MessageList
   alias Nest.Messages.User
-  alias Nest.Sandbox.Mounts
-  alias Nest.Tokens.Estimator
 
   require Logger
 
@@ -131,11 +127,6 @@ defmodule Nest.Agents.Agent.Inbox do
   # Hard cap on queued agent-sourced messages. When full the sender gets
   # an `:inbox_full` error and nothing is queued.
   @max_inbox_size 100
-
-  # The marker a re-delivery carries (issue #62 requirement 5). A retrieved
-  # entry is normally suppressed by `batch/1`; if one still reaches the renderer
-  # the body must never look like a fresh human turn.
-  @redelivery_tag "[re-delivery: this body was already retrieved with agents-last-message]"
 
   @type kind :: :agent | :user | :query | :notice
 
@@ -487,35 +478,24 @@ defmodule Nest.Agents.Agent.Inbox do
     end)
   end
 
+  # The LLM-facing rendering of a drain batch lives in `Render` — the seam's
+  # single owner — and these delegates keep `Inbox` the one public surface a
+  # drain caller reaches for, exactly as the `Delivery` delegates below do for
+  # the consume API. The rendering rules are documented there.
+
   @doc """
   Combine one drain batch and, when over the async-message cap, offload the
-  text to the agent scratch dir. Returns the content string to deliver.
-  Used by the turn executor's drain actions, which pass `batch/1`'s selection
-  so the entries rendered are exactly the entries consumed.
+  text to the agent's scratch dir. Returns the content string to deliver.
   """
   @spec combine_and_offload([entry()], Agent.t()) :: String.t()
-  def combine_and_offload(entries, state) do
-    offload(combine(entries), entries, state)
-  end
+  defdelegate combine_and_offload(entries, state), to: Render
 
   @doc """
-  The user message a drained batch is delivered as.
-
-  `content` is the batch's combined text (`combine_and_offload/2`) and `mode`
-  the drain's winning mode; `Dispatch.build_user_message/3` builds the message
-  itself. The batch's `fulfilled_ids` also ride it as message metadata
-  (`MessageList.fulfilled_metadata/1`): a backgrounded batch's notice answers or
-  closes those calls, so a later load can tell a promise that was kept from one
-  the process died with (`MessageList.backgrounded_results/1`).
-
-  The single writer of that marker, so every drain shape builds its message here
-  — including the backgrounding path, which delivers a *notice* entry when one
-  was queued while another batch executed.
+  The user message a drained batch is delivered as: its rendered `content`,
+  the drain's `mode`, and the batch's metadata.
   """
   @spec build_drained_message([entry()], String.t(), String.t()) :: {:user, User.t()}
-  def build_drained_message(entries, content, mode) do
-    Dispatch.build_user_message(content, mode, MessageList.drained_metadata(entries))
-  end
+  defdelegate build_drained_message(entries, content, mode), to: Render
 
   @doc """
   The batch a drain delivers, selected from the FIFO head of `entries`.
@@ -631,69 +611,5 @@ defmodule Nest.Agents.Agent.Inbox do
   def broadcast(state) do
     Broadcasts.inbox(state, serialize(state.live.inbox))
     state
-  end
-
-  # The LLM-facing rendering of one drain batch. A human entry is rendered as
-  # its bare content — plus, later, the `[mode: X]\n` prefix
-  # `Dispatch.build_user_message/2` adds — because a queued human message must
-  # read exactly like one that arrived while the agent was idle (issue #31
-  # decision 8): the model never has to reason about whether it was queued.
-  # A `:notice` is bare for a different reason: it is the runtime speaking,
-  # and a `[Message from agent "X"]` label would impersonate X (decision 9).
-  # Every other kind keeps its `[Message from agent "X"]` label, which is what
-  # disambiguates a batch of peer messages (from each other and from a human's)
-  # — including a `:query`, whose requester really is that agent (decision 7).
-  defp combine(entries) do
-    Enum.map_join(entries, "\n\n", &render_entry/1)
-  end
-
-  # A retrieved entry is normally suppressed by `batch/1` before it can reach
-  # here, so this is the safety net issue #62 requirement 5 asks for: if both
-  # channels ever carry the body, the second copy is explicitly a re-delivery
-  # and can never read as a fresh human turn.
-  defp render_entry(%{kind: kind, content: content} = entry) when kind in [:user, :notice],
-    do: tag_redelivery(entry, content)
-
-  defp render_entry(%{content: content} = entry),
-    do: tag_redelivery(entry, "#{agent_label(entry)}\n#{content}")
-
-  defp tag_redelivery(%{retrieved: true}, body), do: "#{@redelivery_tag}\n#{body}"
-  defp tag_redelivery(_entry, body), do: body
-
-  # The LLM-facing label for one `:agent` entry. A missing or blank sender
-  # drops the quoted name rather than putting `nil`/`""` in the prompt.
-  defp agent_label(%{from: from}), do: "[Message from agent#{quoted(from)}]"
-
-  defp quoted(from) when is_binary(from) and from != "", do: " \"#{from}\""
-  defp quoted(_from), do: ""
-
-  # Over the configured cap, write the full combined text to the agent's
-  # scratch dir and return a pointer. If the write fails, fall back to
-  # the full text so no messages are lost.
-  defp offload(content, entries, state) do
-    if Estimator.estimate(content) > Config.configured_async_message_max_tokens() do
-      case Overflow.write(
-             content,
-             %{mounts: Mounts.from_agent(state)},
-             "agent-inbox",
-             "txt",
-             Delivery.batch_id(entries)
-           ) do
-        nil -> content
-        path -> pointer(length(entries), path)
-      end
-    else
-      content
-    end
-  end
-
-  defp pointer(1, path) do
-    "You have 1 queued message. It was too large to " <>
-      "include inline and was saved to #{path}. Read that file to see it."
-  end
-
-  defp pointer(n, path) do
-    "You have #{n} queued messages. They were too large to " <>
-      "include inline and were saved to #{path}. Read that file to see them."
   end
 end
