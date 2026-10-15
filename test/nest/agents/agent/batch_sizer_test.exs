@@ -638,6 +638,23 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       assert missing == [],
              "registered tools with only the catch-all projection: #{inspect(missing)}"
     end
+
+    test "the history and status tools project a positive size" do
+      # `projected?/1` is list membership; this exercises the clauses
+      # themselves, so a projection that returned 0 (or fell to the catch-all
+      # for a hallucinated name) cannot pass as covered.
+      c = ctx([])
+
+      for name <- ~w(agents-history agents-status) do
+        assert ProjectedSize.project(call("c-#{name}", name, %{}), c) > 0,
+               "#{name}'s projection is not positive"
+      end
+
+      # `agents-history` is unbounded by construction, so it projects at the
+      # substitute minimum like the other response-bearing sub-agent tools.
+      assert ProjectedSize.project(call("c", "agents-history", %{}), c) ==
+               ProjectedSize.project(call("c", "agents-last-message", %{}), c)
+    end
   end
 
   # -- helpers --
