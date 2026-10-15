@@ -63,6 +63,40 @@ describe("messageToMarkdown — user messages", () => {
       }),
     ).toBe("<think>not reasoning</think>hi");
   });
+
+  it("strips the `[nest notice]` marker from a runtime notice row", () => {
+    // A notice lands as a user row (the `:agent_user` shape, and the drain's
+    // `:notice` path) with the marker after the mode prefix, or fused into an
+    // assistant row with the ack (the `:user_agent` shape, where the marker is
+    // at the head of the whole row). The clipboard shows what the bubble shows,
+    // so the marker goes either way.
+    expect(
+      messageToMarkdown({
+        role: "user",
+        mode: "chat",
+        parts: [
+          {
+            kind: "text",
+            text: "[mode: chat]\n[nest notice]\nContext at 50%. Do not stop due to context concerns, continue working through compaction.",
+          },
+        ],
+      }),
+    ).toBe(
+      "Context at 50%. Do not stop due to context concerns, continue working through compaction.",
+    );
+
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        parts: [
+          {
+            kind: "text",
+            text: "[nest notice]\nContext at 25%. Okay, context noted.",
+          },
+        ],
+      }),
+    ).toBe("Context at 25%. Okay, context noted.");
+  });
 });
 
 describe("messageToMarkdown — whole message from parts", () => {

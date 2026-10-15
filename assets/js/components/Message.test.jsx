@@ -93,3 +93,47 @@ describe("Message copy control placement", () => {
     ).not.toBe(0);
   });
 });
+
+describe("Message runtime notice rendering", () => {
+  it("hides the `[nest notice]` wire marker the row carries", () => {
+    // The raw wire content really carries the marker (that is what the model
+    // reads); the rendered bubble must not show it to the operator, on either
+    // notice row shape — a user row (`:agent_user` / the drain path) or the
+    // fused assistant row (`:user_agent`).
+    const userRaw =
+      "[mode: chat]\n[nest notice]\nContext at 50%. Do not stop due to context concerns, continue working through compaction.";
+    const assistantRaw = "[nest notice]\nContext at 25%. Okay, context noted.";
+
+    expect(userRaw.startsWith("[mode: chat]\n[nest notice]\n")).toBe(true);
+    expect(assistantRaw.startsWith("[nest notice]\n")).toBe(true);
+
+    const { unmount } = render(
+      <MessageBubble
+        agentName="test-agent"
+        message={{
+          index: 3,
+          role: "user",
+          mode: "chat",
+          parts: [{ kind: "text", text: userRaw }],
+          metadata: { mode: "chat" },
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/Context at 50%/)).toBeInTheDocument();
+    expect(screen.queryByText(/nest notice/)).toBeNull();
+    unmount();
+
+    render(
+      <MessageBubble
+        agentName="test-agent"
+        message={assistantMessage({
+          parts: [{ kind: "text", text: assistantRaw }],
+        })}
+      />,
+    );
+
+    expect(screen.getByText(/Okay, context noted\./)).toBeInTheDocument();
+    expect(screen.queryByText(/nest notice/)).toBeNull();
+  });
+});

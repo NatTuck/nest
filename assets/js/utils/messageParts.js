@@ -7,6 +7,7 @@
  */
 
 import { splitThinkFromParts } from "./thinkTags.js";
+import { stripNoticePrefix } from "./stripNoticePrefix.js";
 
 // Concatenate the thinking content for an assistant message:
 // both `Part.Thinking` entries AND any `<!--think...-->` blocks buried
@@ -27,8 +28,28 @@ export function thinkingFor(message) {
 // the ThinkingBlock above). For user messages, the caller wraps
 // the text in a single Part.Text (with the mode prefix stripped), so
 // this is only used for assistants.
+//
+// A synthetic runtime notice renders into an assistant row too: the fused
+// `assistant(notice + ack)` shape puts the `[nest notice]` marker at the head
+// of the row's text (`Nest.Agents.Agent.NoticePairInjector`). The marker is
+// stripped from the first text part here — the same render-time removal
+// `stripModePrefix` performs for a user row's `[mode: X]` prefix — so the
+// operator sees the notice, not the wire framing. Only the first text part is
+// touched: the marker is always at the head of the row, never mid-text.
 export function textPartsFor(message) {
-  return splitThinkFromParts(message?.parts).textParts;
+  return stripNoticeFromParts(splitThinkFromParts(message?.parts).textParts);
+}
+
+function stripNoticeFromParts(parts) {
+  const index = parts.findIndex((part) => part?.kind === "text");
+  if (index === -1) return parts;
+
+  const stripped = stripNoticePrefix(parts[index].text);
+  if (stripped === parts[index].text) return parts;
+
+  const next = parts.slice();
+  next[index] = { ...parts[index], text: stripped };
+  return next;
 }
 
 // Derive the legacy `toolCalls` shape from a message's `parts`

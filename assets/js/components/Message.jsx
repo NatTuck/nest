@@ -53,6 +53,7 @@ import {
   mediaFromParts,
 } from "../utils/messageParts.js";
 import { stripModePrefix } from "../utils/stripModePrefix.js";
+import { stripNoticePrefix } from "../utils/stripNoticePrefix.js";
 
 function Message({ message, agentName }) {
   const isUser = message.role === "user";
@@ -142,7 +143,9 @@ function Message({ message, agentName }) {
                 ? [
                     {
                       kind: "text",
-                      text: stripModePrefix(messageText(message), message.mode),
+                      text: stripNoticePrefix(
+                        stripModePrefix(messageText(message), message.mode),
+                      ),
                     },
                     // Media parts are appended, not replaced. This branch
                     // synthesises its text part from `messageText`, which is

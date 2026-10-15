@@ -159,4 +159,21 @@ describe("buildChatHistory", () => {
 
     expect(result).toEqual([{ content: "no mode", mode: null }]);
   });
+
+  it("strips the `[nest notice]` marker, matching what the bubble showed", () => {
+    // A notice row is never `origin: "human"`, so the server's marker never
+    // reaches a human entry — but the bubble strips a leading marker
+    // unconditionally, so the recall list must do the same or a human who
+    // typed one would get different text back than they saw.
+    const result = buildChatHistory([
+      {
+        role: "user",
+        origin: "human",
+        content: "[mode: build]\n[nest notice]\ntyped by the human",
+        mode: "build",
+      },
+    ]);
+
+    expect(result).toEqual([{ content: "typed by the human", mode: "build" }]);
+  });
 });

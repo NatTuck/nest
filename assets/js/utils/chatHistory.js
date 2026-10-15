@@ -20,11 +20,14 @@
  * `content`), so the text is extracted via `messageText` (which prefers
  * `parts` and falls back to a legacy `content` string). The persisted
  * content has a `[mode: <name>]\n` prefix, which is stripped here so the
- * recovered prompt is the user-visible text.
+ * recovered prompt is the user-visible text, and a `[nest notice]\n` marker is
+ * stripped the same way — the bubble strips both, and the recall list must
+ * hand back what the bubble showed.
  */
 
 import { messageText } from "./messageText.js";
 import { stripModePrefix } from "./stripModePrefix.js";
+import { stripNoticePrefix } from "./stripNoticePrefix.js";
 
 // The `metadata.origin` value the server stamps on the human's own message.
 const HUMAN_ORIGIN = "human";
@@ -42,7 +45,7 @@ function toHistoryEntry(message) {
   if (!raw) return null;
 
   return {
-    content: stripModePrefix(raw, message.mode ?? ""),
+    content: stripNoticePrefix(stripModePrefix(raw, message.mode ?? "")),
     mode: message.mode ?? null,
   };
 }
