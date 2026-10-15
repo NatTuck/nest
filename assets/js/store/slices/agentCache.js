@@ -190,6 +190,12 @@ export function agentCacheSetters(set) {
                 payload.pendingMessageCount ??
                 existing?.pendingMessageCount ??
                 (payload.inbox ?? existing?.inbox ?? []).length,
+              // The queue's delta-stream position (issue #27), the baseline a
+              // `chat:inbox` delta is checked against. `init` carries it beside
+              // `inbox`; a `chat:status` reply does not, so an existing
+              // baseline is kept rather than dropped — losing it would make the
+              // next delta look like a gap and cost a needless full fetch.
+              inboxSeq: payload.inboxSeq ?? existing?.inboxSeq ?? null,
               // The peers this agent owes a reply (`agents-query`). The
               // wire contract always carries the key (`[]` when nothing
               // is owed), so it is taken verbatim: a payload that omits

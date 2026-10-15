@@ -8,6 +8,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
   import ExUnit.CaptureLog
   import Nest.TestSupport.ExecutorTestHelpers
 
+  alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.TreePosition
   alias Nest.Agents.Agent.Turn
@@ -55,14 +56,19 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
   end
 
   defp entry(kind, from, content, mode \\ nil) do
+    # The whole documented entry shape (`Inbox.@type entry`): the removal
+    # delta names an entry by its `id` (issue #27), so a fixture without one
+    # is not an entry the queue could hold.
     %{
+      id: Inbox.new_id(),
       from: from,
       content: content,
       timestamp: DateTime.utc_now(),
       kind: kind,
       mode: mode,
       human?: false,
-      fulfilled_ids: []
+      fulfilled_ids: [],
+      retrieved: false
     }
   end
 
@@ -337,7 +343,8 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       # intentional: the consume half is emitted by the branch that actually
       # appended the message, and it clears only the batch the peek delivered —
       # anything the peek did not take stays queued and stays on the wire. One
-      # consume is one `chat:inbox` frame, carrying the remaining queue.
+      # consume is one `chat:inbox` frame, a removal delta naming the ids that
+      # went (issue #27) — never the queue that is left.
       peer = entry(:agent, "peer", "peer note")
       alice = entry(:user, "alice", "human note", "plan")
       state = inbox_state([peer, alice], "chat")
@@ -347,14 +354,16 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
 
       assert state.live.inbox == [alice]
 
-      assert_receive {:chat_inbox, %{count: 1, messages: [%{"content" => "human note"}]}}
+      assert_receive {:chat_inbox, %{op: "remove", count: 1, ids: [id]}}
+      assert id == peer.id
       refute_received {:chat_inbox, _}
 
       # The batch was the whole queue: the frame reports an empty inbox.
       {state, nil} = run({:consume_inbox, [alice]}, state)
 
       assert state.live.inbox == []
-      assert_receive {:chat_inbox, %{count: 0, messages: []}}
+      assert_receive {:chat_inbox, %{op: "remove", count: 0, ids: [id]}}
+      assert id == alice.id
       refute_received {:chat_inbox, _}
     end
 
@@ -388,7 +397,8 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
                 }}
              ] = state.chat_state.messages
 
-      assert_receive {:chat_inbox, %{count: 0, messages: []}}
+      assert_receive {:chat_inbox, %{op: "remove", count: 0, ids: [id]}}
+      assert id == peer.id
       refute_received {:chat_inbox, _}
     end
 

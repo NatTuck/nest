@@ -324,6 +324,12 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
       # list for the UI viewer plus a count. See `Inbox`.
       pending_messages: Inbox.serialize(state.live.inbox),
       pending_message_count: length(state.live.inbox),
+      # The queue's frame sequence (issue #27): the full list above is the
+      # `op: "replace"` frame at this position, so a client that takes both from
+      # the same snapshot resumes the delta stream with no gap. Read here rather
+      # than recomputed so the list and its sequence can never be from different
+      # moments.
+      inbox_seq: state.live.inbox_seq,
       # The peers this agent still owes a reply to (issue #31 §1.8): the
       # debtors, sorted, `[]` when nothing is owed — never nil and never
       # absent, so a client cannot mistake "not serialized" for "no debt".

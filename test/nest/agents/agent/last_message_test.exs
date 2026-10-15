@@ -154,7 +154,7 @@ defmodule Nest.Agents.Agent.LastMessageTest do
       # genuine later event; wait for that frame, not for the state it writes.
       Agent.stop_chat(pid, self())
 
-      assert_receive {:chat_inbox, %{count: 0, messages: []}}, 1_000
+      assert_receive {:chat_inbox, %{op: "remove", count: 0, ids: [_]}}, 1_000
       assert Agent.get_public_info(pid, 1_000).pending_messages == []
     end)
   end

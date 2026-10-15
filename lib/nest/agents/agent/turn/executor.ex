@@ -431,10 +431,10 @@ defmodule Nest.Agents.Agent.Turn.Executor do
     # synchronously inside one settle, so nothing can be enqueued between the
     # peek and the consume, and anything the peek did not deliver stays queued.
     # A retrieved entry is dropped too (issue #62): `batch/1` skipped it, so the
-    # consume is the only thing that can clear it.
-    inbox = Inbox.consume(state.live.inbox, entries)
-    state = %{state | live: %{state.live | inbox: inbox}}
-    Broadcasts.inbox(state, Inbox.serialize(inbox))
+    # consume is the only thing that can clear it. The frame is the removal
+    # delta for exactly those ids (issue #27) — `Inbox.consume_and_broadcast/2`
+    # owns both the write and the frame so they cannot disagree.
+    state = Inbox.consume_and_broadcast(state, entries)
     Timeline.drained(state, entries)
     {state, :continue}
   end

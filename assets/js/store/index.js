@@ -15,7 +15,7 @@ import { catalogSetters } from "./slices/catalog";
 import { authSetters } from "./slices/auth";
 import { agentCacheSetters } from "./slices/agentCache";
 import { agentCacheStreamingSetters } from "./slices/agentCacheStreaming";
-import { agentInboxSetters } from "./slices/agentInbox";
+import { agentInboxSetters, applyAgentInboxDelta } from "./slices/agentInbox";
 import { addChatDelta } from "./slices/agentCacheDeltas";
 import {
   addChatMessage,
@@ -34,6 +34,8 @@ export const useStore = create(
       ...agentCacheStreamingSetters(set, get),
       ...agentInboxSetters(set),
       addChatDelta: (id, payload) => addChatDelta(set, get, id, payload),
+      applyAgentInboxDelta: (id, payload) =>
+        applyAgentInboxDelta(set, get, id, payload),
       addChatMessage: (id, message) => addChatMessage(set, get, id, message),
       addUserMessage: (id, content, mode) =>
         addUserMessage(set, id, content, mode),

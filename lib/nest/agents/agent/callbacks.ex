@@ -214,16 +214,16 @@ defmodule Nest.Agents.Agent.Callbacks do
   # The `agents-last-message` fetch (issue #62): take the newest pending
   # delivery from `name`, mark it retrieved, and publish the change. The caller
   # then cannot be delivered the same body again at its next turn boundary.
+  # `mark_retrieved/2` owns both halves — the queue write and the delta that
+  # describes it (issue #27) — because only the state after the write knows the
+  # entry's new serialized form.
   def handle_call({:last_message, name}, _from, state) do
-    {inbox, entry} = Inbox.take_last(state.live.inbox, name)
-    state = %{state | live: %{state.live | inbox: inbox}}
-
-    case entry do
-      nil ->
+    case Inbox.mark_retrieved(state, name) do
+      {state, nil} ->
         {:reply, :none, state}
 
-      entry ->
-        {:reply, {:ok, entry.content, entry.id}, Inbox.broadcast(state)}
+      {state, entry} ->
+        {:reply, {:ok, entry.content, entry.id}, state}
     end
   end
 

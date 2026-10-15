@@ -105,8 +105,24 @@ defmodule Nest.Agents.Agent.Inbox do
   undrained messages. `@max_inbox_size` bounds a runaway *peer* producer
   (`handle_delivery/4`); the two self-produced paths — a human message
   (`deliver_user_message/4`) and the runtime's own result
-  (`enqueue_internal/4`) — always queue rather than silently dropping, so each
-  enqueue rebroadcasts the whole serialized list.
+  (`enqueue_internal/4`) — always queue rather than silently dropping.
+
+  ## The wire is incremental (issue #27)
+
+  Every queue mutation broadcasts one delta describing *that* mutation, never
+  the whole list — the frames and their `count`/`inboxSeq` contract are
+  `Nest.Agents.Agent.Broadcasts`'s. So `n` queued frames cost `~n·s` bytes
+  instead of the `~n²·s/2` a full-list rebroadcast per enqueue costs, and a
+  client that misses one re-requests the full list over `chat:inbox` (the
+  `op: "replace"` frame, also carried by `init`) instead of ending up silently
+  wrong; `chat:status`'s `pendingMessageCount` is the count half of the same
+  recovery.
+
+  **Accepted limit: the human path is deliberately unbounded.** A human message
+  is never refused by `@max_inbox_size` (only a *peer* producer's is), so the
+  queue — and the memory it holds — can grow without bound while the agent is
+  busy. The deltas remove the quadratic *traffic*, not the growth; bounding it,
+  and rate-limiting the channel event that fills it, is issue #110.
   """
 
   alias Nest.Agents.Agent
@@ -255,7 +271,8 @@ defmodule Nest.Agents.Agent.Inbox do
   # and `nil` for every other producer; it rides the record, so a reader still
   # sees what the human asked for.
   defp busy_delivery(state, sender, content, kind, mode, human?) do
-    state = state |> put_entry(sender, content, kind, mode, human?) |> broadcast()
+    {state, entry} = put_entry(state, sender, content, kind, mode, human?)
+    state = broadcast_append(state, [entry])
     queued_before = length(state.live.inbox)
     {state, disposition} = drain_backgroundable(state)
 
@@ -271,22 +288,19 @@ defmodule Nest.Agents.Agent.Inbox do
   # The idle arm: enqueue, drain through the turn executor, and report the
   # disposition the drain resolved.
   defp idle_delivery(state, sender, content, kind) do
-    state = put_entry(state, sender, content, kind, nil)
+    {state, entry} = put_entry(state, sender, content, kind, nil)
     queued_before = length(state.live.inbox)
     {state, result} = Turn.drain_inbox(state)
 
     # Peek-then-consume (#26): the drain only consumes the queue when it
     # actually appended the message, so a drain that parks it (a compaction
-    # it needs, or a `:cannot_compact` block) leaves it queued. The busy
-    # branch broadcasts on enqueue; this one must not leave the entry
-    # reachable only by a client refetch. The consume only ever *removes*
-    # entries, so an unchanged length means nothing was consumed: this
-    # entry is still queued and this frame is the only way the client learns
-    # about it. When the consume did run it has already broadcast the
-    # remainder — this entry included — so broadcasting here would send a
-    # duplicate frame.
-    state =
-      if length(state.live.inbox) == queued_before, do: broadcast(state), else: state
+    # it needs, or a `:cannot_compact` block) leaves it queued and reports
+    # `:queued`. The busy branch broadcasts on enqueue; this one must not leave
+    # the entry reachable only by a client refetch, and it is the *only* frame
+    # due when nothing was consumed. A drain that consumed the entry already
+    # broadcast its removal — this entry was in that batch — so a second frame
+    # here would describe a mutation the client has already applied.
+    state = if result == :queued, do: broadcast_append(state, [entry]), else: state
 
     # `result` is the disposition the sender is given, and the action the
     # entry took: a drain that parked the message queued it, so it is
@@ -368,11 +382,12 @@ defmodule Nest.Agents.Agent.Inbox do
           Agent.t()
   def enqueue_internal(state, from, content, kind, fulfilled_ids \\ [])
       when kind in [:agent, :user, :query, :notice] do
-    state =
+    {state, entry} =
       state
       |> satisfy_watch(from, kind)
       |> put_entry(from, content, kind, nil, false, fulfilled_ids)
-      |> broadcast()
+
+    state = broadcast_append(state, [entry])
 
     record_inbox(state, :enqueued, from, kind, content,
       count: length(state.live.inbox),
@@ -542,25 +557,25 @@ defmodule Nest.Agents.Agent.Inbox do
   defdelegate take_last(entries, name), to: Delivery
 
   @doc """
-  Drop every retrieved entry from the queue, rebroadcasting when anything went.
+  Drop every retrieved entry from the queue, broadcasting the ids that went.
 
   A retrieved entry is already consumed (`agents-last-message` took its body),
   so `batch/1` skips it; when it is all that is queued the drain peeks `:empty`
   and never consumes. The executor calls this from its drain's empty branch so
   the queue cannot fill with dead entries and eventually refuse peers at
   `@max_inbox_size` (issue #62). Nothing is delivered, so it records no
-  `Timeline.drained` event.
+  `Timeline.drained` event; the frame is a removal delta naming the entries
+  that went, not the queue that is left.
   """
   @spec prune_retrieved(Agent.t()) :: Agent.t()
   def prune_retrieved(state) do
-    remaining = Enum.reject(state.live.inbox, &Delivery.retrieved?/1)
+    {dropped, remaining} = Enum.split_with(state.live.inbox, &Delivery.retrieved?/1)
 
-    if length(remaining) == length(state.live.inbox) do
+    if dropped == [] do
       state
     else
       state = %{state | live: %{state.live | inbox: remaining}}
-      broadcast(state)
-      state
+      broadcast_remove(state, Enum.map(dropped, & &1.id))
     end
   end
 
@@ -599,7 +614,9 @@ defmodule Nest.Agents.Agent.Inbox do
 
   # `from`/`mode` are normalized here, the single write point, so a malformed
   # payload can never put a number/map on the wire (`serialize/1`'s contract is
-  # string-or-null for both).
+  # string-or-null for both). Returns the entry as well as the state: the
+  # caller broadcasts it as an append delta, and only the entry — not the whole
+  # queue — is what that frame may carry (issue #27).
   defp put_entry(state, from, content, kind, mode, human? \\ false, fulfilled_ids \\ []) do
     entry = %{
       id: Delivery.new_id(),
@@ -613,17 +630,57 @@ defmodule Nest.Agents.Agent.Inbox do
       retrieved: false
     }
 
-    %{state | live: %{state.live | inbox: state.live.inbox ++ [entry]}}
+    {%{state | live: %{state.live | inbox: state.live.inbox ++ [entry]}}, entry}
   end
 
   @doc """
-  Broadcast the current inbox on the agent's topic. Public so the
-  `agents-last-message` fetch (which consumes an entry in place, issue #62) can
-  publish the change the same way every enqueue and drain does.
+  Broadcast the entries just appended to the queue (issue #27).
+
+  Public because three enqueue paths own their own append — the busy and idle
+  delivery arms and `enqueue_internal/4` — and each must publish exactly the
+  entry it added, not the queue it added it to.
   """
-  @spec broadcast(Agent.t()) :: Agent.t()
-  def broadcast(state) do
-    Broadcasts.inbox(state, serialize(state.live.inbox))
-    state
+  @spec broadcast_append(Agent.t(), [entry()]) :: Agent.t()
+  def broadcast_append(state, entries) do
+    Broadcasts.inbox_append(state, serialize(entries))
   end
+
+  @doc """
+  Drop `batch` (plus every retrieved entry) from the queue and broadcast the
+  ids that went — the consume half of peek-then-consume (#26), and the single
+  place the executor's drain mutates the queue.
+  """
+  @spec consume_and_broadcast(Agent.t(), [entry()]) :: Agent.t()
+  def consume_and_broadcast(state, batch) do
+    before = state.live.inbox
+    state = %{state | live: %{state.live | inbox: consume(before, batch)}}
+    broadcast_remove(state, Enum.map(before -- state.live.inbox, & &1.id))
+  end
+
+  @doc """
+  Mark the newest fetchable entry from `name` retrieved and publish it.
+
+  The mutation and the frame are one call because the frame must describe the
+  entry's *new* serialized form (`retrieved: true`), which only the queue after
+  the write knows (issue #27). Returns the state and the entry as the caller's
+  reply payload — its `content` and `id` are unchanged by the marking.
+  """
+  @spec mark_retrieved(Agent.t(), String.t()) :: {Agent.t(), entry() | nil}
+  def mark_retrieved(state, name) do
+    {inbox, entry} = take_last(state.live.inbox, name)
+
+    case entry do
+      nil ->
+        {state, nil}
+
+      entry ->
+        state = %{state | live: %{state.live | inbox: inbox}}
+        {Broadcasts.inbox_update(state, serialize([entry])), entry}
+    end
+  end
+
+  @doc false
+  # The removal half of the delta protocol: `ids` are entries the queue no
+  # longer holds, in the order they went.
+  defp broadcast_remove(state, ids), do: Broadcasts.inbox_remove(state, ids)
 end

@@ -4973,14 +4973,21 @@ describe("channels", () => {
           "connected",
         );
       });
+      // The join's `init` carries the full list *and* the sequence it was taken
+      // at, which is the baseline every later delta is checked against. This
+      // test drives `setAgentConnected` directly, so it establishes that
+      // baseline the way the `init` handler does.
+      useStore.getState().setAgentInbox("agent-1", [], 0);
     }
 
-    it("chat:inbox replaces the queued message list", async () => {
+    it("chat:inbox appends the entry a delta names", async () => {
       await connectedAgent();
 
       simulateServerEvent("agent:1:agent-1", "chat:inbox", {
+        op: "append",
         messages: [
           {
+            id: "d1",
             from: "alice",
             content: "review this",
             timestamp: "t1",
@@ -4988,6 +4995,7 @@ describe("channels", () => {
           },
         ],
         count: 1,
+        inboxSeq: 1,
       });
 
       await vi.waitFor(() => {
@@ -4995,6 +5003,40 @@ describe("channels", () => {
         assert.strictEqual(cache.inbox.length, 1);
         assert.strictEqual(cache.inbox[0].from, "alice");
         assert.strictEqual(cache.pendingMessageCount, 1);
+        assert.strictEqual(cache.inboxSeq, 1);
+      });
+    });
+
+    it("chat:inbox replaces an entry in place on an update delta", async () => {
+      await connectedAgent();
+
+      const entry = {
+        id: "d1",
+        from: "alice",
+        content: "review this",
+        timestamp: "t1",
+        kind: "agent",
+        retrieved: false,
+      };
+      simulateServerEvent("agent:1:agent-1", "chat:inbox", {
+        op: "append",
+        messages: [entry],
+        count: 1,
+        inboxSeq: 1,
+      });
+      // `agents-last-message` took the body: the same entry, now marked.
+      simulateServerEvent("agent:1:agent-1", "chat:inbox", {
+        op: "update",
+        messages: [{ ...entry, retrieved: true }],
+        count: 1,
+        inboxSeq: 2,
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache.inbox.length, 1);
+        assert.strictEqual(cache.inbox[0].retrieved, true);
+        assert.strictEqual(cache.inboxSeq, 2);
       });
     });
 
@@ -5012,8 +5054,10 @@ describe("channels", () => {
 
       // The server only queued it, and says so on `chat:inbox`.
       simulateServerEvent("agent:1:agent-1", "chat:inbox", {
+        op: "append",
         messages: [
           {
+            id: "d1",
             from: "alice",
             content: "queue this",
             timestamp: "t1",
@@ -5022,6 +5066,7 @@ describe("channels", () => {
           },
         ],
         count: 1,
+        inboxSeq: 1,
       });
 
       await vi.waitFor(() => {
@@ -5034,12 +5079,14 @@ describe("channels", () => {
       });
     });
 
-    it("a drain (empty chat:inbox) clears the list", async () => {
+    it("a drain (remove delta) drops exactly the ids it names", async () => {
       await connectedAgent();
 
       simulateServerEvent("agent:1:agent-1", "chat:inbox", {
+        op: "append",
         messages: [
           {
+            id: "d1",
             from: "alice",
             content: "review this",
             timestamp: "t1",
@@ -5047,17 +5094,153 @@ describe("channels", () => {
           },
         ],
         count: 1,
+        inboxSeq: 1,
       });
       simulateServerEvent("agent:1:agent-1", "chat:inbox", {
-        messages: [],
+        op: "remove",
+        ids: ["d1"],
         count: 0,
+        inboxSeq: 2,
       });
 
       await vi.waitFor(() => {
         const cache = useStore.getState().agentsCache["agent-1"];
         assert.deepStrictEqual(cache.inbox, []);
         assert.strictEqual(cache.pendingMessageCount, 0);
+        assert.strictEqual(cache.inboxSeq, 2);
       });
+    });
+
+    it("a missed delta is not applied: the client refetches and converges", async () => {
+      // The frame this client never sees (its sequence is 1, the client's
+      // baseline is 0) — so the frame that follows it is a gap, not a delta.
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await connectedAgent();
+
+        setNextPushResult("agent:1:agent-1", "chat:inbox", {
+          ok: {
+            op: "replace",
+            messages: [
+              {
+                id: "d1",
+                from: "alice",
+                content: "missed",
+                timestamp: "t1",
+                kind: "agent",
+              },
+              {
+                id: "d2",
+                from: "bob",
+                content: "seen",
+                timestamp: "t2",
+                kind: "agent",
+              },
+            ],
+            count: 2,
+            inboxSeq: 2,
+          },
+        });
+
+        simulateServerEvent("agent:1:agent-1", "chat:inbox", {
+          op: "append",
+          messages: [
+            {
+              id: "d2",
+              from: "bob",
+              content: "seen",
+              timestamp: "t2",
+              kind: "agent",
+            },
+          ],
+          count: 2,
+          inboxSeq: 2,
+        });
+
+        await vi.waitFor(() => {
+          const cache = useStore.getState().agentsCache["agent-1"];
+          // Converged on the full list, not on a delta applied to a base that
+          // was missing the frame before it.
+          assert.deepStrictEqual(
+            cache.inbox.map((m) => m.id),
+            ["d1", "d2"],
+          );
+          assert.strictEqual(cache.pendingMessageCount, 2);
+          assert.strictEqual(cache.inboxSeq, 2);
+        });
+        assert.ok(warnSpy.mock.calls.length > 0);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("a delta whose count does not match the list is not applied", async () => {
+      // The sequence continues, but the frame's authoritative count says the
+      // queue holds one entry the delta does not describe: the base list is
+      // wrong, so applying it would leave the client silently short.
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await connectedAgent();
+
+        simulateServerEvent("agent:1:agent-1", "chat:inbox", {
+          op: "append",
+          messages: [
+            {
+              id: "d1",
+              from: "alice",
+              content: "first",
+              timestamp: "t1",
+              kind: "agent",
+            },
+          ],
+          count: 1,
+          inboxSeq: 1,
+        });
+
+        setNextPushResult("agent:1:agent-1", "chat:inbox", {
+          ok: {
+            op: "replace",
+            messages: [
+              {
+                id: "d1",
+                from: "alice",
+                content: "first",
+                timestamp: "t1",
+                kind: "agent",
+              },
+              {
+                id: "d2",
+                from: "bob",
+                content: "second",
+                timestamp: "t2",
+                kind: "agent",
+              },
+            ],
+            count: 2,
+            inboxSeq: 2,
+          },
+        });
+
+        // Names nothing to remove, yet claims the queue holds two entries.
+        simulateServerEvent("agent:1:agent-1", "chat:inbox", {
+          op: "remove",
+          ids: [],
+          count: 2,
+          inboxSeq: 2,
+        });
+
+        await vi.waitFor(() => {
+          const cache = useStore.getState().agentsCache["agent-1"];
+          assert.deepStrictEqual(
+            cache.inbox.map((m) => m.id),
+            ["d1", "d2"],
+          );
+          assert.strictEqual(cache.inboxSeq, 2);
+        });
+        assert.ok(warnSpy.mock.calls.length > 0);
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
 
     it("init populates the inbox and the reply debt from the join payload", async () => {
@@ -5075,6 +5258,7 @@ describe("channels", () => {
             kind: "query",
           },
         ],
+        inboxSeq: 3,
         pendingMessageCount: 1,
         owedReplies: ["bob"],
       });
@@ -5084,19 +5268,22 @@ describe("channels", () => {
         assert.strictEqual(cache.inbox.length, 1);
         assert.strictEqual(cache.inbox[0].from, "bob");
         assert.strictEqual(cache.inbox[0].kind, "query");
+        assert.strictEqual(cache.inboxSeq, 3);
         assert.deepStrictEqual(cache.owedReplies, ["bob"]);
       });
     });
 
-    it("requestInbox fetches and stores the list", async () => {
+    it("requestInbox fetches and stores the list with its sequence", async () => {
       await connectedAgent();
 
       setNextPushResult("agent:1:agent-1", "chat:inbox", {
         ok: {
+          op: "replace",
           messages: [
             { from: "carol", content: "ping", timestamp: "t2", kind: "agent" },
           ],
           count: 1,
+          inboxSeq: 7,
         },
       });
 
@@ -5106,6 +5293,7 @@ describe("channels", () => {
         const cache = useStore.getState().agentsCache["agent-1"];
         assert.strictEqual(cache.inbox.length, 1);
         assert.strictEqual(cache.inbox[0].from, "carol");
+        assert.strictEqual(cache.inboxSeq, 7);
       });
     });
 

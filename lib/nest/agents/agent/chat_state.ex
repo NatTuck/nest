@@ -205,5 +205,12 @@ defmodule Nest.Agents.Agent.ChatState.Live do
             # See the moduledoc. Entries are
             # `%{from: name | nil, content: text, timestamp: DateTime.t(),
             # kind: :agent | :user, mode: mode | nil}` in arrival order.
-            inbox: []
+            inbox: [],
+            # The number of `chat:inbox` frames this agent has emitted (issue
+            # #27). Each frame carries the value it just took, so a client can
+            # tell a contiguous delta stream from one it fell behind on and
+            # resync; see `Nest.Agents.Agent.Broadcasts.inbox_append/2`. Reset
+            # with the queue on restart, which is why a *lower* sequence is
+            # treated as a gap by the client too.
+            inbox_seq: 0
 end
