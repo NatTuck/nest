@@ -329,12 +329,21 @@ end
 # the whole channel directory. Same class as the TOML warm-up above, and the
 # same remedy: pay it here, before any deadline.
 #
-# The value is an integer on purpose. `inspect/1` dispatches on the argument's
-# type, so warming with the wrong type would load `Inspect.Integer`'s siblings
-# and leave the one the guards actually use cold — the guards inspect integers
-# (`context-limit`), strings (`probe-base-url`, `tags`) and maps (`multi-modal`),
-# so all three protocols are warmed below.
-for value <- [0, "", %{}] do
+# **The honest limit, so this does not overclaim.** The *cost* is measured; the
+# gate failure it is meant to explain was never reproduced — at the failing seed
+# the channel directory plus controllers is green **with and without** this
+# block. So the warm-up rests on the measured load cost, not on a before/after,
+# and if that test ever fails again this diagnosis is falsified: reproduce at the
+# suite's real concurrency rather than with synthetic burners.
+#
+# The values are one per type a config value can actually have, because
+# `inspect/1` dispatches on the argument's type. A TOML file or a GUI JSON
+# payload can carry a string, an integer, a float, a boolean, a list, a map or
+# null, so all of those protocols are warmed below — an earlier version warmed
+# only Integer/BitString/Map and left `Inspect.List` cold, while
+# `providers_test.exs` refuses `api_key = []` and the `tags` / `multi-modal`
+# refusals inspect lists. (A tuple cannot arrive from either source.)
+for value <- [0, 0.5, "", true, [], %{}, nil] do
   try do
     Nest.DotConfig.FieldValidation.positive_integer(value, "warmup", "warmup")
   rescue
@@ -347,7 +356,16 @@ end
 # this check passing over a cold chain.
 not_loaded =
   Enum.reject(
-    [Inspect, Inspect.Opts, Inspect.Integer, Inspect.BitString, Inspect.Map],
+    [
+      Inspect,
+      Inspect.Opts,
+      Inspect.Integer,
+      Inspect.Float,
+      Inspect.BitString,
+      Inspect.Atom,
+      Inspect.List,
+      Inspect.Map
+    ],
     &:code.is_loaded/1
   )
 

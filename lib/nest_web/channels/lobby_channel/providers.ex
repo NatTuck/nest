@@ -63,8 +63,18 @@ defmodule NestWeb.LobbyChannel.Providers do
     # channel process died and the operator got no reply at all. That is what
     # made a bad `probe-base-url` strictly worse than a refused one: the write
     # had already landed, and the only signal was a dead channel.
+    # The `reason` stays `failed_to_save` for wire compatibility, but it is not
+    # the truth: by the time this fires the write *has* landed, and it is the
+    # reload (`Models.rescan/0`) that died. The `message` says so, and the client
+    # renders it in preference to the code.
     :exit, _ ->
-      {:reply, {:error, %{"reason" => "failed_to_save"}}, socket}
+      {:reply,
+       {:error,
+        %{
+          "reason" => "failed_to_save",
+          "message" =>
+            "the providers were written to local.toml, but reloading the model cache failed"
+        }}, socket}
   end
 
   def save(_payload, socket) do
@@ -100,7 +110,7 @@ defmodule NestWeb.LobbyChannel.Providers do
   end
 
   defp provider_from_map(m) do
-    name = m["name"]
+    name = provider_name(m["name"])
 
     %Provider{
       name: name,
@@ -132,6 +142,10 @@ defmodule NestWeb.LobbyChannel.Providers do
   #     defined in one place rather than drifting apart when one is added.
   #   * `tags` — preserved by the GUI, so a malformed list can arrive from a
   #     client that built one itself.
+  #   * `base_url` — a text field that sends the raw string, so a cleared field
+  #     arrives as `""` (the GUI now sends `null` for an empty one, matching
+  #     `probe_base_url`). A channel client can send a non-binary, which used to
+  #     be persisted and then raise in every chat to that provider.
   #   * `api_key` — not a value rule: a reference-shaped key (`${ENV}` / `file:`)
   #     is resolved at load by `KeyValidation`, and the password field can hold
   #     one whose target does not exist.
@@ -142,6 +156,7 @@ defmodule NestWeb.LobbyChannel.Providers do
   # read is on `Models.init/1`'s boot path.
   defp validated_fields(m, name) do
     %{
+      base_url: base_url(m["base_url"], name),
       tags: tags(m["tags"], name),
       timeout_seconds: timeout_seconds(m["timeout_seconds"], name),
       default_context_limit: default_context_limit(m["default_context_limit"], name),
@@ -151,6 +166,36 @@ defmodule NestWeb.LobbyChannel.Providers do
       expose_models: if(is_boolean(m["expose_models"]), do: m["expose_models"], else: false),
       probe_multimodal: parse_probe_multimodal(m["probe_multimodal"])
     }
+  end
+
+  # The provider's name is its key in `local.toml` and how it is addressed
+  # everywhere, so an absent or blank one is not a provider. Both used to be
+  # accepted, and they collapsed onto the *same* key — `{"name": ""}` and
+  # `{"name": null}` both wrote `[providers.""]` — so two different payloads
+  # produced one unaddressable provider. The GUI's "add provider" starts a row at
+  # `name: ""`, so refusing it means the operator names the provider before
+  # saving, exactly as the model-name rule already requires.
+  #
+  # The reader is left alone: a TOML key is always a string, so there is no
+  # non-binary shape to refuse, and an empty one reaches no raising consumer.
+  defp provider_name(name) when is_binary(name) and name != "", do: name
+
+  defp provider_name(name) do
+    raise "invalid provider name #{inspect(name)}: must be a non-empty string"
+  end
+
+  # `base-url` is the last field of this class, and the same shape as
+  # `probe-base-url` below: neither side validated it, so the two *agreed* and
+  # there was no drift — but the value is dereferenced on every chat, and a
+  # non-binary raises `FunctionClauseError` in `String.trim_trailing/2`
+  # (`OpenAIClient.normalize_endpoint/2`, `AnthropicClient`, `MultimodalProbe`)
+  # and in `EndpointProbe.probe/1`. A channel client sending `7` had it
+  # persisted; a browser cannot send `7`, but it does send `""` for a cleared
+  # field, and the rule must not rest on one client's coercion.
+  defp base_url(nil, _provider_name), do: nil
+
+  defp base_url(url, provider_name) do
+    ModelValidation.validate_base_url(url, provider_name)
   end
 
   # `probe-base-url` is the field that made the class-closure claim false: the

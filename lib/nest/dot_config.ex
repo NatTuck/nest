@@ -529,8 +529,8 @@ defmodule Nest.DotConfig do
   defp parse_provider(name, data) do
     %Provider{
       name: name,
-      base_url: Map.get(data, "base-url"),
-      api_key: Map.get(data, "api-key"),
+      base_url: ModelValidation.validate_base_url(Map.get(data, "base-url"), name),
+      api_key: ModelValidation.validate_api_key(Map.get(data, "api-key"), name),
       protocol: Map.get(data, "protocol", "openai"),
       auto_models: Map.get(data, "auto-models", false),
       tags: parse_tags(Map.get(data, "tags"), name),
@@ -546,15 +546,24 @@ defmodule Nest.DotConfig do
     }
   end
 
-  # Parses the provider's explicit `models` list, returning `[]`
-  # when the key is absent or malformed.
+  # Parses the provider's explicit `models` list: absent means none, a list is
+  # parsed, and anything else raises.
+  #
+  # A malformed value used to fall through to `[]`, silently dropping the whole
+  # model list — the opposite of the "a bad value is a startup error" convention
+  # the rest of this module follows. The write side already raised on it
+  # (`Enum.map/2` on a non-list), so the two sides agree now.
   defp parse_provider_models(data, provider_name) do
     case Map.get(data, "models") do
+      nil ->
+        []
+
       models_list when is_list(models_list) ->
         Enum.map(models_list, &parse_model(&1, provider_name))
 
-      _ ->
-        []
+      other ->
+        raise "Provider #{provider_name}: invalid models #{inspect(other)}: " <>
+                "must be an array of tables"
     end
   end
 

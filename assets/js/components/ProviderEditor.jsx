@@ -76,7 +76,7 @@ export function ProviderEditor({ provider, onChange, onRemove }) {
           <input
             type="text"
             value={provider.base_url ?? ""}
-            onChange={(e) => set("base_url", e.target.value)}
+            onChange={(e) => set("base_url", e.target.value || null)}
             className={inputCls}
             aria-label="Base URL"
           />

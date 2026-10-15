@@ -447,6 +447,10 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       assert toml =~ "acme"
       refute toml =~ "default-context-limit"
       refute toml =~ "timeout"
+      # `base-url` is a substring of `probe-base-url`, so this asserts that
+      # *neither* key was written — which is what the test is about.
+      refute toml =~ "base-url"
+      refute toml =~ "api-key"
     end
 
     test "replies invalid_payload for a probe-base-url the reader rejects", %{
@@ -470,6 +474,78 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
         ref =
           push(socket, "save_providers", %{
             "providers" => [%{"name" => "acme", "auto_models" => false, "probe_base_url" => bad}]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
+        refute File.exists?(local_file)
+      end
+    end
+
+    test "replies invalid_payload for a base-url the reader rejects", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # The last field of this class, and the same shape as `probe-base-url`
+      # above: neither side validated it, so the two *agreed* and no reader/
+      # writer drift existed — but the value is dereferenced on every chat, and a
+      # non-binary raises `FunctionClauseError` in `String.trim_trailing/2`
+      # (`OpenAIClient.normalize_endpoint/2`, `AnthropicClient`,
+      # `MultimodalProbe`) and in `EndpointProbe.probe/1`, plus an
+      # `ArgumentError` on `<>` in `ChatModel.discovery_url/1`.
+      #
+      # `7` is channel-reachable and used to be persisted. `""` is what the
+      # browser sends for a cleared field; it does not raise, but it is not a URL
+      # either, and this field's sibling `probe-base-url` already refuses it.
+      for bad <- [7, "", [], %{}] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [%{"name" => "acme", "auto_models" => false, "base_url" => bad}]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
+        refute File.exists?(local_file)
+      end
+    end
+
+    test "still saves a base-url and an api-key that are text", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # The premise of the base-url refusal: a non-empty URL is exactly what the
+      # field is for, so the guard must not be refusing the field itself.
+      Mimic.expect(Nest.Models, :rescan, fn -> :ok end)
+
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [
+            %{
+              "name" => "acme",
+              "auto_models" => false,
+              "base_url" => "https://acme.example/v1",
+              "api_key" => "sk-literal"
+            }
+          ]
+        })
+
+      assert_reply ref, :ok, %{}, 1_000
+
+      toml = File.read!(local_file)
+      assert toml =~ ~s(base-url = "https://acme.example/v1")
+      assert toml =~ ~s(api-key = "sk-literal")
+    end
+
+    test "replies invalid_payload for a provider name that is blank or absent", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # `{"name": ""}` and `{"name": null}` used to collapse onto the *same* key
+      # — `[providers.""]` — so two different payloads produced one
+      # unaddressable provider. The GUI's "add provider" starts a row at
+      # `name: ""`, so this is what makes the operator name it before saving.
+      for bad <- ["", nil, 7] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [%{"name" => bad, "auto_models" => false}]
           })
 
         assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000

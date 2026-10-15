@@ -127,6 +127,31 @@ defmodule Nest.DotConfig.ModelValidation do
   end
 
   @doc """
+  The provider's `base-url`, or a raise. `nil` means unset.
+
+  Also called on the write side. This is the same shape of hole as
+  `probe-base-url` below, and the last one found: neither side validated it, so
+  the two *agreed* and no reader/writer drift existed — but the value is
+  dereferenced on every chat, and a non-binary raises `FunctionClauseError` in
+  `String.trim_trailing/2` (`OpenAIClient.normalize_endpoint/2`,
+  `AnthropicClient`, `MultimodalProbe`) and in `EndpointProbe.probe/1`, plus an
+  `ArgumentError` on `<>` in `ChatModel.discovery_url/1`. A channel client could
+  send `7` and have it persisted.
+
+  Non-empty rather than "any binary", so this field and its sibling
+  `probe-base-url` agree: `""` is not a URL, and this module's convention is that
+  a bad value is a **startup** error rather than something that surfaces on the
+  first request. `ProviderEditor` sends `null` for a cleared field, so clearing
+  it means "unset" rather than "refused".
+  """
+  @spec validate_base_url(term(), String.t() | nil) :: String.t() | nil
+  def validate_base_url(nil, _provider_name), do: nil
+
+  def validate_base_url(url, provider_name) do
+    FieldValidation.non_empty_string(url, provider_name, "base-url")
+  end
+
+  @doc """
   The provider's `probe-base-url`, or a raise. `nil` means unset.
 
   Also called on the write side, and it is the field that made the "the class is
@@ -152,11 +177,14 @@ defmodule Nest.DotConfig.ModelValidation do
   key *resolves* is a separate question answered by
   `Nest.DotConfig.KeyValidation` on the read side.
 
-  A non-binary is refused because the reader tolerates one — `KeyValidation` only
-  acts `when is_binary(key)`, so boot succeeds — while `resolve_api_key/1` calls
-  `String.starts_with?/2` on it at chat time and raises `FunctionClauseError`.
+  A non-binary is refused because a non-binary that reaches the resolver raises:
+  `resolve_api_key/1` calls `String.starts_with?/2` on it, so a hand-written
+  `api-key = 7` used to boot and then raise `FunctionClauseError` at chat time.
+  Both sides now call this, so that is a startup error instead.
   """
-  @spec validate_api_key(term(), String.t() | nil) :: String.t()
+  @spec validate_api_key(term(), String.t() | nil) :: String.t() | nil
+  def validate_api_key(nil, _provider_name), do: nil
+
   def validate_api_key(key, provider_name) do
     FieldValidation.string(key, provider_name, "api-key")
   end

@@ -30,7 +30,7 @@ export function emptyProvider() {
   return {
     id: makeId(),
     name: "",
-    base_url: "",
+    base_url: null,
     api_key: "",
     protocol: "openai",
     auto_models: false,

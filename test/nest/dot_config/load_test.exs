@@ -278,6 +278,88 @@ defmodule Nest.DotConfig.LoadTest do
     end
   end
 
+  describe "provider base-url" do
+    # The last field of this class, and the same shape as `probe-base-url`
+    # above: neither side validated it, so the two *agreed* and no drift
+    # existed — but the value is dereferenced on every chat, and a non-binary
+    # raises `FunctionClauseError` in `String.trim_trailing/2`
+    # (`OpenAIClient.normalize_endpoint/2`) and in `EndpointProbe.probe/1`.
+    test "keeps a non-empty binary, is nil when absent, and raises otherwise" do
+      assert load_base_url(~s(base-url = "https://acme.example/v1")) ==
+               "https://acme.example/v1"
+
+      # Absent means absent: with no `base-url` key the value is `nil`, not an
+      # error.
+      assert load_base_url(~s(api-key = "none")) == nil
+
+      for {label, line} <- [
+            {"empty", ~s(base-url = "")},
+            {"number", "base-url = 7"},
+            {"table", "base-url = { a = 1 }"}
+          ] do
+        path = tmp_toml_file("base_url_#{label}")
+        File.write!(path, "[providers.acme]\n" <> line <> "\n")
+
+        assert_raise RuntimeError, ~r/Provider acme: invalid base-url/, fn ->
+          DotConfig.load(path)
+        end
+      end
+    end
+  end
+
+  describe "provider api-key" do
+    # The read side passed a non-binary through — `KeyValidation` only acts
+    # `when is_binary(key)` — so a hand-written `api-key = 7` booted and then
+    # raised `FunctionClauseError` in `String.starts_with?/2` inside
+    # `resolve_api_key/1` at chat time. Both sides call the rule now, so it is a
+    # startup error instead.
+    test "keeps text, is nil when absent, and raises on a non-binary" do
+      # The premise: every legitimate shape of a key is text. An empty string and
+      # the documented `api-key = "none"` opt-out are both real, and refusing
+      # them would break working configs.
+      assert load_api_key(~s(api-key = "sk-literal")) == "sk-literal"
+      assert load_api_key(~s(api-key = "")) == ""
+      assert load_api_key(~s(api-key = "none")) == "none"
+      assert load_api_key(~s(base-url = "https://acme.example/v1")) == nil
+
+      for {label, line} <- [
+            {"number", "api-key = 7"},
+            {"table", "api-key = { a = 1 }"}
+          ] do
+        path = tmp_toml_file("api_key_#{label}")
+        File.write!(path, "[providers.acme]\n" <> line <> "\n")
+
+        assert_raise RuntimeError, ~r/Provider acme: invalid api-key/, fn ->
+          DotConfig.load(path)
+        end
+      end
+    end
+  end
+
+  describe "provider models" do
+    # A malformed `models` used to fall through to `[]`, silently dropping the
+    # whole model list — the opposite of this module's "a bad value is a startup
+    # error" convention. The write side already raised on it, so the two agree
+    # now.
+    test "is empty when absent, and raises on a value that is not an array of tables" do
+      assert load_models(~s(base-url = "https://acme.example/v1")) == []
+      assert length(load_models(~s(models = [{ name = "m" }]))) == 1
+
+      for {label, line} <- [
+            {"string", ~s(models = "abc")},
+            {"number", "models = 7"},
+            {"table", ~s(models = { name = "m" })}
+          ] do
+        path = tmp_toml_file("models_#{label}")
+        File.write!(path, "[providers.acme]\n" <> line <> "\n")
+
+        assert_raise RuntimeError, ~r/Provider acme: invalid models/, fn ->
+          DotConfig.load(path)
+        end
+      end
+    end
+  end
+
   # --- fixtures ---
 
   defp load_probe_base_url(toml) do
@@ -285,6 +367,29 @@ defmodule Nest.DotConfig.LoadTest do
     File.write!(path, toml)
     {:ok, config} = DotConfig.load(path)
     config.providers["acme"].probe_base_url
+  end
+
+  # Both of these take a bare `key = value` line and wrap it in a provider
+  # table, so a premise case and a refusal case share one shape.
+  defp load_base_url(line) do
+    path = tmp_toml_file("base_url_ok")
+    File.write!(path, "[providers.acme]\n" <> line <> "\n")
+    {:ok, config} = DotConfig.load(path)
+    config.providers["acme"].base_url
+  end
+
+  defp load_api_key(line) do
+    path = tmp_toml_file("api_key_ok")
+    File.write!(path, "[providers.acme]\n" <> line <> "\n")
+    {:ok, config} = DotConfig.load(path)
+    config.providers["acme"].api_key
+  end
+
+  defp load_models(line) do
+    path = tmp_toml_file("models_ok")
+    File.write!(path, "[providers.acme]\n" <> line <> "\n")
+    {:ok, config} = DotConfig.load(path)
+    config.providers["acme"].models
   end
 
   defp load_model_context_limit(line) do
