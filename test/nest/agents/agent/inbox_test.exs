@@ -1,9 +1,11 @@
 defmodule Nest.Agents.Agent.InboxTest do
   @moduledoc """
-  Tests for the agent inbox: the entry shape, immediate delivery to an idle
-  agent, queueing while busy (an `agents-send` from another agent and a
-  human chat message), the combined drain with its one-mode rule, the
-  over-cap scratch-file offload, and the error paths.
+  Tests for the agent inbox: immediate delivery to an idle agent, queueing
+  while busy (an `agents-send` from another agent and a human chat message),
+  the combined drain with its one-mode rule, the reply obligation, and the
+  error paths. The LLM-facing rendering of a drain batch — the labels, the
+  bare notices and the over-cap scratch-file pointer — is
+  `Nest.Agents.Agent.InboxRenderTest`'s.
   """
 
   use Nest.DataCase, async: true
@@ -17,9 +19,6 @@ defmodule Nest.Agents.Agent.InboxTest do
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
-
-  # A big-enough body to exceed the default 8000-token cap.
-  @oversized String.duplicate("hello world ", 4_000)
 
   setup do
     # Modes `plan` and `review` on top of the `chat` default, so the
@@ -155,35 +154,6 @@ defmodule Nest.Agents.Agent.InboxTest do
 
     assert {:noproc, _reason} =
              catch_exit(Agent.deliver_internal(gone, "agents-batch", "x", :notice))
-  end
-
-  test "an over-cap combined message is offloaded to a scratch file and replaced by a pointer", %{
-    pid: pid
-  } do
-    set_status(pid, :streaming)
-
-    assert {:ok, :queued} = Agent.deliver_message(pid, "alice", @oversized)
-
-    Agent.stop_chat(pid, self())
-
-    # The drain appends the pointer before it consumes the entry, so the
-    # consume frame is the fence for the pointer being in the transcript.
-    assert_receive {:chat_inbox, %{count: 0}}, 1_000
-    # allowlist: snapshot — messages + tmp_path
-    state = :sys.get_state(pid, 1_000)
-
-    pointer =
-      Enum.find(
-        user_texts(state.chat_state.messages),
-        &(&1 =~ "queued message" and &1 =~ "saved to")
-      )
-
-    assert pointer =~ "You have 1 queued message"
-
-    [path] = Path.wildcard(Path.join(state.tmp_path, "agent-inbox-*.txt"))
-    assert File.read!(path) =~ "hello world"
-
-    wait_idle(pid)
   end
 
   test "delivery to a broken agent returns an error and queues nothing", %{pid: pid} do
@@ -526,31 +496,6 @@ defmodule Nest.Agents.Agent.InboxTest do
 
         assert delivered == expected_modes, label
       end
-    end
-
-    test "an over-cap human message is offloaded and delivered as a pointer", %{pid: pid} do
-      set_status(pid, :streaming)
-      assert :ok = Agent.chat(pid, @oversized, "plan", "alice")
-      assert_receive {:chat_inbox, %{count: 1}}, 1_000
-
-      Agent.stop_chat(pid, self())
-
-      # The drain appends the pointer before it consumes the entry, so the
-      # consume frame is the fence for the pointer being in the transcript.
-      assert_receive {:chat_inbox, %{count: 0}}, 1_000
-      # allowlist: snapshot — messages + tmp_path
-      state = :sys.get_state(pid, 1_000)
-      pointer = Enum.find(user_texts(state.chat_state.messages), &(&1 =~ "queued message"))
-
-      # The human's mode still rides the delivered message, and the oversized
-      # content itself is in the scratch file.
-      assert pointer =~ "[mode: plan]"
-      assert pointer =~ "You have 1 queued message"
-
-      [path] = Path.wildcard(Path.join(state.tmp_path, "agent-inbox-*.txt"))
-      assert File.read!(path) =~ "hello world"
-
-      wait_idle(pid)
     end
 
     test "a human message drained behind a busy turn is tagged as the human's own words", %{
