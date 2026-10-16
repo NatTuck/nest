@@ -46,6 +46,15 @@ defmodule Nest.Agents.Agent.Machine.Response do
   # it is refused rather than truncated.
   @max_cover_length 100
 
+  # The refusal a legacy `focus` argument gets. It has to teach the replacement
+  # in full: the caller holding this argument is running the tool schema from
+  # before the split, so it cannot see the new descriptions, and this message is
+  # the only place the new contract can reach it.
+  @legacy_focus_reason "`focus` no longer exists. Pass `cover` (short guidance, at most " <>
+                         "100 characters, naming what the summary must cover) and/or " <>
+                         "`preserve` (literal content to carry into the summary message " <>
+                         "verbatim) instead."
+
   @empty_nudges [
     "You gave an empty response, which you shouldn't do. What were you saying?",
     "You did it again — another empty response with no actual text. " <>
@@ -282,11 +291,23 @@ defmodule Nest.Agents.Agent.Machine.Response do
   # means "not given"; a present value of the wrong type is refused rather than
   # ignored, because ignoring it would silently discard content the agent
   # believes it preserved.
+  #
+  # `focus` is refused rather than ignored for the same reason, and it is the
+  # case that actually happens: an agent that is already running holds the tool
+  # schema it was started with (the list is only rebuilt on a workspace change
+  # or a compaction), so its first `context-compact` call after this deploy
+  # still passes `focus`. Dropping that argument would lose the material the
+  # agent wrote to survive the compaction — silently, and once — which is the
+  # loss this contract exists to prevent. Refusing costs one iteration and the
+  # message teaches the replacement, which the stale schema cannot.
   defp compact_arguments(%ToolCall{arguments: args}) when is_map(args) do
     cover = Map.get(args, "cover")
     preserve = Map.get(args, "preserve")
 
     cond do
+      Map.has_key?(args, "focus") ->
+        {:refuse, @legacy_focus_reason}
+
       not optional_string?(cover) ->
         {:refuse, "`cover` must be a string, got #{inspect(cover)}"}
 

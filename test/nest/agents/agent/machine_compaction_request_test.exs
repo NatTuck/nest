@@ -184,6 +184,36 @@ defmodule MachineCompactionRequestTest do
       assert content =~ "`preserve` must be a string"
     end
 
+    test "a legacy focus argument is refused, not ignored" do
+      # An agent that is already running holds the tool schema it was started
+      # with — the list is only rebuilt on a workspace change or a compaction —
+      # so its first `context-compact` call after this deploy still passes
+      # `focus`. Ignoring it would lose that guidance silently, once, which is
+      # the loss this contract exists to prevent. The refusal costs one
+      # iteration, and its message is the only place the new contract can reach
+      # a caller that cannot see the new descriptions.
+      cases = [
+        %{"focus" => "keep the API decisions"},
+        %{"focus" => "keep the API decisions", "cover" => "the API decisions"}
+      ]
+
+      for arguments <- cases do
+        {:ok, actions, next} =
+          Response.dispatch(state_at(:generating), response(tool_calls: [tool_call(arguments)]))
+
+        assert next.entry == nil, "expected no compaction staged for #{inspect(arguments)}"
+        refute Enum.any?(actions, &match?({:append, {:user, _}}, &1))
+        assert :iterate in actions
+
+        {:append, {:tool, %Tool{parts: [%Part.ToolResult{content: content, is_error: true}]}}} =
+          Enum.find(actions, &match?({:append, {:tool, _}}, &1))
+
+        assert content =~ "`focus` no longer exists"
+        assert content =~ "`cover`"
+        assert content =~ "`preserve`"
+      end
+    end
+
     test "preserve reaches the commit data and does not survive the turn" do
       {:ok, _actions, staged} =
         Response.dispatch(
