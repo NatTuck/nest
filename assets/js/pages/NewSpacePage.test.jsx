@@ -41,6 +41,11 @@ vi.mock("../channels", async () => {
 });
 
 import { NewSpacePage, validateNewSpaceForm } from "./NewSpacePage";
+import {
+  DEFAULT_SANDBOX_BACKEND,
+  SANDBOX_BACKENDS,
+  sandboxBackendHelp,
+} from "../utils/newSpaceForm";
 
 function SpaceRoute() {
   const { spaceSlug } = useParams();
@@ -125,13 +130,16 @@ describe("validateNewSpaceForm", () => {
   });
 
   it("returns null when all fields are valid", () => {
-    expect(
-      validateNewSpaceForm({
-        name: "My Space",
-        selectedBlueprint: "1",
-        selectedModel: "gpt-4o",
-      }),
-    ).toBeNull();
+    for (const sandboxBackend of SANDBOX_BACKENDS) {
+      expect(
+        validateNewSpaceForm({
+          name: "My Space",
+          selectedBlueprint: "1",
+          selectedModel: "gpt-4o",
+          sandboxBackend,
+        }),
+      ).toBeNull();
+    }
   });
 
   it("requires a workspace path when the vocation needs one", () => {
@@ -140,6 +148,7 @@ describe("validateNewSpaceForm", () => {
         name: "My Space",
         selectedBlueprint: "2",
         selectedModel: "gpt-4o",
+        sandboxBackend: "bwrap",
         requiresWorkspace: true,
         workspacePath: "",
       }),
@@ -152,10 +161,38 @@ describe("validateNewSpaceForm", () => {
         name: "My Space",
         selectedBlueprint: "2",
         selectedModel: "gpt-4o",
+        sandboxBackend: "bwrap",
         requiresWorkspace: true,
         workspacePath: "/tmp/proj",
       }),
     ).toBeNull();
+  });
+
+  it("rejects a sandbox backend that isn't one of the three", () => {
+    const base = {
+      name: "My Space",
+      selectedBlueprint: "1",
+      selectedModel: "gpt-4o",
+    };
+    expect(
+      validateNewSpaceForm({ ...base, sandboxBackend: "kubernetes" }),
+    ).toBe("Please select a sandbox backend");
+    expect(validateNewSpaceForm(base)).toBe("Please select a sandbox backend");
+  });
+});
+
+describe("sandbox backends", () => {
+  it("defaults to bwrap and offers it first", () => {
+    expect(SANDBOX_BACKENDS).toEqual(["bwrap", "docker", "none"]);
+    expect(DEFAULT_SANDBOX_BACKEND).toBe("bwrap");
+  });
+
+  it("describes each backend and says none can't enforce the caps", () => {
+    for (const backend of SANDBOX_BACKENDS) {
+      expect(sandboxBackendHelp(backend)).toBeTruthy();
+    }
+    expect(sandboxBackendHelp("docker")).toMatch(/docker/i);
+    expect(sandboxBackendHelp("none")).toMatch(/cannot be enforced/i);
   });
 });
 
@@ -212,6 +249,28 @@ describe("NewSpacePage", () => {
     ).toBeInTheDocument();
 
     expect(document.title).toBe("vampire · New space");
+  });
+
+  it("offers the three sandbox backends with bwrap selected by default", () => {
+    renderPage();
+
+    const select = screen.getByLabelText("Sandbox");
+    expect(select).toHaveValue(DEFAULT_SANDBOX_BACKEND);
+    for (const backend of SANDBOX_BACKENDS) {
+      expect(screen.getByRole("option", { name: backend })).toBeInTheDocument();
+    }
+    expect(screen.getByText(sandboxBackendHelp("bwrap"))).toBeInTheDocument();
+  });
+
+  it("shows the selected backend's help text, including that none can't enforce caps", () => {
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText("Sandbox"), {
+      target: { value: "none" },
+    });
+
+    expect(screen.getByText(/cannot be enforced/i)).toBeInTheDocument();
+    expect(screen.queryByText(sandboxBackendHelp("bwrap"))).toBeNull();
   });
 
   it("shows the selected blueprint's root agent vocation", () => {
@@ -302,7 +361,7 @@ describe("NewSpacePage", () => {
     expect(screen.getByText("A grading space.")).toBeInTheDocument();
   });
 
-  it("calls createSpace with the space name, blueprint_id, and workspace_path on valid submit", () => {
+  it("calls createSpace with the space name, blueprint_id, workspace_path, and sandbox_backend on valid submit", () => {
     renderPage();
 
     fireEvent.change(screen.getByLabelText("Space Name"), {
@@ -316,6 +375,9 @@ describe("NewSpacePage", () => {
     });
     fireEvent.change(screen.getByLabelText("Workspace Path"), {
       target: { value: "/tmp/proj" },
+    });
+    fireEvent.change(screen.getByLabelText("Sandbox"), {
+      target: { value: "docker" },
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
@@ -335,6 +397,7 @@ describe("NewSpacePage", () => {
       name: "My Project",
       blueprint_id: 2,
       workspace_path: "/tmp/proj",
+      sandbox_backend: "docker",
     });
   });
 
@@ -454,6 +517,7 @@ describe("NewSpacePage", () => {
       screen.getByRole("button", { name: "Creating Space..." }),
     ).toBeDisabled();
     expect(screen.getByLabelText("Space Name")).toBeDisabled();
+    expect(screen.getByLabelText("Sandbox")).toBeDisabled();
   });
 
   it("renders a fallback model option when models is empty", () => {

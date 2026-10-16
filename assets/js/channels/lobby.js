@@ -184,6 +184,7 @@ export function createSpace(model, vocationSlug, onOk, onError, opts = {}) {
   if (opts.blueprint_id) payload.blueprint_id = opts.blueprint_id;
   if (opts.agent_name) payload.agent_name = opts.agent_name;
   if (opts.workspace_path) payload.workspace_path = opts.workspace_path;
+  if (opts.sandbox_backend) payload.sandbox_backend = opts.sandbox_backend;
   if (opts.shared) payload.shared = true;
 
   lobbyChannel

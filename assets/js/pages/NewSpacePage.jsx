@@ -21,7 +21,10 @@ import { RescanButton } from "../components/RescanButton";
 import { describeCreateError } from "../utils/chatErrors.js";
 import { vocationRequiresWorkspace } from "../utils/vocationWorkspace";
 import {
+  DEFAULT_SANDBOX_BACKEND,
+  SANDBOX_BACKENDS,
   resolveThinkingOptions,
+  sandboxBackendHelp,
   validateNewSpaceForm,
 } from "../utils/newSpaceForm";
 
@@ -43,6 +46,7 @@ export function NewSpacePage() {
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedThinking, setSelectedThinking] = useState("medium");
   const [workspacePath, setWorkspacePath] = useState("");
+  const [sandboxBackend, setSandboxBackend] = useState(DEFAULT_SANDBOX_BACKEND);
   const [isCreating, setIsCreating] = useState(false);
   const [isRescanning, setIsRescanning] = useState(false);
   const [error, setError] = useState(null);
@@ -93,6 +97,7 @@ export function NewSpacePage() {
       name,
       selectedBlueprint,
       selectedModel,
+      sandboxBackend,
       requiresWorkspace,
       workspacePath,
     });
@@ -131,6 +136,7 @@ export function NewSpacePage() {
         name: name.trim(),
         blueprint_id: parseInt(selectedBlueprint, 10),
         workspace_path: requiresWorkspace ? workspacePath.trim() : undefined,
+        sandbox_backend: sandboxBackend,
       },
     );
   };
@@ -296,6 +302,32 @@ export function NewSpacePage() {
             </p>
           </div>
         )}
+
+        {/* Sandbox backend (chosen once at creation, immutable after) */}
+        <div className="mb-6">
+          <label
+            htmlFor="space-sandbox-backend"
+            className="block text-sm font-medium text-gray-700 mb-2"
+          >
+            Sandbox
+          </label>
+          <select
+            id="space-sandbox-backend"
+            value={sandboxBackend}
+            onChange={(e) => setSandboxBackend(e.target.value)}
+            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+            disabled={isCreating}
+          >
+            {SANDBOX_BACKENDS.map((backend) => (
+              <option key={backend} value={backend}>
+                {backend}
+              </option>
+            ))}
+          </select>
+          <p className="mt-2 text-sm text-gray-500">
+            {sandboxBackendHelp(sandboxBackend)}
+          </p>
+        </div>
 
         {/* Create button */}
         <button

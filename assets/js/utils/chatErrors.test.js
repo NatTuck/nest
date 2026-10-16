@@ -90,6 +90,20 @@ describe("describeCreateError", () => {
     expect(describeCreateError({ reason: "invalid_agent_name" })).toMatch(
       /letters, numbers, dashes and underscores/i,
     );
+    expect(describeCreateError({ reason: "scratch_name_in_use" })).toMatch(
+      /none/i,
+    );
+  });
+
+  it("names the other space holding the scratch name", () => {
+    const message = describeCreateError({
+      reason: "scratch_name_in_use",
+      space_name: "quiet-otter",
+    });
+
+    expect(message).toContain("quiet-otter");
+    // Two `none`-backend spaces share the host /tmp, so their names collide.
+    expect(message).toMatch(/\/tmp/);
   });
 
   it("words the workspace refusals exactly as the edit-agent path does", () => {

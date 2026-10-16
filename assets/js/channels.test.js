@@ -4082,6 +4082,25 @@ describe("channels", () => {
       });
     });
 
+    it("should include sandbox_backend in payload when provided", async () => {
+      const capturePromise = captureNextPush("lobby", "create_space");
+      setNextPushResult("lobby", "create_space", {
+        ok: { space_id: 1, name: "new-agent" },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length >= 0, true);
+      });
+
+      createSpace("gpt-4", 1, () => {}, undefined, {
+        sandbox_backend: "none",
+      });
+
+      const captured = await capturePromise;
+      assert.strictEqual(captured.sandbox_backend, "none");
+    });
+
     it("should include vocation slug in payload when provided", async () => {
       setNextPushResult("lobby", "create_space", {
         ok: { space_id: 1, name: "new-agent" },
