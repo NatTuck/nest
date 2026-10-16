@@ -24,6 +24,13 @@
  * dot's only input. Without it a stopped agent keeps the neutral `idle` that a
  * row with no live process is given by default — the same lie `catalog.js`'s
  * `applyAgentStatuses` documents for `model_missing`.
+ *
+ * `connecting` is the same kind of entry from the client's side (#52): the
+ * state between asking for an agent's channel and hearing back, which
+ * `setAgentConnecting` writes before the server has said anything about the
+ * agent at all. It is a known state, so it must not fall through to the
+ * unknown-status dot: that indicator means "this client does not recognise the
+ * value", which cannot be true of a value this client wrote.
  */
 
 /** Dot classes and label for each known status. */
@@ -46,6 +53,14 @@ const STATUS_DOTS = {
   // Flat, and outside both the idle grey and the unknown violet: a stopped
   // agent is a fact to read, like a blocked one, but it is not a stall.
   stopped: { className: "bg-slate-500", label: "Stopped" },
+  // The client's own join state (`setAgentConnecting`), which no server
+  // broadcast produces. Hollow and pulsing — in flight, with nothing reported
+  // yet — and deliberately unfilled, so it cannot be mistaken for the settled
+  // grey of `idle`.
+  connecting: {
+    className: "border-2 border-gray-400 animate-pulse",
+    label: "Connecting",
+  },
 };
 
 /**

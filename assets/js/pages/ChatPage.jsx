@@ -299,6 +299,18 @@ export function ChatPage() {
     compacting,
   );
 
+  // The transcript's loading window: the channel is joined (or joining) but no
+  // row has arrived yet, so the conversation is on its way rather than absent.
+  // The agent's active list always contains at least its system row, so an
+  // empty `messages` means "nothing has loaded", never "nothing to show" — and
+  // for a cold agent that window spans the join, the process start, and the
+  // first sync batch. Claiming the conversation is empty during it is what
+  // makes a slow switch read as a click that did nothing.
+  const conversationLoading =
+    (status === "connecting" || status === "connected") &&
+    messages.length === 0 &&
+    !partial;
+
   // The hook only uses the `trigger` value as a dependency
   // for its `useEffect` (it doesn't render the text), so we
   // pass the raw refs (`partial` or `messages`) instead of
@@ -462,7 +474,7 @@ export function ChatPage() {
 
   // Show initial loading state while we attempt first join
   if (isUnknown) {
-    return <ChatLoading />;
+    return <ChatLoading name={name} />;
   }
 
   // Input is disabled only when the connection is down. While the
@@ -589,6 +601,7 @@ export function ChatPage() {
             onLoadHistory={loadHistoryPage}
             onLoadOlder={loadOlderHistory}
             name={name}
+            loading={conversationLoading}
             setScrollContainerEl={setScrollContainerEl}
             setMessagesEndEl={setMessagesEndEl}
           />

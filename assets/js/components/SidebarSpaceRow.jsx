@@ -195,13 +195,39 @@ function AgentTreeRow({
     (state) => state.expandedTreeNodes[nodeKey] === true,
   );
   const toggleTreeNode = useStore((state) => state.toggleTreeNode);
+  // The client's own view of this agent's channel, which is not the same
+  // thing as `agent.status` from the list: the list carries what the server
+  // last said, while this carries whether *this* client has finished joining.
+  // A narrow selector, so a cache write for another agent (or any other field
+  // of this one) does not re-render the row.
+  const cacheStatus = useStore(
+    (state) => state.agentsCache[agent.name]?.status,
+  );
   const onCurrentPath = ancestors.has(agent.name);
   const expanded = onCurrentPath || storedExpanded;
   const [restoreError, setRestoreError] = useState(null);
 
+  // A row is reporting the client's own join state whenever its channel is
+  // being joined — and that is not only the row the route selects: clicking a
+  // second agent while the first join is still in flight (or leaving for the
+  // space overview) leaves that first row `connecting` with the route
+  // elsewhere. A row with no cache entry at all is only joining when it is the
+  // current one; for any other row, no entry means nobody ever asked to join
+  // it, and the list's status is the honest thing to show.
+  //
+  // Between the click and the channel's `init` reply there is nothing from the
+  // server to report, and for a cold agent that window can be seconds long, so
+  // the row reports the state it is actually in rather than a stale status the
+  // click did not change.
+  const joining =
+    cacheStatus === "connecting" || (isCurrent && cacheStatus === undefined);
+
   const label = (
     <>
-      <StatusDot status={agent.status} className="w-2 h-2" />
+      <StatusDot
+        status={joining ? "connecting" : agent.status}
+        className="w-2 h-2"
+      />
       <span className="truncate text-sm font-medium">{agent.name}</span>
       {directChildren.length > 0 && (
         <span className="text-xs text-gray-400 ml-1">
