@@ -141,24 +141,37 @@ describe("Sidebar re-renders", () => {
 });
 
 describe("Sidebar click feedback", () => {
-  it("marks the row being joined, and only that row", () => {
+  it("shows the join in flight on every row that is joining, and only those", () => {
     act(() => {
-      // Both agents are mid-join; only the one the route selects is the row
-      // the user just clicked.
+      // Both agents are mid-join — what a user who clicks through two rows
+      // quickly leaves behind.
       useStore.getState().setAgentConnecting(AGENT);
       useStore.getState().setAgentConnecting(OTHER);
     });
 
     renderSidebar(`/space/my-space/agent/${AGENT}`);
 
-    expect(screen.getAllByLabelText("Connecting")).toHaveLength(1);
-    // `OTHER` is connecting too, but it is not the row that was clicked, so it
-    // keeps the status the agent list reports.
-    expect(screen.getAllByLabelText("Idle")).toHaveLength(1);
+    // Both rows really are joining, so both say so, whichever one the route is
+    // on: the state belongs to the row's channel, not to the selection.
+    expect(screen.getAllByLabelText("Connecting")).toHaveLength(2);
+    expect(screen.queryAllByLabelText("Idle")).toHaveLength(0);
 
-    // The join lands: the row goes back to reporting the agent's status.
+    // The first join lands: that row goes back to reporting the agent's
+    // status, and the other one keeps saying it is still joining.
     act(() => {
       useStore.getState().setAgentConnected(AGENT, {
+        status: "idle",
+        messages: [],
+        lastCompactionIndex: -1,
+        compactionCount: 0,
+      });
+    });
+
+    expect(screen.getAllByLabelText("Connecting")).toHaveLength(1);
+    expect(screen.getAllByLabelText("Idle")).toHaveLength(1);
+
+    act(() => {
+      useStore.getState().setAgentConnected(OTHER, {
         status: "idle",
         messages: [],
         lastCompactionIndex: -1,
@@ -169,12 +182,14 @@ describe("Sidebar click feedback", () => {
     expect(screen.queryAllByLabelText("Connecting")).toHaveLength(0);
     expect(screen.getAllByLabelText("Idle")).toHaveLength(2);
 
-    // Before the join effect has run there is no cache entry at all, and the
-    // row is still the one the user asked for.
+    // With no cache entry at all, only the row the route selects is joining:
+    // the other was never asked for, so it keeps the status the list reports.
+    // (Before the join effect has run, even the selected row has no entry.)
     act(() => {
       useStore.setState({ agentsCache: {} });
     });
 
     expect(screen.getAllByLabelText("Connecting")).toHaveLength(1);
+    expect(screen.getAllByLabelText("Idle")).toHaveLength(1);
   });
 });

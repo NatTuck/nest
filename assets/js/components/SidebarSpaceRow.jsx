@@ -20,7 +20,6 @@ import {
   currentAgentName,
   spaceNodeKey,
 } from "../utils/agentTree";
-import { PendingDot } from "./PendingDot";
 import { StatusDot } from "./StatusDot";
 
 /**
@@ -208,22 +207,27 @@ function AgentTreeRow({
   const expanded = onCurrentPath || storedExpanded;
   const [restoreError, setRestoreError] = useState(null);
 
-  // Between the click and the channel's `init` reply there is nothing from
-  // the server to report, and for a cold agent that window can be seconds
-  // long. Showing the list's status there would be a stale claim the click
-  // did not change; a spinner says the click registered and we are waiting.
-  // Only the row the route selects can be joining — every other row is either
-  // joined already or was never asked to be.
+  // A row is reporting the client's own join state whenever its channel is
+  // being joined — and that is not only the row the route selects: clicking a
+  // second agent while the first join is still in flight (or leaving for the
+  // space overview) leaves that first row `connecting` with the route
+  // elsewhere. A row with no cache entry at all is only joining when it is the
+  // current one; for any other row, no entry means nobody ever asked to join
+  // it, and the list's status is the honest thing to show.
+  //
+  // Between the click and the channel's `init` reply there is nothing from the
+  // server to report, and for a cold agent that window can be seconds long, so
+  // the row reports the state it is actually in rather than a stale status the
+  // click did not change.
   const joining =
-    isCurrent && (cacheStatus === "connecting" || cacheStatus === undefined);
+    cacheStatus === "connecting" || (isCurrent && cacheStatus === undefined);
 
   const label = (
     <>
-      {joining ? (
-        <PendingDot className="w-2 h-2" />
-      ) : (
-        <StatusDot status={agent.status} className="w-2 h-2" />
-      )}
+      <StatusDot
+        status={joining ? "connecting" : agent.status}
+        className="w-2 h-2"
+      />
       <span className="truncate text-sm font-medium">{agent.name}</span>
       {directChildren.length > 0 && (
         <span className="text-xs text-gray-400 ml-1">
