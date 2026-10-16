@@ -83,12 +83,18 @@ export function ChatMessages({
  * The transcript's loading state: a conversation is on its way, but no row has
  * arrived yet.
  *
- * Deliberately distinct from the empty state. The agent's active list always
- * contains at least its system row, so an empty `messages` means "nothing has
- * loaded", never "nothing to show" — and for a cold agent that window spans
- * the channel join, the agent process starting, and the first sync batch.
- * "Start a conversation" is a claim about the agent's history, and making that
- * claim during the window is what reads as a click that did nothing.
+ * Deliberately distinct from the empty state. For a cold agent the window spans
+ * the channel join, the agent process starting, and every sync batch of the
+ * drain, and "Start a conversation" is a claim about the agent's history —
+ * making that claim during the window is what reads as a click that did
+ * nothing.
+ *
+ * Whether the cache is still filling is the caller's call, not this component's.
+ * It cannot be read off an empty `messages`: the active list does not always
+ * contain a system row (an agent whose whole sequence is archived and whose
+ * archive has no system row reports 0), so an empty list is not by itself
+ * evidence of an empty conversation. Hence `loading` as a prop, computed by
+ * `ChatPage` from the server's row count.
  */
 function ConversationLoading() {
   return (

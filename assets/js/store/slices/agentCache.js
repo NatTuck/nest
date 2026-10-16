@@ -84,9 +84,10 @@ export function agentCacheSetters(set) {
                 streaming: null,
                 partial: null,
                 lastIndex: -1,
-                // The active row count the server last reported. `null` until
-                // a payload carries one: the UI shows a progressive fill
-                // ("N of M") only when M is known.
+                // The active row count the server last reported, or `null` when
+                // no payload has carried one. `ChatPage` reads it to tell a
+                // transcript that is still filling from one that is genuinely
+                // empty, so `null` has to stay distinct from 0.
                 messageCount: null,
                 status: "connecting",
                 error: null,
@@ -314,6 +315,9 @@ export function agentCacheSetters(set) {
                   streaming: null,
                   partial: null,
                   lastIndex: -1,
+                  // Same shape as `setAgentConnecting`'s fresh entry: no payload
+                  // arrived, so no count is known.
+                  messageCount: null,
                   status: "error",
                   error,
                   model: null,
