@@ -564,7 +564,7 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
 
   # ---- helpers ----
 
-  # The minimal `Agent.t()` `Turn.Commit.active_segment/6` reads: the
+  # The minimal `Agent.t()` `Turn.Commit.active_segment/7` reads: the
   # archived messages, the compaction counter, and the context limit.
   defp commit_state do
     %Agent{

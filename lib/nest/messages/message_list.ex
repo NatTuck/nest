@@ -323,7 +323,7 @@ defmodule Nest.Messages.MessageList do
 
   An idle agent must never end on a user message: the next user turn
   would then need the live-path bridge (`Repair.classify_live/2`). Both
-  the compaction commit (`Turn.Commit.active_segment/6`) and the
+  the compaction commit (`Turn.Commit.active_segment/7`) and the
   load-time heal (`Repair.classify_load/1`) append this ack so the
   invariant is enforced upstream and the turn-opening append is clean.
 

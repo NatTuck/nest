@@ -41,10 +41,11 @@ defmodule Nest.Agents.Agent.Machine.Response do
 
   @max_empty_retries 2
 
-  # The `context-compact` tool's `cover` argument limit. A longer `cover` is an
-  # agent writing the summary into the request instead of using `preserve`, so
-  # it is refused rather than truncated.
-  @max_cover_length 100
+  # The `context-compact` `cover` argument limit. A longer `cover` is an agent
+  # writing the summary into the request instead of using `preserve`, so it is
+  # refused rather than truncated. The number itself lives with the tool schema
+  # (`Nest.Tools`), so what the model is told and what is enforced cannot drift.
+  @max_cover_length Nest.Tools.context_compact_cover_limit()
 
   # The refusal a legacy `focus` argument gets. It has to teach the replacement
   # in full: the caller holding this argument is running the tool schema from
@@ -106,14 +107,17 @@ defmodule Nest.Agents.Agent.Machine.Response do
 
   # --- branches ---
 
-  defp branch(:compaction, m, _response, assistant_msg, base) do
-    {:compaction, carried_entry} = m.entry
-
-    data = %{
-      summary_text: assistant_text(assistant_msg),
-      summary_assistant: assistant_msg,
-      carried_entry: carried_entry
-    }
+  # The compactor's response, committed.
+  #
+  # Unreachable today: `classify_response/1` answers `:compaction` only when the
+  # machine carries a `{:compaction, …}` entry, and `Phase.enter/4` clears that
+  # entry on the way out of a compaction turn, so a chat-kind machine never
+  # holds one. It stays because the routing contract is written against it —
+  # `Phase`'s `turn_entry/3` comment names this pairing as the hazard it guards
+  # — and it commits through `Compaction.commit_data/2` so this copy cannot
+  # drift from the live path's, which is exactly how it lost `:preserve`.
+  defp branch(:compaction, m, response, _assistant_msg, base) do
+    {data, _sequences} = Compaction.commit_data(m, response)
 
     {:ok, base ++ [{:commit_compaction, data}], Phase.enter(m, :compaction, :committing)}
   end
@@ -277,8 +281,9 @@ defmodule Nest.Agents.Agent.Machine.Response do
     end
   end
 
-  # The `context-compact` tool's arguments, validated. Returns the `preserve`
-  # text (nil when absent or blank) or the refusal reason.
+  # The `context-compact` tool's arguments, validated against an allowlist.
+  # Returns the `preserve` text (nil when absent or blank) or the refusal
+  # reason.
   #
   # `cover` is guidance the compactor reads from the call itself, so the only
   # thing to enforce is its size: a long `cover` is an agent writing the
@@ -287,52 +292,91 @@ defmodule Nest.Agents.Agent.Machine.Response do
   # content, so any length is allowed; it rides `work.preserve` into the
   # summary message.
   #
-  # JSON-decoded arguments arrive with string keys. An absent or blank value
-  # means "not given"; a present value of the wrong type is refused rather than
-  # ignored, because ignoring it would silently discard content the agent
-  # believes it preserved.
+  # Anything the allowlist does not name is refused rather than ignored, because
+  # ignoring it stages a compaction without the content the caller meant to
+  # keep — silently, which is the loss this contract exists to prevent. Two
+  # cases are worth naming:
   #
-  # `focus` is refused rather than ignored for the same reason, and it is the
-  # case that actually happens: an agent that is already running holds the tool
-  # schema it was started with (the list is only rebuilt on a workspace change
-  # or a compaction), so its first `context-compact` call after this deploy
-  # still passes `focus`. Dropping that argument would lose the material the
-  # agent wrote to survive the compaction — silently, and once — which is the
-  # loss this contract exists to prevent. Refusing costs one iteration and the
-  # message teaches the replacement, which the stale schema cannot.
+  #   * `focus`, the argument the split removed, gets its own message: the
+  #     caller holding it is running the schema from before the split (a
+  #     running agent keeps the tool list it was started with until a workspace
+  #     change or a compaction), so that message is the only place the new
+  #     contract can reach it;
+  #   * a near-miss a model invents (`preserve_text`) is refused too, which is
+  #     what makes the refusal a rule rather than one exception.
+  #
+  # JSON-decoded arguments arrive with string keys, and a present value of the
+  # wrong type is refused for the same reason an unknown key is. One case this
+  # cannot cover: `Streaming` maps an arguments JSON decode error to `%{}`,
+  # which is indistinguishable here from a bare `context-compact` call — and a
+  # bare call is legitimate, since both arguments are optional. That failure is
+  # reported where it happens.
   defp compact_arguments(%ToolCall{arguments: args}) when is_map(args) do
-    cover = Map.get(args, "cover")
-    preserve = Map.get(args, "preserve")
-
     cond do
       Map.has_key?(args, "focus") ->
         {:refuse, @legacy_focus_reason}
 
-      not optional_string?(cover) ->
-        {:refuse, "`cover` must be a string, got #{inspect(cover)}"}
-
-      is_binary(cover) and String.length(cover) > @max_cover_length ->
-        {:refuse,
-         "`cover` is #{String.length(cover)} characters, over the " <>
-           "#{@max_cover_length}-character limit. Keep `cover` to a short " <>
-           "description of what the summary must cover, and put literal content " <>
-           "you want carried into the summary in `preserve`."}
-
-      not optional_string?(preserve) ->
-        {:refuse, "`preserve` must be a string, got #{inspect(preserve)}"}
+      unknown_arguments(args) != [] ->
+        {:refuse, unknown_arguments_reason(args)}
 
       true ->
-        {:ok, blank_to_nil(preserve)}
+        with :ok <- cover_verdict(Map.get(args, "cover")),
+             :ok <- preserve_verdict(Map.get(args, "preserve")) do
+          {:ok, blank_to_nil(Map.get(args, "preserve"))}
+        end
     end
   end
 
   defp compact_arguments(_tool_call), do: {:ok, nil}
 
-  defp optional_string?(value), do: is_nil(value) or is_binary(value)
+  @compact_argument_names ~w(cover preserve)
 
+  defp unknown_arguments(args) do
+    args
+    |> Map.keys()
+    |> Enum.reject(&(&1 in @compact_argument_names))
+    |> Enum.sort()
+  end
+
+  defp unknown_arguments_reason(args) do
+    "unknown argument(s) #{Enum.map_join(unknown_arguments(args), ", ", &inspect/1)}: " <>
+      "context-compact takes `cover` (short guidance for the summary) and `preserve` " <>
+      "(content to carry into it verbatim). Unknown arguments are refused rather than " <>
+      "ignored, because ignoring one would silently drop what it carried."
+  end
+
+  defp cover_verdict(nil), do: :ok
+  defp cover_verdict(""), do: :ok
+
+  defp cover_verdict(cover) when is_binary(cover) do
+    if String.length(cover) > @max_cover_length do
+      {:refuse,
+       "`cover` is #{String.length(cover)} characters, over the " <>
+         "#{@max_cover_length}-character limit. Keep `cover` to a short " <>
+         "description of what the summary must cover, and put literal content " <>
+         "you want carried into the summary in `preserve`."}
+    else
+      :ok
+    end
+  end
+
+  defp cover_verdict(other), do: {:refuse, "`cover` must be a string, got #{inspect(other)}"}
+
+  defp preserve_verdict(preserve) when is_binary(preserve), do: :ok
+  defp preserve_verdict(nil), do: :ok
+
+  defp preserve_verdict(other),
+    do: {:refuse, "`preserve` must be a string, got #{inspect(other)}"}
+
+  # Blank *or whitespace-only*: a `preserve` of `"   "` would otherwise render
+  # as an empty section between two separators, and the summary body's
+  # treatment of a blank `preserve` (see `Turn.Commit.summary_body/4`) would
+  # not hold for it.
   defp blank_to_nil(nil), do: nil
-  defp blank_to_nil(""), do: nil
-  defp blank_to_nil(text), do: text
+
+  defp blank_to_nil(text) when is_binary(text) do
+    if String.trim(text) == "", do: nil, else: text
+  end
 
   defp refuse_mixed(m, response, assistant_msg, base) do
     tool_msg =
@@ -400,14 +444,6 @@ defmodule Nest.Agents.Agent.Machine.Response do
   defp has_visible_text?(nil), do: false
   defp has_visible_text?(text) when is_binary(text), do: String.trim(text) != ""
   defp has_visible_text?(_), do: false
-
-  defp assistant_text({:assistant, %Assistant{parts: parts}}) do
-    parts
-    |> Enum.map_join("", fn
-      %Part.Text{text: text} -> text || ""
-      _ -> ""
-    end)
-  end
 
   # --- notice plan (pure) ---
 

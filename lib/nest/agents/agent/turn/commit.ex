@@ -96,10 +96,11 @@ defmodule Nest.Agents.Agent.Turn.Commit do
   # it, so the material an agent wrote to survive the compaction survives it
   # whatever the compactor returns.
   #
-  # `preserve` is nil or non-blank by the time it arrives (`Response`'s
-  # argument validation normalizes a blank one away); the empty-string reject is
-  # for a direct caller of this pure builder, and an empty `summary_text` cannot
-  # reach here (the commit validates the summary first).
+  # `preserve` is nil or non-blank by the time it arrives (`Response`'s argument
+  # validation normalizes a blank *or whitespace-only* one away), and a blank
+  # section is dropped either way — a direct caller of this pure builder gets
+  # the same treatment. An empty `summary_text` cannot reach here (the commit
+  # validates the summary first).
   defp summary_body(summary_text, preserve, tokens_compacted, marker_index) do
     [
       "Summary of previous conversation (compacted from #{tokens_compacted} tokens):",
@@ -107,9 +108,14 @@ defmodule Nest.Agents.Agent.Turn.Commit do
       summary_text,
       archive_pointer(marker_index)
     ]
-    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.reject(&blank?/1)
     |> Enum.join("\n\n")
   end
+
+  # A section that is nil, empty, or nothing but whitespace would render as an
+  # empty section between two separators.
+  defp blank?(nil), do: true
+  defp blank?(text) when is_binary(text), do: String.trim(text) == ""
 
   # Names the archived range in the form `agents-history` takes, so a reader who
   # finds the summary wanting is one call from the rest of it. The range is
@@ -144,10 +150,10 @@ defmodule Nest.Agents.Agent.Turn.Commit do
 
   defp drop_pre_compaction_usage(message), do: message
 
-  # An idle agent must never end on a `user` wire role. The carried
-  # entry can be a user message (or a tool result, wire role `user`), and
-  # with no carried entry the segment ends on the summary user message —
-  # all of which would make the next user turn need the live-path bridge.
+  # An idle agent must never end on a `user` wire role. A carried `user_message`
+  # ends on one, and with no carried entry the segment ends on the summary user
+  # message — both of which would make the next user turn need the live-path
+  # bridge.
   # Close the segment with the compaction-specific assistant ack instead;
   # a carried assistant tail is already valid and gets no extra message.
   #

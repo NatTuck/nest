@@ -177,7 +177,7 @@ would push the line toward the 8 KB stub).
   `Reserve.compaction_reserve(limit)`, `used` = `ConversationSize.size(ctx.messages)`,
   `projected` = `Reserve`'s reserve arithmetic for the staged request (the value
   `Dispatch.compaction_plan/1` used), `carried` = the continuation's tag
-  (`"assistant_response"` / `"tool_call"` / `"compact_tool"` / `"user_message"` /
+  (`"assistant_response"` / `"tool_call"` / `"compact_resume"` / `"user_message"` /
   `nil`), `loop_count` = `m.loop_count`, `archived_to_index: nil`.
 * **`commit`** — `Turn.Executor.commit_compaction/2`, **anchor:** after the
   marker is built, where `data` (summary text, staged, carried entry) and the

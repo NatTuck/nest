@@ -153,7 +153,7 @@ defmodule Nest.Agents.Agent.Turn.CommitTest do
          %Part.ToolResult{
            tool_call_id: "c1",
            name: "context-compact",
-           content: "Compacted from 1000 token previous context.",
+           content: "Compacting now.",
            is_error: false
          }
        ],

@@ -70,7 +70,7 @@ defmodule Nest.Agents.Agent.Machine.Phase do
   # through it, and `enter_blocked/2` deliberately does not — which is what keeps
   # a `:compaction_failed` retry's entry alive for `Compaction.retry/1`.
   #
-  # The two clauses mirror `turn_focus/3`: `:idle` covers a stop during a
+  # The two clauses mirror `turn_guidance/3`: `:idle` covers a stop during a
   # compaction (`m.kind` stays `:compaction`), and any non-`:compaction` kind
   # covers the rest. A non-compaction `entry` (the carried user message
   # `Compaction.resume_with_pending/1` rides into a chat turn) is left alone.

@@ -94,6 +94,27 @@ defmodule Nest.Messages.StreamingTest do
     assert joined =~ ~s("foo.txt")
   end
 
+  test "a tool call whose arguments do not decode is answered with none, and says so" do
+    # `%{}` is indistinguishable downstream from a call that genuinely carried no
+    # arguments, which matters for a tool whose arguments carry content
+    # (`context-compact`'s `preserve`): the difference is the content or its
+    # absence. Hence the warning.
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        acc = Streaming.new(0)
+        acc = Streaming.start_tool_call(acc, "call_1", "context-compact")
+        acc = Streaming.append_tool_call_args(acc, "call_1", "{not json")
+        acc = Streaming.complete_tool_call(acc, "call_1")
+
+        assert %Nest.Messages.Assistant{parts: parts} = Streaming.finalize(acc)
+
+        assert [%Nest.Messages.Part.ToolUse{name: "context-compact", arguments: args}] = parts
+        assert args == %{}
+      end)
+
+    assert log =~ "tool-call arguments did not decode"
+  end
+
   test "complete_tool_call/2 marks a partial tool call complete" do
     acc = Streaming.new(0)
     acc = Streaming.start_tool_call(acc, "call_1", "file-read")

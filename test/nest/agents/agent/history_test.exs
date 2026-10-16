@@ -515,6 +515,44 @@ defmodule Nest.Agents.Agent.HistoryTest do
     end
   end
 
+  describe "the compaction summary's archive pointer (issue #117)" do
+    test "names a range this tool actually reads", %{
+      pid: pid,
+      name: name,
+      space_id: space_id
+    } do
+      # The post-compaction summary message ends with a pointer at the archived
+      # range, spelled the way this tool takes it. `Turn.Commit` builds the
+      # pointer from the marker index, so its `length` is that index and its
+      # window is `0..marker_index - 1`; this drives the read to prove the tool
+      # accepts exactly that window (a window running past the count is an
+      # error here, never a silent truncation).
+      append(pid, text(:user, "before the compaction"))
+      append(pid, text(:assistant, "answered"))
+
+      # The marker lands at the runtime's next free index — the same number the
+      # pointer's `length` is derived from. (No `update_next_message_index_by_id`
+      # here: this test only reads, so the runtime's own index needs no
+      # catch-up.)
+      # allowlist: snapshot — the next free index, i.e. the marker's index
+      next_index = :sys.get_state(pid, 1_000).chat_state.next_message_index
+
+      assert {:ok, _marker} =
+               Persistence.record_compaction(space_id, name, next_index, next_index)
+
+      {result, _log} =
+        run(space_id, name, %{"name" => name, "start_index" => 0, "length" => next_index})
+
+      assert %ToolResult{is_error: false, content: content} = result
+      assert content =~ "before the compaction"
+      assert content =~ "answered"
+
+      # The marker row sits at index 2 — one past the pointer's window, which is
+      # why the pointer's `length` is the marker's index and not one more.
+      refute content =~ "compaction marker"
+    end
+  end
+
   describe "a range read over the inline cap" do
     test "is substituted with a pointer to the full text", %{
       pid: pid,

@@ -124,9 +124,15 @@ defmodule Nest.Tokens.Compactor do
       `messages[0]` can drift and the size must not).
     * `current_messages` — the full chat-state message list
       (used to verify the compactor's call will fit).
-    * `optional_guidance` — `:compact` tool's `focus` arg, or
-      `nil`/empty for the typical user-turn-boundary path.
-      When non-nil/non-empty, it's appended to the suffix.
+    * `optional_guidance` — the clause the request carries after the
+      budget hint, or `nil`/empty for the typical user-turn-boundary
+      path. It has two sources: the operator's `/compact <focus>` text,
+      whose only home is the request (a slash command is a control-plane
+      push and creates no message), or
+      `CompactionProbeSupport.compaction_mention/0` for a
+      `context-compact` call, which names that call's `cover`/`preserve`
+      arguments instead of repeating them. When non-nil/non-empty, it is
+      appended to the suffix.
 
   ## Returns
 

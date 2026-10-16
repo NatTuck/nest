@@ -27,7 +27,7 @@ defmodule Nest.Agents.Agent.Repair do
 
       The bridge is a normal path, not a last-resort guard. The "an idle
       agent never ends on a user message" invariant is still enforced
-      upstream by the compaction commit (`Turn.Commit.active_segment/6`)
+      upstream by the compaction commit (`Turn.Commit.active_segment/7`)
       and the load heal (`classify_load/1`), which keeps the
       turn-opening append clean, but the boundary delivery can append a
       user message onto a wire-`user` tail at any iteration.

@@ -16,16 +16,13 @@ defmodule Nest.Agents.Agent.ToolLoop do
       delegated to `Nest.Agents.Agent.BatchSizer`.
     * Merge the two halves back into input order.
 
-  `context-compact` is no longer routed through this module —
-  the chat turn's response handler detects it ahead of the
-  tool worker, persists the call and its synthetic result, and
-  exits with a `{:compact_resume, _, _}` continuation. The
-  blocked-tool-worker pattern (where the
-  tool worker awaited the compactor on receive) is gone.
-  `context_compact?/1` and `strip_context_compact/1` are
-  retained for compatibility with `BatchSizer.preflight/2`,
-  which strips `context-compact` from its preflight input so
-  BatchSizer doesn't try to project a per-tool size for it.
+  `context-compact` is no longer routed through this module — the chat turn's
+  response handler detects it ahead of the tool worker, persists the call and
+  its synthetic result, and exits with a `{:compact_resume, _, _}`
+  continuation. The blocked-tool-worker pattern (where the tool worker awaited
+  the compactor on receive) is gone, and so are the `context_compact?/1` and
+  `strip_context_compact/1` helpers that once kept `context-compact` out of
+  `BatchSizer`'s preflight projection: nothing in the repo called them.
   """
 
   alias Nest.Agents.Agent.Archive

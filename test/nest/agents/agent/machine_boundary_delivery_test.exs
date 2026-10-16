@@ -3,10 +3,10 @@ defmodule MachineBoundaryDeliveryTest do
   # The turn-boundary inbox delivery contract (issue #15) and the parked /
   # queued-message visibility contract that peek-then-consume establishes
   # (#26): which drain outcome consumes the queue, what the give-up paths do
-  # with the message, and what the post-compaction resume does with it. It
-  # lives beside `machine_test.exs` rather than inside it because that file is
-  # at the credo source-file cap. Behavior contract carried by the tests +
-  # inline `#` comments, same as the rest of the machine contract.
+  # with the message, and what the post-compaction resume does with it. (The
+  # `{:compact_resume, …}` drain cases live in
+  # `machine_compaction_resume_drain_test.exs`, split out at the file cap.)
+  # Behavior contract carried by the tests + inline `#` comments.
 
   use ExUnit.Case, async: true
 
@@ -413,6 +413,12 @@ defmodule MachineBoundaryDeliveryTest do
       # cleared; the drain path's entries stay queued and the agent blocks (a
       # drain would re-stage the failing compaction); with nothing held and
       # nothing queued the agent idles as before.
+      #
+      # Every arm also carries the runtime's own notice. The `context-compact`
+      # call and its synthetic result are already in the transcript — they are
+      # persisted before the plan runs, so a staging failure cannot un-write
+      # them — and the failure has to answer for that claim in the transcript,
+      # not only in a broadcast.
       overflow = {:broadcast, {:overflow, :reserve_exhausted, "compact"}, nil}
 
       # The chat-request arm: the built message is parked on the machine and no
@@ -420,7 +426,13 @@ defmodule MachineBoundaryDeliveryTest do
       held = %{reserve_state() | pending_user_message: {:user_message, user()}}
       {:ok, actions, next} = Compaction.stage(held, nil)
 
-      assert [^overflow, {:append, {:user, %Nest.Messages.User{}}}] = actions
+      assert [
+               ^overflow,
+               {:append, {:user, %Nest.Messages.User{parts: [%Part.Text{text: notice}]}}},
+               {:append, {:user, %Nest.Messages.User{}}}
+             ] = actions
+
+      assert notice =~ "Compaction did not start"
       refute Enum.any?(actions, &match?({:restore_inbox, _}, &1))
       assert next.phase == :idle
       assert next.pending_user_message == nil
@@ -430,7 +442,7 @@ defmodule MachineBoundaryDeliveryTest do
       # draining — a drain would re-run the decision that just failed.
       {:ok, actions, next} = Compaction.stage(reserve_state(inbox_count: 1), nil)
 
-      assert [^overflow] = actions
+      assert [^overflow, {:append, {:user, %Nest.Messages.User{parts: [%Part.Text{}]}}}] = actions
       assert next.phase == :context_overflow
       assert Machine.status_for(next) == :context_overflow
       Machine.validate!(next)
@@ -438,7 +450,7 @@ defmodule MachineBoundaryDeliveryTest do
       # Nothing held and nothing queued: idle, as before.
       {:ok, actions, next} = Compaction.stage(reserve_state(), nil)
 
-      assert [^overflow] = actions
+      assert [^overflow, {:append, {:user, %Nest.Messages.User{parts: [%Part.Text{}]}}}] = actions
       assert next.phase == :idle
       Machine.validate!(next)
 
@@ -450,7 +462,9 @@ defmodule MachineBoundaryDeliveryTest do
           bogus = %{reserve_state() | pending_user_message: {:bogus, :shape}}
           {:ok, actions, next} = Compaction.stage(bogus, nil)
 
-          assert [^overflow] = actions
+          assert [^overflow, {:append, {:user, %Nest.Messages.User{parts: [%Part.Text{}]}}}] =
+                   actions
+
           assert next.phase == :idle
         end)
 
@@ -569,8 +583,7 @@ defmodule MachineBoundaryDeliveryTest do
     }
   end
 
-  # The boundary right after a tool batch lands: the results answer the
-  # assistant's tool call, so nothing is unanswered and nothing is in flight.
+  # The boundary right after a tool batch: results answer the call, nothing in flight.
   defp tool_tail, do: [{:user, user()}, assistant_tool_call(), tool_result()]
 
   # An `{:assistant, _}` tail. Defensive today, not a live boundary: every

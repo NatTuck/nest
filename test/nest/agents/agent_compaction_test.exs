@@ -499,6 +499,10 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert summary_row, "expected a summary_user in the active chat"
       assert summary_row =~ "PRESERVED-TEXT"
 
+      # ...and the pointer at the archive, whose range `HistoryTest` proves
+      # `agents-history` reads (the numbers in it are the marker's own).
+      assert summary_row =~ "`agents-history` (start_index 0, length "
+
       # The call that triggered the compaction is archived with the turn it
       # belonged to: the call, its synthetic result, the bridge ack, the
       # request — in that order.

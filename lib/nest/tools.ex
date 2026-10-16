@@ -233,6 +233,20 @@ defmodule Nest.Tools do
     end
   end
 
+  # The `context-compact` `cover` argument's limit, in graphemes, shared with the
+  # validator (`Machine.Response`) so the number the model is told and the number
+  # enforced cannot drift.
+  #
+  # The schema's `maxLength` is advisory, and JSON Schema counts code points
+  # while the validator counts graphemes (`String.length/1`): a string of
+  # combining characters can pass one and fail the other. The validator is
+  # authoritative, and graphemes are the friendlier unit to state to a model.
+  @context_compact_cover_limit 100
+
+  @doc "The `context-compact` `cover` limit, shared with the validator."
+  @spec context_compact_cover_limit() :: pos_integer()
+  def context_compact_cover_limit, do: @context_compact_cover_limit
+
   # The `context-compact` tool triggers compaction. It is a
   # control-flow tool: it is intercepted by the turn response
   # handler (`Nest.Agents.Agent.Machine.Response`, which requires
@@ -257,7 +271,7 @@ defmodule Nest.Tools do
         "properties" => %{
           "cover" => %{
             "type" => "string",
-            "maxLength" => 100,
+            "maxLength" => @context_compact_cover_limit,
             "description" =>
               "Short guidance (100 characters or fewer) naming what the compaction " <>
                 "summary must cover — e.g. the current task and the decisions made. " <>

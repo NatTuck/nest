@@ -625,14 +625,23 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       assert log =~ "Cannot compact"
       assert_receive {:settled, settled}
 
-      assert length(Persistence.load_full_messages(state.space_id, state.name)) == 1
+      # Three rows: the runtime's notice, the bridge ack the append path inserts
+      # between two user rows, and the parked message.
+      assert length(Persistence.load_full_messages(state.space_id, state.name)) == 3
 
       # A defined status, the slot cleared (so a later resume cannot append the
-      # message twice) and the message in the transcript.
+      # message twice) and the message in the transcript — behind the notice
+      # that answers for the `context-compact` call's own claim.
       assert Machine.status_for(settled.live.machine) == :idle
       assert settled.live.machine.pending_user_message == nil
 
-      assert [{:user, %User{parts: [%Part.Text{text: text}]}}] = settled.chat_state.messages
+      assert [
+               {:user, %User{parts: [%Part.Text{text: notice}]}},
+               {:assistant, _ack},
+               {:user, %User{parts: [%Part.Text{text: text}]}}
+             ] = settled.chat_state.messages
+
+      assert notice =~ "Compaction did not start"
       assert text == "[mode: chat]\nheld message"
     end
   end

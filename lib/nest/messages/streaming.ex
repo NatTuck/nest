@@ -475,5 +475,14 @@ defmodule Nest.Messages.Streaming do
 
   defp handle_decode_result({:ok, decoded}) when is_map(decoded), do: decoded
   defp handle_decode_result({:ok, _}), do: %{}
-  defp handle_decode_result({:error, _}), do: %{}
+
+  # A streamed tool call whose arguments did not decode is answered with no
+  # arguments at all, which downstream is indistinguishable from a call that
+  # genuinely carried none. That is worth saying out loud: for a tool whose
+  # arguments carry content (`context-compact`'s `preserve`), the difference is
+  # the content or its absence.
+  defp handle_decode_result({:error, reason}) do
+    Logger.warning("tool-call arguments did not decode: #{inspect(reason)}")
+    %{}
+  end
 end

@@ -66,10 +66,23 @@ defmodule Nest.Agents.Agent.Machine.Boundary do
   # Whether a delivered message can become the next turn's request. A segment
   # that ends on a `tool` or `assistant` row can.
   #
-  # A `{:compact_resume, …}` segment ends on the compaction summary: a `user`
-  # row, but not a turn waiting for an answer — it is the seed of the new
-  # context. A queued message is delivered onto it rather than waiting behind a
-  # generated turn nobody asked for.
+  # A `{:compact_resume, …}` entry is the exception, in both of the shapes it
+  # reaches this point in:
+  #
+  #   * the success path, where the segment ends on the compaction summary — a
+  #     `user` row, but not a turn waiting for an answer: it is the seed of the
+  #     new context;
+  #   * the failure path (`Compaction.compaction_failed/3`'s non-nil carried
+  #     arm), where the segment still ends on the `[mode: compact]` request row
+  #     and the resumed turn is about to generate over it.
+  #
+  # In both, a queued message is delivered onto the segment rather than waiting
+  # behind a generated turn nobody asked for. On the failure path that is a
+  # deliberate change from the carried-tool-pair shape this entry replaced,
+  # whose tail was a `tool` row and therefore dispatched instead: the queued
+  # message is the real work, and the failed compaction's own state is already
+  # broadcast (`:context_overflow` / `:compaction_failed`) and visible in the
+  # transcript.
   defp deliverable_tail?(%{entry: {:compact_resume, _, _}}), do: true
 
   defp deliverable_tail?(%{work: %{ctx: ctx}}) do

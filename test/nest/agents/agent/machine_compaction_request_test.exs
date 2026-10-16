@@ -214,6 +214,90 @@ defmodule MachineCompactionRequestTest do
       end
     end
 
+    test "a non-string cover is refused" do
+      {:ok, actions, next} =
+        Response.dispatch(
+          state_at(:generating),
+          response(tool_calls: [tool_call(%{"cover" => 42})])
+        )
+
+      assert next.entry == nil
+
+      {:append, {:tool, %Tool{parts: [%Part.ToolResult{content: content, is_error: true}]}}} =
+        Enum.find(actions, &match?({:append, {:tool, _}}, &1))
+
+      assert content =~ "`cover` must be a string"
+      assert content =~ "42"
+    end
+
+    test "a blank or whitespace-only preserve is treated as absent" do
+      # The summary body joins its sections with a blank line between them, so a
+      # preserve of `"   "` would render an empty section. Both normalize away,
+      # and the compaction still stages.
+      for blank <- ["", "   \n "] do
+        {:ok, _actions, next} =
+          Response.dispatch(
+            state_at(:generating),
+            response(tool_calls: [tool_call(%{"preserve" => blank})])
+          )
+
+        assert {:compaction, {:compact_resume, 0, 10}} = next.entry
+        assert next.work.preserve == nil, "expected #{inspect(blank)} to normalize to nil"
+      end
+    end
+
+    test "an unknown argument is refused rather than ignored" do
+      # The same principle as the legacy `focus` refusal: an argument the tool
+      # does not take would otherwise stage a compaction without whatever it
+      # carried, silently. `preserve_text` is the shape a model invents; an atom
+      # key is the shape a hand-built call has.
+      for arguments <- [%{"preserve_text" => "KEEP"}, %{preserve: "KEEP"}] do
+        {:ok, actions, next} =
+          Response.dispatch(state_at(:generating), response(tool_calls: [tool_call(arguments)]))
+
+        assert next.entry == nil, "expected no compaction staged for #{inspect(arguments)}"
+        refute Enum.any?(actions, &match?({:append, {:user, _}}, &1))
+
+        {:append, {:tool, %Tool{parts: [%Part.ToolResult{content: content, is_error: true}]}}} =
+          Enum.find(actions, &match?({:append, {:tool, _}}, &1))
+
+        assert content =~ "unknown argument"
+        assert content =~ "`cover`"
+        assert content =~ "`preserve`"
+      end
+    end
+
+    test "a compaction that cannot start follows its own claim with a notice" do
+      # The call and its synthetic "Compacting now." result are persisted before
+      # the plan runs, so a staging failure cannot un-write them: the notice is
+      # what follows the claim up. A second tool result would answer the same
+      # call twice, which the wire's pairing rule rejects. An empty message list
+      # with no vocation is the cheapest way to reach the failure (no system
+      # prompt to render).
+      machine = state_at(:generating, ctx: %{ctx() | messages: []})
+
+      {:ok, actions, _next} =
+        Response.dispatch(machine, response(tool_calls: [tool_call(%{"preserve" => "KEEP"})]))
+
+      # The pair is in the transcript, and no request row was appended.
+      assert Enum.any?(actions, &match?({:append, {:assistant, _}}, &1))
+      assert Enum.any?(actions, &match?({:append, {:tool, _}}, &1))
+
+      refute Enum.any?(actions, fn
+               {:append, {:user, %{parts: [%Part.Text{text: text}]}}} -> text =~ "[mode: compact]"
+               _ -> false
+             end)
+
+      notice =
+        Enum.find_value(actions, fn
+          {:append, {:user, %{parts: [%Part.Text{text: text}]}}} -> text
+          _ -> nil
+        end)
+
+      assert notice, "expected a notice row after the failed staging"
+      assert notice =~ "Compaction did not start"
+    end
+
     test "preserve reaches the commit data and does not survive the turn" do
       {:ok, _actions, staged} =
         Response.dispatch(
@@ -299,6 +383,36 @@ defmodule MachineCompactionRequestTest do
       assert {:compaction, nil} = retried.entry
       refute Enum.any?(actions, &match?({:append, _}, &1))
       assert :iterate in actions
+    end
+
+    test "preserve survives the blocked state a retry starts from" do
+      # The retry path (`:retry_compaction` from `:compaction_failed`) is entered
+      # through `enter_blocked/2`, which keeps the work fields — that is the
+      # property that makes `work` the right home for `preserve` rather than the
+      # carried entry, which a retry drops (it comes back from `mid_turn_entry`,
+      # which nothing in `lib/` assigns).
+      #
+      # A tool-triggered compaction cannot actually reach that retry: its
+      # `{:compact_resume, …}` carried entry sends `compaction_failed/3` down the
+      # resume arm instead of the blocking one, and only a blocked machine
+      # retries. The invariant is pinned here anyway, because it is what the
+      # design rests on — and because a future change to the failure arms must
+      # not quietly drop the text.
+      {:ok, _actions, staged} =
+        Response.dispatch(
+          state_at(:generating),
+          response(tool_calls: [tool_call(%{"preserve" => "PRESERVED"})])
+        )
+
+      {:ok, _actions, blocked} = Machine.Compaction.compaction_failed(staged, :boom, nil)
+
+      assert blocked.phase == :compaction_failed
+      assert blocked.work.preserve == "PRESERVED"
+
+      {:ok, _actions, retried} = Machine.step(blocked, :retry_compaction)
+
+      assert retried.kind == :compaction and retried.phase == :generating
+      assert retried.work.preserve == "PRESERVED"
     end
   end
 end
