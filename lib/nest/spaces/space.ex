@@ -1,10 +1,10 @@
 defmodule Nest.Spaces.Space do
-  # The one list of usable backends, and the one default. `Nest.Sandbox.Backend`
-  # dispatches on these strings; the New Space form offers them. Anything not
-  # in this list is refused at the insert boundary. Declared before the
-  # `@moduledoc` because the moduledoc interpolates both.
-  @sandbox_backends ~w(bwrap docker none)
-  @default_sandbox_backend "bwrap"
+  # The list and the default live in `Nest.Sandbox.Backend`, the module that
+  # dispatches on them; this schema reads them rather than owning a second copy.
+  # Declared as an attribute before the `@moduledoc` because the moduledoc
+  # interpolates both.
+  @sandbox_backends Nest.Sandbox.Backend.backends()
+  @default_sandbox_backend Nest.Sandbox.Backend.default()
 
   @moduledoc """
   Ecto schema for the `spaces` table.
@@ -27,7 +27,8 @@ defmodule Nest.Spaces.Space do
   ## Sandbox backend
 
   * `sandbox_backend` — how this space's agents are sandboxed:
-    `#{inspect(@sandbox_backends)}`. It is chosen **once, at creation**:
+    `#{inspect(@sandbox_backends)}` (see `Nest.Sandbox.Backend`). It is chosen
+    **once, at creation**:
     `create_changeset/2` sets it and `changeset/2` (the update path)
     deliberately cannot change it, because swapping a backend means
     replacing the environment the space's agents run in — not a live
@@ -35,8 +36,10 @@ defmodule Nest.Spaces.Space do
     pre-existing row is a bwrap space.
 
     `"bwrap"` runs commands under bubblewrap and enforces the mode's
-    caps. `"none"` runs the bare command on the host, so **caps cannot
-    be enforced** for that space. See `Nest.Sandbox.Backend`.
+    caps. `"docker"` runs them in a container the space shares, which sees
+    the workspace and the explicit `.nest` mounts and nothing else of the
+    host. `"none"` runs the bare command on the host, so **caps cannot be
+    enforced** for that space. See `Nest.Sandbox.Backend`.
   """
 
   use Ecto.Schema
@@ -118,9 +121,9 @@ defmodule Nest.Spaces.Space do
   Build the changeset for **inserting** a space row: `changeset/2` plus the
   creation-only `:sandbox_backend`.
 
-  An absent or blank backend takes `default_sandbox_backend/0`; anything
-  outside `sandbox_backends/0` is refused with an error on the field, so a
-  client cannot introduce a backend this build does not implement.
+  An absent or blank backend takes `Nest.Sandbox.Backend.default/0`; anything
+  outside `Nest.Sandbox.Backend.backends/0` is refused with an error on the
+  field, so a client cannot introduce a backend this build does not implement.
   """
   def create_changeset(source, params) do
     params = Map.put(params, :sandbox_backend, sandbox_backend_param(params))
@@ -149,22 +152,6 @@ defmodule Nest.Spaces.Space do
   end
 
   defp present?(value), do: value not in [nil, ""]
-
-  @doc """
-  The sandbox backends this build implements: `#{inspect(@sandbox_backends)}`.
-
-  The authority for both the column's contents and what the New Space form
-  may offer.
-  """
-  @spec sandbox_backends() :: [String.t()]
-  def sandbox_backends, do: @sandbox_backends
-
-  @doc """
-  The backend a space gets when the caller does not choose one:
-  `#{inspect(@default_sandbox_backend)}`.
-  """
-  @spec default_sandbox_backend() :: String.t()
-  def default_sandbox_backend, do: @default_sandbox_backend
 
   @doc """
   The suffix `Nest.Spaces` appends to a space's slug to name its root agent.

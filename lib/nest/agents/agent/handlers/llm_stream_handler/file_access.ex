@@ -100,9 +100,9 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess do
 
   defp part_for_tracking(_part, _mounts), do: :skip
 
-  # `Mounts.from_agent/1` matches `workspace_path`/`tmp_path` hard rather than
-  # guarding for their absence, and that is safe here: every call site passes
-  # an `%Nest.Agents.Agent{}`, whose struct always carries both keys. The
+  # `Mounts.from_agent/1` matches the agent's `:mounts` key hard rather than
+  # guarding for its absence, and that is safe here: every call site passes an
+  # `%Nest.Agents.Agent{}`, whose struct always carries it. The
   # `when is_binary(root)` guard this replaced could only have absorbed a
   # malformed agent-shaped map, which is a bug rather than a case to keep.
   defp record_stat(read_files, full_path, state) do

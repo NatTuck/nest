@@ -18,6 +18,7 @@ defmodule Nest.Spaces do
   alias Nest.Blueprints
   alias Nest.Persistence
   alias Nest.Repo
+  alias Nest.Sandbox.Backend
   alias Nest.Spaces.Space
   alias Nest.Vocations
 
@@ -108,11 +109,11 @@ defmodule Nest.Spaces do
   end
 
   @doc """
-  The sandbox backend of `space_id`: one of `Space.sandbox_backends/0`.
+  The sandbox backend of `space_id`: one of `Backend.backends/0`.
 
   Resolved from the space row rather than stored per agent, because the
   backend is a space property: every agent in a space shares one
-  environment. A missing row resolves to `Space.default_sandbox_backend/0`
+  environment. A missing row resolves to `Backend.default/0`
   — the caller's agent is about to fail for a better reason than "unknown
   backend", and defaulting keeps this a total function.
 
@@ -126,7 +127,7 @@ defmodule Nest.Spaces do
     |> Repo.one()
     |> case do
       backend when is_binary(backend) -> backend
-      _ -> Space.default_sandbox_backend()
+      _ -> Backend.default()
     end
   end
 
@@ -220,6 +221,11 @@ defmodule Nest.Spaces do
           Repo.delete!(space)
         end)
 
+        # The space is gone, so whatever its backend kept alive outside the BEAM
+        # goes with it (a `"docker"` space's containers). After the rows, so a
+        # failure here cannot leave a space without its agents' rows.
+        remove_sandbox(space)
+
         # The space is gone, so it can no longer be in anyone's visible set:
         # tell the owner's channels to drop their subscription to its topic.
         broadcast_spaces_changed(space.created_by_user_id)
@@ -281,6 +287,12 @@ defmodule Nest.Spaces do
 
       space ->
         stop_space_agents(space.id)
+
+        # An archived space is out of service, so its backend's environment goes
+        # too — a `"docker"` space's containers. Unarchiving recreates them
+        # lazily, which is why this is safe here and not only on delete.
+        remove_sandbox(space)
+
         set_archived(space.id, true)
         broadcast_spaces_changed(space.created_by_user_id)
     end
@@ -306,6 +318,14 @@ defmodule Nest.Spaces do
         set_archived(space.id, false)
         broadcast_spaces_changed(space.created_by_user_id)
     end
+  end
+
+  # Release whatever the space's backend keeps alive outside the BEAM. The
+  # backend is passed from the row rather than looked up in the sandbox layer,
+  # which must not read this schema (see `Nest.Sandbox.Mounts`); every backend
+  # but docker is a no-op, and a failure is logged by that layer, not raised.
+  defp remove_sandbox(%Space{id: id, sandbox_backend: backend}) do
+    Backend.remove_space(id, backend)
   end
 
   defp set_archived(id, archived) do
@@ -376,7 +396,7 @@ defmodule Nest.Spaces do
       derived from blueprint when omitted)
     * `:workspace_path` — optional root agent workspace path
     * `:sandbox_backend` — optional space sandbox backend
-      (defaults to `Space.default_sandbox_backend/0`)
+      (defaults to `Backend.default/0`)
     * `:agent_name` — root agent's name (optional; defaults
       to `"<slug>-root"`)
 

@@ -9,6 +9,10 @@ defmodule Nest.Sandbox.Mounts do
   is optional: `nil` means "this call binds none of it", not "the agent has
   none":
 
+    * `space_id` — the space this call belongs to. A backend that keeps an
+      environment outside the BEAM needs it (docker's container name must
+      survive a BEAM restart, so it keys on the space rather than on the
+      scratch directory, whose path embeds the BEAM's pid).
     * `workspace` — bound at its own path when the mode's caps grant
       `":workspace"`, and the base a relative tool path resolves against.
     * `scratch` — the agent's own scratch directory. Its *parent* is bound at
@@ -68,24 +72,25 @@ defmodule Nest.Sandbox.Mounts do
   """
 
   alias Nest.FSPath
-  alias Nest.Spaces.Space
+  alias Nest.Sandbox.Backend
 
   @enforce_keys [:workspace, :scratch]
-  # The backend's default comes from `Nest.Spaces.Space` because that is the one
-  # home of the list (`sandbox_backends/0` / `default_sandbox_backend/0`), not
-  # because a sandbox module has any business knowing about the spaces schema:
-  # a second literal here would be a second source of truth. Only the default is
-  # taken; nothing here branches on the value.
-  defstruct [:workspace, :scratch, backend: Space.default_sandbox_backend()]
+  # The default comes from `Nest.Sandbox.Backend`, the list's one home — a second
+  # literal here would be a second source of truth. Only the default is taken;
+  # nothing here branches on the value.
+  defstruct [:workspace, :scratch, :space_id, backend: Backend.default()]
 
   @typedoc """
   `backend` is the implementation that runs the invocation (a string from
-  `Nest.Spaces.Space.sandbox_backends/0`); `workspace` is the workspace this
-  call binds (or `nil`); `scratch` is the agent's scratch directory this call
-  binds (or `nil`). Either directory may be `nil`: see the moduledoc.
+  `Nest.Sandbox.Backend.backends/0`); `space_id` is the space whose environment
+  it is (`nil` for a call that belongs to no space); `workspace` is the
+  workspace this call binds (or `nil`); `scratch` is the agent's scratch
+  directory this call binds (or `nil`). Either directory may be `nil`: see the
+  moduledoc.
   """
   @type t :: %__MODULE__{
           backend: String.t(),
+          space_id: integer() | nil,
           workspace: String.t() | nil,
           scratch: String.t() | nil
         }
@@ -95,7 +100,7 @@ defmodule Nest.Sandbox.Mounts do
   backend. Either directory may be `nil` for "this call binds none of it" (see
   the moduledoc).
 
-  The backend defaults to `Nest.Spaces.Space.default_sandbox_backend/0`
+  The backend defaults to `Nest.Sandbox.Backend.default/0`
   because most callers genuinely have no space to ask: a test fixture, a
   doc-example, and the `Nest.Tools` tool-description builders all want the
   default backend. A caller that *does* know the space's backend must pass it
@@ -107,11 +112,28 @@ defmodule Nest.Sandbox.Mounts do
   def new(workspace, scratch), do: %__MODULE__{workspace: workspace, scratch: scratch}
 
   @doc """
-  The mounts for a call that binds `workspace` and `scratch` on `backend`.
+  The mounts for a call that binds `workspace` and `scratch` on `backend`, in no
+  space.
   """
   @spec new(String.t() | nil, String.t() | nil, String.t()) :: t()
   def new(workspace, scratch, backend),
     do: %__MODULE__{backend: backend, workspace: workspace, scratch: scratch}
+
+  @doc """
+  The mounts for a call that binds `workspace` and `scratch` on `backend` in
+  `space_id`.
+
+  The space is what a backend that keeps an environment outside the BEAM keys on
+  — the docker backend names one container per `(space, caps signature)`, and
+  that name has to survive a BEAM restart, so it cannot be derived from the
+  scratch directory (whose path embeds the BEAM's pid). A call that belongs to
+  no space passes `nil` and gets an error from a backend that needs one, rather
+  than a container shared by accident.
+  """
+  @spec new(String.t() | nil, String.t() | nil, String.t(), integer() | nil) :: t()
+  def new(workspace, scratch, backend, space_id) do
+    %__MODULE__{backend: backend, space_id: space_id, workspace: workspace, scratch: scratch}
+  end
 
   @doc """
   The mounts for an agent's state: the backend its space runs and the two
@@ -143,6 +165,12 @@ defmodule Nest.Sandbox.Mounts do
   """
   @spec backend(t()) :: String.t()
   def backend(%__MODULE__{backend: backend}), do: backend
+
+  @doc """
+  The space whose environment this call runs in, or `nil`.
+  """
+  @spec space_id(t()) :: integer() | nil
+  def space_id(%__MODULE__{space_id: space_id}), do: space_id
 
   @doc """
   Create the agent's scratch directory when there is one, so a command can be

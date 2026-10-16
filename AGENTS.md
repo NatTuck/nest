@@ -40,9 +40,19 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   mean replacing the environment the space's agents run in. It travels to every
   command on the `Nest.Sandbox.Mounts` value, and `Nest.Sandbox.Backend` is the
   one dispatch point (`Nest.Tools.ShellCmd` is the only caller that matters).
-- `none` runs the bare command on the host, so **caps cannot be enforced** for
-  that space. Say so plainly wherever the backend is offered or documented;
-  never imply otherwise.
+- `bwrap` (the default) enforces the mode's caps with binds and namespaces.
+  `docker` runs commands in a container the space shares: its root filesystem is
+  the derived image, so it sees the workspace and the explicit `.nest` mounts and
+  **nothing else of the host** — `caps.fs.read` is deliberately ignored there,
+  which makes it *stricter* than bwrap, not looser. `none` runs the bare command
+  on the host, so **caps cannot be enforced** for that space (nor the `.nest`
+  read-only mask). Say all of that plainly wherever a backend is offered or
+  documented; never imply otherwise. `notes/sandbox-backends.md` has the full
+  table.
+- A `docker` space's container is keyed on `(space, caps signature)`, never on
+  the space alone: caps are per agent, and one container's binds and network
+  namespace cannot vary per `docker exec`, so a union would silently hand a
+  read-only mode a writable workspace.
 - Do **not** add a host fast path for any of them. There is no second spelling
   of a path an agent uses: the backend plus the two directories the sandbox
   binds — the workspace and the agent's own scratch directory — live in one
@@ -62,6 +72,9 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   names are unique across `none` spaces: the creation boundary refuses a
   collision (`{:scratch_name_in_use, other_space_name}`) and the name generator
   never proposes one.
+- Nothing under `lib/nest/sandbox/` reads the spaces schema. `Nest.Sandbox.Backend`
+  owns the backend list and the default, `Nest.Spaces.Space` consumes them, and
+  the dependency runs schema → sandbox only.
 
 ## Project Design
 

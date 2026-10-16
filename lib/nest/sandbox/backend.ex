@@ -36,8 +36,10 @@ defmodule Nest.Sandbox.Backend do
     bubblewrap, which enforces the mode's caps: the workspace and scratch
     binds, the network namespace, the project mounts.
   * `"docker"` — `Nest.Sandbox.Backend.Docker`. Commands run inside a container
-    shared by the space, which sees the workspace and the explicit `.nest`
-    mounts and nothing else of the host.
+    the space shares, which sees the workspace and the explicit `.nest` mounts
+    and nothing else of the host — its root filesystem is the derived image, so
+    the host's `/` is not visible at all and `caps.fs.read` is deliberately
+    ignored. That makes docker *stricter* than bwrap, not looser.
   * `"none"` — `Nest.Sandbox.Backend.None`. Commands run on the host with no
     sandbox at all. **Caps cannot be enforced** for a space on this backend;
     it is the escape hatch for a space that must reach the real machine, and it
@@ -55,11 +57,35 @@ defmodule Nest.Sandbox.Backend do
 
   alias Nest.Sandbox.Mounts
 
+  # The one list of backends this build implements, and the one default. This
+  # module is the list's home because it is the module that dispatches on it:
+  # `Nest.Spaces.Space` reads it for the column it validates, and
+  # `Nest.Sandbox.Mounts` for the backend a value starts with. Nothing under
+  # `lib/nest/sandbox/` reads the spaces schema — the dependency runs
+  # schema → sandbox, never the reverse.
+  @backends ~w(bwrap docker none)
+  @default "bwrap"
+
   @typedoc """
   A built invocation: the command line to run, and the directory to run it in
   (`nil` when the command line already sets one — bwrap `--chdir`s itself).
   """
   @type spec :: %{command: String.t(), cd: String.t() | nil}
+
+  @doc """
+  Every backend this build implements: `#{inspect(@backends)}`.
+
+  The authority for the `spaces.sandbox_backend` column and for what a client
+  may choose.
+  """
+  @spec backends() :: [String.t()]
+  def backends, do: @backends
+
+  @doc """
+  The backend a space gets when nobody chooses one: `#{inspect(@default)}`.
+  """
+  @spec default() :: String.t()
+  def default, do: @default
 
   @doc """
   The module that runs a call on `mounts`' backend.
@@ -73,12 +99,7 @@ defmodule Nest.Sandbox.Backend do
     case Mounts.backend(mounts) do
       "bwrap" -> {:ok, __MODULE__.Bwrap}
       "none" -> {:ok, __MODULE__.None}
-      # `docker` is a backend `Nest.Spaces.Space.sandbox_backends/0` offers, so
-      # it gets its own clause rather than falling through to the unknown-value
-      # error: a space created with it must be told what is actually missing,
-      # not that its backend is not a backend. This clause is what
-      # `Nest.Sandbox.Backend.Docker` replaces.
-      "docker" -> {:error, "The docker sandbox backend is not implemented yet"}
+      "docker" -> {:ok, __MODULE__.Docker}
       other -> {:error, "Unknown sandbox backend: #{inspect(other)}"}
     end
   end
@@ -124,7 +145,25 @@ defmodule Nest.Sandbox.Backend do
   @spec classify(Mounts.t(), String.t()) :: atom()
   def classify(mounts, stderr), do: backend!(mounts).classify(mounts, stderr)
 
-  # A backend string that is not in `Nest.Spaces.Space.sandbox_backends/0` can
+  @doc """
+  Release whatever a space's backend keeps alive outside the BEAM.
+
+  `backend` is passed in rather than looked up because the caller is
+  `Nest.Spaces`, which already holds the space row: this layer must not read the
+  spaces schema (see `Mounts`). Only the docker backend keeps anything alive —
+  the containers are the environment its agents ran in — so every other backend
+  is a no-op, and a docker failure is logged and swallowed rather than breaking
+  the caller's archive or delete.
+  """
+  @spec remove_space(integer(), String.t(), keyword()) :: :ok
+  def remove_space(space_id, backend, opts \\ []) do
+    case backend do
+      "docker" -> __MODULE__.Docker.remove_space(space_id, opts)
+      _other -> :ok
+    end
+  end
+
+  # A backend string that is not in `backends/0` can
   # only come from a row written by a build that had a backend this one does
   # not. `command/3` reports that as an error the agent can read; the four
   # accessors above are reached only after `command/3` has already resolved,

@@ -11,6 +11,8 @@ defmodule Nest.Sandbox.NoneBackendTest do
 
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
@@ -56,9 +58,20 @@ defmodule Nest.Sandbox.NoneBackendTest do
     test "round-trips stdout and the exit code", %{mounts: mounts} do
       assert {:ok, "hi\n"} = ShellCmd.execute("echo hi", mounts, caps())
 
-      assert {:error, message} = ShellCmd.execute("echo boom >&2; exit 3", mounts, caps())
-      assert message =~ "Exit code 3"
-      assert message =~ "boom"
+      # A non-zero exit is an operator diagnostic: `ShellCmd` logs it with
+      # `Logger.error` before returning, so the test that provokes it captures
+      # and asserts that line rather than letting it into the suite output.
+      # Inclusion only — `capture_log` collects every process's logs in the
+      # window, so an absence assertion here would test nothing (SMELLS.md).
+      log =
+        capture_log(fn ->
+          assert {:error, message} = ShellCmd.execute("echo boom >&2; exit 3", mounts, caps())
+          assert message =~ "Exit code 3"
+          assert message =~ "boom"
+        end)
+
+      assert log =~ "ShellCmd.execute: the bare command exited non-zero"
+      assert log =~ "exit_code=3"
     end
 
     test "stages the transcript where no scratch bind exists, and removes it", %{mounts: mounts} do
@@ -67,9 +80,26 @@ defmodule Nest.Sandbox.NoneBackendTest do
       assert Sandbox.Backend.stage_dir(mounts) == stage
       assert Sandbox.Backend.stage_dir_sandbox(mounts) == stage
 
-      before = Path.wildcard(Path.join(stage, "nest-cmd-*.sh"))
-      assert {:ok, _output} = ShellCmd.execute("true", mounts, caps())
-      assert Path.wildcard(Path.join(stage, "nest-cmd-*.sh")) == before
+      # The staging directory is shared (`System.tmp_dir!()/.nest-cmds`, used by
+      # every `none` space and by the no-scratch-bind case), so the observable has
+      # to be *this* command's transcript and not the directory's contents: a
+      # marker only this command contains, and no file in the staging directory
+      # containing it afterwards. `ShellCmd` removes the transcript on every path.
+      marker = "nest-none-staging-#{System.unique_integer([:positive])}"
+      assert {:ok, _output} = ShellCmd.execute("echo #{marker}", mounts, caps())
+
+      leftovers =
+        stage
+        |> Path.join("nest-cmd-*.sh")
+        |> Path.wildcard()
+        |> Enum.filter(fn path ->
+          case File.read(path) do
+            {:ok, content} -> String.contains?(content, marker)
+            {:error, _reason} -> false
+          end
+        end)
+
+      assert leftovers == []
     end
 
     test "a command with no workspace still runs", %{scratch: scratch} do

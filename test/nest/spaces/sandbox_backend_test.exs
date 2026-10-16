@@ -7,6 +7,7 @@ defmodule Nest.Spaces.SandboxBackendTest do
 
   use Nest.DataCase, async: true
 
+  alias Nest.Sandbox.Backend
   alias Nest.Spaces
   alias Nest.Spaces.Space
   alias NestWeb.LobbyChannel.AgentErrors
@@ -14,10 +15,12 @@ defmodule Nest.Spaces.SandboxBackendTest do
   defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
 
   describe "the backend list" do
-    test "offers bwrap, docker and none, defaulting to bwrap" do
-      assert Space.sandbox_backends() == ~w(bwrap docker none)
-      assert Space.default_sandbox_backend() == "bwrap"
-      assert Space.default_sandbox_backend() in Space.sandbox_backends()
+    test "the schema takes its list and default from the sandbox layer" do
+      # `Nest.Sandbox.Backend` owns them (it is what dispatches on them); this
+      # schema is a consumer, so the two cannot drift.
+      assert Backend.backends() == ~w(bwrap docker none)
+      assert Backend.default() == "bwrap"
+      assert Backend.default() in Backend.backends()
     end
   end
 
@@ -81,7 +84,7 @@ defmodule Nest.Spaces.SandboxBackendTest do
     end
 
     test "resolves a missing row to the default rather than raising" do
-      assert Spaces.sandbox_backend(-1) == Space.default_sandbox_backend()
+      assert Spaces.sandbox_backend(-1) == Backend.default()
     end
   end
 
@@ -96,6 +99,35 @@ defmodule Nest.Spaces.SandboxBackendTest do
 
       assert MapSet.member?(ids, none_space.id)
       refute MapSet.member?(ids, bwrap_space.id)
+    end
+  end
+
+  describe "the backend's environment lifecycle" do
+    test "archiving and deleting a docker space run the backend's cleanup" do
+      # A docker space's containers are the environment its agents ran in, so
+      # both paths release them (`Nest.Sandbox.Backend.remove_space/3`). What is
+      # asserted here is that the hook is on the path and does not interfere:
+      # what it *asks the daemon* is asserted against a fake in
+      # `Nest.Sandbox.Backend.DockerTest`, because the test environment installs
+      # an inert runner rather than talking to a daemon (`config/test.exs`).
+      {:ok, space} =
+        Spaces.create_space(nil, %{name: unique("sb-docker"), sandbox_backend: "docker"})
+
+      assert :ok = Spaces.archive_space(space.id)
+      assert Spaces.get_space(space.id).archived == true
+
+      assert :ok = Spaces.unarchive_space(space.id)
+      assert Spaces.get_space(space.id).archived == false
+
+      assert :ok = Spaces.delete_space(space.id)
+      assert Spaces.get_space(space.id) == nil
+    end
+
+    test "archiving a space whose backend keeps nothing still works" do
+      {:ok, space} = Spaces.create_space(nil, %{name: unique("sb-plain")})
+
+      assert :ok = Spaces.archive_space(space.id)
+      assert Spaces.get_space(space.id).archived == true
     end
   end
 

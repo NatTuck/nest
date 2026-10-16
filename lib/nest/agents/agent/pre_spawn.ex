@@ -180,11 +180,16 @@ defmodule Nest.Agents.Agent.PreSpawn do
 
     # The backend is the space's, not the default: composing the prompt reads
     # `AGENTS.md` through the sandbox, so a `"none"` space must not read it
-    # under bwrap.
+    # under bwrap and a `"docker"` space's read must go to its own container.
     {system_prompt, _mode, _tools, _cached_vocation} =
       SystemPrompt.compose_vocation_config(
         vocation,
-        Mounts.new(Map.get(attrs, :workspace_path), nil, Map.fetch!(attrs, :sandbox_backend)),
+        Mounts.new(
+          Map.get(attrs, :workspace_path),
+          nil,
+          Map.fetch!(attrs, :sandbox_backend),
+          Map.fetch!(attrs, :space_id)
+        ),
         {context_limit, context_limit_source},
         name,
         depth

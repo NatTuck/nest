@@ -31,6 +31,17 @@ defmodule Nest.Sandbox do
   write an offload into) reads it from the value, but the path it hands back to
   the agent is always the agent's own spelling.
 
+  ## Backends
+
+  `Nest.Sandbox.Backend` is the dispatch, and each backend is a module under it.
+  The three differ in *what* they enforce — `bwrap` binds and unshares,
+  `docker` runs in a container whose rootfs is the derived image (so the host's
+  `/` is not visible at all and `caps.fs.read` is deliberately ignored), and
+  `none` runs the bare command on the host and enforces nothing. Everything
+  below that names bwrap — the argument builder, the caps section's bind rules,
+  the device passthrough — is `Nest.Sandbox.Backend.Bwrap`'s, and the full
+  comparison is in `notes/sandbox-backends.md`.
+
   ## bwrap argument builder
 
   `build/2`, `build/3`, and `build/4` translate caps plus a `Mounts` value into
@@ -66,7 +77,9 @@ defmodule Nest.Sandbox do
 
   ## Caps shape
 
-  Caps are a raw map matching the JSONB shape stored on `Vocation.modes`:
+  Caps describe what the *mode* allows; which of it a backend can enforce is the
+  backend's business (see `Nest.Sandbox.Backend`). Caps are a raw map matching
+  the JSONB shape stored on `Vocation.modes`:
 
       %{
         "net" => boolean(),

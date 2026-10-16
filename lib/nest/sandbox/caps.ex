@@ -11,8 +11,11 @@ defmodule Nest.Sandbox.Caps do
         "shell" => %{"background" => non_neg_integer()}
       }
 
-  `"shell"` is optional; its absence means the default background-job
-  ceiling (see `Nest.Sandbox.ShellJobs`).
+  `"shell"` and `"sandbox"` are optional. `"shell"`'s absence means the default
+  background-job ceiling (see `Nest.Sandbox.ShellJobs`); `"sandbox"` carries the
+  project's declared docker image packages (`Nest.ProjectConfig`), which no cap
+  check enforces but which must have the right shape before the docker backend
+  builds an image from them.
   """
 
   @doc "Validates a caps map. Returns `:ok` or `{:error, reason}`."
@@ -30,7 +33,7 @@ defmodule Nest.Sandbox.Caps do
         {:error, "caps.fs.write entries must be strings"}
 
       true ->
-        validate_shell(caps)
+        with :ok <- validate_shell(caps), do: validate_sandbox(caps)
     end
   end
 
@@ -65,4 +68,24 @@ defmodule Nest.Sandbox.Caps do
        do: {:error, "caps.shell.background must be a non-negative integer"}
 
   defp validate_shell(_caps), do: :ok
+
+  # Optional capability: the project's declared docker image packages. The list
+  # itself is validated where `.nest` is parsed; this is the shape check for a
+  # caps map that reached a backend some other way.
+  defp validate_sandbox(%{"sandbox" => sandbox}) when not is_map(sandbox),
+    do: {:error, "caps.sandbox must be a map"}
+
+  defp validate_sandbox(%{"sandbox" => %{"packages" => packages}})
+       when not is_list(packages),
+       do: {:error, "caps.sandbox.packages must be a list"}
+
+  defp validate_sandbox(%{"sandbox" => %{"packages" => packages}}) do
+    if Enum.all?(packages, &is_binary/1) do
+      :ok
+    else
+      {:error, "caps.sandbox.packages entries must be strings"}
+    end
+  end
+
+  defp validate_sandbox(_caps), do: :ok
 end
