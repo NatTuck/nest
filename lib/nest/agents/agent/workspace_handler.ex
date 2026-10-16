@@ -78,7 +78,7 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
 
     state = %{
       state
-      | workspace_path: path,
+      | mounts: %{state.mounts | workspace: path},
         chat_state: %{state.chat_state | read_files: %{}}
     }
 

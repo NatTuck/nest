@@ -45,18 +45,23 @@ defmodule Nest.Agents.Agent.Init do
   """
   @spec build_state(map(), Nest.LLM.ClientConfig.t()) :: Nest.Agents.Agent.t()
   def build_state(attrs, client_config) do
+    backend = Map.fetch!(attrs, :sandbox_backend)
+    workspace = Map.get(attrs, :workspace_path)
+
     {system_prompt, mode, tool_names, cached_vocation, llm_metrics} =
-      build_vocation_pipeline(attrs)
+      build_vocation_pipeline(attrs, backend)
 
     name = Map.fetch!(attrs, :name)
     space_id = Map.fetch!(attrs, :space_id)
-    tmp_path = create_tmp_space(space_id, name)
 
-    tools =
-      Tools.get_functions(
-        tool_names,
-        Mounts.new(Map.get(attrs, :workspace_path), tmp_path)
-      )
+    # The agent's whole sandbox, built once: the backend its space runs, the
+    # workspace it binds, and the scratch directory just created for it. The
+    # tools capture it (a tool closure runs the command it is handed through
+    # this value), so it must carry the real backend — a `"none"` space's
+    # tools must not run their reads under bwrap.
+    mounts = Mounts.new(workspace, create_tmp_space(space_id, name, backend), backend)
+
+    tools = Tools.get_functions(tool_names, mounts)
 
     {initial_messages, next_index} = initial_messages_with_system(system_prompt)
 
@@ -67,8 +72,7 @@ defmodule Nest.Agents.Agent.Init do
       client_config: client_config,
       vocation: cached_vocation,
       vocation_id: Map.fetch!(attrs, :vocation_id),
-      workspace_path: Map.get(attrs, :workspace_path),
-      tmp_path: tmp_path,
+      mounts: mounts,
       tools: tools,
       llm_metrics: llm_metrics,
       tree_position: %TreePosition{
@@ -88,7 +92,11 @@ defmodule Nest.Agents.Agent.Init do
   # tool list, cached vocation struct, and the `llm_metrics`
   # initializer. Kept as its own helper so `build_state/2`
   # stays under the credo ABC cap.
-  defp build_vocation_pipeline(attrs) do
+  #
+  # `backend` rides along because composing the system prompt *runs* the
+  # sandbox: the `AGENTS.md` section reads the file through it, so a
+  # `"none"` space's prompt must not be composed under bwrap.
+  defp build_vocation_pipeline(attrs, backend) do
     model = Map.fetch!(attrs, :model)
     # Internal/test-only cache-tier override; see `initial_context_limit/2`.
     cache_lookup = Map.get(attrs, :context_limit_lookup, &Nest.Models.context_limit/2)
@@ -97,7 +105,7 @@ defmodule Nest.Agents.Agent.Init do
     {system_prompt, mode, tool_names, cached_vocation} =
       SystemPrompt.compose_vocation_config(
         Map.get(attrs, :vocation),
-        Mounts.new(Map.get(attrs, :workspace_path), nil),
+        Mounts.new(Map.get(attrs, :workspace_path), nil, backend),
         {context_limit, context_limit_source},
         Map.get(attrs, :name, ""),
         Map.get(attrs, :depth, 0)
@@ -510,7 +518,7 @@ defmodule Nest.Agents.Agent.Init do
     %Nest.Agents.Agent.ChatState.Live{mode: mode}
   end
 
-  defp create_tmp_space(space_id, agent_name) do
-    Nest.Agents.Agent.__create_tmp_space__(space_id, agent_name)
+  defp create_tmp_space(space_id, agent_name, backend) do
+    Nest.Agents.Agent.__create_tmp_space__(space_id, agent_name, backend)
   end
 end

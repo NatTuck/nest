@@ -21,7 +21,7 @@ defmodule Nest.Sandbox.Caps do
       when is_boolean(net) and is_list(read) and is_list(write) do
     cond do
       "/" not in read ->
-        {:error, "caps.fs.read must include \"/\" (bwrap needs /bin/sh)"}
+        {:error, "caps.fs.read must include \"/\" (the sandbox needs /bin/sh)"}
 
       not Enum.all?(read, &is_binary/1) ->
         {:error, "caps.fs.read entries must be strings"}

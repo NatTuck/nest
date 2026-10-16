@@ -5,26 +5,28 @@ defmodule Nest.Sandbox do
   Everything an agent reads, writes, stats, or executes goes through
   this module. It has three facets:
 
-  ## The sandbox's filesystem view is bwrap's view
+  ## The sandbox's filesystem view is the backend's view
 
   There is **no host-side emulation** of `read`, `stat`, or `glob`: all three
-  execute a command inside bwrap via `ShellCmd.execute_raw/4`, so their bytes
-  and metadata come from exactly the mounts bwrap exposes and can never
-  disagree with what a shell inside the sandbox sees. The only path mapping
-  that remains is the scratch bind source and the reported sandbox spelling,
-  both defined once in `Nest.Sandbox.Paths`.
+  execute a command inside the sandbox via `ShellCmd.execute_raw/4`, so their
+  bytes and metadata come from exactly what the backend exposes and can never
+  disagree with what a shell inside it sees. Which backend that is — `bwrap`,
+  `docker` or the bare command — is a space property, carried on the `Mounts`
+  value and dispatched by `Nest.Sandbox.Backend`. The only path mapping that
+  remains is the scratch bind source and the reported sandbox spelling, both
+  defined once in `Nest.Sandbox.Paths`.
 
-  An agent names exactly one domain of paths: the *sandbox* domain. The space
-  scratch dir is bound at `/tmp`, so an agent's own scratch directory is
-  `/tmp/<agent-name>/...`; the workspace is bound at its own path, so the
-  string an agent uses for a workspace file is the string the workspace
-  already has. Every public executor accepts and returns paths in that domain
-  only.
+  An agent names exactly one domain of paths, and it is the same domain on
+  every backend: the *sandbox* domain. The space scratch dir is bound at
+  `/tmp`, so an agent's own scratch directory is `/tmp/<agent-name>/...`; the
+  workspace is bound at its own path, so the string an agent uses for a
+  workspace file is the string the workspace already has. Every public executor
+  accepts and returns paths in that domain only.
 
-  The two directories the sandbox binds — the workspace and the agent's
-  scratch directory — travel together in one `Nest.Sandbox.Mounts` value,
-  built from the agent's state. This module is what turns that value into
-  binds, and nothing outside it needs a directory in order to name a path an
+  The value that travels — the backend plus the two directories the sandbox
+  binds — is one `Nest.Sandbox.Mounts`, held by the agent and passed to every
+  executor. This module is what turns that value into binds (for the bwrap
+  backend) and nothing outside it needs a directory in order to name a path an
   agent uses: a caller that wants a real directory (to stage a script into, to
   write an offload into) reads it from the value, but the path it hands back to
   the agent is always the agent's own spelling.
@@ -32,29 +34,33 @@ defmodule Nest.Sandbox do
   ## bwrap argument builder
 
   `build/2`, `build/3`, and `build/4` translate caps plus a `Mounts` value into
-  a bwrap command line. Paths are canonicalized (symlinks resolved) for bind
+  a bwrap command line — they are the `Nest.Sandbox.Backend.Bwrap`
+  implementation's builder, reached through `Nest.Sandbox.Backend`, not a
+  general entry point. Paths are canonicalized (symlinks resolved) for bind
   *mounts* so a symlink-traversing workspace binds to its real target;
   `--chdir` stays on the workspace path the caller gave, so the LLM and tools
   keep addressing files exactly as the user gave them.
 
-  A workspace at or under `/tmp` is rejected **unconditionally**: the scratch
-  dir is bound at `/tmp`, so it would shadow the workspace and every
-  read/stat/glob would silently resolve against the wrong tree. A missing
-  workspace is rejected too (bwrap never creates one). A `nil` workspace means
-  "no workspace": no workspace bind, and the sandbox chdirs to the scratch root
-  (`/tmp`) when one is bound.
+  A workspace at or under `/tmp` is rejected **unconditionally**: the space
+  scratch dir is bound at `/tmp` by every backend that binds anything, so it
+  would shadow the workspace and every read/stat/glob would silently resolve
+  against the wrong tree. A missing workspace is rejected too (a sandbox never
+  creates one). A `nil` workspace means "no workspace": no workspace bind, and
+  the sandbox chdirs to the scratch root (`/tmp`) when one is bound.
 
   ## Executors
 
-  `read/3` runs `cat -- <path>` inside bwrap, `stat/4` runs
+  `read/3` runs `cat -- <path>` inside the sandbox, `stat/4` runs
   `stat -L -c '%s|%Y|%f'`, and `glob/4` runs a bash glob loop. `write/4` and
   `run/4` go through `ShellCmd` too, so write/execute permissions are enforced
-  by the mounts.
+  by the mounts — and on a backend that binds nothing, they are enforced by
+  nothing at all (see `Nest.Sandbox.Backend.None`).
 
-  On failure, `read/3`, `stat/4`, and `glob/4` classify bwrap's stderr into an
-  error atom: bwrap setup failures (`:sandbox_setup_failed`), timeouts
-  (`:read_timeout`), cancellation (`:read_cancelled`), permission denials
-  (`:read_permission_denied`), missing paths (`:enoent`), and directories passed
+  On failure, `read/3`, `stat/4`, and `glob/4` classify the command's stderr
+  through the backend into an error atom: sandbox setup failures
+  (`:sandbox_setup_failed`), timeouts (`:read_timeout`), cancellation
+  (`:read_cancelled`), permission denials (`:read_permission_denied`), missing
+  paths (`:enoent`), and directories passed
   to a file read (`:eisdir`). Unexpected failures are logged; ordinary tool
   outcomes are not.
 
@@ -90,26 +96,27 @@ defmodule Nest.Sandbox do
 
   ## Missing paths
 
-  A non-existent workspace is rejected before bwrap runs (bwrap never creates
-  it). A non-existent `fs.write` path fails at bwrap time as a missing source
+  A non-existent workspace is rejected before the sandbox starts (nothing
+  creates one). A non-existent `fs.write` path fails as a missing bind source
   rather than being created: any operation that would fail on a missing
   directory fails, it is never auto-created.
 
-  ## Device passthrough / HPU
+  ## Device passthrough / HPU (the bwrap backend)
 
   bwrap runs with `--unshare-all` and a fresh `--dev` devtmpfs by default. On a
   host with Habana Gaudi (HPU) devices, the sandbox instead binds the host's
   `/dev` with `--dev-bind` (a fresh devtmpfs has no accelerator nodes) and
   binds `Hardware.habana_log_dir/0` read-write (the driver logs there and the
   path is read-only under the root `--ro-bind / /`). Everything else about the
-  sandbox is unchanged.
+  sandbox is unchanged. This whole section is `Nest.Sandbox.Backend.Bwrap`'s
+  business: it is what `build/2,3,4` below construct.
   """
 
   import Bitwise
 
   alias Nest.FSPath
   alias Nest.Hardware
-  alias Nest.Sandbox.{Caps, Failure, Glob, Mounts, Paths, StatBatch}
+  alias Nest.Sandbox.{Backend, Caps, Failure, Glob, Mounts, Paths, StatBatch}
   alias Nest.Tools.{ShellCmd, ShellEscape}
 
   @doc """
@@ -252,8 +259,8 @@ defmodule Nest.Sandbox do
   # ---- Executors ----
 
   @doc """
-  Read `path` (a sandbox-domain path) inside the bwrap sandbox and return
-  its contents. The read is resolved by exactly the mounts bwrap builds.
+  Read `path` (a sandbox-domain path) inside the sandbox and return
+  its contents. The read is resolved by exactly the mounts the backend builds.
 
   Returns `{:ok, content}`, `{:error, :read_permission_denied}`,
   `{:error, :enoent}`, or `{:error, reason}`.
@@ -267,7 +274,7 @@ defmodule Nest.Sandbox do
         {:ok, stdout}
 
       {:ok, _exit_code, _stdout, stderr} ->
-        reason = Failure.classify(stderr)
+        reason = Backend.classify(mounts, stderr)
         Failure.log(:read, path, reason, stderr)
         {:error, reason}
 
@@ -277,7 +284,7 @@ defmodule Nest.Sandbox do
   end
 
   @doc """
-  Stat `path` (a sandbox-domain path) inside the bwrap sandbox.
+  Stat `path` (a sandbox-domain path) inside the sandbox.
 
   Runs `stat -L -c '%s|%Y|%f'` through `ShellCmd.execute_raw/4` and returns a
   partial `%File.Stat{}`: `size`, `type`, and `mode` are populated; `mtime` is
@@ -298,7 +305,7 @@ defmodule Nest.Sandbox do
         parse_stat(stdout, opts)
 
       {:ok, _exit_code, _stdout, stderr} ->
-        reason = Failure.classify(stderr)
+        reason = Backend.classify(mounts, stderr)
         Failure.log(:stat, path, reason, stderr)
         {:error, reason}
 
@@ -308,9 +315,9 @@ defmodule Nest.Sandbox do
   end
 
   @doc """
-  The sizes of many paths in as few bwrap spawns as possible (issue #48).
+  The sizes of many paths in as few sandbox spawns as possible (issue #48).
 
-  `stat/3` is one bwrap spawn per path; the BatchSizer preflight needs only a
+  `stat/3` is one sandbox spawn per path; the BatchSizer preflight needs only a
   size per `file-read` target, so this runs one `stat` invocation per chunk of
   paths instead of one per path.
 
@@ -329,8 +336,8 @@ defmodule Nest.Sandbox do
 
   @doc """
   Expand a glob `pattern` (a sandbox-domain path) to readable regular
-  files by running a bash glob loop inside bwrap. Because the glob runs
-  inside the sandbox, it sees exactly the mounts bwrap exposes — including
+  files by running a bash glob loop inside the sandbox. Because the glob runs
+  inside the sandbox, it sees exactly what the backend exposes — including
   the `/tmp` scratch bind and any project mounts — and returns the matches
   as `/tmp/<agent>/...` and the workspace's own paths, which is the only
   domain an agent names.
@@ -348,7 +355,7 @@ defmodule Nest.Sandbox do
   unbounded set). A resolve failure for a relative pattern with no workspace
   returns `{:error, reason}`.
 
-  Runs inside bwrap; see `Nest.Sandbox.Glob`.
+  Runs inside the sandbox; see `Nest.Sandbox.Glob`.
   """
   @spec glob(String.t(), map(), Mounts.t(), keyword()) ::
           {:ok, [String.t()]} | {:error, atom() | term()}
@@ -358,7 +365,7 @@ defmodule Nest.Sandbox do
   end
 
   @doc """
-  Run `command` inside the bwrap sandbox. Authorizes nothing further
+  Run `command` inside the sandbox. Authorizes nothing further
   itself — the mounts enforce filesystem rules. Delegates to
   `ShellCmd.execute/4`.
   """
@@ -369,7 +376,7 @@ defmodule Nest.Sandbox do
   end
 
   @doc """
-  Write `content` to `path` inside the bwrap sandbox. Write
+  Write `content` to `path` inside the sandbox. Write
   permissions are enforced by the bind mounts, so a write outside the
   permitted paths fails at the kernel level (read-only file system)
   rather than being pre-authorized here. Returns `{:ok, output}` or

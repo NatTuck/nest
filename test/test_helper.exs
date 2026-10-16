@@ -408,7 +408,7 @@ _ =
   })
 
 _ = Nest.ProjectConfig.section(nil)
-_ = Nest.Agents.Agent.TmpSpace.create(0, "warmup")
+_ = Nest.Agents.Agent.TmpSpace.create(0, "warmup", "bwrap")
 
 _ =
   Nest.Tools.get_functions(

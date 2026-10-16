@@ -1,6 +1,6 @@
 defmodule Nest.Sandbox.ShellJobs.Launcher do
   @moduledoc """
-  Stages a background shell job's log file and starts its bwrap process.
+  Stages a background shell job's log file and starts its process.
 
   Called by `Nest.Sandbox.ShellJobs` from inside its `:start_job`
   callback, so this runs in the manager's own process: the `:exec`
@@ -16,6 +16,10 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
   # The subdirectory the job logs live in beneath the agent's own dir.
   @log_subdir "shell-jobs"
 
+  # The erlexec options every background job starts with; `exec_options/1`
+  # prepends a working directory when the backend's spec carries one.
+  @exec_options [:stdout, :stderr, :monitor, {:stdin, :null}, {:kill_timeout, 5000}]
+
   @doc """
   Build the job record for `attrs` and start its process.
 
@@ -24,6 +28,11 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
   path the *sandbox* sees for it
   (`/tmp/<agent-name>/shell-jobs/<id>.log`) — the only spelling that
   resolves inside a `shell-cmd`.
+
+  The command line and its working directory come from
+  `Nest.Sandbox.Backend`'s spec (`attrs[:command_line]` / `attrs[:cd]`), so a
+  background job starts in exactly the environment its backend builds for a
+  foreground one.
 
   Returns `{:ok, job, sandbox_log_path}` or `{:error, reason}`.
   """
@@ -39,7 +48,7 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
 
     with :ok <- File.mkdir_p(log_dir),
          :ok <- File.write(log_path, ""),
-         {:ok, erl_pid, os_pid} <- run_process(Map.fetch!(attrs, :bwrap)) do
+         {:ok, erl_pid, os_pid} <- run_process(attrs) do
       job = %{
         id: job_id,
         agent_key: agent_key,
@@ -65,12 +74,18 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
     end
   end
 
-  defp run_process(bwrap) do
+  defp run_process(attrs) do
     :exec.run(
-      to_charlist(bwrap),
-      [:stdout, :stderr, :monitor, {:stdin, :null}, {:kill_timeout, 5000}]
+      to_charlist(Map.fetch!(attrs, :command_line)),
+      exec_options(Map.get(attrs, :cd))
     )
   end
+
+  # `{:cd, dir}` is how a backend with no chdir of its own starts the job in
+  # the right directory (see `Nest.Tools.ShellCmd.exec_options/2`).
+  defp exec_options(nil), do: @exec_options
+
+  defp exec_options(dir), do: [{:cd, dir} | @exec_options]
 
   defp start_error(reason) when is_atom(reason), do: "Failed to start process: #{reason}"
   defp start_error({:error, reason}), do: start_error(reason)

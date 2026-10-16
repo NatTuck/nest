@@ -111,12 +111,18 @@ defmodule Nest.Agents.AgentTestHelpers do
   Create a fresh space for the test. Returns `{:ok, space_id}`.
   The row is rolled back by the sandbox on test exit.
   """
-  def create_test_space do
+  def create_test_space(attrs \\ %{}) do
     {:ok, space} =
-      Spaces.create_space(nil, %{
-        name: "test-space-#{System.unique_integer([:positive])}",
-        slug: "test-space-#{System.unique_integer([:positive])}"
-      })
+      Spaces.create_space(
+        nil,
+        Map.merge(
+          %{
+            name: "test-space-#{System.unique_integer([:positive])}",
+            slug: "test-space-#{System.unique_integer([:positive])}"
+          },
+          attrs
+        )
+      )
 
     Process.put(@space_id_key, space.id)
     {:ok, space.id}

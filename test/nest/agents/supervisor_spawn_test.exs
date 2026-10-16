@@ -361,9 +361,9 @@ defmodule Nest.Agents.SupervisorSpawnTest do
     test "leaves no orphan row, so the same name can be spawned again", %{space_id: space_id} do
       state = coordinator_state(space_id)
       name = "spawn-rollback-#{System.unique_integer([:positive])}"
-      space_dir = TmpSpace.space_dir(space_id)
+      space_dir = TmpSpace.space_dir(space_id, "bwrap")
 
-      # Make the child's `init/1` fail deterministically: `TmpSpace.create/2`
+      # Make the child's `init/1` fail deterministically: `TmpSpace.create/3`
       # does `File.mkdir_p!` on the child's own scratch dir, so a *file*
       # where that directory belongs raises `File.Error` during the start.
       File.mkdir_p!(space_dir)
@@ -574,7 +574,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
       # The parent inherited a /tmp-rooted workspace; a child that needs one
       # must not start against it.
-      state = %{state | workspace_path: "/tmp/ws"}
+      state = %{state | mounts: %{state.mounts | workspace: "/tmp/ws"}}
 
       assert {:error, :workspace_under_tmp} =
                Supervisor.spawn_agent_in_space(state, name, vocation.slug)
@@ -583,7 +583,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       # pre-existing `:workspace_required` case.
       assert {:error, :workspace_required} =
                Supervisor.spawn_agent_in_space(
-                 %{state | workspace_path: nil},
+                 %{state | mounts: %{state.mounts | workspace: nil}},
                  name,
                  vocation.slug
                )

@@ -158,10 +158,10 @@ defmodule Nest.Sandbox.ShellJobsTest do
     space_id = System.unique_integer([:positive])
     name = "incarnation-#{System.unique_integer([:positive])}"
     key = {space_id, name}
-    tmp = TmpSpace.create(space_id, name)
+    tmp = TmpSpace.create(space_id, name, "bwrap")
     test_pid = self()
 
-    on_exit(fn -> TmpSpace.cleanup(space_id, name) end)
+    on_exit(fn -> TmpSpace.cleanup(space_id, name, "bwrap") end)
 
     # A live incarnation registered under the key. The scratch path is derived
     # from the key, so a monitor for a *previous* incarnation can fire after this
@@ -263,7 +263,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
           ShellJobs.start_job(%{
             agent_key: key,
             command: "true #{i}",
-            bwrap: "true",
+            command_line: "true",
             script_path: nil,
             mounts: Mounts.new(nil, tmp),
             max_jobs: 100

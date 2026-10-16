@@ -39,11 +39,19 @@ defmodule Nest.Agents.Agent do
     :client_config,
     :vocation_id,
     :vocation,
-    :workspace_path,
-    :tmp_path,
     :tools,
     :llm_metrics,
     :created_by_user_id,
+    # The agent's sandbox: the backend its space runs plus the two
+    # directories it binds — the workspace and the agent's own scratch
+    # directory. One value rather than three fields, because that is what
+    # every caller passes to `Nest.Sandbox` and `Nest.Tools.ShellCmd`
+    # (`Mounts.from_agent/1` is the one accessor), and because the
+    # workspace and the scratch directory are only ever used together.
+    # Built once at init; the backend cannot change afterwards (a space's
+    # is fixed at creation), and `set_workspace`/`edit_agent` move only the
+    # workspace half.
+    mounts: %Nest.Sandbox.Mounts{workspace: nil, scratch: nil},
     # `depth` is the agent's distance from its tree root (0 =
     # root). Children inherit `parent.depth + 1`; `agents-spawn`
     # is disabled at `depth >= configured_max_depth()`. Persisted
@@ -82,8 +90,7 @@ defmodule Nest.Agents.Agent do
           model: map(),
           client_config: ClientConfig.t(),
           vocation: Vocations.Vocation.t(),
-          workspace_path: String.t() | nil,
-          tmp_path: String.t() | nil,
+          mounts: Mounts.t(),
           tools: [Nest.LLM.Tool.t()],
           llm_metrics: __MODULE__.LlmMetrics.t(),
           tree_position: __MODULE__.TreePosition.t(),
@@ -502,7 +509,7 @@ defmodule Nest.Agents.Agent do
     # the manager's, in `ShellJobs.drop_agent/2`: it removes the same directory
     # *after* it has stopped this agent's jobs, so a job cannot recreate files
     # under a just-deleted path and leave them behind.
-    cleanup_tmp(state.space_id, state.name)
+    cleanup_tmp(state.mounts, state.space_id, state.name)
 
     # Note: workspace is preserved for review/debugging (per design)
 
@@ -557,9 +564,11 @@ defmodule Nest.Agents.Agent do
 
   # Clean up this agent's own tmp sub-directory. Never touches the
   # space directory or a sibling's files. Delegates to
-  # `Nest.Agents.Agent.TmpSpace.cleanup/2` so this module doesn't carry
-  # the boilerplate.
-  defp cleanup_tmp(space_id, agent_name), do: TmpSpace.cleanup(space_id, agent_name)
+  # `Nest.Agents.Agent.TmpSpace.cleanup/3` so this module doesn't carry
+  # the boilerplate; the backend comes from the agent's own mounts, because
+  # it decides which root the scratch directory is under.
+  defp cleanup_tmp(%Mounts{} = mounts, space_id, agent_name),
+    do: TmpSpace.cleanup(space_id, agent_name, Mounts.backend(mounts))
 
   # Every worker this process's turn is running: the live one, the batches it
   # moved to the background (`Machine.Backgrounding.pids/1`), and the batch
@@ -596,7 +605,7 @@ defmodule Nest.Agents.Agent do
   # `__` prefix marks these as internal. See that module for
   # why.
   @doc false
-  defdelegate __create_tmp_space__(space_id, agent_name), to: TmpSpace, as: :create
+  defdelegate __create_tmp_space__(space_id, agent_name, backend), to: TmpSpace, as: :create
 
   @doc false
   # In-process variant of `handle_call({:append_message, _})`.

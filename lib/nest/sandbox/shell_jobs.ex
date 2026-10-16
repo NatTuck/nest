@@ -2,14 +2,15 @@ defmodule Nest.Sandbox.ShellJobs do
   @moduledoc """
   Per-agent manager for background shell jobs.
 
-  A `shell-cmd` call with `background: true` hands its bwrap command to
+  A `shell-cmd` call with `background: true` hands its sandbox command to
   this manager instead of waiting for it. The manager owns the `:exec`
   port, streams the job's stdout/stderr to a per-job log file under the
   agent's scratch directory (`<scratch>/shell-jobs/<id>.log`), tracks its status,
   and lets `shell-list` / `shell-wait` / `shell-kill` inspect and control
-  it. The sandbox is unchanged: the job is an ordinary bwrap invocation,
-  so its PID/mount/net isolation is identical to a foreground call. It
-  survives only because the manager outlives the tool call.
+  it. The sandbox is unchanged: the job is an ordinary invocation of the
+  agent's backend (see `Nest.Sandbox.Backend`), so its isolation is
+  identical to a foreground call. It survives only because the manager
+  outlives the tool call.
 
   A job's log has two names. The manager reads and writes it under the
   agent's scratch directory (`<scratch>/shell-jobs/<id>.log`); the sandbox
@@ -62,8 +63,10 @@ defmodule Nest.Sandbox.ShellJobs do
 
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.PubSub
+  alias Nest.Sandbox.Mounts
   alias Nest.Sandbox.ShellJobs.Launcher
   alias Nest.Sandbox.ShellJobs.Waiters
+  alias Nest.Spaces.Space
   alias Nest.Tools.Exec
   alias Nest.Tools.ShellCmd
 
@@ -112,12 +115,15 @@ defmodule Nest.Sandbox.ShellJobs do
     * `:agent_key` — `{space_id, agent_name}`, the ownership key
     * `:agent_pid` — monitored; all the agent's jobs die with it
     * `:command` — the original command (for display)
-    * `:bwrap` — the full bwrap command line to run
+    * `:command_line` — the command line the backend built, to run
+    * `:cd` — the directory to start it in, or `nil` when the command
+      line already carries one (see `Nest.Sandbox.Backend.spec/0`)
     * `:script_path` — the staged script's path, removed once
       the job ends
     * `:mounts` — the `Nest.Sandbox.Mounts` value for the agent; the log
       lives under its scratch directory (which the sandbox sees at
-      `/tmp/<agent-name>`)
+      `/tmp/<agent-name>`), and its backend is what decides where that
+      scratch directory is when the agent is dropped
     * `:max_jobs` — the per-agent ceiling (default #{@default_max_jobs})
 
   Returns `{:ok, job_id, log_path}`, where `log_path` is the path inside
@@ -430,23 +436,36 @@ defmodule Nest.Sandbox.ShellJobs do
   # ---- Agent tracking ----
 
   # Monitor the agent pid the first time we see an agent, so its jobs die
-  # with it. On DOWN we drop every job under the key.
+  # with it, and remember the agent's `mounts` so dropping the agent knows
+  # which backend's scratch directory to remove. On DOWN we drop every job
+  # under the key.
   defp track_agent(state, agent_key, attrs) do
     case Map.get(state.agents, agent_key) do
       nil ->
-        case Map.get(attrs, :agent_pid) do
-          pid when is_pid(pid) ->
-            ref = Process.monitor(pid)
-            %{state | agents: Map.put(state.agents, agent_key, %{pid: pid, ref: ref})}
-
-          _ ->
-            state
-        end
+        %{
+          state
+          | agents: Map.put(state.agents, agent_key, agent_record(attrs))
+        }
 
       _existing ->
         state
     end
   end
+
+  # A key that is already tracked keeps its first record: a space's backend is
+  # fixed at creation, so a later job cannot bring a different one.
+  defp agent_record(attrs) do
+    pid = Map.get(attrs, :agent_pid)
+
+    %{
+      pid: pid,
+      ref: monitor_agent_pid(pid),
+      mounts: Map.fetch!(attrs, :mounts)
+    }
+  end
+
+  defp monitor_agent_pid(pid) when is_pid(pid), do: Process.monitor(pid)
+  defp monitor_agent_pid(_pid), do: nil
 
   defp drop_agent(agent_key, state, owner) do
     jobs = state.jobs |> Map.values() |> Enum.filter(&(&1.agent_key == agent_key))
@@ -463,13 +482,12 @@ defmodule Nest.Sandbox.ShellJobs do
     # The jobs above are stopped, so the scratch directory can go now; removing
     # it first would let a running job recreate files under a deleted path.
     # `owner` is the incarnation this drop is for, so a stale monitor for a
-    # previous one cannot delete the scratch a live agent is using.
-    TmpSpace.cleanup_agent_key(agent_key, owner)
+    # previous one cannot delete the scratch a live agent is using, and the
+    # backend comes from the agent's own record because a `"none"` space's
+    # scratch is the host's `/tmp/<agent-name>` rather than a per-space dir.
+    TmpSpace.cleanup_agent_key(agent_key, owner, tracked_backend(state, agent_key))
 
-    case Map.get(state.agents, agent_key) do
-      %{ref: ref} -> Process.demonitor(ref, [:flush])
-      _ -> :ok
-    end
+    demonitor_agent(state, agent_key)
 
     state = %{
       state
@@ -502,10 +520,31 @@ defmodule Nest.Sandbox.ShellJobs do
     _kind, _ -> :ok
   end
 
+  # Stop monitoring the dropped agent. A key with no record, or a record with
+  # no pid (an agent the manager never saw a pid for), has no monitor to
+  # cancel.
+  defp demonitor_agent(state, agent_key) do
+    case Map.get(state.agents, agent_key) do
+      %{ref: ref} when is_reference(ref) -> Process.demonitor(ref, [:flush])
+      _ -> :ok
+    end
+  end
+
+  # The backend the dropped agent's jobs ran on, from the record
+  # `track_agent/3` kept. An untracked key falls back to the default backend:
+  # a drop with no record is a key that never started a job, and the default is
+  # the only backend that can have one.
+  defp tracked_backend(state, agent_key) do
+    case Map.get(state.agents, agent_key) do
+      %{mounts: mounts} -> Mounts.backend(mounts)
+      _ -> Space.default_sandbox_backend()
+    end
+  end
+
   # ---- Retention / cleanup ----
 
   # Remove the job's staged script. `script_path` is the staging path
-  # `ShellCmd.stage_script/2` writes to; the spelling the bwrap command line
+  # `ShellCmd.stage_script/2` writes to; the spelling the backend's command line
   # uses is a different thing and must never be passed here.
   defp remove_script(%{script_path: nil}), do: :ok
 

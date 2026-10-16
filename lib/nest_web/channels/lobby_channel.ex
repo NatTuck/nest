@@ -506,6 +506,10 @@ defmodule NestWeb.LobbyChannel do
       # the default-vocation behavior.
       vocation: maybe_vocation(payload, vocation),
       workspace_path: Keyword.get(opts, :workspace_path),
+      # Chosen once, at creation, and immutable afterwards. Absent or blank
+      # means the default; an unknown value is refused by
+      # `Space.create_changeset/2` rather than silently replaced.
+      sandbox_backend: payload["sandbox_backend"],
       agent_name: payload["agent_name"],
       shared: payload["shared"] == true
     }

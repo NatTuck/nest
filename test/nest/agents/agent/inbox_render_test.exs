@@ -29,6 +29,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
   alias Nest.Agents.Agent.Inbox.Render
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Messages.MessageList
+  alias Nest.Sandbox.Mounts
 
   # A big-enough body to exceed the default 8000-token cap.
   @oversized String.duplicate("hello world ", 4_000)
@@ -43,7 +44,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       # name rather than printing `nil` or `""`. A runtime notice has no label
       # (no agent said it) but does carry the `[nest notice]` marker at the head
       # of its own text, which is what tells the model the body is the runtime's.
-      state = %Agent{tmp_path: nil}
+      state = %Agent{}
 
       assert Render.combine_and_offload([entry(:user, "alice", "from a human", "plan")], state) ==
                "from a human"
@@ -79,7 +80,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       # `batch/1`, so this is the safety net: if both channels ever carry the
       # body, the second copy is explicitly a re-delivery and can never be
       # mistaken for a fresh human turn.
-      state = %Agent{tmp_path: nil}
+      state = %Agent{}
 
       taken = %{entry(:agent, "peer", "the report", nil, "a") | retrieved: true}
 
@@ -96,7 +97,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       File.mkdir_p!(dir)
       on_exit(fn -> rm_tmp!(dir, "inbox-id-") end)
 
-      state = %Agent{name: "offload-id", space_id: 1, tmp_path: dir}
+      state = %Agent{name: "offload-id", space_id: 1, mounts: Mounts.new(nil, dir)}
       first = %{entry(:agent, "peer", "hello world", nil, "firstid") | content: @oversized}
 
       content = Render.combine_and_offload([first], state)
@@ -189,7 +190,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
         end
 
         # One scratch file per delivery, holding the batch's whole text.
-        files = Path.wildcard(Path.join(state.tmp_path, "agent-inbox-*.txt"))
+        files = Path.wildcard(Path.join(Mounts.scratch(state.mounts), "agent-inbox-*.txt"))
         assert length(files) == n, label
         assert Enum.all?(files, &(File.read!(&1) =~ "hello world"))
 
@@ -230,7 +231,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       assert pointer =~ "Read that file to see them"
 
       # One scratch file for the whole batch, holding both entries' text.
-      assert [file] = Path.wildcard(Path.join(state.tmp_path, "agent-inbox-*.txt"))
+      assert [file] = Path.wildcard(Path.join(Mounts.scratch(state.mounts), "agent-inbox-*.txt"))
       assert File.read!(file) =~ "hello world"
 
       wait_idle(pid)

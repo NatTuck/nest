@@ -24,6 +24,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
   alias Nest.Agents.Agent.Timeline
   alias Nest.Messages.Compaction
   alias Nest.PubSub
+  alias Nest.Sandbox.Mounts
 
   # The chunk of the error message that we include in the
   # server log. We log the full message at server side, but
@@ -508,7 +509,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
       # missing key can never render as "no debt".
       owedReplies: Machine.owed_senders(live.machine),
       model: model_payload(state.model),
-      workspacePath: state.workspace_path,
+      workspacePath: Mounts.workspace(state.mounts),
       contextLimit: metrics.context_limit,
       contextLimitSource: metrics.context_limit_source,
       parentId: state.tree_position.parent_id,

@@ -21,6 +21,8 @@ defmodule Nest.Agents.Agent.PreSpawn do
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Agents.Agent.TmpSpace
+  alias Nest.Agents.PersistedAgent
   alias Nest.Messages.MessageList
   alias Nest.Messages.Part
   alias Nest.Messages.System
@@ -28,10 +30,17 @@ defmodule Nest.Agents.Agent.PreSpawn do
   alias Nest.Sandbox.Mounts
 
   @doc """
-  Pre-spawn DB work for `start_link/1`. Inserts the agent row
+  Pre-spawn work for `start_link/1`: the one gate every agent-creation path
+  goes through, then the DB work. Inserts the agent row
   and the initial system message in the *caller's* DB context
   (test pid for tests, channel pid for production) so the
   supervisor pid never has to do DB work during spawn.
+
+  The gate is the `"none"`-space scratch-name rule: such a space's agents live
+  at `/tmp/<name>` in the host's one `/tmp`, so a name another `"none"` space's
+  live agent holds is refused with `{:error, {:scratch_name_in_use, name}}`,
+  and a name nobody holds has its stale directory cleared. Both are described
+  where they are implemented.
 
   Returns `{:ok, id}` (the inserted row's `agents.id`) on success,
   `{:error, reason}` on failure, so a caller whose start then fails can
@@ -39,9 +48,83 @@ defmodule Nest.Agents.Agent.PreSpawn do
   """
   @spec pre_spawn(map()) :: {:ok, integer()} | {:error, term()}
   def pre_spawn(attrs) do
-    case Map.get(attrs, :fork_message_index) do
-      nil -> pre_spawn_with_system(attrs)
-      fork_index -> pre_spawn_clone(attrs, fork_index)
+    with :ok <- ensure_scratch_name(attrs) do
+      case Map.get(attrs, :fork_message_index) do
+        nil -> pre_spawn_with_system(attrs)
+        fork_index -> pre_spawn_clone(attrs, fork_index)
+      end
+    end
+  end
+
+  # The one gate every agent-creation path goes through — a caller-created
+  # agent (`Nest.Agents.create_agent/3`), a clone
+  # (`Supervisor.start_agent_with_parent/3`) and a fresh sub-agent
+  # (`Supervisor.spawn_agent_in_space/4`) all reach `pre_spawn/1` and nothing
+  # else does. That makes this the right place for the one name rule that is
+  # about a *directory* rather than a row, and the last point before the row is
+  # written.
+  #
+  # Only a `"none"` space has the rule: it runs on the host, so its agents'
+  # scratch directories are `/tmp/<name>` in the host's one `/tmp`
+  # (`Nest.Agents.Agent.TmpSpace`), and two `"none"` spaces therefore share a
+  # single namespace of names. Every other backend gives each space its own
+  # root, where the same name is two different directories and no rule is
+  # needed.
+  defp ensure_scratch_name(attrs) do
+    name = Map.fetch!(attrs, :name)
+
+    # A name that is not a single safe path component is the row changeset's
+    # refusal to make (`PersistedAgent.valid_name?/1`), and it has no path to
+    # collide on — so this gate leaves it alone rather than raising on a name
+    # `TmpSpace.agent_dir/3` would refuse to turn into a path.
+    if PersistedAgent.valid_name?(name) and none_space?(attrs) do
+      none_space_scratch_name(Map.fetch!(attrs, :space_id), name)
+    else
+      :ok
+    end
+  end
+
+  defp none_space?(attrs) do
+    Nest.Spaces.sandbox_backend(Map.fetch!(attrs, :space_id)) == "none"
+  end
+
+  defp none_space_scratch_name(space_id, name) do
+    case other_none_space_holder(space_id, name) do
+      nil ->
+        # No live agent in another `"none"` space holds the name, so whatever
+        # sits at the path is a stopped agent's leftovers. A fresh agent starts
+        # from a fresh scratch rather than inheriting them.
+        #
+        # Safe here and only here: this runs in the caller, before
+        # `start_link/1` registers the name, so a live holder would have been
+        # found above. (The path is also derived through
+        # `TmpSpace.agent_dir/3`, which refuses a name that is not a single safe
+        # path component.)
+        TmpSpace.agent_dir(space_id, name, "none") |> File.rm_rf()
+        :ok
+
+      other_space_id ->
+        {:error, {:scratch_name_in_use, space_label(other_space_id)}}
+    end
+  end
+
+  defp other_none_space_holder(space_id, name) do
+    none_ids = Nest.Spaces.none_space_ids()
+
+    Nest.Agents.Registry.list_all()
+    |> Enum.find_value(fn {other_space_id, other_name} ->
+      other_name == name and other_space_id != space_id and
+        MapSet.member?(none_ids, other_space_id) and other_space_id
+    end)
+  end
+
+  # The other space's name, for the message the user reads. It must exist — a
+  # live agent is registered under it — but a race with a delete would leave
+  # nothing to look up, so fall back to something that still names it.
+  defp space_label(space_id) do
+    case Nest.Spaces.get_space(space_id) do
+      %{name: name} when is_binary(name) -> name
+      _ -> "space ##{space_id}"
     end
   end
 
@@ -95,10 +178,13 @@ defmodule Nest.Agents.Agent.PreSpawn do
 
     {context_limit, context_limit_source} = Init.initial_context_limit(model)
 
+    # The backend is the space's, not the default: composing the prompt reads
+    # `AGENTS.md` through the sandbox, so a `"none"` space must not read it
+    # under bwrap.
     {system_prompt, _mode, _tools, _cached_vocation} =
       SystemPrompt.compose_vocation_config(
         vocation,
-        Mounts.new(Map.get(attrs, :workspace_path), nil),
+        Mounts.new(Map.get(attrs, :workspace_path), nil, Map.fetch!(attrs, :sandbox_backend)),
         {context_limit, context_limit_source},
         name,
         depth
@@ -212,16 +298,7 @@ defmodule Nest.Agents.Agent.PreSpawn do
   @spec build_child_attrs(map(), String.t(), String.t(), integer(), map() | nil) :: map()
   def build_child_attrs(parent_state, instruction, child_name, parent_id, model_override \\ nil)
       when is_map(parent_state) and is_binary(instruction) and is_binary(child_name) do
-    # The clone starts from the parent LLM-facing context: the visible
-    # `messages` only. The archived slice is not part of any context - it is
-    # derived on demand (`Persistence.load_history/2`) and it contains the
-    # non-LLM-visible `{:compaction, _}` marker row, which is exactly how a
-    # marker used to end up in a child context.
-    shared_prefix = parent_state.chat_state.messages
-    fork_index = parent_state.chat_state.next_message_index
-
-    {preloaded, next_index} =
-      MessageList.build_clone_fork(shared_prefix, fork_index, child_name, parent_state.depth + 1)
+    {fork_index, preloaded, next_index} = clone_fork(parent_state, child_name)
 
     %{
       name: child_name,
@@ -229,7 +306,9 @@ defmodule Nest.Agents.Agent.PreSpawn do
       model: model_override || parent_state.model,
       vocation_id: parent_state.vocation_id,
       vocation: parent_state.vocation,
-      workspace_path: parent_state.workspace_path,
+      workspace_path: Mounts.workspace(parent_state.mounts),
+      # The child shares its parent's space, so it shares its sandbox backend.
+      sandbox_backend: Mounts.backend(parent_state.mounts),
       parent_id: parent_id,
       parent_name: parent_state.name,
       # Children inherit the parent's user identity and
@@ -252,5 +331,27 @@ defmodule Nest.Agents.Agent.PreSpawn do
       compaction_count: Map.get(parent_state.chat_state, :compaction_count, 0),
       next_message_index: next_index
     }
+  end
+
+  # The clone's forked message prefix and the index it owns from. Extracted from
+  # `build_child_attrs/5` to keep that function's ABC size down.
+  #
+  # The clone starts from the parent LLM-facing context: the visible `messages`
+  # only. The archived slice is not part of any context - it is derived on
+  # demand (`Persistence.load_history/2`) and it contains the non-LLM-visible
+  # `{:compaction, _}` marker row, which is exactly how a marker used to end up
+  # in a child context.
+  defp clone_fork(parent_state, child_name) do
+    fork_index = parent_state.chat_state.next_message_index
+
+    {preloaded, next_index} =
+      MessageList.build_clone_fork(
+        parent_state.chat_state.messages,
+        fork_index,
+        child_name,
+        parent_state.depth + 1
+      )
+
+    {fork_index, preloaded, next_index}
   end
 end

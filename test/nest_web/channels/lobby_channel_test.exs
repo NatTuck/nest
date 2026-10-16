@@ -483,6 +483,35 @@ defmodule NestWeb.LobbyChannelTest do
       assert info.vocation_id == vocation.id
     end
 
+    test "creates a none-backend space and reports it back" do
+      {socket, _payload} = join_lobby()
+
+      ref =
+        push(socket, "create_space", %{
+          "name" => "none-space-#{System.unique_integer([:positive])}",
+          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+          "sandbox_backend" => "none"
+        })
+
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}, 500
+      AgentTestHelpers.ensure_cleanup(name)
+
+      assert Nest.Spaces.get_space(space_id).sandbox_backend == "none"
+    end
+
+    test "refuses a sandbox backend this build does not implement" do
+      {socket, _payload} = join_lobby()
+
+      ref =
+        push(socket, "create_space", %{
+          "name" => "bad-backend-#{System.unique_integer([:positive])}",
+          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+          "sandbox_backend" => "podman"
+        })
+
+      assert_reply ref, :error, %{"reason" => "invalid_sandbox_backend"}, 500
+    end
+
     test "names the workspace refusal instead of a generic failure" do
       {socket, _payload} = join_lobby()
 

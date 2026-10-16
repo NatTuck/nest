@@ -109,7 +109,6 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       name: "test-agent-#{System.unique_integer([:positive])}",
       vocation: vocation,
       vocation_id: vocation.id,
-      workspace_path: nil,
       depth: 0,
       llm_metrics: %Nest.Agents.Agent.LlmMetrics{
         context_limit: context_limit,

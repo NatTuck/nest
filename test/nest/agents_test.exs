@@ -156,12 +156,12 @@ defmodule Nest.AgentsTest do
       # retry with that name fail on `unique_constraint([:space_id,
       # :name])`.
       #
-      # Make `init/1` fail deterministically: `TmpSpace.create/2` does
+      # Make `init/1` fail deterministically: `TmpSpace.create/3` does
       # `File.mkdir_p!` on the agent's scratch dir, so a *file* sitting
       # where that directory belongs raises `File.Error` during start.
       space_id = AgentTestHelpers.current_space_id()
       name = fresh_name()
-      space_dir = TmpSpace.space_dir(space_id)
+      space_dir = TmpSpace.space_dir(space_id, "bwrap")
       blocker = Path.join(space_dir, name)
 
       File.mkdir_p!(space_dir)

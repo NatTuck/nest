@@ -42,6 +42,12 @@ defmodule Nest.ProjectConfig do
   sandbox. When `.nest` is absent, a read-only `/dev/null` is masked
   over the path so an agent can't create one either.
 
+  Both halves of that are **binds**, so they hold only on a backend that
+  binds: a `"none"` space has no sandbox to protect, and an agent there can
+  edit or create its own `.nest` like any other file. That is the same
+  statement as "caps cannot be enforced for a `"none"` space" (see
+  `Nest.Sandbox.Backend.None`), not a separate hole.
+
   ## Failures
 
   A malformed `.nest` never degrades silently: `load/1` logs an error,
@@ -311,7 +317,9 @@ defmodule Nest.ProjectConfig do
   # workspace. When the file is absent we mask `/dev/null` over the
   # path so an agent can't create one (which would be picked up on the
   # next spawn and grant it extra host access). The mask is a real bind
-  # inside bwrap, so `stat`/`read` see the char device directly.
+  # inside the sandbox, so `stat`/`read` see the char device directly.
+  # A backend that binds nothing has nothing to mask with (see the
+  # moduledoc's Gating section).
   defp protected_entries(workspace) do
     nest = Path.join(canonical_ws(workspace), @file_name)
     source = if File.exists?(nest), do: nest, else: "/dev/null"
@@ -353,7 +361,7 @@ defmodule Nest.ProjectConfig do
   end
 
   @doc """
-  `mkdir_p` project-mount backing dirs before bwrap runs: `tmp` sources
+  `mkdir_p` project-mount backing dirs before the sandbox starts: `tmp` sources
   must exist to be bind sources, and `create = true` dirs must exist to
   be mount points.
   """

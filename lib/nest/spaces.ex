@@ -108,6 +108,46 @@ defmodule Nest.Spaces do
   end
 
   @doc """
+  The sandbox backend of `space_id`: one of `Space.sandbox_backends/0`.
+
+  Resolved from the space row rather than stored per agent, because the
+  backend is a space property: every agent in a space shares one
+  environment. A missing row resolves to `Space.default_sandbox_backend/0`
+  — the caller's agent is about to fail for a better reason than "unknown
+  backend", and defaulting keeps this a total function.
+
+  Read once, at agent start, and carried on the agent's
+  `Nest.Sandbox.Mounts` value from then on, so no tool call needs a DB read
+  (see `Nest.Sandbox.Backend`).
+  """
+  @spec sandbox_backend(integer()) :: String.t()
+  def sandbox_backend(space_id) when is_integer(space_id) do
+    from(s in Space, where: s.id == ^space_id, select: s.sandbox_backend)
+    |> Repo.one()
+    |> case do
+      backend when is_binary(backend) -> backend
+      _ -> Space.default_sandbox_backend()
+    end
+  end
+
+  @doc """
+  The ids of every space whose backend is `"none"`.
+
+  Two `"none"` spaces share the host's real `/tmp` (an agent's scratch dir
+  there is `/tmp/<agent-name>`), so their agent names form one shared
+  namespace. The name boundary uses this to find the *other* `"none"`
+  spaces to check a requested name against — see
+  `Nest.Agents.Supervisor.existing_names_for_space/1` and
+  `Nest.Agents.Agent.PreSpawn.pre_spawn/1`.
+  """
+  @spec none_space_ids() :: MapSet.t(integer())
+  def none_space_ids do
+    from(s in Space, where: s.sandbox_backend == "none", select: s.id)
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  @doc """
   Get a space by its ID.
 
   Returns `%Space{}` or `nil`.
@@ -124,7 +164,7 @@ defmodule Nest.Spaces do
 
   * `user_id` — the user creating the space
   * `attrs` — map with `:name` (required) and optionally
-    `:slug`, `:blueprint_id`
+    `:slug`, `:blueprint_id`, `:sandbox_backend`
 
   ## Returns
 
@@ -135,7 +175,7 @@ defmodule Nest.Spaces do
   def create_space(user_id, attrs) do
     with {:ok, %Space{} = space} <-
            %Space{}
-           |> Space.changeset(Map.put(attrs, :created_by_user_id, user_id))
+           |> Space.create_changeset(Map.put(attrs, :created_by_user_id, user_id))
            |> Repo.insert() do
       # Announced here so `create_space/2` is self-contained: whoever creates a
       # space announces it, whatever they do next. When the caller is
@@ -335,6 +375,8 @@ defmodule Nest.Spaces do
     * `:vocation` — root agent's vocation **slug** (optional;
       derived from blueprint when omitted)
     * `:workspace_path` — optional root agent workspace path
+    * `:sandbox_backend` — optional space sandbox backend
+      (defaults to `Space.default_sandbox_backend/0`)
     * `:agent_name` — root agent's name (optional; defaults
       to `"<slug>-root"`)
 
@@ -380,7 +422,10 @@ defmodule Nest.Spaces do
     with {:ok, root_vocation_id} <- resolve_root_vocation(attrs),
          :ok <- ensure_root_workspace(attrs, root_vocation_id),
          {:ok, %Space{} = space} <-
-           create_space(user_id, Map.take(attrs, [:name, :slug, :blueprint_id, :workspace_path])),
+           create_space(
+             user_id,
+             Map.take(attrs, [:name, :slug, :blueprint_id, :workspace_path, :sandbox_backend])
+           ),
          agent_opts = build_root_agent_opts(user_id, attrs, space, root_vocation_id),
          {:ok, agent_name} <- Agents.create_agent(space.id, attrs[:model], agent_opts) do
       {space, agent_name}

@@ -34,7 +34,7 @@ defmodule Nest.Agents.AgentOverflowIntegrationTest do
     {system_prompt, _, _, _} =
       SystemPrompt.compose_vocation_config(
         state.vocation,
-        Mounts.new(state.workspace_path, nil),
+        Mounts.new(Mounts.workspace(state.mounts), nil),
         {state.llm_metrics.context_limit, state.llm_metrics.context_limit_source},
         state.name,
         state.depth

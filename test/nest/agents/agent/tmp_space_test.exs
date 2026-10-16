@@ -31,7 +31,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
     # space dir is left to OS `/tmp` cleanup), so the test mirrors that
     # and can never delete a shared parent.
     space_id = -System.unique_integer([:positive])
-    space_dir = TmpSpace.space_dir(space_id)
+    space_dir = TmpSpace.space_dir(space_id, "bwrap")
     %{space_id: space_id, space_dir: space_dir}
   end
 
@@ -41,8 +41,8 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       space_dir: space_dir
     } do
       capture_log(fn ->
-        a = TmpSpace.create(space_id, "agent-a")
-        b = TmpSpace.create(space_id, "agent-b")
+        a = TmpSpace.create(space_id, "agent-a", "bwrap")
+        b = TmpSpace.create(space_id, "agent-b", "bwrap")
 
         assert a == Path.join(space_dir, "agent-a")
         assert b == Path.join(space_dir, "agent-b")
@@ -56,8 +56,8 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
 
     test "is idempotent", %{space_id: space_id} do
       capture_log(fn ->
-        first = TmpSpace.create(space_id, "agent-a")
-        assert TmpSpace.create(space_id, "agent-a") == first
+        first = TmpSpace.create(space_id, "agent-a", "bwrap")
+        assert TmpSpace.create(space_id, "agent-a", "bwrap") == first
       end)
     end
   end
@@ -68,12 +68,12 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       space_dir: space_dir
     } do
       capture_log(fn ->
-        a = TmpSpace.create(space_id, "agent-a")
-        b = TmpSpace.create(space_id, "agent-b")
+        a = TmpSpace.create(space_id, "agent-a", "bwrap")
+        b = TmpSpace.create(space_id, "agent-b", "bwrap")
         File.write!(Path.join(a, "a.txt"), "a")
         File.write!(Path.join(b, "b.txt"), "b")
 
-        assert :ok = TmpSpace.cleanup(space_id, "agent-a")
+        assert :ok = TmpSpace.cleanup(space_id, "agent-a", "bwrap")
 
         refute File.exists?(a)
         assert File.dir?(space_dir)
@@ -81,7 +81,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
 
         # A sibling can still be created after the cleanup: the space
         # dir (a shared parent) was not rmdir'd.
-        c = TmpSpace.create(space_id, "agent-c")
+        c = TmpSpace.create(space_id, "agent-c", "bwrap")
         assert File.dir?(c)
       end)
     end
@@ -91,8 +91,8 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       space_dir: space_dir
     } do
       capture_log(fn ->
-        TmpSpace.create(space_id, "only-agent")
-        assert :ok = TmpSpace.cleanup(space_id, "only-agent")
+        TmpSpace.create(space_id, "only-agent", "bwrap")
+        assert :ok = TmpSpace.cleanup(space_id, "only-agent", "bwrap")
         assert File.dir?(space_dir)
       end)
     end
@@ -104,7 +104,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       capture_log(fn ->
         # A real agent dir first, so the refusals below are checked
         # against something that exists.
-        keeper = TmpSpace.create(space_id, "keeper")
+        keeper = TmpSpace.create(space_id, "keeper", "bwrap")
         assert Path.dirname(keeper) == space_dir
 
         # ".." would pass a *syntactic* `Path.dirname/1` guard and
@@ -112,13 +112,13 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
         # every agent's scratch). "a/b" would nest a path. `create/2`
         # refuses both outright (the DB boundary rejects such a name, so
         # this only happens if a caller skipped it)...
-        assert_raise ArgumentError, fn -> TmpSpace.create(space_id, "..") end
-        assert_raise ArgumentError, fn -> TmpSpace.create(space_id, "a/b") end
+        assert_raise ArgumentError, fn -> TmpSpace.create(space_id, "..", "bwrap") end
+        assert_raise ArgumentError, fn -> TmpSpace.create(space_id, "a/b", "bwrap") end
 
         # ...and `cleanup/2` (which runs from `terminate/2`, so it must
         # never raise) logs the refusal and removes nothing.
-        assert :ok = TmpSpace.cleanup(space_id, "..")
-        assert :ok = TmpSpace.cleanup(space_id, "a/b")
+        assert :ok = TmpSpace.cleanup(space_id, "..", "bwrap")
+        assert :ok = TmpSpace.cleanup(space_id, "a/b", "bwrap")
 
         assert File.dir?(keeper)
         assert File.dir?(space_dir)
@@ -145,8 +145,8 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       on_exit(fn -> rm_tmp!(ws, "nest_tmp_space_ws_") end)
 
       capture_log(fn ->
-        a = TmpSpace.create(space_id, "agent-a")
-        b = TmpSpace.create(space_id, "agent-b")
+        a = TmpSpace.create(space_id, "agent-a", "bwrap")
+        b = TmpSpace.create(space_id, "agent-b", "bwrap")
 
         # Agent A writes into its own scratch dir. This is the shape the
         # `Overflow` writers produce (a direct host write).
