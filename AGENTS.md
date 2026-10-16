@@ -75,10 +75,16 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   names are unique across `none` spaces: the creation boundary refuses a
   collision (`{:scratch_name_in_use, other_space_name}`) and the name generator
   never proposes one. The name is client- and model-controlled and cannot
-  distinguish Nest's directory from the host's own `/tmp` entries, so
-  `TmpSpace.create/3` writes a `.nest-scratch` marker and **every** `rm_rf` of a
-  `none` scratch requires it. A removal that would take a live same-named agent's
-  scratch in another space is refused too.
+  distinguish Nest's directory from the host's own `/tmp` entries, so a `none`
+  scratch carries a `.nest-scratch` marker and **every** `rm_rf` of a `none`
+  scratch requires it. Both creators write it — `TmpSpace.create/3` and
+  `Nest.Sandbox.Mounts.ensure_scratch!/1`, which stages a transcript before the
+  agent starts — and neither will mark a directory that already exists without
+  it, because marking a directory Nest did not make is what would license the
+  next `rm_rf` to delete it. A name whose path already holds something that is
+  not Nest's is refused by name (`{:scratch_path_taken, path}`) rather than
+  adopted. A removal that would take a live same-named agent's scratch in
+  another space is refused too.
 - Anything that composes a prompt or runs a command must be given the agent's
   *real* scratch bind (`TmpSpace.prompt_mounts/4` builds the prompt's mounts):
   the staged transcript is only reachable inside a docker container through the
