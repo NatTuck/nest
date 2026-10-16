@@ -4087,10 +4087,16 @@ describe("channels", () => {
       setNextPushResult("lobby", "create_space", {
         ok: { space_id: 1, name: "new-agent" },
       });
-      joinLobby();
+
+      // Wait on a real observable: `createSpace` is a silent no-op until the
+      // lobby channel exists, so the join has to have landed before the push.
+      let joined = false;
+      joinLobby(() => {
+        joined = true;
+      });
 
       await vi.waitFor(() => {
-        assert.strictEqual(useStore.getState().agents.length >= 0, true);
+        assert.ok(joined, "the lobby channel must be joined before the push");
       });
 
       createSpace("gpt-4", 1, () => {}, undefined, {
