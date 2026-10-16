@@ -16,8 +16,13 @@ defmodule NestWeb.AgentChannelSyncBatchingTest do
   alias Nest.Messages.Part
   alias Nest.Messages.User
 
-  # The suite's fence. A reply here is at most one budget's worth of JSON
-  # (~1 MB), which is tens of milliseconds of encoding.
+  # The suite's fence, deliberately above the 500 ms default because this file's
+  # fixtures are large. Measured with `--trace`: the four tests run 38.9 /
+  # 221.6 / 285.4 / 361.1 ms on an idle machine, the oversized-message case
+  # measured 709.1 ms with its original 2 MB fixture, and a 500 ms fence was
+  # observed to fail on a loaded machine. The cost is the fixture's own JSON
+  # encode plus `Supervisor.get_agent/2` startup (`seed_active/4` below), not
+  # the reply, which carries at most one budget's worth (~1 MiB).
   @reply_timeout 1_000
 
   # A message of roughly `bytes` wire bytes.

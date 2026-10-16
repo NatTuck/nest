@@ -180,8 +180,9 @@ defmodule Nest.Agents.Agent.PreSpawn do
   # Fold the rows the heal appended (already persisted by the append
   # path) into the attrs the child seeds from, so `init/1` reconstructs
   # the healed sequence without any DB work of its own. The index is not
-  # carried here: `Init.seed_from_db/4` recomputes `highest_index + 1`
-  # from `:preloaded_messages`, and `Persistence.insert_agent/1` (the
+  # carried here: `Init.seed_from_db/5` recomputes `highest_index + 1`
+  # from `:preloaded_messages` and `:archived_summary` (the highest index
+  # can come from either), and `Persistence.insert_agent/1` (the
   # only reader of an attrs `:next_message_index`) only ever runs for a
   # brand-new agent via `pre_spawn/1`.
   defp healed_attrs(attrs, before, healed) do

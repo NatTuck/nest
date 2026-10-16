@@ -563,10 +563,10 @@ describe("ChatPage loading and empty states", () => {
   });
 
   it("claims a conversation is loading only while the channel is joined", () => {
-    // The agent's active list always contains at least its system row, so
-    // "joined, nothing to show yet" is a load in progress rather than an empty
-    // conversation. Claiming otherwise is what makes a slow switch read as a
-    // click that did nothing.
+    // No payload has reported a row count, so the cache's completeness is
+    // unknown: "joined, nothing to show yet" is a load in progress rather than
+    // an empty conversation. Claiming otherwise is what makes a slow switch read
+    // as a click that did nothing.
     mockAgentsCache = {
       "test-agent": {
         status: "connected",
@@ -599,6 +599,46 @@ describe("ChatPage loading and empty states", () => {
 
     expect(screen.getByText("Start a conversation")).toBeInTheDocument();
     expect(screen.queryByText("Loading conversation...")).toBeNull();
+  });
+
+  it("reads the server's row count to tell filling from genuinely empty", () => {
+    // An agent whose whole sequence is archived and whose archive has no system
+    // row reports 0 active rows, so the transcript is honestly empty rather than
+    // loading — keying off `messages.length === 0` alone left it on "Loading
+    // conversation..." forever.
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [],
+        partial: null,
+        messageCount: 0,
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    const { unmount } = renderChat();
+
+    expect(screen.getByText("Start a conversation")).toBeInTheDocument();
+    expect(screen.queryByText("Loading conversation...")).toBeNull();
+
+    // The server counting rows we do not hold yet is a load in progress.
+    unmount();
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [],
+        partial: null,
+        messageCount: 4,
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    expect(screen.getByText("Loading conversation...")).toBeInTheDocument();
+    expect(screen.queryByText("Start a conversation")).toBeNull();
   });
 
   it("renders the partial message when one is present", () => {

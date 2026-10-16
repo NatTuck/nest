@@ -54,7 +54,7 @@ function messagesArea(overrides = {}) {
 describe("ChatMessages", () => {
   beforeEach(cleanup);
 
-  it("shows the empty state when there are no messages and no partial", () => {
+  it("shows the empty state, the loading state, and content over both", () => {
     const { rerender } = render(messagesArea());
 
     expect(screen.getByText("Start a conversation")).toBeInTheDocument();

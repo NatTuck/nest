@@ -64,17 +64,26 @@ defmodule Nest.Persistence.Messages do
   sequence sits below the child's fork, so capping the whole
   subtree at `fork - 1` keeps exactly the inherited rows.
 
+  `:floor` is the exclusive lower bound — rows *above* it. It is the
+  counterpart of `:cap`, and the two partition a sequence between them:
+  `cap: b` plus `floor: b` is every row, exactly once.
+
   `:cap` and `:limit` accept `:all` for "no bound". Rows come back
   in ascending `message_index` order.
   """
   @spec load_slice(integer(), String.t(), keyword()) :: [Message.t()]
   def load_slice(space_id, agent_name, opts) do
-    load(space_id, agent_name, Keyword.delete(opts, :decode))
+    load(space_id, agent_name, Keyword.delete(opts, :projection))
   end
 
-  # The one entry point both public readers go through. `:decode` is internal
-  # — `load_slice/3` strips it so only `archived_summary/3` can ask for
-  # undecoded rows, and it defaults to decoding when absent.
+  # The one entry point both public readers go through. `:projection` is
+  # internal, and `load_slice/3` strips it so only `archived_summary/3` can
+  # reach it: a projection read selects the named fields and skips the decode,
+  # so the rows come back as partial structs rather than messages. That is only
+  # legitimate for a reader that wants facts *about* rows, because a partial
+  # row's `parts` and `api_logs` are empty — `PersistedMessage`'s catch-alls
+  # return `[]` for both — so a caller that decoded one would get a message
+  # that looks like an empty one rather than an error.
   defp load(space_id, agent_name, opts) do
     case Nest.Persistence.fetch_agent(space_id, agent_name) do
       {:ok, row} -> collect_slice(row, MapSet.new(), opts)
@@ -114,8 +123,7 @@ defmodule Nest.Persistence.Messages do
       load(space_id, agent_name,
         cap: boundary,
         limit: :all,
-        decode: false,
-        select: [:message_index, :role, :compaction_count]
+        projection: [:message_index, :role]
       )
 
     %{
@@ -156,38 +164,35 @@ defmodule Nest.Persistence.Messages do
   end
 
   defp load_own_slice(row, cap, limit, roles, origin, floor, opts) do
+    projection = Keyword.get(opts, :projection)
+
     PersistedMessage
     |> where([m], m.agent_id == ^row.id)
     |> floor_index(floor)
     |> cap_index(cap)
     |> filter_roles(roles)
     |> filter_origin(origin)
-    |> select_projection(Keyword.get(opts, :select))
+    |> select_projection(projection)
     |> order_by([m], desc: m.message_index)
     |> cap_rows(limit)
     |> Repo.all()
     |> Enum.reverse()
-    |> Enum.map(&decode_row(&1, opts))
+    |> project_rows(projection)
   end
 
-  # `:floor` is the exclusive lower bound: rows *above* it. It is the
-  # counterpart of `:cap`, and the two partition a sequence between them —
-  # `cap: b` plus `floor: b` is every row, exactly once.
+  # `:floor` is documented on `load_slice/3`: the exclusive lower bound, the
+  # counterpart of `:cap`.
   defp floor_index(query, nil), do: query
   defp floor_index(query, floor), do: where(query, [m], m.message_index > ^floor)
 
-  # A projection read skips `to_runtime/1` entirely, so an archived row never
-  # pays for decoding a payload nobody will look at.
+  # A projection read selects the named fields and skips `to_runtime/1`, so an
+  # archived row never pays for decoding a payload nobody will look at. The rows
+  # that come back are partial structs, not messages — see `load/3`.
   defp select_projection(query, nil), do: query
   defp select_projection(query, fields), do: select(query, ^fields)
 
-  defp decode_row(row, opts) do
-    if Keyword.get(opts, :decode, true) do
-      PersistedMessage.to_runtime(row)
-    else
-      row
-    end
-  end
+  defp project_rows(rows, nil), do: Enum.map(rows, &PersistedMessage.to_runtime/1)
+  defp project_rows(rows, _fields), do: rows
 
   # `:all` bounds are dropped from the query entirely rather than
   # turned into a sentinel value, so the unbounded form stays a

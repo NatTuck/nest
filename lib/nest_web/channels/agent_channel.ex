@@ -518,10 +518,15 @@ defmodule NestWeb.AgentChannel do
   # merge, a sort and a full re-render of the message list, and costs the
   # server a walk of the active messages. A 500-message / 15 MB active window
   # at 64 kB was ~240 sequential round trips; at 1 MiB it is ~16. The old
-  # value was chosen to stay "within the WebSocket frame layer", but Phoenix's
-  # `:max_frame_size` defaults to `:infinity` and this socket does not override
-  # it, so no such ceiling exists — the cap is here to bound one frame's
-  # allocation, not to satisfy a transport limit.
+  # value was chosen to stay "within the WebSocket frame layer". That layer does
+  # bound frames, but only **inbound** ones: `WebSockAdapter.upgrade/4` puts a
+  # 10 MB `:max_frame_size` default on every adapter
+  # (`deps/websock_adapter/lib/websock_adapter.ex`), Bandit's own default is
+  # 8 MB (`deps/bandit/lib/bandit/extractor.ex`), and the value is consulted by
+  # the inbound frame parser (`Bandit.Extractor.pop_frame/1`) — the send path
+  # (`Bandit.WebSocket.Socket.send_frame/3`) never reads it. A reply this channel
+  # pushes is outbound, so this cap is not defending against a transport limit;
+  # it bounds one frame's allocation, and the batch count is what it buys.
   @sync_size_limit 1_048_576
 
   # Fetch the agent's current async inbox (queued `agents-send`

@@ -280,6 +280,15 @@ defmodule Nest.Agents.Agent.Init do
     # Every row is archived, so there is nothing to partition and the
     # in-memory system row stays where `build_state/2` put it. The counters
     # are still seeded, so a later append cannot collide with the archive.
+    #
+    # This is the exception to the partition invariant (`history ++ messages`
+    # is the full sequence in order): the in-memory system row stays in the
+    # active list while the archived copy stays in the archive, so index 0
+    # lands in *both*. Dropping the in-memory row instead would leave an active
+    # list with no system row, which the UI's "the active list always contains
+    # at least its system row" invariant relies on. A reader that walks the
+    # archive and the active list as one sequence has to expect the index to
+    # repeat.
     state = put_counters(state, [], last_compaction_index, inherited_count, archived)
     put_crossed_thresholds(state)
   end
@@ -388,7 +397,9 @@ defmodule Nest.Agents.Agent.Init do
   end
 
   defp shift_archived(nil), do: nil
-  defp shift_archived(%{highest_index: highest} = archived), do: %{archived | highest_index: highest + 1}
+
+  defp shift_archived(%{highest_index: highest} = archived),
+    do: %{archived | highest_index: highest + 1}
 
   @doc """
   Resolve the model's context limit by walking three layers,
