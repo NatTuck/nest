@@ -388,7 +388,9 @@ defmodule Nest.Agents.Agent.Init do
   end
 
   defp shift_archived(nil), do: nil
-  defp shift_archived(%{highest_index: highest} = archived), do: %{archived | highest_index: highest + 1}
+
+  defp shift_archived(%{highest_index: highest} = archived),
+    do: %{archived | highest_index: highest + 1}
 
   @doc """
   Resolve the model's context limit by walking three layers,
