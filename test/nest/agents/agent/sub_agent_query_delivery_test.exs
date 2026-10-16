@@ -35,8 +35,9 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
   that proves it, never a poll of the clock: the parked handshakes above, each
   agent's own `{:chat_message, …}` / `{:chat_status, …}` broadcast for anything
   read out of a transcript or waited on (the coordinator is subscribed by
-  `start_agent/1`, the specialist by `start_mocked_specialist/3`), and
-  `SubAgentToolsHelpers.await_idle/1` for the settled turn. The *outcome* is
+  `start_agent/1`, the specialist by `start_mocked_specialist/3`), and this
+  file's own `assert_settled/1` — the idle frame that carries an empty queue —
+  for a turn whose end drains what arrived during it. The *outcome* is
   pinned by the handshake, never by the timeout, and the hold that keeps the
   batch in flight outlives the fence so a slow host fails a fence (a stuck
   turn) rather than silently flipping the outcome.
@@ -127,11 +128,24 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
 
     # Both turns are over, and the reply discharged the obligation the query
     # created (a give-up notice would be in the coordinator's inbox instead).
-    # One fence per agent is enough here: the answer was absorbed into the
-    # batch's own turn (it landed after the batch produced its result), so the
-    # coordinator broadcasts exactly one `idle` — unlike the backgrounding test
-    # below, where the release starts a second turn.
-    await_idle([coordinator_name, specialist_name])
+    #
+    # The fence is the idle frame that carries an *empty* queue, not the first
+    # idle frame. The answer was delivered while the coordinator's turn was
+    # still running, so that turn's end drains it: a turn ends with
+    # `[{:finalize, :clean}, {:drain_inbox}]`, in that order, so the transient
+    # idle that ends the turn reports the queue it is about to drain
+    # (`pendingMessageCount` is `length(live.inbox)` at broadcast time) and the
+    # drain's own turn starts after it. A bare idle fence matches *that* frame
+    # and returns with the drain's turn still in flight, which is the
+    # `:streaming` the teardown's zero-remaining check catches — the precommit
+    # flake this replaces. An empty queue is the state no further drain can
+    # start from, so the fence below is the last turn's.
+    assert_settled(coordinator_name)
+    assert_settled(specialist_name)
+
+    # The fence's claim, read rather than waited on: the coordinator is idle,
+    # which is exactly what the teardown's zero-remaining check demands.
+    assert Agent.get_public_info(coordinator_pid, 1_000).status == :idle
 
     # allowlist: snapshot — messages + owed_senders
     state = :sys.get_state(coordinator_pid, 1_000)
@@ -274,8 +288,11 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # Both coordinator turns are over, the specialist's turn is too, and the reply
     # discharged the obligation the query created (a give-up notice would be in the
     # coordinator's inbox instead).
-    await_idle(coordinator_name)
-    await_idle(specialist_name)
+    # The same settled fence as the test above: a turn end that drains publishes
+    # an idle frame before the drain's own turn runs, so the fence is the
+    # empty-queue idle rather than the first queued one.
+    assert_settled(coordinator_name)
+    assert_settled(specialist_name)
 
     # allowlist: snapshot — messages + owed_senders
     state = :sys.get_state(coordinator_pid, 1_000)
@@ -286,6 +303,18 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # Delivered exactly once: the backgrounding did not duplicate the answer and
     # the batch's late result did not lose it.
     assert Enum.count(agent_texts(coordinator_pid), &(&1 =~ "the specialist answer")) == 1
+  end
+
+  # The idle fence for a wait that can span a turn end that drains: the agent's
+  # idle frame carrying an *empty* queue, which is the state no further drain can
+  # start from. `SubAgentToolsHelpers.await_idle/1`'s bare frame is the *first*
+  # queued idle — `Nest.Agents.Agent.IdleFenceTest` pins that contract, and it is
+  # right for a wait that spans a single turn. This is the fence for a wait that
+  # spans the drained turn, where that first frame is the transient one.
+  defp assert_settled(names) when is_list(names), do: Enum.each(names, &assert_settled/1)
+
+  defp assert_settled(name) do
+    assert_receive {:chat_status, %{name: ^name, status: "idle", pendingMessageCount: 0}}, 1_000
   end
 
   # The coordinator's script: it queries the specialist, then answers the request
