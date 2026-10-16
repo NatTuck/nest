@@ -80,6 +80,14 @@ export function agentCacheStreamingSetters(set, get) {
               status: cache.status,
               agentState: payload.status || cache.agentState,
               lastIndex,
+              // The count the server reports for the active list, which a
+              // `chat:sync` reply carries too. The drain compares the reply's
+              // own count against the cache, and `ChatPage` compares this one to
+              // tell "still filling" from "genuinely empty".
+              messageCount:
+                typeof payload.messageCount === "number"
+                  ? payload.messageCount
+                  : cache.messageCount,
               contextLimit: payload.contextLimit ?? cache.contextLimit,
               contextLimitSource:
                 payload.contextLimitSource ?? cache.contextLimitSource,

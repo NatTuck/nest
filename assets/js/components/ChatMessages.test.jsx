@@ -54,12 +54,26 @@ function messagesArea(overrides = {}) {
 describe("ChatMessages", () => {
   beforeEach(cleanup);
 
-  it("shows the empty state when there are no messages and no partial", () => {
-    render(messagesArea());
+  it("shows the empty state, the loading state, and content over both", () => {
+    const { rerender } = render(messagesArea());
 
     expect(screen.getByText("Start a conversation")).toBeInTheDocument();
     expect(screen.queryByTestId("messages-list")).toBeNull();
     expect(screen.queryByTestId("streaming-message")).toBeNull();
+
+    // The same slot, with the conversation known to be on its way. An empty
+    // transcript here would claim the agent has nothing to say.
+    rerender(messagesArea({ loading: true }));
+
+    expect(screen.getByText("Loading conversation...")).toBeInTheDocument();
+    expect(screen.queryByText("Start a conversation")).toBeNull();
+
+    // Content wins over the flag: a caller that reports loading while rows are
+    // in hand still shows the rows.
+    rerender(messagesArea({ loading: true, messages: [{ index: 0 }] }));
+
+    expect(screen.getByTestId("messages-list")).toBeInTheDocument();
+    expect(screen.queryByText("Loading conversation...")).toBeNull();
   });
 
   it("renders the message list and streaming bubble whenever there is active content", () => {

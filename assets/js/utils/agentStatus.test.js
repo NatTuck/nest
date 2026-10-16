@@ -42,6 +42,27 @@ describe("agentStatusDot", () => {
     }
   });
 
+  it("maps the statuses the client writes itself", () => {
+    // Neither comes from a status broadcast: `stopped` arrives on the
+    // `agent:stopped` lifecycle event, and `connecting` is the state
+    // `setAgentConnecting` writes before the channel has answered. Both are
+    // known values, so neither may fall through to the unknown-status dot —
+    // that indicator means "this client does not recognise the value", which
+    // cannot be true of a value the client wrote.
+    assert.deepStrictEqual(agentStatusDot("stopped"), {
+      className: "bg-slate-500",
+      label: "Stopped",
+    });
+    assert.deepStrictEqual(agentStatusDot("connecting"), {
+      className: "border-2 border-gray-400 animate-pulse",
+      label: "Connecting",
+    });
+    assert.notStrictEqual(
+      agentStatusDot("connecting").className,
+      agentStatusDot(undefined).className,
+    );
+  });
+
   it("maps each working status to its dot and label", () => {
     const expected = {
       idle: { className: "bg-gray-300", label: "Idle" },
@@ -110,7 +131,10 @@ describe("agentStatusDot", () => {
   });
 
   it("keeps grey exclusive to idle", () => {
-    const greyUsers = SERVER_STATUSES.filter((s) =>
+    // Over every status this module knows, not just the server's: a client
+    // status added later must not be able to pass itself off as a settled idle
+    // agent either.
+    const greyUsers = AGENT_STATUSES.filter((s) =>
       agentStatusDot(s).className.includes("bg-gray-300"),
     );
     assert.deepStrictEqual(greyUsers, ["idle"]);

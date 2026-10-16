@@ -1,11 +1,13 @@
 defmodule Nest.Agents.AgentInitSeedTest do
   @moduledoc """
-  `Init.seed_from_db/4`'s compaction-count derivation.
+  `Init.seed_from_db/5`'s compaction-count derivation.
 
-  The collapsed-history card renders the running compaction count, which
-  must survive a restart without loading the archive. A clone's preload
-  is its parent's *visible* messages only, so the inherited marker rows
-  are not in it; the count arrives as the fourth argument instead.
+  The collapsed-history card renders the running compaction count, which must
+  survive a restart without loading the archive. A clone's preload is its
+  parent's *visible* messages only, so the inherited marker rows are not in it.
+  The count is the largest of three sources: the marker rows in the preload, the
+  archived summary's marker count (which covers a clone's inherited prefix
+  without reading it), and the `:inherited_compaction_count` attribute.
   """
 
   use ExUnit.Case, async: true

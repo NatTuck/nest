@@ -126,6 +126,7 @@ export function ChatPage() {
   // shallow comparison short-circuits.
   const {
     status,
+    messageCount,
     agentState,
     availableModes,
     defaultMode,
@@ -151,6 +152,10 @@ export function ChatPage() {
       const cache = state.agentsCache[name];
       return {
         status: cache?.status ?? "disconnected",
+        // The active row count the server last reported, which the transcript's
+        // loading window compares against the cache. `null` means no payload
+        // has reported one, which is not the same as zero.
+        messageCount: cache?.messageCount ?? null,
         agentState: cache?.agentState ?? "idle",
         availableModes: cache?.modes ?? EMPTY_MODES,
         defaultMode: cache?.defaultMode ?? "chat",
@@ -298,6 +303,25 @@ export function ChatPage() {
     waitingForResponse,
     compacting,
   );
+
+  // The transcript's loading window: the channel is joined (or joining) and the
+  // cache is still short of what the server says it holds, so the conversation
+  // is on its way rather than absent. For a cold agent that window spans the
+  // join, the process start, and every sync batch of the drain. Claiming the
+  // conversation is empty during it is what makes a slow switch read as a click
+  // that did nothing.
+  //
+  // The server's `messageCount` is what separates the two, and an absent one
+  // (no payload has reported it) means "unknown", not "none": an empty cache is
+  // evidence of an empty conversation only once the server has counted zero
+  // rows. The active list usually holds at least its system row, but not always
+  // — an agent whose whole sequence is archived and whose archive has no system
+  // row reports 0 — and keying off `messages.length === 0` alone left that
+  // transcript on "Loading conversation..." forever.
+  const conversationLoading =
+    (status === "connecting" || status === "connected") &&
+    !partial &&
+    (typeof messageCount !== "number" || messages.length < messageCount);
 
   // The hook only uses the `trigger` value as a dependency
   // for its `useEffect` (it doesn't render the text), so we
@@ -462,7 +486,7 @@ export function ChatPage() {
 
   // Show initial loading state while we attempt first join
   if (isUnknown) {
-    return <ChatLoading />;
+    return <ChatLoading name={name} />;
   }
 
   // Input is disabled only when the connection is down. While the
@@ -589,6 +613,7 @@ export function ChatPage() {
             onLoadHistory={loadHistoryPage}
             onLoadOlder={loadOlderHistory}
             name={name}
+            loading={conversationLoading}
             setScrollContainerEl={setScrollContainerEl}
             setMessagesEndEl={setMessagesEndEl}
           />

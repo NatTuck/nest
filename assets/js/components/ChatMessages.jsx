@@ -22,6 +22,7 @@ export function ChatMessages({
   onLoadHistory,
   onLoadOlder,
   name,
+  loading,
   setScrollContainerEl,
   setMessagesEndEl,
 }) {
@@ -45,7 +46,9 @@ export function ChatMessages({
         />
       )}
 
-      {messages.length === 0 && !partial ? (
+      {!hasActive && loading ? (
+        <ConversationLoading />
+      ) : !hasActive ? (
         <div className="text-center py-12 text-gray-400">
           <svg
             className="w-16 h-16 mx-auto mb-4 opacity-50"
@@ -72,6 +75,36 @@ export function ChatMessages({
       )}
 
       <div ref={setMessagesEndEl} />
+    </div>
+  );
+}
+
+/**
+ * The transcript's loading state: a conversation is on its way, but no row has
+ * arrived yet.
+ *
+ * Deliberately distinct from the empty state. For a cold agent the window spans
+ * the channel join, the agent process starting, and every sync batch of the
+ * drain, and "Start a conversation" is a claim about the agent's history —
+ * making that claim during the window is what reads as a click that did
+ * nothing.
+ *
+ * Whether the cache is still filling is the caller's call, not this component's.
+ * It cannot be read off an empty `messages`: the active list does not always
+ * contain a system row (an agent whose whole sequence is archived and whose
+ * archive has no system row reports 0), so an empty list is not by itself
+ * evidence of an empty conversation. Hence `loading` as a prop, computed by
+ * `ChatPage` from the server's row count.
+ */
+function ConversationLoading() {
+  return (
+    <div
+      className="flex flex-col items-center gap-3 py-12"
+      role="status"
+      aria-label="Loading conversation"
+    >
+      <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-blue-600" />
+      <p className="text-sm text-gray-500">Loading conversation...</p>
     </div>
   );
 }

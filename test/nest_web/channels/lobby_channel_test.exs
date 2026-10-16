@@ -400,12 +400,18 @@ defmodule NestWeb.LobbyChannelTest do
       AgentTestHelpers.ensure_cleanup(name)
 
       # The frame rides the space topic (#41) and the channel forwards it to
-      # this client, so it arrives as a push on the socket.
-      assert_push "agent:created", %{
-        "name" => ^name,
-        "space_id" => ^space_id,
-        "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-      }
+      # this client, so it arrives as a push on the socket. Same deliberate
+      # 500ms as the `assert_reply` above, for the reason documented there:
+      # the push comes from the synchronous root-agent creation, which is
+      # serialized across the parallel channel-test load, so the 100ms
+      # default is flaky here.
+      assert_push "agent:created",
+                  %{
+                    "name" => ^name,
+                    "space_id" => ^space_id,
+                    "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+                  },
+                  500
     end
 
     test "forwards provider from the model params to the created agent" do
@@ -428,10 +434,15 @@ defmodule NestWeb.LobbyChannelTest do
       assert model_name(info.model) == "qwen3.5-plus"
       assert model_provider(info.model) == "model-studio"
 
-      assert_push "agent:created", %{
-        "name" => ^name,
-        "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-      }
+      # Same deliberate 500ms as the sibling test above: the push comes from
+      # the synchronous root-agent creation, serialized across the parallel
+      # channel-test load, so the 100ms default is flaky here.
+      assert_push "agent:created",
+                  %{
+                    "name" => ^name,
+                    "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+                  },
+                  500
     end
 
     test "blueprint_id drives the root agent's vocation over the default" do

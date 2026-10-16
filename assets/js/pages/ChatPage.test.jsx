@@ -255,7 +255,10 @@ describe("ChatPage background jobs tab", () => {
     // The panel is not in the message flow, so the command is not
     // rendered until its tab is selected.
     expect(screen.queryByText("sleep 30")).toBeNull();
-    expect(screen.getByText("Start a conversation")).toBeInTheDocument();
+    // This cache is joined with nothing loaded yet, so what the message area
+    // shows is its loading state (see `ChatMessages`' empty slot) — the point
+    // here being that it is the message area, not the jobs panel.
+    expect(screen.getByText("Loading conversation...")).toBeInTheDocument();
   });
 
   it("swaps the message list for the jobs panel when its tab is selected", () => {
@@ -264,7 +267,8 @@ describe("ChatPage background jobs tab", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Background jobs (1)" }));
 
     expect(screen.getByText("sleep 30")).toBeInTheDocument();
-    expect(screen.queryByText("Start a conversation")).toBeNull();
+    // The message area is unmounted, whatever state it was in.
+    expect(screen.queryByText("Loading conversation...")).toBeNull();
   });
 
   it("shows an empty state on the jobs tab when there are no jobs", () => {
@@ -550,14 +554,19 @@ describe("ChatPage loading and empty states", () => {
     mockAgentsCache = {};
   });
 
-  it("shows a 'Loading agent...' spinner when the agent is unknown", () => {
-    // No cache entry for the agent — should show the loading state.
+  it("names the agent in the loading state while its cache is unknown", () => {
+    // No cache entry for the agent — the whole page is the loading state, and
+    // it names the agent the click asked for.
     renderChat();
 
-    expect(screen.getByText("Loading agent...")).toBeInTheDocument();
+    expect(screen.getByText("Loading test-agent...")).toBeInTheDocument();
   });
 
-  it("shows a 'Start a conversation' empty state when there are no messages", () => {
+  it("claims a conversation is loading only while the channel is joined", () => {
+    // No payload has reported a row count, so the cache's completeness is
+    // unknown: "joined, nothing to show yet" is a load in progress rather than
+    // an empty conversation. Claiming otherwise is what makes a slow switch read
+    // as a click that did nothing.
     mockAgentsCache = {
       "test-agent": {
         status: "connected",
@@ -568,9 +577,68 @@ describe("ChatPage loading and empty states", () => {
       },
     };
 
+    const { unmount } = renderChat();
+
+    expect(screen.getByText("Loading conversation...")).toBeInTheDocument();
+    expect(screen.queryByText("Start a conversation")).toBeNull();
+
+    // Not connected: nothing is on its way, so the transcript keeps the empty
+    // state — the connection banner is what explains the silence.
+    unmount();
+    mockAgentsCache = {
+      "test-agent": {
+        status: "disconnected",
+        agentState: "idle",
+        messages: [],
+        partial: null,
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
     renderChat();
 
     expect(screen.getByText("Start a conversation")).toBeInTheDocument();
+    expect(screen.queryByText("Loading conversation...")).toBeNull();
+  });
+
+  it("reads the server's row count to tell filling from genuinely empty", () => {
+    // An agent whose whole sequence is archived and whose archive has no system
+    // row reports 0 active rows, so the transcript is honestly empty rather than
+    // loading — keying off `messages.length === 0` alone left it on "Loading
+    // conversation..." forever.
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [],
+        partial: null,
+        messageCount: 0,
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    const { unmount } = renderChat();
+
+    expect(screen.getByText("Start a conversation")).toBeInTheDocument();
+    expect(screen.queryByText("Loading conversation...")).toBeNull();
+
+    // The server counting rows we do not hold yet is a load in progress.
+    unmount();
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [],
+        partial: null,
+        messageCount: 4,
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    expect(screen.getByText("Loading conversation...")).toBeInTheDocument();
+    expect(screen.queryByText("Start a conversation")).toBeNull();
   });
 
   it("renders the partial message when one is present", () => {

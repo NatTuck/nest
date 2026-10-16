@@ -510,10 +510,24 @@ defmodule NestWeb.AgentChannel do
     end
   end
 
-  # ~64kB soft cap for chat:sync responses — enough headroom for a
-  # reasonable batch of messages without blowing past the WebSocket
-  # frame layer. Always sends at least one message if any remain.
-  @sync_size_limit 65_536
+  # Soft cap on one chat:sync reply. Always sends at least one message if
+  # any remain.
+  #
+  # This is deliberately large. The **batch count** is the dominant cost of a
+  # cold-cache drain (issue #52): every batch costs the client a frame parse, a
+  # merge, a sort and a full re-render of the message list, and costs the
+  # server a walk of the active messages. A 500-message / 15 MB active window
+  # at 64 kB was ~240 sequential round trips; at 1 MiB it is ~16. The old
+  # value was chosen to stay "within the WebSocket frame layer". That layer does
+  # bound frames, but only **inbound** ones: `WebSockAdapter.upgrade/4` puts a
+  # 10 MB `:max_frame_size` default on every adapter
+  # (`deps/websock_adapter/lib/websock_adapter.ex`), Bandit's own default is
+  # 8 MB (`deps/bandit/lib/bandit/extractor.ex`), and the value is consulted by
+  # the inbound frame parser (`Bandit.Extractor.pop_frame/1`) — the send path
+  # (`Bandit.WebSocket.Socket.send_frame/3`) never reads it. A reply this channel
+  # pushes is outbound, so this cap is not defending against a transport limit;
+  # it bounds one frame's allocation, and the batch count is what it buys.
+  @sync_size_limit 1_048_576
 
   # Fetch the agent's current async inbox (queued `agents-send`
   # messages). This is the **resync** frame (issue #27): the queue itself is
@@ -549,12 +563,10 @@ defmodule NestWeb.AgentChannel do
 
     case Agents.get_agent_sync(space_id, name) do
       {:ok, agent} ->
-        serialized =
+        {reply_messages, _bytes} =
           agent.messages
           |> Enum.filter(&index_gt?(&1, last_index))
-          |> Enum.map(&format_message/1)
-
-        {reply_messages, _} = Sync.truncate(serialized, @sync_size_limit)
+          |> Sync.take(@sync_size_limit)
 
         partial = partial_payload(agent.partial, last_index)
 
@@ -653,10 +665,6 @@ defmodule NestWeb.AgentChannel do
   end
 
   defp partial_payload(_, _), do: nil
-
-  defp format_message(message) do
-    Message.to_json(message)
-  end
 
   # Build the model map accepted by `Agents.change_model/3`, preserving
   # the thinking level alongside name/provider.

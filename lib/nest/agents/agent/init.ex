@@ -149,44 +149,88 @@ defmodule Nest.Agents.Agent.Init do
   end
 
   @doc """
-  Seed the agent's `chat_state` from a freshly-loaded DB
-  message sequence. The `preloaded` list is the ordered
-  sequence returned by `Persistence.load_messages/1`
-  (active + history + compaction markers). `last_compaction_index`
-  is the runtime mirror of `agents.last_compaction_index`.
+  Seed the agent's `chat_state` from the loaded message sequence.
 
-  Splits the sequence into `state.chat_state.history` (rows
-  with `index <= last_compaction_index`) and
-  `state.chat_state.messages` (rows strictly greater). The
-  compaction marker row at the boundary lands in `history`
-  (the `<=` rule).
+  `preloaded` is the **active slice** — the rows above
+  `last_compaction_index`, as returned by
+  `Persistence.build_attrs_for_start/2`. The rows at or below the boundary
+  are the archive, which the runtime never holds: `ChatState` keeps only
+  `messages` and the archive is derived on demand by
+  `Nest.Persistence.History`. So the load path reads the archived rows as a
+  projection and passes the three facts it needs about them in `archived`
+  (see `Persistence.Messages.archived_summary/3`): whether a system row
+  exists anywhere in the logical sequence, the highest index the archive
+  reaches, and how many compaction markers sit at or below the boundary.
 
-  Bumps `state.chat_state.next_message_index` to one past the
-  highest stamped index in the loaded list so the next
-  `__append_message__/2` doesn't stamp a colliding index.
+  `archived` may be `nil`, and then those facts are derived from `preloaded`
+  itself — the whole-sequence form that a caller holding the full list (a
+  hand-built fixture, the recovery path) still gets.
 
-  When the persisted sequence has no system row (a legacy
-  pre-system-prompt row), defensively prepends the in-memory
-  system message at index 0 and shifts the boundary up by 1
-  to keep the partition invariant (`history ++ messages ==
-  full sequence in order`).
+  Bumps `state.chat_state.next_message_index` to one past the highest index
+  in the *logical* sequence (`max(active, archived)`) so the next
+  `__append_message__/2` doesn't stamp a colliding index. Reading it from the
+  active slice alone is enough whenever that slice is non-empty, because
+  every active index is above every archived one; the archived maximum
+  matters only for a sequence whose active slice is empty.
+
+  When the persisted sequence has no system row at all (a legacy
+  pre-system-prompt row), defensively prepends the in-memory system message
+  at index 0 and shifts the boundary up by 1 to keep the partition invariant
+  (`active rows == rows above the boundary`).
   """
   @spec seed_from_db(
           Nest.Agents.Agent.t(),
           [Nest.Messages.Message.t()],
           integer(),
-          non_neg_integer()
+          non_neg_integer(),
+          map() | nil
         ) :: Nest.Agents.Agent.t()
-  def seed_from_db(state, preloaded, last_compaction_index, inherited_compaction_count \\ 0)
+  def seed_from_db(
+        state,
+        preloaded,
+        last_compaction_index,
+        inherited_compaction_count \\ 0,
+        archived \\ nil
+      )
 
-  def seed_from_db(state, [], _last_compaction_index, _inherited_compaction_count), do: state
+  # Nothing was loaded and nothing is archived: leave the fresh state alone,
+  # which is the documented contract for a row-less agent. A `-1` boundary with
+  # no rows is the common case here (every brand-new agent), and it must not
+  # reach the prepend path below: there is no system row to *re*-establish, and
+  # shifting a boundary that is already -1 would partition the in-memory
+  # system row away.
+  def seed_from_db(state, [], _last_compaction_index, _inherited_compaction_count, nil),
+    do: state
 
-  def seed_from_db(state, preloaded, last_compaction_index, inherited_compaction_count) do
+  def seed_from_db(state, [], _last_compaction_index, _inherited_compaction_count, %{
+        highest_index: highest
+      })
+      when highest < 0,
+      do: state
+
+  def seed_from_db(state, [], last_compaction_index, inherited_compaction_count, archived) do
+    # An active slice can be empty while the archive is not: every row the
+    # agent has may sit at or below its boundary. There is nothing to
+    # partition, but the counters still have to clear the archive — an
+    # `next_message_index` that did not would stamp an index the archive
+    # already uses, and the unique `(agent_id, message_index)` index would
+    # silently drop the append.
+    seed_with_system_if_needed(
+      state,
+      [],
+      last_compaction_index,
+      inherited_compaction_count,
+      archived
+    )
+  end
+
+  def seed_from_db(state, preloaded, last_compaction_index, inherited_compaction_count, archived) do
     seed_with_system_if_needed(
       state,
       preloaded,
       last_compaction_index,
-      inherited_compaction_count
+      inherited_compaction_count,
+      archived
     )
   end
 
@@ -207,59 +251,56 @@ defmodule Nest.Agents.Agent.Init do
       state,
       Map.get(attrs, :preloaded_messages, []),
       Map.get(attrs, :last_compaction_index, -1),
-      Map.get(attrs, :compaction_count, 0)
+      Map.get(attrs, :compaction_count, 0),
+      Map.get(attrs, :archived_summary)
     )
   end
 
-  # When the in-memory system message is already at position 0
-  # of the preloaded list, partition it as-is into history
-  # and messages.
-  defp seed_with_system_if_needed(state, preloaded, last_compaction_index, inherited_count) do
-    has_system? = Enum.any?(preloaded, &match?({:system, _}, &1))
-
-    if has_system? do
-      do_seed(state, preloaded, last_compaction_index, inherited_count)
+  # Whether the logical sequence carries a system row decides between
+  # partitioning it as-is and the defensive prepend below. The system row may
+  # sit in the archive — a compacted agent's prompt is at index 0, below the
+  # boundary — so the active slice alone cannot answer it; `archived` carries
+  # the answer for the rows that were not loaded. A clone inherits its
+  # parent's system row the same way.
+  defp seed_with_system_if_needed(state, preloaded, boundary, inherited_count, archived) do
+    if has_system_row?(preloaded, archived) do
+      do_seed(state, preloaded, boundary, inherited_count, archived)
     else
-      prepend_system(state, preloaded, last_compaction_index, inherited_count)
+      prepend_system(state, preloaded, boundary, inherited_count, archived)
     end
   end
 
-  defp do_seed(state, preloaded, last_compaction_index, inherited_count) do
+  defp has_system_row?(preloaded, nil), do: Enum.any?(preloaded, &match?({:system, _}, &1))
+
+  defp has_system_row?(preloaded, archived) do
+    archived.has_system_row or Enum.any?(preloaded, &match?({:system, _}, &1))
+  end
+
+  defp do_seed(state, [], last_compaction_index, inherited_count, archived) do
+    # Every row is archived, so there is nothing to partition and the
+    # in-memory system row stays where `build_state/2` put it. The counters
+    # are still seeded, so a later append cannot collide with the archive.
+    #
+    # This is the exception to the partition invariant (`history ++ messages`
+    # is the full sequence in order): the in-memory system row stays in the
+    # active list while the archived copy stays in the archive, so index 0
+    # lands in *both*. Dropping the in-memory row instead would leave an active
+    # list with no system row, which the UI's "the active list always contains
+    # at least its system row" invariant relies on. A reader that walks the
+    # archive and the active list as one sequence has to expect the index to
+    # repeat.
+    state = put_counters(state, [], last_compaction_index, inherited_count, archived)
+    put_crossed_thresholds(state)
+  end
+
+  defp do_seed(state, preloaded, last_compaction_index, inherited_count, archived) do
     messages =
       Enum.filter(preloaded, fn {_role, %{index: idx}} ->
         idx > last_compaction_index
       end)
 
-    # Count of compaction boundaries at or below the current one, so the
-    # collapsed history card can be rendered without loading the archive.
-    # A clone's preload is its parent's *visible* messages only (the
-    # ancestor marker rows live in the shared prefix, not in the preload),
-    # so it cannot see the compactions it inherited; `inherited_count`
-    # carries that lower bound from spawn.
-    compaction_count =
-      max(
-        Enum.count(preloaded, fn
-          {:compaction, %{index: idx}} -> idx <= last_compaction_index
-          _ -> false
-        end),
-        inherited_count
-      )
-
-    highest_index =
-      preloaded
-      |> Enum.map(fn {_role, %{index: idx}} -> idx end)
-      |> Enum.max(fn -> -1 end)
-
-    state = %{
-      state
-      | chat_state: %{
-          state.chat_state
-          | messages: messages,
-            last_compaction_index: last_compaction_index,
-            compaction_count: compaction_count,
-            next_message_index: highest_index + 1
-        }
-    }
+    state = put_counters(state, preloaded, last_compaction_index, inherited_count, archived)
+    state = %{state | chat_state: %{state.chat_state | messages: messages}}
 
     # Rebuild the announced context-threshold set from the persisted
     # notices in the active segment. Without this a BEAM restart would
@@ -268,6 +309,58 @@ defmodule Nest.Agents.Agent.Init do
     # `messages` partition, so a completed compaction still re-arms.
     put_crossed_thresholds(state)
   end
+
+  # The counters the active slice cannot answer on its own: the compaction
+  # count and the highest index of the *logical* sequence.
+  #
+  # The count has three sources, because no single one sees everything: the
+  # active rows carry the markers above the boundary (none count, by the `<=`
+  # rule), `inherited_count` carries what a clone's parent had at spawn, and
+  # `archived` carries the markers that were read as a projection. A clone's
+  # inherited markers live in the shared prefix, so they arrive through the
+  # archive read rather than through its own rows.
+  #
+  # The highest index comes from the active slice whenever it has rows (every
+  # active index is above every archived one), and from the archive when it
+  # does not.
+  defp put_counters(state, preloaded, last_compaction_index, inherited_count, archived) do
+    compaction_count =
+      preloaded
+      |> count_markers(last_compaction_index)
+      |> max(inherited_count)
+      |> max(archived_marker_count(archived))
+
+    highest_index = max(highest_index(preloaded), archived_highest_index(archived))
+
+    %{
+      state
+      | chat_state: %{
+          state.chat_state
+          | last_compaction_index: last_compaction_index,
+            compaction_count: compaction_count,
+            next_message_index: highest_index + 1
+        }
+    }
+  end
+
+  defp count_markers(messages, last_compaction_index) do
+    Enum.count(messages, fn
+      {:compaction, %{index: idx}} -> idx <= last_compaction_index
+      _ -> false
+    end)
+  end
+
+  defp highest_index(messages) do
+    messages
+    |> Enum.map(fn {_role, %{index: idx}} -> idx end)
+    |> Enum.max(fn -> -1 end)
+  end
+
+  defp archived_marker_count(nil), do: 0
+  defp archived_marker_count(archived), do: archived.marker_count
+
+  defp archived_highest_index(nil), do: -1
+  defp archived_highest_index(archived), do: archived.highest_index
 
   # Stamp `live.crossed_thresholds` from the active message list (see
   # `ContextReminder.announced_thresholds/1`). Shared by both seed paths.
@@ -280,7 +373,7 @@ defmodule Nest.Agents.Agent.Init do
   # but no persisted system row. Shift the preloaded list
   # up by one and seed the in-memory system message at
   # position 0 so the system prompt survives BEAM restart.
-  defp prepend_system(state, preloaded, last_compaction_index, inherited_count) do
+  defp prepend_system(state, preloaded, last_compaction_index, inherited_count, archived) do
     [system | _] = state.chat_state.messages
 
     shifted =
@@ -291,9 +384,22 @@ defmodule Nest.Agents.Agent.Init do
     # After the prepend the system row sits at index 0, so
     # the partition needs to shift the boundary up by one as
     # well — the rows the caller persisted are now at their
-    # original index + 1.
-    do_seed(state, [system | shifted], last_compaction_index + 1, inherited_count)
+    # original index + 1. Only the archived maximum moves with the shift
+    # (a uniform renumber cannot change how many markers there are, and this
+    # path is only reached when there is no system row anywhere).
+    do_seed(
+      state,
+      [system | shifted],
+      last_compaction_index + 1,
+      inherited_count,
+      shift_archived(archived)
+    )
   end
+
+  defp shift_archived(nil), do: nil
+
+  defp shift_archived(%{highest_index: highest} = archived),
+    do: %{archived | highest_index: highest + 1}
 
   @doc """
   Resolve the model's context limit by walking three layers,

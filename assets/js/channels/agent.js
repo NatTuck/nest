@@ -179,9 +179,32 @@ function requestSync(agentId, opts = {}) {
     getStore().syncAgentMessages(agentId, resp);
 
     const updatedCache = getStore().agentsCache[agentId];
-    if (updatedCache) {
-      requestSync(agentId, { lastIndex: updatedCache.lastIndex });
+    if (!updatedCache) {
+      return;
     }
+
+    // The server counts the rows the client should be holding, so holding all
+    // of them is the drain's success condition.
+    if (
+      typeof resp.messageCount === "number" &&
+      updatedCache.messages.length >= resp.messageCount
+    ) {
+      return;
+    }
+
+    // Otherwise keep going only while the cache reaches past the bound this
+    // request used. The compaction path deliberately asks from the archived
+    // boundary, which sits *below* a tail the client already holds, so its
+    // reply is filled with rows the client already has: "this reply added
+    // nothing" there does not mean the drain is finished — the next request,
+    // made from the tail, is the one that fetches what is above it. When the
+    // bound *is* the tail, a reply that added nothing means the server has
+    // nothing above it, which is where the loop ends.
+    if (updatedCache.lastIndex <= lastIndex) {
+      return;
+    }
+
+    requestSync(agentId, { lastIndex: updatedCache.lastIndex });
   });
 }
 
