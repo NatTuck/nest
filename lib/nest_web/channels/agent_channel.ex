@@ -510,10 +510,19 @@ defmodule NestWeb.AgentChannel do
     end
   end
 
-  # ~64kB soft cap for chat:sync responses — enough headroom for a
-  # reasonable batch of messages without blowing past the WebSocket
-  # frame layer. Always sends at least one message if any remain.
-  @sync_size_limit 65_536
+  # Soft cap on one chat:sync reply. Always sends at least one message if
+  # any remain.
+  #
+  # This is deliberately large. The **batch count** is the dominant cost of a
+  # cold-cache drain (issue #52): every batch costs the client a frame parse, a
+  # merge, a sort and a full re-render of the message list, and costs the
+  # server a walk of the active messages. A 500-message / 15 MB active window
+  # at 64 kB was ~240 sequential round trips; at 1 MiB it is ~16. The old
+  # value was chosen to stay "within the WebSocket frame layer", but Phoenix's
+  # `:max_frame_size` defaults to `:infinity` and this socket does not override
+  # it, so no such ceiling exists — the cap is here to bound one frame's
+  # allocation, not to satisfy a transport limit.
+  @sync_size_limit 1_048_576
 
   # Fetch the agent's current async inbox (queued `agents-send`
   # messages). This is the **resync** frame (issue #27): the queue itself is
@@ -549,12 +558,10 @@ defmodule NestWeb.AgentChannel do
 
     case Agents.get_agent_sync(space_id, name) do
       {:ok, agent} ->
-        serialized =
+        {reply_messages, _bytes} =
           agent.messages
           |> Enum.filter(&index_gt?(&1, last_index))
-          |> Enum.map(&format_message/1)
-
-        {reply_messages, _} = Sync.truncate(serialized, @sync_size_limit)
+          |> Sync.take(@sync_size_limit)
 
         partial = partial_payload(agent.partial, last_index)
 
@@ -653,10 +660,6 @@ defmodule NestWeb.AgentChannel do
   end
 
   defp partial_payload(_, _), do: nil
-
-  defp format_message(message) do
-    Message.to_json(message)
-  end
 
   # Build the model map accepted by `Agents.change_model/3`, preserving
   # the thinking level alongside name/provider.
