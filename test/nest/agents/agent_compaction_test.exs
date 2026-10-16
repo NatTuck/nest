@@ -559,11 +559,9 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert sys_text =~ "Test programmer prompt.",
              "expected fresh system message to contain the rendered system prompt"
 
-      # The carried tool_call was executed by the post-compaction
-      # chat turn (the mid-turn resume), so the
-      # tool_call + tool_result are consumed and replaced
-      # with the final assistant response. Assert the tail
-      # carries an assistant message.
+      # The resumed turn generated over the new segment — the summary plus the
+      # compaction's own state — so the active list ends on its assistant
+      # response. The compact call and its result are in the archive, not here.
       assert Enum.any?(messages, &match?({:assistant, _}, &1)),
              "expected a final assistant message in the active chat"
 

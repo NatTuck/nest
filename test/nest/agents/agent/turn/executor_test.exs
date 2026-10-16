@@ -493,10 +493,13 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
     end
 
     test "commit_compaction with an empty summary returns commit_error" do
+      # The four keys the executor reads, `preserve` included: this fixture must
+      # not pass only because validation fails before that read.
       data = %{
         summary_text: "",
         summary_assistant: {:assistant, %Nest.Messages.Assistant{parts: [], api_logs: []}},
-        carried_entry: nil
+        carried_entry: nil,
+        preserve: nil
       }
 
       assert {_state, {:commit_error, _reason}} = run({:commit_compaction, data})

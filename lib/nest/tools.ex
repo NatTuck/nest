@@ -273,10 +273,10 @@ defmodule Nest.Tools do
             "type" => "string",
             "maxLength" => @context_compact_cover_limit,
             "description" =>
-              "Short guidance (100 characters or fewer) naming what the compaction " <>
-                "summary must cover — e.g. the current task and the decisions made. " <>
-                "A longer value is refused: put literal content you want carried into " <>
-                "the summary in `preserve` instead."
+              "Short guidance (#{@context_compact_cover_limit} characters or fewer) " <>
+                "naming what the compaction summary must cover — e.g. the current " <>
+                "task and the decisions made. A longer value is refused: put literal " <>
+                "content you want carried into the summary in `preserve` instead."
           },
           "preserve" => %{
             "type" => "string",

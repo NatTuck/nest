@@ -141,12 +141,13 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
     end
   end
 
-  # The compaction did not start. The `context-compact` call and its synthetic
-  # `"Compacting now."` result are already in the transcript — they are
-  # persisted before the plan runs, so a staging failure cannot un-write them —
-  # and a claim nothing follows up on is what this project's transparency rule
-  # exists to prevent. The broadcast tells a connected UI; this row tells the
-  # agent and anyone reading the transcript.
+  # The compaction did not start, and the transcript says so: the broadcast tells
+  # a connected UI, this row tells the agent and anyone reading the transcript.
+  # Every staging failure lands here — automatic, `/compact`, workspace notice,
+  # reserve deferral and the `context-compact` tool — so the text names only the
+  # failure and never the tool. (On the tool path it also answers the claim that
+  # call's own `"Compacting now."` result already made, which is what makes a
+  # silent drop impossible there.)
   #
   # Deliberately not a second tool result: that would answer the same tool call
   # twice, which the wire's pairing rule rejects.

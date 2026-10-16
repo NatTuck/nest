@@ -73,25 +73,6 @@ defmodule Nest.Agents.Agent.ToolLoop do
     end
   end
 
-  @doc """
-  Returns true if `tool_call` is a `context-compact` invocation.
-  Exposed for `BatchSizer.preflight/2` callers that need to
-  strip `context-compact` from their preflight input.
-  """
-  @spec context_compact?(ToolCall.t()) :: boolean()
-  def context_compact?(%ToolCall{name: "context-compact"}), do: true
-
-  def context_compact?(_), do: false
-
-  @doc """
-  Strip `context-compact` calls out of a tool-call list.
-  Returns every other call unchanged.
-  """
-  @spec strip_context_compact([ToolCall.t()]) :: [ToolCall.t()]
-  def strip_context_compact(tool_calls) do
-    Enum.reject(tool_calls, &context_compact?/1)
-  end
-
   # Private — batch dispatch.
 
   # Split the tool-call batch by tool family and route
