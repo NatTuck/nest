@@ -29,7 +29,7 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
 
       assert {:user,
               %User{
-                parts: [%Part.Text{text: "Notice."}],
+                parts: [%Part.Text{text: "[nest notice]\nNotice."}],
                 metadata: %{"context_threshold" => "p25"}
               }} = second
     end
@@ -42,7 +42,8 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
 
   describe ":user_agent direction" do
     test "trailing :user builds a single [assistant(notice + ack)]" do
-      assert {:ok, [{:assistant, %Assistant{parts: [%Part.Text{text: "Notice. Ack."}]}}]} =
+      assert {:ok,
+              [{:assistant, %Assistant{parts: [%Part.Text{text: "[nest notice]\nNotice. Ack."}]}}]} =
                NoticePairInjector.build_pair([user(0)], spec(), :user_agent)
     end
 
@@ -50,8 +51,12 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
       spec = %{kind: :budget, attention: "Tool limit?", notice: "Last round."}
 
       assert {:ok,
-              [{:assistant, %Assistant{parts: [%Part.Text{text: "Last round. Okay, noted."}]}}]} =
-               NoticePairInjector.build_pair([user(0)], spec, :user_agent)
+              [
+                {:assistant,
+                 %Assistant{
+                   parts: [%Part.Text{text: "[nest notice]\nLast round. Okay, noted."}]
+                 }}
+              ]} = NoticePairInjector.build_pair([user(0)], spec, :user_agent)
     end
 
     test "trailing :tool builds a single [assistant(notice + ack)]" do
@@ -64,7 +69,7 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
     test "trailing :assistant (no tool_use) builds [user(notice), assistant(ack)]" do
       assert {:ok,
               [
-                {:user, %User{parts: [%Part.Text{text: "Notice."}]}},
+                {:user, %User{parts: [%Part.Text{text: "[nest notice]\nNotice."}]}},
                 {:assistant, %Assistant{parts: [%Part.Text{text: "Ack."}]}}
               ]} = NoticePairInjector.build_pair([assistant(0)], spec(), :user_agent)
     end
@@ -83,7 +88,10 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
       # is the same `:user_agent` rule `build_pair/3` uses, and lands the notice
       # and its acknowledgement in one message.
       for messages <- [[user(0)], [tool(0)]] do
-        assert [{:assistant, %Assistant{parts: [%Part.Text{text: "Notice. Ack."}]}}] =
+        assert [
+                 {:assistant,
+                  %Assistant{parts: [%Part.Text{text: "[nest notice]\nNotice. Ack."}]}}
+               ] =
                  NoticePairInjector.notice_record(messages, "Notice.", "Ack.")
       end
     end
@@ -93,7 +101,7 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
       # there too (`[user, assistant]` is the opening shape of any conversation).
       for messages <- [[assistant(0)], []] do
         assert [
-                 {:user, %User{parts: [%Part.Text{text: "Notice."}]}},
+                 {:user, %User{parts: [%Part.Text{text: "[nest notice]\nNotice."}]}},
                  {:assistant, %Assistant{parts: [%Part.Text{text: "Ack."}]}}
                ] = NoticePairInjector.notice_record(messages, "Notice.", "Ack.")
       end

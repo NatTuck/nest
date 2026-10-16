@@ -28,6 +28,25 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   cancellation record counts (`Machine.Stopping`) and what a *death* closes: a
   result names its own ids, while a death has only this entry to name them from.
 
+  ## When the deferral fires
+
+  Two moments arm it, and they are the two ways a batch can become
+  interruptible with something already waiting on it:
+
+    * a message arrives while the batch executes — the arrival path
+      (`Inbox.busy_delivery/6`) asks `backgroundable?/1` and runs `step/3`;
+    * the batch's worker registers — `deferred_actions/1` (issue #103). A
+      message that arrived while the model was still streaming the response
+      that asks for the batch is queued by the streaming arm *before* the batch
+      exists, and nothing asks again once it does: the batch then ran to
+      completion with the message waiting behind it, and the deferral fired
+      only when the *next* arrival happened to land during the batch. The
+      machine asks the same question at the moment it becomes interruptible,
+      so the delivery is not one message late.
+
+  Both moments run the same `step/3`, so a delivery that cannot be backgrounded
+  (no batch to move, or one the context cannot hold) queues in exactly one way.
+
   ## The guard (decision D3)
 
   Backgrounding is only correct when there is something to background: the
@@ -64,6 +83,7 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
 
   alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Machine.Boundary
   alias Nest.Agents.Agent.Machine.Delivery
   alias Nest.Agents.Agent.Machine.Phase
   alias Nest.Agents.Agent.Turn.Dispatch
@@ -87,6 +107,38 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   end
 
   def backgroundable?(_machine), do: false
+
+  @doc """
+  The actions that fire the deferral at the moment a batch becomes
+  interruptible (issue #103).
+
+  `backgroundable?/1` is otherwise only ever *asked* by the arrival path
+  (`Inbox.busy_delivery/6` → `drain_backgroundable/1`), which asks it once,
+  when a message arrives. A message that arrives *before* the batch is
+  interruptible — while the model is still streaming the response that asks
+  for it — is queued by the streaming arm, and nothing asks again: the batch
+  then runs to completion with the message waiting behind it, and the deferral
+  fires only when the *next* arrival happens to land while the batch executes.
+  That is the reported shape: the delivery is one message late and the second
+  arrival appears to fix it.
+
+  The machine's own transition into the interruptible state is therefore the
+  second place the question belongs. A batch that starts with messages already
+  queued backgrounds itself and delivers them, exactly as it would have if they
+  had arrived a moment later: `:drain_inbox` in `:executing_tools` runs the same
+  `step/3` the arrival path runs, including its no-op arms, so a delivery that
+  does not fit leaves the entries queued exactly as before.
+
+  Empty for every machine that is not an interruptible batch — the HTTP worker
+  of an in-flight request and the compactor's worker included, so a request in
+  flight is never interrupted — and empty when nothing is queued.
+  """
+  @spec deferred_actions(Machine.t()) :: [Machine.action()]
+  def deferred_actions(m) do
+    if backgroundable?(m) and Boundary.inbox_count(m.work.ctx) > 0,
+      do: [{:drain_inbox}],
+      else: []
+  end
 
   @doc """
   The transition: background the batch and continue the turn with the
@@ -207,7 +259,7 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   `{:deliver_backgrounded, …}` only *enqueues* the notice. When the turn that
   backgrounded the batch has already ended, the machine is `:idle` and nothing
   else would ever wake it — the notice would sit in the queue forever, and an
-  `agents-wait-for-idle` on the idle agent would resolve with the pre-result answer
+  `agents-wait` on the idle agent would resolve with the pre-result answer
   (breaking issue #36's headline promise and invariant 1). The `{:drain_inbox}`
   is what starts the notice's own turn, exactly as `Transitions.child_event/2`
   drains a child's answer into an idle parent. Every other phase either has a

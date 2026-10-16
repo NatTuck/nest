@@ -135,7 +135,7 @@ defmodule Nest.Agents.Agent.Machine.Delivery do
   defp build_notice(m, base, atom, used, crossed) do
     compact? = ContextReminder.compact_available?(m.work.ctx.tools)
     notice = ContextReminder.notice_text(atom, compact?)
-    ack = ContextReminder.ack_text_for(atom, compact?)
+    ack = ContextReminder.ack_text()
 
     spec = %{kind: :context, attention: "Context?", notice: notice, ack: ack, threshold: atom}
 

@@ -109,19 +109,25 @@ defmodule Nest.Tools.SchemaTest do
 
     test "the wait and fetch schemas" do
       # Issue #62: the wait is synchronisation only and the fetch consumes;
-      # issue #54: the wait is non-blocking by default with an explicit
-      # blocking mode. An empty `names` is meaningful, so nothing is required.
-      wait = Tools.get_function("agents-wait-for-idle", Mounts.new("/tmp", nil))
+      # issue #54: the wait never blocks, so it offers no way to block — no
+      # `block` property at all, not merely a `false` default. An empty
+      # `names` is meaningful, so nothing is required.
+      wait = Tools.get_function("agents-wait", Mounts.new("/tmp", nil))
       props = wait.parameters_schema["properties"]
-      assert wait.name == "agents-wait-for-idle"
+      assert wait.name == "agents-wait"
       assert props["names"]["type"] == "array"
       assert props["names"]["items"]["type"] == "string"
       assert props["timeout"]["type"] == "integer"
-      assert {props["all"]["type"], props["block"]["type"]} == {"boolean", "boolean"}
+      assert props["all"]["type"] == "boolean"
+      refute Map.has_key?(props, "block")
+      refute wait.description =~ "block"
       assert (wait.parameters_schema["required"] || []) == []
       assert wait.description =~ "carries NO message content"
       assert wait.description =~ "returns immediately"
       assert wait.description =~ "not an error"
+      # The wait ends the caller's turn whenever it leaves a watch outstanding;
+      # the description has to say so, because the model cannot undo it.
+      assert wait.description =~ "ends your turn"
       # Only a peer this agent queried owes it anything; a peer that owes
       # someone else nothing relevant to this caller may be idle too.
       assert wait.description =~ "owes no replies"
@@ -131,11 +137,76 @@ defmodule Nest.Tools.SchemaTest do
       assert wait.description =~ "give-up reaches you as a runtime notice"
       assert wait.description =~ "only records the refusal"
 
+      # `shell-wait` is the same shape: a watch, never a block.
+      shell_wait = Tools.get_function("shell-wait", Mounts.new("/tmp", nil))
+      shell_props = shell_wait.parameters_schema["properties"]
+      refute Map.has_key?(shell_props, "block")
+      refute shell_wait.description =~ "block"
+      assert shell_props["timeout"]["type"] == "integer"
+      assert shell_wait.parameters_schema["required"] == ["id"]
+
       fetch = Tools.get_function("agents-last-message", Mounts.new("/tmp", nil))
       assert fetch.name == "agents-last-message"
       assert fetch.parameters_schema["properties"]["name"]["type"] == "string"
       assert fetch.parameters_schema["required"] == ["name"]
       assert fetch.description =~ "consumed"
+    end
+
+    test "the history schema states its indexing rule and its search shape" do
+      # Issue #22. The negative-index rule and the search result's shape are
+      # behaviour the model has to know to use the tool at all, so they are
+      # pinned as text here, next to the other model-facing promises.
+      history = Tools.get_function("agents-history", Mounts.new("/tmp", nil))
+      props = history.parameters_schema["properties"]
+
+      assert history.name == "agents-history"
+      assert Enum.sort(Map.keys(props)) == ["length", "name", "search", "start_index"]
+      assert (history.parameters_schema["required"] || []) == []
+      assert {props["start_index"]["type"], props["length"]["type"]} == {"integer", "integer"}
+      assert props["search"]["type"] == "string"
+
+      # A bare read is the last message, which is what `start_index: -1` spells
+      # out; the window runs forward from the resolved index.
+      assert props["start_index"]["description"] =~ "Defaults to -1"
+      assert props["start_index"]["description"] =~ "Negative counts from the end"
+      assert history.description =~ "counts from the end"
+      assert history.description =~ "-1 is the last message"
+      assert history.description =~ "start_index: -5, length: 5"
+      assert history.description =~ "runs past the end"
+      assert history.description =~ "never a silent truncation"
+
+      # The search result's shape, key by key.
+      assert history.description =~ "case-insensitive literal substring"
+      assert history.description =~ ~s("matches")
+      assert history.description =~ ~s("index": N)
+      assert history.description =~ ~s("role")
+      assert history.description =~ ~s("text")
+      assert history.description =~ ~s("text_truncated")
+    end
+
+    test "the status schema reports the count, the boundary and the state" do
+      status = Tools.get_function("agents-status", Mounts.new("/tmp", nil))
+
+      assert status.name == "agents-status"
+      assert Map.keys(status.parameters_schema["properties"]) == ["name"]
+      assert (status.parameters_schema["required"] || []) == []
+
+      assert status.description =~ "how many messages its history holds"
+      assert status.description =~ "the index of its last compaction"
+      assert status.description =~ "not_running"
+      assert status.description =~ "never starts one"
+    end
+
+    test "the history and status tools take no result-size cap" do
+      # A range read is bounded by its own `length` and a status report is a
+      # fixed set of lines, so neither offers a second knob (the default cap
+      # still applies to both results).
+      for name <- ["agents-history", "agents-status"] do
+        function = Tools.get_function(name, Mounts.new("/tmp", nil))
+
+        refute Map.has_key?(function.parameters_schema["properties"], "max_result_tokens"),
+               "#{name} offers `max_result_tokens`, which bounds nothing it needs"
+      end
     end
   end
 end

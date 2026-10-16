@@ -87,6 +87,31 @@ exit 0):
 
   So the attribution of either to a *specific* seed is not reproducible — the
   pair is the honest description, and both are far inside the margin.
+
+  **Update (W6, issue #38): the two modules above no longer jitter, and the
+  jitter moved to two others.** Both were order-dependent because a line in
+  each was reached only through a race — a chat task calling `MockClient` after
+  its agent's teardown stopped the queue, and a process dying between
+  `AgentTestLifecycle`'s registry read and its status call. Every line in those
+  two modules that any run could or could not reach now has a deterministic
+  test, and their missed sets are fixed at `mock_client.ex` (99.1%: the module
+  line, plus `normalize_tool_calls/1`'s `%Tool{}` refusal) and
+  `agent_test_lifecycle.ex` (97.1%: the module line, plus `exit_tag/1`'s
+  bare-atom arm and `proc_info/1`'s `nil` arm) — identical across six seeded
+  `--cover` runs. The three remaining lines are unreachable in a green run, so
+  they cannot flip.
+
+  The sources now, both measured on the tree at `d23d3ec`:
+
+  * `lib/nest/sandbox/shell_jobs.ex` — **19 or 21 missed** (review saw 20/18 on
+    the pre-merge tree): lines **290–291**, the `shell:subscribe` arm for a job
+    that has *already* exited, which a test reaches only by winning a race
+    against that job's exit.
+  * `lib/nest/agents/agent/turn.ex` — **5 or 4 missed** (5 in both of W6's
+    seeded runs; review observed 5↔4): one of its five flips.
+
+  The total is `88.5%` either way, so both are inside the margin — but they are
+  the same class of bug as the pair above, and neither is filed.
 * Which is why six consecutive `--cover` runs (including the seed that
   reproduced the original failure) all report `85.3%` and exit 0. The earlier
   instability was not jitter inside the margin: it was a single module

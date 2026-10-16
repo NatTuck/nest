@@ -83,6 +83,8 @@ defmodule Nest.Models do
 
   alias Nest.ChatModel
   alias Nest.DotConfig
+  alias Nest.Models.Catalog
+  alias Nest.Models.ContextLimits
   alias Nest.Models.MultiModal
 
   @type source :: Nest.LLM.Discover.source()
@@ -169,48 +171,16 @@ defmodule Nest.Models do
 
   Reads the synchronous cache; never blocks on a network call.
   """
-  # Published to a public ETS table so readers never touch the `Nest.Models`
-  # process: `Agent.init/1` resolves a context limit on every start, and
-  # `DynamicSupervisor.start_child/2` runs that `init/1` inside the supervisor's
-  # own `handle_call`, so a `GenServer.call` here put a second single process in
-  # the path of every concurrent start. One row — the whole `context_limits` map,
-  # rewritten whenever it changes (`init/1`, `finalize_scan/1`) — so reads are
-  # lock-free and see the old or the new map, never a partial one.
-  @limits_table :nest_models_context_limits
-
   @spec context_limit(provider :: String.t() | nil, model_id :: String.t() | nil) ::
           {source(), pos_integer()} | nil
   def context_limit(nil, _model_id), do: nil
   def context_limit(_provider, nil), do: nil
 
   def context_limit(provider, model_id) do
-    case published_limits() do
-      {:ok, limits} -> get_in(limits, [provider, model_id])
+    case ContextLimits.lookup(provider, model_id) do
+      {:ok, limit} -> limit
       :unavailable -> GenServer.call(__MODULE__, {:context_limit, provider, model_id})
     end
-  end
-
-  # `:unavailable` means the table is gone (the server is not running, or is
-  # restarting), which is the only case that still needs the call — and the call
-  # raises `:noproc` then, exactly as it did before.
-  defp published_limits do
-    if :ets.whereis(@limits_table) == :undefined do
-      :unavailable
-    else
-      case :ets.lookup(@limits_table, :limits) do
-        [{:limits, limits}] -> {:ok, limits}
-        [] -> :unavailable
-      end
-    end
-  end
-
-  defp publish_limits(limits) do
-    if :ets.whereis(@limits_table) == :undefined do
-      :ets.new(@limits_table, [:named_table, :public, :set, read_concurrency: true])
-    end
-
-    :ets.insert(@limits_table, {:limits, limits})
-    :ok
   end
 
   @doc """
@@ -237,7 +207,7 @@ defmodule Nest.Models do
           send(self(), :startup_scan)
         end
 
-        publish_limits(%{})
+        ContextLimits.publish(%{})
 
         {:ok,
          %{
@@ -251,7 +221,7 @@ defmodule Nest.Models do
       {:error, reason} ->
         Logger.error("Failed to load config: #{inspect(reason)}")
 
-        publish_limits(%{})
+        ContextLimits.publish(%{})
 
         {:ok,
          %{
@@ -362,7 +332,7 @@ defmodule Nest.Models do
   end
 
   def handle_call(:list, _from, state) do
-    {:reply, build_model_list(state), state}
+    {:reply, Catalog.build(state), state}
   end
 
   def handle_call({:context_limit, provider, model_id}, _from, state) do
@@ -505,7 +475,7 @@ defmodule Nest.Models do
   end
 
   defp broadcast(state) do
-    broadcast_payload(build_model_list(state))
+    broadcast_payload(Catalog.build(state))
   end
 
   defp broadcast_payload(payload) do
@@ -516,7 +486,7 @@ defmodule Nest.Models do
   # completion event. Called when the last provider answers, when a
   # scan has no providers, or when the deadline fires.
   defp announce_complete(state, scan_id) do
-    payload = build_model_list(state)
+    payload = Catalog.build(state)
     broadcast_payload(payload)
 
     Phoenix.PubSub.broadcast(
@@ -543,7 +513,7 @@ defmodule Nest.Models do
         context_limits: scan.context_limits
     }
 
-    publish_limits(scan.context_limits)
+    ContextLimits.publish(scan.context_limits)
 
     if scan.deadline_fired do
       # The deadline already emitted this scan's completion; surface
@@ -617,84 +587,5 @@ defmodule Nest.Models do
       |> Map.new()
 
     {models, %{provider.name => limits}}
-  end
-
-  # Composes the merged model list for `Models.list/0`. Static
-  # config wins over auto-discovery on name collisions. The
-  # `context_limit` returned per entry is the *effective* value
-  # resolved across the three layers in priority order:
-  #
-  #   1. Per-model static `context-limit` (already on the merged
-  #      `DotConfig.Model` struct when present in TOML)
-  #   2. Auto-discovery cache (per-{provider, model_id})
-  #   3. Provider-level `default-context-limit`
-  #
-  # Computed at read time so a `reload_static/0` takes effect
-  # immediately on the next read without forcing a refresh.
-  defp build_model_list(state) do
-    {auto, cache} = scan_view(state)
-    providers = (state.static_config && state.static_config.providers) || %{}
-    static = static_models(state)
-
-    Map.merge(auto, static)
-    |> Map.values()
-    |> Enum.map(fn model ->
-      %{
-        "name" => model.name,
-        "provider" => model.provider_name,
-        "context_limit" => effective_context_limit(model, cache, providers),
-        "multi_modal" => effective_multi_modal(model, auto),
-        "thinking_levels" => thinking_levels()
-      }
-    end)
-  end
-
-  # While a scan is active, `state.auto_models`/`state.context_limits`
-  # still hold the previous scan's completed values. Read from the
-  # in-flight accumulator so partial results are visible; fall back
-  # to the canonical fields when idle.
-  defp scan_view(%{scan: %{auto_models: auto, context_limits: limits}}), do: {auto, limits}
-  defp scan_view(state), do: {state.auto_models, state.context_limits}
-
-  defp static_models(%{static_config: %{models: static}}) when is_map(static), do: static
-  defp static_models(_state), do: %{}
-
-  # The thinking levels a model can be configured with. Phase 1
-  # exposes the full supported set for every model; narrowing per
-  # model from provider capability discovery is future work.
-  defp thinking_levels do
-    Nest.DotConfig.thinking_efforts()
-    |> Enum.map(&to_string/1)
-  end
-
-  defp effective_context_limit(model, cache, providers) do
-    cond do
-      is_integer(model.context_limit) ->
-        model.context_limit
-
-      limit = get_in(cache, [model.provider_name, model.name]) ->
-        case limit do
-          {_source, n} when is_integer(n) -> n
-          _ -> provider_default(providers, model.provider_name)
-        end
-
-      true ->
-        provider_default(providers, model.provider_name)
-    end
-  end
-
-  # The multi-modal input vocabulary for a merged model entry. An
-  # explicit static `multi-modal` is authoritative and is never
-  # overwritten by a differing discovery answer; detection is a
-  # fill-in for when static config sets nothing. See
-  # `Nest.Models.MultiModal.effective/2` for the {provider, name}
-  # matching rule.
-  defp effective_multi_modal(model, auto), do: MultiModal.effective(model, auto)
-
-  defp provider_default(providers, provider_name) do
-    case Map.get(providers, provider_name) do
-      %{default_context_limit: limit} when is_integer(limit) -> limit
-      _ -> nil
-    end
   end
 end

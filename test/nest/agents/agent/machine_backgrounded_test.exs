@@ -121,7 +121,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
     test "is resolved during a compaction window, not swallowed" do
       ref = make_ref()
 
-      # `Compaction.stage/3` keeps `work`, so a backgrounded worker can die
+      # `Compaction.stage/2` keeps `work`, so a backgrounded worker can die
       # while the compactor is in flight. The `:compaction` arm would answer
       # `:unknown_worker_down` — no notice, and the entry leaks for good.
       machine =
@@ -176,7 +176,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
       # notice, and the `{:drain_inbox}` is what starts its own turn. Both
       # outcomes a backgrounded batch can produce need it — its result and its
       # worker's death — or the notice would sit in the queue forever and an
-      # `agents-wait-for-idle` would resolve with the pre-result answer.
+      # `agents-wait` would resolve with the pre-result answer.
       ref = make_ref()
 
       machine =

@@ -38,6 +38,10 @@ describe("ToolResults", () => {
     // The machine's synthetic answer to a call it moved to the background has
     // `is_error: false` and no result yet. Badging it "Success" would assert
     // something the data does not support, so the result's own state wins.
+    //
+    // A wait tool's result (issue #54) is the same kind of value: the call
+    // registered a watch and its real result arrives later as a message, so it
+    // is badged on its own state too, never read as a success.
     const toolResults = [
       {
         tool_call_id: "1",
@@ -46,13 +50,23 @@ describe("ToolResults", () => {
         is_error: false,
         state: "backgrounded",
       },
+      {
+        tool_call_id: "2",
+        name: "shell-wait",
+        content:
+          "Watching background job job-1; its result will arrive as a message.",
+        is_error: false,
+        state: "waiting",
+      },
     ];
 
     render(<ToolResults toolResults={toolResults} />);
 
     expect(screen.getByText(/Backgrounded: shell-cmd/)).toBeInTheDocument();
+    expect(screen.getByText(/Waiting: shell-wait/)).toBeInTheDocument();
     expect(screen.queryByText(/Success: shell-cmd/)).toBeNull();
     expect(screen.queryByText(/Error: shell-cmd/)).toBeNull();
+    expect(screen.queryByText(/Success: shell-wait/)).toBeNull();
   });
 
   it("renders an unknown state verbatim rather than a verdict", () => {

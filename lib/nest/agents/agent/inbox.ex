@@ -45,8 +45,13 @@ defmodule Nest.Agents.Agent.Inbox do
       the message is queued on `state.live.inbox`. A target executing a tool
       batch is the one exception (issue #36): the batch is moved to the
       background, the message is delivered immediately, and the batch's own
-      result arrives later as a `:notice`. Otherwise the machine drains the
-      queue at the next turn boundary: `Transitions.iterate/1` emits the
+      result arrives later as a `:notice`. That deferral is armed from the
+      batch's own side too (`Machine.Backgrounding.deferred_actions/1`): a
+      batch that *starts* while messages are queued backgrounds itself and
+      delivers them (issue #103), so a message that arrived while the model was
+      still streaming the response asking for the batch is not left waiting for
+      the next arrival. Otherwise the machine drains the queue at the next turn
+      boundary: `Transitions.iterate/1` emits the
       `:drain_inbox` action from `:generating`/`:chat` once the wire
       sequence is complete and nothing is in flight (issue #15), and
       anything still queued when the target reaches `:idle` is drained by
@@ -62,16 +67,17 @@ defmodule Nest.Agents.Agent.Inbox do
 
   `batch/1` selects what a drain delivers: a human message at the FIFO head is
   delivered **alone**, a run of leading non-human entries is delivered as one
-  batch. `combine/1` then renders the batch: a human entry is its bare content
-  (so a queued human message reads exactly like one that arrived while the
-  agent was idle, and its own `[mode: X]` prefix is added when the message is
-  built), a `:notice` is bare because the runtime — not an agent — said it,
-  while each `:agent`/`:query` entry keeps `[Message from agent "<from>"]` —
-  that label is what disambiguates a batch of peer messages — and an unknown
-  sender (`nil`) drops the quoted name rather than putting `nil` in the prompt.
-  A batch over `Config.configured_async_message_max_tokens/0` is written to
-  the agent's scratch dir and replaced by a short pointer telling the agent
-  how many messages there were and where to read them.
+  batch. `Nest.Agents.Agent.Inbox.Render` then renders the batch: a human entry
+  is its bare content (so a queued human message reads exactly like one that
+  arrived while the agent was idle, and its own `[mode: X]` prefix is added
+  when the message is built), a `:notice` is bare because the runtime — not an
+  agent — said it, while each `:agent`/`:query` entry keeps
+  `[Message from agent "<from>"]` — that label is what disambiguates a batch of
+  peer messages — and an unknown sender (`nil`) drops the quoted name rather
+  than putting `nil` in the prompt.
+  A batch over `Nest.Agents.Agent.Config.configured_async_message_max_tokens/0`
+  is written to the agent's scratch dir and replaced by a short pointer telling
+  the agent how many messages there were and where to read them.
 
   ## One mode per delivery
 
@@ -83,36 +89,52 @@ defmodule Nest.Agents.Agent.Inbox do
   batch actually delivered — the executor applies it when it peeks the queue,
   and a peek that cannot deliver (a compaction) is re-resolved when the resume
   re-drains, so a newer human message that arrives while the agent is compacting
-  is delivered in its own mode rather than under an older batch's.
+  is delivered in its own mode rather than under an older batch's. An attempt
+  that delivers nothing — declined because the context cannot hold the message,
+  parked on a compaction, or blocked — puts the mode back
+  (`Turn.restore_undelivered_mode/3`), so the winner never sticks for an entry
+  that is still queued.
 
   The executor applies the winning mode when it drains — never when the
   entry is queued, because `state.live.mode` feeds `ctx.mode`/`ctx.caps`,
   which are rebuilt on every settle; setting it on arrival would re-resolve
-  the caps of the *ongoing* turn's remaining tool calls.
+  the caps of the *ongoing* turn's remaining tool calls. An attempt that
+  delivers nothing leaves the mode as it was, for the same reason.
 
   The inbox is in-memory (`ChatState.Live`), so a BEAM restart drops
   undrained messages. `@max_inbox_size` bounds a runaway *peer* producer
   (`handle_delivery/4`); the two self-produced paths — a human message
   (`deliver_user_message/4`) and the runtime's own result
-  (`enqueue_internal/4`) — always queue rather than silently dropping, so each
-  enqueue rebroadcasts the whole serialized list.
+  (`enqueue_internal/4`) — always queue rather than silently dropping.
+
+  ## The wire is incremental (issue #27)
+
+  Every queue mutation broadcasts one delta describing *that* mutation, never
+  the whole list — the frames and their `count`/`inboxSeq` contract are
+  `Nest.Agents.Agent.Broadcasts`'s. So `n` queued frames cost `~n·s` bytes
+  instead of the `~n²·s/2` a full-list rebroadcast per enqueue costs, and a
+  client that misses one re-requests the full list over `chat:inbox` (the
+  `op: "replace"` frame, also carried by `init`) instead of ending up silently
+  wrong; `chat:status`'s `pendingMessageCount` is the count half of the same
+  recovery.
+
+  **Accepted limit: the human path is deliberately unbounded.** A human message
+  is never refused by `@max_inbox_size` (only a *peer* producer's is), so the
+  queue — and the memory it holds — can grow without bound while the agent is
+  busy. The deltas remove the quadratic *traffic*, not the growth; bounding it,
+  and rate-limiting the channel event that fills it, is issue #110.
   """
 
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Inbox.Delivery
+  alias Nest.Agents.Agent.Inbox.Render
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Timeline
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Turn.Backgrounded
-  alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.Agent.Watch
-  alias Nest.Messages.MessageList
   alias Nest.Messages.User
-  alias Nest.Sandbox.Mounts
-  alias Nest.Tokens.Estimator
 
   require Logger
 
@@ -126,16 +148,15 @@ defmodule Nest.Agents.Agent.Inbox do
   # the message is delivered *now* (issue #36): a tool batch has no partial
   # state worth waiting for — its real result arrives as a notice either way —
   # while a streaming response and a compaction both keep their message queued.
+  # The machine arms the same deferral from the batch's own side, at the moment
+  # the batch becomes interruptible (`Machine.Backgrounding.deferred_actions/1`,
+  # issue #103), so a message that queued before the batch existed is not left
+  # waiting for the next arrival.
   @backgroundable_statuses [:executing_tools]
 
   # Hard cap on queued agent-sourced messages. When full the sender gets
   # an `:inbox_full` error and nothing is queued.
   @max_inbox_size 100
-
-  # The marker a re-delivery carries (issue #62 requirement 5). A retrieved
-  # entry is normally suppressed by `batch/1`; if one still reaches the renderer
-  # the body must never look like a fresh human turn.
-  @redelivery_tag "[re-delivery: this body was already retrieved with agents-last-message]"
 
   @type kind :: :agent | :user | :query | :notice
 
@@ -250,7 +271,8 @@ defmodule Nest.Agents.Agent.Inbox do
   # and `nil` for every other producer; it rides the record, so a reader still
   # sees what the human asked for.
   defp busy_delivery(state, sender, content, kind, mode, human?) do
-    state = state |> put_entry(sender, content, kind, mode, human?) |> broadcast()
+    {state, entry} = put_entry(state, sender, content, kind, mode, human?)
+    state = broadcast_append(state, [entry])
     queued_before = length(state.live.inbox)
     {state, disposition} = drain_backgroundable(state)
 
@@ -266,22 +288,19 @@ defmodule Nest.Agents.Agent.Inbox do
   # The idle arm: enqueue, drain through the turn executor, and report the
   # disposition the drain resolved.
   defp idle_delivery(state, sender, content, kind) do
-    state = put_entry(state, sender, content, kind, nil)
+    {state, entry} = put_entry(state, sender, content, kind, nil)
     queued_before = length(state.live.inbox)
     {state, result} = Turn.drain_inbox(state)
 
     # Peek-then-consume (#26): the drain only consumes the queue when it
     # actually appended the message, so a drain that parks it (a compaction
-    # it needs, or a `:cannot_compact` block) leaves it queued. The busy
-    # branch broadcasts on enqueue; this one must not leave the entry
-    # reachable only by a client refetch. The consume only ever *removes*
-    # entries, so an unchanged length means nothing was consumed: this
-    # entry is still queued and this frame is the only way the client learns
-    # about it. When the consume did run it has already broadcast the
-    # remainder — this entry included — so broadcasting here would send a
-    # duplicate frame.
-    state =
-      if length(state.live.inbox) == queued_before, do: broadcast(state), else: state
+    # it needs, or a `:cannot_compact` block) leaves it queued and reports
+    # `:queued`. The busy branch broadcasts on enqueue; this one must not leave
+    # the entry reachable only by a client refetch, and it is the *only* frame
+    # due when nothing was consumed. A drain that consumed the entry already
+    # broadcast its removal — this entry was in that batch — so a second frame
+    # here would describe a mutation the client has already applied.
+    state = if result == :queued, do: broadcast_append(state, [entry]), else: state
 
     # `result` is the disposition the sender is given, and the action the
     # entry took: a drain that parked the message queued it, so it is
@@ -363,11 +382,12 @@ defmodule Nest.Agents.Agent.Inbox do
           Agent.t()
   def enqueue_internal(state, from, content, kind, fulfilled_ids \\ [])
       when kind in [:agent, :user, :query, :notice] do
-    state =
+    {state, entry} =
       state
       |> satisfy_watch(from, kind)
       |> put_entry(from, content, kind, nil, false, fulfilled_ids)
-      |> broadcast()
+
+    state = broadcast_append(state, [entry])
 
     record_inbox(state, :enqueued, from, kind, content,
       count: length(state.live.inbox),
@@ -400,7 +420,7 @@ defmodule Nest.Agents.Agent.Inbox do
   Two kinds of loss, both in-process state that goes away with the process:
 
     * a **debt** (`Machine.owed_replies`) — a query that was delivered, so the
-      requester is owed an answer and its `agents-wait-for-idle` simply times out;
+      requester is owed an answer and its `agents-wait` simply times out;
     * a **queued `:query` entry** — a query that was never delivered, so it set
       no debt at all (issue #31 §1.3: the obligation is incurred at delivery)
       and no give-up will ever fire for it. The requester waits for an answer
@@ -487,35 +507,24 @@ defmodule Nest.Agents.Agent.Inbox do
     end)
   end
 
+  # The LLM-facing rendering of a drain batch lives in `Render` — the seam's
+  # single owner — and these delegates keep `Inbox` the one public surface a
+  # drain caller reaches for, exactly as the `Delivery` delegates below do for
+  # the consume API. The rendering rules are documented there.
+
   @doc """
   Combine one drain batch and, when over the async-message cap, offload the
-  text to the agent scratch dir. Returns the content string to deliver.
-  Used by the turn executor's drain actions, which pass `batch/1`'s selection
-  so the entries rendered are exactly the entries consumed.
+  text to the agent's scratch dir. Returns the content string to deliver.
   """
   @spec combine_and_offload([entry()], Agent.t()) :: String.t()
-  def combine_and_offload(entries, state) do
-    offload(combine(entries), entries, state)
-  end
+  defdelegate combine_and_offload(entries, state), to: Render
 
   @doc """
-  The user message a drained batch is delivered as.
-
-  `content` is the batch's combined text (`combine_and_offload/2`) and `mode`
-  the drain's winning mode; `Dispatch.build_user_message/3` builds the message
-  itself. The batch's `fulfilled_ids` also ride it as message metadata
-  (`MessageList.fulfilled_metadata/1`): a backgrounded batch's notice answers or
-  closes those calls, so a later load can tell a promise that was kept from one
-  the process died with (`MessageList.backgrounded_results/1`).
-
-  The single writer of that marker, so every drain shape builds its message here
-  — including the backgrounding path, which delivers a *notice* entry when one
-  was queued while another batch executed.
+  The user message a drained batch is delivered as: its rendered `content`,
+  the drain's `mode`, and the batch's metadata.
   """
   @spec build_drained_message([entry()], String.t(), String.t()) :: {:user, User.t()}
-  def build_drained_message(entries, content, mode) do
-    Dispatch.build_user_message(content, mode, MessageList.drained_metadata(entries))
-  end
+  defdelegate build_drained_message(entries, content, mode), to: Render
 
   @doc """
   The batch a drain delivers, selected from the FIFO head of `entries`.
@@ -526,10 +535,12 @@ defmodule Nest.Agents.Agent.Inbox do
   still batches: a run of leading non-human entries is delivered as one
   message. The selection never reorders anything; it only takes a prefix.
 
-  Total over any entry list on purpose: a future entry kind must not be
-  able to crash the drain inside the Agent process, so anything that is
-  not a human message batches exactly like a peer message does today —
-  `:agent`, `:query` and `:notice` entries all take the second clause.
+  Total over any entry *kind* on purpose: a future kind must not be able to
+  crash the drain inside the Agent process, so anything that is not a human
+  message batches exactly like a peer message does today — `:agent`, `:query`
+  and `:notice` entries all take the second clause. An entry map with no
+  `:kind` key raises rather than batching: that is the entry contract
+  (`put_entry/7` always sets it), not a shape the drain has to tolerate.
   """
   @spec batch([entry()]) :: [entry()]
   def batch(entries) do
@@ -548,25 +559,25 @@ defmodule Nest.Agents.Agent.Inbox do
   defdelegate take_last(entries, name), to: Delivery
 
   @doc """
-  Drop every retrieved entry from the queue, rebroadcasting when anything went.
+  Drop every retrieved entry from the queue, broadcasting the ids that went.
 
   A retrieved entry is already consumed (`agents-last-message` took its body),
   so `batch/1` skips it; when it is all that is queued the drain peeks `:empty`
   and never consumes. The executor calls this from its drain's empty branch so
   the queue cannot fill with dead entries and eventually refuse peers at
   `@max_inbox_size` (issue #62). Nothing is delivered, so it records no
-  `Timeline.drained` event.
+  `Timeline.drained` event; the frame is a removal delta naming the entries
+  that went, not the queue that is left.
   """
   @spec prune_retrieved(Agent.t()) :: Agent.t()
   def prune_retrieved(state) do
-    remaining = Enum.reject(state.live.inbox, &Delivery.retrieved?/1)
+    {dropped, remaining} = Enum.split_with(state.live.inbox, &Delivery.retrieved?/1)
 
-    if length(remaining) == length(state.live.inbox) do
+    if dropped == [] do
       state
     else
       state = %{state | live: %{state.live | inbox: remaining}}
-      broadcast(state)
-      state
+      broadcast_remove(state, Enum.map(dropped, & &1.id))
     end
   end
 
@@ -575,8 +586,8 @@ defmodule Nest.Agents.Agent.Inbox do
   `kind: :query` entry in it (issue #31 decision 1 — a name, not a record:
   there is no query id and no requester-side state).
 
-  Total over any entry list, like `batch/1`, and `nil`-tolerant because the
-  chat-request path has no batch behind it. A query entry whose sender is
+  Total over any entry list — a missing `kind` or `from` contributes nothing —
+  and `nil`-tolerant because the chat-request path has no batch behind it. A query entry whose sender is
   missing or blank contributes nothing: the obligation is keyed by name
   (`Machine.owe_replies/2`), so an unnamed sender has no key to owe.
   """
@@ -605,7 +616,9 @@ defmodule Nest.Agents.Agent.Inbox do
 
   # `from`/`mode` are normalized here, the single write point, so a malformed
   # payload can never put a number/map on the wire (`serialize/1`'s contract is
-  # string-or-null for both).
+  # string-or-null for both). Returns the entry as well as the state: the
+  # caller broadcasts it as an append delta, and only the entry — not the whole
+  # queue — is what that frame may carry (issue #27).
   defp put_entry(state, from, content, kind, mode, human? \\ false, fulfilled_ids \\ []) do
     entry = %{
       id: Delivery.new_id(),
@@ -619,81 +632,49 @@ defmodule Nest.Agents.Agent.Inbox do
       retrieved: false
     }
 
-    %{state | live: %{state.live | inbox: state.live.inbox ++ [entry]}}
+    {%{state | live: %{state.live | inbox: state.live.inbox ++ [entry]}}, entry}
+  end
+
+  # The append half of the delta protocol (issue #27): the three enqueue paths
+  # — the busy and idle delivery arms and `enqueue_internal/4` — each publish
+  # exactly the entry they added, never the queue they added it to.
+  defp broadcast_append(state, entries), do: Broadcasts.inbox_append(state, serialize(entries))
+
+  @doc """
+  Drop `batch` (plus every retrieved entry) from the queue and broadcast the
+  ids that went — the consume half of peek-then-consume (#26), and the single
+  place the executor's drain mutates the queue.
+  """
+  @spec consume_and_broadcast(Agent.t(), [entry()]) :: Agent.t()
+  def consume_and_broadcast(state, batch) do
+    before = state.live.inbox
+    state = %{state | live: %{state.live | inbox: consume(before, batch)}}
+    broadcast_remove(state, Enum.map(before -- state.live.inbox, & &1.id))
   end
 
   @doc """
-  Broadcast the current inbox on the agent's topic. Public so the
-  `agents-last-message` fetch (which consumes an entry in place, issue #62) can
-  publish the change the same way every enqueue and drain does.
+  Mark the newest fetchable entry from `name` retrieved and publish it.
+
+  The mutation and the frame are one call because the frame must describe the
+  entry's *new* serialized form (`retrieved: true`), which only the queue after
+  the write knows (issue #27). Returns the state and the entry as the caller's
+  reply payload — its `content` and `id` are unchanged by the marking.
   """
-  @spec broadcast(Agent.t()) :: Agent.t()
-  def broadcast(state) do
-    Broadcasts.inbox(state, serialize(state.live.inbox))
-    state
-  end
+  @spec mark_retrieved(Agent.t(), String.t()) :: {Agent.t(), entry() | nil}
+  def mark_retrieved(state, name) do
+    {inbox, entry} = take_last(state.live.inbox, name)
 
-  # The LLM-facing rendering of one drain batch. A human entry is rendered as
-  # its bare content — plus, later, the `[mode: X]\n` prefix
-  # `Dispatch.build_user_message/2` adds — because a queued human message must
-  # read exactly like one that arrived while the agent was idle (issue #31
-  # decision 8): the model never has to reason about whether it was queued.
-  # A `:notice` is bare for a different reason: it is the runtime speaking,
-  # and a `[Message from agent "X"]` label would impersonate X (decision 9).
-  # Every other kind keeps its `[Message from agent "X"]` label, which is what
-  # disambiguates a batch of peer messages (from each other and from a human's)
-  # — including a `:query`, whose requester really is that agent (decision 7).
-  defp combine(entries) do
-    Enum.map_join(entries, "\n\n", &render_entry/1)
-  end
+    case entry do
+      nil ->
+        {state, nil}
 
-  # A retrieved entry is normally suppressed by `batch/1` before it can reach
-  # here, so this is the safety net issue #62 requirement 5 asks for: if both
-  # channels ever carry the body, the second copy is explicitly a re-delivery
-  # and can never read as a fresh human turn.
-  defp render_entry(%{kind: kind, content: content} = entry) when kind in [:user, :notice],
-    do: tag_redelivery(entry, content)
-
-  defp render_entry(%{content: content} = entry),
-    do: tag_redelivery(entry, "#{agent_label(entry)}\n#{content}")
-
-  defp tag_redelivery(%{retrieved: true}, body), do: "#{@redelivery_tag}\n#{body}"
-  defp tag_redelivery(_entry, body), do: body
-
-  # The LLM-facing label for one `:agent` entry. A missing or blank sender
-  # drops the quoted name rather than putting `nil`/`""` in the prompt.
-  defp agent_label(%{from: from}), do: "[Message from agent#{quoted(from)}]"
-
-  defp quoted(from) when is_binary(from) and from != "", do: " \"#{from}\""
-  defp quoted(_from), do: ""
-
-  # Over the configured cap, write the full combined text to the agent's
-  # scratch dir and return a pointer. If the write fails, fall back to
-  # the full text so no messages are lost.
-  defp offload(content, entries, state) do
-    if Estimator.estimate(content) > Config.configured_async_message_max_tokens() do
-      case Overflow.write(
-             content,
-             %{mounts: Mounts.from_agent(state)},
-             "agent-inbox",
-             "txt",
-             Delivery.batch_id(entries)
-           ) do
-        nil -> content
-        path -> pointer(length(entries), path)
-      end
-    else
-      content
+      entry ->
+        state = %{state | live: %{state.live | inbox: inbox}}
+        {Broadcasts.inbox_update(state, serialize([entry])), entry}
     end
   end
 
-  defp pointer(1, path) do
-    "You have 1 queued message. It was too large to " <>
-      "include inline and was saved to #{path}. Read that file to see it."
-  end
-
-  defp pointer(n, path) do
-    "You have #{n} queued messages. They were too large to " <>
-      "include inline and were saved to #{path}. Read that file to see them."
-  end
+  # The removal half of the delta protocol (issue #27): the ids the queue no
+  # longer holds, in the order they went.
+  defp broadcast_remove(state, ids), do: Broadcasts.inbox_remove(state, ids)
 end

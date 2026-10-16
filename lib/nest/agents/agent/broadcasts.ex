@@ -19,6 +19,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
 
   require Logger
 
+  alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Timeline
   alias Nest.Messages.Compaction
@@ -321,16 +322,54 @@ defmodule Nest.Agents.Agent.Broadcasts do
     Phoenix.PubSub.broadcast(PubSub, topic(space_id, name), {:chat_notification, payload})
   end
 
-  # Broadcasts the agent's current async inbox (queued `agents-send`
-  # messages) so the UI can show and count them. Fired on every queue
-  # change and on drain (an empty list clears the panel). `messages` is
-  # the already-serialized list (`Inbox.serialize/1`).
-  def inbox(state, messages) do
+  # Inbox deltas (issue #27). One frame per queue mutation, describing *that*
+  # mutation and nothing else, so the bytes a subscriber pays are proportional
+  # to the change rather than to the whole queue:
+  #
+  #     {:chat_inbox, %{op: "append", messages: [entry], count: n, inboxSeq: s}}
+  #     {:chat_inbox, %{op: "remove", ids: [id], count: n, inboxSeq: s}}
+  #     {:chat_inbox, %{op: "update", messages: [entry], count: n, inboxSeq: s}}
+  #
+  # `count` is the authoritative queue length *after* the mutation. `inboxSeq`
+  # is the frame's position in this agent's stream (one per frame, never
+  # reused), which is what lets a client tell a contiguous stream from one it
+  # fell behind on; the full list — the `init` payload's `inbox` and the
+  # `chat:inbox` reply, both `op: "replace"` — is the resync frame. See
+  # `Nest.Agents.Agent.Inbox`'s moduledoc for the protocol and its limits.
+  @doc """
+  Broadcast the entries just appended to the inbox.
+  """
+  @spec inbox_append(Agent.t(), [map()]) :: Agent.t()
+  def inbox_append(state, entries), do: inbox_delta(state, "append", %{messages: entries})
+
+  @doc """
+  Broadcast the ids just removed from the inbox.
+  """
+  @spec inbox_remove(Agent.t(), [String.t()]) :: Agent.t()
+  def inbox_remove(state, ids), do: inbox_delta(state, "remove", %{ids: ids})
+
+  @doc """
+  Broadcast the entries whose serialized form changed in place — an
+  `agents-last-message` fetch marking one `retrieved`.
+  """
+  @spec inbox_update(Agent.t(), [map()]) :: Agent.t()
+  def inbox_update(state, entries), do: inbox_delta(state, "update", %{messages: entries})
+
+  # The single construction site for an inbox frame, and the only writer of
+  # `live.inbox_seq`: the counter is the number of frames this agent has
+  # emitted, so a client that has applied frame `s` knows the next one is
+  # `s + 1` and a gap means it missed one (or that the agent restarted, which
+  # resets the counter — a *lower* sequence is a gap too, deliberately).
+  defp inbox_delta(state, op, payload) do
+    seq = state.live.inbox_seq + 1
+
     Phoenix.PubSub.broadcast(
       PubSub,
       topic(state.space_id, state.name),
-      {:chat_inbox, %{messages: messages, count: length(messages)}}
+      {:chat_inbox, Map.merge(payload, %{op: op, count: length(state.live.inbox), inboxSeq: seq})}
     )
+
+    %{state | live: %{state.live | inbox_seq: seq}}
   end
 
   # Broadcasts a streaming text delta with character position

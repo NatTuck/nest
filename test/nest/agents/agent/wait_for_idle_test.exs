@@ -1,27 +1,33 @@
 defmodule Nest.Agents.Agent.WaitForIdleTest do
   @moduledoc """
-  Coverage for the **blocking** `agents-wait-for-idle` mode (`block: true`)
-  through the `ToolLoop` dispatch and `Nest.Agents.Agent.WaitForIdle`.
+  Coverage for the wait engine behind `agents-wait` (issue #54).
 
-  The result paths the tool must have:
+  Two drivers, one subject:
 
-    * every target already idle → immediate partition;
+    * the **registration** paths — argument validation, target resolution, and
+      a wait with nothing to watch — are driven through the tool
+      (`ToolLoop.execute/3`), because the tool result is what the model reads
+      and its `is_error` flag and log line are part of the contract;
+    * the **event loop** is driven directly through `WaitForIdle.await/6`,
+      which is the only way to keep the wake-ups deterministic: the watcher
+      runs in its own supervised task (`WatchTest` covers that plumbing), while
+      the loop itself is woken here by a real event already in the mailbox —
+      the idle status frame a target broadcasts, or a target's `:DOWN` — and by
+      a `timeout` whose deadline has already passed. No test sleeps and no test
+      waits out a poll.
+
+  The result paths the engine must have:
+
     * a busy target going idle → the partition, with **all** currently-idle
       names and no payload (issue #62: the wait is synchronisation only);
     * `all: true` → waits for every target;
-    * the wall-clock timeout → a normal (`is_error: false`) result.
+    * the wall-clock timeout → a normal result, rendered as a distinguishable
+      notice.
 
   Plus the target-resolution rules: `[]` means every other agent in the
   space (never the caller), a name that resolves to no agent is an error
   rather than a silent idle, a read-only wait never starts an agent, and a
   malformed `names`/`timeout`/`all` argument is rejected loudly.
-
-  The wait is driven deterministically: the idle status broadcast is
-  already in the mailbox, so the loop is woken by a real event, and the
-  timeout case uses a `timeout` whose deadline has already passed. No test
-  sleeps and no test waits out a poll.
-
-  The async (registration) mode lives in `WatchTest`.
   """
   use ExUnit.Case, async: true
 
@@ -29,6 +35,7 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
   import Mimic
 
   alias Nest.Agents.Agent.ToolLoop
+  alias Nest.Agents.Agent.WaitForIdle
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
 
@@ -38,19 +45,35 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
     %{space_id: 1, agent_name: "caller", context_limit: 100_000, messages: []}
   end
 
+  defp call(args), do: %ToolCall{id: "wait-1", name: "agents-wait", arguments: args}
+
+  # The registration path, through the tool. Only valid for a call that
+  # registers nothing — an error, or a wait with nothing to watch — so no agent
+  # is involved; a call that registers a watch goes through `await/1`.
   defp run(args) do
     with_log(fn ->
-      [%ToolResult{} = result] =
-        ToolLoop.execute(ctx(), nil, [
-          %ToolCall{
-            id: "wait-1",
-            name: "agents-wait-for-idle",
-            arguments: Map.put(args, "block", true)
-          }
-        ])
-
+      [%ToolResult{} = result] = ToolLoop.execute(ctx(), nil, [call(args)])
       result
     end)
+  end
+
+  # The event loop, driven in-process: the same call the watcher task makes,
+  # with no monitor (the caller is this process), rendered by the notice the
+  # watcher would deliver.
+  defp await(args) do
+    {:ok, names, timeout, all?, initial} = WaitForIdle.resolve(ctx(), call(args))
+
+    case WaitForIdle.await(1, names, timeout, all?, initial) do
+      {:ok, partition} -> {:ok, WaitForIdle.notice_text(partition)}
+      {:timeout, partition} -> {:ok, WaitForIdle.timeout_notice_text(partition, timeout)}
+    end
+  end
+
+  # The partition a call resolves to before any waiting — what the registration
+  # reports inline when there is nothing to watch.
+  defp resolved(args) do
+    {:ok, _names, _timeout, _all?, partition} = WaitForIdle.resolve(ctx(), call(args))
+    partition
   end
 
   # Drive `Nest.Agents.list_agents_info_for_space/1` from a FIFO of space
@@ -106,13 +129,13 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
 
   defp agent(name, status), do: %{name: name, status: status}
 
-  test "returns the partition immediately when every target is already idle" do
+  test "reports the partition inline when every target is already idle" do
     stub_listing([[agent("caller", :idle), agent("bob", :idle), agent("carol", :idle)]])
 
     {named, _log} = run(%{"names" => ["bob", "carol"]})
 
-    assert %ToolResult{name: "agents-wait-for-idle", is_error: false, content: content} = named
-    assert content == "Idle: bob, carol. Still busy: (none)."
+    assert %ToolResult{name: "agents-wait", is_error: false, content: content} = named
+    assert content == "All agents are already idle: bob, carol."
 
     # An empty list means every other agent in the space (the same set
     # `agents-list` reports). The caller is excluded: it is busy running
@@ -120,19 +143,19 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
     {all, _log} = run(%{})
 
     assert %ToolResult{is_error: false, content: content} = all
-    assert content == "Idle: bob, carol. Still busy: (none)."
+    assert content == "All agents are already idle: bob, carol."
 
     # An explicit empty list behaves exactly like omitting `names`.
     {explicit, _log} = run(%{"names" => []})
 
     assert %ToolResult{is_error: false, content: content} = explicit
-    assert content == "Idle: bob, carol. Still busy: (none)."
+    assert content == "All agents are already idle: bob, carol."
 
     # The caller is never a target, however it is named.
     {self_named, _log} = run(%{"names" => ["caller", "bob"]})
 
     assert %ToolResult{is_error: false, content: content} = self_named
-    assert content == "Idle: bob. Still busy: (none)."
+    assert content == "All agents are already idle: bob."
 
     # An empty space (only the caller) has nothing to wait for and returns
     # immediately rather than erroring.
@@ -141,6 +164,19 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
 
     assert %ToolResult{is_error: false, content: content} = empty
     assert content == "No other agents in this space to wait for."
+  end
+
+  # The registration reports the same partition the engine starts from, so the
+  # inline answer and the watch's own reference read cannot disagree.
+  test "a wait with something to watch resolves to the busy set" do
+    stub_listing([[agent("caller", :idle), agent("bob", :streaming), agent("carol", :idle)]])
+
+    partition = resolved(%{"names" => ["bob", "carol"]})
+
+    assert partition == %{idle: ["carol"], still_busy: ["bob"], gone: []}
+
+    assert WaitForIdle.watch_confirmation(partition) ==
+             "Watching (you will be notified): bob. Already idle: carol."
   end
 
   test "a busy target going idle reports the partition with no payload" do
@@ -155,20 +191,16 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
     ])
 
     send(self(), {:chat_status, %{status: "idle"}})
-    {result, _log} = run(%{"names" => ["bob", "carol"], "timeout" => 500})
-
-    assert %ToolResult{is_error: false, content: content} = result
-    assert content == "Idle: bob. Still busy: carol."
+    assert {:ok, content} = await(%{"names" => ["bob", "carol"], "timeout" => 500})
+    assert content == "Agents now idle: bob. Still busy: carol."
 
     # A target that vanishes mid-wait (no live process, no persisted row)
     # is reported as gone rather than waited out to the timeout.
     stub_listing([[agent("bob", :streaming)], [agent("bob", :streaming)], []])
 
     send(self(), {:chat_status, %{status: "idle"}})
-    {gone, _log} = run(%{"names" => ["bob"], "timeout" => 500})
-
-    assert %ToolResult{is_error: false, content: content} = gone
-    assert content == "Idle: (none). Still busy: (none). No longer running: bob."
+    assert {:ok, content} = await(%{"names" => ["bob"], "timeout" => 500})
+    assert content == "Agents now idle: (none). Still busy: (none). No longer running: bob."
   end
 
   test "all: true waits until every named target is idle" do
@@ -182,10 +214,8 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
     ])
 
     send(self(), {:chat_status, %{status: "idle"}})
-    {result, _log} = run(%{"names" => ["bob", "carol"], "all" => true, "timeout" => 500})
-
-    assert %ToolResult{is_error: false, content: content} = result
-    assert content == "Idle: bob, carol. Still busy: (none)."
+    assert {:ok, content} = await(%{"names" => ["bob", "carol"], "all" => true, "timeout" => 500})
+    assert content == "Agents now idle: bob, carol. Still busy: (none)."
   end
 
   # The monitor is the event a dying target cannot broadcast: a stopped,
@@ -215,38 +245,34 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
       end
     )
 
-    {result, _log} = run(%{"names" => ["bob"], "timeout" => 1_000})
-
-    assert %ToolResult{is_error: false, content: content} = result
-    assert content == "Idle: bob. Still busy: (none)."
+    assert {:ok, content} = await(%{"names" => ["bob"], "timeout" => 1_000})
+    assert content == "Agents now idle: bob. Still busy: (none)."
   end
 
   test "the immediate decision is the authoritative read's, not the caller's" do
     # The caller's own read sees both targets idle; by the authoritative read
     # (taken after the subscription) bob is running. `all: true` must keep
-    # waiting: returning "Idle: bob, carol" for a target that is running is a
-    # lie. This is the one behaviour change from the poll, where the immediate
-    # decision used the caller's read, and it is deliberate.
+    # waiting: returning "Agents now idle: bob, carol" for a target that is
+    # running is a lie. This is the one behaviour change from the poll, where
+    # the immediate decision used the caller's read, and it is deliberate.
     stub_listing([
       [agent("bob", :idle), agent("carol", :idle)],
       [agent("bob", :streaming), agent("carol", :idle)]
     ])
 
-    {result, log} = run(%{"names" => ["bob", "carol"], "all" => true, "timeout" => 1})
+    assert {:ok, content} = await(%{"names" => ["bob", "carol"], "all" => true, "timeout" => 1})
 
-    assert %ToolResult{is_error: false, content: content} = result
-    assert content == "Timed out after 1ms. Idle: carol. Still busy: bob."
-    assert log =~ "agents-wait-for-idle: no target changed within 1ms"
+    assert content ==
+             "Timed out after 1ms waiting for agents to go idle. Idle: carol. Still busy: bob."
   end
 
   test "reaching the timeout is a normal result, not an error" do
     stub_listing([[agent("bob", :streaming)]])
 
-    {result, log} = run(%{"names" => ["bob"], "timeout" => 1})
+    assert {:ok, content} = await(%{"names" => ["bob"], "timeout" => 1})
 
-    assert %ToolResult{name: "agents-wait-for-idle", is_error: false, content: content} = result
-    assert content == "Timed out after 1ms. Idle: (none). Still busy: bob."
-    assert log =~ "agents-wait-for-idle: no target changed within 1ms"
+    assert content ==
+             "Timed out after 1ms waiting for agents to go idle. Idle: (none). Still busy: bob."
   end
 
   test "an unknown target name is an error, not a silent idle" do
@@ -254,7 +280,7 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
 
     {result, log} = run(%{"names" => ["bob", "ghost"]})
 
-    assert %ToolResult{name: "agents-wait-for-idle", is_error: true, content: content} = result
+    assert %ToolResult{name: "agents-wait", is_error: true, content: content} = result
     assert content == "Agent ghost not found in this space."
     assert log =~ "BatchSizer produced is_error=true tool result"
   end
@@ -272,12 +298,12 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
     {named, _log} = run(%{"names" => ["db-only"]})
 
     assert %ToolResult{is_error: false, content: content} = named
-    assert content == "Idle: db-only. Still busy: (none)."
+    assert content == "All agents are already idle: db-only."
 
     {all, _log} = run(%{})
 
     assert %ToolResult{is_error: false, content: content} = all
-    assert content == "Idle: db-only. Still busy: (none)."
+    assert content == "All agents are already idle: db-only."
   end
 
   # The schema declares `names` as an array of strings. A bare string, or a
@@ -287,8 +313,7 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
   test "a malformed `names` argument is an error, not an implicit empty list" do
     {not_a_list, log} = run(%{"names" => "bob"})
 
-    assert %ToolResult{name: "agents-wait-for-idle", is_error: true, content: content} =
-             not_a_list
+    assert %ToolResult{name: "agents-wait", is_error: true, content: content} = not_a_list
 
     assert content ==
              ~s(Invalid `names` argument: expected a list of agent names, got: "bob".)
@@ -303,12 +328,12 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
              ~s(Invalid `names` argument: expected a list of agent names, got: ["bob", 5].)
   end
 
-  # A non-positive timeout would render "No agent went idle within -1ms";
+  # A non-positive timeout would render "no target changed within -1ms";
   # reject it instead.
-  test "a non-positive timeout is an error, not a wait with a negative budget" do
+  test "a non-positive timeout is an error, not a watch with a negative budget" do
     {result, log} = run(%{"names" => ["bob"], "timeout" => -1})
 
-    assert %ToolResult{name: "agents-wait-for-idle", is_error: true, content: content} = result
+    assert %ToolResult{name: "agents-wait", is_error: true, content: content} = result
 
     assert content ==
              "Invalid `timeout` argument: expected a positive integer of milliseconds, " <>
@@ -320,7 +345,7 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
   test "a non-boolean `all` is an error" do
     {result, log} = run(%{"names" => ["bob"], "all" => "yes"})
 
-    assert %ToolResult{name: "agents-wait-for-idle", is_error: true, content: content} = result
+    assert %ToolResult{name: "agents-wait", is_error: true, content: content} = result
     assert content == ~s(Invalid `all` argument: expected a boolean, got: "yes".)
     assert log =~ "BatchSizer produced is_error=true tool result"
   end

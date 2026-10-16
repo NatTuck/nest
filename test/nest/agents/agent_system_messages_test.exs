@@ -277,7 +277,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
 
       # The user messages containing the notices also each
       # have type-specific content: budget says "tool call rounds",
-      # context says "token budget".
+      # context says "Context at".
       budget_user_messages =
         Enum.filter(messages, fn
           {:user, %Nest.Messages.User{parts: parts}} ->
@@ -294,7 +294,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
         Enum.filter(messages, fn
           {:user, %Nest.Messages.User{parts: parts}} ->
             Enum.any?(parts, fn
-              %Part.Text{text: text} -> String.contains?(text, "token budget")
+              %Part.Text{text: text} -> String.contains?(text, "Context at")
               _ -> false
             end)
 

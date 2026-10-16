@@ -251,9 +251,12 @@ defmodule NestWeb.AgentChannel do
     {:noreply, socket}
   end
 
-  # Handle an async-inbox update from PubSub (broadcast by
-  # `Nest.Agents.Agent.Inbox` on every `agents-send` queue change and on
-  # drain). The payload carries the full serialized message list.
+  # Handle an async-inbox delta from PubSub (broadcast by
+  # `Nest.Agents.Agent.Inbox` on every queue change). The payload is one
+  # incremental frame — `op` is `"append"`, `"remove"` or `"update"`, with
+  # `count` and `inboxSeq` — never the whole list (issue #27); a client that
+  # finds a gap in `inboxSeq` re-requests the full list over the `chat:inbox`
+  # push, whose reply is the `op: "replace"` frame.
   @impl true
   def handle_info({:chat_inbox, payload}, socket) do
     push(socket, "chat:inbox", payload)
@@ -289,6 +292,11 @@ defmodule NestWeb.AgentChannel do
       "usage" => agent.usage,
       "inbox" => agent.pending_messages,
       "pendingMessageCount" => agent.pending_message_count,
+      # The queue's delta-stream position (issue #27): `inbox` above is the full
+      # list as of this sequence, so a client that stores both is in sync with
+      # every `chat:inbox` delta that follows. Read from the same snapshot as
+      # the list, never recomputed.
+      "inboxSeq" => agent.inbox_seq,
       # The reply debt (issue #31 §1.8): always present, `[]` when nothing is owed.
       "owedReplies" => agent.owed_replies,
       "shellJobs" => ShellJobs.list({agent.space_id, agent.name})
@@ -508,16 +516,23 @@ defmodule NestWeb.AgentChannel do
   @sync_size_limit 65_536
 
   # Fetch the agent's current async inbox (queued `agents-send`
-  # messages). The full list is also pushed as `chat:inbox` whenever it
-  # changes; this lets a freshly joined/reconnected client request it on
-  # demand.
+  # messages). This is the **resync** frame (issue #27): the queue itself is
+  # published as incremental `chat:inbox` deltas, so a client that missed one
+  # (or has just joined) asks for the whole list here and gets it with the
+  # `inboxSeq` it was taken at — `op` is `"replace"` so the frame is
+  # self-describing. `count` is the same list's length.
   @impl true
   def handle_in("chat:inbox", _payload, socket) do
     case Agents.get_info(socket.assigns.space_id, socket.assigns.name) do
       {:ok, agent} ->
         {:reply,
-         {:ok, %{"messages" => agent.pending_messages, "count" => agent.pending_message_count}},
-         socket}
+         {:ok,
+          %{
+            "op" => "replace",
+            "messages" => agent.pending_messages,
+            "count" => agent.pending_message_count,
+            "inboxSeq" => agent.inbox_seq
+          }}, socket}
 
       {:error, :not_found} ->
         {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}

@@ -7,8 +7,9 @@ defmodule Nest.Agents.Agent.ToolLoop do
   response with `tool_calls` is received. Responsibilities:
 
     * Split the batch by tool — sub-agent tools (`agents-spawn`,
-      `agents-query`, `agents-send`, `agents-wait-for-idle`,
-      `agents-last-message`, `agents-list`, `agents-list-archived`,
+      `agents-query`, `agents-send`, `agents-wait`,
+      `agents-last-message`, `agents-history`, `agents-status`,
+      `agents-list`, `agents-list-archived`,
       `agents-archive`, `agents-unarchive`, `agents-batch`,
       `models-list`) are routed through their `run_*` handlers, which run
       in this worker and never in the agent GenServer; everything else is
@@ -29,10 +30,11 @@ defmodule Nest.Agents.Agent.ToolLoop do
   alias Nest.Agents.Agent.Archive
   alias Nest.Agents.Agent.BatchCoordinator
   alias Nest.Agents.Agent.BatchSizer
+  alias Nest.Agents.Agent.History
   alias Nest.Agents.Agent.LastMessage
+  alias Nest.Agents.Agent.Status
   alias Nest.Agents.Agent.SubAgentResults
   alias Nest.Agents.Agent.ToolLoop.ModelEntry
-  alias Nest.Agents.Agent.WaitForIdle
   alias Nest.Agents.Agent.Watch
   alias Nest.Agents.Registry
   alias Nest.DotConfig
@@ -112,8 +114,10 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
     sub_entries =
       Enum.map(sub_calls, fn tc ->
-        %ToolResult{content: content, is_error: is_error} = run_sub_agent_tool(ctx, tc)
-        {tc, if(is_error, do: :error, else: :ok), content}
+        %ToolResult{content: content, is_error: is_error, state: state} =
+          run_sub_agent_tool(ctx, tc)
+
+        {tc, entry_kind(is_error, state), content}
       end)
 
     # One authoritative budget pass over the whole batch so regular and
@@ -128,6 +132,14 @@ defmodule Nest.Agents.Agent.ToolLoop do
     BatchSizer.cook(entries, ctx)
   end
 
+  # The entry kind `BatchSizer` cooks the result part from. A result that is not
+  # a verdict — a wait tool's, whose real result arrives later as a message
+  # (issue #54) — keeps its own kind, so the part it becomes carries the marker
+  # the machine reads to end the turn.
+  defp entry_kind(true, _state), do: :error
+  defp entry_kind(false, "waiting"), do: :waiting
+  defp entry_kind(false, _state), do: :ok
+
   defp sub_agent_tool?(%ToolCall{name: name})
        when name in [
               "agents-spawn",
@@ -138,8 +150,10 @@ defmodule Nest.Agents.Agent.ToolLoop do
               "agents-unarchive",
               "agents-batch",
               "agents-send",
-              "agents-wait-for-idle",
+              "agents-wait",
               "agents-last-message",
+              "agents-history",
+              "agents-status",
               "models-list"
             ],
        do: true
@@ -150,11 +164,16 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-query"} = tc), do: run_query_agent(ctx, tc)
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-send"} = tc), do: run_send_agent(ctx, tc)
 
-  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-wait-for-idle"} = tc),
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-wait"} = tc),
     do: run_wait_for_idle(ctx, tc)
 
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-last-message"} = tc),
     do: run_last_message(ctx, tc)
+
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-history"} = tc),
+    do: run_history(ctx, tc)
+
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-status"} = tc), do: run_status(ctx, tc)
 
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-list"} = tc), do: run_list_agents(ctx, tc)
 
@@ -211,7 +230,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp spawn_confirmation(spawned_name, _query) do
     "Spawned agent #{spawned_name} with your query. Its answer will arrive as a " <>
       "message in your inbox; if it fails or is stopped before it answers, a " <>
-      "runtime notice saying so will arrive instead. Use `agents-wait-for-idle` " <>
+      "runtime notice saying so will arrive instead. Use `agents-wait` " <>
       "to be notified when it finishes, and `agents-last-message` to read its " <>
       "message."
   end
@@ -426,7 +445,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp query_confirmation(target, :delivered) do
     "Query delivered to #{target}, which now owes you a reply: it stays in its " <>
       "turn until it answers, and its answer will arrive as a message in your " <>
-      "inbox. Use `agents-wait-for-idle` to be notified when it answers, and " <>
+      "inbox. Use `agents-wait` to be notified when it answers, and " <>
       "`agents-last-message` to read its message."
   end
 
@@ -501,29 +520,15 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp refusal_message(verb, target, reason),
     do: "Could not #{verb} #{target}: #{inspect(reason)}"
 
-  # `agents-wait-for-idle`: synchronisation only (issue #62). By default it
-  # registers interest and returns immediately, leaving the agent idle so a
-  # human can message it (issue #54); the watcher delivers a bare notice when
-  # the event fires. `block: true` runs the wait in this worker instead and
-  # returns the partition. Neither mode carries the target's message.
+  # `agents-wait`: register interest (issue #54). Nothing waits here: the watch
+  # is reported on the result as `state: "waiting"`, which the machine reads and
+  # ends the caller's turn for; the watcher's notice is what wakes the agent. A
+  # wait with nothing to watch reports inline and the turn continues.
   defp run_wait_for_idle(ctx, %ToolCall{} = tc) do
-    if extract_bool_arg(tc, "block", false) do
-      blocking_wait(ctx, tc)
-    else
-      case Watch.register_call(ctx, tc) do
-        {:ok, content} -> build_tool_result(tc, "agents-wait-for-idle", content)
-        {:error, content} -> build_tool_result(tc, "agents-wait-for-idle", content, true)
-      end
-    end
-  end
-
-  defp blocking_wait(ctx, %ToolCall{} = tc) do
-    case WaitForIdle.run(ctx, tc) do
-      {:ok, content} ->
-        build_tool_result(tc, "agents-wait-for-idle", SubAgentResults.bound(content, tc, ctx))
-
-      {:error, content} ->
-        build_tool_result(tc, "agents-wait-for-idle", content, true)
+    case Watch.register_call(ctx, tc) do
+      {:waiting, content} -> build_tool_result(tc, "agents-wait", content, false, "waiting")
+      {:ok, content} -> build_tool_result(tc, "agents-wait", content)
+      {:error, content} -> build_tool_result(tc, "agents-wait", content, true)
     end
   end
 
@@ -537,6 +542,29 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
       {:error, content} ->
         build_tool_result(tc, "agents-last-message", content, true)
+    end
+  end
+
+  # `agents-history` (issue #22): a plain DB read of another agent's persisted
+  # sequence, so it is callable mid-turn and never touches the target's process.
+  # A range read of tool-heavy history can be arbitrarily large, so it goes
+  # through the same inline cap every response-bearing sub-agent result does.
+  defp run_history(ctx, %ToolCall{} = tc) do
+    case History.run(ctx, tc) do
+      {:ok, content} ->
+        build_tool_result(tc, "agents-history", SubAgentResults.bound(content, tc, ctx))
+
+      {:error, content} ->
+        build_tool_result(tc, "agents-history", content, true)
+    end
+  end
+
+  # `agents-status` (issue #22): the target's message count, compaction boundary
+  # and state. A fixed set of lines, so nothing to bound.
+  defp run_status(ctx, %ToolCall{} = tc) do
+    case Status.run(ctx, tc) do
+      {:ok, content} -> build_tool_result(tc, "agents-status", content)
+      {:error, content} -> build_tool_result(tc, "agents-status", content, true)
     end
   end
 
@@ -610,13 +638,14 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   defp extract_bool_arg(_tc, _key, default), do: default
 
-  defp build_tool_result(%ToolCall{} = tc, name, content, is_error \\ false) do
+  defp build_tool_result(%ToolCall{} = tc, name, content, is_error \\ false, state \\ nil) do
     %ToolResult{
       tool_call_id: tc.id,
       name: name,
       arguments: tc.arguments,
       content: content,
-      is_error: is_error
+      is_error: is_error,
+      state: state
     }
   end
 end

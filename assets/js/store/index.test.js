@@ -4910,6 +4910,226 @@ describe("store", () => {
     });
   });
 
+  describe("applyAgentInboxDelta (#27)", () => {
+    // A connected agent whose full-list frame (the join's `init`) left the
+    // queue empty at sequence 0 — the baseline the deltas below continue.
+    const seed = (messages = [], inboxSeq = 0) => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        status: "idle",
+      });
+      useStore.getState().setAgentInbox("agent-1", messages, inboxSeq);
+    };
+
+    const entry = (id, content = "hi") => ({
+      id,
+      from: "alice",
+      content,
+      timestamp: "t1",
+      kind: "agent",
+    });
+
+    it("appends the entries an append delta names and adopts its sequence", () => {
+      seed();
+
+      const result = useStore.getState().applyAgentInboxDelta("agent-1", {
+        op: "append",
+        messages: [entry("d1")],
+        count: 1,
+        inboxSeq: 1,
+      });
+
+      expect(result).toEqual({ applied: true, needsResync: false });
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.inbox.map((m) => m.id)).toEqual(["d1"]);
+      expect(cache.pendingMessageCount).toBe(1);
+      expect(cache.inboxSeq).toBe(1);
+    });
+
+    it("retracts the optimistic row an appended human entry confirms", () => {
+      seed();
+      useStore.getState().setAgentConnected("agent-1", { status: "streaming" });
+      useStore.getState().addUserMessage("agent-1", "queue this", "build");
+
+      useStore.getState().applyAgentInboxDelta("agent-1", {
+        op: "append",
+        messages: [
+          {
+            id: "d1",
+            from: "alice",
+            content: "queue this",
+            timestamp: "t1",
+            kind: "user",
+            mode: "build",
+          },
+        ],
+        count: 1,
+        inboxSeq: 1,
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messages).toEqual([]);
+      expect(cache.streaming).toBeNull();
+      expect(cache.partial).toBeNull();
+      expect(cache.inbox.map((m) => m.id)).toEqual(["d1"]);
+    });
+
+    it("removes exactly the ids a remove delta names, tolerating one it never saw", () => {
+      seed([entry("d1"), entry("d2")], 2);
+
+      useStore.getState().applyAgentInboxDelta("agent-1", {
+        op: "remove",
+        ids: ["d1"],
+        count: 1,
+        inboxSeq: 3,
+      });
+
+      let cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.inbox.map((m) => m.id)).toEqual(["d2"]);
+      expect(cache.pendingMessageCount).toBe(1);
+
+      // An id this client never held is not an error: the idle delivery path
+      // enqueues and consumes in one step, so its removal frame is the first
+      // thing the client hears about that entry. The frame's `count` is what
+      // proves the result is the server's queue.
+      const result = useStore.getState().applyAgentInboxDelta("agent-1", {
+        op: "remove",
+        ids: ["never-seen"],
+        count: 1,
+        inboxSeq: 4,
+      });
+
+      expect(result).toEqual({ applied: true, needsResync: false });
+      cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.inbox.map((m) => m.id)).toEqual(["d2"]);
+      expect(cache.inboxSeq).toBe(4);
+    });
+
+    it("replaces an entry in place on an update delta", () => {
+      seed([{ ...entry("d1"), retrieved: false }], 1);
+
+      useStore.getState().applyAgentInboxDelta("agent-1", {
+        op: "update",
+        messages: [{ ...entry("d1"), retrieved: true }],
+        count: 1,
+        inboxSeq: 2,
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.inbox).toHaveLength(1);
+      expect(cache.inbox[0].retrieved).toBe(true);
+      expect(cache.inboxSeq).toBe(2);
+    });
+
+    it("does not apply a frame that skips a sequence", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      seed();
+
+      const result = useStore.getState().applyAgentInboxDelta("agent-1", {
+        op: "append",
+        messages: [entry("d1")],
+        count: 1,
+        inboxSeq: 2,
+      });
+
+      expect(result).toEqual({ applied: false, needsResync: true });
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.inbox).toEqual([]);
+      expect(cache.inboxSeq).toBe(0);
+      expect(warnSpy).toHaveBeenCalled();
+    });
+
+    it("does not apply a frame with no baseline to continue from", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      useStore.getState().setAgentConnected("agent-1", { status: "idle" });
+
+      const result = useStore.getState().applyAgentInboxDelta("agent-1", {
+        op: "append",
+        messages: [entry("d1")],
+        count: 1,
+        inboxSeq: 1,
+      });
+
+      expect(result).toEqual({ applied: false, needsResync: true });
+      expect(useStore.getState().agentsCache["agent-1"].inboxSeq).toBeNull();
+      expect(warnSpy).toHaveBeenCalled();
+    });
+
+    it("does not apply a frame whose count disagrees with the list", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      seed();
+
+      // The sequence continues, but the frame claims the queue holds one entry
+      // the delta does not describe: applying it would leave the client
+      // silently short, so it must resync instead.
+      const result = useStore.getState().applyAgentInboxDelta("agent-1", {
+        op: "remove",
+        ids: [],
+        count: 1,
+        inboxSeq: 1,
+      });
+
+      expect(result).toEqual({ applied: false, needsResync: true });
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.inbox).toEqual([]);
+      expect(cache.inboxSeq).toBe(0);
+      expect(warnSpy).toHaveBeenCalled();
+    });
+
+    it("does not apply an update for an entry it does not hold", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      seed();
+
+      const result = useStore.getState().applyAgentInboxDelta("agent-1", {
+        op: "update",
+        messages: [entry("never-seen")],
+        count: 0,
+        inboxSeq: 1,
+      });
+
+      expect(result).toEqual({ applied: false, needsResync: true });
+      expect(warnSpy).toHaveBeenCalled();
+    });
+
+    it("does not apply a malformed frame", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      seed();
+
+      const payloads = [
+        { messages: [entry("d1")], count: 1, inboxSeq: 1 },
+        { op: "replace", messages: [], count: 0, inboxSeq: 1 },
+        { op: "append", messages: [entry("d1")], inboxSeq: 1 },
+        { op: "remove", ids: [], count: 0 },
+        { op: "append", messages: "nope", count: 1, inboxSeq: 1 },
+        { op: "remove", ids: "nope", count: 0, inboxSeq: 1 },
+      ];
+
+      for (const payload of payloads) {
+        expect(
+          useStore.getState().applyAgentInboxDelta("agent-1", payload),
+        ).toEqual({ applied: false, needsResync: true });
+      }
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.inbox).toEqual([]);
+      expect(cache.inboxSeq).toBe(0);
+      expect(warnSpy).toHaveBeenCalledTimes(payloads.length);
+    });
+
+    it("is a no-op for an agent with no cache entry", () => {
+      const before = useStore.getState().agentsCache;
+      expect(
+        useStore.getState().applyAgentInboxDelta("ghost", {
+          op: "append",
+          messages: [],
+          count: 0,
+          inboxSeq: 1,
+        }),
+      ).toEqual({ applied: false, needsResync: false });
+      expect(useStore.getState().agentsCache).toBe(before);
+    });
+  });
+
   describe("applyAgentStatus (#53)", () => {
     const seed = () =>
       useStore.getState().setAgents([

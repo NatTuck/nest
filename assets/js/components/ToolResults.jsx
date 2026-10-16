@@ -5,17 +5,22 @@
  *
  * The badge is not a two-way success/failure switch. A result can
  * carry a `state` the `is_error` flag cannot express: a call the
- * machine moved to the background (issue #36) has produced no result
- * yet, so `is_error: false` would badge it "Success" — an assertion
- * the data does not support. The result's own `state` decides first,
- * and a state this build does not know is rendered as such rather
+ * machine moved to the background (issue #36), or one that registered a
+ * watch and will report later as a message (issue #54), has produced no
+ * result yet, so `is_error: false` would badge it "Success" — an
+ * assertion the data does not support. The result's own `state` decides
+ * first, and a state this build does not know is rendered as such rather
  * than being quietly read as a success or a failure.
  */
 import { TruncatedResult } from "./TruncatedResult";
 import { sortArgumentsForDisplay } from "../utils/argumentDisplay";
 
-// The wire's `state` value for a call whose result has not arrived yet.
+// The wire's `state` values for a call whose result has not arrived yet:
+// `backgrounded` is the machine's synthetic answer to a batch it moved to the
+// background (issue #36), `waiting` a wait tool's own answer for a call that
+// registered a watch (issue #54).
 const BACKGROUNDED = "backgrounded";
+const WAITING = "waiting";
 
 const STATES = {
   success: {
@@ -39,6 +44,13 @@ const STATES = {
     icon: "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z",
     iconLabel: "Backgrounded icon",
   },
+  waiting: {
+    box: "bg-indigo-50 border-indigo-200",
+    text: "text-indigo-700",
+    content: "text-indigo-600",
+    icon: "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z",
+    iconLabel: "Waiting icon",
+  },
   unknown: {
     box: "bg-amber-50 border-amber-200",
     text: "text-amber-700",
@@ -52,6 +64,9 @@ const STATES = {
 function resultState(result) {
   if (result.state === BACKGROUNDED) {
     return { style: STATES.backgrounded, label: "Backgrounded" };
+  }
+  if (result.state === WAITING) {
+    return { style: STATES.waiting, label: "Waiting" };
   }
   if (result.state) {
     // An unrecognised state is shown verbatim: it is data this build

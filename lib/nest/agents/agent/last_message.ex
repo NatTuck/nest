@@ -10,7 +10,7 @@ defmodule Nest.Agents.Agent.LastMessage do
 
   The fetch reads the caller's inbox rather than the target's transcript on
   purpose. Requirement 1 (idle implies delivered) means that once
-  `agents-wait-for-idle` reports an agent idle, its delivery is already in the
+  `agents-wait` reports an agent idle, its delivery is already in the
   caller's inbox; the fetch is exactly "receive that inbox copy mid-turn",
   which needs no second content channel and no correlation id threaded through
   the delivery path.

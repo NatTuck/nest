@@ -60,6 +60,7 @@ defmodule Nest.Agents.Agent.EmptyResponseRepromptTest do
     # ...but the model is asked to actually speak.
     assert_receive {:chat_message, {:user, %{index: 3, parts: [%Part.Text{text: nudge}]}}}, 1_000
     assert nudge =~ "empty response"
+    assert nudge =~ "[nest notice]"
 
     # And this time it replies with real text.
     assert_receive {:chat_message, {:assistant, %{index: 4, parts: parts}}},

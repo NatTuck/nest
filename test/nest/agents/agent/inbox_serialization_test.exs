@@ -1,24 +1,19 @@
 defmodule Nest.Agents.Agent.InboxSerializationTest do
   @moduledoc """
-  The inbox's wire shape and its pure selection/rendering rules: `serialize/1`,
-  `batch/1`, `combine_and_offload/2`, the two self-produced enqueues, and
-  `drain_mode/1`.
+  The inbox's wire shape and its pure selection rules: `serialize/1`,
+  `batch/1`, `query_senders/1`, `drain_mode/1`, the two self-produced
+  enqueues, and the delivery-id/consume API.
 
   Split out of `InboxTest` (which owns the delivery/disposition contract) when
-  that file reached the credo source-file cap; the behavior contract is carried
-  by the tests and their inline `#` comments, exactly as there.
+  that file reached the credo source-file cap; the rendering half is
+  `Nest.Agents.Agent.InboxRenderTest`'s. The behavior contract is carried by
+  the tests and their inline `#` comments, exactly as there.
   """
 
   use ExUnit.Case, async: true
 
-  import Nest.Test.TmpCleanup
-
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Inbox
-  alias Nest.Messages.MessageList
-
-  # A big-enough body to exceed the default 8000-token cap.
-  @oversized String.duplicate("hello world ", 4_000)
 
   describe "entry shape and serialization" do
     test "serialize/1 emits the wire shape the browser renders, for every kind" do
@@ -166,43 +161,6 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       assert Inbox.batch([peer, notice, alice]) == [peer, notice]
     end
 
-    test "combine_and_offload/2 renders a lone human message bare and labels an agent batch" do
-      # intentional: the rendered text is LLM-facing. A human entry is its bare
-      # content (its `[mode: X]` prefix is added when the message is built), so
-      # a queued human message reads exactly like one that arrived while the
-      # agent was idle. Agent entries keep `[Message from agent "X"]`, which is
-      # what disambiguates a batch; a missing or blank sender drops the quoted
-      # name rather than printing `nil` or `""`.
-      state = %Agent{tmp_path: nil}
-
-      assert Inbox.combine_and_offload([entry(:user, "alice", "from a human", "plan")], state) ==
-               "from a human"
-
-      assert Inbox.combine_and_offload([entry(:user, nil, "from nobody")], state) ==
-               "from nobody"
-
-      assert Inbox.combine_and_offload(
-               [
-                 entry(:agent, "peer", "from an agent"),
-                 entry(:agent, "", "from a blank agent"),
-                 entry(:agent, nil, "from nobody")
-               ],
-               state
-             ) ==
-               "[Message from agent \"peer\"]\nfrom an agent\n\n" <>
-                 "[Message from agent]\nfrom a blank agent\n\n" <>
-                 "[Message from agent]\nfrom nobody"
-
-      # A query is a peer's words and keeps the label (decision 7); a notice
-      # is the runtime's own and must never be framed as an agent's (decision
-      # 9) — it renders bare, exactly like a human's.
-      assert Inbox.combine_and_offload([entry(:query, "peer", "may I ask?")], state) ==
-               "[Message from agent \"peer\"]\nmay I ask?"
-
-      assert Inbox.combine_and_offload([entry(:notice, "peer", "peer never answered")], state) ==
-               "peer never answered"
-    end
-
     test "deliver_user_message/4 normalizes a non-binary sender and mode to nil" do
       # intentional: `serialize/1`'s contract is string-or-null, so a malformed
       # payload cannot put a number/map on the wire.
@@ -237,9 +195,12 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
         state = Inbox.enqueue_internal(state, "runtime", content, kind)
 
         assert length(state.live.inbox) == n
-        assert_receive {:chat_inbox, %{count: ^n, messages: messages}}
-        assert List.last(messages)["content"] == content
-        assert List.last(messages)["kind"] == Atom.to_string(kind)
+
+        # The frame is the delta for this enqueue: the one entry it appended
+        # (issue #27), not the 100 already queued.
+        assert_receive {:chat_inbox, %{op: "append", count: ^n, messages: [entry]}}
+        assert entry["content"] == content
+        assert entry["kind"] == Atom.to_string(kind)
 
         assert %{from: "runtime", content: ^content, kind: ^kind, mode: nil} =
                  List.last(state.live.inbox)
@@ -288,52 +249,6 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
     end
   end
 
-  describe "build_drained_message/3 origin marker" do
-    test "a human batch is tagged as the human's own words" do
-      entries = [entry(:user, "alice", "hi", "plan", nil, true)]
-
-      assert {:user, %{metadata: metadata}} = Inbox.build_drained_message(entries, "hi", "plan")
-
-      assert metadata == %{"mode" => "plan", "origin" => "human"}
-    end
-
-    test "a delivered batch is left untagged and keeps its fulfilled ids" do
-      # The marker is fail-closed on the client, so a delivered batch must
-      # carry no `origin` at all — and the backgrounded-promise metadata that
-      # already rides this message must survive the merge.
-      entries = [
-        entry(:agent, "peer", "do it")
-        |> Map.put(:fulfilled_ids, ["call-1", "call-2"])
-      ]
-
-      assert {:user, %{metadata: metadata}} =
-               Inbox.build_drained_message(entries, "do it", "chat")
-
-      assert metadata ==
-               Map.merge(
-                 %{"mode" => "chat"},
-                 MessageList.fulfilled_metadata(["call-1", "call-2"])
-               )
-
-      refute Map.has_key?(metadata, "origin")
-    end
-
-    test "a non-user entry that claims human? is left untagged" do
-      # `origin_metadata/1` requires `kind: :user` *and* `human?: true`. The two
-      # agree by construction today — only `deliver_user_message/5` sets the
-      # flag, and it always sets `kind: :user`, which `batch/1` delivers alone —
-      # so this is defensive-input coverage for the invariant: an entry that
-      # claimed `human?` on another kind must stay untagged rather than be
-      # mistagged as the human's own words.
-      entries = [entry(:notice, nil, "runtime note", nil, nil, true)]
-
-      assert {:user, %{metadata: metadata}} =
-               Inbox.build_drained_message(entries, "runtime note", "chat")
-
-      refute Map.has_key?(metadata, "origin")
-    end
-  end
-
   describe "delivery ids and consume semantics (issue #62)" do
     test "every enqueued entry carries a distinct id" do
       # intentional: the id is a per-delivery identity, not a sequence, so two
@@ -364,21 +279,6 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       assert Inbox.consume([taken], []) == []
     end
 
-    test "combine_and_offload/2 tags a retrieved entry as a re-delivery" do
-      # intentional: requirement 5. A retrieved entry is normally suppressed by
-      # `batch/1`, so this is the safety net: if both channels ever carry the
-      # body, the second copy is explicitly a re-delivery and can never be
-      # mistaken for a fresh human turn.
-      state = %Agent{tmp_path: nil}
-
-      taken = %{entry(:agent, "peer", "the report", nil, "a") | retrieved: true}
-
-      rendered = Inbox.combine_and_offload([taken], state)
-      assert rendered =~ "[re-delivery:"
-      assert rendered =~ "already retrieved with agents-last-message"
-      assert rendered =~ "the report"
-    end
-
     test "take_last/2 fetches the newest non-human entry from a name" do
       # intentional: `agents-last-message` reads the pending delivery, never a
       # human message, and consumes only the entry it returns.
@@ -389,7 +289,11 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
 
       {left, taken} = Inbox.take_last([peer, bob, human, newest], "peer")
       assert taken.id == "d"
-      assert Enum.find(left, &(&1.id == "d")).retrieved == true
+      # The copy returned is the one the queue now holds, so a caller that
+      # publishes the change as the update frame (issue #27) serializes exactly
+      # what it wrote rather than re-deriving it.
+      assert taken == Enum.find(left, &(&1.id == "d"))
+      assert taken.retrieved == true
       assert Enum.find(left, &(&1.id == "a")).retrieved == false
 
       # A name with only a human entry has nothing to fetch: the human's words
@@ -401,24 +305,9 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       assert {[], nil} = Inbox.take_last([], "ghost")
       assert {[^human], nil} = Inbox.take_last([human], "ghost")
     end
-
-    test "an over-cap batch's offload file is named after its first entry's id" do
-      # intentional: requirement 4 — the id is on the pointer's path too, so a
-      # caller that fetched the body recognises the file it names.
-      dir = Path.join(System.tmp_dir!(), "inbox-id-#{System.unique_integer([:positive])}")
-      File.mkdir_p!(dir)
-      on_exit(fn -> rm_tmp!(dir, "inbox-id-") end)
-
-      state = %Agent{name: "offload-id", space_id: 1, tmp_path: dir}
-      first = %{entry(:agent, "peer", "hello world", nil, "firstid") | content: @oversized}
-
-      content = Inbox.combine_and_offload([first], state)
-      assert content =~ "agent-inbox-firstid.txt"
-      assert File.read!(Path.join(dir, "agent-inbox-firstid.txt")) =~ "hello world"
-    end
   end
 
-  defp entry(kind, from, content, mode \\ nil, id \\ nil, human? \\ false) do
+  defp entry(kind, from, content, mode \\ nil, id \\ nil) do
     %{
       id: id || Inbox.new_id(),
       from: from,
@@ -426,7 +315,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       timestamp: DateTime.utc_now(),
       kind: kind,
       mode: mode,
-      human?: human?,
+      human?: false,
       fulfilled_ids: [],
       retrieved: false
     }

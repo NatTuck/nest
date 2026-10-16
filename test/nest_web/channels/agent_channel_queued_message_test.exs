@@ -61,9 +61,20 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       end
 
       # The queued human entries travel on the wire with their kind and mode,
-      # and `pendingMessageCount` counts them.
+      # and `pendingMessageCount` counts them. The reply is the resync frame
+      # (issue #27): the full list, its length, and the `inboxSeq` it was taken
+      # at, self-described as a replacement so a client can tell it apart from
+      # a delta.
       ref = push(socket, "chat:inbox", %{})
-      assert_reply ref, :ok, %{"count" => 2, "messages" => messages}
+
+      assert_reply ref, :ok, %{
+        "op" => "replace",
+        "count" => 2,
+        "messages" => messages,
+        "inboxSeq" => inbox_seq
+      }
+
+      assert is_integer(inbox_seq)
 
       assert Enum.map(messages, &Map.take(&1, ["from", "content", "kind", "mode"])) == [
                %{
@@ -238,7 +249,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
 
       # The backgrounding left `:executing_tools` for the delivered turn, and no
       # idle went out with it: an idle here would resolve an idle-based
-      # `agents-wait-for-idle` with the pre-delivery answer.
+      # `agents-wait` with the pre-delivery answer.
       assert_push "chat:status", %{status: "streaming", pendingMessageCount: 0}, 1_000
 
       # The channel is the process that turns the agent's broadcasts into these
@@ -394,7 +405,8 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       ref = push(socket, "chat:message", %{"content" => "human note", "mode" => "plan"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:inbox", %{count: 1}, 1_000
+      assert_push "chat:inbox", %{op: "append", count: 1, messages: [entry]}, 1_000
+      assert entry["content"] == "human note"
 
       # The channel barrier makes the negative check deterministic: anything the
       # channel would have pushed for the parked compaction is already here.
@@ -412,10 +424,10 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # Releasing the compactor commits the compaction: the resume re-runs the
       # carried continuation and the next turn boundary drains the queue, so the
       # message is delivered and the queue clears. The only count-0 frame in
-      # this test is that consume.
+      # this test is that consume, and it names the entry it removed.
       send(compactor, :release_compactor)
 
-      assert_push "chat:inbox", %{count: 0, messages: []}, 1_000
+      assert_push "chat:inbox", %{op: "remove", count: 0, ids: [_]}, 1_000
 
       assert_push "chat:message",
                   %{"role" => "user", "mode" => "plan", "parts" => [%{"text" => text}]},

@@ -14,7 +14,8 @@ defmodule Nest.Tools.Groups do
     * `"file"`    — read/write/edit/inspect files
     * `"shell"`   — run shell commands, including background jobs
     * `"context"` — context usage/compaction control tools
-    * `"agents"`  — spawn/query/archive sub-agents and list models
+    * `"agents"`  — spawn/query/archive sub-agents, read their history, and
+      list models
   """
 
   require Logger
@@ -24,7 +25,7 @@ defmodule Nest.Tools.Groups do
     "shell" => ~w(shell-cmd shell-list shell-wait shell-kill),
     "context" => ~w(context-check context-compact),
     "agents" =>
-      ~w(agents-spawn agents-query agents-send agents-wait-for-idle agents-last-message agents-list agents-list-archived agents-archive agents-unarchive agents-batch models-list)
+      ~w(agents-spawn agents-query agents-send agents-wait agents-last-message agents-list agents-list-archived agents-archive agents-unarchive agents-batch models-list agents-history agents-status)
   }
 
   # Canonical order. Expansion follows this order (and the tool order

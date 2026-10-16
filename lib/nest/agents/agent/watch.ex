@@ -2,10 +2,19 @@ defmodule Nest.Agents.Agent.Watch do
   @moduledoc """
   Interest registrations for the non-blocking waits (issues #54 + #62).
 
-  `agents-wait-for-idle` and `shell-wait` return immediately by default: the
-  tool worker registers a watch, the agent ends its turn and goes **idle** so a
-  human can message it (issue #54), and a supervised task delivers a bare
-  `:notice` when the event fires.
+  `agents-wait` and `shell-wait` never block: the tool worker registers a
+  watch, reports that it did, and the machine **ends the caller's turn** so the
+  agent goes idle (issue #54) and a human can message it. A supervised task
+  delivers a bare `:notice` when the event fires, which wakes the idle agent.
+
+  Reporting the registration is what makes the turn-ending exact: the tool
+  result of a call that registered a watch carries `state: "waiting"` (the
+  entry kind `BatchSizer` cooks it from), and
+  `Machine.Transitions.tool_results/2` rests the turn for a batch whose results
+  carry it. A wait with nothing to watch — every target already idle, no other
+  agents in the space — registers nothing, returns an ordinary result, and the
+  turn simply continues, which is why both functions below return `{:waiting,
+  …}` and `{:ok, …}` as distinct shapes.
 
   ## The registration
 
@@ -116,12 +125,16 @@ defmodule Nest.Agents.Agent.Watch do
   end
 
   @doc """
-  Register interest for an `agents-wait-for-idle` call (issue #54). Resolves
-  the targets; already-idle-only waits report inline and register nothing.
-  Returns `{:ok, confirmation}` or `{:error, content}`.
+  Register interest for an `agents-wait` call (issue #54). Resolves the
+  targets; a wait with nothing to watch reports inline and registers nothing.
+
+  Returns `{:waiting, confirmation}` when a watch is now outstanding (the
+  caller's turn ends), `{:ok, confirmation}` when every target was already idle
+  or the space holds no other agent (the caller's turn continues), or
+  `{:error, content}` when the call was refused and registered nothing.
   """
   @spec register_call(map(), Nest.Messages.ToolCall.t()) ::
-          {:ok, String.t()} | {:error, String.t()}
+          {:waiting, String.t()} | {:ok, String.t()} | {:error, String.t()}
   def register_call(ctx, %Nest.Messages.ToolCall{} = tc) do
     case WaitForIdle.resolve(ctx, tc) do
       {:error, content} ->
@@ -147,7 +160,7 @@ defmodule Nest.Agents.Agent.Watch do
     case start(ctx.agent_pid, ref, spec) do
       {:ok, pid} ->
         Agent.watch_attached(ctx.agent_pid, ref, pid)
-        {:ok, WaitForIdle.watch_confirmation(partition)}
+        {:waiting, WaitForIdle.watch_confirmation(partition)}
 
       {:error, reason} ->
         Agent.unregister_watch(ctx.agent_pid, ref)
@@ -156,10 +169,13 @@ defmodule Nest.Agents.Agent.Watch do
   end
 
   @doc """
-  Register interest for a `shell-wait` call (issue #54). Returns the
-  confirmation text; the watcher delivers the job's result as a notice.
+  Register interest for a `shell-wait` call (issue #54). Returns
+  `{:waiting, confirmation}` when the watch is now outstanding (the caller's
+  turn ends) or `{:error, content}` when it could not be registered. The
+  watcher delivers the job's result as a notice.
   """
-  @spec register_shell_call(map(), String.t(), pos_integer()) :: {:ok, String.t()}
+  @spec register_shell_call(map(), String.t(), pos_integer()) ::
+          {:waiting, String.t()} | {:error, String.t()}
   def register_shell_call(ctx, id, timeout) do
     key = Nest.Tools.agent_key(ctx)
     ref = make_ref()
@@ -169,7 +185,7 @@ defmodule Nest.Agents.Agent.Watch do
     case start(ctx.agent_pid, ref, spec) do
       {:ok, pid} ->
         Agent.watch_attached(ctx.agent_pid, ref, pid)
-        {:ok, "Watching background job #{id}; its result will arrive as a message."}
+        {:waiting, "Watching background job #{id}; its result will arrive as a message."}
 
       {:error, reason} ->
         Agent.unregister_watch(ctx.agent_pid, ref)

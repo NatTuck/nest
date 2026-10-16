@@ -160,6 +160,7 @@ defmodule Nest.Agents do
       vocation_slug: info.vocation_slug,
       pending_messages: info.pending_messages,
       pending_message_count: info.pending_message_count,
+      inbox_seq: info.inbox_seq,
       owed_replies: info.owed_replies
     }
 

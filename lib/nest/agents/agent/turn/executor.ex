@@ -29,18 +29,16 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   alias Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess
   alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Machine
-  alias Nest.Agents.Agent.Machine.Children
   alias Nest.Agents.Agent.MessageAppender
-  alias Nest.Agents.Agent.SubAgentResults
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Agents.Agent.Timeline
   alias Nest.Agents.Agent.ToolFilter
   alias Nest.Agents.Agent.ToolLoop
+  alias Nest.Agents.Agent.Turn.ChildActions
   alias Nest.Agents.Agent.Turn.Commit
   alias Nest.Agents.Agent.Turn.GiveUpDelivery
   alias Nest.Agents.Agent.Turn.HTTPWorker
   alias Nest.Agents.Agent.Turn.Terminal
-  alias Nest.Agents.Agent.Watch
   alias Nest.Messages.Streaming
   alias Nest.Messages.ThinkTags
   alias Nest.Sandbox.Mounts
@@ -223,6 +221,14 @@ defmodule Nest.Agents.Agent.Turn.Executor do
     {state, :continue}
   end
 
+  # The wait rest (issue #54): the turn is over, but nothing is complete — the
+  # agent is idle waiting for a message that will wake it. `clear_live/1` runs
+  # (so the next turn starts clean), and the parent is deliberately NOT told the
+  # child finished: reporting a completion here would answer a query the child
+  # never answered, and the child reports for real when it wakes and ends a
+  # turn.
+  defp execute({:finalize, :waiting}, state), do: {clear_live(state), :continue}
+
   defp execute({:finalize, metadata}, state) when is_map(metadata) do
     state = finalize_partial(state, metadata)
     state = clear_live(state)
@@ -277,62 +283,21 @@ defmodule Nest.Agents.Agent.Turn.Executor do
     end
   end
 
-  # A child's outcome is delivered here, in the parent's process, so a child
-  # whose worker is already gone cannot lose the result — there is no `send/2`
-  # to a pid left to fail (issue #31 §2.1). It goes to the child's *reporting
-  # target* when it has one that is still alive: a batch child reports to its
-  # coordinator, so the parent reads the batch's aggregate once instead of every
-  # child's answer as well. A target that has died falls back to the parent's
-  # own inbox, so a batch whose coordinator crashed degrades to per-child
-  # messages rather than to silence. The completion arrives as the child's own
-  # words; a child that produced nothing, failed, or was stopped arrives as a
-  # runtime notice.
-  defp execute({:child_message, name, result}, state) do
-    Timeline.child_message(state, name, result)
+  # The child lifecycle actions live in `Turn.ChildActions`; the executor keeps
+  # one clause per action so the action vocabulary stays pinned here.
+  defp execute({:child_message, name, result}, state),
+    do: ChildActions.child_message(state, name, result)
 
-    case Children.target(state.live.machine.children, name) do
-      target when is_pid(target) ->
-        if Process.alive?(target) do
-          send(target, {:child_message, name, result})
-          {state, :continue}
-        else
-          enqueue_child_message(state, name, result)
-        end
+  defp execute({:merge_usage, name, usage}, state),
+    do: ChildActions.merge_usage(state, name, usage)
 
-      nil ->
-        enqueue_child_message(state, name, result)
-    end
-  end
+  defp execute({:stop_child, name}, state), do: ChildActions.stop_child(state, name)
 
-  defp execute({:merge_usage, name, usage}, state) do
-    Timeline.child_usage(state, name, usage)
+  defp execute({:archive_child, name}, state), do: ChildActions.archive_child(state, name)
 
-    state = %{
-      state
-      | llm_metrics: %{
-          state.llm_metrics
-          | descendant_usage: Broadcasts.total_usage(state.llm_metrics.descendant_usage, usage)
-        }
-    }
+  defp execute({:stop_all_children}, state), do: ChildActions.stop_all(state)
 
-    {state, :continue}
-  end
-
-  defp execute({:stop_child, name}, state) do
-    Timeline.child_action(state, "stopped", name)
-    _ = Nest.Agents.Supervisor.stop_agent(state.space_id, name)
-    {state, :continue}
-  end
-
-  defp execute({:archive_child, name}, state) do
-    Timeline.child_action(state, "archived", name)
-    _ = Nest.Agents.Supervisor.archive_agent(state.space_id, name)
-    {state, :continue}
-  end
-
-  defp execute({:stop_all_children}, state), do: {stop_running_children(state), :continue}
-
-  defp execute({:stop_watchers}, state), do: {Watch.stop_all(state), :continue}
+  defp execute({:stop_watchers}, state), do: ChildActions.stop_watchers(state)
 
   defp execute({:drain_inbox}, state) do
     case peek_inbox(state) do
@@ -356,7 +321,13 @@ defmodule Nest.Agents.Agent.Turn.Executor do
         # sequence" refusal. Consuming the batch on it would drop the message
         # with nothing in the transcript — the "in neither" state #26 exists to
         # eliminate — so the batch stays queued and the refusal rides back as a
-        # follow event, exactly as the `{:append, _}` clause's failure does.
+        # follow event, exactly as the `{:append, _}` clause's failure does. It
+        # is unreachable from here by construction: the batch's message is a
+        # `{:user, _}`, and `:stale` comes only from `Repair.classify_live/2`'s
+        # tool-result arm, which this action — emitted only by the `:loop_ack`
+        # rest, in `:idle` — cannot reach. The clause stays because an outcome
+        # that is not `{:ok, _}` must never consume the batch, and leaving the
+        # message queued is the only safe disposition for one.
         case MessageAppender.handle_single(state, user) do
           {:ok, _stamped, state} -> consume_inbox(state, batch)
           {:stale, state} -> {state, {:follow, {:append_result, :stale, nil}}}
@@ -439,11 +410,6 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   # rebroadcasts nothing. `{:consume_inbox, _}` is what clears the queue —
   # emitted only by the branch that appended the message — so a delivery that
   # parks (a compaction, a block) leaves the message queued and visible.
-  defp enqueue_child_message(state, name, result) do
-    {content, kind} = SubAgentResults.child_message(name, result)
-    {Inbox.enqueue_internal(state, name, content, kind), :continue}
-  end
-
   defp peek_inbox(state) do
     case Inbox.batch(state.live.inbox) do
       [] ->
@@ -471,10 +437,10 @@ defmodule Nest.Agents.Agent.Turn.Executor do
     # synchronously inside one settle, so nothing can be enqueued between the
     # peek and the consume, and anything the peek did not deliver stays queued.
     # A retrieved entry is dropped too (issue #62): `batch/1` skipped it, so the
-    # consume is the only thing that can clear it.
-    inbox = Inbox.consume(state.live.inbox, entries)
-    state = %{state | live: %{state.live | inbox: inbox}}
-    Broadcasts.inbox(state, Inbox.serialize(inbox))
+    # consume is the only thing that can clear it. The frame is the removal
+    # delta for exactly those ids (issue #27) — `Inbox.consume_and_broadcast/2`
+    # owns both the write and the frame so they cannot disagree.
+    state = Inbox.consume_and_broadcast(state, entries)
     Timeline.drained(state, entries)
     {state, :continue}
   end
@@ -487,7 +453,10 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   # the vocation does not define. Applied here, never when the entry was queued:
   # `state.live.mode` feeds `ctx.mode`/`ctx.caps`, which `Turn.prepare/1`
   # rebuilds on every settle, so setting it on arrival would re-resolve the caps
-  # of the *ongoing* turn's remaining tool calls.
+  # of the *ongoing* turn's remaining tool calls. A drain that consumes nothing
+  # — a decline, a park, a block — undoes the application
+  # (`Turn.restore_undelivered_mode/3`) for that same reason: the entry is still
+  # queued, so the mode must not stick.
   defp applied_mode(state, entries) do
     case Inbox.drain_mode(entries) do
       nil ->
@@ -578,16 +547,6 @@ defmodule Nest.Agents.Agent.Turn.Executor do
       Nest.Agents.Registry.via_tuple(state.space_id, state.tree_position.parent_name),
       payload
     )
-  end
-
-  defp stop_running_children(state) do
-    machine = state.live.machine
-
-    machine
-    |> Machine.running_child_names()
-    |> Enum.each(fn name -> _ = Nest.Agents.Supervisor.stop_agent(state.space_id, name) end)
-
-    put_machine(state, %{machine | children: %Children{}})
   end
 
   defp put_machine(state, machine), do: %{state | live: %{state.live | machine: machine}}

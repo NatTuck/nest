@@ -174,7 +174,7 @@ defmodule Nest.Tools.ShellCmdTest do
   # and `handle_timeout`/`:exec.stop` never ran, leaving the bwrap process
   # running with nothing left to stop it. 86400000 is one day expressed in
   # *milliseconds* — the number a model that learned the unit from
-  # `agents-wait-for-idle`/`agents-batch` (both milliseconds) passes by habit — so
+  # `agents-wait`/`agents-batch` (both milliseconds) passes by habit — so
   # this is the reachable form of the bug: 8.64e10 ms of bound.
   @tag :bwrap
   test "a `timeout` past `receive`'s `after` ceiling still runs the command", %{ws: ws} do
@@ -281,7 +281,7 @@ defmodule Nest.Tools.ShellCmdTest do
 
     # The model-visible contract: seconds, default 60, no cap, and optional
     # (omitting it is what applies the default). The unit is spelled out
-    # because `agents-wait-for-idle` and `agents-batch` take milliseconds.
+    # because `agents-wait` and `agents-batch` take milliseconds.
     assert timeout["type"] == "integer"
     assert timeout["description"] =~ "Wall-clock limit in seconds"
     assert timeout["description"] =~ "default #{default_seconds}"
@@ -296,7 +296,7 @@ defmodule Nest.Tools.ShellCmdTest do
     function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
 
     # Rejected before anything runs, so the tool error is the whole result.
-    # The shape is the one `agents-wait-for-idle`'s `timeout` rejection uses, so the
+    # The shape is the one `agents-wait`'s `timeout` rejection uses, so the
     # model is told what it got wrong instead of silently getting the
     # default.
     for bad <- [0, -1, 1.5, "5", true] do
@@ -309,7 +309,7 @@ defmodule Nest.Tools.ShellCmdTest do
     end
   end
 
-  test "the tool refuses to pipe output into head, tail, or grep", %{ws: ws} do
+  test "the tool refuses to pipe output into head or tail", %{ws: ws} do
     function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
 
     # Rejected before anything runs, so no bwrap is needed and the tool error
@@ -318,12 +318,11 @@ defmodule Nest.Tools.ShellCmdTest do
           "ls | head",
           "ls | head -n 5",
           "cat big.log | tail -f",
-          "ps aux | grep beam",
           "sort | uniq -c | sort -rn | head"
         ] do
       assert {:error, message} = function.function.(%{"command" => command}, nil)
       assert message =~ "will not pipe command output into"
-      assert message =~ "head, tail, or grep"
+      assert message =~ "head or tail"
     end
 
     # The offending command is named, so the model knows which pipe to drop.
@@ -334,11 +333,28 @@ defmodule Nest.Tools.ShellCmdTest do
     # command cannot smuggle a discarded pipe past it.
     assert {:error, message} =
              function.function.(
-               %{"command" => "tail -f app.log | grep ERROR", "background" => true},
+               %{"command" => "sort | uniq -c | head", "background" => true},
                nil
              )
 
-    assert message =~ "will not pipe command output into `grep`"
+    assert message =~ "will not pipe command output into `head`"
+  end
+
+  test "the tool rejects a detached-background marker, even with `background: true`", %{ws: ws} do
+    function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
+
+    # The check is a pure function of the command string, so `background: true`
+    # does not get a marker past it: a `&` still makes the staged script exit at
+    # once (reporting "exited 0" with no output), and bwrap has no controlling
+    # terminal for `nohup`/`setsid`. Rejected before anything runs, so no bwrap
+    # is needed and the tool error is the whole result.
+    for command <- ["setsid sleep 1", "nohup sleep 1", "sleep 1 &"] do
+      for args <- [%{"command" => command}, %{"command" => command, "background" => true}] do
+        assert {:error, message} = function.function.(args, nil)
+        assert message =~ "never runs a command detached"
+        assert message =~ "background: true"
+      end
+    end
   end
 
   test "the tool rejects a non-string command instead of crashing ShellCmd", %{ws: ws} do
@@ -354,7 +370,8 @@ defmodule Nest.Tools.ShellCmdTest do
   end
 
   @tag :bwrap
-  test "the tool still runs head/tail/grep directly and pipes into other commands", %{ws: ws} do
+  test "the tool still runs head/tail/grep directly and pipes into grep or other commands",
+       %{ws: ws} do
     function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
     File.write!(Path.join(ws, "sample.txt"), "alpha\nbeta\n")
 
@@ -363,6 +380,10 @@ defmodule Nest.Tools.ShellCmdTest do
     assert output == "alpha\n"
 
     assert {:ok, output} = function.function.(%{"command" => "grep beta sample.txt"}, nil)
+    assert output == "beta\n"
+
+    # A pipe into `grep` is a legitimate filter (issue #106) and runs normally.
+    assert {:ok, output} = function.function.(%{"command" => "cat sample.txt | grep beta"}, nil)
     assert output == "beta\n"
 
     # A pipe into a command other than a pager is unaffected.

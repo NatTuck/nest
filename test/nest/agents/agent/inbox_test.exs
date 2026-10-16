@@ -1,25 +1,25 @@
 defmodule Nest.Agents.Agent.InboxTest do
   @moduledoc """
-  Tests for the agent inbox: the entry shape, immediate delivery to an idle
-  agent, queueing while busy (an `agents-send` from another agent and a
-  human chat message), the combined drain with its one-mode rule, the
-  over-cap scratch-file offload, and the error paths.
+  Tests for the agent inbox: immediate delivery to an idle agent, queueing
+  while busy (an `agents-send` from another agent and a human chat message),
+  the combined drain with its one-mode rule, the reply obligation, and the
+  error paths. The LLM-facing rendering of a drain batch — the labels, the
+  bare notices and the over-cap scratch-file pointer — is
+  `Nest.Agents.Agent.InboxRenderTest`'s.
   """
 
   use Nest.DataCase, async: true
   alias Nest.Agents.Agent.Machine
 
   import ExUnit.CaptureLog
+  import Nest.Agents.AgentStateHelpers, only: [set_status: 2, wait_idle: 1, replace_state: 2]
+  import Nest.Agents.AgentTurnTestHelpers, only: [text_of: 1, user_texts: 1]
 
   alias Nest.Agents
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
-  alias Nest.Messages.Part
-
-  # A big-enough body to exceed the default 8000-token cap.
-  @oversized String.duplicate("hello world ", 4_000)
 
   setup do
     # Modes `plan` and `review` on top of the `chat` default, so the
@@ -37,7 +37,7 @@ defmodule Nest.Agents.Agent.InboxTest do
 
   test "delivery to an idle agent starts a turn with the message as a user message", %{pid: pid} do
     assert {:ok, :delivered} = Agent.deliver_message(pid, "peer", "do the thing")
-    # allowlist: snapshot — messages + tmp_path
+    # allowlist: snapshot — inbox + messages
     state = :sys.get_state(pid, 1_000)
 
     assert Enum.any?(
@@ -48,10 +48,14 @@ defmodule Nest.Agents.Agent.InboxTest do
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
     # The delivery consumed the entry, so the only queue frame due is the
-    # consume's own empty one — never an enqueue frame (see the parked-drain
-    # test below for the other half of this contract).
+    # consume's own removal — never an append frame (see the parked-drain
+    # test below for the other half of this contract). The frame names the id
+    # that went, not the (empty) queue that is left.
     assert state.live.inbox == []
-    assert_receive {:chat_inbox, %{count: 0, messages: []}}
+
+    # 1000 ms is the suite's fence for `test/` (`test/test_helper.exs:157`):
+    # this frame is broadcast by the agent process, not by this one.
+    assert_receive {:chat_inbox, %{op: "remove", count: 0, ids: [_]}}, 1_000
     refute_received {:chat_inbox, _}
   end
 
@@ -79,7 +83,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     # stop timer owns the terminal transition, so the drain's own consume frame
     # is the fence, and it is the last one due — the queue is empty after it.
     assert_receive {:chat_inbox, %{count: 0}}, 1_000
-    # allowlist: snapshot — messages + tmp_path
+    # allowlist: snapshot — inbox + messages
     state = :sys.get_state(pid, 1_000)
 
     assert state.live.inbox == []
@@ -101,7 +105,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     # no `[Message from agent …]` label — and drained through the turn executor
     # when the target is idle, exactly like a peer delivery.
     assert {:ok, :delivered} = Agent.deliver_internal(pid, "agents-batch", ~s(["done"]), :notice)
-    # allowlist: snapshot — messages + tmp_path
+    # allowlist: snapshot — inbox + messages
     state = :sys.get_state(pid, 1_000)
     assert [text] = Enum.filter(user_texts(state.chat_state.messages), &(&1 =~ ~s(["done"])))
     refute text =~ "Message from agent"
@@ -155,35 +159,6 @@ defmodule Nest.Agents.Agent.InboxTest do
 
     assert {:noproc, _reason} =
              catch_exit(Agent.deliver_internal(gone, "agents-batch", "x", :notice))
-  end
-
-  test "an over-cap combined message is offloaded to a scratch file and replaced by a pointer", %{
-    pid: pid
-  } do
-    set_status(pid, :streaming)
-
-    assert {:ok, :queued} = Agent.deliver_message(pid, "alice", @oversized)
-
-    Agent.stop_chat(pid, self())
-
-    # The drain appends the pointer before it consumes the entry, so the
-    # consume frame is the fence for the pointer being in the transcript.
-    assert_receive {:chat_inbox, %{count: 0}}, 1_000
-    # allowlist: snapshot — messages + tmp_path
-    state = :sys.get_state(pid, 1_000)
-
-    pointer =
-      Enum.find(
-        user_texts(state.chat_state.messages),
-        &(&1 =~ "queued message" and &1 =~ "saved to")
-      )
-
-    assert pointer =~ "You have 1 queued message"
-
-    [path] = Path.wildcard(Path.join(state.tmp_path, "agent-inbox-*.txt"))
-    assert File.read!(path) =~ "hello world"
-
-    wait_idle(pid)
   end
 
   test "delivery to a broken agent returns an error and queues nothing", %{pid: pid} do
@@ -312,10 +287,14 @@ defmodule Nest.Agents.Agent.InboxTest do
 
       for {kind, n} <- Enum.with_index(kinds, 1) do
         assert {:ok, :queued} = Agent.deliver_message(pid, "peer", "msg #{n}", kind)
-        assert_receive {:chat_inbox, %{count: ^n, messages: messages}}, 1_000
 
-        assert Enum.map(messages, & &1["kind"]) ==
-                 kinds |> Enum.take(n) |> Enum.map(&Atom.to_string/1)
+        # The frame is the delta for this delivery alone (issue #27): the entry
+        # it appended, tagged with its kind, and the queue length it left
+        # behind — never the accumulated list, which the fetch below reads.
+        assert_receive {:chat_inbox, %{op: "append", count: ^n, messages: [entry]}}, 1_000
+
+        assert entry["kind"] == Atom.to_string(kind)
+        assert entry["content"] == "msg #{n}"
       end
 
       info = Agent.get_public_info(pid, 1_000)
@@ -528,31 +507,6 @@ defmodule Nest.Agents.Agent.InboxTest do
       end
     end
 
-    test "an over-cap human message is offloaded and delivered as a pointer", %{pid: pid} do
-      set_status(pid, :streaming)
-      assert :ok = Agent.chat(pid, @oversized, "plan", "alice")
-      assert_receive {:chat_inbox, %{count: 1}}, 1_000
-
-      Agent.stop_chat(pid, self())
-
-      # The drain appends the pointer before it consumes the entry, so the
-      # consume frame is the fence for the pointer being in the transcript.
-      assert_receive {:chat_inbox, %{count: 0}}, 1_000
-      # allowlist: snapshot — messages + tmp_path
-      state = :sys.get_state(pid, 1_000)
-      pointer = Enum.find(user_texts(state.chat_state.messages), &(&1 =~ "queued message"))
-
-      # The human's mode still rides the delivered message, and the oversized
-      # content itself is in the scratch file.
-      assert pointer =~ "[mode: plan]"
-      assert pointer =~ "You have 1 queued message"
-
-      [path] = Path.wildcard(Path.join(state.tmp_path, "agent-inbox-*.txt"))
-      assert File.read!(path) =~ "hello world"
-
-      wait_idle(pid)
-    end
-
     test "a human message drained behind a busy turn is tagged as the human's own words", %{
       pid: pid
     } do
@@ -588,18 +542,6 @@ defmodule Nest.Agents.Agent.InboxTest do
 
       assert [%{"origin" => "human"}] = appended_user_metadata
     end
-  end
-
-  defp set_status(pid, status) do
-    replace_state(pid, fn state ->
-      %{
-        state
-        | live: %{
-            state.live
-            | machine: Machine.status_to_machine(state.live.machine, status)
-          }
-      }
-    end)
   end
 
   # Undo a fabricated busy status (and its queued entries) so a test that
@@ -648,30 +590,6 @@ defmodule Nest.Agents.Agent.InboxTest do
     }
   end
 
-  # Wait for the agent to settle, on the frame that decides it: the `idle`
-  # broadcast that ends the turn. A bare `idle` frame is not the fence — a stop,
-  # and any turn end that drains, publishes the transient
-  # `streaming -> idle -> streaming` of issue #15 first — so the fence is the
-  # idle that carries an empty queue. An empty queue is also exactly the state
-  # no further drain can start from, which is what the teardown invariant
-  # checks; the status read that follows is a read of the settled state, not a
-  # wait.
-  defp wait_idle(pid) do
-    assert_receive {:chat_status, %{status: "idle", pendingMessageCount: 0}}, 1_000
-
-    assert Agent.get_public_info(pid, 1_000).status == :idle
-  end
-
-  defp user_texts(messages) do
-    Enum.flat_map(messages, fn
-      {:user, %{parts: parts}} -> [parts_text(parts)]
-      _ -> []
-    end)
-  end
-
-  defp text_of({_tag, %{parts: parts}}), do: parts_text(parts)
-  defp text_of(_message), do: ""
-
   # The `[mode: X]` prefix `Dispatch.build_user_message/2` puts on a delivered
   # message, or nil when the message has none. Any mode name (dashes, uppercase)
   # is accepted, so the helper cannot silently report nil for a real mode.
@@ -681,16 +599,4 @@ defmodule Nest.Agents.Agent.InboxTest do
       nil -> nil
     end
   end
-
-  defp parts_text(parts) do
-    Enum.map_join(parts, "", fn
-      %Part.Text{text: text} -> text || ""
-      _ -> ""
-    end)
-  end
-
-  # `:sys.replace_state/3` with the suite's explicit 500 ms timeout, kept as a
-  # helper so the call stays on one line (the three-argument form pushes
-  # these files past the 700-line cap once `mix format` expands it).
-  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 1_000)
 end

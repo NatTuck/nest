@@ -93,3 +93,56 @@ describe("Message copy control placement", () => {
     ).not.toBe(0);
   });
 });
+
+describe("Message runtime notice rendering", () => {
+  it("hides the `[nest notice]` wire marker the row carries", () => {
+    // The raw wire content really carries the marker (that is what the model
+    // reads); the rendered bubble must not show it to the operator, on any
+    // notice row shape — a user row (`:agent_user` / the drain path), the
+    // fused assistant row (`:user_agent`), or a notice batched behind a peer's
+    // entry (where the marker heads the second body, not the message).
+    const cases = [
+      {
+        label: "a user notice row",
+        text: "[mode: chat]\n[nest notice]\nContext at 50%. Do not stop due to context concerns, continue working through compaction.",
+        shown: /Context at 50%/,
+        role: "user",
+      },
+      {
+        label: "the fused assistant notice row",
+        text: "[nest notice]\nContext at 25%. Okay, context noted.",
+        shown: /Okay, context noted\./,
+        role: "assistant",
+      },
+      {
+        label: "a notice batched behind a peer's entry",
+        text: '[mode: chat]\n[Message from agent "peer"]\nmay I ask?\n\n[nest notice]\nContext at 50%.',
+        shown: /may I ask\?/,
+        role: "user",
+      },
+    ];
+
+    for (const { label, text, shown, role } of cases) {
+      expect(text.includes("[nest notice]"), label).toBe(true);
+
+      const message =
+        role === "user"
+          ? {
+              index: 3,
+              role: "user",
+              mode: "chat",
+              parts: [{ kind: "text", text }],
+              metadata: { mode: "chat" },
+            }
+          : assistantMessage({ parts: [{ kind: "text", text }] });
+
+      const { unmount } = render(
+        <MessageBubble agentName="test-agent" message={message} />,
+      );
+
+      expect(screen.getByText(shown), label).toBeInTheDocument();
+      expect(screen.queryByText(/nest notice/), label).toBeNull();
+      unmount();
+    }
+  });
+});

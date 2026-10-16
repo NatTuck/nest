@@ -103,11 +103,27 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   def project(%ToolCall{name: "agents-send"}, _ctx),
     do: estimator_overhead("Message queued for clever-raven.")
 
-  def project(%ToolCall{name: "agents-wait-for-idle"}, _ctx),
+  def project(%ToolCall{name: "agents-wait"}, _ctx),
     do: summary_baseline_size() * @safety_padding
 
   def project(%ToolCall{name: "agents-last-message"}, _ctx),
     do: summary_baseline_size() * @safety_padding
+
+  # `agents-history` returns a range read of arbitrary user/tool text, bounded
+  # by the per-call cap like the other response-bearing sub-agent tools, so it
+  # projects at the substitute minimum.
+  def project(%ToolCall{name: "agents-history"}, _ctx),
+    do: summary_baseline_size() * @safety_padding
+
+  # `agents-status` is a fixed set of lines; this is one representative report.
+  def project(%ToolCall{name: "agents-status"}, _ctx),
+    do:
+      estimator_overhead(
+        "Agent \"clever-raven\": idle (running)\n" <>
+          "  messages: 42 (indices 0..41)\n" <>
+          "  last compaction index: -1 (never compacted)\n" <>
+          "  owed replies: none; pending inbox: 0 message(s)"
+      )
 
   # Catch-all for tools the LLM hallucinates or spells
   # incorrectly. These calls never reach execution; they return
@@ -133,7 +149,8 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
     file-read shell-cmd file-write file-edit file-inspect context-check
     shell-wait shell-list shell-kill
     agents-spawn agents-query agents-batch agents-list agents-list-archived models-list
-    agents-archive agents-unarchive agents-send agents-wait-for-idle agents-last-message
+    agents-archive agents-unarchive agents-send agents-wait agents-last-message
+    agents-history agents-status
   )
 
   @doc false

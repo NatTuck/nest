@@ -159,49 +159,11 @@ defmodule Nest.Agents.AgentTestHelpers do
     {agent_pid, name}
   end
 
-  @doc """
-  Deliver a compaction result to an agent by driving the production
-  compaction entry: put the machine into the compactor's `:generating`
-  phase with `entry = {:compaction, carried_entry}`, then send the
-  `{:http_response, ref, %RunResponse{}}` the executor's commit path
-  consumes (via `Compaction.commit_compaction/2`).
-  """
-  def send_compaction_done(agent_pid, summary_text, carried_entry) do
-    ref = make_ref()
-
-    # Put the machine into the compactor's generating phase with a live
-    # worker ref, then deliver the HTTP response. `active_message_index` is
-    # the index the *summary* will be stamped with; the request message is
-    # not fabricated here — in production the machine appends it before
-    # dispatching the compactor, and this helper starts after that point.
-    :sys.replace_state(
-      agent_pid,
-      fn state ->
-        machine = state.live.machine
-
-        machine = %{
-          machine
-          | kind: :compaction,
-            phase: :generating,
-            entry: {:compaction, carried_entry},
-            work: %{
-              machine.work
-              | worker_kind: :http,
-                worker_ref: ref,
-                active_message_index: state.chat_state.next_message_index
-            }
-        }
-
-        %{state | live: %{state.live | machine: machine}}
-      end,
-      1_000
-    )
-
-    send(
-      agent_pid,
-      {:http_response, ref, %Nest.LLM.RunResponse{text: summary_text, usage: nil}}
-    )
-  end
+  # `send_compaction_done/3` reaches straight into the machine's fields, so it
+  # lives with the other machine fixtures in `Nest.TestSupport.MachineTestHelpers`.
+  # This delegation keeps its existing callers working.
+  defdelegate send_compaction_done(agent_pid, summary_text, carried_entry),
+    to: Nest.TestSupport.MachineTestHelpers
 
   # Hand the test process ownership links to the freshly-spawned
   # agent pid: DB sandbox checkout, Mimic stubs, MockClient swap,

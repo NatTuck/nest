@@ -236,9 +236,21 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # see the invariant on `AgentTurnTestHelpers.park/3`.
     send(batch, :release_result)
 
+    # Every runtime notice is tagged at the head of its own body (issue #102,
+    # `Nest.Messages.NoticeTag`), and the drain's `[mode: chat]` prefix is added
+    # in front of the whole message when it is built — so the wire text is the
+    # mode prefix, then the marker, then the notice. The client strips them in
+    # that order (`stripNoticePrefix(stripModePrefix(…))`), so neither reaches
+    # the operator.
     assert_receive {:chat_message,
                     {:user,
-                     %{parts: [%Part.Text{text: "[mode: chat]\nYour backgrounded command" <> _}]}}},
+                     %{
+                       parts: [
+                         %Part.Text{
+                           text: "[mode: chat]\n[nest notice]\nYour backgrounded command" <> _
+                         }
+                       ]
+                     }}},
                    1_000
 
     assert Enum.any?(

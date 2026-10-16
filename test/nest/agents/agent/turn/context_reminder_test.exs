@@ -2,9 +2,9 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
   @moduledoc """
   Tests for the mid-iteration context-usage reminder logic.
 
-  These are unit tests of `ContextReminder.highest_unannounced/3`,
-  `ContextReminder.format/4`, and `ContextReminder.build_message/3`.
-  The in-process turn wiring (the context spec injected by the
+  These are unit tests of `ContextReminder.highest_unannounced/3` and
+  `ContextReminder.build_message/2`. The in-process turn wiring (the context
+  spec injected by the
   user-notice / response path, the set persisted on the Agent's
   `live.crossed_thresholds`, and the set cleared on successful
   compaction in `Machine.Compaction`) is covered by the regression
@@ -29,13 +29,13 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
 
   alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.LLM.ClientConfig
+  alias Nest.Messages.NoticeTag
   alias Nest.Messages.User
 
   # A 200k-limit model with the standard 40k reserve has a
   # 160k working budget, so the threshold numbers below all
   # correspond to working-budget percentages.
   @limit 200_000
-  @working_budget 160_000
 
   describe "highest_unannounced/3" do
     test "returns nil when usage is well under 25% of the working budget" do
@@ -91,99 +91,58 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
     end
   end
 
-  describe "format/3" do
-    test ":p25 includes the percentage, used, and working budget" do
-      text = ContextReminder.format(:p25, 40_000, @limit)
-      assert text =~ "25%"
-      assert text =~ "40000"
-      assert text =~ "#{@working_budget}"
+  describe "build_message/2" do
+    test "builds the decided notice row, carrying the marker, for every threshold" do
+      # The row is the one the live paths announce: the decided text on a
+      # `{:user, _}` row carrying the `[nest notice]` marker. It used to be the
+      # legacy verbose counts form and carried no marker, which made this the
+      # one builder that could produce an untagged runtime notice row.
+      for {atom, compact?} <- [{:p25, true}, {:p50, true}, {:p75, true}, {:p75, false}] do
+        assert {:user,
+                %User{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
+                 ContextReminder.build_message(atom, compact?)
+
+        assert content == NoticeTag.tag(ContextReminder.notice_text(atom, compact?))
+      end
     end
 
-    test ":p50 includes the percentage, used, and working budget" do
-      text = ContextReminder.format(:p50, 80_000, @limit)
-      assert text =~ "50%"
-      assert text =~ "80000"
-      assert text =~ "#{@working_budget}"
-    end
+    test "agrees with the spec the response path injects, marker and all" do
+      # `spec/4` is what `Machine.Response` announces; `build_message/2` must
+      # produce the same row text for the same threshold.
+      spec = ContextReminder.spec(80_001, @limit, MapSet.new())
 
-    test ":p75 includes the percentage, used, working budget, and a context tool recommendation" do
-      text = ContextReminder.format(:p75, 120_000, @limit)
-      assert text =~ "75%"
-      assert text =~ "120000"
-      assert text =~ "#{@working_budget}"
-      assert text =~ "context"
-      assert text =~ "compact"
-    end
+      assert {:user, %User{parts: [%Nest.Messages.Part.Text{text: content}]}} =
+               ContextReminder.build_message(spec.threshold)
 
-    test ":p75 with compact? false omits the tool recommendation" do
-      text = ContextReminder.format(:p75, 120_000, @limit, false)
-      assert text =~ "75%"
-      assert text =~ "120000"
-      assert text =~ "#{@working_budget}"
-      refute text =~ "compact"
-    end
-
-    test "format text uses the spec'd shape ('~used of ~effective token budget')" do
-      used = 1234
-      expected_effective = @working_budget
-
-      text = ContextReminder.format(:p50, used, @limit)
-
-      assert text ==
-               "Context usage is now at 50% (~#{used} of ~#{expected_effective} token budget)."
+      assert content == NoticeTag.tag(spec.notice)
     end
   end
 
-  describe "build_message/3" do
-    test "returns a {:user, %User{}} tuple with the formatted content" do
-      assert {:user,
-              %User{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
-               ContextReminder.build_message(:p50, 80_000, @limit)
-
-      assert content =~ "50%"
-      assert content =~ "80000"
-      assert content =~ "#{@working_budget}"
-    end
-  end
-
-  describe "build_message/4" do
-    test "returns a {:user, %User{}} tuple with the formatted content" do
-      config = %ClientConfig{}
-
-      assert {:user,
-              %User{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
-               ContextReminder.build_message(:p50, 80_000, @limit, config)
-
-      assert content =~ "50%"
-      assert content =~ "80000"
-    end
-
-    test "accepts nil config" do
-      assert {:user,
-              %User{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
-               ContextReminder.build_message(:p75, 120_000, @limit, nil)
-
-      assert content =~ "75%"
-      assert content =~ "120000"
-      assert content =~ "context"
-    end
-  end
-
-  describe "notice_text/1" do
-    test "returns short notice for :p25" do
+  describe "notice_text/2" do
+    test "pins the four decided notice texts, threshold by threshold" do
+      # Only 50% and 75% tell the model to keep working: a model does not start
+      # worrying about context until the 50% notice, so 25% is a bare statement.
+      # The 75% notice has two variants — one for an agent that owns the
+      # `context-compact` tool and one for an agent whose vocation lacks it,
+      # which must not be told to use a tool it does not have.
       assert ContextReminder.notice_text(:p25) == "Context at 25%."
+
+      assert ContextReminder.notice_text(:p50) ==
+               "Context at 50%. Do not stop due to context concerns, " <>
+                 "continue working through compaction."
+
+      assert ContextReminder.notice_text(:p75, true) ==
+               "Context at 75%. Do not stop due to context concerns, " <>
+                 "either explicitly compact yourself with the context-compact tool " <>
+                 "or continue working through compaction."
+
+      assert ContextReminder.notice_text(:p75, false) ==
+               "Context at 75%. Do not stop due to context concerns, " <>
+                 "continue working through compaction."
     end
 
-    test "returns short notice for :p50" do
-      assert ContextReminder.notice_text(:p50) == "Context at 50%."
-    end
-
-    test "returns short notice for :p75 with compact recommendation" do
-      assert ContextReminder.notice_text(:p75) =~ "compact"
-    end
-
-    test "returns a compact-free p75 notice when compaction isn't available" do
-      assert ContextReminder.notice_text(:p75, false) == "Context at 75%."
+    test "the p75 notice for an agent without the tool never names it" do
+      refute ContextReminder.notice_text(:p75, false) =~ "context-compact"
     end
   end
 
@@ -198,21 +157,11 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
     end
   end
 
-  describe "ack_text_for/1" do
-    test "returns ack for :p25" do
-      assert ContextReminder.ack_text_for(:p25) == "Okay, that's plenty of space."
-    end
-
-    test "returns ack for :p50" do
-      assert ContextReminder.ack_text_for(:p50) == "Okay, I should consider conserving tokens."
-    end
-
-    test "returns ack for :p75 with compact recommendation" do
-      assert ContextReminder.ack_text_for(:p75) =~ "compact"
-    end
-
-    test "returns a compact-free p75 ack when compaction isn't available" do
-      refute ContextReminder.ack_text_for(:p75, false) =~ "compact"
+  describe "ack_text/0" do
+    test "is one sentence for every context threshold" do
+      # The ack is not where the model is steered — the notice is — so one
+      # sentence covers all three thresholds and both 75% variants.
+      assert ContextReminder.ack_text() == "Okay, context noted."
     end
   end
 
@@ -228,13 +177,28 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
       assert ContextReminder.spec(1_000, @limit, MapSet.new()) == nil
     end
 
-    test "returns a :context spec with 'Context?' attention and full format text for :p25" do
+    test "returns a :context spec with 'Context?' attention and the decided notice for :p25" do
       spec = ContextReminder.spec(40_001, @limit, MapSet.new())
       assert spec.kind == :context
       assert spec.attention == "Context?"
       assert spec.threshold == :p25
-      assert spec.notice =~ "25%"
-      assert spec.notice =~ "40001"
+      assert spec.notice == ContextReminder.notice_text(:p25)
+    end
+
+    test "the spec's notice is exactly the decided text, whichever path announces it" do
+      # Two paths announce a context threshold: `Machine.Delivery` builds the
+      # notice from `notice_text/2` directly, while `Machine.Response` goes
+      # through `spec/4`. They must never disagree — a threshold has exactly
+      # one text — so this pins the response path's spec to the delivery path's
+      # text for every threshold and both 75% variants. It would fail if the
+      # two generators drifted apart again.
+      cases = [{:p25, 40_001}, {:p50, 80_001}, {:p75, 120_001}]
+
+      for {atom, used} <- cases, compact? <- [true, false] do
+        spec = ContextReminder.spec(used, @limit, MapSet.new(), compact?)
+        assert spec.threshold == atom
+        assert spec.notice == ContextReminder.notice_text(atom, compact?)
+      end
     end
 
     test "returns a :context spec for :p50" do
@@ -254,11 +218,11 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
       assert spec.notice =~ "compact"
     end
 
-    test "p75 spec notice omits compaction when compact? is false" do
+    test "p75 spec notice omits the tool when compact? is false" do
       spec = ContextReminder.spec(120_001, @limit, MapSet.new(), false)
       assert spec.threshold == :p75
       assert spec.notice =~ "75%"
-      refute spec.notice =~ "compact"
+      refute spec.notice =~ "context-compact"
     end
 
     test "returns nil when the only crossed threshold was already announced (no higher threshold crossed)" do

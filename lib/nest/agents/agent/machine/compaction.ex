@@ -3,13 +3,13 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   Pure compaction staging/resume/commit decisions.
 
   Split out of `Machine.Transitions` to keep that module within the
-  file-length budget. `stage/3` runs the loop-breaker and plans the
+  file-length budget. `stage/2` runs the loop-breaker and plans the
   request; `resume/1` dispatches the carried entry after a commit; and
   `compaction_failed/3` enters the retryable blocked state.
 
   ## Give-up paths and the drain shapes
 
-  Every `stage/3` caller can hit `{:error, :reserve_exhausted}`, and each arm
+  Every `stage/2` caller can hit `{:error, :reserve_exhausted}`, and each arm
   of that branch keeps the message that caused the attempt on a wire payload
   (issue #29) rather than stranding it. The shapes it and the loop breaker
   use are the action vocabulary's two ways of disposing of a queued message
@@ -27,19 +27,31 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Boundary
+  alias Nest.Agents.Agent.Machine.Failure
   alias Nest.Agents.Agent.Machine.Phase
   alias Nest.Agents.Agent.Machine.ReplyReminder
   alias Nest.Agents.Agent.Machine.Response
   alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.Agent.WorkspaceHandler
+  alias Nest.LLM.Preflight
+  alias Nest.Messages.NoticeTag
 
   @max_consecutive_compactions 3
 
-  @doc "Stage a compaction turn (loop-breaker checked)."
-  @spec stage(Machine.t(), Machine.entry() | nil, Machine.entry() | nil) ::
-          {:ok, [term()], Machine.t()}
-  def stage(m, carried_entry, pending_user) do
+  @doc """
+  Stage a compaction turn (loop-breaker checked).
+
+  `carried_entry` is the entry the compaction carries across the commit: the
+  refused batch's `{:tool_call, …}` continuation on the preflight path, or
+  `nil` for a turn that has nothing in flight. There is deliberately no
+  parameter for a pending user message — the chat-request path parks it on the
+  machine (`%{m | pending_user_message: entry}`) before calling this, and the
+  drain path under peek-then-consume (#26) never parks one at all, so a
+  parameter for it was always `nil` at every call site.
+  """
+  @spec stage(Machine.t(), Machine.entry() | nil) :: {:ok, [term()], Machine.t()}
+  def stage(m, carried_entry) do
     count = m.loop_count + 1
 
     case loop_breaker(m, count) do
@@ -47,13 +59,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
         result
 
       :ok ->
-        m = %{
-          m
-          | loop_count: count,
-            pending_user_message: pending_user || m.pending_user_message
-        }
-
-        do_stage(m, carried_entry)
+        do_stage(%{m | loop_count: count}, carried_entry)
     end
   end
 
@@ -166,7 +172,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
 
   # `:reserve_exhausted` means the model cannot fit the system prompt plus the
   # compaction request into its reserve, so re-draining would re-run
-  # `start_chat/3` → `:needs_compaction` → `stage/3` → here in a tight
+  # `start_chat/3` → `:needs_compaction` → `stage/2` → here in a tight
   # synchronous loop. Each arm keeps the message that caused the attempt on a
   # wire payload instead of stranding it (issue #29).
   defp reserve_exhausted(m) do
@@ -178,7 +184,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
       # anything else, and clear the slot so a later resume cannot append it
       # twice. Deliberately no trailing `{:drain_inbox}`: with a non-empty
       # queue a drain would re-preflight → `start_chat/3` →
-      # `:needs_compaction` → `stage/3` → this branch again.
+      # `:needs_compaction` → `stage/2` → this branch again.
       (user = Phase.held_user(m)) != nil ->
         Phase.rest(%{m | pending_user_message: nil}, :chat, :reserve_exhausted, [
           overflow,
@@ -233,6 +239,90 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   def carried(%{entry: {:compaction, carried}}), do: carried
   def carried(%{entry: _}), do: nil
 
+  # --- the `(kind: :compaction, phase: :generating)` transition table ---
+
+  # `Machine.Transitions` dispatches every event for a machine generating a
+  # compaction here, so the compactor's result/error/death handling and its
+  # request dispatch sit with the rest of the compaction decisions. An event
+  # this slice does not name answers `{:ignore, :not_applicable, m}` — exactly
+  # what `Transitions`' default clause gave it before the split.
+  @doc """
+  Apply one event to a machine generating a compaction.
+
+  Split out of `Machine.Transitions` for the credo file cap; pure like the rest
+  of the transition table.
+  """
+  @spec transition(Machine.t(), term()) ::
+          {:ok, [term()], Machine.t()} | {:ignore, atom(), Machine.t()}
+  def transition(%Machine{} = m, {:http_ok, ref, response}) do
+    if Machine.valid_ref?(m, ref),
+      do: commit_compaction(m, response),
+      else: {:ignore, :stale_result, m}
+  end
+
+  def transition(%Machine{} = m, {:compaction_error, reason, carried}) do
+    compaction_failed(m, reason, carried)
+  end
+
+  def transition(%Machine{} = m, {:http_error, ref, reason}) do
+    if Machine.valid_ref?(m, ref),
+      do: compaction_failed(m, reason, carried(m)),
+      else: {:ignore, :stale_result, m}
+  end
+
+  def transition(%Machine{} = m, {:worker_crashed, ref, ex, _st}) do
+    if Machine.valid_ref?(m, ref),
+      do: compaction_failed(m, ex, carried(m)),
+      else: {:ignore, :stale_result, m}
+  end
+
+  # The request was **not** committed, so nothing may be sent: a refused append
+  # is a `{:follow, …}` that halts the action list and the phase has no worker
+  # left to answer, so the default clause would wedge the agent forever.
+  # `Failure.fail_turn` is the visible failure instead.
+  #
+  # Deliberately *not* `:compaction_failed`: a retry re-sends the committed
+  # sequence, and this sequence has no request row in it — the compactor would
+  # be asked to summarize with no instruction. Unreachable by construction (the
+  # `{:refuse, _}` clause heals the tail before staging); it is the backstop.
+  def transition(%Machine{} = m, {:append_result, :invalid, reason}) do
+    Failure.fail_turn(m, %ArgumentError{message: reason}, [])
+  end
+
+  # Unreachable by construction, and deliberately NOT a `fail_turn`: `:stale`
+  # comes only from `Repair.classify_live/2`'s `tool_result?` arm, and the
+  # compaction request is a `{:user, _}` — so a stale outcome here would mean
+  # the request was not what this phase appends. Ignoring it matches the
+  # `:generating`/`:chat` sibling and cannot mask a failed append, because
+  # `:invalid` (the only outcome a user append can actually produce) is above.
+  def transition(%Machine{} = m, {:append_result, :stale, _}),
+    do: {:ignore, :stale_append, m}
+
+  # The compaction request is committed; spawn the compactor over the
+  # ordinary message list.
+  def transition(%Machine{} = m, :iterate) do
+    messages = Dispatch.request_messages(m)
+
+    case Preflight.validate_request(messages) do
+      :ok ->
+        # The *summary's* index, from the context `prepare/1` just rebuilt: the
+        # request and any bridge are already committed with real indices, so the
+        # next free index is where the summary lands. Written onto `work` as
+        # well as emitted, like `do_dispatch_http/1`, because
+        # `Response.assistant_with_log/2` stamps the response's API-log id from
+        # it — unset, the compactor's log carried the last chat dispatch's index.
+        provisional = m.work.ctx.next_message_index
+        ctx = Dispatch.spawn_ctx(m, messages)
+        machine = %{m | work: %{m.work | active_message_index: provisional}}
+        {:ok, [{:set_streaming, provisional}, {:stage_compaction, ctx}], machine}
+
+      {:error, violations} ->
+        compaction_failed(m, Preflight.format_violations(violations), carried(m))
+    end
+  end
+
+  def transition(%Machine{} = m, _event), do: {:ignore, :not_applicable, m}
+
   @doc "Enter the retryable `:compaction_failed` state after a failure."
   @spec compaction_failed(Machine.t(), term(), Machine.entry() | nil) ::
           {:ok, [term()], Machine.t()}
@@ -283,7 +373,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
     # messages are what the reminder would be appended to.
     case ReplyReminder.decision(m) do
       {:remind, text, m} ->
-        reminder = ContextReminder.build_user_notice(text, nil)
+        reminder = ContextReminder.build_user_notice(NoticeTag.tag(text), nil)
         machine = Phase.init_turn(Phase.enter(m, :chat, :generating, :http), carried)
         {:ok, [{:append, reminder}, :iterate], machine}
 

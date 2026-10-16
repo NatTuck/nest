@@ -244,7 +244,7 @@ false once that file's body is converted.
 | `test/nest/agents/agent/sub_agent_tools_test.exs:325` | read-for-value | A | `get_messages/1` | agents-send tool result |
 | `test/nest/agents/agent/sub_agent_tools_test.exs:342` | read-for-value | A | `get_messages/1` | specialist received the peer framing |
 | `test/nest/agents/agent/sub_agent_tools_test.exs:389` | read-for-value | A | `get_messages/1` | missing-target tool error |
-| `test/nest/agents/agent/sub_agent_tools_test.exs:431` | read-for-value | A | `get_messages/1` | agents-wait-for-idle tool result |
+| `test/nest/agents/agent/sub_agent_tools_test.exs:431` | read-for-value | A | `get_messages/1` | agents-wait tool result |
 | `test/nest/agents/agent/timeline_emitters_test.exs:107` | read-for-value | A | `pi.context_limit` | limit the request line recorded |
 | `test/nest/agents/agent/timeline_emitters_test.exs:250` | read-for-value | A | `pi.status` | `:executing_tools` while the send is parked |
 | `test/nest/agents/agent/timeline_emitters_test.exs:306` | read-for-value | A | `pi.status` | `:executing_tools` while the send is parked |

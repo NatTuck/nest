@@ -84,14 +84,19 @@ defmodule Nest.LLM.Tools do
   @doc """
   Execute a single tool call and return the raw result.
 
-  Returns the underlying `{:ok, content}` / `{:error, reason}`
-  tuple from the tool's function without wrapping it in a
+  Returns the underlying `{:ok, content}` / `{:error, reason}` tuple
+  from the tool's function without wrapping it in a
   `ToolResult` struct. Used by `Nest.Agents.Agent.BatchSizer`,
   which sizes each result and decides keep-or-substitute before
   persisting.
+
+  A tool may also return `{:waiting, content}`: the call registered interest
+  in something that has not happened yet and its real result will arrive later
+  as a message (the wait tools, issue #54). `BatchSizer` carries that through as
+  the entry kind `:waiting`, which stamps the result part's `state`.
   """
   @spec execute_one([Tool.t()], ToolCall.t(), map()) ::
-          {:ok, String.t()} | {:error, String.t()}
+          {:ok, String.t()} | {:error, String.t()} | {:waiting, String.t()}
   def execute_one(tool_defs, %ToolCall{name: name, arguments: args}, context)
       when is_list(tool_defs) do
     case Enum.find(tool_defs, fn %Tool{name: n} -> n == name end) do
@@ -194,6 +199,21 @@ defmodule Nest.LLM.Tools do
       content: ensure_non_empty(reason),
       arguments: args,
       is_error: true
+    }
+  end
+
+  # A tool that registered interest in something that has not happened yet (the
+  # wait tools, issue #54). It is not an error, and it is not a verdict either,
+  # so the result carries `state` — the same field `BatchSizer` stamps and the
+  # machine reads to end the turn.
+  defp to_result(id, name, args, {:waiting, content}) do
+    %ToolResult{
+      tool_call_id: id,
+      name: name,
+      content: ensure_non_empty(content),
+      arguments: args,
+      is_error: false,
+      state: "waiting"
     }
   end
 

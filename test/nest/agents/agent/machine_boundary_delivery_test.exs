@@ -418,7 +418,7 @@ defmodule MachineBoundaryDeliveryTest do
       # The chat-request arm: the built message is parked on the machine and no
       # queue holds it, so it must be appended (the `:loop_ack` precedent).
       held = %{reserve_state() | pending_user_message: {:user_message, user()}}
-      {:ok, actions, next} = Compaction.stage(held, nil, nil)
+      {:ok, actions, next} = Compaction.stage(held, nil)
 
       assert [^overflow, {:append, {:user, %Nest.Messages.User{}}}] = actions
       refute Enum.any?(actions, &match?({:restore_inbox, _}, &1))
@@ -428,7 +428,7 @@ defmodule MachineBoundaryDeliveryTest do
 
       # The inbox arm: the entries are still queued, so block instead of
       # draining — a drain would re-run the decision that just failed.
-      {:ok, actions, next} = Compaction.stage(reserve_state(inbox_count: 1), nil, nil)
+      {:ok, actions, next} = Compaction.stage(reserve_state(inbox_count: 1), nil)
 
       assert [^overflow] = actions
       assert next.phase == :context_overflow
@@ -436,7 +436,7 @@ defmodule MachineBoundaryDeliveryTest do
       Machine.validate!(next)
 
       # Nothing held and nothing queued: idle, as before.
-      {:ok, actions, next} = Compaction.stage(reserve_state(), nil, nil)
+      {:ok, actions, next} = Compaction.stage(reserve_state(), nil)
 
       assert [^overflow] = actions
       assert next.phase == :idle
@@ -448,7 +448,7 @@ defmodule MachineBoundaryDeliveryTest do
       log =
         capture_log(fn ->
           bogus = %{reserve_state() | pending_user_message: {:bogus, :shape}}
-          {:ok, actions, next} = Compaction.stage(bogus, nil, nil)
+          {:ok, actions, next} = Compaction.stage(bogus, nil)
 
           assert [^overflow] = actions
           assert next.phase == :idle

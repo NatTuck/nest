@@ -120,6 +120,7 @@ defmodule MachineStructureTest do
                  :context_projection,
                  :crossed_thresholds,
                  :inbox,
+                 :inbox_seq,
                  :machine,
                  :mode,
                  :pending_notice,

@@ -20,7 +20,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Backgrounding
   alias Nest.Agents.Agent.Machine.Boundary
-  alias Nest.Agents.Agent.Machine.Children
+  alias Nest.Agents.Agent.Machine.ChildEvents
   alias Nest.Agents.Agent.Machine.Compaction
   alias Nest.Agents.Agent.Machine.Delivery
   alias Nest.Agents.Agent.Machine.Failure
@@ -33,6 +33,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.LLM.Preflight
   alias Nest.Messages.MessageList
+  alias Nest.Messages.ToolResult
 
   # Compile-time copies of the blocked phases so guards stay valid.
   @blocked [
@@ -53,28 +54,20 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # --- child events (any phase) ---
 
-  def do_step(%Machine{} = m, {:child_spawned, name, archive, target}) do
-    case Children.register(m.children, name, archive, target) do
-      {:ok, _actions, children} -> {:ok, [], %{m | children: children}}
-      {:ignore, reason, children} -> {:ignore, reason, %{m | children: children}}
-    end
-  end
+  def do_step(%Machine{} = m, {:child_spawned, _, _, _} = event),
+    do: ChildEvents.transition(m, event)
 
-  def do_step(%Machine{} = m, {:child_completed, name, response, usage}) do
-    child_event(m, {:completed, name, response, usage})
-  end
+  def do_step(%Machine{} = m, {:child_completed, _, _, _} = event),
+    do: ChildEvents.transition(m, event)
 
-  def do_step(%Machine{} = m, {:child_failed, name, reason}) do
-    child_event(m, {:failed, name, reason})
-  end
+  def do_step(%Machine{} = m, {:child_failed, _, _} = event),
+    do: ChildEvents.transition(m, event)
 
-  def do_step(%Machine{} = m, {:child_terminated, name, reason}) do
-    child_event(m, {:terminated, name, reason})
-  end
+  def do_step(%Machine{} = m, {:child_terminated, _, _} = event),
+    do: ChildEvents.transition(m, event)
 
-  def do_step(%Machine{} = m, {:abandon_child, name}) do
-    child_event(m, {:abandoned, name})
-  end
+  def do_step(%Machine{} = m, {:abandon_child, _} = event),
+    do: ChildEvents.transition(m, event)
 
   # --- stop guards ---
 
@@ -136,7 +129,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # --- blocked exits ---
 
   # A retry **re-sends** the existing sequence; it does not re-plan. The
-  # request message is committed, so calling `Compaction.stage/3` here would
+  # request message is committed, so calling `Compaction.stage/2` here would
   # append a second request with a different remaining-token count and
   # double-count the request's own size. `Compaction.retry/1` owns both the
   # re-send and the loop breaker that bounds the retries.
@@ -155,7 +148,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     #    `{:drain_inbox, :append}` shape, which builds the combined message and
     #    consumes it **without** `start_chat/3`. Under peek-then-consume (#26)
     #    a drain that needed a compaction left its entries queued, so a bare
-    #    `{:drain_inbox}` would re-preflight them and re-`stage/3` the failing
+    #    `{:drain_inbox}` would re-preflight them and re-`stage/2` the failing
     #    compaction — the loop the ack exists to break. It stays the shape for
     #    "nothing held and nothing queued", i.e. the empty-inbox no-op.
     actions =
@@ -226,11 +219,23 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     {:ok, [{:kill, pid}], m}
   end
 
+  # The batch's worker is registered, so the batch is now interruptible: any
+  # message that queued *before* it existed — one that arrived while the model
+  # was still streaming the response that asks for this batch — is delivered
+  # now, backgrounding the batch, rather than waiting for the next arrival
+  # (issue #103). `Backgrounding.deferred_actions/1` owns that decision, and it
+  # is empty for every worker that is not an interruptible batch (the HTTP
+  # worker of an in-flight request and the compactor's), so this never
+  # interrupts a request in flight.
   def do_step(%{phase: p} = m, {:worker_started, ref, pid, kind})
       when p in [:generating, :executing_tools] do
     if m.work.worker_kind == kind do
-      {:ok, [],
-       %{m | work: %{m.work | worker_ref: ref, active_worker: pid, active_worker_kind: kind}}}
+      machine = %{
+        m
+        | work: %{m.work | worker_ref: ref, active_worker: pid, active_worker_kind: kind}
+      }
+
+      {:ok, Backgrounding.deferred_actions(machine), machine}
     else
       {:ok, [{:kill, pid}], m}
     end
@@ -249,7 +254,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # requests are deliberate, not the automatic loop the breaker guards against.
   # The optional `focus` rides on `work` into `Dispatch.compaction_plan/1`.
   def do_step(%{phase: :idle} = m, {:compact_request, focus}) do
-    Compaction.stage(%{m | loop_count: 0, work: %{m.work | focus: focus}}, nil, nil)
+    Compaction.stage(%{m | loop_count: 0, work: %{m.work | focus: focus}}, nil)
   end
 
   def do_step(%{phase: :idle} = m, {:inbox_drain, entries, content}),
@@ -289,7 +294,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
         )
 
       :needs_compaction ->
-        Compaction.stage(m, nil, nil)
+        Compaction.stage(m, nil)
 
       :cannot_compact ->
         actions = [{:broadcast, {:overflow, :reserve_exhausted, "start a conversation"}, nil}]
@@ -309,13 +314,15 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   def do_step(%{phase: :generating, kind: :chat} = m, {:http_ok, ref, response})
       when is_map(response) do
-    if valid_ref?(m, ref), do: Response.dispatch(m, response), else: {:ignore, :stale_result, m}
+    if Machine.valid_ref?(m, ref),
+      do: Response.dispatch(m, response),
+      else: {:ignore, :stale_result, m}
   end
 
   # A dedicated stream-error path: persist the partial + error text as the
   # assistant message, then idle. Distinct from a turn crash (repair).
   def do_step(%{phase: :generating, kind: :chat} = m, {:llm_error, ref, msg}) do
-    if valid_ref?(m, ref) do
+    if Machine.valid_ref?(m, ref) do
       Phase.rest(clear_worker(m), :chat, :llm_error, [{:llm_error, msg}, {:drain_inbox}])
     else
       {:ignore, :stale_result, m}
@@ -323,11 +330,13 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   end
 
   def do_step(%{phase: :generating, kind: :chat} = m, {:http_error, ref, reason}) do
-    if valid_ref?(m, ref), do: Failure.fail_turn(m, reason, []), else: {:ignore, :stale_result, m}
+    if Machine.valid_ref?(m, ref),
+      do: Failure.fail_turn(m, reason, []),
+      else: {:ignore, :stale_result, m}
   end
 
   def do_step(%{phase: :generating, kind: :chat} = m, {:worker_crashed, ref, exception, st}) do
-    if valid_ref?(m, ref),
+    if Machine.valid_ref?(m, ref),
       do: Failure.fail_turn(m, exception, st),
       else: {:ignore, :stale_result, m}
   end
@@ -360,7 +369,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
       |> MessageList.unpaired_tail_tool_uses()
       |> MessageList.interrupted_tool_result()
 
-    {:ok, actions, machine} = Compaction.stage(m, m.work.preflight.continuation, nil)
+    {:ok, actions, machine} = Compaction.stage(m, m.work.preflight.continuation)
     {:ok, heal_tail(heal) ++ actions, machine}
   end
 
@@ -369,7 +378,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # The boundary delivery (issue #15): a drained inbox message lands here as a
   # user turn and the turn continues in place — the same body as the `:idle`
   # clause, but the phase stays `:generating`, so no transient idle is ever
-  # broadcast (an idle-based `agents-wait-for-idle` would resolve early, and a
+  # broadcast (an idle-based `agents-wait` would resolve early, and a
   # `{:finalize, :clean}` would report a partial result to a parent).
   def do_step(%{phase: :generating, kind: :chat} = m, {:inbox_drain, entries, content}),
     do: deliver_inbox(m, entries, content)
@@ -397,7 +406,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     do: Backgrounding.step(m, entries, content)
 
   def do_step(%{phase: :executing_tools} = m, {:tool_results, ref, results}) do
-    if valid_ref?(m, ref), do: tool_results(m, results), else: {:ignore, :stale_result, m}
+    if Machine.valid_ref?(m, ref), do: tool_results(m, results), else: {:ignore, :stale_result, m}
   end
 
   def do_step(%{phase: :executing_tools} = m, {:append_result, :invalid, reason}) do
@@ -412,76 +421,11 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # --- compaction (generating) ---
 
-  def do_step(%{phase: :generating, kind: :compaction} = m, {:http_ok, ref, response}) do
-    if valid_ref?(m, ref),
-      do: Compaction.commit_compaction(m, response),
-      else: {:ignore, :stale_result, m}
-  end
-
-  def do_step(%{phase: :generating, kind: :compaction} = m, {:compaction_error, reason, carried}) do
-    Compaction.compaction_failed(m, reason, carried)
-  end
-
-  def do_step(%{phase: :generating, kind: :compaction} = m, {:http_error, ref, reason}) do
-    if valid_ref?(m, ref),
-      do: Compaction.compaction_failed(m, reason, Compaction.carried(m)),
-      else: {:ignore, :stale_result, m}
-  end
-
-  def do_step(%{phase: :generating, kind: :compaction} = m, {:worker_crashed, ref, ex, _st}) do
-    if valid_ref?(m, ref),
-      do: Compaction.compaction_failed(m, ex, Compaction.carried(m)),
-      else: {:ignore, :stale_result, m}
-  end
-
-  # The request was **not** committed, so nothing may be sent: a refused append
-  # is a `{:follow, …}` that halts the action list and the phase has no worker
-  # left to answer, so the default clause would wedge the agent forever.
-  # `Failure.fail_turn` is the visible failure instead.
-  #
-  # Deliberately *not* `:compaction_failed`: a retry re-sends the committed
-  # sequence, and this sequence has no request row in it — the compactor would
-  # be asked to summarize with no instruction. Unreachable by construction (the
-  # `{:refuse, _}` clause heals the tail before staging); it is the backstop.
-  def do_step(%{phase: :generating, kind: :compaction} = m, {:append_result, :invalid, reason}) do
-    Failure.fail_turn(m, %ArgumentError{message: reason}, [])
-  end
-
-  # Unreachable by construction, and deliberately NOT a `fail_turn`: `:stale`
-  # comes only from `Repair.classify_live/2`'s `tool_result?` arm, and the
-  # compaction request is a `{:user, _}` — so a stale outcome here would mean
-  # the request was not what this phase appends. Ignoring it matches the
-  # `:generating`/`:chat` sibling and cannot mask a failed append, because
-  # `:invalid` (the only outcome a user append can actually produce) is above.
-  def do_step(%{phase: :generating, kind: :compaction} = m, {:append_result, :stale, _}),
-    do: {:ignore, :stale_append, m}
-
-  # The compaction request is committed; spawn the compactor over the
-  # ordinary message list.
-  def do_step(%{phase: :generating, kind: :compaction} = m, :iterate) do
-    messages = Dispatch.request_messages(m)
-
-    case Preflight.validate_request(messages) do
-      :ok ->
-        # The *summary's* index, from the context `prepare/1` just rebuilt: the
-        # request and any bridge are already committed with real indices, so the
-        # next free index is where the summary lands. Written onto `work` as
-        # well as emitted, like `do_dispatch_http/1`, because
-        # `Response.assistant_with_log/2` stamps the response's API-log id from
-        # it — unset, the compactor's log carried the last chat dispatch's index.
-        provisional = m.work.ctx.next_message_index
-        ctx = Dispatch.spawn_ctx(m, messages)
-        machine = %{m | work: %{m.work | active_message_index: provisional}}
-        {:ok, [{:set_streaming, provisional}, {:stage_compaction, ctx}], machine}
-
-      {:error, violations} ->
-        Compaction.compaction_failed(
-          m,
-          Preflight.format_violations(violations),
-          Compaction.carried(m)
-        )
-    end
-  end
+  # The whole `(kind: :compaction, phase: :generating)` slice of the table —
+  # the compactor's result/error/death handling and the request dispatch —
+  # lives in `Machine.Compaction` with the rest of the compaction decisions.
+  def do_step(%{phase: :generating, kind: :compaction} = m, event),
+    do: Compaction.transition(m, event)
 
   # --- committing ---
 
@@ -545,7 +489,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
         # queued (peek-then-consume), so the compaction's `resume/1` re-drains
         # them in place once the context has shrunk.
         parked = if inbox_entries in [nil, []], do: %{m | pending_user_message: entry}, else: m
-        Compaction.stage(parked, nil, nil)
+        Compaction.stage(parked, nil)
 
       :cannot_compact ->
         # The drained entries stay queued (nothing consumed them) and the agent
@@ -631,8 +575,63 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     machine = enter(m, :chat, :generating, :http)
     machine = %{machine | work: %{machine.work | pending_notice: nil}}
 
-    {:ok, [{:append, tool_msg}, {:record_file_access}, :iterate], machine}
+    if waiting?(results) do
+      wait_rest(machine, tool_msg)
+    else
+      {:ok, [{:append, tool_msg}, {:record_file_access}, :iterate], machine}
+    end
   end
+
+  # A batch whose results carry a wait tool's `state: "waiting"` (issue #54)
+  # ends the turn instead of iterating. The tool layer reports only the fact —
+  # the call registered a watch and its real result arrives later as a message
+  # — and the machine decides what that means, exactly as it owns every other
+  # action: rest in `:idle`, so the agent stops (with no further request) and a
+  # human can message it.
+  #
+  # Three details are load-bearing:
+  #
+  #   * the synthetic assistant acknowledgement after the result. A `{:tool, _}`
+  #     is a wire-`user` message, so resting on one would leave the idle agent
+  #     on a user role — the shape `Repair.classify_load/1` and the compaction
+  #     commit both heal — and the wake's own message would need the live
+  #     bridge. The ack restores alternation *before* the idle, and
+  #     `{:record_file_access}` runs ahead of it so it still reads the batch's
+  #     own message (a mixed batch may carry a `file-read`).
+  #   * `{:finalize, :waiting}`, not `{:finalize, :clean}`: the turn is over but
+  #     nothing is complete, so the parent is *not* told the child finished.
+  #     The agent will report when the message it is waiting for arrives and its
+  #     own turn ends for real. It is emitted *before* the drain, so a drain
+  #     that produces a follow event cannot skip it.
+  #   * a queued message is not stranded, and is not delivered through a
+  #     transient `:idle` either: with one waiting the machine stays where it is
+  #     and the drain's `{:inbox_drain, …}` starts the delivered message's turn
+  #     in place — the rule `Transitions.iterate/1` applies at every other turn
+  #     boundary (issue #15). `force_finalize` keeps its "wrap this turn up now"
+  #     meaning, exactly as it does there.
+  defp wait_rest(machine, tool_msg) do
+    actions = [
+      {:append, tool_msg},
+      {:record_file_access},
+      {:append, MessageList.waiting_ack()}
+    ]
+
+    if Boundary.inbox_count(machine.work.ctx) > 0 and not machine.work.force_finalize do
+      # The turn continues with the queued message: the live working set is
+      # left alone, exactly as it is at every other boundary that continues a
+      # turn (`Transitions.iterate/1`), and the next dispatch resets it.
+      {:ok, actions ++ [{:drain_inbox}], machine}
+    else
+      Phase.rest(machine, :chat, :waiting, actions ++ [{:finalize, :waiting}, {:drain_inbox}])
+    end
+  end
+
+  # True when any result of the batch is one the tool layer marked as having no
+  # verdict yet. `BatchSizer` stamps `state: "waiting"` from its `:waiting`
+  # entry kind, which is what a wait tool's `{:waiting, content}` return becomes
+  # — so the machine tells a wait result from an ordinary one by the result
+  # itself, and a batch mixing a wait with ordinary tools ends the turn too.
+  defp waiting?(results), do: Enum.any?(results, &match?(%ToolResult{state: "waiting"}, &1))
 
   # --- worker death / terminal ---
 
@@ -663,31 +662,5 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   defp unowned_worker_down(m, pid, reason), do: worker_down(m, pid, reason)
 
-  defp valid_ref?(m, ref) do
-    not Machine.stopping?(m) and is_reference(m.work.worker_ref) and m.work.worker_ref == ref
-  end
-
   defp messages(m), do: m.work.ctx.messages
-
-  # A child's outcome is delivered into this agent's own inbox (§2.1). When the
-  # machine is already idle, nothing else would ever drain it: a peer's message
-  # wakes an idle agent (`Inbox.handle_delivery/4` drains it), and a child's
-  # answer has to as well — otherwise a parent that ended its turn before its
-  # child answered would leave the answer sitting in the queue until something
-  # else woke it. While the parent is `:generating` the `:iterate` turn boundary
-  # drains it instead. `:executing_tools` needs the drain too (issue #36): an
-  # internal enqueue never passes through the delivery path, so this is the only
-  # thing that can background the parent's batch and deliver the answer now.
-  defp child_event(m, event) do
-    case Children.step(m.children, event) do
-      {:ok, actions, children} ->
-        actions = actions ++ [{:broadcast, :status, nil}]
-
-        drain = if m.phase in [:idle, :executing_tools], do: [{:drain_inbox}], else: []
-        {:ok, actions ++ drain, %{m | children: children}}
-
-      {:ignore, reason, children} ->
-        {:ignore, reason, %{m | children: children}}
-    end
-  end
 end

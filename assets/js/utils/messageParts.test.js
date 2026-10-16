@@ -65,6 +65,43 @@ describe("textPartsFor", () => {
     const toolUse = { kind: "tool_use", id: "x", name: "shell-cmd" };
     expect(textPartsFor({ parts: [toolUse] })).toEqual([toolUse]);
   });
+
+  it("strips the `[nest notice]` marker from a runtime notice's row", () => {
+    // The fused `assistant(notice + ack)` row is an assistant row whose text
+    // starts with the server's marker (`Nest.Agents.Agent.NoticePairInjector`);
+    // the operator must see the notice, not the wire framing. Only the head is
+    // touched — a later text part is left alone.
+    expect(
+      textPartsFor({
+        parts: [{ kind: "text", text: "[nest notice]\nContext at 50%." }],
+      }),
+    ).toEqual([{ kind: "text", text: "Context at 50%." }]);
+
+    expect(
+      textPartsFor({
+        parts: [
+          { kind: "text", text: "[nest notice]\nContext at 50%." },
+          { kind: "text", text: "and the model echoed [nest notice]\nagain" },
+        ],
+      }),
+    ).toEqual([
+      { kind: "text", text: "Context at 50%." },
+      { kind: "text", text: "and the model echoed [nest notice]\nagain" },
+    ]);
+
+    // A non-text head is skipped rather than mis-stripped.
+    expect(
+      textPartsFor({
+        parts: [
+          { kind: "tool_use", id: "x", name: "shell-cmd" },
+          { kind: "text", text: "[nest notice]\nContext at 50%." },
+        ],
+      }),
+    ).toEqual([
+      { kind: "tool_use", id: "x", name: "shell-cmd" },
+      { kind: "text", text: "Context at 50%." },
+    ]);
+  });
 });
 
 describe("toolCallsFromParts", () => {

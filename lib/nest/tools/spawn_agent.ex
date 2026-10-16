@@ -45,7 +45,7 @@ defmodule Nest.Tools.SpawnAgent do
       "role. Set `clone_context` to true to spawn the agent with a copy of " <>
       "this conversation instead of a fresh context. Set `archive` to true " <>
       "(with `query`) to stop and archive the agent after it responds " <>
-      "(one-shot). Use `agents-wait-for-idle` to wait for the new agent to finish. " <>
+      "(one-shot). Use `agents-wait` to wait for the new agent to finish. " <>
       "Spawned vocations may be restricted by this space's blueprint. " <>
       "Sub-agents can be spawned down to a maximum depth of " <>
       "#{Config.configured_max_depth()}. Set `model` to a " <>

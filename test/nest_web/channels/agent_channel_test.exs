@@ -349,23 +349,31 @@ defmodule NestWeb.AgentChannelTest do
   end
 
   describe "chat:inbox" do
-    test "handle_in replies with the inbox and forwards the broadcast", %{
+    test "handle_in replies with the full list and forwards deltas verbatim", %{
       socket: socket,
       space_id: space_id,
       agent_id: name
     } do
+      # The reply is the resync frame (issue #27): the whole queue with the
+      # sequence it was taken at, self-described as a replacement.
       ref = push(socket, "chat:inbox", %{})
-      assert_reply ref, :ok, %{"messages" => [], "count" => 0}
 
-      Phoenix.PubSub.broadcast(
-        Nest.PubSub,
-        "agent:#{space_id}:#{name}",
-        {:chat_inbox, %{messages: [%{"from" => "peer", "content" => "hi"}], count: 1}}
-      )
+      assert_reply ref, :ok, %{
+        "op" => "replace",
+        "messages" => [],
+        "count" => 0,
+        "inboxSeq" => seq
+      }
 
-      assert_push "chat:inbox", payload
-      assert payload.count == 1
-      assert [%{"from" => "peer", "content" => "hi"}] = payload.messages
+      assert is_integer(seq)
+
+      # A delta is forwarded as it was broadcast: the channel relays the
+      # incremental frame verbatim rather than reshaping it into a list.
+      delta = %{op: "append", messages: [%{"from" => "peer", "content" => "hi"}], count: 1}
+
+      Phoenix.PubSub.broadcast(Nest.PubSub, "agent:#{space_id}:#{name}", {:chat_inbox, delta})
+
+      assert_push "chat:inbox", ^delta
     end
   end
 

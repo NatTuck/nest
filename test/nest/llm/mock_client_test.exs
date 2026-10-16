@@ -5,12 +5,38 @@ defmodule Nest.LLM.MockClientTest do
   alias Nest.LLM.RunRequest
   alias Nest.LLM.RunResponse
   alias Nest.LLM.Tool
+  alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
+  alias Nest.Messages.User
+
+  # A 1x1 PNG, for the media wire shapes below.
+  @png "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="
 
   setup do
     MockClient.start_link()
     MockClient.clear()
     on_exit(fn -> MockClient.stop() end)
     :ok
+  end
+
+  defp shell_tool do
+    %Tool{
+      name: "shell-cmd",
+      description: "run a shell command",
+      parameters_schema: %{type: "object"},
+      function: fn _args, _opts -> {:ok, ""} end
+    }
+  end
+
+  defp media_part do
+    %Part.Media{
+      tool_call_id: nil,
+      modality: :image,
+      media_type: "image/png",
+      data: @png,
+      bytes: byte_size(Base.decode64!(@png)),
+      path: "shot.png"
+    }
   end
 
   describe "lifecycle" do
@@ -20,6 +46,27 @@ defmodule Nest.LLM.MockClientTest do
       assert MockClient.start_link() != nil
       assert MockClient.clear() == :ok
       MockClient.start_link()
+    end
+
+    test "stop is idempotent" do
+      # The per-test teardown stops the queue, and an `on_exit` hook may stop it
+      # again: the second call finds no process and must be a no-op.
+      assert MockClient.stop() == :ok
+      assert MockClient.stop() == :ok
+    end
+
+    test "clear and run survive a stopped queue" do
+      # The window this pins is real: the teardown stops the per-agent queue
+      # while a chat task may still be finishing, so `clear/0` and `run/2` can
+      # each land with no queue registered for the owner. Neither may crash, and
+      # `run/2` falls back to the default response rather than returning
+      # nothing.
+      MockClient.stop()
+      assert MockClient.clear() == :ok
+
+      {:ok, stream} = MockClient.run(%RunRequest{})
+      assert [{:text, text}, {:finish_reason, "stop"}, {:done, _}] = Enum.to_list(stream)
+      assert is_binary(text) and text != ""
     end
   end
 
@@ -114,6 +161,33 @@ defmodule Nest.LLM.MockClientTest do
         Enum.filter(stream, &match?({:tool_call_delta, _}, &1))
 
       assert Jason.decode!(delta) == %{}
+    end
+  end
+
+  describe "script selection for a request that carries no tools" do
+    test "skips a queued tool response and keeps it for the next tool-bearing call" do
+      MockClient.set_tool_response(%{
+        text: "calling",
+        tool_calls: [%{id: "c1", name: "shell-cmd", arguments: %{"command" => "ls"}}]
+      })
+
+      MockClient.set_response("plain answer")
+
+      # `tools: nil` is the compactor's shape (`Dispatch` sends
+      # `tools: nil, tool_choice: :none`), and such a call cannot consume a
+      # tool-call script: the queued one is skipped and re-queued rather than
+      # streamed to a caller that asked for no tools.
+      {:ok, stream} = MockClient.run(%RunRequest{tools: nil})
+
+      assert [{:text, "plain answer"}, {:finish_reason, "stop"}, {:done, _}] =
+               Enum.to_list(stream)
+
+      # The skipped script is still queued, and the next call that does carry
+      # tools gets it.
+      {:ok, tool_stream} = MockClient.run(%RunRequest{tools: [shell_tool()]})
+
+      assert {:tool_call_start, %{id: "c1", name: "shell-cmd"}} =
+               Enum.at(Enum.to_list(tool_stream), 1)
     end
   end
 
@@ -232,6 +306,69 @@ defmodule Nest.LLM.MockClientTest do
                  }
                }
              ]
+    end
+  end
+
+  describe "the wire shapes the replay harness depends on" do
+    test "renders an assistant tool_use as OpenAI function tool_calls" do
+      req = %RunRequest{
+        messages: [
+          {:assistant,
+           %Assistant{
+             index: 0,
+             parts: [
+               %Part.Text{text: "on it"},
+               %Part.ToolUse{id: "call_1", name: "shell-cmd", arguments: %{"command" => "ls"}},
+               %Part.ToolUse{id: "call_2", name: "file-read", arguments: ~s({"path":"a.md"})}
+             ],
+             api_logs: []
+           }}
+        ]
+      }
+
+      assert [%{"role" => "assistant", "content" => "on it", "tool_calls" => [first, second]}] =
+               MockClient.format_request_payload(req)["messages"]
+
+      assert first["id"] == "call_1"
+      assert first["type"] == "function"
+      assert first["function"]["name"] == "shell-cmd"
+      assert Jason.decode!(first["function"]["arguments"]) == %{"command" => "ls"}
+
+      # Arguments already carried as a JSON string pass through verbatim: the
+      # mock must not re-encode what a restored row already holds.
+      assert second["function"]["arguments"] == ~s({"path":"a.md"})
+    end
+
+    test "renders a user message carrying media as a content array" do
+      # The user-role media branch is the shape a build with a wider vocabulary
+      # (or a future upload) leaves behind, so the part is built directly: a
+      # media part is still shown in the panel, so it cannot silently vanish
+      # from the request either.
+      req = %RunRequest{
+        messages: [{:user, %User{index: 1, parts: [%Part.Text{text: "look"}, media_part()]}}]
+      }
+
+      assert [%{"role" => "user", "content" => [text_block, image]}] =
+               MockClient.format_request_payload(req)["messages"]
+
+      assert text_block == %{"type" => "text", "text" => "look"}
+      assert image["type"] == "image"
+      assert image["source"] == %{"type" => "base64", "media_type" => "image/png", "data" => @png}
+
+      # With no text part there is nothing to hoist, and an empty text block is
+      # omitted rather than sent — it is not valid content.
+      req = %RunRequest{messages: [{:user, %User{index: 1, parts: [media_part()]}}]}
+
+      assert [%{"role" => "user", "content" => [%{"type" => "image"}]}] =
+               MockClient.format_request_payload(req)["messages"]
+    end
+
+    test "a request with no tools at all omits the tools key" do
+      # `nil` and `[]` are both "no tools" — the mock is total over the two
+      # shapes — and neither puts a `tools` key on the wire.
+      for tools <- [nil, []] do
+        refute Map.has_key?(MockClient.format_request_payload(%RunRequest{tools: tools}), "tools")
+      end
     end
   end
 

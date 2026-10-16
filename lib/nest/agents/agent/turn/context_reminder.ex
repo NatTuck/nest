@@ -9,6 +9,7 @@ defmodule Nest.Agents.Agent.Turn.ContextReminder do
   """
 
   alias Nest.LLM.ClientConfig
+  alias Nest.Messages.NoticeTag
   alias Nest.Messages.Part
   alias Nest.Messages.User
   alias Nest.Tokens.ConversationSize
@@ -20,20 +21,29 @@ defmodule Nest.Agents.Agent.Turn.ContextReminder do
     {0.75, :p75}
   ]
 
-  @ack_texts %{
-    p25: "Okay, that's plenty of space.",
-    p50: "Okay, I should consider conserving tokens."
-  }
-
+  # The decided notice wording. The 25% notice is a bare statement: models do
+  # not start worrying about context until the 50% notice, so only 50% and 75%
+  # tell the model to keep working rather than stop. The 75% notice has two
+  # variants: one for an agent that owns the `context-compact` tool (it may
+  # compact itself) and one for an agent whose vocation lacks it (it must not be
+  # told to use a tool it does not have).
   @notice_texts %{
     p25: "Context at 25%.",
-    p50: "Context at 50%."
+    p50:
+      "Context at 50%. Do not stop due to context concerns, continue working through compaction."
   }
 
-  @p75_notice_compact "Context at 75%. Consider compacting via the context-compact tool."
-  @p75_notice_plain "Context at 75%."
-  @p75_ack_compact "Okay, no more expensive tool calls and I should consider explicitly compacting."
-  @p75_ack_plain "Okay, I should conserve context."
+  @p75_notice_compact "Context at 75%. Do not stop due to context concerns, " <>
+                        "either explicitly compact yourself with the context-compact tool " <>
+                        "or continue working through compaction."
+
+  @p75_notice_plain "Context at 75%. Do not stop due to context concerns, " <>
+                      "continue working through compaction."
+
+  # Every context threshold acknowledges the same way. The ack is not where the
+  # model is steered — the notice is — so it is one sentence for all three
+  # thresholds and both 75% variants.
+  @ack_text "Okay, context noted."
 
   @type spec :: %{
           required(:kind) => atom(),
@@ -76,14 +86,14 @@ defmodule Nest.Agents.Agent.Turn.ContextReminder do
   def notice_text(atom, _compact?), do: Map.fetch!(@notice_texts, atom)
 
   @doc """
-  Assistant ack text that pairs with a given notice.
-  """
-  @spec ack_text_for(atom(), boolean()) :: String.t()
-  def ack_text_for(atom, compact? \\ true)
+  The assistant ack text that pairs with a context notice.
 
-  def ack_text_for(:p75, true), do: @p75_ack_compact
-  def ack_text_for(:p75, false), do: @p75_ack_plain
-  def ack_text_for(atom, _compact?), do: Map.fetch!(@ack_texts, atom)
+  Every context threshold acknowledges identically — the ack is not where the
+  model is steered, the notice is — so there is one ack, not one per threshold
+  and no `compact?` variant.
+  """
+  @spec ack_text() :: String.t()
+  def ack_text, do: @ack_text
 
   @doc """
   Whether the agent owns the `context-compact` tool.
@@ -104,7 +114,7 @@ defmodule Nest.Agents.Agent.Turn.ContextReminder do
         %{
           kind: :context,
           attention: "Context?",
-          notice: format(atom, used, limit, compact?),
+          notice: notice_text(atom, compact?),
           threshold: atom
         }
     end
@@ -159,41 +169,19 @@ defmodule Nest.Agents.Agent.Turn.ContextReminder do
   end
 
   @doc """
-  Build the reminder message for the given threshold atom.
-  Kept for callers that need the legacy shape.
+  Build the context-notice row for the given threshold atom.
+
+  The row is exactly the one the live paths announce: the decided text
+  (`notice_text/2`) on the `{:user, _}` row `build_user_notice/3` builds,
+  carrying the `[nest notice]` marker (`NoticeTag.tag/1`). `compact?` picks the
+  75% variant, as it does for the text itself.
+
+  It takes no counts because the decided wording carries none: a parameter that
+  no longer reaches the row would read as if it still did.
   """
-  @spec build_message(atom(), non_neg_integer(), pos_integer(), ClientConfig.t() | nil) ::
-          {:user, User.t()}
-  def build_message(atom, used, limit, client_config) do
-    build_user_notice(format(atom, used, limit), client_config)
-  end
-
-  @spec build_message(atom(), non_neg_integer(), pos_integer()) :: {:user, User.t()}
-  def build_message(atom, used, limit),
-    do: build_message(atom, used, limit, %ClientConfig{})
-
-  @doc false
-  @spec format(atom(), non_neg_integer(), pos_integer(), boolean()) :: String.t()
-  def format(atom, used, limit, compact? \\ true)
-
-  def format(:p25, used, limit, _compact?), do: percentage_text(25, used, limit)
-
-  def format(:p50, used, limit, _compact?), do: percentage_text(50, used, limit)
-
-  def format(:p75, used, limit, compact?) do
-    base = percentage_text(75, used, limit)
-
-    if compact? do
-      base <> " Consider compacting via the `context-compact` tool to free up room."
-    else
-      base
-    end
-  end
-
-  defp percentage_text(pct, used, limit) do
-    reserve = Reserve.compaction_reserve(limit)
-    effective = max(1, limit - reserve)
-    "Context usage is now at #{pct}% (~#{used} of ~#{effective} token budget)."
+  @spec build_message(atom(), boolean()) :: {:user, User.t()}
+  def build_message(atom, compact? \\ true) do
+    build_user_notice(NoticeTag.tag(notice_text(atom, compact?)), nil)
   end
 
   @doc """

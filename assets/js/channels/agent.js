@@ -303,7 +303,7 @@ export function joinAgent(agentId, spaceId) {
     const priorBoundary =
       getStore().agentsCache[agentId]?.lastCompactionIndex ?? -1;
     store.setAgentConnected(agentId, payload);
-    store.setAgentInbox(agentId, payload.inbox ?? []);
+    store.setAgentInbox(agentId, payload.inbox ?? [], payload.inboxSeq);
     reconcileAgentCache(store, agentId, payload, priorBoundary);
     // The init payload carries the boundary but not the archive; the
     // marker + recall prompts are fetched lazily.
@@ -381,10 +381,15 @@ export function joinAgent(agentId, spaceId) {
     store.setAgentJobs(agentId, payload?.jobs ?? []);
   });
 
-  // Async agent-to-agent inbox: the full queued-message list changes
-  // when a peer sends (`agents-send`) or when the agent drains it.
+  // Async agent-to-agent inbox: the queue is published incrementally
+  // (issue #27), one frame per queue change — an append when a peer or a
+  // human queues a message, a removal when the agent drains it. A frame that
+  // does not continue this client's stream (a missed delta, or an agent that
+  // restarted and reset the sequence) is not applied: the client re-requests
+  // the whole list over `chat:inbox` and replaces its cache from the reply.
   channel.on("chat:inbox", (payload) => {
-    store.setAgentInbox(agentId, payload?.messages ?? []);
+    const result = store.applyAgentInboxDelta(agentId, payload);
+    if (result?.needsResync) requestInbox(agentId);
   });
 
   channel.onClose(() => {
@@ -460,16 +465,19 @@ export function reloadAgent(agentId, spaceId, onError) {
 
 /**
  * Refresh an agent's async inbox (`agents-send` queue) over
- * `chat:inbox`. Used by the inbox panel when it opens with fewer cached
- * entries than the status count (a `chat:inbox` broadcast may have been
- * missed). A no-op when the channel isn't connected.
+ * `chat:inbox`. This is the **resync** request (issue #27): the reply carries
+ * the full list, its length and the `inboxSeq` it was taken at, so the cache
+ * is replaced and the delta baseline re-established in one step. The inbox
+ * panel calls it on open, and the `chat:inbox` handler calls it when a delta
+ * does not continue the client's stream. A no-op when the channel isn't
+ * connected.
  */
 export function requestInbox(agentId) {
   const channel = agentChannels.get(agentId);
   if (!channel) return;
 
   channel.push("chat:inbox", {}).receive("ok", (resp) => {
-    getStore().setAgentInbox(agentId, resp?.messages ?? []);
+    getStore().setAgentInbox(agentId, resp?.messages ?? [], resp?.inboxSeq);
   });
 }
 

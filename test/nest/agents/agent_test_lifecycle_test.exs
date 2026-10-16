@@ -202,7 +202,12 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
           end
         end)
 
-      assert_receive {:registered, ^pid}
+      # 1000 ms is the suite's fence for `test/` (`test/test_helper.exs:157`).
+      # SMELLS.md's "as low as possible" rule is about a wait whose duration
+      # can be measured; this one awaits a *spawned* process that has to be
+      # scheduled and register itself, so the fence is the documented bound
+      # rather than a guess.
+      assert_receive {:registered, ^pid}, 1_000
 
       result = AgentTestLifecycle.stop_test_agents()
 
@@ -330,7 +335,9 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
           end
         end)
 
-      assert_receive {:registered, ^pid}
+      # The same spawned-process ack, so the same suite fence
+      # (`test/test_helper.exs:157`).
+      assert_receive {:registered, ^pid}, 1_000
 
       log =
         capture_log(fn ->
@@ -348,6 +355,44 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       send(pid, :stop)
       assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
       assert AgentTestLifecycle.detect_leaked_agent(space_id, name, 10) == :ok
+    end
+
+    test "does not report an agent that goes away inside the bound" do
+      # The watch's other arm: the agent is registered when the hook looks it up
+      # and dies before the bound expires, so the detector returns on the DOWN
+      # rather than on its timeout. Reached only when the teardown's stop is
+      # still in flight at `on_exit` time, which is why it is a race in the
+      # suite and a fact here.
+      {:ok, space_id} = AgentTestHelpers.create_test_space()
+      name = "dies-while-watched-#{System.unique_integer([:positive])}"
+      test_pid = self()
+
+      pid =
+        spawn(fn ->
+          {:ok, _} = Elixir.Registry.register(Nest.Agents.Registry, {space_id, name}, nil)
+          send(test_pid, {:registered, self()})
+
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      # The same spawned-process ack, so the same suite fence
+      # (`test/test_helper.exs:157`).
+      assert_receive {:registered, ^pid}, 1_000
+
+      detector =
+        Task.async(fn -> AgentTestLifecycle.detect_leaked_agent(space_id, name, 1_000) end)
+
+      # Wait for the detector's monitor to be in place *before* stopping the
+      # process: that is what makes this the DOWN arm rather than a race against
+      # it. The lookup has already succeeded and the monitor exists, so the
+      # detector's only way out of its receive is the DOWN it is waiting for.
+      assert Eventually.eventually(fn -> monitored_by?(pid, detector.pid) end, timeout: 1_000)
+
+      send(pid, :stop)
+
+      assert Task.await(detector) == :ok
     end
   end
 
@@ -411,6 +456,47 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       assert log =~ name
 
       :ok = :sys.resume(pid)
+    end
+
+    test "keeps the body's exception when the teardown cannot run at all" do
+      # The hook's real path: `reraise_after_teardown/3` runs in the `on_exit`
+      # runner, *after* the test pid — the sandbox connection's owner — has
+      # exited, so the teardown's own `Repo.all/1` raises before it can stop
+      # anything. That must not replace the body's exception: the body's error is
+      # re-raised unchanged, and the teardown's failure is said in the log
+      # instead.
+      parent = self()
+
+      log =
+        capture_log(fn ->
+          spawn(fn ->
+            try do
+              AgentTestLifecycle.reraise_after_teardown(
+                :error,
+                RuntimeError.exception("body boom"),
+                [{__MODULE__, :probe, 0, [file: ~c"probe.ex", line: 7]}]
+              )
+            rescue
+              error -> send(parent, {:raised, Exception.message(error)})
+            end
+          end)
+
+          # The suite's fence for `test/` (`test/test_helper.exs:157`): this
+          # message comes from the spawned process above, after its `Repo.all/1`
+          # raised.
+          assert_receive {:raised, "body boom"}, 1_000
+        end)
+
+      assert log =~ "test teardown raised"
+      assert log =~ "OwnershipError"
+    end
+  end
+
+  # Whether `watcher` has a monitor on `pid`, read from the monitored side.
+  defp monitored_by?(pid, watcher) do
+    case Process.info(pid, :monitored_by) do
+      {:monitored_by, watchers} -> watcher in watchers
+      nil -> false
     end
   end
 

@@ -1,34 +1,30 @@
 defmodule Nest.Tools.ShellPipesTest do
   @moduledoc """
   Tests for `Nest.Tools.ShellPipes`, the filter that rejects `shell-cmd`
-  commands piping output into `head`, `tail`, or `grep`.
+  commands piping output into `head` or `tail`.
 
   `check/1` is pure — no bwrap, no I/O — so these run fast. The positive cases
   pin the pipeline detection (including by path, after redirections, and on a
   continuation line); the negative cases pin the false positives the tokenizer
   must avoid: quotes, comments, heredoc bodies, `||`/`&&`, and head/tail/grep
-  used directly or as a filename.
+  used directly or as a filename. `grep` is *not* a pager (issue #106), so a
+  pipe into it is allowed.
   """
 
   use ExUnit.Case, async: true
 
   alias Nest.Tools.ShellPipes
 
-  describe "check/1 rejects a pipe into head, tail, or grep" do
+  describe "check/1 rejects a pipe into head or tail" do
     test "rejects a pager at any pipeline stage, by bare name or by path" do
       for command <- [
             "ls | head",
             "ls | head -n 5",
             "cat big.log | tail -f",
-            "ps aux | grep beam",
-            "dmesg | grep -i error",
             "ls|head",
-            "ls |& grep err",
             "a | b | head",
             "sort | uniq -c | sort -rn | head",
             "ls | /usr/bin/head",
-            "ls | sort | grep x",
-            "ls | grep",
             "echo $((1 << 2))\nls | head",
             "(( x << 1 ))\nls | head"
           ] do
@@ -45,9 +41,6 @@ defmodule Nest.Tools.ShellPipesTest do
 
       assert {:error, tail} = ShellPipes.check("ls | tail -f")
       assert tail =~ "into `tail`"
-
-      assert {:error, grep} = ShellPipes.check("ls | grep x")
-      assert grep =~ "into `grep`"
     end
 
     test "sees the command word after redirections and assignments" do
@@ -65,7 +58,7 @@ defmodule Nest.Tools.ShellPipesTest do
             "ls\n| head",
             "ls \\\n| head",
             "ls |\nhead",
-            "ps aux |\ngrep beam",
+            "ps aux |\nhead",
             "(ls | head)",
             "ls | (head)",
             "ls | head && echo done"
@@ -131,8 +124,24 @@ defmodule Nest.Tools.ShellPipesTest do
       end
     end
 
-    test "allows pipes into commands other than head, tail, or grep" do
-      for command <- ["ls | sort", "ls | wc -l", "echo hi | tr a-z A-Z", "cat f | tee g"] do
+    test "allows pipes into commands other than head or tail, including grep" do
+      # `grep` selects rather than truncates, so it is a legitimate filter and
+      # piping into it is allowed (issue #106) — by bare name, by path, and with
+      # a flag, including at a later pipeline stage.
+      for command <- [
+            "ls | sort",
+            "ls | wc -l",
+            "echo hi | tr a-z A-Z",
+            "cat f | tee g",
+            "ls | grep x",
+            "ls | /usr/bin/grep x",
+            "ls | grep -v x",
+            "ps aux | grep beam",
+            "dmesg | grep -i error",
+            "ls |& grep err",
+            "ls | sort | grep x",
+            "ls | grep"
+          ] do
         assert :ok = ShellPipes.check(command), "expected #{inspect(command)} to be allowed"
       end
     end
