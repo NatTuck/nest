@@ -23,11 +23,13 @@ export function thinkingFor(message) {
   return message.thinking || null;
 }
 
-// Extract the text parts for an assistant message, with any
-// `<!--think...-->` blocks removed (their content was routed into
-// the ThinkingBlock above). For user messages, the caller wraps
-// the text in a single Part.Text (with the mode prefix stripped), so
-// this is only used for assistants.
+// The parts for a non-user row, with any `<!--think...-->` blocks split
+// out (their content was routed into the ThinkingBlock above). NOT
+// text-only: every non-text part passes through in place, `media`
+// included, so a caller that renders the media itself must use
+// `messageContentPartsFor` instead (issue #115). For user messages, the
+// caller wraps the text in a single Part.Text (with the mode prefix
+// stripped), so this is only used for non-user rows.
 //
 // A synthetic runtime notice renders into an assistant row too: the fused
 // `assistant(notice + ack)` shape puts the `[nest notice]` marker at the head
@@ -50,6 +52,24 @@ function stripNoticeFromParts(parts) {
   const next = parts.slice();
   next[index] = { ...parts[index], text: stripped };
   return next;
+}
+
+// The parts to hand `MessageContent` for a non-user row, whose media is
+// rendered beside it rather than inside it.
+//
+// `textPartsFor` passes every non-text part through, and `media` is the one
+// kind `MessageContent` renders itself (`mediaFromParts` + `ToolMedia`), so
+// a caller that renders the media with its own `ToolMedia` would render the
+// attachment a second time and the operator would see it twice (issue #115).
+// Filtering it out here is the whole contract. The `tool_use` / `tool_result`
+// parts stay: `MessageContent` reads only `text` and ignores them, and
+// `toolCallsFromParts` / `toolResultsFromParts` derive their shapes from the
+// message's own parts, not from what this returns.
+//
+// A `user` row does not come through here — that branch synthesises its own
+// parts array and hands its media to `MessageContent` to render.
+export function messageContentPartsFor(message) {
+  return textPartsFor(message).filter((p) => p?.kind !== "media");
 }
 
 // Derive the legacy `toolCalls` shape from a message's `parts`

@@ -16,6 +16,7 @@ import { describe, it, expect } from "vitest";
 import {
   thinkingFor,
   textPartsFor,
+  messageContentPartsFor,
   toolCallsFromParts,
   toolResultsFromParts,
   mediaFromParts,
@@ -101,6 +102,42 @@ describe("textPartsFor", () => {
       { kind: "tool_use", id: "x", name: "shell-cmd" },
       { kind: "text", text: "Context at 50%." },
     ]);
+  });
+});
+
+describe("messageContentPartsFor", () => {
+  it("drops media parts while keeping every other part in place", () => {
+    // The helper's whole contract: `MessageContent` renders the media part
+    // itself, so the caller that renders media beside it must not hand it one
+    // (issue #115). The other non-text parts are inert there and stay.
+    const toolUse = { kind: "tool_use", id: "x", name: "shell-cmd" };
+    const toolResult = {
+      kind: "tool_result",
+      toolCallId: "c1",
+      name: "file-read",
+      content: "r",
+    };
+    expect(
+      messageContentPartsFor({
+        parts: [
+          { kind: "text", text: "done" },
+          { kind: "media", toolCallId: "c1", modality: "image", data: "AAAA" },
+          toolUse,
+          toolResult,
+        ],
+      }),
+    ).toEqual([{ kind: "text", text: "done" }, toolUse, toolResult]);
+  });
+
+  it("returns the text parts unchanged when there is no media", () => {
+    expect(
+      messageContentPartsFor({ parts: [{ kind: "text", text: "hello" }] }),
+    ).toEqual([{ kind: "text", text: "hello" }]);
+  });
+
+  it("tolerates a missing message or parts", () => {
+    expect(messageContentPartsFor(null)).toEqual([]);
+    expect(messageContentPartsFor({})).toEqual([]);
   });
 });
 

@@ -18,6 +18,9 @@
  *   render a ThinkingBlock; tool_use parts render via
  *   ToolCalls; apiLogs render via ApiLogsBlock
  * - Tool messages render via ToolResults with full content
+ * - A tool message's `media` part renders its image exactly once
+ *   (issue #115), not once from `MessageContent` and again from the
+ *   explicit `ToolMedia` beside it
  * - Tolerates missing timestamps / unknown roles
  * - Interleaved messages + markers render in original order
  */
@@ -403,6 +406,38 @@ describe("CollapsedHistory", () => {
       expect(bubble.textContent).toContain("Success: shell-cmd");
       expect(bubble.textContent).toContain("file1.txt");
       expect(bubble.textContent).toContain("file2.txt");
+    });
+
+    it("renders a tool message's attached image once, not twice", () => {
+      // Issue #115: `textPartsFor` passes the `media` part through, so
+      // `MessageContent` rendered it while the explicit `ToolMedia` beside it
+      // rendered it again — the pane showed the attachment twice.
+      const history = buildHistory([
+        {
+          role: "tool",
+          parts: [
+            {
+              kind: "tool_result",
+              toolCallId: "call_1",
+              name: "file-read",
+              content: "Read 68 B image/png from shot.png; attached below.",
+              isError: false,
+            },
+            {
+              kind: "media",
+              toolCallId: "call_1",
+              modality: "image",
+              mediaType: "image/png",
+              bytes: 68,
+              data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
+              path: "shot.png",
+            },
+          ],
+        },
+      ]);
+      render(<CollapsedHistory history={history} />);
+
+      expect(screen.getAllByTestId("tool-media-image")).toHaveLength(1);
     });
   });
 

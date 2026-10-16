@@ -48,7 +48,7 @@ import { messageToMarkdown } from "../utils/formatMessage.js";
 import { messageText } from "../utils/messageText.js";
 import {
   thinkingFor,
-  textPartsFor,
+  messageContentPartsFor,
   toolCallsFromParts,
   mediaFromParts,
 } from "../utils/messageParts.js";
@@ -155,7 +155,7 @@ function Message({ message, agentName }) {
                       (p) => p && p.kind === "media",
                     ),
                   ]
-                : textPartsFor(message)
+                : messageContentPartsFor(message)
             }
             isPartial={isPartial}
             className="text-gray-800"
@@ -164,15 +164,24 @@ function Message({ message, agentName }) {
         <ToolCalls toolCalls={toolCalls} />
         <DelegatedTask message={message} agentName={agentName} />
         <ToolResults toolResults={message.toolResults} />
-        {/* The user branch above hands its media to `MessageContent`, which
-            renders it; every other role's `MessageContent` receives text only,
-            so its media is rendered here. The `isUser` guard is what keeps a
-            user-side attachment from rendering twice. `message.media` is
-            derived by the store alongside `toolResults`; the `mediaFromParts`
-            fallback covers a message that reached the renderer without going
-            through that merge. */}
+        {/* The media for a row that is not the user's own: the user branch
+            above hands its media to `MessageContent`, and every other role
+            either gets parts with the media filtered out
+            (`messageContentPartsFor`) or, for `system`, goes through
+            `SystemMessageContent` — so this is the one render.
+            `message.media` is derived by `buildMerged`; a freshly appended row
+            carries no message-level field, so the `mediaFromParts` fallback
+            covers the media part in `parts`. The `?.length` test is not `??`:
+            an empty `media` array is not nullish, so `??` would keep it and
+            drop an attachment whose only copy is that part. */}
         {!isUser && (
-          <ToolMedia media={message.media ?? mediaFromParts(message.parts)} />
+          <ToolMedia
+            media={
+              message.media?.length
+                ? message.media
+                : mediaFromParts(message.parts)
+            }
+          />
         )}
         <ApiLogsBlock
           apiLogs={message.apiLogs}
