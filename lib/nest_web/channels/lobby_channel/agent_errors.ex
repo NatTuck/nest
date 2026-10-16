@@ -8,6 +8,11 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
   require Logger
 
   alias Nest.Agents.PersistedAgent
+  alias Nest.Spaces.Space
+
+  # The `Nest.Sandbox.workspace_error/1` refusals a create can carry; each is
+  # its own reply code (see `create_payload/1`).
+  @workspace_reasons [:workspace_required, :workspace_missing, :workspace_under_tmp]
 
   @doc false
   def change_model_payload(name, reason) do
@@ -66,20 +71,22 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
   @doc false
   def create_payload(reason) do
     case reason do
-      :workspace_required ->
-        {:error, %{"reason" => "workspace_required"}}
-
-      :workspace_missing ->
-        {:error, %{"reason" => "workspace_missing"}}
-
-      :workspace_under_tmp ->
-        {:error, %{"reason" => "workspace_under_tmp"}}
+      # One arm for the workspace refusals: the reply code is the reason's own
+      # name, so listing them separately would be three copies of one rule.
+      workspace_reason when workspace_reason in @workspace_reasons ->
+        {:error, %{"reason" => to_string(workspace_reason)}}
 
       :blueprint_missing ->
         {:error, %{"reason" => "blueprint_missing"}}
 
       :missing_vocation ->
         {:error, %{"reason" => "missing_vocation"}}
+
+      # A `"none"`-backend space's agent name collides with a live agent's
+      # scratch directory in another `"none"` space — they share the host's
+      # `/tmp`. The other space is named so the message can say which one.
+      {:scratch_name_in_use, space_name} ->
+        {:error, %{"reason" => "scratch_name_in_use", "space_name" => space_name}}
 
       {:vocation_not_found, slug} ->
         # A blueprint whose root vocation no longer exists: stale blueprint
@@ -98,6 +105,14 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
       %Ecto.Changeset{data: %PersistedAgent{}, errors: errors} ->
         agent_changeset_payload(errors)
 
+      # A space changeset refused the row. The one field a client sends that
+      # `Space.create_changeset/2` validates by *value* is the sandbox backend,
+      # so name that rather than answering "failed to create" about a choice the
+      # user just made; the rest (a blank name, a taken slug) stays generic,
+      # like the other unshowable reasons here.
+      %Ecto.Changeset{data: %Space{}, errors: errors} ->
+        space_changeset_payload(errors)
+
       other ->
         Logger.error("Failed to create space: #{inspect(other)}")
         {:error, %{"reason" => "failed_to_create"}}
@@ -110,6 +125,16 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
   defp agent_changeset_payload(errors) do
     if Keyword.has_key?(errors, :name) do
       {:error, %{"reason" => "invalid_agent_name"}}
+    else
+      Logger.error("Failed to create space: #{inspect(errors)}")
+      {:error, %{"reason" => "failed_to_create"}}
+    end
+  end
+
+  # Same shape for the space changeset's one client-facing field.
+  defp space_changeset_payload(errors) do
+    if Keyword.has_key?(errors, :sandbox_backend) do
+      {:error, %{"reason" => "invalid_sandbox_backend"}}
     else
       Logger.error("Failed to create space: #{inspect(errors)}")
       {:error, %{"reason" => "failed_to_create"}}
