@@ -14,6 +14,7 @@ import {
   setNextJoinResult,
   setNextPushResult,
   captureNextPush,
+  simulateServerEvent,
 } from "./__mocks__/phoenix";
 import { useStore } from "./store";
 import {
@@ -132,5 +133,92 @@ describe("chat:sync drain", () => {
     ).toEqual([["chat:sync", { lastIndex: 1 }]]);
 
     pushSpy.mockRestore();
+  });
+
+  it("keeps draining when the request came from below the cached tail", async () => {
+    // The compaction path deliberately asks from the archived boundary, which
+    // sits below a tail the client already holds, so its reply is filled with
+    // rows the client already has. "This reply added nothing" there must not
+    // end the drain: the rows above the tail would never be fetched.
+    setNextJoinResult(TOPIC, {
+      autoInit: {
+        id: "agent-1",
+        status: "idle",
+        messageCount: 4,
+        messages: [row(4), row(5), row(6), row(7)],
+      },
+    });
+
+    joinAgent("agent-1", 1);
+
+    await vi.waitFor(() => {
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messages.map((m) => m.index)).toEqual([4, 5, 6, 7]);
+    });
+
+    // Boundary 3: the cache keeps 4..7, and the sync request goes out from 3.
+    setNextPushResult(TOPIC, "chat:sync", {
+      ok: {
+        messages: [row(4), row(5)],
+        partial: null,
+        status: "idle",
+        messageCount: 8,
+      },
+    });
+
+    const first = captureNextPush(TOPIC, "chat:sync");
+    simulateServerEvent(TOPIC, "chat:compaction", { marker: { index: 3 } });
+    expect(await first).toEqual({ lastIndex: 3 });
+
+    // Those rows were already cached, so the client asks again from its tail —
+    // and that request is the one that reaches the rows above it.
+    setNextPushResult(TOPIC, "chat:sync", {
+      ok: {
+        messages: [row(8), row(9), row(10), row(11)],
+        partial: null,
+        status: "idle",
+        messageCount: 8,
+      },
+    });
+
+    const second = captureNextPush(TOPIC, "chat:sync");
+    expect(await second).toEqual({ lastIndex: 7 });
+
+    await vi.waitFor(() => {
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messages.map((m) => m.index)).toEqual([
+        4, 5, 6, 7, 8, 9, 10, 11,
+      ]);
+    });
+  });
+
+  it("records the server's active row count on the cache", async () => {
+    // The count is what the drain compares against, and what the UI needs to
+    // show a progressive fill. A sync reply is one of its sources.
+    setNextJoinResult(TOPIC, {
+      autoInit: {
+        id: "agent-1",
+        status: "idle",
+        messageCount: 4,
+        messages: [],
+      },
+    });
+    setNextPushResult(TOPIC, "chat:sync", {
+      ok: {
+        messages: [row(0), row(1)],
+        partial: null,
+        status: "idle",
+        messageCount: 6,
+      },
+    });
+
+    const first = captureNextPush(TOPIC, "chat:sync");
+    joinAgent("agent-1", 1);
+    expect(await first).toEqual({ lastIndex: -1 });
+
+    await vi.waitFor(() => {
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messageCount).toBe(6);
+    });
   });
 });

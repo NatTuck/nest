@@ -84,6 +84,10 @@ export function agentCacheSetters(set) {
                 streaming: null,
                 partial: null,
                 lastIndex: -1,
+                // The active row count the server last reported. `null` until
+                // a payload carries one: the UI shows a progressive fill
+                // ("N of M") only when M is known.
+                messageCount: null,
                 status: "connecting",
                 error: null,
                 model: null,
@@ -161,6 +165,10 @@ export function agentCacheSetters(set) {
               streaming: streaming,
               partial: streaming,
               lastIndex,
+              // The active row count the server reports, kept so a reconnect
+              // does not throw away what a `chat:sync` reply established.
+              messageCount:
+                payload.messageCount ?? existing?.messageCount ?? null,
               status: "connected",
               agentState: payload.status || "idle",
               error: null,
