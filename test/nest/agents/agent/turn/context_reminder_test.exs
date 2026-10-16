@@ -2,10 +2,9 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
   @moduledoc """
   Tests for the mid-iteration context-usage reminder logic.
 
-  These are unit tests of `ContextReminder.highest_unannounced/3`,
-  `ContextReminder.build_message/2`, and `ContextReminder.format/4` — the
-  legacy verbose formatter, superseded by `notice_text/2` and reachable only
-  from this file. The in-process turn wiring (the context spec injected by the
+  These are unit tests of `ContextReminder.highest_unannounced/3` and
+  `ContextReminder.build_message/2`. The in-process turn wiring (the context
+  spec injected by the
   user-notice / response path, the set persisted on the Agent's
   `live.crossed_thresholds`, and the set cleared on successful
   compaction in `Machine.Compaction`) is covered by the regression
@@ -37,7 +36,6 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
   # 160k working budget, so the threshold numbers below all
   # correspond to working-budget percentages.
   @limit 200_000
-  @working_budget 160_000
 
   describe "highest_unannounced/3" do
     test "returns nil when usage is well under 25% of the working budget" do
@@ -90,49 +88,6 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
     test "returns nil when limit is zero or negative (defensive)" do
       assert ContextReminder.highest_unannounced(100, 0, MapSet.new()) == nil
       assert ContextReminder.highest_unannounced(100, -1, MapSet.new()) == nil
-    end
-  end
-
-  describe "format/3" do
-    test ":p25 includes the percentage, used, and working budget" do
-      text = ContextReminder.format(:p25, 40_000, @limit)
-      assert text =~ "25%"
-      assert text =~ "40000"
-      assert text =~ "#{@working_budget}"
-    end
-
-    test ":p50 includes the percentage, used, and working budget" do
-      text = ContextReminder.format(:p50, 80_000, @limit)
-      assert text =~ "50%"
-      assert text =~ "80000"
-      assert text =~ "#{@working_budget}"
-    end
-
-    test ":p75 includes the percentage, used, working budget, and a context tool recommendation" do
-      text = ContextReminder.format(:p75, 120_000, @limit)
-      assert text =~ "75%"
-      assert text =~ "120000"
-      assert text =~ "#{@working_budget}"
-      assert text =~ "context"
-      assert text =~ "compact"
-    end
-
-    test ":p75 with compact? false omits the tool recommendation" do
-      text = ContextReminder.format(:p75, 120_000, @limit, false)
-      assert text =~ "75%"
-      assert text =~ "120000"
-      assert text =~ "#{@working_budget}"
-      refute text =~ "compact"
-    end
-
-    test "format text uses the spec'd shape ('~used of ~effective token budget')" do
-      used = 1234
-      expected_effective = @working_budget
-
-      text = ContextReminder.format(:p50, used, @limit)
-
-      assert text ==
-               "Context usage is now at 50% (~#{used} of ~#{expected_effective} token budget)."
     end
   end
 

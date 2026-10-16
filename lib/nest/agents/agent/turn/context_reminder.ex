@@ -176,37 +176,12 @@ defmodule Nest.Agents.Agent.Turn.ContextReminder do
   carrying the `[nest notice]` marker (`NoticeTag.tag/1`). `compact?` picks the
   75% variant, as it does for the text itself.
 
-  It takes no counts because the decided wording carries none — the used and
-  effective token counts were the *legacy* verbose form's (`format/4`), and a
-  parameter that no longer reaches the row would read as if it still did.
+  It takes no counts because the decided wording carries none: a parameter that
+  no longer reaches the row would read as if it still did.
   """
   @spec build_message(atom(), boolean()) :: {:user, User.t()}
   def build_message(atom, compact? \\ true) do
     build_user_notice(NoticeTag.tag(notice_text(atom, compact?)), nil)
-  end
-
-  @doc false
-  @spec format(atom(), non_neg_integer(), pos_integer(), boolean()) :: String.t()
-  def format(atom, used, limit, compact? \\ true)
-
-  def format(:p25, used, limit, _compact?), do: percentage_text(25, used, limit)
-
-  def format(:p50, used, limit, _compact?), do: percentage_text(50, used, limit)
-
-  def format(:p75, used, limit, compact?) do
-    base = percentage_text(75, used, limit)
-
-    if compact? do
-      base <> " Consider compacting via the `context-compact` tool to free up room."
-    else
-      base
-    end
-  end
-
-  defp percentage_text(pct, used, limit) do
-    reserve = Reserve.compaction_reserve(limit)
-    effective = max(1, limit - reserve)
-    "Context usage is now at #{pct}% (~#{used} of ~#{effective} token budget)."
   end
 
   @doc """
