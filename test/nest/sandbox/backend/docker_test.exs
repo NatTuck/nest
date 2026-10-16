@@ -1,87 +1,22 @@
 defmodule Nest.Sandbox.Backend.DockerTest do
   @moduledoc """
-  The docker backend: the container's name and layout, the derived image, and the
-  lifecycle — all against a fake runner, so the suite never talks to a daemon.
+  What the docker backend *decides*: the container's name and layout, the derived
+  image, the binds it makes, the `run` arguments, classification, and staging.
 
-  `Docker.system/1` (the `System.cmd("docker", argv)` default) is the one line
-  these tests do not execute; `config/test.exs` installs an inert runner for the
-  test environment so nothing else can reach a daemon by accident.
+  `Docker.system/1` (the `System.cmd("docker", argv)` default) is the one line the
+  suite does not execute; `config/test.exs` installs an inert runner for the test
+  environment so nothing else can reach a daemon by accident. What the backend
+  then *asks the daemon to do* is in
+  `Nest.Sandbox.Backend.DockerLifecycleTest`.
   """
 
   use ExUnit.Case, async: true
 
+  import Nest.Sandbox.Backend.DockerTestHelpers
+
   alias Nest.Sandbox
-  alias Nest.Sandbox.Backend
   alias Nest.Sandbox.Backend.Docker
   alias Nest.Sandbox.Mounts
-
-  @space_id 7
-  @calls {__MODULE__, :docker_calls}
-
-  # ---- fixtures ----
-
-  defp mounts(workspace \\ nil, scratch \\ nil) do
-    Mounts.new(workspace, scratch, "docker", @space_id)
-  end
-
-  # A scratch directory with the real shape, so `Paths.scratch_root/1` derives the
-  # space dir rather than refusing it.
-  defp scratch do
-    Path.join([
-      "/tmp",
-      "nest-docker-test-#{System.unique_integer([:positive])}",
-      "space-#{@space_id}",
-      "agent-a"
-    ])
-  end
-
-  defp caps(opts \\ []) do
-    %{
-      "net" => Keyword.get(opts, :net, false),
-      "fs" => %{
-        "read" => ["/"],
-        "write" => Keyword.get(opts, :write, ["/tmp", ":workspace"])
-      }
-    }
-  end
-
-  defp caps_with(extra) do
-    Map.put(caps(), "fs", Map.merge(caps()["fs"], extra))
-  end
-
-  defp caps_with_packages(packages) do
-    Map.put(caps(), "sandbox", %{"packages" => packages})
-  end
-
-  # ---- the fake daemon ----
-
-  # Every runner call in these tests is synchronous and from the test process, so
-  # the process dictionary is the whole record of what the daemon was asked to do
-  # — which is the observable these tests assert on.
-  defp scripted_runner(answers) do
-    Process.put(@calls, [])
-
-    fn argv ->
-      Process.put(@calls, [argv | Process.get(@calls, [])])
-
-      key = Enum.find(Map.keys(answers), :default, &List.starts_with?(argv, &1))
-      Map.get(answers, key, {"", 0})
-    end
-  end
-
-  # A runner whose answer may depend on how many calls came before it, for the
-  # races (create/build refused because someone else got there first).
-  defp sequenced_runner(fun) do
-    Process.put(@calls, [])
-
-    fn argv ->
-      seen = Process.get(@calls, [])
-      Process.put(@calls, [argv | seen])
-      fun.(argv, length(seen) + 1)
-    end
-  end
-
-  defp calls, do: Enum.reverse(Process.get(@calls, []))
 
   # ---- container identity ----
 
@@ -90,7 +25,7 @@ defmodule Nest.Sandbox.Backend.DockerTest do
       write = scratch()
 
       assert {:ok, name} = Docker.container_name(mounts("/ws", write), caps(), [])
-      assert name =~ ~r/\Anest-space-#{@space_id}-[0-9a-f]{8}\z/
+      assert name =~ ~r/\Anest-space-#{space_id()}-#{Elixir.System.pid()}-[0-9a-f]{8}\z/
 
       # Same layout, same name: this is what makes two agents share a container.
       assert {:ok, ^name} = Docker.container_name(mounts("/ws", write), caps(), [])
@@ -114,14 +49,24 @@ defmodule Nest.Sandbox.Backend.DockerTest do
       # container's mounts are fixed when it is created, so `docker start`ing the
       # old one would leave its `/tmp` pointing at the *previous* BEAM's scratch
       # directory — a directory this BEAM never writes to, which would make every
-      # staged script unreadable inside the container. A fresh container is the
-      # correct answer, and the old one goes when the space is archived.
-      this_beam = Path.join(["/tmp", "nest-999999", "space-#{@space_id}", "agent-a"])
-      next_beam = Path.join(["/tmp", "nest-1000000", "space-#{@space_id}", "agent-a"])
+      # staged script unreadable inside the container. The superseded container is
+      # swept on the next create for the space (see the sweep tests below).
+      this_beam = Path.join(["/tmp", "nest-999999", "space-#{space_id()}", "agent-a"])
+      next_beam = Path.join(["/tmp", "nest-1000000", "space-#{space_id()}", "agent-a"])
 
       assert {:ok, first} = Docker.container_name(mounts("/ws", this_beam), caps(), [])
       assert {:ok, second} = Docker.container_name(mounts("/ws", next_beam), caps(), [])
       refute second == first
+    end
+
+    test "carries the BEAM pid, and the pid moves the name" do
+      write = scratch()
+
+      assert {:ok, name} = Docker.container_name(mounts("/ws", write), caps(), [], "111")
+      assert name == "nest-space-#{space_id()}-111-" <> hash_suffix(name)
+
+      assert {:ok, other} = Docker.container_name(mounts("/ws", write), caps(), [], "222")
+      refute other == name
     end
 
     test "refuses mounts that belong to no space" do
@@ -272,286 +217,6 @@ defmodule Nest.Sandbox.Backend.DockerTest do
 
   # ---- the command line ----
 
-  describe "command/3" do
-    test "is docker exec with the container, stdin and the staged script" do
-      assert {:ok, %{command: command, cd: nil}} =
-               Docker.command(mounts("/ws", scratch()), caps(), "/tmp/.cmds/nest-cmd-1.sh")
-
-      assert command =~
-               ~r/\Adocker exec -i nest-space-7-[0-9a-f]{8} \/bin\/bash '\/tmp\/\.cmds\/nest-cmd-1\.sh'\z/
-    end
-
-    test "escapes a script path that needs it" do
-      assert {:ok, %{command: command}} =
-               Docker.command(mounts("/ws", scratch()), caps(), "/tmp/.cmds/it's.sh")
-
-      assert command =~ ~r/'\/tmp\/\.cmds\/it'\\''s\.sh'\z/
-    end
-
-    test "reports a container that cannot be created instead of returning one" do
-      # The image is there (the default answer), `run` is refused, and the
-      # re-inspect still says missing — so this is a real failure, not a race.
-      runner =
-        scripted_runner(%{["inspect"] => {"No such object\n", 1}, ["run"] => {"boom\n", 1}})
-
-      assert {:error, reason} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      assert reason =~ "docker run failed"
-      assert reason =~ "boom"
-    end
-  end
-
-  # ---- the lifecycle ----
-
-  describe "ensure_container/3" do
-    test "reuses a running container without touching the image" do
-      runner = scripted_runner(%{["inspect"] => {"running\n", 0}})
-      write = scratch()
-
-      assert {:ok, name} = Docker.ensure_container(mounts("/ws", write), caps(), runner: runner)
-      assert {:ok, ^name} = Docker.ensure_container(mounts("/ws", write), caps(), runner: runner)
-
-      # Two inspects, no create: that is what "shared by the space" means.
-      assert calls() == [
-               ["inspect", "--format", "{{.State.Status}}", name],
-               ["inspect", "--format", "{{.State.Status}}", name]
-             ]
-    end
-
-    test "starts an existing but stopped container" do
-      runner = scripted_runner(%{["inspect"] => {"exited\n", 0}, ["start"] => {"", 0}})
-
-      assert {:ok, name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      assert calls() == [
-               ["inspect", "--format", "{{.State.Status}}", name],
-               ["start", name]
-             ]
-    end
-
-    test "creates the container when it is missing, building the image first" do
-      runner =
-        scripted_runner(%{
-          ["inspect"] => {"No such object\n", 1},
-          ["image"] => {"No such image\n", 1},
-          ["build"] => {"", 0},
-          ["run"] => {"container-id\n", 0}
-        })
-
-      write = scratch()
-
-      assert {:ok, name} = Docker.ensure_container(mounts("/ws", write), caps(), runner: runner)
-
-      tag = Docker.image_tag(caps())
-
-      assert [
-               ["inspect", "--format", "{{.State.Status}}", ^name],
-               ["image", "inspect", ^tag],
-               ["build", "-t", ^tag, context],
-               ["run", "-d", "--name", ^name | run_args]
-             ] = calls()
-
-      assert context =~ ~r|/nest-docker-build-\d+\z|
-      assert run_args == Docker.run_args(mounts("/ws", write), caps(), tag, [])
-    end
-
-    test "skips the build when the image already exists" do
-      runner =
-        scripted_runner(%{
-          ["inspect"] => {"No such object\n", 1},
-          ["image"] => {"", 0},
-          ["run"] => {"", 0}
-        })
-
-      assert {:ok, _name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      refute Enum.any?(calls(), &match?(["build" | _], &1))
-    end
-
-    test "adopts a container a racing agent created" do
-      runner =
-        sequenced_runner(fn argv, n ->
-          case {argv, n} do
-            {["inspect" | _], 1} -> {"No such object\n", 1}
-            {["image" | _], _} -> {"", 0}
-            {["run" | _], _} -> {"Conflict. The container name is already in use\n", 125}
-            {["inspect" | _], _} -> {"running\n", 0}
-          end
-        end)
-
-      assert {:ok, name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      assert name =~ ~r/\Anest-space-#{@space_id}-/
-    end
-
-    test "adopts an image a racing agent built" do
-      runner =
-        sequenced_runner(fn argv, n ->
-          case {argv, n} do
-            {["inspect" | _], 1} -> {"No such object\n", 1}
-            {["image" | _], 2} -> {"No such image\n", 1}
-            {["build" | _], _} -> {"", 1}
-            {["image" | _], _} -> {"", 0}
-            {["run" | _], _} -> {"", 0}
-          end
-        end)
-
-      assert {:ok, _name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-    end
-
-    test "keeps a long daemon message bounded" do
-      # A failed build prints the daemon's own diagnosis, which can be very long;
-      # the agent gets the beginning of it, which is where the cause is.
-      runner =
-        scripted_runner(%{
-          ["inspect"] => {"No such object\n", 1},
-          ["image"] => {"No such image\n", 1},
-          ["build"] => {String.duplicate("E: no\n", 500), 100}
-        })
-
-      assert {:error, reason} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      assert reason =~ "docker build failed"
-      assert String.length(reason) < 600
-      assert String.ends_with?(reason, "…")
-    end
-
-    test "reports a failed image build rather than a half-built sandbox" do
-      runner =
-        scripted_runner(%{
-          ["inspect"] => {"No such object\n", 1},
-          ["image"] => {"No such image\n", 1},
-          ["build"] => {"E: Unable to locate package nodejs\n", 100}
-        })
-
-      assert {:error, reason} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      assert reason =~ "docker build failed"
-      assert reason =~ "Unable to locate package nodejs"
-    end
-
-    test "leaves no build context behind" do
-      runner =
-        scripted_runner(%{
-          ["inspect"] => {"No such object\n", 1},
-          ["image"] => {"", 0},
-          ["run"] => {"", 0}
-        })
-
-      assert {:ok, _name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      assert Path.wildcard(Path.join(System.tmp_dir!(), "nest-docker-build-*")) == []
-    end
-
-    test "refuses mounts that belong to no space" do
-      assert {:error, reason} =
-               Docker.ensure_container(Mounts.new("/ws", nil, "docker"), caps(),
-                 runner: fn _argv -> {"", 0} end
-               )
-
-      assert reason =~ "needs the space"
-    end
-  end
-
-  describe "remove_space/2" do
-    test "removes only this space's containers, by name" do
-      other = "nest-space-#{@space_id + 1}-deadbeef"
-
-      runner =
-        scripted_runner(%{
-          ["ps"] => {"nest-space-#{@space_id}-aaaaaaaa\n#{other}\nnot-ours\n", 0},
-          ["rm"] => {"", 0}
-        })
-
-      assert :ok = Docker.remove_space(@space_id, runner: runner)
-
-      # The filter narrows the list and the pattern decides: another space's
-      # container, and anything else the daemon happens to match, is left alone.
-      assert calls() == [
-               [
-                 "ps",
-                 "-a",
-                 "--filter",
-                 "name=#{Docker.container_prefix(@space_id)}",
-                 "--format",
-                 "{{.Names}}"
-               ],
-               ["rm", "-f", "nest-space-#{@space_id}-aaaaaaaa"]
-             ]
-    end
-
-    test "logs a daemon failure and does not raise" do
-      runner = scripted_runner(%{["ps"] => {"Cannot connect to the Docker daemon\n", 1}})
-
-      # A failure here must not break the archive or delete that asked for it, so
-      # it is logged and swallowed. Inclusion only: `capture_log` is not
-      # process-scoped, so an absence assertion would test nothing.
-      log =
-        ExUnit.CaptureLog.capture_log(fn ->
-          assert :ok = Docker.remove_space(@space_id, runner: runner)
-        end)
-
-      assert log =~ "could not list containers for space #{@space_id}"
-      assert log =~ "Cannot connect to the Docker daemon"
-    end
-
-    test "logs a container that will not go away" do
-      runner =
-        scripted_runner(%{
-          ["ps"] => {"nest-space-#{@space_id}-aaaaaaaa\n", 0},
-          ["rm"] => {"Error response from daemon: container is paused\n", 1}
-        })
-
-      log =
-        ExUnit.CaptureLog.capture_log(fn ->
-          assert :ok = Docker.remove_space(@space_id, runner: runner)
-        end)
-
-      assert log =~ "could not remove container nest-space-#{@space_id}-aaaaaaaa"
-    end
-  end
-
-  # ---- classification and staging ----
-
-  describe "classify/2" do
-    test "calls the daemon's own failures a broken sandbox" do
-      for stderr <- [
-            "docker: Error response from daemon: No such container: nest-space-7-aaaaaaaa",
-            "Error response from daemon: Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
-            "container abc is not running"
-          ] do
-        assert Backend.classify(mounts(), stderr) == :sandbox_setup_failed
-      end
-    end
-
-    test "leaves the command's own failures to the errno table" do
-      assert Backend.classify(mounts(), "cat: /x: No such file or directory") == :enoent
-      assert Backend.classify(mounts(), "cat: /x: Permission denied") == :read_permission_denied
-      assert Backend.classify(mounts(), "sh: 1: nope: not found") == :read_failed
-      assert Backend.classify(mounts(), "[Command timed out after 5ms]") == :read_timeout
-    end
-  end
-
-  describe "staging" do
-    test "stages where the container's /tmp reaches" do
-      write = scratch()
-      mounts = mounts("/ws", write)
-
-      assert Docker.stage_dir(mounts) == Path.join(Path.dirname(write), ".cmds")
-      assert Docker.stage_dir_sandbox(mounts) == "/tmp/.cmds"
-      assert Backend.stage_dir(mounts) == Docker.stage_dir(mounts)
-      assert Backend.display_name(mounts) == "docker exec"
-    end
-  end
-
   # ---- bwrap's own argument list, read back as binds ----
 
   defp bwrap_binds(args), do: do_bwrap_binds(args, [])
@@ -568,4 +233,6 @@ defmodule Nest.Sandbox.Backend.DockerTest do
   defp readable_roots(caps) do
     caps |> Sandbox.readable_roots() |> Enum.map(&{&1, &1, "ro"})
   end
+
+  defp hash_suffix(name), do: name |> String.split("-") |> List.last()
 end
