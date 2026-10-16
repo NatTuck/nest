@@ -39,12 +39,19 @@ defmodule Nest.Agents.Agent.TmpSpace do
   #
   # So `create/3` writes `#{@marker}` into a `"none"` agent's scratch, and every
   # removal requires it: `cleanup/3`, `remove_stale/3`. A directory without the
-  # marker is never removed. That is the safe direction, and it has two honest
-  # residuals: a pre-existing `/tmp/X11-unix`, or a `"none"` scratch created
-  # before this change, is left alone forever; and an agent that deletes its own
-  # marker leaves a stale directory behind. Only `"none"` needs the marker —
-  # a bwrap or docker scratch is under `nest-<BEAM pid>/space-<id>/`, which
-  # already says whose it is.
+  # marker is never removed, and `create/3` will not adopt one either — it raises
+  # rather than stamp a marker into something that is not Nest's, which is what
+  # would otherwise hand the next `cleanup/3` a licence to delete it. The name
+  # boundary refuses such a name before any of that (`PreSpawn.pre_spawn/1`'s
+  # `{:scratch_path_taken, path}`), and this raise is the backstop for a caller
+  # that skipped the boundary.
+  #
+  # Two honest residuals: a `"none"` scratch created before this change has no
+  # marker and is therefore never removed (and its name cannot be reused, because
+  # `create/3` will not adopt it) — clear it by hand; and an agent that deletes
+  # its own marker leaves a directory in the same state. Only `"none"` needs the
+  # marker — a bwrap or docker scratch is under
+  # `nest-<BEAM pid>/space-<id>/`, which already says whose it is.
   #
   # ## Space-directory lifecycle
   #
@@ -100,17 +107,55 @@ defmodule Nest.Agents.Agent.TmpSpace do
   @spec create(integer(), String.t(), String.t()) :: String.t()
   def create(space_id, agent_name, backend) do
     path = agent_dir(space_id, agent_name, backend)
-    File.mkdir_p!(path)
-    write_marker(path, backend)
-    Logger.info("Created tmp space for agent #{space_id}/#{agent_name}: #{path}")
-    path
+
+    # A `"none"` scratch is the host's own `/tmp/<name>`, so `mkdir_p!` would
+    # silently *adopt* whatever is already there — including exactly the
+    # directories the marker exists to protect (another BEAM's `nest-<pid>`, a
+    # host `X11-unix`). Stamping the marker into one would hand the next
+    # `cleanup/3` a licence to delete it, so refuse instead. A directory Nest
+    # marked earlier still re-opens idempotently, which is what re-creating a
+    # stopped agent's scratch needs.
+    if claimable?(path, backend) do
+      File.mkdir_p!(path)
+      write_marker(path, backend)
+      Logger.info("Created tmp space for agent #{space_id}/#{agent_name}: #{path}")
+      path
+    else
+      raise ArgumentError,
+            "refusing to use #{inspect(path)} as a scratch directory: " <>
+              "it exists and is not Nest's"
+    end
   end
+
+  @doc """
+  Write Nest's scratch marker into `path`.
+
+  `create/3` does this as part of creating the directory. This is for the one
+  other creator — `Nest.Sandbox.Mounts.ensure_scratch!/1`, which stages a
+  command's transcript and so has to make the directory it stages into: a
+  `"none"` scratch it made without the marker would be one no later `cleanup/3`
+  could ever remove (see the moduledoc).
+  """
+  @spec mark!(String.t(), String.t()) :: :ok
+  def mark!(path, backend), do: write_marker(path, backend)
 
   # A `"none"` scratch is the host's own `/tmp/<name>`, so it has to say it is
   # Nest's before anything will remove it (see the moduledoc). The other backends
   # need nothing: their paths carry `nest-<BEAM pid>/space-<id>`.
   defp write_marker(path, "none"), do: File.write!(Path.join(path, @marker), "")
   defp write_marker(_path, _backend), do: :ok
+
+  @doc """
+  Whether `create/3` may use `path` as a scratch directory: it is free, or
+  already carries Nest's marker.
+
+  `false` means something is there that Nest did not put there. The name boundary
+  refuses that case by name (`PreSpawn.pre_spawn/1`'s
+  `{:scratch_path_taken, path}`); this is the same question, for the callers that
+  have to ask it without going through the boundary.
+  """
+  @spec claimable?(String.t(), String.t()) :: boolean()
+  def claimable?(path, backend), do: not File.exists?(path) or marked?(path, backend)
 
   @doc """
   Remove the agent's own scratch directory, leaving the space directory
@@ -176,9 +221,19 @@ defmodule Nest.Agents.Agent.TmpSpace do
 
   `nil` scratch for a name that cannot be a path component: such an agent is
   refused by its own changeset, and nothing composes a prompt for it.
+
+  The directory is made on demand — by `create/3` when the agent starts, or by
+  `Nest.Sandbox.Mounts.ensure_scratch!/1` when the prompt's read is staged, which
+  happens first. Both mark what they make.
   """
   @spec prompt_mounts(String.t() | nil, integer(), String.t(), String.t()) :: Mounts.t()
   def prompt_mounts(workspace, space_id, name, backend) do
+    # This *names* the directory; it does not make it. The two creators are
+    # `create/3` (the start path) and `Nest.Sandbox.Mounts.ensure_scratch!/1`
+    # (staging, which is what the prompt's `AGENTS.md` read does), and both mark
+    # what they make — see `mark!/2`. Keeping this pure matters: a scratch path
+    # that cannot be made must fail where the agent starts, not as a raise out of
+    # the caller that is merely composing a prompt.
     scratch = if single_segment?(name), do: agent_dir(space_id, name, backend)
     Mounts.new(workspace, scratch, backend, space_id)
   end

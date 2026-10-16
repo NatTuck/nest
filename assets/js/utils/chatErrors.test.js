@@ -106,6 +106,26 @@ describe("describeCreateError", () => {
     expect(message).toMatch(/\/tmp/);
   });
 
+  it("names the path when the scratch path is already something else", () => {
+    const message = describeCreateError({
+      reason: "scratch_path_taken",
+      path: "/tmp/X11-unix",
+    });
+
+    expect(message).toContain("/tmp/X11-unix");
+    // The answer is another name, not a retry.
+    expect(message).toMatch(/another agent name/i);
+  });
+
+  it("still says something useful when the taken path is missing", () => {
+    // The server always sends it, but a message with "undefined" in it would be
+    // worse than a vaguer sentence.
+    const message = describeCreateError({ reason: "scratch_path_taken" });
+
+    expect(message).toMatch(/scratch path/i);
+    expect(message).not.toContain("undefined");
+  });
+
   it("words the workspace refusals exactly as the edit-agent path does", () => {
     for (const reason of [
       "workspace_required",

@@ -196,7 +196,10 @@ to receive the status, and the push never arrives at all — so the flake was a
 race, and a longer timeout would not have fixed it.
 
 Fixed by waiting for both sessions' `space:created` frames before broadcasting
-the status. That frame is pushed *after* the reconcile, on the same topic and in
-the same process, so two of them is exactly the barrier; the count is what
-attributes a frame to a session, since both sockets push into the test's one
-mailbox. The 1000 ms waits are unchanged.
+the status. The guarantee is same-sender FIFO on the **per-user** topic: the
+reconcile is triggered by the `{:spaces_changed, _}` frame, and `space:created`
+is published to that same topic by the same sender afterwards, so a session that
+has pushed `space:created` has already handled `{:spaces_changed, _}` and is
+subscribed. Two frames, because both sockets push into the test's one mailbox
+and the count is the only thing that attributes a frame to a session. The 1000 ms
+waits are unchanged.
