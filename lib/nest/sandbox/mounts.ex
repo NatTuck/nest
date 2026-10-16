@@ -10,9 +10,10 @@ defmodule Nest.Sandbox.Mounts do
   none":
 
     * `space_id` — the space this call belongs to. A backend that keeps an
-      environment outside the BEAM needs it (docker's container name must
-      survive a BEAM restart, so it keys on the space rather than on the
-      scratch directory, whose path embeds the BEAM's pid).
+      environment outside the BEAM names that environment after the space
+      (docker's container is `nest-space-<space_id>-…`), and the space id cannot
+      be recovered from either directory: the scratch path embeds the BEAM's pid
+      and reading an id back out of it would be a reverse mapping.
     * `workspace` — bound at its own path when the mode's caps grant
       `":workspace"`, and the base a relative tool path resolves against.
     * `scratch` — the agent's own scratch directory. Its *parent* is bound at
@@ -123,12 +124,14 @@ defmodule Nest.Sandbox.Mounts do
   The mounts for a call that binds `workspace` and `scratch` on `backend` in
   `space_id`.
 
-  The space is what a backend that keeps an environment outside the BEAM keys on
-  — the docker backend names one container per `(space, caps signature)`, and
-  that name has to survive a BEAM restart, so it cannot be derived from the
-  scratch directory (whose path embeds the BEAM's pid). A call that belongs to
-  no space passes `nil` and gets an error from a backend that needs one, rather
-  than a container shared by accident.
+  The space is what a backend that keeps an environment outside the BEAM names
+  that environment after — the docker backend's container is
+  `nest-space-<space_id>-<BEAM pid>-<layout hash>` — and the space id cannot be
+  recovered from either directory: the scratch path embeds the BEAM's pid, and
+  reading an id back out of a path would be a reverse mapping this codebase
+  deliberately does not have. A call that belongs to no space passes `nil` and
+  gets an error from a backend that needs one, rather than a container shared by
+  accident.
   """
   @spec new(String.t() | nil, String.t() | nil, String.t(), integer() | nil) :: t()
   def new(workspace, scratch, backend, space_id) do

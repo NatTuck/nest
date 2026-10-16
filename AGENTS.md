@@ -49,10 +49,13 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   read-only mask). Say all of that plainly wherever a backend is offered or
   documented; never imply otherwise. `notes/sandbox-backends.md` has the full
   table.
-- A `docker` space's container is keyed on `(space, caps signature)`, never on
-  the space alone: caps are per agent, and one container's binds and network
+- A `docker` space's container is keyed on `(space, BEAM, caps signature)`, never
+  on the space alone: caps are per agent, and one container's binds and network
   namespace cannot vary per `docker exec`, so a union would silently hand a
-  read-only mode a writable workspace.
+  read-only mode a writable workspace. The BEAM's pid is in the name because the
+  layout includes the scratch root (which embeds it), so a restart gets a fresh
+  container — and the create path sweeps the ones whose BEAM is gone, because
+  otherwise every restart would leave one behind.
 - Do **not** add a host fast path for any of them. There is no second spelling
   of a path an agent uses: the backend plus the two directories the sandbox
   binds — the workspace and the agent's own scratch directory — live in one

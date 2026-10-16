@@ -28,7 +28,7 @@ defmodule Nest.Sandbox.Backend.Docker do
   every mode's caps would silently hand a read-only mode a writable workspace,
   which is exactly the silent capability weakening this codebase forbids. So each
   distinct caps signature gets its own container, named
-  `nest-space-<space_id>-<hash>`:
+  `nest-space-<space_id>-<BEAM pid>-<hash>`:
 
   * the hash covers exactly what the container's layout depends on — `net`, the
     bind list with its rw/ro flags, the workspace path, and the HPU device paths;
@@ -39,8 +39,28 @@ defmodule Nest.Sandbox.Backend.Docker do
   `.nest`), so the two names are keyed differently on purpose.
 
   The container is created lazily on first use, `docker start`ed when it exists
-  but is stopped (which is what lets it survive a BEAM restart), and removed when
-  the space is archived or deleted (`Nest.Spaces` → `Nest.Sandbox.Backend.remove_space/3`).
+  but is stopped, and removed when the space is archived or deleted
+  (`Nest.Spaces` → `Nest.Sandbox.Backend.remove_space/3`).
+
+  ## A container does *not* outlive its BEAM
+
+  The layout includes the scratch bind, whose source is the space scratch dir —
+  `/tmp/nest-<BEAM pid>/space-<id>`. A restart is therefore a different layout, and
+  it gets a different container, on purpose: a container's mounts are fixed when
+  it is created, so reusing one would leave its `/tmp` pointing at the *previous*
+  BEAM's scratch directory, a directory this BEAM never writes to, which would
+  make every staged script unreadable inside the container.
+
+  The superseded container does not leak: the next create for that space sweeps
+  every container of the space whose BEAM is gone (`sweep_dead_beams/2`), which is
+  what the pid segment in the name is for. A *live* BEAM's container is left
+  alone — two BEAMs can share a space id — and so is any name that is not this
+  space's exact format.
+
+  So "one container for the life of the space" holds within a BEAM, not across
+  restarts. Making it hold across restarts would mean a scratch root that does not
+  embed the BEAM's pid, i.e. a change to `Nest.Agents.Agent.TmpSpace.space_dir/2`,
+  which is a deliberate design and out of scope here.
 
   ## The derived image
 
@@ -56,7 +76,7 @@ defmodule Nest.Sandbox.Backend.Docker do
   ## Testing
 
   Everything that decides *what* to run is pure and asserted exactly
-  (`container_name/3`, `image_tag/1`, `dockerfile/1`, `bind_specs/2`,
+  (`container_name/4`, `image_tag/1`, `dockerfile/1`, `bind_specs/2`,
   `run_args/4`). The lifecycle takes an injectable `:runner` (`fn argv ->
   {output, exit_code} end`) so create / reuse / start-if-stopped / remove are all
   tested against a fake; `system/1`, the `System.cmd` default, is the only line
@@ -174,7 +194,7 @@ defmodule Nest.Sandbox.Backend.Docker do
       case status(name, runner) do
         :running -> {:ok, name}
         :stopped -> start(name, runner)
-        :missing -> create(name, mounts, caps, devices, runner)
+        :missing -> create(mounts, caps, devices, name, runner)
       end
     end
   end
@@ -213,7 +233,7 @@ defmodule Nest.Sandbox.Backend.Docker do
       {output, 0} ->
         # `--filter name=` is a substring match, so the filter narrows the list
         # and the pattern decides: only this space's own containers, whose names
-        # are exactly `<prefix><8 hex>`.
+        # are exactly `<prefix><pid>-<8 hex>`.
         {:ok, output |> String.split("\n", trim: true) |> Enum.filter(&this_space?(&1, space_id))}
 
       {output, code} ->
@@ -222,11 +242,20 @@ defmodule Nest.Sandbox.Backend.Docker do
     end
   end
 
-  defp this_space?(name, space_id) do
-    Regex.match?(
-      ~r/\A#{Regex.escape(container_prefix(space_id))}[0-9a-f]{#{@name_hash_bytes * 2}}\z/,
-      name
-    )
+  defp this_space?(name, space_id), do: beam_pid_of(name, space_id) != :error
+
+  # The BEAM pid segment of a container name that is exactly this space's format,
+  # or `:error` for anything else — another space's container, an older naming
+  # scheme, or a name someone made up. Only a name this matches is ever removed.
+  defp beam_pid_of(name, space_id) do
+    case Regex.run(container_pattern(space_id), name, capture: :all_but_first) do
+      [os_pid] -> {:ok, os_pid}
+      _other -> :error
+    end
+  end
+
+  defp container_pattern(space_id) do
+    ~r/\A#{Regex.escape(container_prefix(space_id))}(\d+)-[0-9a-f]{#{@name_hash_bytes * 2}}\z/
   end
 
   defp remove_container(name, runner) do
@@ -249,8 +278,9 @@ defmodule Nest.Sandbox.Backend.Docker do
   end
 
   # `exited`, `created` and `paused` all mean "there is a container and it is not
-  # serving": `docker start` brings it back *with its binds*, which is what lets
-  # it survive a BEAM restart.
+  # serving": `docker start` brings it back *with the binds it was created with*,
+  # which is why only the BEAM whose scratch root those binds name can use it —
+  # see `sweep_dead_beams/2`.
   defp status_of("running"), do: :running
   defp status_of(_other), do: :stopped
 
@@ -261,9 +291,58 @@ defmodule Nest.Sandbox.Backend.Docker do
     end
   end
 
-  defp create(name, mounts, caps, devices, runner) do
+  defp create(mounts, caps, devices, name, runner) do
+    # Reclaim this space's containers whose BEAM is gone, before making another
+    # one. See `sweep_dead_beams/2` for why they are there at all.
+    sweep_dead_beams(Mounts.space_id(mounts), runner)
+
     with {:ok, image} <- ensure_image(caps, runner) do
       run_container(name, mounts, caps, devices, image, runner)
+    end
+  end
+
+  # Remove this space's containers left by a BEAM that is no longer running.
+  #
+  # The scratch root is part of the layout, and its path embeds the BEAM's OS pid
+  # (`Nest.Agents.Agent.TmpSpace`), so a restart is a *different* layout and gets
+  # a fresh container: a container's mounts are fixed when it is created, and
+  # reusing one would leave its `/tmp` pointing at the previous BEAM's scratch
+  # directory, which this BEAM never writes to. The superseded container would
+  # otherwise sit there — running `sleep infinity`, holding nothing useful —
+  # until the space is archived or deleted, which on a dev loop means one per
+  # restart. This is the only place that reclaims them.
+  #
+  # Liveness is `/proc/<pid>`, which is Linux-specific — fine, because
+  # `Nest.Application.check_system_dependencies!/0` already requires bwrap, i.e.
+  # Linux. A *live* pid is deliberately kept: two BEAMs can share a space id (a
+  # dev BEAM and a prod BEAM on one daemon, same serial), and neither may remove
+  # the other's container. Only a name in this space's own format is ever a
+  # candidate, so another space's containers and anything unrecognised are left
+  # alone.
+  defp sweep_dead_beams(space_id, runner) do
+    case list_containers(space_id, runner) do
+      {:ok, names} ->
+        Enum.each(names, &sweep_one(&1, space_id, runner))
+
+      {:error, reason} ->
+        # Opportunistic cleanup: the `docker run` this precedes reports the same
+        # daemon failure properly, so this is a debugging line rather than a
+        # second report of it.
+        Logger.debug("#{@log_tag} #{reason}")
+    end
+
+    :ok
+  end
+
+  defp sweep_one(name, space_id, runner) do
+    with {:ok, os_pid} <- beam_pid_of(name, space_id),
+         true <- os_pid != beam_pid() and not File.exists?("/proc/#{os_pid}") do
+      Logger.info("#{@log_tag} removing #{name}: BEAM #{os_pid} is gone")
+      remove_container(name, runner)
+    else
+      # This BEAM's own container, a live BEAM's, or a name that is not this
+      # space's format: not ours to remove.
+      _kept -> :ok
     end
   end
 
@@ -336,19 +415,27 @@ defmodule Nest.Sandbox.Backend.Docker do
   # ---- what the container is ----
 
   @doc """
-  The container's name: `nest-space-<space_id>-<hash of the layout>`.
+  The container's name: `nest-space-<space_id>-<BEAM pid>-<hash of the layout>`.
 
   `{:error, reason}` when the mounts carry no space: a container shared by
   accident is worse than a clear refusal, and only a caller that built its value
   without one can hit this.
+
+  The BEAM's OS pid is a segment because the layout contains the scratch root,
+  whose path embeds it — a restart is a different layout, and its container has
+  to be a different container (see `sweep_dead_beams/2`). It is also what lets
+  the sweep tell a dead BEAM's container from a live one's.
+
+  `os_pid` is threaded for the tests, which have one BEAM and could otherwise not
+  exercise two.
   """
-  @spec container_name(Mounts.t(), map() | nil, [String.t()]) ::
+  @spec container_name(Mounts.t(), map() | nil, [String.t()], String.t()) ::
           {:ok, String.t()} | {:error, String.t()}
-  def container_name(mounts, caps, devices) do
+  def container_name(mounts, caps, devices, os_pid \\ nil) do
     case Mounts.space_id(mounts) do
       id when is_integer(id) ->
         signature = {net?(caps), bind_specs(mounts, caps), Mounts.workspace(mounts), devices}
-        {:ok, "#{container_prefix(id)}#{hash(signature, @name_hash_bytes)}"}
+        {:ok, name(id, os_pid || beam_pid(), hash(signature, @name_hash_bytes))}
 
       _other ->
         {:error, "A docker sandbox needs the space it belongs to"}
@@ -358,6 +445,12 @@ defmodule Nest.Sandbox.Backend.Docker do
   @doc "The prefix every container of `space_id` starts with."
   @spec container_prefix(integer()) :: String.t()
   def container_prefix(space_id), do: "#{@name_prefix}#{space_id}-"
+
+  defp name(space_id, os_pid, hash), do: "#{container_prefix(space_id)}#{os_pid}-#{hash}"
+
+  # The BEAM's OS pid, spelled explicitly so an alias for `Nest.Messages.System`
+  # (as several agent modules have) could never change what this means.
+  defp beam_pid, do: Elixir.System.pid()
 
   @doc """
   The tag of the image derived for `caps`' package set.

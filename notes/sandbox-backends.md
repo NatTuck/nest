@@ -50,26 +50,42 @@ which is exactly the silent capability weakening this codebase forbids.
 
 So each distinct caps signature gets its own container:
 
-* named `nest-space-<space_id>-<8 hex>`, where the hash covers `net`, the bind
-  list with its rw/ro flags, the workspace path, and the HPU device paths — i.e.
-  exactly what the container's layout depends on;
-* created lazily on first use, `docker start`ed when it exists but is stopped (so
-  it survives a BEAM restart), and shared by every agent that resolves to the
-  same signature. In practice a space has one or two.
+* named `nest-space-<space_id>-<BEAM pid>-<8 hex>`, where the hash covers `net`,
+  the bind list with its rw/ro flags, the workspace path, and the HPU device
+  paths — i.e. exactly what the container's layout depends on;
+* created lazily on first use, `docker start`ed when it exists but is stopped, and
+  shared by every agent that resolves to the same signature. In practice a space
+  has one or two.
 
-The container name keys on the **space id**, not on the scratch directory: the
-scratch path embeds the BEAM's OS pid, so it changes on every restart, and a
-container name that changed with it would leak a container per restart. That is
-also why `Nest.Sandbox.Mounts` carries the space id.
+The name carries the **BEAM's OS pid** as well as the space id, because the layout
+includes the scratch bind — the space scratch dir is `/tmp/nest-<BEAM pid>/space-<id>`.
+A restart is therefore a different layout, and it gets a different container, on
+purpose: a container's mounts are fixed when it is created, so `docker start`ing
+the old one would leave its `/tmp` pointing at the *previous* BEAM's scratch
+directory, which this BEAM never writes to — every staged script would be
+unreadable inside the container. (That is also why `Nest.Sandbox.Mounts` carries
+the space id: the name has to be built from the space, not from the scratch path.)
+
+The superseded container does not leak. The next create for that space sweeps
+every container of the space whose BEAM is gone — liveness is `/proc/<pid>`, which
+is Linux-specific and fine, since `bwrap` is already a boot requirement — and logs
+each removal at `info`. A *live* BEAM's container is kept, because two BEAMs can
+share a space id (a dev BEAM and a prod BEAM on one daemon, same serial), and so
+is any name that is not this space's exact format.
+
+So **"one container for the life of the space" holds within a BEAM, not across
+restarts.** Making it hold across restarts would mean a scratch root that does not
+embed the BEAM's pid — a change to `Nest.Agents.Agent.TmpSpace.space_dir/2`, which
+is a deliberate design and out of scope here.
 
 The *image* is per space rather than per signature — it comes from the space's
 `.nest`, which every agent in the space shares.
 
 Archiving or deleting a space removes every container named
-`nest-space-<space_id>-*` (`Nest.Spaces` → `Nest.Sandbox.Backend.remove_space/3`).
-Archive is reversible: the containers are recreated lazily after an unarchive. A
-daemon failure during that cleanup is logged and does not break the archive or
-the delete.
+`nest-space-<space_id>-*` — every BEAM's, not just the running one
+(`Nest.Spaces` → `Nest.Sandbox.Backend.remove_space/3`). Archive is reversible:
+the containers are recreated lazily after an unarchive. A daemon failure during
+that cleanup is logged and does not break the archive or the delete.
 
 ## The derived image
 
@@ -159,6 +175,15 @@ docker ps -a --format '{{.Names}}' | grep '^nest-space-' || echo "no nest contai
 ```
 
 ## Known limitations
+
+* **A docker space's container does not survive a BEAM restart.** Each restart
+  gets a fresh container (see above), and the superseded one is swept on the next
+  create for that space. To clear them all by hand (`xargs -r`, so an empty list
+  is a no-op rather than a usage error):
+
+  ```sh
+  docker ps -aq --filter 'name=^nest-space-' | xargs -r docker rm -f
+  ```
 
 * **`bwrap` is still required at boot.** `Nest.Application.check_system_dependencies!/0`
   runs `bwrap --version` and refuses to start without it, so a deployment that
