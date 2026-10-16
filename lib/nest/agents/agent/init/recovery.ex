@@ -48,7 +48,9 @@ defmodule Nest.Agents.Agent.Init.Recovery do
       Init.seed_from_db(
         state,
         Map.get(attrs, :preloaded_messages, []),
-        Map.get(attrs, :last_compaction_index, -1)
+        Map.get(attrs, :last_compaction_index, -1),
+        0,
+        Map.get(attrs, :archived_summary)
       )
 
     Broadcasts.model_missing(state.space_id, state.name, model_label, reason)

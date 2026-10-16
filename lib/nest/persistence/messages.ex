@@ -69,10 +69,60 @@ defmodule Nest.Persistence.Messages do
   """
   @spec load_slice(integer(), String.t(), keyword()) :: [Message.t()]
   def load_slice(space_id, agent_name, opts) do
+    load(space_id, agent_name, Keyword.delete(opts, :decode))
+  end
+
+  # The one entry point both public readers go through. `:decode` is internal
+  # — `load_slice/3` strips it so only `archived_summary/3` can ask for
+  # undecoded rows, and it defaults to decoding when absent.
+  defp load(space_id, agent_name, opts) do
     case Nest.Persistence.fetch_agent(space_id, agent_name) do
       {:ok, row} -> collect_slice(row, MapSet.new(), opts)
       {:error, :not_found} -> []
     end
+  end
+
+  @doc """
+  Summarize the rows at or below `boundary` without reading their payloads.
+
+  The load path needs exactly three facts about the archived prefix — whether
+  a system row exists anywhere in the logical sequence, the highest index the
+  archive reaches, and how many compaction markers sit at or below the
+  boundary — and nothing at all about their content. Reading them as full
+  messages decodes every archived row's JSON, which is what made a cold start
+  scale with the whole conversation instead of the active window (issue #52).
+
+  This reads the same rows through the same shared-prefix walk, as a
+  projection, so the facts are identical to the ones a full read would give
+  and only the decode is skipped. A clone's inherited prefix is included,
+  which is what makes the marker count right for a clone whose boundary is
+  one it inherited from its parent.
+
+  A `boundary` below zero means nothing is archived.
+  """
+  @spec archived_summary(integer(), String.t(), integer()) :: %{
+          has_system_row: boolean(),
+          highest_index: integer(),
+          marker_count: non_neg_integer()
+        }
+  def archived_summary(_space_id, _agent_name, boundary) when boundary < 0 do
+    %{has_system_row: false, highest_index: -1, marker_count: 0}
+  end
+
+  def archived_summary(space_id, agent_name, boundary) do
+    rows =
+      load(space_id, agent_name,
+        cap: boundary,
+        limit: :all,
+        decode: false,
+        select: [:message_index, :role, :compaction_count]
+      )
+
+    %{
+      has_system_row: Enum.any?(rows, &(&1.role == "system")),
+      highest_index: rows |> Enum.map(& &1.message_index) |> Enum.max(fn -> -1 end),
+      marker_count: Enum.count(rows, &(&1.role == "compaction"))
+    }
   end
 
   defp collect_slice(%PersistedAgent{} = row, seen, opts) do
@@ -80,8 +130,9 @@ defmodule Nest.Persistence.Messages do
     limit = Keyword.get(opts, :limit, :all)
     roles = Keyword.get(opts, :roles)
     origin = Keyword.get(opts, :origin)
+    floor = Keyword.get(opts, :floor)
 
-    own = load_own_slice(row.id, cap, limit, roles, origin)
+    own = load_own_slice(row, cap, limit, roles, origin, floor, opts)
     remaining = subtract_limit(limit, length(own))
 
     case shared_parent(row, seen) do
@@ -91,7 +142,11 @@ defmodule Nest.Persistence.Messages do
         if parent_cap == :none do
           own
         else
-          parent_opts = [cap: parent_cap, limit: remaining, roles: roles, origin: origin]
+          parent_opts =
+            opts
+            |> Keyword.put(:cap, parent_cap)
+            |> Keyword.put(:limit, remaining)
+
           collect_slice(parent, MapSet.put(seen, row.id), parent_opts) ++ own
         end
 
@@ -100,17 +155,38 @@ defmodule Nest.Persistence.Messages do
     end
   end
 
-  defp load_own_slice(agent_id, cap, limit, roles, origin) do
+  defp load_own_slice(row, cap, limit, roles, origin, floor, opts) do
     PersistedMessage
-    |> where([m], m.agent_id == ^agent_id)
+    |> where([m], m.agent_id == ^row.id)
+    |> floor_index(floor)
     |> cap_index(cap)
     |> filter_roles(roles)
     |> filter_origin(origin)
+    |> select_projection(Keyword.get(opts, :select))
     |> order_by([m], desc: m.message_index)
     |> cap_rows(limit)
     |> Repo.all()
     |> Enum.reverse()
-    |> Enum.map(&PersistedMessage.to_runtime/1)
+    |> Enum.map(&decode_row(&1, opts))
+  end
+
+  # `:floor` is the exclusive lower bound: rows *above* it. It is the
+  # counterpart of `:cap`, and the two partition a sequence between them —
+  # `cap: b` plus `floor: b` is every row, exactly once.
+  defp floor_index(query, nil), do: query
+  defp floor_index(query, floor), do: where(query, [m], m.message_index > ^floor)
+
+  # A projection read skips `to_runtime/1` entirely, so an archived row never
+  # pays for decoding a payload nobody will look at.
+  defp select_projection(query, nil), do: query
+  defp select_projection(query, fields), do: select(query, ^fields)
+
+  defp decode_row(row, opts) do
+    if Keyword.get(opts, :decode, true) do
+      PersistedMessage.to_runtime(row)
+    else
+      row
+    end
   end
 
   # `:all` bounds are dropped from the query entirely rather than
