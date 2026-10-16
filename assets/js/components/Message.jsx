@@ -48,7 +48,7 @@ import { messageToMarkdown } from "../utils/formatMessage.js";
 import { messageText } from "../utils/messageText.js";
 import {
   thinkingFor,
-  textPartsFor,
+  messageContentPartsFor,
   toolCallsFromParts,
   mediaFromParts,
 } from "../utils/messageParts.js";
@@ -155,7 +155,7 @@ function Message({ message, agentName }) {
                       (p) => p && p.kind === "media",
                     ),
                   ]
-                : textPartsFor(message).filter((p) => p?.kind !== "media")
+                : messageContentPartsFor(message)
             }
             isPartial={isPartial}
             className="text-gray-800"
@@ -164,18 +164,24 @@ function Message({ message, agentName }) {
         <ToolCalls toolCalls={toolCalls} />
         <DelegatedTask message={message} agentName={agentName} />
         <ToolResults toolResults={message.toolResults} />
-        {/* The user branch above hands its media to `MessageContent`, which
-            renders it; every other role's `MessageContent` gets the parts with
-            media filtered out above, so its media is rendered here — exactly
-            once. The filter is load-bearing: `textPartsFor` splits think blocks
-            out but passes every other non-text part through, so without it
-            `MessageContent` renders the media too and the operator sees the
-            attachment twice (issue #115). `message.media` is derived by the
-            store alongside `toolResults`; the `mediaFromParts` fallback covers
-            a message that reached the renderer without going through that
-            merge. */}
+        {/* The media for a row that is not the user's own: the user branch
+            above hands its media to `MessageContent`, and every other role
+            either gets parts with the media filtered out
+            (`messageContentPartsFor`) or, for `system`, goes through
+            `SystemMessageContent` — so this is the one render.
+            `message.media` is derived by `buildMerged`; a freshly appended row
+            carries no message-level field, so the `mediaFromParts` fallback
+            covers the media part in `parts`. The `?.length` test is not `??`:
+            an empty `media` array is not nullish, so `??` would keep it and
+            drop an attachment whose only copy is that part. */}
         {!isUser && (
-          <ToolMedia media={message.media ?? mediaFromParts(message.parts)} />
+          <ToolMedia
+            media={
+              message.media?.length
+                ? message.media
+                : mediaFromParts(message.parts)
+            }
+          />
         )}
         <ApiLogsBlock
           apiLogs={message.apiLogs}

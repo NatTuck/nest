@@ -34,7 +34,7 @@ import { stripNoticePrefix } from "../utils/stripNoticePrefix.js";
 import { textFromParts } from "../utils/messageText.js";
 import {
   thinkingFor,
-  textPartsFor,
+  messageContentPartsFor,
   toolCallsFromParts,
   toolResultsFromParts,
   mediaFromParts,
@@ -127,18 +127,16 @@ function MessageBubble({ message }) {
           <>
             <ThinkingBlock thinking={thinkingFor(message)} isPartial={false} />
             <MessageContent
-              parts={textPartsFor(message).filter((p) => p?.kind !== "media")}
+              parts={messageContentPartsFor(message)}
               isPartial={false}
               className="text-xs text-gray-700"
             />
             <ToolCalls toolCalls={toolCallsFromParts(message.parts)} />
             <ToolResults toolResults={toolResultsFromParts(message.parts)} />
-            {/* This branch's `MessageContent` gets the parts with media
-                filtered out, so the media is rendered here — exactly once.
-                The filter is load-bearing: `textPartsFor` passes every
-                non-text part through, so without it `MessageContent` renders
-                the media too (issue #115). The user branch above hands its
-                media to `MessageContent` instead. */}
+            {/* The user branch above renders its media through
+                `MessageContent`; this branch's parts are filtered by
+                `messageContentPartsFor`, so the media is rendered here —
+                exactly once. */}
             <ToolMedia media={mediaFromParts(message.parts)} />
             <ApiLogsBlock
               apiLogs={message.apiLogs}

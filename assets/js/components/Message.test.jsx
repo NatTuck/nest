@@ -186,6 +186,8 @@ describe("attached media renders exactly once", () => {
     state: null,
   };
 
+  // Deliberately no default `media` field: `overrides` is where a case says
+  // which of the two copies of the attachment the message carries.
   const toolMessage = (parts, overrides = {}) => ({
     index: 5,
     role: "tool",
@@ -199,34 +201,49 @@ describe("attached media renders exactly once", () => {
         state: null,
       },
     ],
-    media: [derivedMedia],
     metadata: null,
     ...overrides,
   });
 
-  it("renders a tool message's attached image once, not twice", () => {
-    render(
-      <MessageBubble
-        agentName="test-agent"
-        message={toolMessage([toolResultPart, mediaPart])}
-      />,
-    );
+  const cases = [
+    {
+      label: "a freshly appended tool result (no message-level media field)",
+      // The shape `addChatMessage` builds for a new row: the wire message is
+      // spread verbatim and only `toolCalls` / `toolResults` are derived, so
+      // the sole copy of the attachment is the `media` part in `parts` — the
+      // wire has no message-level `media` key (`Part.to_json`). `buildMerged`
+      // is the only store path that derives one, so this is the shape the
+      // reported bug arrived in, and the `mediaFromParts(message.parts)`
+      // fallback is what renders it.
+      message: toolMessage([toolResultPart, mediaPart]),
+    },
+    {
+      label: "a re-merged tool result whose derived media field carries it",
+      message: toolMessage([toolResultPart, mediaPart], {
+        media: [derivedMedia],
+      }),
+    },
+    {
+      label: "an empty derived media field beside a media part in parts",
+      // `[]` is not nullish, so `message.media ?? mediaFromParts(...)` keeps
+      // the empty array; with the media part also filtered out of
+      // `MessageContent` that renders nothing at all — a silent drop.
+      message: toolMessage([toolResultPart, mediaPart], { media: [] }),
+    },
+    {
+      label: "a derived media field with no media part in parts",
+      // Why the explicit render stays rather than being deleted: this media
+      // `MessageContent` cannot see, and dropping the explicit render would
+      // lose it silently — which the project forbids.
+      message: toolMessage([toolResultPart], { media: [derivedMedia] }),
+    },
+  ];
 
-    expect(screen.getAllByTestId("tool-media-image")).toHaveLength(1);
-  });
+  for (const { label, message } of cases) {
+    it(`renders the attached image once for ${label}`, () => {
+      render(<MessageBubble agentName="test-agent" message={message} />);
 
-  it("still renders the image when only the store-derived media field carries it", () => {
-    // Why the explicit render stays rather than being deleted: a message whose
-    // parts carry no media part but whose derived `media` field does. This one
-    // `MessageContent` cannot see, and dropping the explicit render would lose
-    // it silently — which the project forbids.
-    render(
-      <MessageBubble
-        agentName="test-agent"
-        message={toolMessage([toolResultPart])}
-      />,
-    );
-
-    expect(screen.getAllByTestId("tool-media-image")).toHaveLength(1);
-  });
+      expect(screen.getAllByTestId("tool-media-image")).toHaveLength(1);
+    });
+  }
 });
