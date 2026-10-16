@@ -28,6 +28,7 @@ defmodule Nest.Agents.AgentTmpPathTest do
   alias Nest.Agents.Agent
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
+  alias Nest.Sandbox.Mounts
 
   setup :verify_on_exit!
 
@@ -85,8 +86,8 @@ defmodule Nest.Agents.AgentTmpPathTest do
       # allowlist: snapshot — tmp_path
       state = :sys.get_state(pid, 1_000)
 
-      assert state.tmp_path =~ ~r|/tmp/nest-#{System.pid()}/space-\d+/agent\d+|,
-             "Expected tmp_path to match pattern, got: #{inspect(state.tmp_path)}"
+      assert Mounts.scratch(state.mounts) =~ ~r|/tmp/nest-#{System.pid()}/space-\d+/agent\d+|,
+             "Expected tmp_path to match pattern, got: #{inspect(Mounts.scratch(state.mounts))}"
 
       # It must not reach a client either. `build_public_info/1` is what the
       # channels push, and #79 removed the field from it so the one remaining
@@ -125,7 +126,7 @@ defmodule Nest.Agents.AgentTmpPathTest do
       # allowlist: snapshot — tmp_path
       state = :sys.get_state(pid, 1_000)
 
-      assert state.tmp_path == agent_tmp_path(current_space_id(), name)
+      assert Mounts.scratch(state.mounts) == agent_tmp_path(current_space_id(), name)
     end
 
     test "cleans up tmp directory when stopped via Supervisor.stop_agent/2" do

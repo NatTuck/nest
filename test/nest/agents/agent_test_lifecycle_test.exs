@@ -222,7 +222,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
 
     test "does not report an idle agent whose teardown is slow" do
       # The regression this guard was fixed for. `Agent.terminate/2` ends with
-      # `cleanup_tmp/2` -> `TmpSpace.cleanup/2` -> `File.rm_rf/1`, so the stop
+      # `cleanup_tmp/2` -> `TmpSpace.cleanup/3` -> `File.rm_rf/1`, so the stop
       # handshake contains real filesystem work — a `File.rm_rf` per agent — and
       # it is not a measurement of the agent's receive loop. The bound used to be
       # 10 ms, and that handshake reaches it on a busy machine — 12 provably idle
@@ -246,7 +246,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       {pid, name} = AgentTestHelpers.start_agent()
       space_id = AgentTestHelpers.current_space_id()
 
-      scratch = TmpSpace.create(space_id, name)
+      scratch = TmpSpace.create(space_id, name, "bwrap")
       Enum.each(1..20, fn i -> File.write!(Path.join(scratch, "f#{i}"), "x") end)
 
       result = AgentTestLifecycle.stop_test_agents()

@@ -54,6 +54,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
   alias Nest.Persistence
+  alias Nest.Sandbox.Mounts
 
   @doc """
   Build a fresh-context child agent's attrs from a parent
@@ -86,7 +87,10 @@ defmodule Nest.Agents.Agent.SubAgent do
       space_id: parent_state.space_id,
       model: model_override || parent_state.model,
       vocation_id: vocation_id,
-      workspace_path: parent_state.workspace_path,
+      workspace_path: Mounts.workspace(parent_state.mounts),
+      # The child lives in its parent's space, so it shares the space's
+      # sandbox backend.
+      sandbox_backend: Mounts.backend(parent_state.mounts),
       parent_id: parent_id,
       parent_name: parent_state.name,
       created_by_user_id: parent_state.created_by_user_id,
@@ -420,7 +424,7 @@ defmodule Nest.Agents.Agent.SubAgent do
       name: child_name,
       model: state.model,
       vocation: state.vocation.slug,
-      workspace_path: state.workspace_path,
+      workspace_path: Mounts.workspace(state.mounts),
       parent_id: parent_db_id,
       parent_name: state.name,
       depth: state.depth + 1

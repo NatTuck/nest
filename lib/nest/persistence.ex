@@ -93,7 +93,18 @@ defmodule Nest.Persistence do
   def build_agent_attrs(attrs) do
     attrs
     |> maybe_load_vocation()
+    |> put_sandbox_backend()
   end
+
+  # The space's sandbox backend, resolved once per start and carried on the
+  # attrs so `Nest.Agents.Agent.Init` never has to read the DB for it (see
+  # `Nest.Sandbox.Backend`). `put_new` so a caller that already named one — a
+  # spawned child inheriting its parent's — keeps it.
+  defp put_sandbox_backend(%{space_id: space_id} = attrs) when is_integer(space_id) do
+    Map.put_new(attrs, :sandbox_backend, Nest.Spaces.sandbox_backend(space_id))
+  end
+
+  defp put_sandbox_backend(attrs), do: attrs
 
   defp maybe_load_vocation(%{vocation: _vocation} = attrs), do: attrs
 
@@ -518,6 +529,7 @@ defmodule Nest.Persistence do
       model: row.model,
       vocation_id: row.vocation_id,
       workspace_path: row.workspace_path,
+      sandbox_backend: Nest.Spaces.sandbox_backend(row.space_id),
       next_message_index: row.next_message_index,
       last_compaction_index: boundary,
       parent_id: row.parent_id,

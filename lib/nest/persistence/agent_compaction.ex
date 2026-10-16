@@ -140,7 +140,7 @@ defmodule Nest.Persistence.AgentCompaction do
     {system_prompt, _mode, _tools, _vocation} =
       SystemPrompt.compose_vocation_config(
         vocation,
-        Mounts.new(agent.workspace_path, nil),
+        Mounts.new(agent.workspace_path, nil, Nest.Spaces.sandbox_backend(agent.space_id)),
         {limit, source},
         agent.name,
         agent.depth || 0

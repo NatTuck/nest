@@ -2,10 +2,10 @@ defmodule Nest.Sandbox.StatBatch do
   @moduledoc """
   Batched `stat` for the BatchSizer preflight (issue #48).
 
-  `Nest.Sandbox.stat/3` is one bwrap spawn per path. The preflight needs only a
+  `Nest.Sandbox.stat/3` is one sandbox spawn per path. The preflight needs only a
   size per `file-read` target, so `stat_many/3` runs **one** `stat` invocation
   per chunk of paths — far fewer spawns than one per path, and still no
-  host-side fast path: the command runs inside bwrap through
+  host-side fast path: the command runs inside the sandbox through
   `Nest.Tools.ShellCmd.execute_raw/4`, and the bind layout stays in
   `Nest.Sandbox.Paths`.
 
@@ -30,7 +30,7 @@ defmodule Nest.Sandbox.StatBatch do
   ## Failure handling
 
     * Some paths reported, some not — the absent ones are re-statted with
-      `Nest.Sandbox.stat/3`, so each keeps its own `Failure.classify/1` reason
+      `Nest.Sandbox.stat/3`, so each keeps its own `Nest.Sandbox.Backend.classify/2` reason
       and its own operator log line.
     * Nothing reported at all — the sandbox itself failed, so the stderr is
       classified once and applied to every path in the chunk, with a single log
@@ -40,7 +40,7 @@ defmodule Nest.Sandbox.StatBatch do
   """
 
   alias Nest.Sandbox
-  alias Nest.Sandbox.{Failure, Mounts}
+  alias Nest.Sandbox.{Backend, Failure, Mounts}
   alias Nest.Tools.ShellCmd
   alias Nest.Tools.ShellEscape
 
@@ -50,7 +50,7 @@ defmodule Nest.Sandbox.StatBatch do
   @chunk 100
 
   @doc """
-  The size of every distinct path in `paths`, in as few bwrap spawns as
+  The size of every distinct path in `paths`, in as few sandbox spawns as
   possible.
 
   Returns `%{path => {:ok, size} | {:error, reason}}`.
@@ -66,7 +66,7 @@ defmodule Nest.Sandbox.StatBatch do
     end)
   end
 
-  # One chunk, in one bwrap spawn where possible.
+  # One chunk, in one sandbox spawn where possible.
   defp stat_chunk(chunk, caps, mounts) do
     {batched, unbatched} = Enum.split_with(chunk, &(not String.contains?(&1, "\n")))
 
@@ -80,7 +80,7 @@ defmodule Nest.Sandbox.StatBatch do
   defp run_batch(paths, caps, mounts) do
     case ShellCmd.execute_raw(stat_command(paths), mounts, caps) do
       {:ok, _exit_code, "", stderr} ->
-        whole_chunk_failed(paths, stderr)
+        whole_chunk_failed(paths, stderr, mounts)
 
       {:ok, _exit_code, stdout, _stderr} ->
         partial(paths, stdout, caps, mounts)
@@ -105,8 +105,8 @@ defmodule Nest.Sandbox.StatBatch do
   # detail only — the preflight projects every error identically, so no refusal
   # decision moves. Attribution is exact on the fallback path
   # (`per_path_sizes/4`).
-  defp whole_chunk_failed(paths, stderr) do
-    reason = Failure.classify(stderr)
+  defp whole_chunk_failed(paths, stderr, mounts) do
+    reason = Backend.classify(mounts, stderr)
     Failure.log(:stat, "#{hd(paths)} (+#{length(paths) - 1} more)", reason, stderr)
     Map.new(paths, &{&1, {:error, reason}})
   end

@@ -267,7 +267,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
         name: state.name,
         space_id: state.space_id,
         model: state.model,
-        workspace_path: state.workspace_path,
+        workspace_path: Mounts.workspace(state.mounts),
         message_count: length(state.chat_state.messages),
         # The two numbers the collapsed history card renders: where the
         # active messages start, and how many compactions have happened.

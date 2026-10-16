@@ -28,20 +28,29 @@ human request to do exactly that.
 - Never revert stuff, not even temporarily, without an explicit human request. 
 If the tree is so screwed up that reverting is the only option then stop and report.
 
-### Sandbox reads always go through bwrap
+### Sandbox reads always go through the active backend
 
-- The sandbox's filesystem view *is* bwrap's view. There is **no host-side
-  emulation** of `read`, `stat`, or `glob`: all three execute inside bwrap, so
-  their results come from exactly the mounts bwrap exposes and can never
-  disagree with what a shell inside the sandbox sees.
+- The sandbox's filesystem view *is* the active backend's view. There is **no
+  host-side emulation** of `read`, `stat`, or `glob`: all three execute inside
+  the sandbox, so their results come from exactly what the backend exposes and
+  can never disagree with what a shell inside it sees.
+- Which backend that is, is a **per-space, creation-only** choice
+  (`spaces.sandbox_backend`: `bwrap`, `docker` or `none`). It is picked when the
+  space is created and cannot be changed afterwards, because changing it would
+  mean replacing the environment the space's agents run in. It travels to every
+  command on the `Nest.Sandbox.Mounts` value, and `Nest.Sandbox.Backend` is the
+  one dispatch point (`Nest.Tools.ShellCmd` is the only caller that matters).
+- `none` runs the bare command on the host, so **caps cannot be enforced** for
+  that space. Say so plainly wherever the backend is offered or documented;
+  never imply otherwise.
 - Do **not** add a host fast path for any of them. There is no second spelling
-  of a path an agent uses: the two directories the sandbox binds — the workspace
-  and the agent's own scratch directory — live in one `Nest.Sandbox.Mounts`
-  value that travels with the turn, and `Nest.Sandbox` is what turns it into
-  binds. A module that needs a real directory reads it from that value; none of
-  them needs one in order to name a path an agent uses, and
+  of a path an agent uses: the backend plus the two directories the sandbox
+  binds — the workspace and the agent's own scratch directory — live in one
+  `Nest.Sandbox.Mounts` value that travels with the turn, and `Nest.Sandbox` is
+  what turns it into binds. A module that needs a real directory reads it from
+  that value; none of them needs one in order to name a path an agent uses, and
   `/tmp/<agent-name>/...` is the only scratch spelling an agent is ever told
-  about or hands back.
+  about or hands back — on **every** backend.
 - The path mapping lives in exactly one place: `Nest.Sandbox.Paths`.
 - A workspace at or under `/tmp` is rejected **unconditionally**, because the
   space scratch dir is bound at `/tmp` and would shadow it. A workspace can
@@ -49,6 +58,10 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   Both are rejected at the point the workspace is chosen (create-space,
   create-agent, `set_workspace`, edit-agent) and again at the final gate in
   `Nest.Sandbox.build/4`.
+- A `none` space's scratch is the host's real `/tmp/<agent-name>`, so agent
+  names are unique across `none` spaces: the creation boundary refuses a
+  collision (`{:scratch_name_in_use, other_space_name}`) and the name generator
+  never proposes one.
 
 ## Project Design
 

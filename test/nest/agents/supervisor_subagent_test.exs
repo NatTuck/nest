@@ -35,6 +35,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
   alias Nest.Persistence
+  alias Nest.Sandbox.Mounts
   alias Nest.Vocations
 
   setup do
@@ -53,10 +54,10 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       {:ok, parent_name, parent_pid, _parent_id} = start_root_parent(vid)
       parent_state = read_parent_state(parent_name, parent_pid)
       space_id = AgentTestHelpers.current_space_id()
-      space_dir = TmpSpace.space_dir(space_id)
+      space_dir = TmpSpace.space_dir(space_id, "bwrap")
 
       # A clone's name is generated, so the blocker has to catch *any* name:
-      # replacing the space directory with a file makes `TmpSpace.create/2`'s
+      # replacing the space directory with a file makes `TmpSpace.create/3`'s
       # `File.mkdir_p!` raise `File.Error` for whichever child name comes out,
       # so the clone's `init/1` fails before the process starts.
       rm_tmp!(space_dir, "nest-#{System.pid()}")
@@ -269,7 +270,9 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       vocation_id: vid,
       vocation: Vocations.get_vocation(vid),
       parent_id: nil,
-      depth: 0
+      depth: 0,
+      # `Init.build_state/2` requires it (see `Nest.Sandbox.Backend`).
+      sandbox_backend: "bwrap"
     }
 
     case Supervisor.start_under_test(attrs) do
@@ -322,7 +325,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       model: info.model,
       vocation: attrs.vocation,
       vocation_id: info.vocation_id,
-      workspace_path: attrs.workspace_path,
+      mounts: Mounts.new(attrs.workspace_path, nil, attrs.sandbox_backend),
       llm_metrics: %Nest.Agents.Agent.LlmMetrics{
         context_limit: info.context_limit,
         context_limit_source: info.context_limit_source,

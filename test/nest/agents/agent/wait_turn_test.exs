@@ -471,7 +471,7 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
       # The agent's own scratch directory — the space dir plus the bare agent
       # name (`TmpSpace`'s layout) — so the job's log lives where the agent's
       # own `shell-list` would find it.
-      scratch = Path.join(TmpSpace.space_dir(space_id), name)
+      scratch = Path.join(TmpSpace.space_dir(space_id, "bwrap"), name)
       workspace = Agent.get_public_info(pid, 1_000).workspace_path
       key = {space_id, name}
 

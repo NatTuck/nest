@@ -21,6 +21,7 @@ defmodule Nest.Agents.Supervisor do
   alias Nest.Agents.Agent.Turn.GiveUpDelivery
   alias Nest.Agents.PersistedAgent
   alias Nest.Persistence
+  alias Nest.Sandbox.Mounts
   alias Nest.Spaces
   alias Nest.Vocations
   alias Nest.Vocations.Vocation
@@ -381,10 +382,11 @@ defmodule Nest.Agents.Supervisor do
         :ok
 
       vocation ->
-        if Vocations.requires_workspace?(vocation) and is_nil(parent_state.workspace_path) do
+        if Vocations.requires_workspace?(vocation) and
+             is_nil(Mounts.workspace(parent_state.mounts)) do
           {:error, :workspace_required}
         else
-          Nest.Sandbox.workspace_error(parent_state.workspace_path)
+          Nest.Sandbox.workspace_error(Mounts.workspace(parent_state.mounts))
         end
     end
   end
@@ -588,6 +590,30 @@ defmodule Nest.Agents.Supervisor do
   @spec existing_names_for_space(integer()) :: MapSet.t(String.t())
   def existing_names_for_space(space_id) do
     MapSet.new(Registry.list_for_space(space_id) ++ persistence_list_names_for_space(space_id))
+    |> MapSet.union(none_space_scratch_names(space_id))
+  end
+
+  # Names a *live* agent in a different `"none"` space is using as its scratch
+  # directory. Two `"none"` spaces share the host's one `/tmp`, so those names
+  # are taken in this space too — a name the generator would otherwise hand out
+  # and the creation boundary would then refuse (see
+  # `Nest.Agents.Agent.PreSpawn.pre_spawn/1`).
+  #
+  # Empty for any other backend: each of those spaces has its own scratch root,
+  # where the same name is a different directory and is free.
+  defp none_space_scratch_names(space_id) do
+    if Spaces.sandbox_backend(space_id) == "none" do
+      none_ids = Spaces.none_space_ids()
+
+      Registry.list_all()
+      |> Enum.filter(fn {other_space_id, _name} ->
+        other_space_id != space_id and MapSet.member?(none_ids, other_space_id)
+      end)
+      |> Enum.map(fn {_space_id, name} -> name end)
+      |> MapSet.new()
+    else
+      MapSet.new()
+    end
   end
 
   defp persistence_list_names_for_space(space_id) do

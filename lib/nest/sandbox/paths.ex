@@ -5,17 +5,22 @@ defmodule Nest.Sandbox.Paths do
   The single definition of the space scratch bind and the sandbox-domain
   spelling of a scratch path.
 
-  The space scratch dir is bound at `#{@sandbox_root}` inside the sandbox,
-  so an agent's own scratch dir (the space dir plus `<agent-name>`) is
-  `#{@sandbox_root}/<agent-name>` inside. `scratch_root/1` is the one bind
-  source (`Nest.Sandbox.append_tmp_bind/2` uses it) and `sandbox_tmp_path/1`
-  is the one inverse mapping, so the mount and the spelling cannot drift.
+  The space scratch dir is bound at `#{@sandbox_root}` inside the sandbox
+  (by the backends that bind anything), so an agent's own scratch dir (the
+  space dir plus `<agent-name>`) is `#{@sandbox_root}/<agent-name>` inside.
+  `scratch_root/1` is the one bind source (`Nest.Sandbox.append_tmp_bind/2`
+  uses it) and `sandbox_tmp_path/1` is the one inverse mapping, so the mount
+  and the spelling cannot drift.
+
+  A `"none"` space binds nothing: its scratch root *is* the host's
+  `#{@sandbox_root}`, so the spelling and the directory coincide there (see
+  `Nest.Sandbox.Backend.None`).
 
   There is deliberately **no** path translation here: the sandbox's
-  filesystem view is bwrap's view, and every `read`/`stat`/`glob` executes
-  inside bwrap (see `Nest.Sandbox`). `TmpSpace` produces the agent's scratch
-  directory; `Paths` derives the mount and the spelling from it. `Paths`
-  must not depend on `TmpSpace`.
+  filesystem view is the active backend's view, and every `read`/`stat`/`glob`
+  executes inside it (see `Nest.Sandbox`). `TmpSpace` produces the agent's
+  scratch directory; `Paths` derives the mount and the spelling from it.
+  `Paths` must not depend on `TmpSpace`.
 
   ## A scratch directory is a bind source, not an address
 

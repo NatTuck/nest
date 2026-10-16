@@ -81,7 +81,8 @@ defmodule Nest.Agents.Agent.RecoveryTest do
                  space_id: AgentTestHelpers.current_space_id(),
                  name: "ghost-agent-#{System.unique_integer([:positive])}",
                  model: %{name: "ghost-model"},
-                 vocation_id: vocation_id()
+                 vocation_id: vocation_id(),
+                 sandbox_backend: "bwrap"
                }}
             )
 
@@ -112,7 +113,8 @@ defmodule Nest.Agents.Agent.RecoveryTest do
                  space_id: AgentTestHelpers.current_space_id(),
                  name: "ghost-agent-#{System.unique_integer([:positive])}",
                  model: %{name: "ghost-model"},
-                 vocation_id: vocation_id()
+                 vocation_id: vocation_id(),
+                 sandbox_backend: "bwrap"
                }}
             )
 
