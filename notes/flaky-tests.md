@@ -181,3 +181,22 @@ not mistaken for a regression.
 (`max_cases` is the physical core count; 8 cases -> 0 failures, 16 -> 2,
 24 -> 12). `notes/sketchy-slow-tests.md` holds the fence and `await_idle`
 material, including why the teardown gate exists at all.
+
+## 2026-10-16 — the scoping test's missing reconciliation barrier
+
+`LobbyChannelScopingTest`'s "a space created in one session is reconciled into
+the user's other session" failed once in a `mix test --cover` run (2760 tests)
+and passed alone, and passed in a second cover run. It was not a timeout
+problem: the test broadcast `{:agent_status, …}` on the new space's topic
+immediately after the create reply, but the *first* session learns about the
+space only by handling the per-user `{:spaces_changed, _}` frame, which is a
+different mailbox delivery from the synchronous reconcile the pushing session
+does. Broadcasting before that frame is handled means there is no subscription
+to receive the status, and the push never arrives at all — so the flake was a
+race, and a longer timeout would not have fixed it.
+
+Fixed by waiting for both sessions' `space:created` frames before broadcasting
+the status. That frame is pushed *after* the reconcile, on the same topic and in
+the same process, so two of them is exactly the barrier; the count is what
+attributes a frame to a session, since both sockets push into the test's one
+mailbox. The 1000 ms waits are unchanged.

@@ -127,12 +127,23 @@ defmodule Nest.Sandbox.Backend.Docker do
   @spec command(Mounts.t(), map() | nil, String.t()) ::
           {:ok, Nest.Sandbox.Backend.spec()} | {:error, String.t()}
   def command(mounts, caps, script) do
-    with {:ok, name} <- ensure_container(mounts, caps) do
-      {:ok,
-       %{
-         command: "docker exec -i #{name} /bin/bash #{ShellEscape.escape(script)}",
-         cd: nil
-       }}
+    # The staged script has to be reachable *inside* the container, and the only
+    # bind that can make it so is the scratch bind at `/tmp`. Without it the
+    # staging directory is the host's own `<tmp>/.nest-cmds`, which bwrap reaches
+    # through its read-only root bind and this backend cannot reach at all: the
+    # container's `/tmp` is its own, so bash would exit 127 and the failure would
+    # be classified `:enoent` — an ordinary "not found" that is not logged and
+    # that a caller like the system prompt would swallow. Refuse loudly instead.
+    if Mounts.scratch(mounts) do
+      with {:ok, name} <- ensure_container(mounts, caps) do
+        {:ok,
+         %{
+           command: "docker exec -i #{name} /bin/bash #{ShellEscape.escape(script)}",
+           cd: nil
+         }}
+      end
+    else
+      {:error, "A docker sandbox needs the agent's scratch bind to stage its script"}
     end
   end
 
@@ -434,7 +445,18 @@ defmodule Nest.Sandbox.Backend.Docker do
   def container_name(mounts, caps, devices, os_pid \\ nil) do
     case Mounts.space_id(mounts) do
       id when is_integer(id) ->
-        signature = {net?(caps), bind_specs(mounts, caps), Mounts.workspace(mounts), devices}
+        # The image is part of the signature because it *is* the container's root
+        # filesystem: a `.nest` that changes its `[sandbox] packages` changes the
+        # image, and a container reused across that change would run the old one
+        # (`ensure_image/2` runs only on the create path).
+        signature = {
+          net?(caps),
+          bind_specs(mounts, caps),
+          Mounts.workspace(mounts),
+          devices,
+          image_tag(caps)
+        }
+
         {:ok, name(id, os_pid || beam_pid(), hash(signature, @name_hash_bytes))}
 
       _other ->

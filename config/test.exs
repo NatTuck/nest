@@ -38,8 +38,16 @@ config :nest, hpu_device_paths: []
 # `System.cmd("docker", argv)`; here it is an inert stub that reports "the
 # daemon answered, and there is nothing there", which is the answer that
 # leaves every code path in its no-op branch. The lifecycle tests pass their
-# own `runner:` and assert the argv they expect, so the stubbed default is
-# what keeps `System.cmd` the one line the suite does not execute.
+# own `runner:` and assert the argv they expect.
+#
+# This covers the *setup* calls only — `inspect`, `start`, `image`, `build`,
+# `run`, `ps`, `rm`. It does **not** cover the command an agent runs: that is the
+# literal `docker exec -i …` string `Docker.command/3` builds and
+# `Nest.Tools.ShellCmd` hands to erlexec, which never goes through the runner. So
+# a test that runs a command through the docker backend would shell out to the
+# real `docker` — and print an `[error]` from the failed exec — rather than being
+# silently inert. No test does that today; this comment exists so the next one
+# knows.
 config :nest, docker_runner: fn _argv -> {"", 0} end
 
 # `Nest.Hostname.get/0` titles every page (and feeds

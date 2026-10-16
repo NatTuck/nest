@@ -191,5 +191,22 @@ defmodule Nest.Sandbox.BackendTest do
       assert {:error, message} = Sandbox.run("true", mounts, caps())
       assert message =~ "podman"
     end
+
+    test "every executor answers an unknown backend with an error, not a raise", %{dir: dir} do
+      # `glob/4` reaches the staging spelling before `ShellCmd` resolves the
+      # backend, and that accessor raises rather than answering. Resolving first
+      # is what keeps glob's contract the same as its siblings'.
+      mounts = Mounts.new(dir, nil, "podman")
+      path = Path.join(dir, "f.txt")
+
+      assert {:error, run_message} = Sandbox.run("true", mounts, caps())
+      assert {:error, read_message} = Sandbox.read(path, caps(), mounts)
+      assert {:error, stat_message} = Sandbox.stat(path, caps(), mounts)
+      assert {:error, glob_message} = Sandbox.glob("*", caps(), mounts)
+
+      for message <- [run_message, read_message, stat_message, glob_message] do
+        assert message =~ "podman"
+      end
+    end
   end
 end

@@ -84,9 +84,12 @@ defmodule Nest.Agents.Agent.PreSpawn do
     end
   end
 
-  defp none_space?(attrs) do
-    Nest.Spaces.sandbox_backend(Map.fetch!(attrs, :space_id)) == "none"
-  end
+  # The backend is already on the attrs — every caller resolves it from the space
+  # row before `pre_spawn/1` (see `Persistence.build_agent_attrs/1` and
+  # `start_attrs/7`), and `Init` reads the same key a few lines later. Reading the
+  # row again here would be a second query per agent creation for a value the
+  # caller already has.
+  defp none_space?(attrs), do: Map.fetch!(attrs, :sandbox_backend) == "none"
 
   defp none_space_scratch_name(space_id, name) do
     case other_none_space_holder(space_id, name) do
@@ -97,11 +100,11 @@ defmodule Nest.Agents.Agent.PreSpawn do
         #
         # Safe here and only here: this runs in the caller, before
         # `start_link/1` registers the name, so a live holder would have been
-        # found above. (The path is also derived through
-        # `TmpSpace.agent_dir/3`, which refuses a name that is not a single safe
-        # path component.)
-        TmpSpace.agent_dir(space_id, name, "none") |> File.rm_rf()
-        :ok
+        # found above. `remove_stale/3` still requires Nest's own marker in the
+        # directory, because the name alone does not say the directory is ours
+        # (`nest-4`, `X11-unix` and `snap-private-tmp` all pass the name rule and
+        # all exist in real `/tmp`s).
+        TmpSpace.remove_stale(space_id, name, "none")
 
       other_space_id ->
         {:error, {:scratch_name_in_use, space_label(other_space_id)}}
@@ -178,17 +181,19 @@ defmodule Nest.Agents.Agent.PreSpawn do
 
     {context_limit, context_limit_source} = Init.initial_context_limit(model)
 
-    # The backend is the space's, not the default: composing the prompt reads
-    # `AGENTS.md` through the sandbox, so a `"none"` space must not read it
-    # under bwrap and a `"docker"` space's read must go to its own container.
+    # The prompt is composed through the agent's *real* mounts, scratch
+    # included: composing it reads `AGENTS.md` through the sandbox, so a
+    # `"none"` space must not read it under bwrap, and a `"docker"` space can
+    # only reach the staged transcript through the scratch bind (see
+    # `Nest.Agents.Agent.TmpSpace.prompt_mounts/4`).
     {system_prompt, _mode, _tools, _cached_vocation} =
       SystemPrompt.compose_vocation_config(
         vocation,
-        Mounts.new(
+        TmpSpace.prompt_mounts(
           Map.get(attrs, :workspace_path),
-          nil,
-          Map.fetch!(attrs, :sandbox_backend),
-          Map.fetch!(attrs, :space_id)
+          Map.fetch!(attrs, :space_id),
+          name,
+          Map.fetch!(attrs, :sandbox_backend)
         ),
         {context_limit, context_limit_source},
         name,

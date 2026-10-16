@@ -30,6 +30,40 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
                ~r/\Adocker exec -i nest-space-7-\d+-[0-9a-f]{8} \/bin\/bash '\/tmp\/\.cmds\/nest-cmd-1\.sh'\z/
     end
 
+    test "refuses to build a command with no scratch bind" do
+      # The staged transcript has to be reachable *inside* the container, and only
+      # the scratch bind puts it there: without it the staging directory is the
+      # host's own `<tmp>/.nest-cmds`, which the container cannot see at all —
+      # bash would exit 127, the failure would classify as `:enoent` (an ordinary
+      # not-found, deliberately not logged), and a caller like the system prompt
+      # would swallow it. Refusing is what makes the next such caller loud.
+      assert {:error, reason} =
+               Docker.command(mounts("/ws", nil), caps(), "/tmp/.nest-cmds/x.sh")
+
+      assert reason =~ "needs the agent's scratch bind"
+    end
+
+    test "stages where the container can reach the transcript" do
+      write = scratch()
+      mounts = mounts("/ws", write)
+      space_dir = Path.dirname(write)
+
+      staged = Backend.stage_dir(mounts)
+      handed = Backend.stage_dir_sandbox(mounts)
+
+      # Staged inside the space scratch root — the directory the container gets at
+      # `/tmp` — and handed to bash as that same file's `/tmp` spelling.
+      assert staged == Path.join(space_dir, ".cmds")
+      assert String.starts_with?(staged, space_dir <> "/")
+      assert handed == "/tmp/.cmds"
+      assert handed == String.replace_prefix(staged, space_dir, "/tmp")
+
+      assert {:ok, %{command: command}} =
+               Docker.command(mounts, caps(), Path.join(handed, "nest-cmd-1.sh"))
+
+      assert command =~ "'/tmp/.cmds/nest-cmd-1.sh'"
+    end
+
     test "escapes a script path that needs it" do
       assert {:ok, %{command: command}} =
                Docker.command(mounts("/ws", scratch()), caps(), "/tmp/.cmds/it's.sh")
@@ -214,9 +248,6 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
   end
 
   describe "the dead-BEAM sweep" do
-    # A pid above any real `pid_max`, so `/proc/<pid>` cannot exist.
-    @dead_pid "999999999"
-
     test "removes a dead BEAM's container before creating this one" do
       dead = "nest-space-#{space_id()}-#{@dead_pid}-aaaaaaaa"
 

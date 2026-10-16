@@ -21,10 +21,17 @@ defmodule Nest.Sandbox.Mounts do
       `/tmp/<agent-name>`.
 
   A caller passes what its call actually needs, and `nil` is a legitimate
-  half — the value describes one call's binds, not the agent's. Composing the
-  system prompt reads `AGENTS.md` through the sandbox with
-  `new(workspace, nil)`: the file is an absolute path in the workspace, so a
-  scratch bind could not change those bytes.
+  half — the value describes one call's binds, not the agent's.
+
+  Composing the system prompt is *not* one of those halves, though it used to be
+  built as one: it reads `AGENTS.md` through the sandbox, so it runs the backend,
+  and a backend whose staging directory is only reachable through the scratch
+  bind cannot run at all without it (`Nest.Sandbox.Backend.Docker.command/3`).
+  The prompt therefore uses the agent's real mounts, scratch included —
+  `Nest.Agents.Agent.TmpSpace.prompt_mounts/4` is the one place that builds them.
+  Under bwrap a scratch bind cannot change the bytes a read of an absolute
+  workspace path returns, which is what made the omission look harmless; under
+  docker it loses the read entirely.
 
   ## The value is the agent's
 

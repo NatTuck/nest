@@ -28,6 +28,24 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # `Nest.Agents.Agent.PreSpawn.pre_spawn/1` and
   # `Nest.Agents.Supervisor.existing_names_for_space/1`).
   #
+  # ## A `"none"` scratch carries Nest's own marker
+  #
+  # `/tmp/<name>` is not distinguishable from the host's own `/tmp` entries by
+  # its shape: the name is client- and model-controlled, `@name_format` allows
+  # `nest-4`, `X11-unix` and `snap-private-tmp`, and all three are real things to
+  # find in a `/tmp`. An `rm_rf` on one of them would take another BEAM's whole
+  # scratch root (every space's offloads, shell-job logs and `.nest` tmp mounts)
+  # or a host directory Nest never owned.
+  #
+  # So `create/3` writes `#{@marker}` into a `"none"` agent's scratch, and every
+  # removal requires it: `cleanup/3`, `remove_stale/3`. A directory without the
+  # marker is never removed. That is the safe direction, and it has two honest
+  # residuals: a pre-existing `/tmp/X11-unix`, or a `"none"` scratch created
+  # before this change, is left alone forever; and an agent that deletes its own
+  # marker leaves a stale directory behind. Only `"none"` needs the marker —
+  # a bwrap or docker scratch is under `nest-<BEAM pid>/space-<id>/`, which
+  # already says whose it is.
+  #
   # ## Space-directory lifecycle
   #
   # The space directory is created on demand (`mkdir_p!`) and never
@@ -39,7 +57,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # pid that created the directory, since the path embeds the BEAM's
   # OS pid. The space directory is therefore left to OS `/tmp` cleanup.
 
-  alias Nest.Sandbox.Paths
+  alias Nest.Sandbox.{Mounts, Paths}
 
   @tmp_prefix "/tmp/nest-"
 
@@ -63,6 +81,10 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # space, every agent's scratch.
   @name_format ~r/\A[A-Za-z0-9_-]+\z/
 
+  # What a `"none"` agent's scratch directory carries to say it is Nest's. See
+  # the moduledoc.
+  @marker ".nest-scratch"
+
   require Logger
 
   @doc """
@@ -79,9 +101,16 @@ defmodule Nest.Agents.Agent.TmpSpace do
   def create(space_id, agent_name, backend) do
     path = agent_dir(space_id, agent_name, backend)
     File.mkdir_p!(path)
+    write_marker(path, backend)
     Logger.info("Created tmp space for agent #{space_id}/#{agent_name}: #{path}")
     path
   end
+
+  # A `"none"` scratch is the host's own `/tmp/<name>`, so it has to say it is
+  # Nest's before anything will remove it (see the moduledoc). The other backends
+  # need nothing: their paths carry `nest-<BEAM pid>/space-<id>`.
+  defp write_marker(path, "none"), do: File.write!(Path.join(path, @marker), "")
+  defp write_marker(_path, _backend), do: :ok
 
   @doc """
   Remove the agent's own scratch directory, leaving the space directory
@@ -90,9 +119,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
   @spec cleanup(integer(), String.t(), String.t()) :: :ok
   def cleanup(space_id, agent_name, backend) do
     if single_segment?(agent_name) do
-      path = agent_dir(space_id, agent_name, backend)
-      File.rm_rf(path)
-      Logger.info("Cleaned up tmp space for agent #{space_id}/#{agent_name}: #{path}")
+      remove(space_id, agent_name, backend, :cleanup)
     else
       # Refuse rather than raise: `cleanup/3` runs from `terminate/2`, and
       # a name that cannot be a single directory component must never turn
@@ -114,6 +141,103 @@ defmodule Nest.Agents.Agent.TmpSpace do
     # nothing and the race was a real bug. The space directory is left to
     # OS `/tmp` cleanup (see the moduledoc).
     :ok
+  end
+
+  @doc """
+  Remove a stopped agent's stale scratch directory, if it is safe to.
+
+  `PreSpawn.pre_spawn/1` calls this when an agent takes a name that no *live*
+  agent holds, so that a fresh agent starts from a fresh scratch instead of
+  inheriting a stopped one's files. The caller has already established that no
+  live agent owns the name, so the only question left here is whether the
+  directory is Nest's to remove at all (`remove/4`).
+
+  Returns `:ok` whether or not anything was removed: this is cleanup, and the
+  caller has nothing to do about a refusal.
+  """
+  @spec remove_stale(integer(), String.t(), String.t()) :: :ok
+  def remove_stale(space_id, agent_name, backend) do
+    # A name that cannot be a path component is the row changeset's refusal to
+    # make; there is no directory of that name, and nothing here may raise.
+    if single_segment?(agent_name), do: remove(space_id, agent_name, backend, :stale)
+    :ok
+  end
+
+  @doc """
+  The mounts a prompt for `name` is composed through.
+
+  Composing a prompt *runs* the sandbox — `Nest.Agents.Agent.SystemPrompt` reads
+  `AGENTS.md` through it — so the mounts have to be the agent's real ones, and
+  the scratch directory has to be named even though it may not exist yet:
+  `Nest.Sandbox.Backend.Docker.command/3` can only stage a script the container
+  can reach through the scratch bind, and without it the read fails as a
+  not-found that the prompt then swallows. The directory is created on demand by
+  `Nest.Sandbox.Mounts.ensure_scratch!/1` before anything is staged.
+
+  `nil` scratch for a name that cannot be a path component: such an agent is
+  refused by its own changeset, and nothing composes a prompt for it.
+  """
+  @spec prompt_mounts(String.t() | nil, integer(), String.t(), String.t()) :: Mounts.t()
+  def prompt_mounts(workspace, space_id, name, backend) do
+    scratch = if single_segment?(name), do: agent_dir(space_id, name, backend)
+    Mounts.new(workspace, scratch, backend, space_id)
+  end
+
+  # The one place a scratch directory is removed, with both guards a `rm_rf`
+  # needs. Each refusal leaves a directory behind rather than removing the wrong
+  # one.
+  #
+  # `reason` only shapes the log line: `:cleanup` is an agent stopping,
+  # `:stale` is a new agent taking a name a stopped one held.
+  defp remove(space_id, agent_name, backend, reason) do
+    path = agent_dir(space_id, agent_name, backend)
+
+    cond do
+      # Nothing there: the agent never created one, or something already took it.
+      # Not notable, and not something to report.
+      not File.dir?(path) ->
+        :ok
+
+      not marked?(path, backend) ->
+        Logger.error(
+          "TmpSpace.#{reason}: refusing to rm_rf #{path}: it is not a Nest scratch directory"
+        )
+
+      held_by_another_none_space?(space_id, agent_name, backend) ->
+        Logger.info(
+          "TmpSpace.#{reason}: leaving #{path}: a live agent in another space uses the same name"
+        )
+
+      true ->
+        File.rm_rf(path)
+        Logger.info("Cleaned up tmp space for agent #{space_id}/#{agent_name}: #{path}")
+    end
+
+    :ok
+  end
+
+  # A `"none"` scratch is the host's own `/tmp/<name>`, so the marker is the only
+  # thing that says Nest owns it. Every other backend's scratch sits under
+  # `nest-<BEAM pid>/space-<id>/`, which already says so.
+  defp marked?(_path, backend) when backend != "none", do: true
+  defp marked?(path, "none"), do: File.exists?(Path.join(path, @marker))
+
+  # Two `"none"` spaces share one `/tmp`, so the same name can be live in both:
+  # a space's `x` can stop, another space take the name, and the first be
+  # rehydrated — the on-demand restart path is deliberately not gated by the
+  # creation boundary. Removing the directory then would delete a live agent's
+  # scratch. Registry-only, because this runs from `terminate/2`, where a DB read
+  # is not available; over-refusing leaves a stale directory, which is harmless.
+  defp held_by_another_none_space?(_space_id, _name, backend) when backend != "none", do: false
+
+  defp held_by_another_none_space?(space_id, name, "none") do
+    Enum.any?(Nest.Agents.Registry.list_all(), fn {other_space_id, other_name} ->
+      other_name == name and other_space_id != space_id
+    end)
+  rescue
+    # The registry is gone (application shutdown). Refusing is the safe
+    # direction: a stale directory, not a live agent's scratch.
+    ArgumentError -> true
   end
 
   @doc """

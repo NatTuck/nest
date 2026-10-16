@@ -69,6 +69,21 @@ defmodule Nest.Sandbox.Backend.DockerTest do
       refute other == name
     end
 
+    test "the image is part of the layout, so a package change moves the name" do
+      # The image *is* the container's root filesystem, and `ensure_image/2` runs
+      # only on the create path — so a `.nest` that changes its `[sandbox]
+      # packages` has to move the name, or every command would keep reusing the
+      # container built from the old image.
+      write = scratch()
+
+      assert {:ok, plain} = Docker.container_name(mounts("/ws", write), caps(), [])
+
+      assert {:ok, packaged} =
+               Docker.container_name(mounts("/ws", write), caps_with_packages(["nodejs"]), [])
+
+      refute packaged == plain
+    end
+
     test "refuses mounts that belong to no space" do
       assert {:error, reason} =
                Docker.container_name(Mounts.new("/ws", nil, "docker"), caps(), [])

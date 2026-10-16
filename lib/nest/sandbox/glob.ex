@@ -34,7 +34,12 @@ defmodule Nest.Sandbox.Glob do
   def run(pattern, caps, mounts, opts \\ []) do
     limit = Keyword.get(opts, :limit, @glob_limit)
 
-    with {:ok, full} <- Mounts.resolve(pattern, mounts),
+    # The backend is resolved *here*, before `stage_dir_sandbox/1` needs it: that
+    # accessor raises on a backend this build does not implement, and every
+    # sibling executor (`read/3`, `stat/4`, `run/4`) answers with the same
+    # `{:error, reason}` instead. Resolving first is what keeps glob one of them.
+    with {:ok, _backend} <- Backend.resolve(mounts),
+         {:ok, full} <- Mounts.resolve(pattern, mounts),
          :ok <- reject_terminal_double_star(full) do
       execute(full, caps, mounts, limit)
     end
