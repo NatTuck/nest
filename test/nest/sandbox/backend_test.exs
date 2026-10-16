@@ -12,7 +12,6 @@ defmodule Nest.Sandbox.BackendTest do
   alias Nest.Sandbox.Backend.{Bwrap, None}
   alias Nest.Sandbox.Mounts
   alias Nest.Sandbox.Paths
-  alias Nest.Spaces.Space
 
   defp caps do
     %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}}
@@ -41,8 +40,8 @@ defmodule Nest.Sandbox.BackendTest do
     test "new/2 takes the default backend", %{dir: dir} do
       mounts = Mounts.new(dir, nil)
 
-      assert Mounts.backend(mounts) == Space.default_sandbox_backend()
-      assert Space.default_sandbox_backend() in Space.sandbox_backends()
+      assert Mounts.backend(mounts) == Backend.default()
+      assert Backend.default() in Backend.backends()
     end
 
     test "new/3 names the backend and keeps both directories", %{dir: dir} do
@@ -71,14 +70,11 @@ defmodule Nest.Sandbox.BackendTest do
       assert message =~ "podman"
     end
 
-    test "reports docker as not implemented yet, rather than as unknown" do
-      # `docker` is a value the schema offers (`Space.sandbox_backends/0`) whose
-      # implementation has not landed: a space created with it must be told what
-      # is actually missing. `Nest.Sandbox.Backend.Docker` replaces this clause,
-      # and this test with it.
-      assert {:error, message} = Backend.resolve(Mounts.new(nil, nil, "docker"))
-      assert message =~ "docker"
-      assert message =~ "not implemented"
+    test "resolves every backend the list offers" do
+      for backend <- Backend.backends() do
+        assert {:ok, module} = Backend.resolve(Mounts.new(nil, nil, backend))
+        assert is_atom(module)
+      end
     end
   end
 
@@ -156,6 +152,35 @@ defmodule Nest.Sandbox.BackendTest do
 
       assert Backend.classify(mounts, "[Command timed out after 5ms]") == :read_timeout
       assert Backend.classify(mounts, "[Command cancelled]") == :read_cancelled
+    end
+  end
+
+  describe "remove_space/3" do
+    test "is a no-op for every backend that keeps nothing alive" do
+      # Only docker keeps an environment outside the BEAM (its containers), so
+      # the other two answer without asking anything. The docker clause is
+      # asserted in `Nest.Sandbox.Backend.DockerTest`, where its argv is checked
+      # against a fake daemon.
+      assert Backend.remove_space(7, "bwrap") == :ok
+      assert Backend.remove_space(7, "none") == :ok
+    end
+  end
+
+  describe "the accessors" do
+    test "raise on a backend this build does not implement" do
+      # `command/3` reports an unknown backend as a value the agent can read; the
+      # four accessors are reached only after it has resolved one, so an unknown
+      # value there is a programming error rather than something to report.
+      mounts = Mounts.new(nil, nil, "podman")
+
+      for call <- [
+            fn -> Backend.stage_dir(mounts) end,
+            fn -> Backend.stage_dir_sandbox(mounts) end,
+            fn -> Backend.display_name(mounts) end,
+            fn -> Backend.classify(mounts, "boom") end
+          ] do
+        assert_raise ArgumentError, ~r/podman/, call
+      end
     end
   end
 

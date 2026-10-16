@@ -119,7 +119,12 @@ defmodule Nest.ProjectConfigTest do
         {"mount = 3\n", "array of tables"},
         {"[shell]\nbackground = -1\n", "non-negative integer"},
         {"[shell]\nbackground = \"x\"\n", "non-negative integer"},
-        {"shell = 3\n", "shell must be a table"}
+        {"shell = 3\n", "shell must be a table"},
+        {"[sandbox]\npackages = \"nodejs\"\n", "packages must be a list"},
+        {"[sandbox]\npackages = [3]\n", "Debian package names"},
+        {"[sandbox]\npackages = [\"NodeJS\"]\n", "Debian package names"},
+        {"[sandbox]\npackages = [\"-bad\"]\n", "Debian package names"},
+        {"sandbox = 3\n", "sandbox must be a table"}
       ]
 
       Enum.each(cases, fn {body, needle} -> expect_error(dir, body, needle) end)
@@ -209,6 +214,33 @@ defmodule Nest.ProjectConfigTest do
     end
   end
 
+  describe "the [sandbox] packages" do
+    test "are carried in caps for every mode, like the shell cap", %{dir: dir} do
+      write_nest(dir, "[sandbox]\npackages = [\"nodejs\", \"elixir\"]\n")
+
+      # A read-only mode gets them too: tooling inside the container is not a
+      # filesystem grant.
+      assert {:ok, merged} = ProjectConfig.effective_caps(caps([]), Mounts.new(dir, "/tmp/agent"))
+      assert ProjectConfig.sandbox_packages(merged) == ["nodejs", "elixir"]
+    end
+
+    test "are deduplicated and read back from caps alone", %{dir: dir} do
+      write_nest(dir, "[sandbox]\npackages = [\"nodejs\", \"nodejs\"]\n")
+
+      assert {:ok, merged} = ProjectConfig.effective_caps(caps(), Mounts.new(dir, "/tmp/agent"))
+      assert ProjectConfig.sandbox_packages(merged) == ["nodejs"]
+    end
+
+    test "are empty when .nest declares none", %{dir: dir} do
+      write_nest(dir, "[[mount]]\npath = \"~/x\"\nmode = \"rw\"\n")
+
+      assert ProjectConfig.sandbox_packages(caps()) == []
+
+      assert {:ok, merged} = ProjectConfig.effective_caps(caps(), Mounts.new(dir, "/tmp/agent"))
+      assert ProjectConfig.sandbox_packages(merged) == []
+    end
+  end
+
   describe "section/1" do
     test "is empty when there is no .nest", %{dir: dir} do
       assert ProjectConfig.section(dir) == ""
@@ -223,6 +255,23 @@ defmodule Nest.ProjectConfigTest do
     test "describes the shell background cap", %{dir: dir} do
       write_nest(dir, "[shell]\nbackground = 3\n")
       assert ProjectConfig.section(dir) =~ "at most 3 background shell job(s)"
+    end
+
+    test "names the packages and where they are", %{dir: dir} do
+      write_nest(dir, "[sandbox]\npackages = [\"nodejs\"]\n")
+
+      section = ProjectConfig.section(dir)
+
+      assert section =~ "Project sandbox config"
+      assert section =~ "docker sandbox image with these packages: nodejs"
+    end
+
+    test "is non-empty when the only setting is the packages", %{dir: dir} do
+      # The `empty_config?/1` guard has to count them, or a `.nest` that only
+      # declares packages would render nothing at all.
+      write_nest(dir, "[sandbox]\npackages = [\"nodejs\"]\n")
+
+      refute ProjectConfig.section(dir) == ""
     end
 
     test "renders a visible error for a malformed file", %{dir: dir} do

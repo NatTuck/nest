@@ -63,10 +63,9 @@ defmodule Nest.Sandbox.ShellJobs do
 
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.PubSub
-  alias Nest.Sandbox.Mounts
+  alias Nest.Sandbox.{Backend, Mounts}
   alias Nest.Sandbox.ShellJobs.Launcher
   alias Nest.Sandbox.ShellJobs.Waiters
-  alias Nest.Spaces.Space
   alias Nest.Tools.Exec
   alias Nest.Tools.ShellCmd
 
@@ -537,7 +536,7 @@ defmodule Nest.Sandbox.ShellJobs do
   defp tracked_backend(state, agent_key) do
     case Map.get(state.agents, agent_key) do
       %{mounts: mounts} -> Mounts.backend(mounts)
-      _ -> Space.default_sandbox_backend()
+      _ -> Backend.default()
     end
   end
 

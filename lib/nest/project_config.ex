@@ -33,6 +33,18 @@ defmodule Nest.ProjectConfig do
   a writable workspace: it is not a filesystem grant, so it applies in
   every mode.
 
+  The optional `[sandbox]` table declares Debian packages to add to a
+  `"docker"` space's image:
+
+      [sandbox]
+      packages = ["nodejs", "elixir"]
+
+  Names must look like Debian package names (`^[a-z0-9][a-z0-9+.-]*$`); the
+  list is additive and only affects the docker backend's derived image
+  (`Nest.Sandbox.Backend.Docker`). Like `[shell]`, it is not a filesystem
+  grant, so it applies in every mode — the toolchain is in the container,
+  not on the host.
+
   ## Gating
 
   Project mounts are merged into a mode's caps **only when that mode
@@ -70,8 +82,11 @@ defmodule Nest.ProjectConfig do
   @typedoc "The `[shell]` sandbox settings from `.nest`."
   @type shell :: %{optional(String.t()) => non_neg_integer()}
 
-  @typedoc "The parsed `.nest` file: mounts plus optional `[shell]` settings."
-  @type config :: %{optional(String.t()) => [mount()] | shell() | nil}
+  @typedoc "The `[sandbox]` settings from `.nest`."
+  @type sandbox :: %{optional(String.t()) => [String.t()]}
+
+  @typedoc "The parsed `.nest` file: mounts plus optional `[shell]` and `[sandbox]` settings."
+  @type config :: %{optional(String.t()) => [mount()] | shell() | sandbox() | nil}
 
   @doc """
   Load and parse `<workspace>/.nest`.
@@ -139,10 +154,42 @@ defmodule Nest.ProjectConfig do
   defp validate(raw, workspace) do
     with {:ok, mounts} <- validate_mounts(Map.get(raw, "mount", []), workspace),
          :ok <- reject_duplicates(mounts),
-         {:ok, shell} <- validate_shell(Map.get(raw, "shell")) do
+         {:ok, shell} <- validate_shell(Map.get(raw, "shell")),
+         {:ok, sandbox} <- validate_sandbox(Map.get(raw, "sandbox")) do
       config = %{"mounts" => mounts}
+
       {:ok, if(shell, do: Map.put(config, "shell", shell), else: config)}
+      |> put_sandbox(sandbox)
     end
+  end
+
+  defp put_sandbox({:ok, config}, nil), do: {:ok, config}
+  defp put_sandbox({:ok, config}, sandbox), do: {:ok, Map.put(config, "sandbox", sandbox)}
+  defp put_sandbox(error, _sandbox), do: error
+
+  defp validate_sandbox(nil), do: {:ok, nil}
+
+  defp validate_sandbox(raw) when is_map(raw) do
+    case Map.get(raw, "packages", []) do
+      packages when is_list(packages) ->
+        if Enum.all?(packages, &valid_package?/1) do
+          {:ok, %{"packages" => Enum.uniq(packages)}}
+        else
+          {:error, "sandbox packages must be Debian package names"}
+        end
+
+      _other ->
+        {:error, "sandbox packages must be a list"}
+    end
+  end
+
+  defp validate_sandbox(_raw), do: {:error, "sandbox must be a table"}
+
+  # Debian package names: lower-case, digits, and `+`, `.` or `-` after the
+  # first character. Refusing anything else keeps a malformed name from reaching
+  # an `apt-get install` line.
+  defp valid_package?(name) do
+    is_binary(name) and Regex.match?(~r/\A[a-z0-9][a-z0-9+.-]*\z/, name)
   end
 
   defp validate_shell(nil), do: {:ok, nil}
@@ -256,12 +303,13 @@ defmodule Nest.ProjectConfig do
     end
   end
 
-  # The `[shell]` background cap applies in every mode: it is not a
-  # filesystem grant, so a read-only mode can still lower it (including
-  # to 0 to disable background jobs) or raise it.
+  # The `[shell]` background cap and the `[sandbox]` packages apply in every
+  # mode: neither is a filesystem grant (one is a job ceiling, the other is
+  # tooling inside the container), so a read-only mode gets both.
   defp merge(caps, config, mounts) do
     caps
     |> put_shell(config)
+    |> put_sandbox_packages(config)
     |> maybe_put_project_mounts(mounts, config)
   end
 
@@ -289,11 +337,30 @@ defmodule Nest.ProjectConfig do
 
   defp put_shell(caps, _config), do: caps
 
+  # The declared package set, carried in caps so the docker backend reads it
+  # from the value it already has instead of re-reading `.nest` on every command.
+  defp put_sandbox_packages(caps, %{"sandbox" => %{"packages" => packages}}) do
+    sandbox = caps |> Map.get("sandbox", %{}) |> Map.put("packages", packages)
+    Map.put(caps, "sandbox", sandbox)
+  end
+
+  defp put_sandbox_packages(caps, _config), do: caps
+
   defp mounts(%{"mounts" => mounts}), do: mounts
   defp mounts(_config), do: []
 
   defp shell(%{"shell" => shell}), do: shell
   defp shell(_config), do: nil
+
+  @doc """
+  The Debian packages a project's `.nest` adds to a `"docker"` space's image.
+
+  Reads them from `caps` (where `effective_caps/2` put them) so a caller needs
+  no `.nest` read of its own, and returns `[]` for a mode whose `.nest` declares
+  none.
+  """
+  @spec sandbox_packages(map() | nil) :: [String.t()]
+  def sandbox_packages(caps), do: get_in(caps, ["sandbox", "packages"]) || []
 
   defp workspace_writable?(caps), do: ":workspace" in (get_in(caps, ["fs", "write"]) || [])
 
@@ -394,10 +461,14 @@ defmodule Nest.ProjectConfig do
     end
   end
 
-  defp empty_config?(config), do: mounts(config) == [] and shell(config) == nil
+  defp empty_config?(config) do
+    mounts(config) == [] and shell(config) == nil and sandbox_packages_config(config) == []
+  end
 
   defp render_section(config) do
-    lines = Enum.map(mounts(config), &render_mount/1) ++ shell_lines(config)
+    lines =
+      Enum.map(mounts(config), &render_mount/1) ++
+        shell_lines(config) ++ package_lines(config)
 
     "\n\n[Project sandbox config]\n\n" <>
       "This project has a `.nest` file granting extra sandbox settings " <>
@@ -410,6 +481,22 @@ defmodule Nest.ProjectConfig do
   end
 
   defp shell_lines(_config), do: []
+
+  # The packages are in the docker image, not on the host, so the line says
+  # where they are — an agent that reaches for `node` on a bwrap space would
+  # otherwise read this as a promise about its own environment.
+  defp package_lines(config) do
+    case sandbox_packages_config(config) do
+      [] ->
+        []
+
+      packages ->
+        ["- a docker sandbox image with these packages: #{Enum.join(packages, ", ")}"]
+    end
+  end
+
+  defp sandbox_packages_config(%{"sandbox" => %{"packages" => packages}}), do: packages
+  defp sandbox_packages_config(_config), do: []
 
   defp render_mount(%{"dest" => dest, "mode" => "rw"}),
     do: "- read-write access to #{dest}"

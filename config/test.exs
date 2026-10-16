@@ -33,6 +33,15 @@ config :nest, stop_fallback_ms: 1
 # `hardware_test.exs` exercises detection against a `dev_root` fixture.
 config :nest, hpu_device_paths: []
 
+# The suite must never talk to a Docker daemon, and must never leave a
+# container behind. The docker backend's default runner is
+# `System.cmd("docker", argv)`; here it is an inert stub that reports "the
+# daemon answered, and there is nothing there", which is the answer that
+# leaves every code path in its no-op branch. The lifecycle tests pass their
+# own `runner:` and assert the argv they expect, so the stubbed default is
+# what keeps `System.cmd` the one line the suite does not execute.
+config :nest, docker_runner: fn _argv -> {"", 0} end
+
 # `Nest.Hostname.get/0` titles every page (and feeds
 # `window.NEST_CONFIG.host`). Pin it so the layout tests assert on a
 # fixed name instead of whatever machine they happen to run on.
