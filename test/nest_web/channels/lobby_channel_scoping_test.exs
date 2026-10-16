@@ -403,6 +403,19 @@ defmodule NestWeb.LobbyChannelScopingTest do
       assert_reply ref, :ok, %{"space_id" => new_space_id, "name" => new_name}, 500
       AgentTestHelpers.ensure_cleanup(new_name)
 
+      # The barrier the status broadcast needs, and the reason this test used to
+      # flake under cover-load: the first session reconciles from the per-user
+      # `{:spaces_changed, _}` frame, which is a *different* mailbox delivery from
+      # the synchronous reconcile the pushing session does. Broadcasting the
+      # status before the first session has handled it means there is no
+      # subscription to receive it, and the push never arrives at all — so waiting
+      # for its `space:created` frame (pushed after the reconcile, on the same
+      # topic and in the same process) is what makes the status broadcast
+      # deterministic. Two frames, because both sockets push into this mailbox and
+      # the *count* is the only thing that attributes a frame to a session.
+      assert_push "space:created", %{"space" => %Nest.Spaces.Space{id: ^new_space_id}}, 1_000
+      assert_push "space:created", %{"space" => %Nest.Spaces.Space{id: ^new_space_id}}, 1_000
+
       Phoenix.PubSub.broadcast(
         Nest.PubSub,
         "space:#{new_space_id}",

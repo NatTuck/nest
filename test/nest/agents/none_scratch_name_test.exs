@@ -12,11 +12,16 @@ defmodule Nest.Agents.NoneScratchNameTest do
 
   use Nest.DataCase, async: true
 
+  import ExUnit.CaptureLog
+
   alias Nest.Agents
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
+  alias Nest.Persistence
+  alias Nest.Sandbox.Mounts
   alias Nest.Spaces
+  alias Nest.Test.TmpCleanup
 
   defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
 
@@ -33,6 +38,36 @@ defmodule Nest.Agents.NoneScratchNameTest do
       )
 
     AgentTestHelpers.ensure_cleanup(name)
+    name
+  end
+
+  # Start an agent from a row that already exists, the way
+  # `Supervisor.fetch_or_start_agent/2` rehydrates one — no `pre_spawn`, so the
+  # creation boundary does not run.
+  defp start_rehydrated(space_id, name) do
+    model = %{name: "qwen3.5-plus", provider: "model-studio"}
+    vocation_id = AgentTestHelpers.vocation_id_for_test()
+
+    {:ok, _row} =
+      Persistence.insert_agent(%{
+        space_id: space_id,
+        name: name,
+        model: model,
+        vocation_id: vocation_id
+      })
+
+    {:ok, _pid} =
+      Supervisor.start_under_test(%{
+        space_id: space_id,
+        name: name,
+        model: model,
+        vocation_id: vocation_id,
+        vocation: Nest.Vocations.get_vocation(vocation_id),
+        workspace_path: nil,
+        sandbox_backend: "none",
+        depth: 0
+      })
+
     name
   end
 
@@ -103,6 +138,84 @@ defmodule Nest.Agents.NoneScratchNameTest do
       assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
 
       assert start_named(space_b, name) == name
+    end
+  end
+
+  describe "a name another live agent holds" do
+    test "stopping one of two live same-named agents leaves the shared scratch" do
+      {:ok, space_a} = AgentTestHelpers.create_test_space(%{sandbox_backend: "none"})
+      {:ok, space_b} = AgentTestHelpers.create_test_space(%{sandbox_backend: "none"})
+
+      name = unique("shared-live")
+      start_named(space_b, name)
+
+      # The second one can only be live through the *rehydration* path: the
+      # creation boundary refuses a name a live agent in another `none` space
+      # holds, but restarting a row on demand is deliberately not gated. That is
+      # how two live agents end up sharing `/tmp/<name>`.
+      start_rehydrated(space_a, name)
+
+      scratch = TmpSpace.agent_dir(space_a, name, "none")
+      assert scratch == TmpSpace.agent_dir(space_b, name, "none")
+      File.write!(Path.join(scratch, "mine.txt"), "keep")
+
+      {:ok, pid} = Nest.Agents.Registry.lookup(space_a, name)
+      ref = Process.monitor(pid)
+      assert :ok = Supervisor.stop_agent(space_a, name)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
+
+      # Space B's agent is still live, so the directory is not ours to remove.
+      assert File.dir?(scratch)
+      assert File.read!(Path.join(scratch, "mine.txt")) == "keep"
+    end
+  end
+
+  describe "a name nothing live holds" do
+    test "an unmarked directory of that name is never removed" do
+      {:ok, space_id} = AgentTestHelpers.create_test_space(%{sandbox_backend: "none"})
+
+      # A `none` agent's scratch is the host's own `/tmp/<name>`, and the name is
+      # client- and model-controlled. This one is not Nest's — no marker — so
+      # taking the name must not delete it, whatever it holds.
+      name = unique("nest-rmtest")
+      dir = Path.join(System.tmp_dir!(), name)
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "host-file"), "not Nest's")
+      on_exit(fn -> TmpCleanup.rm_tmp!(dir, "nest-rmtest") end)
+
+      log =
+        capture_log(fn ->
+          assert start_named(space_id, name) == name
+        end)
+
+      # The refusal is an `:error` line (a directory that exists and is not ours
+      # is worth an operator's attention), asserted for inclusion only.
+      assert log =~ "it is not a Nest scratch directory"
+      assert File.read!(Path.join(dir, "host-file")) == "not Nest's"
+    end
+  end
+
+  describe "the mounts a docker space's agent gets" do
+    test "carry the agent's real scratch, so a command can be staged" do
+      {:ok, space_id} = AgentTestHelpers.create_test_space(%{sandbox_backend: "docker"})
+
+      # No workspace: composing the prompt then reads no `AGENTS.md`, so this
+      # never runs the container. What it does assert is the thing that made a
+      # docker space with a workspace silently lose that section — the mounts the
+      # prompt is composed through must name the agent's scratch, or the staged
+      # transcript lands where the container cannot reach it.
+      name = start_named(space_id, unique("docker-mounts"))
+      {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
+
+      # allowlist: snapshot — the mounts the *start path* built, which is the
+      # thing under test; no accessor exposes them and there is no event for
+      # "the agent started with these mounts" (the creation itself is the wait).
+      mounts = Mounts.from_agent(:sys.get_state(pid))
+
+      assert Mounts.scratch(mounts) == TmpSpace.agent_dir(space_id, name, "docker")
+      assert Mounts.space_id(mounts) == space_id
+      assert Mounts.backend(mounts) == "docker"
+      assert File.dir?(Mounts.scratch(mounts))
     end
   end
 

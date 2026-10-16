@@ -51,16 +51,17 @@ defmodule Nest.Agents.Agent.Init do
     name = Map.fetch!(attrs, :name)
     space_id = Map.fetch!(attrs, :space_id)
 
-    {system_prompt, mode, tool_names, cached_vocation, llm_metrics} =
-      build_vocation_pipeline(attrs, backend, space_id)
-
     # The agent's whole sandbox, built once: the backend its space runs, the
     # workspace it binds, and the scratch directory just created for it. The
     # tools capture it (a tool closure runs the command it is handed through
-    # this value), so it must carry the real backend — a `"none"` space's
-    # tools must not run their reads under bwrap.
-    mounts =
-      Mounts.new(workspace, create_tmp_space(space_id, name, backend), backend, space_id)
+    # this value), and composing the prompt runs the sandbox too, so both must
+    # carry the real backend and the real scratch — a `"none"` space's reads
+    # must not run under bwrap, and a `"docker"` one can only stage through the
+    # scratch bind (see `Nest.Sandbox.Backend.Docker.command/3`).
+    mounts = Mounts.new(workspace, create_tmp_space(space_id, name, backend), backend, space_id)
+
+    {system_prompt, mode, tool_names, cached_vocation, llm_metrics} =
+      build_vocation_pipeline(attrs, mounts)
 
     tools = Tools.get_functions(tool_names, mounts)
 
@@ -94,11 +95,10 @@ defmodule Nest.Agents.Agent.Init do
   # initializer. Kept as its own helper so `build_state/2`
   # stays under the credo ABC cap.
   #
-  # `backend` and `space_id` ride along because composing the system prompt
-  # *runs* the sandbox: the `AGENTS.md` section reads the file through it, so a
-  # `"none"` space's prompt must not be composed under bwrap and a `"docker"`
-  # space's must be composed in the right container.
-  defp build_vocation_pipeline(attrs, backend, space_id) do
+  # The prompt is composed through `mounts` because composing it *runs* the
+  # sandbox: the `AGENTS.md` section reads the file through it (see
+  # `Nest.Agents.Agent.TmpSpace.prompt_mounts/4`).
+  defp build_vocation_pipeline(attrs, mounts) do
     model = Map.fetch!(attrs, :model)
     # Internal/test-only cache-tier override; see `initial_context_limit/2`.
     cache_lookup = Map.get(attrs, :context_limit_lookup, &Nest.Models.context_limit/2)
@@ -107,7 +107,7 @@ defmodule Nest.Agents.Agent.Init do
     {system_prompt, mode, tool_names, cached_vocation} =
       SystemPrompt.compose_vocation_config(
         Map.get(attrs, :vocation),
-        Mounts.new(Map.get(attrs, :workspace_path), nil, backend, space_id),
+        mounts,
         {context_limit, context_limit_source},
         Map.get(attrs, :name, ""),
         Map.get(attrs, :depth, 0)

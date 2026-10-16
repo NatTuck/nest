@@ -18,6 +18,7 @@ defmodule Nest.Persistence.AgentCompaction do
   alias Nest.Agents.Agent.Config, as: AgentConfig
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.PersistedAgent
   alias Nest.ChatModel
   alias Nest.DotConfig
@@ -26,7 +27,6 @@ defmodule Nest.Persistence.AgentCompaction do
   alias Nest.Persistence.AgentCompaction.Planner
   alias Nest.Persistence.AgentCompaction.Summarizer
   alias Nest.Persistence.AgentCompaction.Writer
-  alias Nest.Sandbox.Mounts
   alias Nest.Spaces
   alias Nest.Vocations
 
@@ -140,11 +140,11 @@ defmodule Nest.Persistence.AgentCompaction do
     {system_prompt, _mode, _tools, _vocation} =
       SystemPrompt.compose_vocation_config(
         vocation,
-        Mounts.new(
+        TmpSpace.prompt_mounts(
           agent.workspace_path,
-          nil,
-          Nest.Spaces.sandbox_backend(agent.space_id),
-          agent.space_id
+          agent.space_id,
+          agent.name,
+          Nest.Spaces.sandbox_backend(agent.space_id)
         ),
         {limit, source},
         agent.name,

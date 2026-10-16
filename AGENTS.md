@@ -74,7 +74,17 @@ If the tree is so screwed up that reverting is the only option then stop and rep
 - A `none` space's scratch is the host's real `/tmp/<agent-name>`, so agent
   names are unique across `none` spaces: the creation boundary refuses a
   collision (`{:scratch_name_in_use, other_space_name}`) and the name generator
-  never proposes one.
+  never proposes one. The name is client- and model-controlled and cannot
+  distinguish Nest's directory from the host's own `/tmp` entries, so
+  `TmpSpace.create/3` writes a `.nest-scratch` marker and **every** `rm_rf` of a
+  `none` scratch requires it. A removal that would take a live same-named agent's
+  scratch in another space is refused too.
+- Anything that composes a prompt or runs a command must be given the agent's
+  *real* scratch bind (`TmpSpace.prompt_mounts/4` builds the prompt's mounts):
+  the staged transcript is only reachable inside a docker container through the
+  `<space_dir>:/tmp` bind, so a call that leaves the scratch out silently loses
+  the read instead of failing loudly (`Nest.Sandbox.Backend.Docker.command/3`
+  refuses outright).
 - Nothing under `lib/nest/sandbox/` reads the spaces schema. `Nest.Sandbox.Backend`
   owns the backend list and the default, `Nest.Spaces.Space` consumes them, and
   the dependency runs schema → sandbox only.

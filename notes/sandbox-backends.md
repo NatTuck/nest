@@ -41,6 +41,46 @@ it as a `.nest` mount.
 Agent-visible paths are identical on every backend: `/tmp/<agent-name>/…` for
 scratch and the workspace's own path for the workspace.
 
+### The staging directory needs the scratch bind
+
+A command's transcript is staged on the host and handed to the shell as a *file*,
+so the file has to be reachable *inside* the environment. Under bwrap that works
+with or without a scratch bind, because bwrap binds the host `/` read-only and
+`<host tmp>/.nest-cmds` is visible through it. **Under docker it does not**: the
+container's root filesystem is the image, so without the `<space_dir>:/tmp` bind
+the handed path is the container's own empty `/tmp` — bash exits 127, the failure
+classifies as `:enoent` (an ordinary "not found", deliberately not logged), and a
+caller like the system prompt's `AGENTS.md` section swallows it. A docker space
+with a workspace would silently lose that section.
+
+So every call that runs the sandbox names the agent's real scratch directory —
+`Nest.Agents.Agent.TmpSpace.prompt_mounts/4` is the one place the prompt's mounts
+are built — and `Docker.command/3` refuses outright with no scratch bind, so the
+next caller that forgets is loud rather than silent.
+
+### A `"none"` scratch is removed only if Nest marked it
+
+A `"none"` agent's scratch is the host's own `/tmp/<name>`, and the name is
+client- and model-controlled: `@name_format` admits `nest-4` (another BEAM's
+whole scratch root), `X11-unix` and `snap-private-tmp`, all of which are real
+entries in a real `/tmp`. So `TmpSpace.create/3` writes a `.nest-scratch` marker
+into a `"none"` agent's scratch, and **every** removal requires it — the
+`terminate/2` cleanup and the stale-directory clear at creation. A directory
+without the marker is never removed.
+
+Two honest residuals: a pre-existing `/tmp/X11-unix`, or a `"none"` scratch from
+before this change, is left alone forever; and an agent that deletes its own
+marker leaves a stale directory. Only `"none"` needs the marker — a bwrap or
+docker scratch sits under `nest-<BEAM pid>/space-<id>/`.
+
+A `"none"` scratch is also left alone while a *live* agent in another space holds
+the same name. Two `"none"` spaces share one `/tmp`, the creation boundary only
+refuses a *live* holder, and the on-demand restart path is not gated at all — so
+space A's stopped `x`, space B's new `x`, and A's rehydrated `x` can all be live
+on `/tmp/x`. `TmpSpace.cleanup/3` therefore asks the registry (only the registry:
+it runs from `terminate/2`) whether another space has a live agent of that name,
+and refuses if so. Over-refusing leaves a stale directory, which is harmless.
+
 ## One container per `(space, caps signature)`
 
 Caps are per **agent** (they come from the vocation's mode), and one container's
@@ -100,8 +140,13 @@ RUN apt-get update \
 * `debian:trixie-slim` is Debian 13. It is deliberately minimal — no `git`,
   `curl`, `file` or `rg` — so the base set adds what a shell needs to be useful.
 * The tag is `nest-sandbox:<12 hex>` keyed on the base reference and the sorted
-  package list, so a changed set is a different tag and rebuilds on next use. The
-  build is skipped when the tag already exists.
+  package list, so a changed set is a different tag. The build is skipped when the
+  tag already exists, and the tag is part of the container's signature — a
+  container reused across a package change would otherwise keep running the old
+  image, because the image is only ensured on the create path. The superseded
+  container then lingers until its BEAM is gone, which is the deliberate cost of a
+  pid-based sweep: a layout-based one would have two agents in different modes
+  deleting each other's container on every create.
 * The project toolchain (Elixir, Node, Rust) is **not** in the base. A project
   that needs it declares it:
 
@@ -123,6 +168,12 @@ A failed build or a failed container start reaches the agent as
 
 ## Testing
 
+* A docker space with a *workspace* cannot be created in the suite at all: the
+  system prompt reads `AGENTS.md` through the backend, and that exec is a real
+  `docker exec` (the `docker_runner` stub covers the setup calls, not the command
+  the agent runs — see `config/test.exs`). The call sites that build the prompt's
+  mounts are therefore covered through `TmpSpace.prompt_mounts/4` and through a
+  docker space *without* a workspace.
 * Everything that decides *what* to run is pure and asserted exactly:
   `Docker.container_name/3`, `image_tag/1`, `dockerfile/1`, `bind_specs/2`,
   `run_args/4`. `bind_specs/2` mirrors `Nest.Sandbox.build/2`'s derivation, and a
