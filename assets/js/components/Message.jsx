@@ -155,7 +155,7 @@ function Message({ message, agentName }) {
                       (p) => p && p.kind === "media",
                     ),
                   ]
-                : textPartsFor(message)
+                : textPartsFor(message).filter((p) => p?.kind !== "media")
             }
             isPartial={isPartial}
             className="text-gray-800"
@@ -165,12 +165,15 @@ function Message({ message, agentName }) {
         <DelegatedTask message={message} agentName={agentName} />
         <ToolResults toolResults={message.toolResults} />
         {/* The user branch above hands its media to `MessageContent`, which
-            renders it; every other role's `MessageContent` receives text only,
-            so its media is rendered here. The `isUser` guard is what keeps a
-            user-side attachment from rendering twice. `message.media` is
-            derived by the store alongside `toolResults`; the `mediaFromParts`
-            fallback covers a message that reached the renderer without going
-            through that merge. */}
+            renders it; every other role's `MessageContent` gets the parts with
+            media filtered out above, so its media is rendered here — exactly
+            once. The filter is load-bearing: `textPartsFor` splits think blocks
+            out but passes every other non-text part through, so without it
+            `MessageContent` renders the media too and the operator sees the
+            attachment twice (issue #115). `message.media` is derived by the
+            store alongside `toolResults`; the `mediaFromParts` fallback covers
+            a message that reached the renderer without going through that
+            merge. */}
         {!isUser && (
           <ToolMedia media={message.media ?? mediaFromParts(message.parts)} />
         )}

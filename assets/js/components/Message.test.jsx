@@ -1,8 +1,10 @@
 /**
- * Tests for the live `Message` bubble's API-logs affordance.
+ * Tests for the live `Message` bubble.
  *
- * The response log is expected on assistant messages; a missing one
- * must render a visible error indicator rather than silently vanishing.
+ * Covers the API-logs affordance (a missing response log must render a visible
+ * error indicator rather than silently vanishing), the `[nest notice]` marker's
+ * render-time removal, and that an attached image renders exactly once
+ * (issue #115).
  */
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
@@ -144,5 +146,87 @@ describe("Message runtime notice rendering", () => {
       expect(screen.queryByText(/nest notice/), label).toBeNull();
       unmount();
     }
+  });
+});
+
+describe("attached media renders exactly once", () => {
+  // Issue #115. Two components can render media: `MessageContent`, whose parts
+  // still carry the media part because `textPartsFor` passes every non-text
+  // part through, and the explicit `ToolMedia` beside it for a non-user role.
+  // Both fired, so the operator saw the attachment twice.
+  const PNG =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
+
+  // The wire part, camelCase; the store-derived `media` field, snake_case.
+  const mediaPart = {
+    kind: "media",
+    toolCallId: "call_1",
+    modality: "image",
+    mediaType: "image/png",
+    bytes: 68,
+    data: PNG,
+    path: "shot.png",
+  };
+
+  const derivedMedia = {
+    tool_call_id: "call_1",
+    modality: "image",
+    mediaType: "image/png",
+    bytes: 68,
+    data: PNG,
+    path: "shot.png",
+  };
+
+  const toolResultPart = {
+    kind: "tool_result",
+    toolCallId: "call_1",
+    name: "file-read",
+    content: "Read 68 B image/png from shot.png; attached below.",
+    isError: false,
+    state: null,
+  };
+
+  const toolMessage = (parts, overrides = {}) => ({
+    index: 5,
+    role: "tool",
+    parts,
+    toolResults: [
+      {
+        tool_call_id: "call_1",
+        name: "file-read",
+        content: "Read 68 B image/png from shot.png; attached below.",
+        is_error: false,
+        state: null,
+      },
+    ],
+    media: [derivedMedia],
+    metadata: null,
+    ...overrides,
+  });
+
+  it("renders a tool message's attached image once, not twice", () => {
+    render(
+      <MessageBubble
+        agentName="test-agent"
+        message={toolMessage([toolResultPart, mediaPart])}
+      />,
+    );
+
+    expect(screen.getAllByTestId("tool-media-image")).toHaveLength(1);
+  });
+
+  it("still renders the image when only the store-derived media field carries it", () => {
+    // Why the explicit render stays rather than being deleted: a message whose
+    // parts carry no media part but whose derived `media` field does. This one
+    // `MessageContent` cannot see, and dropping the explicit render would lose
+    // it silently — which the project forbids.
+    render(
+      <MessageBubble
+        agentName="test-agent"
+        message={toolMessage([toolResultPart])}
+      />,
+    );
+
+    expect(screen.getAllByTestId("tool-media-image")).toHaveLength(1);
   });
 });

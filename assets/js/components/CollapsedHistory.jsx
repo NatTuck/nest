@@ -127,15 +127,18 @@ function MessageBubble({ message }) {
           <>
             <ThinkingBlock thinking={thinkingFor(message)} isPartial={false} />
             <MessageContent
-              parts={textPartsFor(message)}
+              parts={textPartsFor(message).filter((p) => p?.kind !== "media")}
               isPartial={false}
               className="text-xs text-gray-700"
             />
             <ToolCalls toolCalls={toolCallsFromParts(message.parts)} />
             <ToolResults toolResults={toolResultsFromParts(message.parts)} />
-            {/* This branch's `MessageContent` gets text only, so the media is
-                rendered beside it; the user branch above hands its media to
-                `MessageContent` instead. */}
+            {/* This branch's `MessageContent` gets the parts with media
+                filtered out, so the media is rendered here — exactly once.
+                The filter is load-bearing: `textPartsFor` passes every
+                non-text part through, so without it `MessageContent` renders
+                the media too (issue #115). The user branch above hands its
+                media to `MessageContent` instead. */}
             <ToolMedia media={mediaFromParts(message.parts)} />
             <ApiLogsBlock
               apiLogs={message.apiLogs}
