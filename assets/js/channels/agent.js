@@ -179,9 +179,20 @@ function requestSync(agentId, opts = {}) {
     getStore().syncAgentMessages(agentId, resp);
 
     const updatedCache = getStore().agentsCache[agentId];
-    if (updatedCache) {
-      requestSync(agentId, { lastIndex: updatedCache.lastIndex });
+    if (!updatedCache) {
+      return;
     }
+
+    // Re-sync only when the reply actually moved the watermark. A reply that
+    // adds no new index — a replayed frame, or a server that keeps naming rows
+    // the client already has — would otherwise re-request the same batch
+    // forever. A cold drain of a long conversation is a series of batches, so
+    // this is the loop's termination condition, not a rare edge.
+    if (updatedCache.lastIndex <= lastIndex) {
+      return;
+    }
+
+    requestSync(agentId, { lastIndex: updatedCache.lastIndex });
   });
 }
 
