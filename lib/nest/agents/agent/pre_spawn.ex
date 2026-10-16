@@ -93,21 +93,33 @@ defmodule Nest.Agents.Agent.PreSpawn do
 
   defp none_space_scratch_name(space_id, name) do
     case other_none_space_holder(space_id, name) do
-      nil ->
-        # No live agent in another `"none"` space holds the name, so whatever
-        # sits at the path is a stopped agent's leftovers. A fresh agent starts
-        # from a fresh scratch rather than inheriting them.
-        #
-        # Safe here and only here: this runs in the caller, before
-        # `start_link/1` registers the name, so a live holder would have been
-        # found above. `remove_stale/3` still requires Nest's own marker in the
-        # directory, because the name alone does not say the directory is ours
-        # (`nest-4`, `X11-unix` and `snap-private-tmp` all pass the name rule and
-        # all exist in real `/tmp`s).
-        TmpSpace.remove_stale(space_id, name, "none")
+      nil -> clear_stale_scratch(space_id, name)
+      other_space_id -> {:error, {:scratch_name_in_use, space_label(other_space_id)}}
+    end
+  end
 
-      other_space_id ->
-        {:error, {:scratch_name_in_use, space_label(other_space_id)}}
+  # No live agent holds the name, so whatever sits at the path is a stopped
+  # agent's leftovers — *if* it is Nest's at all. `/tmp/<name>` is the host's own
+  # `/tmp` and the name is client- and model-controlled, so a directory Nest did
+  # not put there is refused by name rather than adopted: `TmpSpace.create/3`
+  # would otherwise stamp its marker into it and hand the next `cleanup/3` a
+  # licence to delete it (`nest-4` is another BEAM's whole scratch root, and
+  # `X11-unix` and `snap-private-tmp` are real `/tmp` entries).
+  #
+  # The refusal belongs here, at the point the name is chosen, rather than as a
+  # raise from `init/1` that the start path rolls back: the caller can then say
+  # which name to pick instead.
+  #
+  # Refusing here is also safe against a live holder: this runs in the caller,
+  # before `start_link/1` registers the name, so a live one would have been found
+  # above.
+  defp clear_stale_scratch(space_id, name) do
+    path = TmpSpace.agent_dir(space_id, name, "none")
+
+    if TmpSpace.claimable?(path, "none") do
+      TmpSpace.remove_stale(space_id, name, "none")
+    else
+      {:error, {:scratch_path_taken, path}}
     end
   end
 

@@ -63,6 +63,14 @@ export function describeCreateError(err) {
       return "No agent vocation is configured on the server.";
     case "invalid_agent_name":
       return "Agent names can only contain letters, numbers, dashes and underscores.";
+    case "scratch_path_taken":
+      // The name is free, but the host directory Nest would use for this
+      // agent's scratch already exists and is not Nest's — so Nest will not
+      // adopt it (and would refuse to remove it later). Only a `none`-backend
+      // space can hit this: it is the one that puts its agents in the host /tmp.
+      return err?.path
+        ? `There is already something at ${err.path} on the server, and it is not this space's. Pick another agent name.`
+        : "There is already something at that agent's scratch path on the server. Pick another agent name.";
     case "scratch_name_in_use":
       // A `none`-backend space runs commands on the host, so its agents'
       // scratch directories all live under the one host `/tmp`. Two such

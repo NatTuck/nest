@@ -79,6 +79,7 @@ defmodule Nest.Sandbox.Mounts do
   reports nothing.
   """
 
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.FSPath
   alias Nest.Sandbox.Backend
 
@@ -185,12 +186,25 @@ defmodule Nest.Sandbox.Mounts do
   @doc """
   Create the agent's scratch directory when there is one, so a command can be
   staged in it. A no-op when there is no scratch directory.
+
+  This is the *second* creator of a scratch directory (the first is
+  `Nest.Agents.Agent.TmpSpace.create/3`, on the start path), and it marks what it
+  makes: a `"none"` scratch is the host's own `/tmp/<name>`, and one made without
+  the marker would be a directory no later `cleanup/3` could ever remove. An
+  existing directory is never touched — in particular, something at that path
+  that is not Nest's is left unmarked, which is what keeps the marker meaning
+  "Nest made this" (see `Nest.Agents.Agent.TmpSpace`).
   """
   @spec ensure_scratch!(t()) :: :ok
   def ensure_scratch!(%__MODULE__{scratch: nil}), do: :ok
 
-  def ensure_scratch!(%__MODULE__{scratch: dir}) do
-    File.mkdir_p!(dir)
+  def ensure_scratch!(%__MODULE__{scratch: dir} = mounts) do
+    unless File.dir?(dir) do
+      File.mkdir_p!(dir)
+      TmpSpace.mark!(dir, backend(mounts))
+    end
+
+    :ok
   end
 
   @doc """

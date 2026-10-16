@@ -26,6 +26,16 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
   # guard exists for (`nest-<pid>`, `X11-unix`, `snap-private-tmp`): the guard
   # cannot tell them apart from a stand-in, and a test that used one would delete
   # the host's own directory if the guard ever regressed.
+  defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
+
+  # A `"none"` scratch is the host's own `/tmp/<name>`, so a test that makes one
+  # has to remove it: production leaves them to the agent's `terminate/2`, and a
+  # test that never started an agent has no way to reach that.
+  defp track_none_scratch(space_id, name) do
+    on_exit(fn -> TmpSpace.cleanup(space_id, name, "none") end)
+    name
+  end
+
   defp host_tmp_dir(prefix) do
     dir = Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
@@ -142,16 +152,53 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
 
   describe "prompt_mounts/4" do
     test "names the agent's real scratch, space and backend", %{space_id: space_id} do
-      mounts = TmpSpace.prompt_mounts("/ws", space_id, "agent-a", "docker")
+      mounts = TmpSpace.prompt_mounts("/ws", space_id, unique("agent-a"), "docker")
 
       # The scratch directory is named even though nothing created it: the
       # docker backend can only stage a script the container reaches through the
       # scratch bind, and composing the prompt runs the sandbox (see
       # `Nest.Sandbox.Backend.Docker.command/3`).
-      assert Mounts.scratch(mounts) == TmpSpace.agent_dir(space_id, "agent-a", "docker")
+      assert Mounts.scratch(mounts) ==
+               TmpSpace.agent_dir(space_id, Mounts.scratch(mounts) |> Path.basename(), "docker")
+
       assert Mounts.workspace(mounts) == "/ws"
       assert Mounts.backend(mounts) == "docker"
       assert Mounts.space_id(mounts) == space_id
+    end
+
+    test "names the directory without making it", %{space_id: space_id} do
+      # Naming and making are separate on purpose: the two creators are `create/3`
+      # (the start path) and `Mounts.ensure_scratch!/1` (staging), and a scratch
+      # path that cannot be made has to fail where the agent starts rather than as
+      # a raise out of the caller that is merely composing a prompt.
+      name = track_none_scratch(space_id, unique("none-a"))
+      mounts = TmpSpace.prompt_mounts(nil, space_id, name, "none")
+
+      assert Mounts.scratch(mounts) == Path.join("/tmp", name)
+      refute File.exists?(Mounts.scratch(mounts))
+    end
+
+    test "ensure_scratch!/1 marks what it makes, and never touches what is there", %{
+      space_id: space_id
+    } do
+      # The staging seam is the other creator of a scratch directory: a `"none"`
+      # one it made without the marker would be a directory no later `cleanup/3`
+      # could ever remove.
+      name = track_none_scratch(space_id, unique("none-a"))
+      mounts = TmpSpace.prompt_mounts(nil, space_id, name, "none")
+      scratch = Mounts.scratch(mounts)
+
+      assert :ok = Mounts.ensure_scratch!(mounts)
+      assert File.exists?(Path.join(scratch, ".nest-scratch"))
+
+      # Something at the path that is not Nest's is left unmarked: the marker has
+      # to keep meaning "Nest made this", or it is a licence to delete.
+      foreign = host_tmp_dir("nest-rmtest-ensure")
+      foreign_mounts = Mounts.new(nil, foreign, "none", space_id)
+
+      assert :ok = Mounts.ensure_scratch!(foreign_mounts)
+      refute File.exists?(Path.join(foreign, ".nest-scratch"))
+      assert File.dir?(foreign)
     end
 
     test "carries no scratch for a name that cannot be a path component", %{space_id: space_id} do
@@ -167,7 +214,10 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
     test "create/3 marks a none agent's scratch and leaves the other backends unmarked", %{
       space_id: space_id
     } do
-      for {backend, name} <- [{"none", "none-a"}, {"bwrap", "bwrap-a"}, {"docker", "docker-a"}] do
+      for backend <- ["none", "bwrap", "docker"] do
+        name = unique("#{backend}-a")
+        if backend == "none", do: track_none_scratch(space_id, name)
+
         path = TmpSpace.create(space_id, name, backend)
         marked = File.exists?(Path.join(path, ".nest-scratch"))
 
@@ -176,11 +226,38 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       end
     end
 
+    test "create/3 refuses to adopt a directory that is not Nest's", %{space_id: space_id} do
+      # `mkdir_p!` is a no-op on an existing directory, so without this check
+      # `create/3` would claim exactly the directories the marker exists to
+      # protect — and stamp the marker into one, which is what licenses the next
+      # `cleanup/3` to delete it.
+      dir = host_tmp_dir("nest-rmtest-adopt")
+      File.write!(Path.join(dir, "host-file"), "not Nest's")
+
+      assert_raise ArgumentError, ~r/it exists and is not Nest's/, fn ->
+        TmpSpace.create(space_id, Path.basename(dir), "none")
+      end
+
+      refute File.exists?(Path.join(dir, ".nest-scratch"))
+      assert File.read!(Path.join(dir, "host-file")) == "not Nest's"
+    end
+
+    test "create/3 re-opens a marked directory idempotently", %{space_id: space_id} do
+      # Re-creating a stopped agent's scratch is the ordinary path, and it must
+      # not look like adoption.
+      name = track_none_scratch(space_id, unique("none-a"))
+      first = TmpSpace.create(space_id, name, "none")
+
+      assert TmpSpace.create(space_id, name, "none") == first
+      assert File.exists?(Path.join(first, ".nest-scratch"))
+    end
+
     test "cleanup/3 removes a marked none scratch", %{space_id: space_id} do
-      path = TmpSpace.create(space_id, "none-a", "none")
+      name = track_none_scratch(space_id, unique("none-a"))
+      path = TmpSpace.create(space_id, name, "none")
       assert File.dir?(path)
 
-      assert :ok = TmpSpace.cleanup(space_id, "none-a", "none")
+      assert :ok = TmpSpace.cleanup(space_id, name, "none")
       refute File.exists?(path)
     end
 
@@ -216,10 +293,11 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
     end
 
     test "remove_stale/3 obeys the same rule", %{space_id: space_id} do
-      marked = TmpSpace.create(space_id, "none-a", "none")
+      name = track_none_scratch(space_id, unique("none-a"))
+      marked = TmpSpace.create(space_id, name, "none")
       unmarked = host_tmp_dir("nest-rmtest-stale")
 
-      assert :ok = TmpSpace.remove_stale(space_id, "none-a", "none")
+      assert :ok = TmpSpace.remove_stale(space_id, name, "none")
       refute File.exists?(marked)
 
       log =
@@ -240,10 +318,11 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
     test "a bwrap scratch is removed without a marker", %{space_id: space_id} do
       # Its path already carries `nest-<BEAM pid>/space-<id>`, so there is
       # nothing to disambiguate.
-      path = TmpSpace.create(space_id, "bwrap-a", "bwrap")
+      name = unique("bwrap-a")
+      path = TmpSpace.create(space_id, name, "bwrap")
       refute File.exists?(Path.join(path, ".nest-scratch"))
 
-      assert :ok = TmpSpace.cleanup(space_id, "bwrap-a", "bwrap")
+      assert :ok = TmpSpace.cleanup(space_id, name, "bwrap")
       refute File.exists?(path)
     end
   end

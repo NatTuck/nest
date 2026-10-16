@@ -10,9 +10,12 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
   alias Nest.Agents.PersistedAgent
   alias Nest.Spaces.Space
 
-  # The `Nest.Sandbox.workspace_error/1` refusals a create can carry; each is
-  # its own reply code (see `create_payload/1`).
+  # The `Nest.Sandbox.workspace_error/1` refusals a create can carry.
   @workspace_reasons [:workspace_required, :workspace_missing, :workspace_under_tmp]
+
+  # The refusals whose reply code is simply the reason's own name, so one arm
+  # covers them (see `create_payload/1`).
+  @simple_reasons @workspace_reasons ++ [:blueprint_missing, :missing_vocation]
 
   @doc false
   def change_model_payload(name, reason) do
@@ -71,28 +74,15 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
   @doc false
   def create_payload(reason) do
     case reason do
-      # One arm for the workspace refusals: the reply code is the reason's own
-      # name, so listing them separately would be three copies of one rule.
-      workspace_reason when workspace_reason in @workspace_reasons ->
-        {:error, %{"reason" => to_string(workspace_reason)}}
+      # One arm for the refusals whose reply code is the reason's own name: the
+      # workspace ones, plus the two the blueprint resolution adds. Listing them
+      # separately would be five copies of one rule.
+      simple when simple in @simple_reasons ->
+        {:error, %{"reason" => to_string(simple)}}
 
-      :blueprint_missing ->
-        {:error, %{"reason" => "blueprint_missing"}}
-
-      :missing_vocation ->
-        {:error, %{"reason" => "missing_vocation"}}
-
-      # A `"none"`-backend space's agent name collides with a live agent's
-      # scratch directory in another `"none"` space — they share the host's
-      # `/tmp`. The other space is named so the message can say which one.
-      {:scratch_name_in_use, space_name} ->
-        {:error, %{"reason" => "scratch_name_in_use", "space_name" => space_name}}
-
-      {:vocation_not_found, slug} ->
-        # A blueprint whose root vocation no longer exists: stale blueprint
-        # data rather than a user mistake, so name the code and log the detail.
-        Logger.warning("Blueprint root vocation #{inspect(slug)} no longer exists")
-        {:error, %{"reason" => "vocation_not_found"}}
+      # The tagged refusals, which all carry a detail term beside the code.
+      {tag, _detail} = tagged when is_atom(tag) ->
+        tagged_payload(tagged)
 
       # The root agent's name (`create_space`'s `agent_name`) is not a
       # filename-safe component. Matching `data:` on the *agent* schema is what
@@ -129,6 +119,31 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
       Logger.error("Failed to create space: #{inspect(errors)}")
       {:error, %{"reason" => "failed_to_create"}}
     end
+  end
+
+  # The refusals whose reason carries a detail term. The two `"none"`-space
+  # scratch ones come from the same place — such a space's agents live at
+  # `/tmp/<name>` in the host's one `/tmp` — and each names what it refused: the
+  # other space whose live agent holds the name, or the path that is already
+  # something Nest does not own.
+  defp tagged_payload({:scratch_name_in_use, other_space_name}) do
+    {:error, %{"reason" => "scratch_name_in_use", "space_name" => other_space_name}}
+  end
+
+  defp tagged_payload({:scratch_path_taken, path}) do
+    {:error, %{"reason" => "scratch_path_taken", "path" => path}}
+  end
+
+  # A blueprint whose root vocation no longer exists: stale blueprint data rather
+  # than a user mistake, so name the code and log the detail.
+  defp tagged_payload({:vocation_not_found, slug}) do
+    Logger.warning("Blueprint root vocation #{inspect(slug)} no longer exists")
+    {:error, %{"reason" => "vocation_not_found"}}
+  end
+
+  defp tagged_payload(other) do
+    Logger.error("Failed to create space: #{inspect(other)}")
+    {:error, %{"reason" => "failed_to_create"}}
   end
 
   # Same shape for the space changeset's one client-facing field.

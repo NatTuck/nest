@@ -136,5 +136,12 @@ defmodule Nest.Spaces.SandboxBackendTest do
       assert {:error, %{"reason" => "scratch_name_in_use", "space_name" => "other-space"}} =
                AgentErrors.create_payload({:scratch_name_in_use, "other-space"})
     end
+
+    test "names the path when the scratch path is already something else" do
+      # The name is free but the host directory is not Nest's, so the answer is
+      # another name — and the client needs the path to say which one it means.
+      assert {:error, %{"reason" => "scratch_path_taken", "path" => "/tmp/X11-unix"}} =
+               AgentErrors.create_payload({:scratch_path_taken, "/tmp/X11-unix"})
+    end
   end
 end

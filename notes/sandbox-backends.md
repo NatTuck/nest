@@ -65,13 +65,32 @@ client- and model-controlled: `@name_format` admits `nest-4` (another BEAM's
 whole scratch root), `X11-unix` and `snap-private-tmp`, all of which are real
 entries in a real `/tmp`. So `TmpSpace.create/3` writes a `.nest-scratch` marker
 into a `"none"` agent's scratch, and **every** removal requires it — the
-`terminate/2` cleanup and the stale-directory clear at creation. A directory
-without the marker is never removed.
+`terminate/2` cleanup and the stale-directory clear at creation.
 
-Two honest residuals: a pre-existing `/tmp/X11-unix`, or a `"none"` scratch from
-before this change, is left alone forever; and an agent that deletes its own
-marker leaves a stale directory. Only `"none"` needs the marker — a bwrap or
-docker scratch sits under `nest-<BEAM pid>/space-<id>/`.
+A directory without the marker is left alone because nothing will touch it: the
+name boundary refuses it (`{:scratch_path_taken, path}` — the New Space form says
+there is already something at that agent's scratch path on the host that this
+space does not own, and to pick another name), `create/3` refuses to adopt it
+rather than stamping a marker into it, and both removals require the marker. That
+last part is what makes the guarantee hold: `create/3` *claiming* a foreign
+directory would mark it, and the next `cleanup/3` would then delete it — the
+pass-one version of this guard had exactly that hole.
+
+Two honest residuals: a `"none"` scratch created before this change has no marker,
+so it is neither removed nor reusable (clear it by hand); and an agent that
+deletes its own marker leaves a directory in the same state. Only `"none"` needs
+the marker — a bwrap or docker scratch sits under `nest-<BEAM pid>/space-<id>/`.
+
+A scratch directory has exactly two creators, and both mark what they make:
+`TmpSpace.create/3` (the start path) and `Mounts.ensure_scratch!/1`, which
+`Nest.Tools.ShellCmd` calls before every staged command — and which the prompt's
+`AGENTS.md` read reaches first. That second one used to be a bare `mkdir_p!`, so a
+`"none"` scratch it made carried no marker, and a start that never happened left a
+directory no later agent could remove. An *existing* directory is never touched,
+so something that is not Nest's is never marked by accident.
+`TmpSpace.prompt_mounts/4` only *names* the directory; it does not make it, so a
+scratch path that cannot be made fails where the agent starts rather than as a
+raise out of a caller that is merely composing a prompt.
 
 A `"none"` scratch is also left alone while a *live* agent in another space holds
 the same name. Two `"none"` spaces share one `/tmp`, the creation boundary only

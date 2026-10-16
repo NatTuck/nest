@@ -12,8 +12,6 @@ defmodule Nest.Agents.NoneScratchNameTest do
 
   use Nest.DataCase, async: true
 
-  import ExUnit.CaptureLog
-
   alias Nest.Agents
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
@@ -28,13 +26,15 @@ defmodule Nest.Agents.NoneScratchNameTest do
   # Start a live agent in `space_id` under an explicit name, and register the
   # same teardown `AgentTestHelpers.start_agent/1` uses (the agent is not
   # linked to the test process).
-  defp start_named(space_id, name) do
+  defp start_named(space_id, name, opts \\ []) do
     {:ok, ^name} =
       Agents.create_agent(
         space_id,
         %{name: "qwen3.5-plus", provider: "model-studio"},
-        name: name,
-        vocation_id: AgentTestHelpers.vocation_id_for_test()
+        Keyword.merge(
+          [name: name, vocation_id: AgentTestHelpers.vocation_id_for_test()],
+          opts
+        )
       )
 
     AgentTestHelpers.ensure_cleanup(name)
@@ -68,6 +68,11 @@ defmodule Nest.Agents.NoneScratchNameTest do
         depth: 0
       })
 
+    # `ensure_cleanup/1` names the space through `current_space_id/0`, so point it
+    # at this one first: the test's own stops happen mid-body, and a failure
+    # before them must not leave a live agent behind.
+    AgentTestHelpers.put_space_id(space_id)
+    AgentTestHelpers.ensure_cleanup(name)
     name
   end
 
@@ -98,9 +103,17 @@ defmodule Nest.Agents.NoneScratchNameTest do
       name = unique("cross-backend")
       start_named(none_space, name)
 
+      # The `none` side's scratch is the host's own `/tmp/<name>`, and its
+      # `terminate/2` cleanup refuses while the bwrap space's live agent holds the
+      # same name (the guard is registry-only, so it cannot tell that the other
+      # agent's scratch is under a different root). Harmless in production — a
+      # stale directory — but a test has to remove its own.
+      none_scratch = TmpSpace.agent_dir(none_space, name, "none")
+      on_exit(fn -> TmpCleanup.rm_tmp!(none_scratch, "cross-backend") end)
+
       # Different roots, so the same name is a different directory: no rule.
       assert start_named(bwrap_space, name) == name
-      assert TmpSpace.agent_dir(none_space, name, "none") == "/tmp/#{name}"
+      assert none_scratch == "/tmp/#{name}"
       refute TmpSpace.agent_dir(bwrap_space, name, "bwrap") == "/tmp/#{name}"
     end
 
@@ -171,31 +184,71 @@ defmodule Nest.Agents.NoneScratchNameTest do
   end
 
   describe "a name nothing live holds" do
-    test "an unmarked directory of that name is never removed" do
+    test "an unmarked directory of that name is refused, never adopted" do
       {:ok, space_id} = AgentTestHelpers.create_test_space(%{sandbox_backend: "none"})
 
       # A `none` agent's scratch is the host's own `/tmp/<name>`, and the name is
       # client- and model-controlled. This one is not Nest's — no marker — so
-      # taking the name must not delete it, whatever it holds.
+      # taking the name must not touch it, and must not *adopt* it either:
+      # stamping the marker in would license the next `cleanup/3` to delete it.
       name = unique("nest-rmtest")
       dir = Path.join(System.tmp_dir!(), name)
       File.mkdir_p!(dir)
       File.write!(Path.join(dir, "host-file"), "not Nest's")
       on_exit(fn -> TmpCleanup.rm_tmp!(dir, "nest-rmtest") end)
 
-      log =
-        capture_log(fn ->
-          assert start_named(space_id, name) == name
-        end)
+      assert {:error, {:scratch_path_taken, ^dir}} =
+               Agents.create_agent(
+                 space_id,
+                 %{name: "qwen3.5-plus", provider: "model-studio"},
+                 name: name,
+                 vocation_id: AgentTestHelpers.vocation_id_for_test()
+               )
 
-      # The refusal is an `:error` line (a directory that exists and is not ours
-      # is worth an operator's attention), asserted for inclusion only.
-      assert log =~ "it is not a Nest scratch directory"
+      refute File.exists?(Path.join(dir, ".nest-scratch"))
       assert File.read!(Path.join(dir, "host-file")) == "not Nest's"
     end
   end
 
-  describe "the mounts a docker space's agent gets" do
+  describe "the mounts an agent's prompt is composed through" do
+    test "carry the scratch bind for a bwrap space too" do
+      # The regression guard for the docker defect: reverting the prompt's mounts
+      # to a nil scratch fails nothing today, because a docker space *with a
+      # workspace* cannot be created in the suite (its prompt read is a real
+      # `docker exec`). What it does leave behind is observable under bwrap: the
+      # prompt's `AGENTS.md` read stages its transcript through the scratch bind,
+      # so `<space_dir>/.cmds` exists afterwards only if the mounts carried one.
+      # (Under bwrap the read would have succeeded either way — bwrap reaches
+      # `<host tmp>/.nest-cmds` through its read-only root bind — which is exactly
+      # why the staging directory, not the content, is the observable. Building
+      # the agent's *tools* with a mounts value stages nothing (checked directly:
+      # `Tools.get_functions/2` creates no `.cmds`), so the directory can only
+      # come from the prompt's read — though not from *which* of the two prompt
+      # call sites.)
+      workspace = Path.join([File.cwd!(), "_build", "tmp", "nest_prompt_mounts"])
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "AGENTS.md"), "# Project notes\n")
+
+      on_exit(fn ->
+        if String.contains?(workspace, "nest_prompt_mounts"), do: File.rm_rf(workspace)
+      end)
+
+      {:ok, space_id} = AgentTestHelpers.create_test_space()
+
+      name = start_named(space_id, unique("bwrap-mounts"), workspace_path: workspace)
+
+      {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
+
+      # allowlist: snapshot — the mounts the *start path* built, which is the
+      # thing under test; no accessor exposes them and there is no event for
+      # "the agent started with these mounts".
+      mounts = Mounts.from_agent(:sys.get_state(pid))
+      scratch = Mounts.scratch(mounts)
+
+      assert scratch == TmpSpace.agent_dir(space_id, name, "bwrap")
+      assert File.dir?(Path.join(Path.dirname(scratch), ".cmds"))
+    end
+
     test "carry the agent's real scratch, so a command can be staged" do
       {:ok, space_id} = AgentTestHelpers.create_test_space(%{sandbox_backend: "docker"})
 
