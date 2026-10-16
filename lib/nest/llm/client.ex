@@ -1,4 +1,6 @@
 defmodule Nest.LLM.Client do
+  require Logger
+
   @moduledoc """
   Behavior for LLM clients.
 
@@ -343,6 +345,8 @@ defmodule Nest.LLM.Client do
     iolist |> Enum.reverse() |> IO.iodata_to_binary()
   end
 
+  # An empty buffer is a call that genuinely carried no arguments: every tool
+  # whose arguments are all optional can produce one, so it is not a failure.
   defp decode_arguments([]), do: %{}
 
   defp decode_arguments(buffer) do
@@ -350,5 +354,18 @@ defmodule Nest.LLM.Client do
   end
 
   defp handle_decode_result({:ok, decoded}) when is_map(decoded), do: decoded
-  defp handle_decode_result(_), do: %{}
+
+  # A buffer that did not decode is answered with no arguments at all, which
+  # downstream is indistinguishable from a call that carried none — and for a
+  # tool whose arguments carry content (`context-compact`'s `preserve`) that
+  # difference is the whole point of the argument. Worth saying out loud, then.
+  # This is the decoder the live path uses (`finalize/2` → `Runner` → the
+  # machine's dispatch); `Messages.Streaming`'s decoder is only reached for
+  # partials, which the runtime never marks complete.
+  defp handle_decode_result({:error, reason}) do
+    Logger.warning("tool-call arguments did not decode: #{inspect(reason)}")
+    %{}
+  end
+
+  defp handle_decode_result({:ok, _}), do: %{}
 end

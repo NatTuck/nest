@@ -22,6 +22,30 @@ defmodule MachineCompactionTest do
       assert Enum.any?(actions, &match?({:broadcast, {:compaction_loop, _, _, _}, _}, &1))
     end
 
+    test "a compaction that cannot start says so in the transcript" do
+      # `:system_oversized`: the rendered system prompt does not fit the 25%
+      # budget, so the plan fails before any request exists. Every staging
+      # failure leaves a notice, and the wording differs per arm, so this pins
+      # the oversized one (the three `:reserve_exhausted` arms are pinned in
+      # `MachineBoundaryDeliveryTest`).
+      m = state_at(:idle, ctx: %{ctx() | context_limit: 1})
+
+      {:ok, actions, next} = Machine.Compaction.stage(m, nil)
+
+      assert next.phase == :context_overflow
+      assert Machine.status_for(next) == :context_overflow
+
+      notice =
+        Enum.find_value(actions, fn
+          {:append, {:user, %{parts: [%Part.Text{text: text}]}}} -> text
+          _ -> nil
+        end)
+
+      assert notice, "expected a notice row for the failed staging"
+      assert notice =~ "Compaction did not start"
+      assert notice =~ "system prompt is too large"
+    end
+
     test "a deferred assistant reply stays blocked on compaction failure" do
       m = state_at(:idle)
       reply = {:assistant_response, user(), 1, 5}

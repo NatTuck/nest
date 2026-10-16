@@ -28,9 +28,10 @@ defmodule Nest.Tokens.Compactor do
   records the response as an assistant message on the agent's
   message list (via the canonical append path, same as a regular
   chat-turn assistant response) and uses the summary text to
-  derive a "Summary of earlier conversation" user message after
-  the commit. The compactor does not wrap, rename, or otherwise
-  reshape the response.
+  derive a "Summary of previous conversation" user message after
+  the commit — alongside the agent's own `preserve` text, when the
+  compaction came from a `context-compact` call. The compactor does
+  not wrap, rename, or otherwise reshape the response.
 
   The LLM call is set up by the caller. It sends a request whose
   messages END with a `[mode: compact]` suffix — a `user` row, because
@@ -123,9 +124,15 @@ defmodule Nest.Tokens.Compactor do
       `messages[0]` can drift and the size must not).
     * `current_messages` — the full chat-state message list
       (used to verify the compactor's call will fit).
-    * `optional_guidance` — `:compact` tool's `focus` arg, or
-      `nil`/empty for the typical user-turn-boundary path.
-      When non-nil/non-empty, it's appended to the suffix.
+    * `optional_guidance` — the clause the request carries after the
+      budget hint, or `nil`/empty for the typical user-turn-boundary
+      path. It has two sources: the operator's `/compact <focus>` text,
+      whose only home is the request (a slash command is a control-plane
+      push and creates no message), or
+      `CompactionProbeSupport.compaction_mention/0` for a
+      `context-compact` call, which names that call's `cover`/`preserve`
+      arguments instead of repeating them. When non-nil/non-empty, it is
+      appended to the suffix.
 
   ## Returns
 

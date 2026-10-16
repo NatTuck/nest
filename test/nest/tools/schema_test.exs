@@ -209,4 +209,36 @@ defmodule Nest.Tools.SchemaTest do
       end
     end
   end
+
+  describe "the compaction tool" do
+    test "context-compact splits its guidance into cover and preserve" do
+      # This schema is the only place the model learns the contract: the
+      # request names the arguments rather than repeating them, and the
+      # validator refuses what the schema does not describe.
+      function = Tools.get_function("context-compact", Mounts.new("/tmp", nil))
+      props = function.parameters_schema["properties"]
+
+      assert function.name == "context-compact"
+      assert Enum.sort(Map.keys(props)) == ["cover", "preserve"]
+      assert (function.parameters_schema["required"] || []) == []
+
+      # The limit is enforced in `Machine.Response` (a longer `cover` is
+      # refused, not truncated), and both sides read it from
+      # `Tools.context_compact_cover_limit/0`.
+      assert props["cover"]["type"] == "string"
+      assert props["cover"]["maxLength"] == Tools.context_compact_cover_limit()
+      assert props["cover"]["maxLength"] == 100
+      assert props["cover"]["description"] =~ "100 characters or fewer"
+      assert props["cover"]["description"] =~ "`preserve`"
+
+      assert props["preserve"]["type"] == "string"
+      assert props["preserve"]["description"] =~ "verbatim"
+      assert props["preserve"]["description"] =~ "not as instructions to the summarizer"
+
+      # `focus` is gone, and a caller still passing it is refused rather than
+      # ignored (`MachineCompactionRequestTest` pins that).
+      refute Map.has_key?(props, "focus")
+      refute function.description =~ "focus"
+    end
+  end
 end

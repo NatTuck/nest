@@ -43,8 +43,9 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   Stage a compaction turn (loop-breaker checked).
 
   `carried_entry` is the entry the compaction carries across the commit: the
-  refused batch's `{:tool_call, …}` continuation on the preflight path, or
-  `nil` for a turn that has nothing in flight. There is deliberately no
+  refused batch's `{:tool_call, …}` continuation on the preflight path, the
+  `{:compact_resume, …}` a `context-compact` call leaves behind, or `nil` for a
+  turn that has nothing in flight. There is deliberately no
   parameter for a pending user message — the chat-request path parks it on the
   machine (`%{m | pending_user_message: entry}`) before calling this, and the
   drain path under peek-then-consume (#26) never parks one at all, so a
@@ -128,12 +129,30 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
 
       {:error, :system_oversized} ->
         Phase.block(m, :context_overflow, :system_oversized, [
-          {:broadcast, {:overflow, :system_oversized, "compact"}, nil}
+          {:broadcast, {:overflow, :system_oversized, "compact"}, nil},
+          compaction_not_started(
+            "Compaction did not start: the system prompt is too large for the " <>
+              "model's context window."
+          )
         ])
 
       {:error, :reserve_exhausted} ->
         reserve_exhausted(m)
     end
+  end
+
+  # The compaction did not start, and the transcript says so: the broadcast tells
+  # a connected UI, this row tells the agent and anyone reading the transcript.
+  # Every staging failure lands here — automatic, `/compact`, workspace notice,
+  # reserve deferral and the `context-compact` tool — so the text names only the
+  # failure and never the tool. (On the tool path it also answers the claim that
+  # call's own `"Compacting now."` result already made, which is what makes a
+  # silent drop impossible there.)
+  #
+  # Deliberately not a second tool result: that would answer the same tool call
+  # twice, which the wire's pairing rule rejects.
+  defp compaction_not_started(reason) do
+    {:append, ContextReminder.build_user_notice(NoticeTag.tag(reason), nil)}
   end
 
   # The request message is appended *before* the compactor is dispatched, so
@@ -178,6 +197,12 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   defp reserve_exhausted(m) do
     overflow = {:broadcast, {:overflow, :reserve_exhausted, "compact"}, nil}
 
+    notice =
+      compaction_not_started(
+        "Compaction did not start: the system prompt plus the compaction request " <>
+          "exceed the compaction reserve."
+      )
+
     cond do
       # The chat-request arm: the built message is parked on the machine and no
       # queue holds it, so append it (the `:loop_ack` precedent) before
@@ -188,6 +213,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
       (user = Phase.held_user(m)) != nil ->
         Phase.rest(%{m | pending_user_message: nil}, :chat, :reserve_exhausted, [
           overflow,
+          notice,
           {:append, {:user, user}}
         ])
 
@@ -196,15 +222,41 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
       # would re-stage the failing compaction. Block instead; `{:unblocked}`
       # re-attempts the drain once the operator has acted.
       Boundary.inbox_count(m.work.ctx) > 0 ->
-        Phase.block(m, :context_overflow, :reserve_exhausted, [overflow])
+        Phase.block(m, :context_overflow, :reserve_exhausted, [overflow, notice])
 
       # Nothing queued and nothing parked (a manual `/compact`, the workspace
       # notice, a retry with an empty inbox): rest in `:idle`, as before. (The
       # arms above are reachable from `:compaction_failed` and `:generating`
       # too, so they *enter* `:idle` rather than "stay" there.)
       true ->
-        Phase.rest(m, :chat, :reserve_exhausted, [overflow])
+        Phase.rest(m, :chat, :reserve_exhausted, [overflow, notice])
     end
+  end
+
+  @doc """
+  Build the `{:commit_compaction, data}` payload — the one place its shape is
+  defined.
+
+  Two callers commit a compactor response: `commit_compaction/2` below (the
+  live path, from the compaction turn's own transition table) and `Response`'s
+  `:compaction` branch. Keeping a second copy of this map is how `:preserve`
+  went missing from that branch — the executor's dot access raises on the
+  missing key, so the divergence is loud, but only by luck. One builder cannot
+  drift from itself.
+  """
+  @spec commit_data(Machine.t(), Nest.LLM.RunResponse.t()) :: {map(), map()}
+  def commit_data(m, response) do
+    {:compaction, carried_entry} = m.entry
+    {assistant_msg, sequences} = Response.assistant_with_log(m, response)
+
+    data = %{
+      summary_text: response.text || "",
+      summary_assistant: assistant_msg,
+      carried_entry: carried_entry,
+      preserve: m.work.preserve
+    }
+
+    {data, sequences}
   end
 
   @doc """
@@ -213,17 +265,13 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   The request message is already committed (the staging append), so this
   commits only the summary and its marker — and the bridge, if the append
   path inserted one, is already in the segment being archived.
+
+  `preserve` rides along in the commit data: it is turn-scoped on `work`, and
+  this is its last reader before the turn ends.
   """
   @spec commit_compaction(Machine.t(), Nest.LLM.RunResponse.t()) :: {:ok, [term()], Machine.t()}
   def commit_compaction(m, response) do
-    {:compaction, carried_entry} = m.entry
-    {assistant_msg, sequences} = Response.assistant_with_log(m, response)
-
-    data = %{
-      summary_text: response.text || "",
-      summary_assistant: assistant_msg,
-      carried_entry: carried_entry
-    }
+    {data, sequences} = commit_data(m, response)
 
     actions = [
       {:merge_metrics, response.usage},

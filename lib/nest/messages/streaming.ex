@@ -474,6 +474,5 @@ defmodule Nest.Messages.Streaming do
   end
 
   defp handle_decode_result({:ok, decoded}) when is_map(decoded), do: decoded
-  defp handle_decode_result({:ok, _}), do: %{}
-  defp handle_decode_result({:error, _}), do: %{}
+  defp handle_decode_result(_), do: %{}
 end

@@ -39,15 +39,33 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   require Logger
 
   @doc """
+  The clause a `context-compact` compaction's request carries in place of that
+  call's arguments.
+
+  The call is persisted immediately before the request (see
+  `Nest.Agents.Agent.Machine.Response`'s `compact_only/4`), so the compactor
+  reads `cover` and `preserve` from the conversation itself. Repeating them in
+  the request would be the same text twice — and a long `preserve` would then
+  be doing two jobs, instructions to the summarizer and content to carry, which
+  is how a compaction request starts reading as a task list.
+  """
+  @spec compaction_mention() :: String.t()
+  def compaction_mention do
+    "Cover the topics named in the `cover` argument of the context-compact " <>
+      "call, and do not duplicate the content of its `preserve` argument: " <>
+      "that content is carried into the summary message verbatim."
+  end
+
+  @doc """
   The per-call compactor suffix text: a one-liner that tells
   the agent to summarize in `<remaining_tokens>` tokens, with an
-  optional `optional_guidance` clause (e.g. from the `:compact`
-  tool's `focus` arg or a future `/compact <args>` slash
-  command) appended when present.
+  optional guidance clause appended when present. The guidance has one
+  of two sources, never both: the operator's `/compact <focus>` text, or
+  `compaction_mention/0` for a `context-compact` call.
 
   Format:
       [mode: compact]
-      Summarize the conversation in your <N> remaining tokens. <optional_guidance?>
+      Summarize the conversation in your <N> remaining tokens. <guidance?>
 
   The tag is on its own line, exactly like the `[mode: <name>]\\n` prefix every
   human row carries. That is what lets the client's `stripModePrefix` remove it

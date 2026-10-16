@@ -4700,7 +4700,8 @@ describe("channels", () => {
             {
               index: 8,
               role: "user",
-              content: "Summary of earlier conversation:\n\n…",
+              content:
+                "Summary of previous conversation (compacted from 1200 tokens):\n\n…",
             },
           ],
           messageCount: 8,

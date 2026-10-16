@@ -383,35 +383,20 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
         {:assistant,
          %Assistant{
            index: nil,
-           parts: [%Part.ToolUse{id: "call_compact", name: "context-compact", arguments: %{}}],
+           parts: [%Part.Text{text: "CARRIED-REPLY"}],
            usage: stale_usage,
-           api_logs: []
-         }}
-
-      synthetic_result =
-        {:tool,
-         %Nest.Messages.Tool{
-           index: nil,
-           parts: [
-             %Part.ToolResult{
-               tool_call_id: "call_compact",
-               name: "context-compact",
-               arguments: %{},
-               content: "Compacted.",
-               is_error: false
-             }
-           ],
            api_logs: []
          }}
 
       seed_pre_compaction_messages(pid, default_messages())
       consume_pre_seed_broadcasts(default_messages())
 
-      send_compaction_done(
-        pid,
-        "Test summary.",
-        {:compact_tool, [carried_assistant, synthetic_result], 1, 5}
-      )
+      # The vehicle is the deferred final reply (`{:assistant_response, …}`):
+      # the carried entry that puts a pre-compaction assistant in the active
+      # segment. A `context-compact` compaction carries no assistant — its call
+      # and synthetic result are persisted before the request, so they are
+      # archived.
+      send_compaction_done(pid, "Test summary.", {:assistant_response, carried_assistant, 1, 5})
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
       active = Nest.Agents.Agent.get_messages(pid, 1_000)
@@ -419,14 +404,14 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       carried =
         Enum.find_value(active, fn
           {:assistant, %Assistant{parts: parts} = assistant} ->
-            if Enum.any?(parts, &match?(%Part.ToolUse{id: "call_compact"}, &1)),
+            if Enum.any?(parts, &match?(%Part.Text{text: "CARRIED-REPLY"}, &1)),
               do: assistant
 
           _ ->
             nil
         end)
 
-      assert carried, "expected the carried compact assistant in the active segment"
+      assert carried, "expected the carried assistant in the active segment"
       assert carried.usage == nil, "carried assistant kept its stale pre-compaction usage"
 
       assert ConversationSize.size(active) < 100_000,

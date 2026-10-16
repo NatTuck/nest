@@ -109,6 +109,7 @@ defmodule MachineStructureTest do
                  :max_iterations,
                  :pending_notice,
                  :preflight,
+                 :preserve,
                  :worker_kind,
                  :worker_ref
                ])

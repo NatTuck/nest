@@ -589,6 +589,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
       Commit.active_segment(
         state,
         summary_text,
+        data.preserve,
         data.carried_entry,
         marker_index,
         archived_count,

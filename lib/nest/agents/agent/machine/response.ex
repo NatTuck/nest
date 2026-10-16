@@ -34,11 +34,27 @@ defmodule Nest.Agents.Agent.Machine.Response do
   alias Nest.Messages.Part
   alias Nest.Messages.Tool
   alias Nest.Messages.ToolCall
+  alias Nest.Scripts.CompactionProbeSupport
   alias Nest.Tokens.Budget
   alias Nest.Tokens.ConversationSize
   alias Nest.Tokens.Estimator
 
   @max_empty_retries 2
+
+  # The `context-compact` `cover` argument limit. A longer `cover` is an agent
+  # writing the summary into the request instead of using `preserve`, so it is
+  # refused rather than truncated. The number itself lives with the tool schema
+  # (`Nest.Tools`), so what the model is told and what is enforced cannot drift.
+  @max_cover_length Nest.Tools.context_compact_cover_limit()
+
+  # The refusal a legacy `focus` argument gets. It has to teach the replacement
+  # in full: the caller holding this argument is running the tool schema from
+  # before the split, so it cannot see the new descriptions, and this message is
+  # the only place the new contract can reach it.
+  @legacy_focus_reason "`focus` no longer exists. Pass `cover` (short guidance, at most " <>
+                         "100 characters, naming what the summary must cover) and/or " <>
+                         "`preserve` (literal content to carry into the summary message " <>
+                         "verbatim) instead."
 
   @empty_nudges [
     "You gave an empty response, which you shouldn't do. What were you saying?",
@@ -91,14 +107,17 @@ defmodule Nest.Agents.Agent.Machine.Response do
 
   # --- branches ---
 
-  defp branch(:compaction, m, _response, assistant_msg, base) do
-    {:compaction, carried_entry} = m.entry
-
-    data = %{
-      summary_text: assistant_text(assistant_msg),
-      summary_assistant: assistant_msg,
-      carried_entry: carried_entry
-    }
+  # The compactor's response, committed.
+  #
+  # Unreachable today: `classify_response/1` answers `:compaction` only when the
+  # machine carries a `{:compaction, …}` entry, and `Phase.enter/4` clears that
+  # entry on the way out of a compaction turn, so a chat-kind machine never
+  # holds one. It stays because the routing contract is written against it —
+  # `Phase`'s `turn_entry/3` comment names this pairing as the hazard it guards
+  # — and it commits through `Compaction.commit_data/2` so this copy cannot
+  # drift from the live path's, which is exactly how it lost `:preserve`.
+  defp branch(:compaction, m, response, _assistant_msg, base) do
+    {data, _sequences} = Compaction.commit_data(m, response)
 
     {:ok, base ++ [{:commit_compaction, data}], Phase.enter(m, :compaction, :committing)}
   end
@@ -215,29 +234,148 @@ defmodule Nest.Agents.Agent.Machine.Response do
 
   # --- tool-call branches ---
 
+  # A `context-compact` call: validate its arguments, persist the call and its
+  # synthetic result, then stage the compaction.
+  #
+  # The call is an ordinary action of the turn that is about to be archived, so
+  # both rows are persisted *before* the request row. The archive then holds
+  # the whole causal chain (call, result, bridge ack, request, summary), and
+  # the pair never has to be replayed into the new segment — which is what put
+  # the call on the wrong side of the marker. The carried entry therefore
+  # carries no messages: the only thing left to carry is the intent to resume
+  # generation, and the entry has to say so, because a `nil` carried entry
+  # appends the idle bridge ack (a segment ending on an assistant is not a
+  # valid generation request).
+  #
+  # The arguments are *not* copied into the request. The compactor reads them
+  # from the persisted call immediately before the request, so
+  # `Dispatch.compaction_plan/1` only names them — see
+  # `CompactionProbeSupport.compaction_mention/0`.
   defp compact_only(m, response, assistant_msg, base) do
     [tool_call] = response.tool_calls
-    pre_count = Estimator.estimate_messages(m.work.ctx.messages || [])
-    synthetic = build_synthetic_compact_result(tool_call, pre_count)
 
-    continuation =
-      {:compact_tool, [assistant_msg, synthetic], m.work.iteration, m.work.max_iterations}
+    case compact_arguments(tool_call) do
+      {:ok, preserve} ->
+        synthetic = build_synthetic_compact_result(tool_call)
+        continuation = {:compact_resume, m.work.iteration, m.work.max_iterations}
 
-    # The LLM's `focus` arg rides on `work` into
-    # `Dispatch.compaction_plan/1`, which renders it into the suffix.
-    m = %{m | work: %{m.work | focus: compact_focus(tool_call)}}
-    {:ok, actions, machine} = Compaction.stage(m, continuation)
-    {:ok, base ++ actions, machine}
+        # The request *names* the call's arguments instead of repeating them —
+        # they are in the conversation, one message back — so the tool path's
+        # guidance is the constant clause that says how to treat them. The
+        # other source of `focus` is an operator's `/compact <focus>` text
+        # (`Transitions`'s `{:compact_request, focus}`), and a compaction has
+        # one source or the other, never both.
+        work = %{
+          m.work
+          | focus: CompactionProbeSupport.compaction_mention(),
+            preserve: preserve
+        }
+
+        {:ok, actions, machine} = Compaction.stage(%{m | work: work}, continuation)
+        {:ok, base ++ [{:append, assistant_msg}, {:append, synthetic}] ++ actions, machine}
+
+      {:refuse, reason} ->
+        tool_msg = Messages.refuse_context_compact_arguments(response.tool_calls, reason)
+        machine = Phase.enter(m, :chat, :generating, :http)
+        {:ok, base ++ [{:append, assistant_msg}, {:append, tool_msg}, :iterate], machine}
+    end
   end
 
-  # The `context-compact` tool's optional `focus` argument. JSON-decoded
-  # arguments arrive with string keys; an absent/non-string/blank value
-  # means no operator guidance.
-  defp compact_focus(%ToolCall{arguments: args}) do
-    case args do
-      %{"focus" => focus} when is_binary(focus) and focus != "" -> focus
-      _ -> nil
+  # The `context-compact` tool's arguments, validated against an allowlist.
+  # Returns the `preserve` text (nil when absent or blank) or the refusal
+  # reason.
+  #
+  # `cover` is guidance the compactor reads from the call itself, so the only
+  # thing to enforce is its size: a long `cover` is an agent writing the
+  # summary into the request, which is what `preserve` is for, and silently
+  # truncating it would drop whatever the agent thought it said. `preserve` is
+  # content, so any length is allowed; it rides `work.preserve` into the
+  # summary message.
+  #
+  # Anything the allowlist does not name is refused rather than ignored, because
+  # ignoring it stages a compaction without the content the caller meant to
+  # keep — silently, which is the loss this contract exists to prevent. Two
+  # cases are worth naming:
+  #
+  #   * `focus`, the argument the split removed, gets its own message: the
+  #     caller holding it is running the schema from before the split (a
+  #     running agent keeps the tool list it was started with until a workspace
+  #     change or a compaction), so that message is the only place the new
+  #     contract can reach it;
+  #   * a near-miss a model invents (`preserve_text`) is refused too, which is
+  #     what makes the refusal a rule rather than one exception.
+  #
+  # JSON-decoded arguments arrive with string keys, and a present value of the
+  # wrong type is refused for the same reason an unknown key is. One case this
+  # cannot cover: `Streaming` maps an arguments JSON decode error to `%{}`,
+  # which is indistinguishable here from a bare `context-compact` call — and a
+  # bare call is legitimate, since both arguments are optional. That failure is
+  # reported where it happens.
+  defp compact_arguments(%ToolCall{arguments: args}) when is_map(args) do
+    cond do
+      Map.has_key?(args, "focus") ->
+        {:refuse, @legacy_focus_reason}
+
+      unknown_arguments(args) != [] ->
+        {:refuse, unknown_arguments_reason(args)}
+
+      true ->
+        with :ok <- cover_verdict(Map.get(args, "cover")),
+             :ok <- preserve_verdict(Map.get(args, "preserve")) do
+          {:ok, blank_to_nil(Map.get(args, "preserve"))}
+        end
     end
+  end
+
+  defp compact_arguments(_tool_call), do: {:ok, nil}
+
+  @compact_argument_names ~w(cover preserve)
+
+  defp unknown_arguments(args) do
+    args
+    |> Map.keys()
+    |> Enum.reject(&(&1 in @compact_argument_names))
+    |> Enum.sort()
+  end
+
+  defp unknown_arguments_reason(args) do
+    "unknown argument(s) #{Enum.map_join(unknown_arguments(args), ", ", &inspect/1)}: " <>
+      "context-compact takes `cover` (short guidance for the summary) and `preserve` " <>
+      "(content to carry into it verbatim). Unknown arguments are refused rather than " <>
+      "ignored, because ignoring one would silently drop what it carried."
+  end
+
+  defp cover_verdict(nil), do: :ok
+  defp cover_verdict(""), do: :ok
+
+  defp cover_verdict(cover) when is_binary(cover) do
+    if String.length(cover) > @max_cover_length do
+      {:refuse,
+       "`cover` is #{String.length(cover)} characters, over the " <>
+         "#{@max_cover_length}-character limit. Keep `cover` to a short " <>
+         "description of what the summary must cover, and put literal content " <>
+         "you want carried into the summary in `preserve`."}
+    else
+      :ok
+    end
+  end
+
+  defp cover_verdict(other), do: {:refuse, "`cover` must be a string, got #{inspect(other)}"}
+
+  defp preserve_verdict(preserve) when is_binary(preserve), do: :ok
+  defp preserve_verdict(nil), do: :ok
+
+  defp preserve_verdict(other),
+    do: {:refuse, "`preserve` must be a string, got #{inspect(other)}"}
+
+  # Blank *or whitespace-only*: a `preserve` of `"   "` would otherwise render
+  # as an empty section between two separators, and the summary body's
+  # treatment of a blank `preserve` (see `Turn.Commit.summary_body/4`) would
+  # not hold for it.
+  defp blank_to_nil(nil), do: nil
+
+  defp blank_to_nil(text) when is_binary(text) do
+    if String.trim(text) == "", do: nil, else: text
   end
 
   defp refuse_mixed(m, response, assistant_msg, base) do
@@ -258,7 +396,13 @@ defmodule Nest.Agents.Agent.Machine.Response do
     {:ok, base ++ [{:append, assistant_msg}, {:preflight, ctx, calls, continuation}], machine}
   end
 
-  defp build_synthetic_compact_result(tool_call, pre_count) do
+  # The synthetic result of a `context-compact` call: a successful tool result
+  # persisted with the call, before the compaction runs. It says what is true
+  # when it is written — the compaction is starting — rather than reporting an
+  # outcome the compaction has not produced yet. A later failure surfaces
+  # through the `:compaction_failed` state and its banner, and the request row
+  # it answers stays in the transcript either way.
+  defp build_synthetic_compact_result(tool_call) do
     {:tool,
      %Tool{
        index: nil,
@@ -268,7 +412,7 @@ defmodule Nest.Agents.Agent.Machine.Response do
            tool_call_id: tool_call.id,
            name: "context-compact",
            arguments: tool_call.arguments,
-           content: "Compacted from #{pre_count} token previous context.",
+           content: "Compacting now.",
            is_error: false
          }
        ],
@@ -300,14 +444,6 @@ defmodule Nest.Agents.Agent.Machine.Response do
   defp has_visible_text?(nil), do: false
   defp has_visible_text?(text) when is_binary(text), do: String.trim(text) != ""
   defp has_visible_text?(_), do: false
-
-  defp assistant_text({:assistant, %Assistant{parts: parts}}) do
-    parts
-    |> Enum.map_join("", fn
-      %Part.Text{text: text} -> text || ""
-      _ -> ""
-    end)
-  end
 
   # --- notice plan (pure) ---
 

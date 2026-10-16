@@ -122,6 +122,51 @@ defmodule Nest.LLM.ClientTest do
     end
   end
 
+  describe "tool-call arguments that do not decode" do
+    test "are answered with none, and say so — but an empty buffer is silent" do
+      # A `context-compact` call whose arguments JSON is truncated stages a
+      # compaction with no `preserve`, which is the loss that contract exists to
+      # prevent, so the decoder says so rather than answering silently. An empty
+      # buffer is the benign case: a call that genuinely carried no arguments,
+      # which every tool with only optional arguments can produce.
+      acc = %{
+        Client.new_accumulator()
+        | tool_calls: %{
+            "call_1" => %{
+              id: "call_1",
+              name: "context-compact",
+              arguments_buffer: ["{not json"]
+            }
+          }
+      }
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert [%Nest.Messages.ToolCall{name: "context-compact", arguments: args}] =
+                   Client.finalize(acc).tool_calls
+
+          assert args == %{}
+        end)
+
+      assert log =~ "tool-call arguments did not decode"
+
+      silent =
+        ExUnit.CaptureLog.capture_log(fn ->
+          empty = %{
+            Client.new_accumulator()
+            | tool_calls: %{
+                "call_2" => %{id: "call_2", name: "context-compact", arguments_buffer: []}
+              }
+          }
+
+          assert [%Nest.Messages.ToolCall{arguments: args}] = Client.finalize(empty).tool_calls
+          assert args == %{}
+        end)
+
+      refute silent =~ "did not decode"
+    end
+  end
+
   describe "credential headers" do
     # These are the exact shapes the two clients put on the wire. They are
     # asserted here rather than through `run/2` because each client issues
