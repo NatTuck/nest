@@ -18,8 +18,9 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   `context-compact` is no longer routed through this module —
   the chat turn's response handler detects it ahead of the
-  tool worker and exits with a `{:compact_tool, _, _, _}`
-  continuation. The blocked-tool-worker pattern (where the
+  tool worker, persists the call and its synthetic result, and
+  exits with a `{:compact_resume, _, _}` continuation. The
+  blocked-tool-worker pattern (where the
   tool worker awaited the compactor on receive) is gone.
   `context_compact?/1` and `strip_context_compact/1` are
   retained for compatibility with `BatchSizer.preflight/2`,

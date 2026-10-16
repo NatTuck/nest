@@ -218,8 +218,8 @@ defmodule Nest.Agents.AgentCompactionTest do
          %User{index: 4, parts: [%Part.Text{text: "[mode: compact] summarize"}], api_logs: []}}
       ]
 
-      # The compactor LLM's response text. The regenerator wraps
-      # it as "Summary of earlier conversation:\n\n…".
+      # The compactor LLM's response text. The commit wraps it as
+      # "Summary of previous conversation (compacted from N tokens):\n\n…".
       summary_text = "..."
 
       # `:tool_call` continuation: the resumed post-compaction turn
@@ -343,7 +343,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # The compaction produced the active summary_user.
       assert Enum.any?(messages, fn
                {:user, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
-                 String.starts_with?(t, "Summary of earlier conversation:")
+                 String.starts_with?(t, "Summary of previous conversation (")
 
                _ ->
                  false
@@ -427,7 +427,7 @@ defmodule Nest.Agents.AgentCompactionTest do
           %{
             id: "call_1",
             name: "context-compact",
-            arguments: %{"focus" => "recent"}
+            arguments: %{"cover" => "recent", "preserve" => "PRESERVED-TEXT"}
           }
         ]
       })
@@ -469,32 +469,76 @@ defmodule Nest.Agents.AgentCompactionTest do
       # Post-compaction shape (compactor is a chat turn, compactor
       # re-renders the system message per AGENTS.md exception).
       #
-      # History:  [old_system, old_user, old_assistant, tool_call_assistant,
-      #             tool_result, [mode: compact] suffix, compactor_assistant,
-      #             marker]
+      # History:  [old_system, old_user, old_assistant, compact_assistant,
+      #             compact_tool_result, bridge_ack, [mode: compact] request,
+      #             compactor_assistant, marker]
       # Messages: [new_system_fresh, summary_user, post_chat_assistant]
-      #             (the carried tool_call was executed by the post-compaction
-      #              chat turn, so it's consumed and replaced with the
-      #              final assistant response)
       #
-      # Index positions vary; assert by role + content.
+      # The compact call and its synthetic result are persisted *before* the
+      # request, so the archive reads in causal order and the pair is never
+      # replayed into the new segment. Index positions vary; assert by content.
 
-      # The fresh system message is the head of the active
-      # list (re-rendered from the latest DB vocation + AGENTS.md
-      # at compaction time).
+      # The fresh system message is the head of the active list (re-rendered
+      # from the latest DB vocation + AGENTS.md at compaction time).
       assert match?({:system, _}, Enum.at(messages, 0)),
              "expected fresh system message at messages[0]; got #{inspect(Enum.at(messages, 0))}"
 
-      # The summary_user (compactor's summary) follows the
-      # fresh system.
-      assert Enum.any?(messages, fn
-               {:user, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
-                 String.starts_with?(t, "Summary of earlier conversation:")
+      # The summary row follows it: the compactor's prose, wrapped with what
+      # this compaction replaced and the agent's own `preserve` text verbatim
+      # (the machinery writes that part, so it survives whatever the compactor
+      # returned).
+      summary_row =
+        Enum.find_value(messages, fn
+          {:user, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
+            if String.starts_with?(t, "Summary of previous conversation ("), do: t
+
+          _ ->
+            nil
+        end)
+
+      assert summary_row, "expected a summary_user in the active chat"
+      assert summary_row =~ "PRESERVED-TEXT"
+
+      # The call that triggered the compaction is archived with the turn it
+      # belonged to: the call, its synthetic result, the bridge ack, the
+      # request — in that order.
+      archive =
+        Enum.map(history, fn
+          {:user, %{parts: [%Part.Text{text: t}]}} when is_binary(t) -> {:user, t}
+          {:assistant, %Assistant{parts: parts}} -> {:assistant, parts}
+          {:tool, %Tool{parts: parts}} -> {:tool, parts}
+          {role, _} -> {role, nil}
+        end)
+
+      call_at =
+        Enum.find_index(archive, fn
+          {:assistant, parts} ->
+            Enum.any?(parts, &match?(%Part.ToolUse{name: "context-compact"}, &1))
+
+          _ ->
+            false
+        end)
+
+      assert call_at, "expected the context-compact call in the archive"
+
+      assert {:tool, [%Part.ToolResult{content: "Compacting now.", is_error: false}]} =
+               Enum.at(archive, call_at + 1)
+
+      assert {:assistant, [%Part.Text{text: ack}]} = Enum.at(archive, call_at + 2)
+      assert ack =~ "Let me pause to summarize"
+
+      assert {:user, request} = Enum.at(archive, call_at + 3)
+      assert request =~ "[mode: compact]"
+
+      # And none of it leaks into the new segment.
+      refute Enum.any?(messages, fn
+               {:assistant, %{parts: parts}} ->
+                 Enum.any?(parts, &match?(%Part.ToolUse{name: "context-compact"}, &1))
 
                _ ->
                  false
              end),
-             "expected a summary_user in the active chat"
+             "the compact call belongs to the archived segment"
 
       # The fresh system message's text contains the
       # rendered system prompt (vocation `system_prompt`

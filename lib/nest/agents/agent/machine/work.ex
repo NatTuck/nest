@@ -21,12 +21,20 @@ defmodule Nest.Agents.Agent.Machine.Work do
   which is what the stop's cancellation record counts and what a worker
   death names the promises it closes by (a result names its own).
   `preflight` caches the pending
-  tool batch while its fit check runs. `focus` is the optional operator
-  guidance for the summary
-  (the `context-compact` tool's `focus` arg or `/compact <focus>`); it is
-  rendered into the compaction request suffix. It is *turn-scoped*: it is
-  cleared when the compaction turn ends (a chat turn or idle begins), so a
-  stale focus cannot leak into a later *automatic* compaction.
+  tool batch while its fit check runs.
+
+  `focus` and `preserve` are the two halves of a compaction's guidance, and
+  both are *turn-scoped*: they exist only for the compaction turn they were
+  staged for, and are cleared when it ends (a chat turn or idle begins), so
+  neither can leak into a later *automatic* compaction.
+
+    * `focus` is guidance rendered into the compaction request suffix — the
+      operator's `/compact <focus>` text, or the constant clause that tells
+      the compactor how to treat a `context-compact` call's arguments.
+    * `preserve` is literal content carried into the summary message
+      unchanged, from the `context-compact` tool's `preserve` argument. It is
+      what keeps a compaction from destroying material the agent wrote
+      specifically to survive it, whatever the compactor returns.
   """
 
   defstruct ctx: nil,
@@ -46,9 +54,10 @@ defmodule Nest.Agents.Agent.Machine.Work do
             # late result or worker death is routed on, and `ids` are the
             # calls the synthetic result answered.
             backgrounded: %{},
-            # Turn-scoped: `Machine.Phase.enter/4` clears it when the
+            # Turn-scoped: `Machine.Phase.enter/4` clears them when the
             # compaction turn ends (a chat turn or idle begins).
-            focus: nil
+            focus: nil,
+            preserve: nil
 
   @type t :: %__MODULE__{
           ctx: map() | nil,
@@ -63,7 +72,8 @@ defmodule Nest.Agents.Agent.Machine.Work do
           pending_notice: String.t() | nil,
           preflight: map() | nil,
           backgrounded: %{reference() => %{pid: pid(), ids: [String.t()]}},
-          focus: String.t() | nil
+          focus: String.t() | nil,
+          preserve: String.t() | nil
         }
 
   @doc "Reset the working set."

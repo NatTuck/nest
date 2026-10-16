@@ -19,12 +19,12 @@ defmodule Nest.Agents.Agent.Machine.Phase do
   still standing. `GuardTest` scans the sources and fails on any other writer.
 
   `enter/4` is also the turn boundary, so it is where the turn-scoped
-  `work.focus` is dropped: entering a chat turn, or entering any `:idle`
-  phase, ends the compaction turn the focus was staged for, so the
-  operator's guidance cannot leak into a later *automatic* compaction.
-  Entering a `:compaction` turn leaves it untouched, and
-  `enter_blocked/2` deliberately preserves it so a `:compaction_failed`
-  retry re-renders the same guidance.
+  `work.focus` and `work.preserve` are dropped: entering a chat turn, or
+  entering any `:idle` phase, ends the compaction turn they were staged for,
+  so guidance cannot leak into a later *automatic* compaction. Entering a
+  `:compaction` turn leaves them untouched, and `enter_blocked/2`
+  deliberately preserves them so a `:compaction_failed` retry re-renders the
+  same guidance and re-carries the same preserved content.
   """
 
   alias Nest.Agents.Agent.Config
@@ -49,7 +49,8 @@ defmodule Nest.Agents.Agent.Machine.Phase do
             worker_ref: nil,
             active_worker: nil,
             active_worker_kind: worker_kind,
-            focus: turn_focus(kind, phase, m.work.focus)
+            focus: turn_guidance(kind, phase, m.work.focus),
+            preserve: turn_guidance(kind, phase, m.work.preserve)
         }
     })
   end
@@ -78,12 +79,12 @@ defmodule Nest.Agents.Agent.Machine.Phase do
   defp turn_entry(_kind, _phase, {:compaction, _}), do: nil
   defp turn_entry(_kind, _phase, entry), do: entry
 
-  # `focus` is turn-scoped: it exists only for the compaction turn it was
-  # staged for. Entering a chat turn — or any `:idle` phase — ends that
-  # turn, so the operator's guidance must not survive into a later
-  # *automatic* compaction (`Transitions.start_chat/3`,
-  # `Response.finalize_or_defer/4`, `:workspace_notice`), which would
-  # silently apply a stale focus to a summary nobody asked for.
+  # `focus` and `preserve` are turn-scoped: they exist only for the compaction
+  # turn they were staged for. Entering a chat turn — or any `:idle` phase —
+  # ends that turn, so guidance must not survive into a later *automatic*
+  # compaction (`Transitions.start_chat/3`, `Response.finalize_or_defer/4`,
+  # `:workspace_notice`), which would silently apply stale guidance to a
+  # summary nobody asked for.
   #
   # Both clauses are load-bearing:
   #   * `kind == :chat` covers `Compaction.resume/1` →
@@ -91,14 +92,15 @@ defmodule Nest.Agents.Agent.Machine.Phase do
   #     `:committing` and never passes through `:idle`;
   #   * `phase == :idle` covers a stop during a compaction (`{:stop, _}`
   #     → `:stopping` keeps kind `:compaction`, then `stop_timer` →
-  #     `enter(m, m.kind, :idle)`) and any other route back to idle with a
-  #     stale focus.
+  #     `enter(m, m.kind, :idle)`) and any other route back to idle with
+  #     stale guidance.
   #
   # Leaving a `:compaction` turn untouched is what keeps `retry_compaction`
-  # (from `:compaction_failed`) re-rendering the SAME focus.
-  defp turn_focus(:chat, _phase, _focus), do: nil
-  defp turn_focus(_kind, :idle, _focus), do: nil
-  defp turn_focus(_kind, _phase, focus), do: focus
+  # (from `:compaction_failed`) re-rendering the SAME focus and re-carrying the
+  # SAME preserve.
+  defp turn_guidance(:chat, _phase, _guidance), do: nil
+  defp turn_guidance(_kind, :idle, _guidance), do: nil
+  defp turn_guidance(_kind, _phase, guidance), do: guidance
 
   @doc """
   Rest the machine in `:idle`.
@@ -225,10 +227,15 @@ defmodule Nest.Agents.Agent.Machine.Phase do
   @doc false
   @spec entry_iteration(term()) :: non_neg_integer()
   def entry_iteration({_tag, _msg, n, _max}) when is_integer(n), do: n
+
+  # `{:compact_resume, iteration, max_iterations}` carries no message, so its
+  # bookkeeping sits one slot earlier than the message-carrying entries.
+  def entry_iteration({:compact_resume, n, _max}) when is_integer(n), do: n
   def entry_iteration(_), do: 0
 
   @doc false
   @spec entry_max_iterations(term()) :: pos_integer()
   def entry_max_iterations({_tag, _msg, _n, m}) when is_integer(m), do: m
+  def entry_max_iterations({:compact_resume, _n, m}) when is_integer(m), do: m
   def entry_max_iterations(_), do: Config.configured_max_tool_iterations()
 end

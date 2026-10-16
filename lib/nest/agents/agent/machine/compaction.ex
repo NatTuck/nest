@@ -43,8 +43,9 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   Stage a compaction turn (loop-breaker checked).
 
   `carried_entry` is the entry the compaction carries across the commit: the
-  refused batch's `{:tool_call, …}` continuation on the preflight path, or
-  `nil` for a turn that has nothing in flight. There is deliberately no
+  refused batch's `{:tool_call, …}` continuation on the preflight path, the
+  `{:compact_resume, …}` a `context-compact` call leaves behind, or `nil` for a
+  turn that has nothing in flight. There is deliberately no
   parameter for a pending user message — the chat-request path parks it on the
   machine (`%{m | pending_user_message: entry}`) before calling this, and the
   drain path under peek-then-consume (#26) never parks one at all, so a
@@ -213,6 +214,9 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   The request message is already committed (the staging append), so this
   commits only the summary and its marker — and the bridge, if the append
   path inserted one, is already in the segment being archived.
+
+  `preserve` rides along into the commit data: it is turn-scoped on `work`,
+  and this is its last reader before the turn ends.
   """
   @spec commit_compaction(Machine.t(), Nest.LLM.RunResponse.t()) :: {:ok, [term()], Machine.t()}
   def commit_compaction(m, response) do
@@ -222,7 +226,8 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
     data = %{
       summary_text: response.text || "",
       summary_assistant: assistant_msg,
-      carried_entry: carried_entry
+      carried_entry: carried_entry,
+      preserve: m.work.preserve
     }
 
     actions = [

@@ -184,7 +184,7 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
     end
   end
 
-  describe "Turn.Commit.active_segment/6" do
+  describe "Turn.Commit.active_segment/7" do
     test "a compaction that finalizes idle closes on an assistant tail" do
       # The idle invariant: when the commit finalizes (no carried entry,
       # or a carried assistant response), the segment must not end on a
@@ -198,7 +198,7 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
 
       for {carried, expected_roles, tail} <- cases do
         {messages, {:compaction, marker}} =
-          Turn.Commit.active_segment(commit_state(), "summary", carried, 10, 1, nil)
+          Turn.Commit.active_segment(commit_state(), "summary", nil, carried, 10, 1, nil)
 
         assert marker.index == 10
         assert Enum.map(messages, &role/1) == expected_roles, "roles for #{inspect(carried)}"
@@ -216,23 +216,29 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
       end
     end
 
-    test "a compact_tool carried entry keeps its tool-result tail (resumes generation)" do
-      # Regression: a `context-compact`'s carried tail ends on a tool
-      # result, whose wire role is `user`. The `{:compact_tool, ...}`
-      # entry resumes generation, so this segment is the generation
-      # request's input and must keep ending on the tool result. An idle
-      # bridge ack here would ship a trailing assistant request (DeepSeek
-      # 400s "content[].thinking ... must be passed back"; Anthropic
-      # rejects a prefilled assistant when thinking is enabled).
-      carried = {:compact_tool, [assistant_tool_use(nil, "c1"), tool_result(nil, "c1")], 1, 5}
-
+    test "a compact_resume carried entry carries no tail and gets no bridge ack" do
+      # A `context-compact` call and its synthetic result are persisted before
+      # the compaction request, so they belong to the archived segment and the
+      # entry carries no messages. It must still be treated as a carried entry:
+      # generation resumes after the commit, so the segment ends on the summary
+      # user message and the idle bridge ack — which would ship a
+      # trailing-assistant request (DeepSeek 400s "content[].thinking ... must
+      # be passed back"; Anthropic rejects a prefilled assistant when thinking
+      # is enabled) — is not added.
       {messages, {:compaction, marker}} =
-        Turn.Commit.active_segment(commit_state(), "summary", carried, 10, 1, nil)
+        Turn.Commit.active_segment(
+          commit_state(),
+          "summary",
+          nil,
+          {:compact_resume, 1, 5},
+          10,
+          1,
+          nil
+        )
 
       assert marker.index == 10
-      assert Enum.map(messages, &role/1) == [:user, :assistant, :tool]
+      assert Enum.map(messages, &role/1) == [:user]
       assert MessageList.last_wire_role(messages) == :user
-      assert {:tool, %Tool{}} = List.last(messages)
       assert :ok = Preflight.validate(messages)
       assert :ok = Preflight.validate_request(messages)
     end

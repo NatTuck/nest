@@ -49,6 +49,30 @@ defmodule Nest.Scripts.CompactionProbeSupportTest do
     end
   end
 
+  describe "compaction_mention/0" do
+    test "names the tool call's arguments instead of restating them" do
+      mention = CompactionProbeSupport.compaction_mention()
+
+      # This is what a tool-triggered request carries: a pointer at the call's
+      # own arguments (persisted immediately before the request), plus the
+      # instruction that `preserve` is not the compactor's to write — the
+      # machinery carries it into the summary message.
+      assert mention =~ "`cover`"
+      assert mention =~ "`preserve`"
+      assert mention =~ "do not duplicate"
+
+      # And it composes into a request the way the tool path renders it.
+      suffix = CompactionProbeSupport.compaction_suffix(1500, mention)
+
+      assert String.starts_with?(
+               suffix,
+               "[mode: compact]\nSummarize the conversation in your 1500 remaining tokens."
+             )
+
+      assert String.ends_with?(suffix, mention)
+    end
+  end
+
   describe "suffix_system_message/2" do
     test "wraps the suffix as a {:user, _} tuple" do
       msg = CompactionProbeSupport.suffix_system_message(2000, nil)

@@ -60,7 +60,23 @@ defmodule Nest.Agents.Agent.Machine.Boundary do
   @spec drain?(Machine.t()) :: boolean()
   def drain?(m) do
     inbox_count(m.work.ctx) > 0 and not m.work.force_finalize and
-      deliverable_tail?(List.last(m.work.ctx.messages))
+      deliverable_tail?(m)
+  end
+
+  # Whether a delivered message can become the next turn's request. A segment
+  # that ends on a `tool` or `assistant` row can.
+  #
+  # A `{:compact_resume, …}` segment ends on the compaction summary: a `user`
+  # row, but not a turn waiting for an answer — it is the seed of the new
+  # context. A queued message is delivered onto it rather than waiting behind a
+  # generated turn nobody asked for.
+  defp deliverable_tail?(%{entry: {:compact_resume, _, _}}), do: true
+
+  defp deliverable_tail?(%{work: %{ctx: ctx}}) do
+    case List.last(ctx.messages) do
+      {tag, _msg} when tag in [:tool, :assistant] -> true
+      _ -> false
+    end
   end
 
   @doc """
@@ -78,7 +94,4 @@ defmodule Nest.Agents.Agent.Machine.Boundary do
   @spec inbox_count(map()) :: non_neg_integer()
   def inbox_count(%{inbox_count: n}) when is_integer(n), do: n
   def inbox_count(_ctx), do: 0
-
-  defp deliverable_tail?({tag, _msg}) when tag in [:tool, :assistant], do: true
-  defp deliverable_tail?(_last), do: false
 end

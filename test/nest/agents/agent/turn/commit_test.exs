@@ -12,16 +12,18 @@ defmodule Nest.Agents.Agent.Turn.CommitTest do
   alias Nest.Messages.Tool
   alias Nest.Messages.User
 
-  describe "active_segment/6 and the idle bridge ack" do
-    test "a compact_tool carried entry keeps its tool-result tail (no bridge ack)" do
-      # Regression: a context-compact's carried tail ends on a tool
-      # result (wire role user). Appending the idle bridge ack there
-      # would turn the resumed generation request into one whose final
-      # message is a synthetic assistant with no thinking block —
-      # DeepSeek 400s ("content[].thinking ... must be passed back") and
-      # Anthropic rejects a prefilled assistant under thinking.
-      {new_messages, _marker} = active_segment({:compact_tool, [assistant(), tool()], 0, 10})
+  describe "the post-compaction active segment" do
+    test "a compact_resume carried entry carries no tail and gets no bridge ack" do
+      # A `context-compact` call and its synthetic result are persisted before
+      # the compaction request, so they belong to the archived segment and the
+      # entry carries no messages. It must still suppress the idle bridge ack:
+      # generation resumes on the far side of the commit, and a segment ending
+      # on a synthetic assistant is a prefilled-assistant request (DeepSeek 400s
+      # "content[].thinking ... must be passed back"; Anthropic rejects it when
+      # thinking is enabled).
+      {new_messages, _marker} = active_segment({:compact_resume, 0, 10})
 
+      assert [{:user, %User{}}] = new_messages
       assert MessageList.last_wire_role(new_messages) == :user
       refute Enum.any?(new_messages, &bridge_ack?/1)
       assert Preflight.validate_request(new_messages) == :ok
@@ -52,8 +54,68 @@ defmodule Nest.Agents.Agent.Turn.CommitTest do
     end
   end
 
+  describe "the post-compaction summary message" do
+    test "names what was replaced, carries preserve verbatim, and points at the archive" do
+      {[summary], {:compaction, marker}} =
+        active_segment_with_preserve("the summary text", "PRESERVED: task and state")
+
+      assert {:user, %User{parts: [%Part.Text{text: text}]}} = summary
+
+      # The count is the marker's own, so one event cannot report two numbers.
+      header =
+        "Summary of previous conversation (compacted from #{marker.tokens_compacted} tokens):"
+
+      assert text =~ header
+
+      # The agent's own content. The machinery writes it, not the compactor, so
+      # it survives whatever the compactor returned.
+      assert text =~ "PRESERVED: task and state"
+
+      # The compactor's prose, and where the rest of the conversation went.
+      assert text =~ "the summary text"
+      assert text =~ "`agents-history` (start_index 0, length 5)"
+    end
+
+    test "an absent preserve leaves no empty section" do
+      {[summary], _marker} = active_segment_with_preserve("the summary text", nil)
+      assert {:user, %User{parts: [%Part.Text{text: text}]}} = summary
+
+      assert text =~ "the summary text"
+      refute text =~ "\n\n\n"
+    end
+  end
+
   defp active_segment(carried_entry) do
-    Commit.active_segment(state(), "the summary", carried_entry, 5, 20, nil)
+    Commit.active_segment(state(), "the summary", nil, carried_entry, 5, 20, nil)
+  end
+
+  # `{:compact_resume, 0, 10}` carries no messages and suppresses the idle
+  # bridge ack, so the segment is exactly the summary row — the shape a
+  # `context-compact` commit produces.
+  defp active_segment_with_preserve(summary_text, preserve) do
+    Commit.active_segment(
+      state_with_archived_messages(),
+      summary_text,
+      preserve,
+      {:compact_resume, 0, 10},
+      5,
+      20,
+      nil
+    )
+  end
+
+  # A state with something in the active segment, so the header's token count is
+  # a real estimate rather than the empty list's zero. The segment is shaped like
+  # the one a `context-compact` call produces: a user row, then the call and its
+  # synthetic result.
+  defp state_with_archived_messages do
+    %{
+      state()
+      | chat_state: %ChatState{
+          messages: [user("First"), assistant(), tool()],
+          compaction_count: 0
+        }
+    }
   end
 
   defp state do

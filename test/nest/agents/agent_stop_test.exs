@@ -127,17 +127,16 @@ defmodule Nest.Agents.AgentStopTest do
 
   describe "stop_chat/2 during context-compact tool" do
     test "the tool-call mid-execution stop unwinds without auto-resume" do
-      # Set up a stream that emits one `context-compact` tool call.
-      # The turn's `handle_compact_only/3` emits `{:needs_compaction, _}`
-      # to the Agent and stops; the Agent then owns the compaction. We
-      # stop the agent while that hand-off is in flight.
+      # Set up a stream that emits one `context-compact` tool call. The turn's
+      # response handler stages the compaction and hands the turn over to it;
+      # we stop the agent while that hand-off is in flight.
       MockClient.set_tool_response(%{
         text: "compacting",
         tool_calls: [
           %{
             id: "call_1",
             name: "context-compact",
-            arguments: %{"focus" => "recent"}
+            arguments: %{"cover" => "recent"}
           }
         ]
       })
@@ -153,18 +152,17 @@ defmodule Nest.Agents.AgentStopTest do
       # resulting `:compacting` status.
       assert_receive {:chat_status, %{status: "compacting"}}, 1_000
 
-      # The assistant carrying the tool call is *carried* into the
-      # compaction, so it only reaches the transcript when the commit
-      # appends the new active segment. The `chat:compaction` marker is
-      # broadcast after that append, so it is the fence for the transcript
-      # read below (a context-notice synthetic pair, if one was injected,
-      # is not what we are looking for).
+      # The assistant carrying the tool call is persisted *before* the
+      # compaction request, so the commit archives it with the rest of the
+      # turn: read it from the archive. The `chat:compaction` marker is
+      # broadcast after the append, so it is the fence for the read below.
       assert_receive {:chat_compaction, _}, 1_000
 
-      messages = Agent.get_messages(pid, 1_000)
+      info = Agent.get_public_info(pid, 1_000)
+      archived = Nest.Persistence.load_history(info.space_id, info.name)
 
       tool_assistant =
-        Enum.find_value(messages, fn
+        Enum.find_value(archived, fn
           {:assistant, %Assistant{parts: parts} = msg} ->
             if Enum.any?(parts, &match?(%Part.ToolUse{}, &1)), do: msg
 

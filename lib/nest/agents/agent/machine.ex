@@ -148,14 +148,20 @@ defmodule Nest.Agents.Agent.Machine do
 
   @type action :: tuple() | :iterate
 
-  @type tool_pair :: [Nest.Messages.Assistant.t() | Nest.Messages.Tool.t()]
-
   # The start-state intent for a turn's first iteration. See
   # `Nest.Agents.Agent.Turn` for the per-shape behavior.
+  #
+  # `{:compact_resume, iteration, max_iterations}` is the entry a
+  # `context-compact` call leaves behind: the call and its synthetic result
+  # are persisted *before* the compaction (they are ordinary actions of the
+  # turn being archived), so the entry carries no messages — it exists to
+  # resume generation on the far side of the commit, which is why it must
+  # not be `nil` (a `nil` carried entry appends the idle bridge ack, and a
+  # segment ending on an assistant is not a valid generation request).
   @type entry ::
           {:user_message, Nest.Messages.User.t()}
           | {:tool_call, Nest.Messages.Assistant.t(), non_neg_integer(), pos_integer()}
-          | {:compact_tool, tool_pair(), non_neg_integer(), pos_integer()}
+          | {:compact_resume, non_neg_integer(), pos_integer()}
           | {:assistant_response, Nest.Messages.Assistant.t(), non_neg_integer(), pos_integer()}
           | {:compaction, entry() | nil}
 

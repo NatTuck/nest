@@ -23,10 +23,14 @@ defmodule Nest.Agents.Agent.Turn.Commit do
 
   @doc """
   Build `{new_active_messages, marker}` for a successful compaction.
+
+  `preserve` is the agent's own content for the summary message, written by
+  the machinery rather than by the compactor (see `summary_body/4`).
   """
   @spec active_segment(
           Agent.t(),
           String.t(),
+          String.t() | nil,
           Agent.Machine.entry() | nil,
           non_neg_integer(),
           non_neg_integer(),
@@ -35,6 +39,7 @@ defmodule Nest.Agents.Agent.Turn.Commit do
   def active_segment(
         state,
         summary_text,
+        preserve,
         carried_entry,
         marker_index,
         archived_count,
@@ -43,10 +48,19 @@ defmodule Nest.Agents.Agent.Turn.Commit do
     now = DateTime.utc_now()
     archived_messages = state.chat_state.messages || []
 
+    # The size of what this compaction replaces, computed once: it is what the
+    # marker records and what the summary message reports, so one event cannot
+    # report two numbers.
+    tokens_compacted = Estimator.estimate_messages(archived_messages)
+
     summary_user =
       {:user,
        %User{
-         parts: [%Part.Text{text: "Summary of earlier conversation:\n\n" <> summary_text}],
+         parts: [
+           %Part.Text{
+             text: summary_body(summary_text, preserve, tokens_compacted, marker_index)
+           }
+         ],
          timestamp: now,
          api_logs: []
        }}
@@ -66,18 +80,58 @@ defmodule Nest.Agents.Agent.Turn.Commit do
         marker_index,
         archived_count,
         state.chat_state.compaction_count + 1,
-        Estimator.estimate_messages(archived_messages),
+        tokens_compacted,
         Estimator.estimate_messages(new_messages)
       )
 
     {new_messages, marker}
   end
 
-  @doc "Append the carried entry's messages to the new active segment."
+  # The summary message's body: what this compaction replaced, the agent's own
+  # `preserve` text verbatim, the compactor's summary, and where the archived
+  # conversation is still readable.
+  #
+  # `preserve` sits here rather than in the compactor's output on purpose. The
+  # request tells the compactor not to duplicate it, and the machinery writes
+  # it, so the material an agent wrote to survive the compaction survives it
+  # whatever the compactor returns.
+  #
+  # `preserve` is nil or non-blank by the time it arrives (`Response`'s
+  # argument validation normalizes a blank one away); the empty-string reject is
+  # for a direct caller of this pure builder, and an empty `summary_text` cannot
+  # reach here (the commit validates the summary first).
+  defp summary_body(summary_text, preserve, tokens_compacted, marker_index) do
+    [
+      "Summary of previous conversation (compacted from #{tokens_compacted} tokens):",
+      preserve,
+      summary_text,
+      archive_pointer(marker_index)
+    ]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.join("\n\n")
+  end
+
+  # Names the archived range in the form `agents-history` takes, so a reader who
+  # finds the summary wanting is one call from the rest of it. The range is
+  # `0..marker_index - 1`: indices are contiguous from 0, and the marker row
+  # itself sits at `marker_index`.
+  defp archive_pointer(marker_index) do
+    "The conversation before this compaction is still readable with " <>
+      "`agents-history` (start_index 0, length #{marker_index})."
+  end
+
+  @doc """
+  Append the carried entry's messages to the new active segment.
+
+  `{:compact_resume, _, _}` carries none: a `context-compact` call and its
+  synthetic result are persisted *before* the compaction request, so they
+  belong to the segment this compaction archives. The entry exists to resume
+  generation on the far side of the commit.
+  """
   @spec append_entry_tail([term()], Agent.Machine.entry() | nil) :: [term()]
   def append_entry_tail(new_messages, {:user_message, msg}), do: new_messages ++ [{:user, msg}]
   def append_entry_tail(new_messages, {:tool_call, msg, _, _}), do: new_messages ++ [msg]
-  def append_entry_tail(new_messages, {:compact_tool, [a, b], _, _}), do: new_messages ++ [a, b]
+  def append_entry_tail(new_messages, {:compact_resume, _, _}), do: new_messages
   def append_entry_tail(new_messages, {:assistant_response, msg, _, _}), do: new_messages ++ [msg]
   def append_entry_tail(new_messages, _other), do: new_messages
 

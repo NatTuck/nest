@@ -133,11 +133,32 @@ defmodule Nest.Agents.Agent.Turn.Messages do
   @spec refuse_context_compact_co_batch([Nest.Messages.ToolCall.t()], [tuple()]) ::
           {:tool, Tool.t()}
   def refuse_context_compact_co_batch(tool_calls, _messages_before) do
-    reason =
+    refusal(
+      tool_calls,
       "Batch refused: context-compact must be the sole tool in a batch " <>
         "(current batch contains other tools as well). Call context-compact " <>
         "in its own iteration."
+    )
+  end
 
+  @doc """
+  Refuse a `context-compact` call whose arguments do not meet the tool's
+  contract, naming what is wrong in `reason`.
+
+  An error result rather than a dropped call: the agent asked for a
+  compaction, and answering with the reason lets it fix the arguments and ask
+  again (or carry on). Nothing is staged, so no compaction happens and the
+  conversation is untouched.
+  """
+  @spec refuse_context_compact_arguments([Nest.Messages.ToolCall.t()], String.t()) ::
+          {:tool, Tool.t()}
+  def refuse_context_compact_arguments(tool_calls, reason) do
+    refusal(tool_calls, "context-compact refused: " <> reason)
+  end
+
+  # One error `ToolResult` per call in the batch: every call the assistant made
+  # must be answered, or the sequence fails wire validation.
+  defp refusal(tool_calls, reason) do
     error_results =
       Enum.map(tool_calls, fn tc ->
         %ToolResult{

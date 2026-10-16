@@ -237,9 +237,15 @@ defmodule Nest.Tools do
   # control-flow tool: it is intercepted by the turn response
   # handler (`Nest.Agents.Agent.Machine.Response`, which requires
   # it to be the sole call in a batch) and
-  # never actually invoked here, so its `function` is a stub. The
-  # schema surfaces the `focus` argument the LLM can pass to guide
-  # what the compaction summary should preserve.
+  # never actually invoked here, so its `function` is a stub.
+  #
+  # The two arguments split the job the single `focus` argument used to do, and
+  # the split is the point: `cover` is guidance for the summarizer, `preserve`
+  # is content the machinery carries into the summary message unchanged. Long
+  # material belongs in `preserve` — a long `cover` is refused, because text
+  # that size in the guidance slot reads to the compactor as instructions to
+  # act on rather than a summary to write. These descriptions are what the
+  # model reads, so they carry the contract.
   defp context_compact_function do
     %Tool{
       name: "context-compact",
@@ -249,11 +255,23 @@ defmodule Nest.Tools do
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
-          "focus" => %{
+          "cover" => %{
+            "type" => "string",
+            "maxLength" => 100,
+            "description" =>
+              "Short guidance (100 characters or fewer) naming what the compaction " <>
+                "summary must cover — e.g. the current task and the decisions made. " <>
+                "A longer value is refused: put literal content you want carried into " <>
+                "the summary in `preserve` instead."
+          },
+          "preserve" => %{
             "type" => "string",
             "description" =>
-              "What to preserve in the compaction summary (e.g. recent instructions, " <>
-                "the current task)."
+              "Content to carry into the post-compaction summary message verbatim — " <>
+                "your own hand-written summary of the task, state, and next steps, or " <>
+                "anything else the next context must not lose. It is reproduced " <>
+                "unchanged, so write it as the text you want to see, not as " <>
+                "instructions to the summarizer."
           }
         },
         "required" => []

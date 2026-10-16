@@ -28,9 +28,10 @@ defmodule Nest.Tokens.Compactor do
   records the response as an assistant message on the agent's
   message list (via the canonical append path, same as a regular
   chat-turn assistant response) and uses the summary text to
-  derive a "Summary of earlier conversation" user message after
-  the commit. The compactor does not wrap, rename, or otherwise
-  reshape the response.
+  derive a "Summary of previous conversation" user message after
+  the commit — alongside the agent's own `preserve` text, when the
+  compaction came from a `context-compact` call. The compactor does
+  not wrap, rename, or otherwise reshape the response.
 
   The LLM call is set up by the caller. It sends a request whose
   messages END with a `[mode: compact]` suffix — a `user` row, because
