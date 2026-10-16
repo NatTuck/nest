@@ -85,6 +85,27 @@ export function catalogSetters(set) {
       });
     },
 
+    /**
+     * Set a space's network access in the store. The space lives in exactly one
+     * of the two lists, so both are checked: the toggle is rendered from a space
+     * in either.
+     */
+    setSpaceNetworkAccess: (spaceId, networkAccess) => {
+      set((state) => {
+        const update = (spaces) =>
+          spaces.map((space) =>
+            space.id === spaceId
+              ? { ...space, network_access: networkAccess }
+              : space,
+          );
+
+        return {
+          spaces: update(state.spaces),
+          archivedSpaces: update(state.archivedSpaces),
+        };
+      });
+    },
+
     unarchiveSpace: (spaceId) => {
       set((state) => {
         const space = state.archivedSpaces.find((s) => s.id === spaceId);

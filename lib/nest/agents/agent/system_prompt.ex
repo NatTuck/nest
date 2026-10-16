@@ -136,7 +136,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
     system_prompt =
       (vocation.system_prompt || "") <>
-        Vocations.mode_catalog(vocation, tools) <>
+        Vocations.mode_catalog(vocation, tools, Mounts.network_access(mounts)) <>
         build_suffix(mounts, context_limit_info, name, depth, tools) <>
         agents_md_section(mounts, initial_caps(vocation, initial_mode)) <>
         Nest.ProjectConfig.section(Mounts.workspace(mounts))

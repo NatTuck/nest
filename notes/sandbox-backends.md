@@ -20,12 +20,16 @@ already travels with every call. Adding a backend means adding a module under
 | `caps.fs.write` | `--bind` per path | `-v <p>:<p>:rw` | ignored |
 | Workspace | bound at its own path, rw iff `":workspace"` | same, `-v …:rw\|ro` | the real directory |
 | Scratch (`/tmp`) | the space scratch dir, bound at `/tmp` | same, `-v <space_dir>:/tmp:rw\|ro` | the host's real `/tmp` |
-| `caps.net` | `--share-net` / `--unshare-net` | no flag / `--network none` | ignored |
+| `caps.net` (the space's `network_access`) | `--share-net` / `--unshare-net` | no flag / `--network none` | ignored |
 | `.nest` mounts | `--bind` / `--ro-bind` | `-v` | not bound (the host path is already visible) |
 | `.nest` read-only mask | a `/dev/null` `--ro-bind` | a `/dev/null` `-v …:ro` | **not enforced** |
 | `caps.shell.background` | enforced by `ShellJobs` | enforced by `ShellJobs` | enforced by `ShellJobs` |
 | HPU devices | host `/dev` `--dev-bind` + writable Habana log dir | `--device` per path | already visible |
 | Process/net namespace | unshared | the container's | the host's |
+
+`caps["net"]` is the **space's** `network_access`, not a vocation mode's: it is
+resolved once at agent start, carried on the `Mounts` value, and injected by
+`Nest.Sandbox.with_network_access/2`. A mode's own `net` key is dead data.
 
 **`none` enforces nothing.** It is the escape hatch for a space that must reach
 the real machine, and its caps are unenforceable by construction — including the

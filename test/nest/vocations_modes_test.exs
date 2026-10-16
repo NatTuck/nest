@@ -204,7 +204,7 @@ defmodule Nest.VocationsModesTest do
         }
       }
 
-      catalog = Vocations.mode_catalog(vocation, ["shell-cmd"])
+      catalog = Vocations.mode_catalog(vocation, ["shell-cmd"], false)
 
       assert catalog =~ "\n\n[Available modes]\n"
 
@@ -226,7 +226,7 @@ defmodule Nest.VocationsModesTest do
         }
       }
 
-      catalog = Vocations.mode_catalog(vocation, ["shell-cmd"])
+      catalog = Vocations.mode_catalog(vocation, ["shell-cmd"], false)
 
       refute catalog =~ "Read and write workspace"
       assert catalog =~ "plan: Read only \"/\". Read and write /tmp."
@@ -243,7 +243,7 @@ defmodule Nest.VocationsModesTest do
         }
       }
 
-      catalog = Vocations.mode_catalog(vocation, [])
+      catalog = Vocations.mode_catalog(vocation, [], false)
 
       assert catalog =~ "\n\n[Available modes]\n"
       assert catalog =~ "- chat: General conversation."

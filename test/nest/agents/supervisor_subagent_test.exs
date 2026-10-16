@@ -272,7 +272,8 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       parent_id: nil,
       depth: 0,
       # `Init.build_state/2` requires it (see `Nest.Sandbox.Backend`).
-      sandbox_backend: "bwrap"
+      sandbox_backend: "bwrap",
+      network_access: true
     }
 
     case Supervisor.start_under_test(attrs) do
@@ -325,7 +326,14 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       model: info.model,
       vocation: attrs.vocation,
       vocation_id: info.vocation_id,
-      mounts: Mounts.new(attrs.workspace_path, nil, attrs.sandbox_backend),
+      mounts:
+        Mounts.new(
+          attrs.workspace_path,
+          nil,
+          attrs.sandbox_backend,
+          attrs.space_id,
+          attrs.network_access
+        ),
       llm_metrics: %Nest.Agents.Agent.LlmMetrics{
         context_limit: info.context_limit,
         context_limit_source: info.context_limit_source,

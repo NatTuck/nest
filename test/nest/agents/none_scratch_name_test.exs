@@ -65,6 +65,7 @@ defmodule Nest.Agents.NoneScratchNameTest do
         vocation: Nest.Vocations.get_vocation(vocation_id),
         workspace_path: nil,
         sandbox_backend: "none",
+        network_access: false,
         depth: 0
       })
 

@@ -499,6 +499,22 @@ defmodule NestWeb.LobbyChannelTest do
       assert Nest.Spaces.get_space(space_id).sandbox_backend == "none"
     end
 
+    test "carries the client's network choice into the created space" do
+      {socket, _payload} = join_lobby()
+
+      ref =
+        push(socket, "create_space", %{
+          "name" => "net-space-#{System.unique_integer([:positive])}",
+          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+          "network_access" => false
+        })
+
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}, 500
+      AgentTestHelpers.ensure_cleanup(name)
+
+      assert Nest.Spaces.get_space(space_id).network_access == false
+    end
+
     test "refuses a sandbox backend this build does not implement" do
       {socket, _payload} = join_lobby()
 
@@ -531,6 +547,62 @@ defmodule NestWeb.LobbyChannelTest do
 
         assert_reply ref, :error, %{"reason" => ^reason}, 500
       end
+    end
+  end
+
+  describe "handle_in(set_space_network)" do
+    test "flips the space's network access and announces it" do
+      {socket, _payload} = join_lobby()
+
+      ref =
+        push(socket, "create_space", %{
+          "name" => "net-toggle-#{System.unique_integer([:positive])}",
+          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+        })
+
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}, 500
+      AgentTestHelpers.ensure_cleanup(name)
+      assert Nest.Spaces.get_space(space_id).network_access == true
+
+      toggle =
+        push(socket, "set_space_network", %{"space_id" => space_id, "network_access" => false})
+
+      assert_reply toggle, :ok, %{"network_access" => false}, 500
+      assert Nest.Spaces.get_space(space_id).network_access == false
+
+      # The frame carries the whole space, so another session of the same user
+      # shows the same value rather than its stale one.
+      assert_push "space:updated",
+                  %{"space" => %Nest.Spaces.Space{id: ^space_id, network_access: false}},
+                  500
+    end
+
+    test "refuses a payload that is not a boolean, or names no space" do
+      {socket, _payload} = join_lobby()
+
+      for payload <- [
+            %{"space_id" => 1, "network_access" => "yes"},
+            %{"space_id" => 1},
+            %{"network_access" => true},
+            %{}
+          ] do
+        assert_reply push(socket, "set_space_network", payload),
+                     :error,
+                     %{"reason" => "invalid_payload"},
+                     500
+      end
+    end
+
+    test "refuses a space the user does not own" do
+      {socket, _payload} = join_lobby()
+
+      assert_reply push(socket, "set_space_network", %{
+                     "space_id" => -1,
+                     "network_access" => false
+                   }),
+                   :error,
+                   %{"reason" => _reason},
+                   500
     end
   end
 

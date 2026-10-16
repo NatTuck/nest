@@ -46,7 +46,12 @@ export function NewSpacePage() {
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedThinking, setSelectedThinking] = useState("medium");
   const [workspacePath, setWorkspacePath] = useState("");
+  // Network access is a space property, so it is chosen here and editable later
+  // on the space's own page.
+  const [networkAccess, setNetworkAccess] = useState(true);
   const [sandboxBackend, setSandboxBackend] = useState(DEFAULT_SANDBOX_BACKEND);
+  // Network access is a space property, chosen here and editable later on the
+  // space's own page.
   const [isCreating, setIsCreating] = useState(false);
   const [isRescanning, setIsRescanning] = useState(false);
   const [error, setError] = useState(null);
@@ -137,6 +142,7 @@ export function NewSpacePage() {
         blueprint_id: parseInt(selectedBlueprint, 10),
         workspace_path: requiresWorkspace ? workspacePath.trim() : undefined,
         sandbox_backend: sandboxBackend,
+        network_access: networkAccess,
       },
     );
   };
@@ -327,6 +333,30 @@ export function NewSpacePage() {
           <p className="mt-2 text-sm text-gray-500">
             {sandboxBackendHelp(sandboxBackend)}
           </p>
+        </div>
+
+        {/* Network access (a space property, editable later) */}
+        <div className="mb-6 flex items-start gap-3">
+          <input
+            id="space-network-access"
+            type="checkbox"
+            checked={networkAccess}
+            onChange={(e) => setNetworkAccess(e.target.checked)}
+            disabled={isCreating}
+            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+          />
+          <div>
+            <label
+              htmlFor="space-network-access"
+              className="text-sm font-medium text-gray-700"
+            >
+              Network access
+            </label>
+            <p className="text-sm text-gray-500">
+              Whether this space's agents may reach the network. A space with no
+              sandbox cannot enforce this.
+            </p>
+          </div>
         </div>
 
         {/* Create button */}
