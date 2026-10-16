@@ -38,11 +38,45 @@ import {
   createInvite,
   revokeInvite,
   archiveSpace,
+  setSpaceNetwork,
   unarchiveSpace,
   unarchiveAgent,
   clearAgentChannels,
   agentChannels,
 } from "./channels";
+
+describe("setSpaceNetwork", () => {
+  it("pushes the space and the new value, and forwards ok", async () => {
+    setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+    joinLobby();
+    setNextPushResult("lobby", "set_space_network", {
+      ok: { network_access: false },
+    });
+
+    let captured = "not-called";
+    setSpaceNetwork(7, false, () => {
+      captured = "called";
+    });
+
+    await vi.waitFor(() => {
+      assert.strictEqual(captured, "called");
+    });
+  });
+
+  it("applies the server's space:updated frame to the store", async () => {
+    setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+    joinLobby();
+    useStore.setState({ spaces: [{ id: 7, name: "s", network_access: true }] });
+
+    simulateServerEvent("lobby", "space:updated", {
+      space: { id: 7, network_access: false },
+    });
+
+    await vi.waitFor(() => {
+      assert.strictEqual(useStore.getState().spaces[0].network_access, false);
+    });
+  });
+});
 
 describe("channels", () => {
   beforeEach(() => {

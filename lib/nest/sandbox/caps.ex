@@ -11,6 +11,10 @@ defmodule Nest.Sandbox.Caps do
         "shell" => %{"background" => non_neg_integer()}
       }
 
+  `"net"` is the *space's* value by the time a caps map is validated — injected
+  by `Nest.Sandbox.with_network_access/2`, which is why a mode's own `"net"` key
+  is dead data (`Nest.Spaces.Space`).
+
   `"shell"` and `"sandbox"` are optional. `"shell"`'s absence means the default
   background-job ceiling (see `Nest.Sandbox.ShellJobs`); `"sandbox"` carries the
   project's declared docker image packages (`Nest.ProjectConfig`), which no cap

@@ -226,8 +226,9 @@ defmodule Nest.Agents.Agent.TmpSpace do
   `Nest.Sandbox.Mounts.ensure_scratch!/1` when the prompt's read is staged, which
   happens first. Both mark what they make.
   """
-  @spec prompt_mounts(String.t() | nil, integer(), String.t(), String.t()) :: Mounts.t()
-  def prompt_mounts(workspace, space_id, name, backend) do
+  @spec prompt_mounts(String.t() | nil, integer(), String.t(), String.t(), boolean()) ::
+          Mounts.t()
+  def prompt_mounts(workspace, space_id, name, backend, network_access) do
     # This *names* the directory; it does not make it. The two creators are
     # `create/3` (the start path) and `Nest.Sandbox.Mounts.ensure_scratch!/1`
     # (staging, which is what the prompt's `AGENTS.md` read does), and both mark
@@ -235,7 +236,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
     # that cannot be made must fail where the agent starts, not as a raise out of
     # the caller that is merely composing a prompt.
     scratch = if single_segment?(name), do: agent_dir(space_id, name, backend)
-    Mounts.new(workspace, scratch, backend, space_id)
+    Mounts.new(workspace, scratch, backend, space_id, network_access)
   end
 
   # The one place a scratch directory is removed, with both guards a `rm_rf`

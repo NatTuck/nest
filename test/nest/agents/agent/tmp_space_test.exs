@@ -152,7 +152,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
 
   describe "prompt_mounts/4" do
     test "names the agent's real scratch, space and backend", %{space_id: space_id} do
-      mounts = TmpSpace.prompt_mounts("/ws", space_id, unique("agent-a"), "docker")
+      mounts = TmpSpace.prompt_mounts("/ws", space_id, unique("agent-a"), "docker", true)
 
       # The scratch directory is named even though nothing created it: the
       # docker backend can only stage a script the container reaches through the
@@ -172,7 +172,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       # path that cannot be made has to fail where the agent starts rather than as
       # a raise out of the caller that is merely composing a prompt.
       name = track_none_scratch(space_id, unique("none-a"))
-      mounts = TmpSpace.prompt_mounts(nil, space_id, name, "none")
+      mounts = TmpSpace.prompt_mounts(nil, space_id, name, "none", true)
 
       assert Mounts.scratch(mounts) == Path.join("/tmp", name)
       refute File.exists?(Mounts.scratch(mounts))
@@ -185,7 +185,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       # one it made without the marker would be a directory no later `cleanup/3`
       # could ever remove.
       name = track_none_scratch(space_id, unique("none-a"))
-      mounts = TmpSpace.prompt_mounts(nil, space_id, name, "none")
+      mounts = TmpSpace.prompt_mounts(nil, space_id, name, "none", true)
       scratch = Mounts.scratch(mounts)
 
       assert :ok = Mounts.ensure_scratch!(mounts)
@@ -205,7 +205,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       # Such an agent is refused by its own changeset, and nothing composes a
       # prompt for it — but this must not raise on the way there.
       for name <- ["..", "a/b", "with space", ""] do
-        assert Mounts.scratch(TmpSpace.prompt_mounts(nil, space_id, name, "bwrap")) == nil
+        assert Mounts.scratch(TmpSpace.prompt_mounts(nil, space_id, name, "bwrap", true)) == nil
       end
     end
   end

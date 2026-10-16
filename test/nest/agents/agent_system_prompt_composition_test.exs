@@ -67,7 +67,12 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       assert system_prompt =~ "Base prompt."
       assert system_prompt =~ "\n\n[Available modes]\n\n"
       assert system_prompt =~ ~s(- build: Read only "/")
-      assert system_prompt =~ "Network disabled"
+
+      # The mode's caps say `net: false`, but network access is the *space's* now
+      # (and this space defaults to `true`), so that is what the catalog must say:
+      # the mode's `net` is dead data, and rendering it would tell the agent
+      # something the sandbox does not do.
+      assert system_prompt =~ "Network enabled"
       assert system_prompt =~ "You're clear to edit the project in the workspace."
       assert system_prompt =~ "\n\nWorkspace and tool working directory: #{workspace}"
       # `compact` is rendered into the catalog alongside the

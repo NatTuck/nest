@@ -405,7 +405,33 @@ describe("NewSpacePage", () => {
       blueprint_id: 2,
       workspace_path: "/tmp/proj",
       sandbox_backend: "docker",
+      // Network access is a space property, chosen here and editable later; the
+      // toggle defaults to on.
+      network_access: true,
     });
+  });
+
+  it("sends network access off when the toggle is cleared", () => {
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText("Space Name"), {
+      target: { value: "Closed Project" },
+    });
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "2" },
+    });
+    fireEvent.change(screen.getByLabelText("Select Model"), {
+      target: { value: "gpt-4o" },
+    });
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/tmp/proj" },
+    });
+
+    fireEvent.click(screen.getByLabelText("Network access"));
+    fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
+
+    const opts = mocks.createSpace.mock.calls[0][4];
+    expect(opts.network_access).toBe(false);
   });
 
   it("navigates to the new space's page on success", () => {

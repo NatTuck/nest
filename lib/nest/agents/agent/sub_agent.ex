@@ -89,8 +89,9 @@ defmodule Nest.Agents.Agent.SubAgent do
       vocation_id: vocation_id,
       workspace_path: Mounts.workspace(parent_state.mounts),
       # The child lives in its parent's space, so it shares the space's
-      # sandbox backend.
+      # sandbox backend and its network access.
       sandbox_backend: Mounts.backend(parent_state.mounts),
+      network_access: Mounts.network_access(parent_state.mounts),
       parent_id: parent_id,
       parent_name: parent_state.name,
       created_by_user_id: parent_state.created_by_user_id,

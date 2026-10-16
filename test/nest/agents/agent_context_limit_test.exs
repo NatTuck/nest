@@ -39,7 +39,8 @@ defmodule Nest.Agents.AgentContextLimitTest do
       vocation_id: AgentTestHelpers.vocation_id_for_test(),
       # `Init.build_state/2` requires it; the default backend is what a
       # hand-built fixture means (see `Nest.Sandbox.Backend`).
-      sandbox_backend: "bwrap"
+      sandbox_backend: "bwrap",
+      network_access: true
     }
 
     attrs = Map.merge(defaults, attrs)

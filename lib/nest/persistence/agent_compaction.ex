@@ -144,7 +144,8 @@ defmodule Nest.Persistence.AgentCompaction do
           agent.workspace_path,
           agent.space_id,
           agent.name,
-          Nest.Spaces.sandbox_backend(agent.space_id)
+          Nest.Spaces.sandbox_backend(agent.space_id),
+          Nest.Spaces.network_access(agent.space_id)
         ),
         {limit, source},
         agent.name,

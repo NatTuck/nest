@@ -14,6 +14,12 @@ defmodule Nest.Sandbox.Mounts do
       (docker's container is `nest-space-<space_id>-…`), and the space id cannot
       be recovered from either directory: the scratch path embeds the BEAM's pid
       and reading an id back out of it would be a reverse mapping.
+    * `network_access` — whether this call may reach the network. It is the
+      *space's* value (`spaces.network_access`), resolved once at agent start
+      like the backend, and injected into the resolved caps as `"net"`
+      (`Nest.Sandbox.with_network_access/2`) so no caps resolution has to read
+      the DB. `false` when the value names no space, which is what
+      `Nest.Sandbox.default_caps/0` has.
     * `workspace` — bound at its own path when the mode's caps grant
       `":workspace"`, and the base a relative tool path resolves against.
     * `scratch` — the agent's own scratch directory. Its *parent* is bound at
@@ -84,10 +90,11 @@ defmodule Nest.Sandbox.Mounts do
   alias Nest.Sandbox.Backend
 
   @enforce_keys [:workspace, :scratch]
-  # The default comes from `Nest.Sandbox.Backend`, the list's one home — a second
-  # literal here would be a second source of truth. Only the default is taken;
-  # nothing here branches on the value.
-  defstruct [:workspace, :scratch, :space_id, backend: Backend.default()]
+  # The backend default comes from `Nest.Sandbox.Backend`, the list's one home —
+  # a second literal here would be a second source of truth. Only the default is
+  # taken; nothing here branches on the value. Network access defaults to
+  # `false`, which is what a value naming no space means (see the moduledoc).
+  defstruct [:workspace, :scratch, :space_id, network_access: false, backend: Backend.default()]
 
   @typedoc """
   `backend` is the implementation that runs the invocation (a string from
@@ -100,6 +107,7 @@ defmodule Nest.Sandbox.Mounts do
   @type t :: %__MODULE__{
           backend: String.t(),
           space_id: integer() | nil,
+          network_access: boolean(),
           workspace: String.t() | nil,
           scratch: String.t() | nil
         }
@@ -147,6 +155,21 @@ defmodule Nest.Sandbox.Mounts do
   end
 
   @doc """
+  The mounts for a call in a space, with everything that space decides: the
+  backend it runs, its network access, and the two directories this call binds.
+  """
+  @spec new(String.t() | nil, String.t() | nil, String.t(), integer() | nil, boolean()) :: t()
+  def new(workspace, scratch, backend, space_id, network_access) do
+    %__MODULE__{
+      backend: backend,
+      space_id: space_id,
+      network_access: network_access,
+      workspace: workspace,
+      scratch: scratch
+    }
+  end
+
+  @doc """
   The mounts for an agent's state: the backend its space runs and the two
   directories it owns. This is the one place the value is read out of agent
   state, so every tool, handler and agent module holds the value rather than a
@@ -182,6 +205,13 @@ defmodule Nest.Sandbox.Mounts do
   """
   @spec space_id(t()) :: integer() | nil
   def space_id(%__MODULE__{space_id: space_id}), do: space_id
+
+  @doc """
+  Whether this call may reach the network: the space's value, or `false` for a
+  call that names no space.
+  """
+  @spec network_access(t()) :: boolean()
+  def network_access(%__MODULE__{network_access: network_access}), do: network_access
 
   @doc """
   Create the agent's scratch directory when there is one, so a command can be

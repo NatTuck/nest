@@ -273,15 +273,17 @@ defmodule Nest.Vocations do
   source of the compaction contract — is always rendered, since
   automatic compaction still runs for a tool-less agent.
   """
-  @spec mode_catalog(Vocation.t() | nil, [String.t()]) :: String.t()
-  def mode_catalog(vocation, tools)
+  @spec mode_catalog(Vocation.t() | nil, [String.t()], boolean()) :: String.t()
+  def mode_catalog(vocation, tools, network_access)
 
-  def mode_catalog(nil, _tools), do: ""
+  def mode_catalog(nil, _tools, _network_access), do: ""
 
-  def mode_catalog(%Vocation{modes: nil}, _tools), do: ""
-  def mode_catalog(%Vocation{modes: modes}, _tools) when map_size(modes) == 0, do: ""
+  def mode_catalog(%Vocation{modes: nil}, _tools, _network_access), do: ""
 
-  def mode_catalog(%Vocation{modes: modes}, tools) do
+  def mode_catalog(%Vocation{modes: modes}, _tools, _network_access) when map_size(modes) == 0,
+    do: ""
+
+  def mode_catalog(%Vocation{modes: modes}, tools, network_access) do
     # `compact` is always rendered into the catalog alongside the
     # vocation's user-configured modes. It's the only place in the
     # agent's initial system prompt that explains the summarization
@@ -298,7 +300,7 @@ defmodule Nest.Vocations do
     catalog =
       all_modes
       |> Enum.sort_by(fn {name, _} -> name end)
-      |> Enum.map_join("\n", &format_mode_line(&1, tool_capable?))
+      |> Enum.map_join("\n", &format_mode_line(&1, tool_capable?, network_access))
 
     "\n\n[Available modes]\n\n" <>
       mode_catalog_intro(tool_capable?) <>
@@ -347,12 +349,12 @@ defmodule Nest.Vocations do
   # sandboxing it can never exercise), so:
   #   * description → `- name: <description>.`
   #   * no description → `- name.`
-  defp format_mode_line({name, mode_def}, tool_capable?) do
+  defp format_mode_line({name, mode_def}, tool_capable?, network_access) do
     description = Map.get(mode_def, "description", "")
 
     cond do
       tool_capable? and Map.has_key?(mode_def, "caps") ->
-        caps_text = caps_sentences(Map.get(mode_def, "caps"))
+        caps_text = caps_sentences(Map.get(mode_def, "caps"), network_access)
 
         if description == "" do
           "- #{name}: #{caps_text}."
@@ -377,13 +379,16 @@ defmodule Nest.Vocations do
   # resolves to the agent's actual workspace path at runtime. We
   # render it as the bare name "workspace" in the catalog so the LLM
   # doesn't see the internal symbol.
-  defp caps_sentences(%{"net" => net, "fs" => %{"read" => read, "write" => write}}) do
-    [read_sentence(read), write_sentence(write), net_sentence(net)]
+  # `network_access` is the *space's*, not the mode's: the mode's own `"net"` is
+  # dead data (the space's value overrides it at caps-resolution time), so
+  # rendering it here would tell the agent something the sandbox does not do.
+  defp caps_sentences(%{"fs" => %{"read" => read, "write" => write}}, network_access) do
+    [read_sentence(read), write_sentence(write), net_sentence(network_access)]
     |> Enum.reject(&(&1 == ""))
     |> Enum.join(". ")
   end
 
-  defp caps_sentences(_), do: "custom profile"
+  defp caps_sentences(_caps, _network_access), do: "custom profile"
 
   defp read_sentence(["/"]), do: ~s(Read only "/")
   defp read_sentence([]), do: "No filesystem read"

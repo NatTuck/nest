@@ -132,6 +132,49 @@ defmodule Nest.Spaces do
   end
 
   @doc """
+  The network access of `space_id`.
+
+  Resolved from the space row rather than from a vocation mode, because the
+  network is a space property. A missing row resolves to `true`, which is the
+  column's default: the caller is about to fail for a better reason than a
+  missing space, and defaulting keeps this total. (A value that names *no* space
+  — a tool call with no space behind it — keeps `Nest.Sandbox.default_caps/0`'s
+  `net: false` instead; see `Nest.Sandbox.with_network_access/2`.)
+
+  Read once, at agent start, and carried on the agent's
+  `Nest.Sandbox.Mounts` value from then on, so caps resolution never reads the
+  DB.
+  """
+  @spec network_access(integer()) :: boolean()
+  def network_access(space_id) when is_integer(space_id) do
+    from(s in Space, where: s.id == ^space_id, select: s.network_access)
+    |> Repo.one()
+    |> case do
+      value when is_boolean(value) -> value
+      _ -> true
+    end
+  end
+
+  @doc """
+  Turn this space's network access on or off.
+
+  Editable, unlike `sandbox_backend`: a space can be closed off or opened up
+  without recreating it. Takes effect for the agents' *subsequent* commands — the
+  value is resolved at agent start and carried on the agent's mounts, so a live
+  agent keeps the value it started with until it is restarted.
+
+  Returns `{:ok, space}` or `{:error, reason}`.
+  """
+  @spec set_network_access(integer(), boolean()) ::
+          {:ok, Space.t()} | {:error, Ecto.Changeset.t() | :not_found}
+  def set_network_access(id, value) when is_integer(id) and is_boolean(value) do
+    case get_space(id) do
+      nil -> {:error, :not_found}
+      %Space{} = space -> space |> Space.changeset(%{network_access: value}) |> Repo.update()
+    end
+  end
+
+  @doc """
   The ids of every space whose backend is `"none"`.
 
   Two `"none"` spaces share the host's real `/tmp` (an agent's scratch dir
@@ -444,7 +487,14 @@ defmodule Nest.Spaces do
          {:ok, %Space{} = space} <-
            create_space(
              user_id,
-             Map.take(attrs, [:name, :slug, :blueprint_id, :workspace_path, :sandbox_backend])
+             Map.take(attrs, [
+               :name,
+               :slug,
+               :blueprint_id,
+               :workspace_path,
+               :sandbox_backend,
+               :network_access
+             ])
            ),
          agent_opts = build_root_agent_opts(user_id, attrs, space, root_vocation_id),
          {:ok, agent_name} <- Agents.create_agent(space.id, attrs[:model], agent_opts) do

@@ -82,7 +82,8 @@ defmodule Nest.Agents.Agent.RecoveryTest do
                  name: "ghost-agent-#{System.unique_integer([:positive])}",
                  model: %{name: "ghost-model"},
                  vocation_id: vocation_id(),
-                 sandbox_backend: "bwrap"
+                 sandbox_backend: "bwrap",
+                 network_access: true
                }}
             )
 
@@ -114,7 +115,8 @@ defmodule Nest.Agents.Agent.RecoveryTest do
                  name: "ghost-agent-#{System.unique_integer([:positive])}",
                  model: %{name: "ghost-model"},
                  vocation_id: vocation_id(),
-                 sandbox_backend: "bwrap"
+                 sandbox_backend: "bwrap",
+                 network_access: true
                }}
             )
 

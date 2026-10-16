@@ -91,7 +91,10 @@ defmodule Nest.Sandbox do
       }
 
   * `"net"` — when `true`, the sandbox shares the host's network namespace
-    (`--share-net`); when `false`, network is unshared.
+    (`--share-net`); when `false`, network is unshared. This one is the
+    **space's** value, not the mode's: `spaces.network_access` is resolved once at
+    agent start and injected here by `with_network_access/2`, so a mode's own
+    `"net"` is dead data. See `Nest.Spaces.Space`.
   * `"fs.read"` — must include `"/"` to run any command. `["/"]` produces
     `--ro-bind / /`.
   * `"fs.write"` — the explicit list of paths bound read-write. The
@@ -216,6 +219,25 @@ defmodule Nest.Sandbox do
 
       {:ok, args}
     end
+  end
+
+  @doc """
+  Put the space's network access into `caps` as `"net"`.
+
+  The network is a *space* property (`spaces.network_access`), not a vocation
+  mode's, so this is where the mode's own `"net"` is overridden — and it is the
+  one place, because every caps resolution ends in
+  `Nest.ProjectConfig.apply_or_default/2`, which calls this. Nothing downstream
+  changes: `Nest.Sandbox.build/2` and both backends keep reading `caps["net"]`.
+
+  The value travels on the `Mounts` value (resolved once at agent start, like the
+  backend), so no caps resolution reads the DB. A `Mounts` value that names no
+  space carries `false`, which is `default_caps/0`'s value: an agent with no
+  space behind it must not gain the network.
+  """
+  @spec with_network_access(map(), Mounts.t()) :: map()
+  def with_network_access(caps, %Mounts{} = mounts) do
+    Map.put(caps, "net", Mounts.network_access(mounts))
   end
 
   @doc """

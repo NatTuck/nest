@@ -297,6 +297,14 @@ defmodule Nest.ProjectConfig do
   """
   @spec apply_or_default(map(), Mounts.t()) :: map()
   def apply_or_default(caps, mounts) do
+    # The space's network access goes in *here*, before the project config, so
+    # that a malformed `.nest` cannot drop it and so that both caps-resolution
+    # paths (`Nest.Agents.Agent.resolve_caps/1` and
+    # `Nest.Agents.Agent.ChatPipeline.resolve_mode_and_caps/3`) inject it by
+    # calling this one function — it is not a project setting, but this is the
+    # one place a mode's caps become the caps for a call.
+    caps = Nest.Sandbox.with_network_access(caps, mounts)
+
     case effective_caps(caps, mounts) do
       {:ok, merged} -> merged
       {:error, _reason} -> caps

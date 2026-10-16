@@ -101,7 +101,9 @@ defmodule Nest.Persistence do
   # `Nest.Sandbox.Backend`). `put_new` so a caller that already named one — a
   # spawned child inheriting its parent's — keeps it.
   defp put_sandbox_backend(%{space_id: space_id} = attrs) when is_integer(space_id) do
-    Map.put_new(attrs, :sandbox_backend, Nest.Spaces.sandbox_backend(space_id))
+    attrs
+    |> Map.put_new(:sandbox_backend, Nest.Spaces.sandbox_backend(space_id))
+    |> Map.put_new(:network_access, Nest.Spaces.network_access(space_id))
   end
 
   defp put_sandbox_backend(attrs), do: attrs
@@ -530,6 +532,7 @@ defmodule Nest.Persistence do
       vocation_id: row.vocation_id,
       workspace_path: row.workspace_path,
       sandbox_backend: Nest.Spaces.sandbox_backend(row.space_id),
+      network_access: Nest.Spaces.network_access(row.space_id),
       next_message_index: row.next_message_index,
       last_compaction_index: boundary,
       parent_id: row.parent_id,

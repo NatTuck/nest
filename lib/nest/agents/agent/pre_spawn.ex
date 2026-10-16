@@ -205,7 +205,8 @@ defmodule Nest.Agents.Agent.PreSpawn do
           Map.get(attrs, :workspace_path),
           Map.fetch!(attrs, :space_id),
           name,
-          Map.fetch!(attrs, :sandbox_backend)
+          Map.fetch!(attrs, :sandbox_backend),
+          Map.fetch!(attrs, :network_access)
         ),
         {context_limit, context_limit_source},
         name,
@@ -329,8 +330,10 @@ defmodule Nest.Agents.Agent.PreSpawn do
       vocation_id: parent_state.vocation_id,
       vocation: parent_state.vocation,
       workspace_path: Mounts.workspace(parent_state.mounts),
-      # The child shares its parent's space, so it shares its sandbox backend.
+      # The child shares its parent's space, so it shares its sandbox backend
+      # and its network access.
       sandbox_backend: Mounts.backend(parent_state.mounts),
+      network_access: Mounts.network_access(parent_state.mounts),
       parent_id: parent_id,
       parent_name: parent_state.name,
       # Children inherit the parent's user identity and

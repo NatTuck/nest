@@ -43,6 +43,32 @@ describe("store", () => {
       expect(useStore.getState().archivedSpaces).toEqual([]);
     });
 
+    it("setSpaceNetworkAccess updates a space in either list", () => {
+      const store = useStore.getState();
+      const active = { id: 1, name: "a", network_access: true };
+      const archived = { id: 2, name: "b", network_access: true };
+      useStore.setState({ spaces: [active], archivedSpaces: [archived] });
+
+      useStore.getState().setSpaceNetworkAccess(1, false);
+      useStore.getState().setSpaceNetworkAccess(2, false);
+
+      expect(useStore.getState().spaces[0].network_access).toBe(false);
+      expect(useStore.getState().archivedSpaces[0].network_access).toBe(false);
+      // Everything else about the space is left alone.
+      expect(useStore.getState().spaces[0].name).toBe("a");
+      expect(store).toBeDefined();
+    });
+
+    it("setSpaceNetworkAccess is a no-op for an unknown id", () => {
+      useStore.setState({
+        spaces: [{ id: 1, name: "a", network_access: true }],
+      });
+
+      useStore.getState().setSpaceNetworkAccess(999, false);
+
+      expect(useStore.getState().spaces[0].network_access).toBe(true);
+    });
+
     it("unarchiveSpace moves a space back to the active list", () => {
       useStore.getState().setSpaces([s2]);
       useStore.getState().setArchivedSpaces([s1]);

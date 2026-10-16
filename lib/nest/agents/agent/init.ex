@@ -46,6 +46,7 @@ defmodule Nest.Agents.Agent.Init do
   @spec build_state(map(), Nest.LLM.ClientConfig.t()) :: Nest.Agents.Agent.t()
   def build_state(attrs, client_config) do
     backend = Map.fetch!(attrs, :sandbox_backend)
+    network_access = Map.fetch!(attrs, :network_access)
     workspace = Map.get(attrs, :workspace_path)
 
     name = Map.fetch!(attrs, :name)
@@ -58,7 +59,7 @@ defmodule Nest.Agents.Agent.Init do
     # carry the real backend and the real scratch — a `"none"` space's reads
     # must not run under bwrap, and a `"docker"` one can only stage through the
     # scratch bind (see `Nest.Sandbox.Backend.Docker.command/3`).
-    mounts = Mounts.new(workspace, create_tmp_space(space_id, name, backend), backend, space_id)
+    mounts = agent_mounts(attrs, name, space_id, workspace, backend, network_access)
 
     {system_prompt, mode, tool_names, cached_vocation, llm_metrics} =
       build_vocation_pipeline(attrs, mounts)
@@ -95,6 +96,18 @@ defmodule Nest.Agents.Agent.Init do
   # initializer. Kept as its own helper so `build_state/2`
   # stays under the credo ABC cap.
   #
+  # The agent's sandbox: the backend its space runs, its network access, the
+  # workspace it binds, and the scratch directory just created for it.
+  defp agent_mounts(_attrs, name, space_id, workspace, backend, network_access) do
+    Mounts.new(
+      workspace,
+      create_tmp_space(space_id, name, backend),
+      backend,
+      space_id,
+      network_access
+    )
+  end
+
   # The prompt is composed through `mounts` because composing it *runs* the
   # sandbox: the `AGENTS.md` section reads the file through it (see
   # `Nest.Agents.Agent.TmpSpace.prompt_mounts/4`).

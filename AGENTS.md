@@ -40,6 +40,14 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   mean replacing the environment the space's agents run in. It travels to every
   command on the `Nest.Sandbox.Mounts` value, and `Nest.Sandbox.Backend` is the
   one dispatch point (`Nest.Tools.ShellCmd` is the only caller that matters).
+- **Network access is the space's, not a mode's.** `spaces.network_access`
+  (boolean, editable) is the only source of `caps["net"]`: it is resolved once at
+  agent start and carried on `Nest.Sandbox.Mounts`, and
+  `Nest.Sandbox.with_network_access/2` injects it at caps-resolution time (called
+  from `Nest.ProjectConfig.apply_or_default/2`, the one funnel both resolution
+  paths share). A vocation mode's own `net` key is **dead data** — never read,
+  never rendered into the prompt — and a value naming no space keeps
+  `default_caps/0`'s `net: false`. Do not add a second place that reads either.
 - `bwrap` (the default) enforces the mode's caps with binds and namespaces.
   `docker` runs commands in a container the space shares: its root filesystem is
   the derived image, so it sees the workspace and the explicit `.nest` mounts and
