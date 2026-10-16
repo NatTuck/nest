@@ -194,6 +194,13 @@ describe("sandbox backends", () => {
     expect(sandboxBackendHelp("docker")).toMatch(/docker/i);
     expect(sandboxBackendHelp("none")).toMatch(/cannot be enforced/i);
   });
+
+  it("renders an obvious error rather than nothing for an unknown backend", () => {
+    expect(sandboxBackendHelp("kubernetes")).toMatch(
+      /unknown sandbox backend/i,
+    );
+    expect(sandboxBackendHelp(undefined)).toMatch(/unknown sandbox backend/i);
+  });
 });
 
 describe("NewSpacePage", () => {

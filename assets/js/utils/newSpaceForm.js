@@ -34,9 +34,17 @@ const SANDBOX_BACKEND_HELP = {
  * Help text for a sandbox backend, rendered under the `<select>`. The
  * `none` text states plainly that the sandbox caps are unenforceable
  * there, because the commands run directly on the host.
+ *
+ * An unrecognised backend renders an obvious error rather than an empty
+ * line: the value is constrained by `SANDBOX_BACKENDS` and by
+ * `validateNewSpaceForm`, so reaching the fallback means the list here and
+ * the value the form holds have drifted apart, which must not be silent.
  */
 export function sandboxBackendHelp(backend) {
-  return SANDBOX_BACKEND_HELP[backend];
+  return (
+    SANDBOX_BACKEND_HELP[backend] ??
+    `Unknown sandbox backend ${JSON.stringify(backend)}: this is a bug in the form, not a choice you can make.`
+  );
 }
 
 /**
