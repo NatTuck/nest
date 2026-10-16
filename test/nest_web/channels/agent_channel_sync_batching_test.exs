@@ -17,12 +17,12 @@ defmodule NestWeb.AgentChannelSyncBatchingTest do
   alias Nest.Messages.User
 
   # The suite's fence, deliberately above the 500 ms default because this file's
-  # fixtures are large. Measured with `--trace`: the four tests run 38.9 /
-  # 221.6 / 285.4 / 361.1 ms on an idle machine, the oversized-message case
-  # measured 709.1 ms with its original 2 MB fixture, and a 500 ms fence was
-  # observed to fail on a loaded machine. The cost is the fixture's own JSON
-  # encode plus `Supervisor.get_agent/2` startup (`seed_active/4` below), not
-  # the reply, which carries at most one budget's worth (~1 MiB).
+  # fixtures are large. Measured with `--cover --trace`, which is the
+  # instrumentation a full precommit runs under: the oversized-message case took
+  # 789.8 ms with a 2 MB fixture, the other three 23.7 / 114.7 / 215.7 ms, and a
+  # 500 ms fence was observed to fail under load. The cost is the fixture's own
+  # JSON encode plus `Supervisor.get_agent/2` startup (`seed_active/4` below),
+  # not the reply, which carries at most one budget's worth (~1 MiB).
   @reply_timeout 1_000
 
   # A message of roughly `bytes` wire bytes.
@@ -118,9 +118,12 @@ defmodule NestWeb.AgentChannelSyncBatchingTest do
     space_id: space_id,
     agent_id: agent_id
   } do
-    # A single 2 MB message cannot fit any budget. It must still be sent, or
-    # the client would ask again from the same lastIndex forever.
-    seed_active(space_id, agent_id, 1, 2_000_000)
+    # A single message just over the whole budget cannot fit it. It must still
+    # be sent, or the client would ask again from the same lastIndex forever.
+    # Sized just over the budget rather than far over it: the property is
+    # identical, and the fixture's own JSON encode dominates this file's runtime
+    # (measured at 789.8 ms for a 2 MB fixture under coverage).
+    seed_active(space_id, agent_id, 1, 1_100_000)
 
     messages = sync(socket, -1)
 
