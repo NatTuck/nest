@@ -174,9 +174,17 @@ defmodule Nest.PersistenceAgentsTest do
       # `Persistence.insert_message/4`).
       assert restored.agent_row_id == row_id
 
-      # 3 preloaded messages: system@0, user@1, marker@2.
-      # Partition happens inside Agent.init/1's seed_from_db/3.
-      assert length(restored.preloaded_messages) == 3
+      # The active slice is what is loaded as messages, and nothing here is
+      # above the boundary — so no rows come back as messages, and the
+      # archive is reported as facts instead (issue #52). Partitioning and
+      # seeding happen inside `Agent.init/1`'s `seed_from_db/5`.
+      assert restored.preloaded_messages == []
+
+      assert restored.archived_summary == %{
+               has_system_row: true,
+               highest_index: 2,
+               marker_count: 1
+             }
     end
 
     test "returns :not_found when no row exists" do

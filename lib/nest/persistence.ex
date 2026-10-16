@@ -63,6 +63,7 @@ defmodule Nest.Persistence do
   alias Nest.Messages.Compaction
   alias Nest.Messages.Message
   alias Nest.Persistence.CompactionMarker
+  alias Nest.Persistence.Messages
   alias Nest.Repo
   alias Nest.Spaces.Space
   alias Nest.Vocations
@@ -468,7 +469,21 @@ defmodule Nest.Persistence do
     with {:ok, row} <- fetch_agent(space_id, agent_name),
          :ok <- ensure_not_archived(row),
          {:ok, boundary} <- last_compaction_index(space_id, agent_name) do
-      preloaded = load_full_messages(space_id, agent_name)
+      # The rows the runtime actually holds: everything above the compaction
+      # boundary. The rows at or below it are the archive, which `ChatState`
+      # never holds — `Nest.Persistence.History` derives it on demand — so
+      # reading them as messages here only ever fed three facts about them and
+      # made a cold start scale with the whole conversation instead of the
+      # active window (issue #52). `archived_summary/3` reads those facts as a
+      # projection, so the payloads are never decoded.
+      preloaded =
+        Messages.load_slice(space_id, agent_name,
+          cap: :all,
+          limit: :all,
+          floor: boundary
+        )
+
+      archived = Messages.archived_summary(space_id, agent_name, boundary)
       {violations, load_heal} = classify_sequence(preloaded, boundary)
 
       attrs =
@@ -476,6 +491,7 @@ defmodule Nest.Persistence do
           row,
           boundary,
           preloaded,
+          archived,
           violations,
           load_heal,
           parent_name_for(row)
@@ -494,7 +510,7 @@ defmodule Nest.Persistence do
   # The `Agent.start_link/1` attrs map. Extracted from
   # `build_attrs_for_start/2` so the load path stays under credo's ABC
   # cap (the map literal is the bulk of the assignments).
-  defp start_attrs(row, boundary, preloaded, violations, load_heal, parent_name) do
+  defp start_attrs(row, boundary, preloaded, archived, violations, load_heal, parent_name) do
     %{
       space_id: row.space_id,
       name: row.name,
@@ -511,6 +527,7 @@ defmodule Nest.Persistence do
       created_by_user_id: row.created_by_user_id,
       shared: row.shared == true,
       preloaded_messages: preloaded,
+      archived_summary: archived,
       sequence_violations: violations,
       load_heal: load_heal,
       repair_command: repair_command(violations, row.space_id),
