@@ -16,6 +16,7 @@
  */
 
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useShallow } from "zustand/shallow";
 import { useStore } from "../store";
 import { ArchivedSpaceRow } from "./SidebarArchivedRow";
 import { SpaceRow } from "./SidebarSpaceRow";
@@ -25,6 +26,14 @@ import { SpaceRow } from "./SidebarSpaceRow";
  */
 export function Sidebar() {
   const location = useLocation();
+  // One shallow-compared subscription rather than a bare `useStore()`. A bare
+  // call re-renders this component — and rebuilds every space's agent tree,
+  // since each `SpaceRow` runs `buildAgentTree` — on *every* store write. The
+  // writes that arrive while a click is being handled are exactly the ones
+  // that touch none of these fields: each streamed `chat:delta`, and each
+  // `chat:sync` batch as a cold agent's cache fills in (hundreds of them for a
+  // long conversation). The shallow compare short-circuits all of those,
+  // because every field below is reference-stable unless its own slice moved.
   const {
     agents,
     archivedAgents,
@@ -33,7 +42,17 @@ export function Sidebar() {
     archivedCollapsed,
     setArchivedCollapsed,
     currentUser,
-  } = useStore();
+  } = useStore(
+    useShallow((state) => ({
+      agents: state.agents,
+      archivedAgents: state.archivedAgents,
+      spaces: state.spaces,
+      archivedSpaces: state.archivedSpaces,
+      archivedCollapsed: state.archivedCollapsed,
+      setArchivedCollapsed: state.setArchivedCollapsed,
+      currentUser: state.currentUser,
+    })),
+  );
 
   const isActive = (path) => {
     if (path === "/spaces/new") {

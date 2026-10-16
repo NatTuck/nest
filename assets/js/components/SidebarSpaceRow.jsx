@@ -20,6 +20,7 @@ import {
   currentAgentName,
   spaceNodeKey,
 } from "../utils/agentTree";
+import { PendingDot } from "./PendingDot";
 import { StatusDot } from "./StatusDot";
 
 /**
@@ -195,13 +196,34 @@ function AgentTreeRow({
     (state) => state.expandedTreeNodes[nodeKey] === true,
   );
   const toggleTreeNode = useStore((state) => state.toggleTreeNode);
+  // The client's own view of this agent's channel, which is not the same
+  // thing as `agent.status` from the list: the list carries what the server
+  // last said, while this carries whether *this* client has finished joining.
+  // A narrow selector, so a cache write for another agent (or any other field
+  // of this one) does not re-render the row.
+  const cacheStatus = useStore(
+    (state) => state.agentsCache[agent.name]?.status,
+  );
   const onCurrentPath = ancestors.has(agent.name);
   const expanded = onCurrentPath || storedExpanded;
   const [restoreError, setRestoreError] = useState(null);
 
+  // Between the click and the channel's `init` reply there is nothing from
+  // the server to report, and for a cold agent that window can be seconds
+  // long. Showing the list's status there would be a stale claim the click
+  // did not change; a spinner says the click registered and we are waiting.
+  // Only the row the route selects can be joining — every other row is either
+  // joined already or was never asked to be.
+  const joining =
+    isCurrent && (cacheStatus === "connecting" || cacheStatus === undefined);
+
   const label = (
     <>
-      <StatusDot status={agent.status} className="w-2 h-2" />
+      {joining ? (
+        <PendingDot className="w-2 h-2" />
+      ) : (
+        <StatusDot status={agent.status} className="w-2 h-2" />
+      )}
       <span className="truncate text-sm font-medium">{agent.name}</span>
       {directChildren.length > 0 && (
         <span className="text-xs text-gray-400 ml-1">
