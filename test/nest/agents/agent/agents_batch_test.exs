@@ -528,9 +528,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   # start answer with MockClient's random fallback: this test is about the
   # batch's own messages.)
   defp run_batch(parent_pid, id, args) do
-    # The children's vocation, named rather than omitted — see
-    # `upsert_batch_vocation/0`. It is the parent's own, which is what the removed
-    # fallback picked, so the batch's shape is unchanged.
+    # Named, not omitted: the parent's own, which the removed fallback picked.
     args =
       Map.put_new(args, "vocation", Agent.get_public_info(parent_pid, 1_000).vocation_slug)
 
@@ -681,10 +679,8 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   end
 
   # The coordinator's vocation exposes `agents-batch`. The children take the
-  # vocation `run_batch/3` names explicitly: `agents-batch` no longer hands a child
-  # the caller's own vocation when `vocation` is omitted (stage 4b — an omitted
-  # slug takes the space's blueprint default, and this test's space has no
-  # blueprint), and the children's chat cycle is stubbed either way.
+  # vocation `run_batch/3` names explicitly, because `agents-batch` no longer hands
+  # a child the caller's own when `vocation` is omitted (stage 4b).
   defp upsert_batch_vocation do
     {:ok, %Vocations.Vocation{id: vid}} =
       Vocations.upsert_vocation(%{
