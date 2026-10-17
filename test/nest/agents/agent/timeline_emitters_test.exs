@@ -209,8 +209,8 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     assert [%{"action" => "drained", "count" => 1, "from" => "peer", "mode" => "act"}] =
              inbox_action("drained")
 
-    # ...and the delivered entry's delivery id (issue #62), so a reader can
-    # recognise the copy the caller may already hold. The id is a 16-hex token
+    # ...and the delivered entry's delivery id (issue #62), so the `drained`
+    # line names the same entry a removal frame would. The id is a 16-hex token
     # from `Inbox.Delivery.new_id/0`; a regression that stopped propagating it
     # would leave `nil` here.
     assert [%{"id" => drained_id}] = inbox_action("drained")

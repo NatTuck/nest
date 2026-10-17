@@ -24,7 +24,6 @@ defmodule Nest.Tools do
     FileTools,
     History,
     InspectFile,
-    LastMessage,
     QueryAgent,
     ShellCmdTool,
     ShellJobs,
@@ -79,7 +78,6 @@ defmodule Nest.Tools do
              "agents-batch",
              "agents-send",
              "agents-wait",
-             "agents-last-message",
              "agents-history",
              "agents-status",
              "models-list"
@@ -106,7 +104,6 @@ defmodule Nest.Tools do
   defp sub_agent_tool_function("agents-batch"), do: batch_agent_function()
   defp sub_agent_tool_function("agents-send"), do: send_agent_function()
   defp sub_agent_tool_function("agents-wait"), do: WaitForIdle.function()
-  defp sub_agent_tool_function("agents-last-message"), do: LastMessage.function()
   defp sub_agent_tool_function("agents-history"), do: History.function()
   defp sub_agent_tool_function("agents-status"), do: Status.function()
 
@@ -400,11 +397,6 @@ defmodule Nest.Tools do
   # `Nest.Tools.WaitForIdle`; execution lives in
   # `Nest.Agents.Agent.ToolLoop.run_wait_for_idle/2`, which delegates to
   # `Nest.Agents.Agent.Watch` in the turn's tool worker.
-
-  # The `agents-last-message` tool: read the pending delivered message from a
-  # named agent out of the caller's own inbox, mid-turn, and consume it (issue
-  # #62). The spec lives in `Nest.Tools.LastMessage`; execution lives in
-  # `Nest.Agents.Agent.ToolLoop.run_last_message/2`.
 
   # The `agents-archive` tool: stop + mark existing agents in
   # this space archived. They are then excluded from `agents-list`

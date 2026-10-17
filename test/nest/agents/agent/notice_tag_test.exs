@@ -264,8 +264,7 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
       kind: kind,
       mode: nil,
       human?: false,
-      fulfilled_ids: [],
-      retrieved: false
+      fulfilled_ids: []
     }
   end
 

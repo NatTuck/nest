@@ -67,8 +67,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       kind: kind,
       mode: mode,
       human?: false,
-      fulfilled_ids: [],
-      retrieved: false
+      fulfilled_ids: []
     }
   end
 

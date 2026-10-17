@@ -393,10 +393,8 @@ describe("InboxPanel", () => {
     expect(onFetch).toHaveBeenCalledTimes(1);
   });
 
-  it("renders each entry's delivery id and its retrieved marker", () => {
-    // Issue #62: the id is what lets a caller recognise a copy it already
-    // has, and `retrieved` says an `agents-last-message` fetch consumed the
-    // body (the drain will skip it).
+  it("renders each entry's delivery id", () => {
+    // Issue #62: the id is the identity a removal frame names the entry by.
     seed({
       inbox: [
         {
@@ -406,7 +404,6 @@ describe("InboxPanel", () => {
           timestamp: "t1",
           kind: "agent",
           mode: null,
-          retrieved: true,
         },
       ],
       pendingMessageCount: 1,
@@ -417,7 +414,6 @@ describe("InboxPanel", () => {
     fireEvent.click(screen.getByRole("button"));
 
     expect(screen.getByTestId("inbox-delivery-id").textContent).toBe("abc123");
-    expect(screen.getByTestId("inbox-retrieved").textContent).toBe("retrieved");
     expect(screen.queryByTestId("inbox-delivery-id-missing")).toBeNull();
   });
 
@@ -430,7 +426,6 @@ describe("InboxPanel", () => {
           timestamp: "t1",
           kind: "agent",
           mode: null,
-          retrieved: false,
         },
       ],
       pendingMessageCount: 1,
@@ -444,6 +439,5 @@ describe("InboxPanel", () => {
       screen.getByTestId("inbox-delivery-id-missing").textContent,
     ).toContain("missing");
     expect(screen.queryByTestId("inbox-delivery-id")).toBeNull();
-    expect(screen.queryByTestId("inbox-retrieved")).toBeNull();
   });
 });

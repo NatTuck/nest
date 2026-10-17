@@ -13,8 +13,7 @@ defmodule Nest.Tools.WaitForIdle do
   caller's turn, and the notice it delivers is what wakes the idle agent.
 
   This tool is **synchronisation only** (issue #62): it never carries the
-  watched agent's message. The body comes from the inbox delivery, or from
-  `agents-last-message` when the caller needs it mid-turn.
+  watched agent's message. The body arrives as an ordinary inbox delivery.
   """
 
   alias Nest.LLM.Tool
@@ -40,8 +39,8 @@ defmodule Nest.Tools.WaitForIdle do
           "call — reaching it is a normal result, delivered as a message, not " <>
           "an error. Pass `all: true` to wait for every named agent rather " <>
           "than the first. " <>
-          "This call carries NO message content — use `agents-last-message` to " <>
-          "read an agent's message once it is idle. An idle peer owes no " <>
+          "This call carries NO message content — an agent's message arrives in " <>
+          "your inbox as an ordinary delivery. An idle peer owes no " <>
           "replies: a peer you queried does not go idle until it has answered " <>
           "you or the runtime has given up on it. A give-up reaches you as a " <>
           "runtime notice — unless the runtime cannot reach you, in which case " <>

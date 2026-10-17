@@ -5146,39 +5146,6 @@ describe("channels", () => {
       });
     });
 
-    it("chat:inbox replaces an entry in place on an update delta", async () => {
-      await connectedAgent();
-
-      const entry = {
-        id: "d1",
-        from: "alice",
-        content: "review this",
-        timestamp: "t1",
-        kind: "agent",
-        retrieved: false,
-      };
-      simulateServerEvent("agent:1:agent-1", "chat:inbox", {
-        op: "append",
-        messages: [entry],
-        count: 1,
-        inboxSeq: 1,
-      });
-      // `agents-last-message` took the body: the same entry, now marked.
-      simulateServerEvent("agent:1:agent-1", "chat:inbox", {
-        op: "update",
-        messages: [{ ...entry, retrieved: true }],
-        count: 1,
-        inboxSeq: 2,
-      });
-
-      await vi.waitFor(() => {
-        const cache = useStore.getState().agentsCache["agent-1"];
-        assert.strictEqual(cache.inbox.length, 1);
-        assert.strictEqual(cache.inbox[0].retrieved, true);
-        assert.strictEqual(cache.inboxSeq, 2);
-      });
-    });
-
     it("retracts the optimistic row when a queued human message arrives on chat:inbox", async () => {
       await connectedAgent();
 

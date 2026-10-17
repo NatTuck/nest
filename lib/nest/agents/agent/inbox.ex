@@ -13,8 +13,8 @@ defmodule Nest.Agents.Agent.Inbox do
     * the runtime's own result for this agent
       (`enqueue_internal/4`, W2's async spawn/batch completion).
 
-  An entry is `%{id, from, content, timestamp, kind, mode, human?, fulfilled_ids,
-  retrieved}`. `content` is stored **verbatim** (no `[mode: ...]` prefix — that
+  An entry is `%{id, from, content, timestamp, kind, mode, human?, fulfilled_ids}`.
+  `content` is stored **verbatim** (no `[mode: ...]` prefix — that
   is added when the entry is delivered), `mode` is the mode the entry asks the
   recipient to run under — a human's own, or a peer's `set_mode` — and is `nil`
   for an entry that asks for no change, and the producer-supplied fields are
@@ -169,8 +169,7 @@ defmodule Nest.Agents.Agent.Inbox do
           kind: kind(),
           mode: String.t() | nil,
           human?: boolean(),
-          fulfilled_ids: [String.t()],
-          retrieved: boolean()
+          fulfilled_ids: [String.t()]
         }
 
   @doc """
@@ -466,9 +465,7 @@ defmodule Nest.Agents.Agent.Inbox do
   JSON-safe view of the queued entries, for the wire (channel/status)
   and tests. `"kind"` is one of `"agent"`, `"user"`, `"query"`,
   `"notice"`; `"mode"` is a string or `nil`; `"id"` is the delivery id
-  (issue #62); `"retrieved"` says an `agents-last-message` fetch already
-  consumed the body, so the UI can show the retrieval rather than hide it;
-  `"human"` is `true` only for a prompt the human typed.
+  (issue #62); `"human"` is `true` only for a prompt the human typed.
 
   `"human"` is not derivable from `"kind"`: an `agents-spawn` `query`
   kickoff is also a `"user"` entry, so the flag is what lets a reader tell
@@ -484,8 +481,7 @@ defmodule Nest.Agents.Agent.Inbox do
         "timestamp" => DateTime.to_iso8601(entry.timestamp),
         "kind" => Atom.to_string(entry.kind),
         "mode" => entry.mode,
-        "human" => entry.human?,
-        "retrieved" => Delivery.retrieved?(entry)
+        "human" => entry.human?
       }
     end)
   end
@@ -526,43 +522,13 @@ defmodule Nest.Agents.Agent.Inbox do
   (`put_entry/7` always sets it), not a shape the drain has to tolerate.
   """
   @spec batch([entry()]) :: [entry()]
-  def batch(entries) do
-    entries
-    |> Enum.reject(&Delivery.retrieved?/1)
-    |> select_batch()
-  end
-
-  defp select_batch([%{kind: :user} = head | _rest]), do: [head]
-  defp select_batch(entries), do: Enum.take_while(entries, &(&1.kind != :user))
+  def batch([%{kind: :user} = head | _rest]), do: [head]
+  def batch(entries), do: Enum.take_while(entries, &(&1.kind != :user))
 
   # The delivery-id and consume API lives in `Delivery` (issue #62); these
   # delegates keep `Inbox` the one public surface for a queued entry.
   defdelegate new_id, to: Delivery
   defdelegate consume(entries, batch), to: Delivery
-  defdelegate take_last(entries, name), to: Delivery
-
-  @doc """
-  Drop every retrieved entry from the queue, broadcasting the ids that went.
-
-  A retrieved entry is already consumed (`agents-last-message` took its body),
-  so `batch/1` skips it; when it is all that is queued the drain peeks `:empty`
-  and never consumes. The executor calls this from its drain's empty branch so
-  the queue cannot fill with dead entries and eventually refuse peers at
-  `@max_inbox_size` (issue #62). Nothing is delivered, so it records no
-  `Timeline.drained` event; the frame is a removal delta naming the entries
-  that went, not the queue that is left.
-  """
-  @spec prune_retrieved(Agent.t()) :: Agent.t()
-  def prune_retrieved(state) do
-    {dropped, remaining} = Enum.split_with(state.live.inbox, &Delivery.retrieved?/1)
-
-    if dropped == [] do
-      state
-    else
-      state = %{state | live: %{state.live | inbox: remaining}}
-      broadcast_remove(state, Enum.map(dropped, & &1.id))
-    end
-  end
 
   @doc """
   The senders a delivered batch obliges this agent to answer: one name per
@@ -611,8 +577,7 @@ defmodule Nest.Agents.Agent.Inbox do
       kind: kind,
       mode: if(is_binary(mode), do: mode, else: nil),
       human?: human? == true,
-      fulfilled_ids: fulfilled_ids,
-      retrieved: false
+      fulfilled_ids: fulfilled_ids
     }
 
     {%{state | live: %{state.live | inbox: state.live.inbox ++ [entry]}}, entry}
@@ -624,37 +589,15 @@ defmodule Nest.Agents.Agent.Inbox do
   defp broadcast_append(state, entries), do: Broadcasts.inbox_append(state, serialize(entries))
 
   @doc """
-  Drop `batch` (plus every retrieved entry) from the queue and broadcast the
-  ids that went — the consume half of peek-then-consume (#26), and the single
-  place the executor's drain mutates the queue.
+  Drop `batch` from the queue and broadcast the ids that went — the consume
+  half of peek-then-consume (#26), and the single place the executor's drain
+  mutates the queue.
   """
   @spec consume_and_broadcast(Agent.t(), [entry()]) :: Agent.t()
   def consume_and_broadcast(state, batch) do
     before = state.live.inbox
     state = %{state | live: %{state.live | inbox: consume(before, batch)}}
     broadcast_remove(state, Enum.map(before -- state.live.inbox, & &1.id))
-  end
-
-  @doc """
-  Mark the newest fetchable entry from `name` retrieved and publish it.
-
-  The mutation and the frame are one call because the frame must describe the
-  entry's *new* serialized form (`retrieved: true`), which only the queue after
-  the write knows (issue #27). Returns the state and the entry as the caller's
-  reply payload — its `content` and `id` are unchanged by the marking.
-  """
-  @spec mark_retrieved(Agent.t(), String.t()) :: {Agent.t(), entry() | nil}
-  def mark_retrieved(state, name) do
-    {inbox, entry} = take_last(state.live.inbox, name)
-
-    case entry do
-      nil ->
-        {state, nil}
-
-      entry ->
-        state = %{state | live: %{state.live | inbox: inbox}}
-        {Broadcasts.inbox_update(state, serialize([entry])), entry}
-    end
   end
 
   # The removal half of the delta protocol (issue #27): the ids the queue no

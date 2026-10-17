@@ -2,9 +2,9 @@
  * Async inbox cache setters.
  *
  * The queue is published **incrementally** (issue #27): a `chat:inbox` event
- * carries one delta — `op: "append"`, `"remove"` or `"update"` — with the
- * authoritative `count` after it and the frame's position `inboxSeq` in this
- * agent's stream. The whole list rides only the `init` payload and the
+ * carries one delta — `op: "append"` or `"remove"` — with the authoritative
+ * `count` after it and the frame's position `inboxSeq` in this agent's
+ * stream. The whole list rides only the `init` payload and the
  * `chat:inbox` fetch reply (`op: "replace"`), which is the resync frame.
  * `chat:status` carries only the count (and, separately, the reply debt, which
  * lives on the cache as `owedReplies`). The list holds all four entry kinds:
@@ -18,7 +18,7 @@
 import { retractOptimisticRow } from "./agentCacheMessages";
 
 /** The delta ops the wire can carry. Anything else is a contract violation. */
-const OPS = new Set(["append", "remove", "update"]);
+const OPS = new Set(["append", "remove"]);
 
 /**
  * Retract the optimistic rows a queued send left behind.
@@ -60,26 +60,16 @@ function retractQueuedOptimistic(cache, list) {
  * Apply one delta to a cached list and return the new list, or `null` when
  * the frame cannot be applied to it.
  *
- * `update` names an entry the client must already hold (the server marks a
- * fetched entry `retrieved` in place), so an unknown id is a gap rather than
- * a no-op. `remove` is tolerant of an unknown id on purpose: the idle
- * delivery path enqueues and consumes in one step, so its removal frame is
- * the first thing a client hears about an entry it never saw appended, and
- * the frame's `count` (checked by the caller) is what proves the result is
- * the server's queue.
+ * `remove` is tolerant of an unknown id on purpose: the idle delivery path
+ * enqueues and consumes in one step, so its removal frame is the first thing
+ * a client hears about an entry it never saw appended, and the frame's
+ * `count` (checked by the caller) is what proves the result is the server's
+ * queue.
  */
 function applyDelta(list, payload) {
-  if (payload.op === "append" || payload.op === "update") {
+  if (payload.op === "append") {
     if (!Array.isArray(payload.messages)) return null;
-    if (payload.op === "append") return list.concat(payload.messages);
-
-    let next = list;
-    for (const entry of payload.messages) {
-      const at = next.findIndex((held) => held?.id === entry?.id);
-      if (at < 0) return null;
-      next = next.map((held, i) => (i === at ? entry : held));
-    }
-    return next;
+    return list.concat(payload.messages);
   }
 
   if (!Array.isArray(payload.ids)) return null;

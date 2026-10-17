@@ -191,8 +191,7 @@ defmodule Nest.Agents.Agent.Turn do
   #   * an action appends its entry (`Inbox.put_entry/7` appends to the queue),
   #     so an earlier action can only ever put entries *behind* what was queued;
   #   * a batch is a head prefix of the queue — a lone human message, or the run
-  #     of leading non-human entries (`Inbox.batch/1`), retrieved entries
-  #     rejected;
+  #     of leading non-human entries (`Inbox.batch/1`);
   #   * the only entries an action earlier in the list adds today are mode-less
   #     ones — `{:deliver_backgrounded, …}`'s outcome and `{:child_message, …}`'s
   #     delivery both go through `Inbox.enqueue_internal/5`, which passes
@@ -370,11 +369,10 @@ defmodule Nest.Agents.Agent.Turn do
   `Inbox.handle_delivery/3` (idle target).
 
   `:delivered` means nothing this drain found queued is still queued: the
-  entries it peeked were consumed — delivered to the transcript, or dropped
-  because an `agents-last-message` fetch already took them. `:queued` means at
-  least one of them survived — the delivery parked on a compaction it needed
-  before it could fit, or on a `:cannot_compact` block — so the message is
-  still queued and visible on the wire. The reply is computed from the queue
+  entries it peeked were consumed and delivered to the transcript. `:queued`
+  means at least one of them survived — the delivery parked on a compaction it
+  needed before it could fit, or on a `:cannot_compact` block — so the message
+  is still queued and visible on the wire. The reply is computed from the queue
   this drain peeked, not from "the inbox is empty": under peek-then-consume
   (#26) the executor leaves the queue alone, so a delivery that did not consume
   anything must report `:queued`.
@@ -388,10 +386,10 @@ defmodule Nest.Agents.Agent.Turn do
   @spec drain_inbox(Agent.t()) :: {Agent.t(), :delivered | :queued}
   def drain_inbox(state) do
     # The empty-inbox clause is the total-function shape for a caller that
-    # drained nothing. A *non-empty* queue can also reach the `nil` follow-event
-    # clause: when every entry is retrieved (`agents-last-message` consumed it),
-    # the executor prunes them without delivering anything, so there is no
-    # `{:inbox_drain, …}` follow event.
+    # drained nothing. A *non-empty* queue always peeks a non-empty batch
+    # (`Inbox.batch/1` selects a head prefix, and its head always matches one
+    # of its clauses), so there is always a `{:inbox_drain, …}`
+    # follow event.
     case state.live.inbox do
       [] ->
         {state, :delivered}

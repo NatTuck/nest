@@ -80,35 +80,6 @@ defmodule Nest.Agents.Agent.WatchTest do
     assert Agent.get_public_info(pid, 1_000).status == :idle
   end
 
-  defp set_busy(pid) do
-    :sys.replace_state(
-      pid,
-      fn state ->
-        %{
-          state
-          | live: %{
-              state.live
-              | machine: Machine.status_to_machine(state.live.machine, :streaming)
-            }
-        }
-      end,
-      1_000
-    )
-  end
-
-  defp reset_to_idle(pid) do
-    :sys.replace_state(
-      pid,
-      fn state ->
-        %{
-          state
-          | live: %{state.live | machine: Machine.status_to_machine(state.live.machine, :idle)}
-        }
-      end,
-      1_000
-    )
-  end
-
   defp notices(pid) do
     Agent.get_messages(pid, 1_000)
     |> Enum.flat_map(fn
@@ -351,54 +322,11 @@ defmodule Nest.Agents.Agent.WatchTest do
 
     # Access, not a `match?`: a malformed entry raises loudly here, where a
     # pattern would silently mismatch and leave the `refute` vacuous (the
-    # serialized key itself is pinned by `last_message_test`'s patterns).
+    # serialized key itself is pinned by `inbox_serialization_test`'s patterns).
     refute Enum.any?(
              Agent.get_public_info(pid, 1_000).pending_messages,
              &(&1["kind"] == "notice")
            )
-  end
-
-  # The second variant: the caller is busy when the report arrives, so it
-  # queues; the watch fires satisfied (no bare notice), and the caller pulls the
-  # body mid-turn with `agents-last-message`, consuming it so the drain cannot
-  # deliver it again.
-  test "a mid-turn caller fetches the queued delivery once", %{
-    pid: pid,
-    name: name,
-    space_id: space_id
-  } do
-    stub_listing([
-      # resolve, then the watcher's reference read, then its authoritative read
-      [agent(name, :idle), agent("bob", :streaming)],
-      [agent(name, :idle), agent("bob", :streaming)],
-      [agent(name, :idle), agent("bob", :streaming)],
-      # the recheck the target's status frame drives
-      [agent(name, :idle), agent("bob", :idle)]
-    ])
-
-    assert %ToolResult{is_error: false} = wait(pid, name, space_id, %{"names" => ["bob"]})
-
-    # The caller is busy, so the report queues rather than starting a turn.
-    set_busy(pid)
-    assert {:ok, :queued} = Agent.deliver_internal(pid, "bob", "the report", :agent)
-
-    # The target's status frame wakes the watch; it fires satisfied, so no bare
-    # notice is delivered on top of the queued body. The frame goes to the
-    # watcher task directly, for the reason in the test above.
-    [{_ref, %{pid: task}}] = Map.to_list(watchers(pid))
-    mref = Process.monitor(task)
-    send(task, {:chat_status, %{status: "idle"}})
-    assert_receive {:DOWN, ^mref, :process, ^task, _reason}, 1_000
-    assert watchers(pid) == %{}
-
-    [%ToolResult{content: content, is_error: false}] =
-      ToolLoop.execute(ctx(pid, name, space_id), nil, [
-        %ToolCall{id: "m1", name: "agents-last-message", arguments: %{"name" => "bob"}}
-      ])
-
-    assert content =~ "the report"
-    assert [%{"retrieved" => true}] = Agent.get_public_info(pid, 1_000).pending_messages
-    reset_to_idle(pid)
   end
 
   test "shell-wait registers and the notice carries the job output", %{

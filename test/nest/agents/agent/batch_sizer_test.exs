@@ -653,7 +653,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       # `agents-history` is unbounded by construction, so it projects at the
       # substitute minimum like the other response-bearing sub-agent tools.
       assert ProjectedSize.project(call("c", "agents-history", %{}), c) ==
-               ProjectedSize.project(call("c", "agents-last-message", %{}), c)
+               ProjectedSize.project(call("c", "agents-wait", %{}), c)
     end
   end
 
