@@ -42,10 +42,11 @@ defmodule NestWeb.AgentChannelTest do
       assert payload["model"]["name"] == "qwen3.5-plus"
       assert payload["model"]["provider"] == "model-studio"
 
-      # Vocation-less agent defaults to "chat"
-      assert payload["modes"] == ["chat"]
-      assert payload["defaultMode"] == "chat"
-      assert payload["currentMode"] == "chat"
+      # The two universal modes (`Nest.Modes`), not a vocation's: the server is
+      # the authority on which exist, and a new agent starts in the default.
+      assert payload["modes"] == ["plan", "act"]
+      assert payload["defaultMode"] == "act"
+      assert payload["currentMode"] == "act"
 
       # The archive is fetched lazily over `chat:history`; only the
       # boundary numbers ride the join payload.
@@ -337,9 +338,9 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref, :ok, payload
 
       # currentMode must be present so the client can re-sync
-      # the dropdown on reconnect / re-fetch. For a vocation-less
-      # agent the default is "chat".
-      assert payload["currentMode"] == "chat"
+      # the dropdown on reconnect / re-fetch. An agent nothing has
+      # said anything about is in the permissive mode.
+      assert payload["currentMode"] == "act"
 
       # The archive boundary travels too, so a reconnect that missed a
       # `chat:compaction` broadcast can still reconcile the card.

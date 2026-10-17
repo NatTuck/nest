@@ -227,8 +227,11 @@ defmodule Nest.Agents.AgentChatModeTest do
       {pid, _agent_id} =
         start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
 
-      # Initial state: vocation default (lex-first: "build").
-      assert Agent.get_public_info(pid, 1_000).current_mode == "build"
+      # Initial state: the mode the row carries. It is no longer a vocation's
+      # default — the modes are code constants (`Nest.Modes`) and what is
+      # per-agent is *which* one, seeded from the space's blueprint — so an
+      # agent nothing has said anything about is in the permissive one.
+      assert Agent.get_public_info(pid, 1_000).current_mode == "act"
 
       # Send a chat with mode "plan". The agent's state.live.mode
       # should update to "plan".
