@@ -81,9 +81,19 @@ defmodule NestWeb.AgentChannelTestHelpers do
         Repo.delete_all(Accounts.Invite)
         Repo.delete_all(Accounts.User)
 
+        # A username unique to this test. `users.username` is a unique index, and
+        # a fixed name makes every concurrent channel test wait on the previous
+        # one's *uncommitted* index entry — released only when that test's
+        # sandbox transaction rolls back, i.e. at the end of that test. Measured
+        # across the suite: 368 user inserts costing 12.1 s of database time at
+        # ~33 ms each (61% of all query time), against ~1.4 ms for every other
+        # insert here. It is also what made the channel tests serialise: with a
+        # per-test name there is no other transaction to wait for.
+        username = "agent-channel-tester-#{System.unique_integer([:positive])}"
+
         {:ok, user, _role} =
           Accounts.create_user(
-            %{username: "agent-channel-tester", password: "password123"},
+            %{username: username, password: "password123"},
             "first-user"
           )
 
