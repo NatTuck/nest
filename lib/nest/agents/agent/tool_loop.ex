@@ -637,22 +637,23 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # call asks for no change.
   #
   # `"mine"` is the sender's own current mode, which is what makes the common
-  # case — hand this off to someone who may do what I may — one word. The
-  # monotone rule is checked here, where the sender's mode is known (`ctx.mode`),
-  # and a refusal is returned as this call's error so the sender reads why
-  # rather than watching a change quietly not happen.
+  # case — hand this off to someone who may do what I may — one word. It is a
+  # spelling, not a shortcut: it goes through `Nest.Agents.Agent.ModeAuthority`
+  # like any other request, because *who is asking* is the whole rule. An `act`
+  # agent asking for `"mine"` on a stranger, or on its own `plan` parent, is
+  # asking to raise them, and is refused — the two cases the shortcut used to
+  # let through.
   #
-  # The rule itself is `Nest.Agents.Agent.ModeAuthority`; nothing here decides
-  # what is allowed, only which actor is asking.
+  # The rule itself is `ModeAuthority`; nothing here decides what is allowed,
+  # only which actor is asking and what it asked for.
   defp requested_mode(ctx, tc, target) do
     case extract_string_arg(tc, "set_mode") do
       "" ->
         {:ok, nil}
 
-      "mine" ->
-        {:ok, ctx.mode}
+      asked ->
+        requested = if asked == "mine", do: ctx.mode, else: asked
 
-      requested ->
         actor = %{
           kind: :agent,
           space_id: ctx.space_id,

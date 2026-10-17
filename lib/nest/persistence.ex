@@ -156,6 +156,12 @@ defmodule Nest.Persistence do
         name: name,
         space_id: space_id,
         model: model,
+        # The mode `PreSpawn` derived for this agent (`PreSpawn.put_mode/1`),
+        # seeded from the blueprint's `default_mode` or inherited from the
+        # parent. It is what a restart reads back, so omitting it here would let
+        # the column's default quietly widen a child that was spawned `plan` —
+        # the one thing the mode being persisted exists to prevent.
+        mode: Map.get(attrs, :mode, Nest.Modes.default()),
         vocation_id: Map.get(attrs, :vocation_id),
         workspace_path: Map.get(attrs, :workspace_path),
         next_message_index: Map.get(attrs, :next_message_index, 0),
