@@ -61,18 +61,11 @@ defmodule Nest.TestSupport.ExecutorTestHelpers do
   end
 
   @doc """
-  A vocation defining the modes the drain tests request, so
-  `ChatPipeline.resolve_mode_and_caps/3` resolves "plan" to "plan" and an
-  unknown mode to the "chat" default.
+  A vocation. Its mode list is empty on purpose: the modes are code constants
+  (`Nest.Modes`), so nothing reads a vocation's modes and the struct carries none.
   """
   def vocation do
-    %Nest.Vocations.Vocation{
-      modes: %{
-        "chat" => %{"caps" => %{}},
-        "plan" => %{"caps" => %{}},
-        "review" => %{"caps" => %{}}
-      }
-    }
+    %Nest.Vocations.Vocation{}
   end
 
   @doc """
@@ -123,7 +116,7 @@ defmodule Nest.TestSupport.ExecutorTestHelpers do
       messages: [],
       tmp_path: nil,
       workspace_path: nil,
-      mode: "chat",
+      mode: "act",
       next_message_index: 0,
       crossed_thresholds: %MapSet{},
       context_projection: nil,
