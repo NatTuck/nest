@@ -19,6 +19,7 @@ defmodule Nest.Spaces do
   alias Nest.Persistence
   alias Nest.Repo
   alias Nest.Sandbox.Backend
+  alias Nest.Spaces.CreationParams
   alias Nest.Spaces.Space
   alias Nest.Vocations
 
@@ -240,7 +241,7 @@ defmodule Nest.Spaces do
   def create_space(user_id, attrs) do
     with {:ok, %Space{} = space} <-
            %Space{}
-           |> Space.create_changeset(Map.put(attrs, :created_by_user_id, user_id))
+           |> Space.create_changeset(CreationParams.for_create(attrs, user_id))
            |> Repo.insert() do
       # Announced here so `create_space/2` is self-contained: whoever creates a
       # space announces it, whatever they do next. When the caller is
@@ -464,6 +465,26 @@ defmodule Nest.Spaces do
     case get_space(space_id) do
       %Space{blueprint_id: nil} -> nil
       %Space{blueprint_id: bid} -> Blueprints.spawnable_vocations(bid)
+      _ -> nil
+    end
+  end
+
+  @doc """
+  Resolve the blueprint's default spawn vocation for a space.
+
+  Returns `nil` when the space has no blueprint, the blueprint is gone, **or**
+  the blueprint has no default. The three cases are deliberately one answer,
+  because `agents-spawn` treats them identically: an omitted `vocation` is
+  refused with an error naming the missing argument rather than falling back to
+  the caller's own vocation.
+
+  `Nest.Agents.Supervisor.resolve_spawn_vocation/2` is the caller.
+  """
+  @spec default_spawnable_vocation_for_space(integer()) :: String.t() | nil
+  def default_spawnable_vocation_for_space(space_id) when is_integer(space_id) do
+    case get_space(space_id) do
+      %Space{blueprint_id: nil} -> nil
+      %Space{blueprint_id: bid} -> Blueprints.default_spawnable_vocation(bid)
       _ -> nil
     end
   end

@@ -70,12 +70,15 @@ const sampleBlueprints = [
     name: "Chat",
     description: "A conversational space.",
     root_vocation: "chat",
+    // The seeded Chat blueprint is the one whose agents are offline by default.
+    default_net: false,
   },
   {
     id: 2,
     name: "Grading",
     description: "A grading space.",
     root_vocation: "grading-coordinator",
+    default_net: true,
   },
 ];
 
@@ -423,6 +426,68 @@ describe("NewSpacePage", () => {
 
     const opts = mocks.createSpace.mock.calls[0][4];
     expect(opts.network_access).toBe(false);
+  });
+
+  it("pre-fills network access from the selected blueprint, and follows a change", () => {
+    renderPage();
+
+    // Nothing selected yet: the toggle keeps the value a space got before
+    // blueprints had a `default_net`.
+    expect(screen.getByLabelText("Network access")).toBeChecked();
+
+    // Chat's default is off...
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "1" },
+    });
+    expect(screen.getByLabelText("Network access")).not.toBeChecked();
+
+    // ...and Grading's is on.
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "2" },
+    });
+    expect(screen.getByLabelText("Network access")).toBeChecked();
+  });
+
+  it("keeps the user's own choice when the blueprint changes", () => {
+    renderPage();
+
+    // Chat's default is off; the user turns it on anyway.
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "1" },
+    });
+    fireEvent.click(screen.getByLabelText("Network access"));
+    expect(screen.getByLabelText("Network access")).toBeChecked();
+
+    // Going to Grading and *back to Chat* must not resurrect Chat's default: a
+    // blueprint's value is a default, and the user's choice is the choice.
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "2" },
+    });
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "1" },
+    });
+    expect(screen.getByLabelText("Network access")).toBeChecked();
+  });
+
+  it("sends the blueprint's default when the user leaves the toggle alone", () => {
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText("Space Name"), {
+      target: { value: "My Project" },
+    });
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "1" },
+    });
+    fireEvent.change(screen.getByLabelText("Select Model"), {
+      target: { value: "gpt-4o" },
+    });
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/home/nat/proj" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
+
+    expect(mocks.createSpace.mock.calls[0][4].network_access).toBe(false);
   });
 
   it("navigates to the new space's page on success", () => {

@@ -15,9 +15,11 @@ defmodule Nest.Agents.SupervisorSpawnTest do
     * Unrestricted space (no blueprint) → any vocation spawns.
     * Whitelisted blueprint → allowed vocation spawns, denied
       vocation returns `{:error, {:vocation_not_spawnable, _}}`.
-    * Omitted `vocation` → defaults to the parent's vocation,
-      or auto-defaults to the sole allowed vocation, or is refused
-      as ambiguous when multiple vocations are allowed.
+    * Omitted `vocation` → the space's blueprint
+      `default_spawnable_vocation` (held to the whitelist like an
+      explicit slug), or a `{:vocation_required, _}` refusal naming
+      the argument when the blueprint names no default. Never the
+      caller's own vocation.
     * Duplicate name → `{:error, :duplicate_name}` (the
       `(space_id, name)` composite unique index).
     * Fresh context → the spawned agent's message count is 1
@@ -29,6 +31,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
   import Eventually
 
   alias Nest.Agents
+  alias Nest.Agents.Agent.BatchPlan
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.TmpSpace
@@ -253,7 +256,11 @@ defmodule Nest.Agents.SupervisorSpawnTest do
         Spaces.create_space(nil, %{
           name: "whitelist-space-#{System.unique_integer([:positive])}",
           slug: "whitelist-space-#{System.unique_integer([:positive])}",
-          blueprint_id: blueprint.id
+          blueprint_id: blueprint.id,
+          # Every space needs a workspace from stage 4 on, and these tests call
+          # `Spaces.create_space/2` directly rather than going through
+          # `create_space_with_root_agent/2`.
+          workspace_path: AgentTestHelpers.default_test_workspace()
         })
 
       state = coordinator_state(space.id)
@@ -274,25 +281,32 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       refute Enum.member?(Agents.list_agents_for_space(space.id), denied_name)
     end
 
-    test "omitting vocation auto-defaults to the sole allowed vocation" do
+    test "omitting vocation takes the blueprint's default_spawnable_vocation" do
       allowed = fresh_vocation()
 
       {:ok, blueprint} =
         Blueprints.create_blueprint(%{
           name: "auto-wl-#{System.unique_integer([:positive])}",
           root_vocation: allowed.slug,
-          spawnable_vocations: [allowed.slug]
+          spawnable_vocations: [allowed.slug],
+          default_spawnable_vocation: allowed.slug
         })
 
       {:ok, space} =
         Spaces.create_space(nil, %{
           name: "auto-wl-space-#{System.unique_integer([:positive])}",
           slug: "auto-wl-space-#{System.unique_integer([:positive])}",
-          blueprint_id: blueprint.id
+          blueprint_id: blueprint.id,
+          # Every space needs a workspace from stage 4 on, and these tests call
+          # `Spaces.create_space/2` directly rather than going through
+          # `create_space_with_root_agent/2`.
+          workspace_path: AgentTestHelpers.default_test_workspace()
         })
 
-      # The coordinator's own vocation (Test Default) is NOT in the
-      # whitelist — exactly the "Head TA may only spawn Graders" shape.
+      # The coordinator's own vocation (Test Default) is neither the blueprint's
+      # default nor whitelisted — exactly the "Head TA may only spawn Graders"
+      # shape, and the point of the column: the model does not have to know the
+      # slug, and the caller's own vocation is not the answer.
       state = coordinator_state(space.id)
       refute state.vocation_id == allowed.id
 
@@ -306,32 +320,49 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       assert Nest.Agents.Agent.get_public_info(pid, 1_000).vocation_id == allowed.id
     end
 
-    test "omitting vocation with multiple allowed vocations is refused as ambiguous" do
+    test "omitting vocation is refused when the blueprint names no default" do
       allowed_a = fresh_vocation()
       allowed_b = fresh_vocation()
 
       {:ok, blueprint} =
         Blueprints.create_blueprint(%{
-          name: "ambig-wl-#{System.unique_integer([:positive])}",
+          name: "nodefault-wl-#{System.unique_integer([:positive])}",
           root_vocation: allowed_a.slug,
           spawnable_vocations: [allowed_a.slug, allowed_b.slug]
         })
 
       {:ok, space} =
         Spaces.create_space(nil, %{
-          name: "ambig-wl-space-#{System.unique_integer([:positive])}",
-          slug: "ambig-wl-space-#{System.unique_integer([:positive])}",
-          blueprint_id: blueprint.id
+          name: "nodefault-wl-space-#{System.unique_integer([:positive])}",
+          slug: "nodefault-wl-space-#{System.unique_integer([:positive])}",
+          blueprint_id: blueprint.id,
+          # Every space needs a workspace from stage 4 on, and these tests call
+          # `Spaces.create_space/2` directly rather than going through
+          # `create_space_with_root_agent/2`.
+          workspace_path: AgentTestHelpers.default_test_workspace()
         })
 
       state = coordinator_state(space.id)
-      name = "ambig-#{System.unique_integer([:positive])}"
+      name = "nodefault-#{System.unique_integer([:positive])}"
 
-      assert {:error, {:vocation_not_spawnable, labels}} =
+      # Refused, not guessed. Neither the caller's own vocation nor the first of
+      # the allowed list is the answer to "which vocation?" — the refusal names
+      # the argument to supply and carries the vocations that would be accepted,
+      # so the model can retry in one step.
+      assert {:error, {:vocation_required, labels}} =
                Supervisor.spawn_agent_in_space(state, name)
 
       slugs = Enum.map(labels, &elem(&1, 1))
       assert Enum.sort(slugs) == Enum.sort([allowed_a.slug, allowed_b.slug])
+      refute Enum.member?(Agents.list_agents_for_space(space.id), name)
+
+      # The tuple is what the tool layer sees; the *model* sees the rendered text,
+      # so that is what has to name the argument. (The `agents-spawn` renderer is
+      # private to `ToolLoop`; this is the batch one, and both are fed the same
+      # tuple.)
+      message = BatchPlan.spawn_error_message({:vocation_required, labels})
+      assert message =~ "`vocation` is required"
+      assert message =~ allowed_a.slug
     end
 
     test "an empty spawnable_vocations list is unrestricted" do
@@ -348,7 +379,11 @@ defmodule Nest.Agents.SupervisorSpawnTest do
         Spaces.create_space(nil, %{
           name: "empty-wl-space-#{System.unique_integer([:positive])}",
           slug: "empty-wl-space-#{System.unique_integer([:positive])}",
-          blueprint_id: blueprint.id
+          blueprint_id: blueprint.id,
+          # Every space needs a workspace from stage 4 on, and these tests call
+          # `Spaces.create_space/2` directly rather than going through
+          # `create_space_with_root_agent/2`.
+          workspace_path: AgentTestHelpers.default_test_workspace()
         })
 
       name = "any-#{System.unique_integer([:positive])}"
@@ -362,6 +397,11 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
   describe "a failed spawn" do
     test "leaves no orphan row, so the same name can be spawned again", %{space_id: space_id} do
+      # An explicit vocation, because a space with no blueprint now has no
+      # `default_spawnable_vocation` and refuses an omitted one outright — see
+      # the whitelist describe above. This test is about the rollback, so it says
+      # which specialist it is spawning and gets on with it.
+      vocation = fresh_vocation()
       state = coordinator_state(space_id)
       name = "spawn-rollback-#{System.unique_integer([:positive])}"
       space_dir = TmpSpace.space_dir(space_id, "bwrap")
@@ -381,7 +421,9 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
       on_exit(fn -> File.rm(blocker) end)
 
-      assert_raise File.Error, fn -> Supervisor.spawn_agent_in_space(state, name) end
+      assert_raise File.Error, fn ->
+        Supervisor.spawn_agent_in_space(state, name, vocation.slug)
+      end
 
       # The row the spawn would have pre-spawned is absent (and its system
       # message with it), so the space holds only the coordinator — and the
@@ -392,7 +434,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
       File.rm!(blocker)
 
-      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name)
+      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation.slug)
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
 
       assert {:ok, _row} = Nest.Persistence.fetch_agent(space_id, name)

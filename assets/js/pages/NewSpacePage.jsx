@@ -47,11 +47,13 @@ export function NewSpacePage() {
   const [selectedThinking, setSelectedThinking] = useState("medium");
   const [workspacePath, setWorkspacePath] = useState("");
   // Network access is a space property, so it is chosen here and editable later
-  // on the space's own page.
-  const [networkAccess, setNetworkAccess] = useState(true);
+  // on the space's own page. `null` means "the user has not chosen": the value
+  // then follows the selected blueprint's `default_net`, which is what makes
+  // picking a blueprint pre-fill the toggle. Once the user touches the toggle
+  // their choice wins, so picking another blueprint cannot stomp it — which is
+  // why this stores the *choice* rather than the value.
+  const [networkChoice, setNetworkChoice] = useState(null);
   const [sandboxBackend, setSandboxBackend] = useState(DEFAULT_SANDBOX_BACKEND);
-  // Network access is a space property, chosen here and editable later on the
-  // space's own page.
   const [isCreating, setIsCreating] = useState(false);
   const [isRescanning, setIsRescanning] = useState(false);
   const [error, setError] = useState(null);
@@ -76,6 +78,13 @@ export function NewSpacePage() {
     : null;
   const selectedVocationName = selectedVocation?.name;
   const requiresWorkspace = vocationRequiresWorkspace(selectedVocation);
+
+  // The blueprint's `default_net` is a *default*, not a policy: `??` rather than
+  // `||`, so a blueprint that says `false` is honoured, and `true` when nothing
+  // says otherwise — which is what a space got before blueprints had a
+  // `default_net` at all (and what a form with no blueprint selected gets).
+  const networkAccess =
+    networkChoice ?? selectedBlueprintData?.default_net ?? true;
 
   const thinkingOptions = resolveThinkingOptions(models, selectedModel);
 
@@ -341,7 +350,7 @@ export function NewSpacePage() {
             id="space-network-access"
             type="checkbox"
             checked={networkAccess}
-            onChange={(e) => setNetworkAccess(e.target.checked)}
+            onChange={(e) => setNetworkChoice(e.target.checked)}
             disabled={isCreating}
             className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
           />
@@ -353,8 +362,9 @@ export function NewSpacePage() {
               Network access
             </label>
             <p className="text-sm text-gray-500">
-              Whether this space's agents may reach the network. A space with no
-              sandbox cannot enforce this.
+              Whether this space's agents may reach the network. Starts from the
+              selected blueprint's choice; a space with no sandbox cannot
+              enforce this.
             </p>
           </div>
         </div>

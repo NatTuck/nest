@@ -68,9 +68,9 @@ defmodule Nest.Tools.SpawnAgent do
           "type" => "string",
           "description" =>
             "The vocation slug defining the specialist's role and tools " <>
-              "(for example \"programmer\"). Defaults to your own " <>
-              "vocation when omitted (or the space's sole allowed vocation if " <>
-              "your own isn't allowed)."
+              "(for example \"programmer\"). When omitted, the space's blueprint " <>
+              "default is used; a space whose blueprint names no default refuses " <>
+              "the spawn, so pass one."
         },
         "clone_context" => %{
           "type" => "boolean",
