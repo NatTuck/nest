@@ -75,6 +75,19 @@ agent process via `send/2` from the LLM client task. The test drains
 PubSub messages and checks `state.chat_state.messages[].api_logs`,
 but the `api_log` message may arrive after the test's drain window.
 
+### 7. CSRF token / page-controller timeout (`page_controller_test.exs:81`)
+
+Observed once (2026-10-17) as a 3000 ms `ExUnit.TimeoutError` whose innermost
+frame was `:code_server.call/1`, reached from `get_csrf_token/0` in
+`lib/nest_web/components/layouts/root.html.heex`. It belongs to the
+code-server contention class above, but the module being lazily loaded is
+**unidentified**: the warm-up list in `test/test_helper.exs` already covers
+`Plug.CSRFProtection`, `Phoenix.Controller`, `Phoenix.HTML` and
+`Phoenix.Template`. Not reproduced in two plain runs or one `--cover` run, and
+the file passes alone (9/9). See the dated section at the end of this file for
+the next step — capture the full `:code_server.call/1` frame, name the module,
+add it to the warm-up list. Do not raise the 3000 ms.
+
 ## Notes for fixing
 
 All these failures have the same shape: an `assert_receive` or
