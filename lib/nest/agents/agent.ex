@@ -334,21 +334,24 @@ defmodule Nest.Agents.Agent do
   @doc """
   Resolve the agent's current effective sandbox caps from its state.
 
-  Uses the same `Vocations.get_caps/2` lookup as the chat pipeline so
-  bookkeeping file access (AGENTS.md reads, policy stats) is
-  authorized by the same caps the tools run under. Falls back to the
-  `Nest.Sandbox` default profile when there is no vocation or the
-  mode is unknown.
+  The caps are the mode's — `Nest.Modes.caps/1` — resolved through
+  `Nest.ProjectConfig.resolve_caps/2`, so bookkeeping file access (AGENTS.md
+  reads, policy stats) is authorized by the same caps the tools run under. The
+  mode is read from `live.mode`, which is the row's mode and can change while the
+  agent works.
+
+  `Nest.Modes.caps/1` is total: a mode name this build does not implement — a row
+  written by another build, a client that made one up — resolves to the default
+  mode's caps rather than to nothing. Falling back to
+  `Nest.Sandbox.default_caps/0` instead would be *stricter* than the agent's own
+  tools, which is the one thing this must not be: the same mode has to authorize
+  both.
   """
   @spec resolve_caps(t()) :: map()
-  def resolve_caps(%__MODULE__{vocation: %Nest.Vocations.Vocation{} = vocation} = state) do
-    caps =
-      case Nest.Vocations.get_caps(vocation, state.live.mode) do
-        {:ok, caps} -> caps
-        _ -> Nest.Sandbox.default_caps()
-      end
-
-    Nest.ProjectConfig.resolve_caps(caps, Mounts.from_agent(state))
+  def resolve_caps(%__MODULE__{vocation: %Nest.Vocations.Vocation{}} = state) do
+    state.live.mode
+    |> Nest.Modes.caps()
+    |> Nest.ProjectConfig.resolve_caps(Mounts.from_agent(state))
   end
 
   def resolve_caps(%__MODULE__{} = state) do

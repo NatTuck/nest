@@ -155,13 +155,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
         name: "SubAgentRegistration Vocation #{System.unique_integer([:positive])}",
         description: "Sub-agent raw-registration test",
         system_prompt: "x",
-        tools: ["context", "agents"],
-        modes: %{
-          "chat" => %{
-            "description" => "Chat",
-            "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp"]}}
-          }
-        }
+        tools: ["context", "agents"]
       })
 
     vid

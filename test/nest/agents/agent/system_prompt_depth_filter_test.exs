@@ -21,23 +21,12 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
   alias Nest.Vocations
 
   setup do
-    valid_caps = %{
-      "net" => false,
-      "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
-    }
-
     {:ok, vocation} =
       Vocations.create_vocation(%{
         name: "DepthFilter-#{System.unique_integer([:positive])}",
         description: "Depth filter test",
         system_prompt: "Base.",
-        tools: ["context", "agents"],
-        modes: %{
-          "chat" => %{
-            "description" => "General conversation.",
-            "caps" => valid_caps
-          }
-        }
+        tools: ["context", "agents"]
       })
 
     {:ok, vocation: vocation}

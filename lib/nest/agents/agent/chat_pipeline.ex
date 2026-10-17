@@ -82,8 +82,8 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   need the caps the tools run under.
 
   The vocation argument is kept because every caller already has one to hand and
-  the modes no longer depend on it (stage 4 drops the `vocations.modes` column
-  this used to read).
+  the modes no longer depend on it: they are universal constants (`Nest.Modes`),
+  and the column that used to hold them is gone.
   """
   @spec resolve_mode_and_caps(String.t() | nil, term(), Mounts.t()) :: {String.t(), map()}
   def resolve_mode_and_caps(mode, _vocation_or_nil, mounts) do

@@ -86,8 +86,9 @@ defmodule Nest.Agents.Agent.ModelHandler do
     end
   end
 
-  # Every agent requires a non-null working directory now
-  # (`Vocations.requires_workspace?/1` is a constant), so this is unconditional.
+  # Every agent requires a non-null working directory (the modes are universal
+  # and `act` — which every agent can be in — writes the workspace), so this is
+  # unconditional.
   defp validate_workspace(_state, workspace_path) do
     if is_nil(workspace_path) do
       {:error, :workspace_required}

@@ -127,7 +127,7 @@ defmodule Nest.Vocations do
   references like `agents.vocation_id` stay valid.
 
   Used by `priv/repo/seeds.exs` so re-running seeds updates the
-  existing rows (system prompts, modes, tools) in place rather than
+  existing rows (system prompts, tools) in place rather than
   failing or creating a second row.
   """
   @spec upsert_vocation(map()) :: {:ok, Vocation.t()} | {:error, Ecto.Changeset.t()}
@@ -135,7 +135,7 @@ defmodule Nest.Vocations do
     %Vocation{}
     |> Vocation.changeset(attrs)
     |> Repo.insert(
-      on_conflict: {:replace, [:name, :description, :system_prompt, :tools, :modes, :updated_at]},
+      on_conflict: {:replace, [:name, :description, :system_prompt, :tools, :updated_at]},
       conflict_target: :slug,
       returning: true
     )
@@ -153,53 +153,6 @@ defmodule Nest.Vocations do
   def change_vocation(%Vocation{} = vocation, attrs \\ %{}) do
     Vocation.changeset(vocation, attrs)
   end
-
-  @doc """
-  Resolves the capability map for a mode.
-
-  The modes are universal (`Nest.Modes`), so this no longer depends on the
-  vocation at all. The argument stays because every caller already has one to
-  hand, and because stage 4 drops the `vocations.modes` column this used to read.
-
-  Returns `{:error, :unknown_mode}` for a name this build does not implement —
-  including the old `"chat"`, which is not a mode any more. A caller that has to
-  cope with an unknown name should ask `Nest.Modes.valid?/1` first and fall back
-  to `Nest.Modes.default/0`; `Nest.Modes.caps/1` is the total version.
-  """
-  @spec get_caps(Vocation.t() | nil, String.t()) :: {:ok, map()} | {:error, :unknown_mode}
-  def get_caps(_vocation, mode) do
-    if Nest.Modes.valid?(mode) do
-      {:ok, Nest.Modes.caps(mode)}
-    else
-      {:error, :unknown_mode}
-    end
-  end
-
-  @doc """
-  Whether a vocation's agents expect a workspace directory: **always**, now.
-
-  This used to be derived from the vocation's mode caps — a vocation required a
-  workspace iff one of its modes wrote the symbolic `":workspace"`. Every space
-  has a workspace from here on, so the answer is a constant: the `act` mode is
-  the only thing that writes the workspace, and every agent can be in `act`.
-
-  The callers keep their checks — a space or an agent with no workspace is still
-  refused, loudly, which is what makes a row carrying a deliberately fake path
-  fail where a human can see it rather than silently having no workspace.
-  """
-  @spec requires_workspace?(Vocation.t() | nil) :: boolean()
-  def requires_workspace?(_vocation), do: true
-
-  @doc """
-  The modes an agent of this vocation may be in: every mode, for every vocation.
-
-  Kept as a function of the vocation (which it ignores) because that is the shape
-  its callers have; the list itself is `Nest.Modes.names/0`. `"compact"` is
-  deliberately *not* in it — compaction is a protocol marker that rides the
-  `[mode: …]` prefix, not a mode an agent can be in.
-  """
-  @spec list_modes(Vocation.t() | nil) :: [String.t()]
-  def list_modes(_vocation), do: Nest.Modes.names()
 
   @doc """
   Canonical description text for the `compact` mode as it appears in the agent's

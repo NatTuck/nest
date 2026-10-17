@@ -122,8 +122,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
         name: "SpawnVocation-#{System.unique_integer([:positive])}",
         description: "Spawn test",
         system_prompt: "You are a specialist.",
-        tools: ["context"],
-        modes: %{}
+        tools: ["context"]
       })
 
     vocation
@@ -566,13 +565,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
           name: "WSSpawn-#{System.unique_integer([:positive])}",
           description: "needs a workspace",
           system_prompt: "ws",
-          tools: [],
-          modes: %{
-            "build" => %{
-              "description" => "writes workspace",
-              "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => [":workspace"]}}
-            }
-          }
+          tools: []
         })
 
       name = "ws-child-#{System.unique_integer([:positive])}"

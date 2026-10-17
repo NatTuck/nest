@@ -300,13 +300,7 @@ defmodule Nest.Agents.AgentNameMigrationTest do
         name: "Sanitize Names Test",
         description: "Default for the agent-name migration test",
         system_prompt: "You are a helpful test assistant.",
-        tools: ["context"],
-        modes: %{
-          "chat" => %{
-            "description" => "General conversation.",
-            "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp"]}}
-          }
-        }
+        tools: ["context"]
       })
 
     vocation

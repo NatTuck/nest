@@ -3,7 +3,8 @@ defmodule Nest.Sandbox.Caps do
   Validation for the sandbox capability (`caps`) map.
 
   Extracted from `Nest.Sandbox` to keep that module under the size cap.
-  A caps map matches the JSONB shape stored on `Vocation.modes`:
+  A caps map is the shape `Nest.Modes.caps/1` returns (it was the JSONB shape
+  stored on `vocations.modes` until stage 4 dropped that column):
 
       %{
         "net" => boolean(),

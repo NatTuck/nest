@@ -59,16 +59,7 @@ defmodule Nest.Agents.AgentOverflowIntegrationTest do
           name: "Overflow-Integration-#{System.unique_integer([:positive])}",
           description: "Overflow integration test",
           system_prompt: "Overflow-marked-prompt-#{System.unique_integer([:positive])}",
-          tools: ["context"],
-          modes: %{
-            "chat" => %{
-              "description" => "General conversation.",
-              "caps" => %{
-                "net" => false,
-                "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
-              }
-            }
-          }
+          tools: ["context"]
         },
         attrs
       )

@@ -61,18 +61,14 @@ defmodule Nest.TestSupport.ExecutorTestHelpers do
   end
 
   @doc """
-  A vocation defining the modes the drain tests request, so
-  `ChatPipeline.resolve_mode_and_caps/3` resolves "plan" to "plan" and an
-  unknown mode to the "chat" default.
+  A placeholder vocation for the drain tests. It carries nothing: the modes are
+  universal code constants (`Nest.Modes`), so a vocation declares none, and
+  `ChatPipeline.resolve_mode_and_caps/3` ignores the vocation entirely — "plan"
+  resolves to "plan" and an unknown mode to the default because those are the
+  constants, not because this struct says so.
   """
   def vocation do
-    %Nest.Vocations.Vocation{
-      modes: %{
-        "chat" => %{"caps" => %{}},
-        "plan" => %{"caps" => %{}},
-        "review" => %{"caps" => %{}}
-      }
-    }
+    %Nest.Vocations.Vocation{}
   end
 
   @doc """
