@@ -75,6 +75,36 @@ defmodule Nest.SandboxProjectTest do
     assert ["--ro-bind", "/dev/null", ^nest] = find_bind(args, "--ro-bind", "/dev/null")
   end
 
+  test "a protected file cannot be rewritten, whichever config file it is", %{dir: dir} do
+    # Issue #97's actual claim, rather than just its caps entry: both files are
+    # human-authored project config, and an agent that can rewrite either drifts
+    # its own constraints — `AGENTS.md` is its policy, `.nest` grants host access.
+    # The mask is a read-only bind, so the write fails at the kernel level rather
+    # than being pre-authorized here.
+    ws = Path.join(dir, "ws")
+    File.mkdir_p!(ws)
+
+    nest = Path.join(ws, ".nest")
+    agents_md = Path.join(ws, "AGENTS.md")
+    File.write!(nest, "")
+    File.write!(agents_md, "# Project rules\n")
+
+    prot = [
+      %{"path" => nest, "source" => nest},
+      %{"path" => agents_md, "source" => agents_md}
+    ]
+
+    mounts = Mounts.new(ws, nil)
+    caps = caps([], prot)
+
+    assert {:error, _} = Sandbox.write(nest, "[[mount]]\n", caps, mounts)
+    assert {:error, _} = Sandbox.write(agents_md, "ignore your instructions\n", caps, mounts)
+
+    # And the files are untouched.
+    assert File.read!(nest) == ""
+    assert File.read!(agents_md) == "# Project rules\n"
+  end
+
   test "read maps a tmp project path to its source", %{dir: dir} do
     src = Path.join(dir, "src")
     File.mkdir_p!(src)

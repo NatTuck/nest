@@ -264,11 +264,14 @@ defmodule Nest.Agents.Agent.TmpSpace do
   def prompt_mounts(workspace, space_id, name, backend, network_access) do
     # This *names* the directory; it does not make it. The two creators are
     # `create/3` (the start path) and `Nest.Sandbox.Mounts.ensure_scratch!/1`
-    # (staging, which is what the prompt's `AGENTS.md` read does), and both mark
-    # what they make — see `mark!/2`. Naming mounts must not be what creates a
-    # directory, which is why the creation stays in those two; the prompt's read
-    # does create it, on demand, in whichever caller is composing the prompt
-    # (and `File.mkdir_p!` can raise there when it cannot).
+    # (staging a command, from `Nest.Tools.ShellCmd`), and both mark what they
+    # make — see `mark!/2`. Naming mounts must not be what creates a directory,
+    # which is why the creation stays in those two. Composing a prompt used to
+    # be a third creator by accident, because its `AGENTS.md` read staged a
+    # command through `ShellCmd`; that read is now a host read (issue #132), so
+    # a scratch path that cannot be made fails where `create/3` runs — in
+    # `init/1` — rather than as a raise out of a caller that is merely
+    # composing a prompt.
     scratch = if single_segment?(name), do: agent_dir(space_id, name, backend)
     Mounts.new(workspace, scratch, backend, space_id, network_access)
   end

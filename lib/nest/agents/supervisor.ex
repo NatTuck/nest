@@ -113,18 +113,18 @@ defmodule Nest.Agents.Supervisor do
 
   # Compose the expensive part of the initial state here, in the caller, rather
   # than inside `init/1` — `init/1` runs with this supervisor blocked until it
-  # returns, so the sandbox read it does for `AGENTS.md` was paid *serially* by
-  # every agent start. See `Nest.Agents.Agent.Init.prepare/1`.
+  # returns, so the composition it does was paid *serially* by every agent
+  # start. See `Nest.Agents.Agent.Init.prepare/1`.
   #
-  # Composing the prompt creates the agent's scratch directory on the way
-  # (`Sandbox.read` -> `Mounts.ensure_scratch!/1`, whose `File.mkdir_p!` raises
-  # `File.Error`). Inside `init/1` that raise came back as `{:error, reason}`
-  # from `DynamicSupervisor.start_child/2`; out here it would escape
-  # `fetch_or_start_agent/2` and `get_agent/2`, both of which return error
-  # tuples, are called from channels, and log nothing themselves — so it is
-  # mapped back to that shape and logged here. (Deliberately not in
-  # `Agent.pre_spawn/1`: `start_pre_spawned/3` re-raises after rolling the row
-  # back, and that path already behaved this way.)
+  # The rescue is a **boundary guard with no known reachable cause**, kept
+  # because the alternative is worse: `fetch_or_start_agent/2` and `get_agent/2`
+  # return error tuples, are called from channels, and log nothing themselves,
+  # so anything raised out of composition would escape them silently. There is
+  # no cause left to name: composition touches no sandbox (the `AGENTS.md` read
+  # is a host read, issue #132), creates no scratch directory (that is
+  # `TmpSpace.create/3`, in `init/1`), renders a malformed `.nest` as an error
+  # section rather than raising, and every `Map.fetch!` it does is gated by
+  # `compose_ready?/1`.
   defp prepare_for_start(attrs) do
     {:ok, Init.prepare(attrs)}
   rescue

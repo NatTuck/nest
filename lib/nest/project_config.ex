@@ -52,15 +52,23 @@ defmodule Nest.ProjectConfig do
 
   Project mounts are merged into a mode's caps **only when that mode
   already writes the symbolic `":workspace"`** — a read-only mode must
-  stay read-only. In those modes the `.nest` file itself is mounted
-  read-only (see `Nest.Sandbox`), so an agent can never edit its own
-  sandbox. When `.nest` is absent, a read-only `/dev/null` is masked
-  over the path so an agent can't create one either.
+  stay read-only. In those modes the two human-authored config files are
+  mounted read-only (see `Nest.Sandbox`), so an agent can never edit its own
+  sandbox or its own instructions: `.nest`, which grants host access, and
+  `AGENTS.md`, which is the project's policy rendered into its prompt. When
+  either is absent, a read-only `/dev/null` is masked over the path so an
+  agent can't create one either.
+
+  The two are one class and get one treatment. Both are read on the **host** by
+  the runtime — `load/1` for `.nest`, `Nest.Agents.Agent.SystemPrompt` for
+  `AGENTS.md` — and handed to the sandbox as read-only binds rather than
+  discovered by it, so an agent's view of either file is the host's file by
+  construction, on every backend.
 
   Both halves of that are **binds**, so they hold only on a backend that
   binds: a `"none"` space has no sandbox to protect, and an agent there can
-  edit or create its own `.nest` like any other file. That is the same
-  statement as "caps cannot be enforced for a `"none"` space" (see
+  edit or create its own `.nest` or `AGENTS.md` like any other file. That is the
+  same statement as "caps cannot be enforced for a `"none"` space" (see
   `Nest.Sandbox.Backend.None`), not a separate hole.
 
   ## Failures
@@ -77,6 +85,10 @@ defmodule Nest.ProjectConfig do
   alias Nest.Sandbox.Mounts
 
   @file_name ".nest"
+  # `AGENTS.md` is protected for the same reason and by the same mechanism
+  # (issue #97): it is a human-authored policy document, and an agent that can
+  # rewrite it drifts its own constraints.
+  @agents_md_name "AGENTS.md"
   @modes ~w(rw tmp)
 
   @typedoc "A project mount with its host path expanded."
@@ -399,19 +411,29 @@ defmodule Nest.ProjectConfig do
     :crypto.hash(:sha256, dest) |> Base.encode16(case: :lower) |> binary_part(0, 16)
   end
 
-  # The `.nest` file is always protected (read-only) in a writable
-  # workspace. When the file is absent we mask `/dev/null` over the
-  # path so an agent can't create one (which would be picked up on the
-  # next spawn and grant it extra host access). The mask is a real bind
-  # inside the sandbox, so `stat`/`read` see the char device directly —
-  # and, because bwrap's `--ro-bind` mounts with `nodev`, *reading* it
-  # fails with `EACCES` rather than returning empty bytes. That is what
-  # both binding backends do, identically. A backend that binds nothing
-  # has nothing to mask with (see the moduledoc's Gating section).
+  # The `.nest` and `AGENTS.md` files are always protected (read-only) in a
+  # writable workspace. Both are **human-authored project config**: `.nest`
+  # grants host access, `AGENTS.md` states the project's policy, and an agent
+  # that can rewrite either drifts its own constraints — which is why the
+  # runtime reads them on the host (`Nest.ProjectConfig.load/1` for one,
+  # `Nest.Agents.Agent.SystemPrompt` for the other) and the sandbox is *handed*
+  # them as read-only binds rather than discovering them.
+  #
+  # When a file is absent we mask `/dev/null` over its path so an agent can't
+  # create one (which would be picked up on the next spawn and grant it extra
+  # host access, or quietly change its own prompt). The mask is a real bind
+  # inside the sandbox, so `stat`/`read` see the char device directly — and,
+  # because bwrap's `--ro-bind` mounts with `nodev`, *reading* it fails with
+  # `EACCES` rather than returning empty bytes. That is what both binding
+  # backends do, identically. A backend that binds nothing has nothing to mask
+  # with (see the moduledoc's Gating section).
   defp protected_entries(workspace) do
-    nest = Path.join(canonical_ws(workspace), @file_name)
-    source = if File.exists?(nest), do: nest, else: "/dev/null"
-    [%{"path" => nest, "source" => source}]
+    ws = canonical_ws(workspace)
+
+    for name <- [@file_name, @agents_md_name] do
+      path = Path.join(ws, name)
+      %{"path" => path, "source" => if(File.exists?(path), do: path, else: "/dev/null")}
+    end
   end
 
   # The canonical-workspace memo's table. (The `.nest` parse has its own cache,

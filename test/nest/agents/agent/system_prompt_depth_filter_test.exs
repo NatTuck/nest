@@ -7,7 +7,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
 
   * The `[Delegation]` section is gone from the system prompt —
     tool descriptions in the tool list are the only guidance.
-  * `compose_vocation_config/6` always returns the full
+  * `compose_vocation_config/5` always returns the full
     vocation tool list regardless of depth (clones must keep
     the parent's exact tool list).
   * The identity line reports the agent's name and depth.
@@ -16,7 +16,6 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
 
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.SystemPrompt
-  alias Nest.Modes
   alias Nest.Sandbox.Mounts
   alias Nest.Vocations
 
@@ -43,8 +42,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
       Mounts.new(nil, nil),
       {nil, nil},
       name,
-      depth,
-      Modes.default()
+      depth
     )
   end
 

@@ -278,14 +278,30 @@ on `/tmp/x`. `TmpSpace.cleanup/3` therefore asks the registry (only the registry
 it runs from `terminate/2`) whether another space has a live agent of that name,
 and refuses if so. Over-refusing leaves a stale directory, which is harmless.
 
-## The `.nest` mask
+## The config-file mask: `.nest` and `AGENTS.md`
 
-The mask is a real bind of `/dev/null` (or of the `.nest` file itself, when it
-exists) at the `.nest` path, read-only, in both layers. Reading it therefore
-fails with `EACCES` rather than returning empty bytes: bwrap's read-only binds
-are mounted with `nodev`, so a char device bound through one cannot be opened.
-That is true on bwrap and on docker alike — it is one rendering of one bind list
-— and it is what makes the mask a mask rather than an empty file.
+Two files are masked, not one, and they are one class: both are human-authored
+project config the agent must not rewrite. `.nest` grants host access;
+`AGENTS.md` is the project's policy, rendered into the agent's system prompt. An
+agent that can rewrite either drifts its own constraints.
+
+The mask is a real bind of `/dev/null` (or of the file itself, when it exists)
+at the file's path, read-only, in both layers. Reading it therefore fails with
+`EACCES` rather than returning empty bytes: bwrap's read-only binds are mounted
+with `nodev`, so a char device bound through one cannot be opened. That is true
+on bwrap and on docker alike — it is one rendering of one bind list — and it is
+what makes the mask a mask rather than an empty file.
+
+Because both are masked, the runtime reads both on the **host**: `load/1` for
+`.nest`, `Nest.Agents.Agent.SystemPrompt` for `AGENTS.md`. The sandbox is *handed*
+them read-only rather than discovering them, so an agent's view of either is the
+host's file by construction. That is also why composing a prompt no longer runs
+a command — and why every agent start no longer pays a `bwrap` fork to read
+`AGENTS.md` (issue #132).
+
+A `"none"` space enforces none of this: it runs the bare command on the host, so
+there is nothing to bind a mask with and an agent there can edit or create
+either file. Same statement as "caps cannot be enforced for a `none` space".
 
 ## The derived image
 

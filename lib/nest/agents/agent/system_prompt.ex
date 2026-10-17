@@ -33,6 +33,8 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   alias Nest.Tools.Groups
   alias Nest.Vocations
 
+  @agents_md_file "AGENTS.md"
+
   @max_fraction_of_context 0.25
 
   # Conservative upper-bound token estimate used by the
@@ -120,32 +122,31 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   system message from its parent, so the reported name/depth
   may be stale once cloned — the clone's own "You are the
   clone" notice supersedes it.
-  `mode` is the agent's own — the persisted one, from its row — and it is
-  passed *in* rather than derived here: the modes are universal (`Nest.Modes`)
-  and an agent's mode is a runtime property, so the prompt composer neither
-  knows nor decides it. It is used for one thing: the caps the `AGENTS.md` read
-  is authorized with.
+  It takes no `mode`. The modes are universal (`Nest.Modes`) and an agent's
+  mode is a runtime property, so the composer renders the constant catalog and
+  states the mode nowhere: every message already states it. The `AGENTS.md` read
+  used to be authorized with the mode's caps and is now a host read, which is
+  why the argument went away rather than becoming unused.
   """
   @spec compose_vocation_config(
           Nest.Vocations.Vocation.t() | nil,
           Mounts.t(),
           {integer() | nil, atom() | nil},
           String.t(),
-          non_neg_integer(),
-          String.t()
+          non_neg_integer()
         ) ::
           {String.t() | nil, [String.t()], Nest.Vocations.Vocation.t() | nil}
-  def compose_vocation_config(nil, _mounts, _context_limit_info, _name, _depth, _mode),
+  def compose_vocation_config(nil, _mounts, _context_limit_info, _name, _depth),
     do: {nil, [], nil}
 
-  def compose_vocation_config(vocation, mounts, context_limit_info, name, depth, mode) do
+  def compose_vocation_config(vocation, mounts, context_limit_info, name, depth) do
     tools = Groups.expand(vocation.tools || [])
 
     system_prompt =
       (vocation.system_prompt || "") <>
         modes_section(tools, mounts) <>
         build_suffix(mounts, context_limit_info, name, depth, tools) <>
-        agents_md_section(mounts, mode) <>
+        agents_md_section(mounts) <>
         Nest.ProjectConfig.section(Mounts.workspace(mounts))
 
     {system_prompt, tools, vocation}
@@ -308,15 +309,23 @@ defmodule Nest.Agents.Agent.SystemPrompt do
       "giving a working token budget of ~#{effective} tokens.\n"
   end
 
-  defp agents_md_section(%Mounts{workspace: nil}, _mode), do: ""
+  defp agents_md_section(%Mounts{workspace: nil}), do: ""
 
-  defp agents_md_section(mounts, mode) do
-    # `AGENTS.md` lives at the workspace root. The read runs through the
-    # sandbox like every other read, so `Nest.Sandbox` decides what is visible —
-    # and it is authorized with the caps of the mode the agent is *in*, so a mode
-    # that could not read the workspace could not read this either.
-    with {:ok, path} <- Mounts.resolve("AGENTS.md", mounts),
-         {:ok, content} <- Sandbox.read(path, Modes.caps(mode), mounts) do
+  defp agents_md_section(mounts) do
+    # `AGENTS.md` lives at the workspace root and is read on the **host**, the
+    # same way `Nest.ProjectConfig.load/1` reads `.nest` for the section
+    # rendered just above. The two files are one class: both are
+    # human-authored project config, both are masked read-only into the sandbox
+    # by `Nest.ProjectConfig.protected_entries/1`, and neither is agent-mutable
+    # state — so the sandbox's view at that path *is* the host file, by
+    # construction, on every backend.
+    #
+    # Reading it through the sandbox instead would buy nothing and cost a
+    # `bwrap` fork per agent start (measured at ~9ms, ~1.5s of the suite). It
+    # was never the read set doing the work either: both modes have
+    # `fs.read: ["/"]`, so the caps could not have refused it.
+    with workspace when is_binary(workspace) <- Mounts.workspace(mounts),
+         {:ok, content} <- File.read(Path.join(workspace, @agents_md_file)) do
       # The file is arbitrary user bytes: NUL / invalid UTF-8 cannot be
       # stored in the system message's jsonb row. Replace them rather
       # than crash the Agent.

@@ -164,15 +164,26 @@ defmodule Nest.ProjectConfigTest do
       assert {:ok, ^caps} = ProjectConfig.effective_caps(caps, Mounts.new(dir, "/tmp/agent"))
     end
 
-    test "adds project mounts and protected .nest", %{dir: dir} do
+    test "adds project mounts and protects .nest and AGENTS.md", %{dir: dir} do
       write_nest(dir, "[[mount]]\npath = \"~/x\"\nmode = \"rw\"\n")
+      File.write!(Path.join(dir, "AGENTS.md"), "# Project rules\n")
+
       assert {:ok, merged} = ProjectConfig.effective_caps(caps(), Mounts.new(dir, "/tmp/agent"))
       assert [%{"dest" => dest, "source" => source}] = merged["fs"]["project"]
       assert dest == Path.expand("~/x")
       assert source == dest
-      assert [%{"path" => nest, "source" => nest_src}] = merged["fs"]["protected"]
+
+      # Both human-authored config files are masked read-only, each sourced from
+      # the real file when it is there (issue #97).
+      assert [
+               %{"path" => nest, "source" => nest_src},
+               %{"path" => agents_md, "source" => agents_md_src}
+             ] = merged["fs"]["protected"]
+
       assert nest == Path.join(dir, ".nest")
       assert nest_src == nest
+      assert agents_md == Path.join(dir, "AGENTS.md")
+      assert agents_md_src == agents_md
     end
 
     test "merges the shell background cap in a writable mode", %{dir: dir} do
@@ -197,9 +208,20 @@ defmodule Nest.ProjectConfigTest do
       assert String.starts_with?(source, "/tmp/agent/project/")
     end
 
-    test "masks /dev/null over a missing .nest", %{dir: dir} do
+    test "masks /dev/null over a missing .nest and a missing AGENTS.md", %{dir: dir} do
+      # Neither file exists in this fixture. The mask is what stops an agent
+      # *creating* one — which would be picked up on the next spawn, granting
+      # extra host access (`.nest`) or quietly changing its own prompt
+      # (`AGENTS.md`).
       assert {:ok, merged} = ProjectConfig.effective_caps(caps(), Mounts.new(dir, "/tmp/agent"))
-      assert [%{"source" => "/dev/null"}] = merged["fs"]["protected"]
+
+      assert [
+               %{"path" => nest, "source" => "/dev/null"},
+               %{"path" => agents_md, "source" => "/dev/null"}
+             ] = merged["fs"]["protected"]
+
+      assert nest == Path.join(dir, ".nest")
+      assert agents_md == Path.join(dir, "AGENTS.md")
     end
 
     test "resolve_caps leaves caps unchanged when malformed", %{dir: dir} do

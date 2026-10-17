@@ -145,10 +145,14 @@ defmodule Nest.Sandbox.Backend.DockerTest do
   # ---- what the container binds ----
 
   describe "container_binds/1" do
-    test "binds the workspace read-write and the .nest mask read-only" do
+    test "binds the workspace read-write and both config masks read-only" do
+      # `.nest` and `AGENTS.md` are one class — human-authored project config the
+      # agent must not rewrite — so both are masked, `/dev/null` over each when
+      # the file is absent (issue #97).
       assert Docker.container_binds(mounts("/ws")) == [
                {"/ws", "/ws", :rw},
-               {"/dev/null", "/ws/.nest", :ro}
+               {"/dev/null", "/ws/.nest", :ro},
+               {"/dev/null", "/ws/AGENTS.md", :ro}
              ]
     end
 
@@ -210,6 +214,8 @@ defmodule Nest.Sandbox.Backend.DockerTest do
                "/ws:/ws:rw",
                "-v",
                "/dev/null:/ws/.nest:ro",
+               "-v",
+               "/dev/null:/ws/AGENTS.md:ro",
                "-v",
                "#{stage_dir()}:/tmp/.cmds:ro",
                "-w",

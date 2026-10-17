@@ -322,8 +322,7 @@ defmodule Nest.Agents.AgentNameMigrationTest do
         Mounts.new(nil, nil),
         {nil, nil},
         name,
-        0,
-        Nest.Modes.act()
+        0
       )
 
     insert_message(agent_id, 0, "system", prompt <> Keyword.get(opts, :extra, ""))

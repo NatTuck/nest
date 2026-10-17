@@ -27,7 +27,7 @@ Instrumented full-suite run (`:counters` probes in `init/1` and
 Because the starts are serialized, that sum *is* the span the supervisor was
 busy: ~3.6 s of a 5.5 s run.
 
-`init_pipeline` is `SystemPrompt.compose_vocation_config/6`. Micro-benchmarked
+`init_pipeline` is `SystemPrompt.compose_vocation_config/5`. Micro-benchmarked
 in isolation (200 iterations, idle, `mix run`), it is **0.078 ms/call with no
 workspace and 10.148 ms/call with one**, and the whole difference is
 `agents_md_section/2` -> `Nest.Sandbox.read/3`, which shells `cat` through the

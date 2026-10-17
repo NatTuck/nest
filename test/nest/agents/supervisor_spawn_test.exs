@@ -28,6 +28,8 @@ defmodule Nest.Agents.SupervisorSpawnTest do
   """
   use Nest.DataCase, async: true
 
+  import ExUnit.CaptureLog
+
   import Eventually
 
   alias Nest.Agents
@@ -432,27 +434,34 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       space_dir = TmpSpace.space_dir(space_id, "bwrap")
 
       # Make the spawn fail deterministically: a *file* where the child's own
-      # scratch directory belongs. A fresh child's prompt is composed in
-      # `PreSpawn` (so the index-0 system row can be written), and composing it
-      # stages its `AGENTS.md` read through that scratch, so `File.mkdir_p!`
-      # refuses the file. That happens *before* the row is written, so the
-      # spawn fails with nothing left behind. (A clone does not compose in
-      # `pre_spawn` — see `SupervisorSubagentTest`'s sibling test, which fails
-      # in `init/1` and rolls a written row back; a fresh spawn cannot reach
-      # `init/1` with a blocked scratch.)
+      # scratch directory belongs, so `TmpSpace.create/3`'s `File.mkdir_p!`
+      # refuses it. That happens in the child's `init/1` — composing its prompt
+      # no longer creates the directory (the `AGENTS.md` read is a host read;
+      # issue #132), so the spawn now fails *after* `pre_spawn` wrote the row,
+      # and the rollback is what the assertion below is about.
       File.mkdir_p!(space_dir)
       blocker = Path.join(space_dir, name)
       File.write!(blocker, "not a directory")
 
       on_exit(fn -> File.rm(blocker) end)
 
-      assert_raise File.Error, fn ->
-        Supervisor.spawn_agent_in_space(state, name, vocation.slug)
-      end
+      # `DynamicSupervisor.start_child/2` turns a raise out of `init/1` into
+      # `{:error, {exception, stacktrace}}`; `start_pre_spawned/3` rolls the row
+      # back, logs that it did, and returns the error. Asserted inside the
+      # capture: `Logger.warning` is synchronous, so the line is guaranteed to
+      # have been emitted by the time the call returns.
+      log =
+        capture_log(fn ->
+          assert {:error, {%File.Error{}, _stacktrace}} =
+                   Supervisor.spawn_agent_in_space(state, name, vocation.slug)
+        end)
 
-      # The row the spawn would have pre-spawned is absent (and its system
-      # message with it), so the space holds only the coordinator — and the
-      # name is free again rather than blocked by an orphan.
+      assert log =~ "failed to start"
+      assert log =~ "removing the row it pre-spawned"
+
+      # The row the spawn pre-spawned is gone (and its system message with it),
+      # so the space holds only the coordinator — and the name is free again
+      # rather than blocked by an orphan.
       assert Nest.Persistence.fetch_agent(space_id, name) == {:error, :not_found}
       assert agent_count(space_id) == 1
       assert message_count(space_id) == 1
