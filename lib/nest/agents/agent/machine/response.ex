@@ -510,8 +510,13 @@ defmodule Nest.Agents.Agent.Machine.Response do
   end
 
   defp collect_specs(m, projected) do
+    # A pending notice is either budget text (a binary, from
+    # `do_dispatch_http/1`) or a space-environment change (a map, from
+    # `WorkspaceHandler.apply_space_environment/2`). Only the binary is a budget
+    # reminder; the map is delivered by its own `:workspace_notice` transition.
     budget =
-      if m.work.pending_notice, do: BudgetReminder.spec_from_pending(m.work.pending_notice)
+      if is_binary(m.work.pending_notice),
+        do: BudgetReminder.spec_from_pending(m.work.pending_notice)
 
     context = compute_context_spec(m, projected)
 

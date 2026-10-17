@@ -253,19 +253,20 @@ defmodule Nest.Agents.NoneScratchNameTest do
     test "carry the agent's real scratch, so a command can be staged" do
       {:ok, space_id} = AgentTestHelpers.create_test_space(%{sandbox_backend: "docker"})
 
-      # The space has a workspace — every space does now
-      # (`Space.create_changeset/2`) — but this agent's *mounts* do not: a
-      # workspace reaches an agent through `Agents.create_agent/3`'s
-      # `:workspace_path` option and from nowhere else, and `start_named/3` names
-      # none. So composing the prompt takes
-      # `SystemPrompt.agents_md_section/2`'s first clause, which returns `""` for
-      # `%Mounts{workspace: nil}` without reading — no `docker exec`, nothing
-      # printed. (A docker agent *with* a workspace would make that read; it is the
-      # one docker call the inert `docker_runner` in `config/test.exs` does not
-      # cover.) What this asserts is the thing that made a docker space silently
-      # lose its `AGENTS.md` section — the mounts the prompt is composed through
-      # must name the agent's scratch, or the staged transcript lands where the
-      # container cannot reach it.
+      # The agent has its *space's* workspace (every space has one, and
+      # `agents.workspace_path` no longer exists), so composing its prompt
+      # reaches `SystemPrompt.agents_md_section/2`'s read — which for a docker
+      # space is a real `docker exec` against a container that is not there. The
+      # inert `docker_runner` in `config/test.exs` does not cover that call (it
+      # only wraps `Docker.system/1`), so it is answered here: the read is stubbed
+      # to `:enoent`, which is what a workspace with no `AGENTS.md` produces, and
+      # the suite never reaches a daemon.
+      Mimic.stub(Nest.Sandbox, :read, fn _mounts, _path, _mode -> {:error, :enoent} end)
+
+      # What this asserts is the thing that made a docker space silently lose its
+      # `AGENTS.md` section — the mounts the prompt is composed through must name
+      # the agent's scratch, or the staged transcript lands where the container
+      # cannot reach it.
       name = start_named(space_id, unique("docker-mounts"))
       {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
 

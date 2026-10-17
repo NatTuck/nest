@@ -135,20 +135,31 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
   end
 
   describe "the machine's own notice rows" do
-    test "a workspace change and a wire-repair continuation are tagged" do
+    test "a space-environment change and a wire-repair continuation are tagged" do
       # Neither goes through the injector: each builds its own row, so each is
       # pinned here. Both are the runtime speaking, so both carry the marker —
       # without it a user row reads as a human's or a peer's message. The
-      # workspace row's `[mode: notice]` prefix comes first (the row's mode is
+      # environment row's `[mode: notice]` prefix comes first (the row's mode is
       # encoded exactly as every delivered row's is), so the marker heads the
       # notice body after it.
       assert [
-               {:user, %User{parts: [%Part.Text{text: workspace}]}},
+               {:user, %User{parts: [%Part.Text{text: notice}]}},
                {:assistant, %Assistant{parts: [%Part.Text{text: ack}]}}
-             ] = WorkspaceHandler.notice_pair("/tmp/ws")
+             ] =
+               WorkspaceHandler.notice_pair(%{
+                 workspace: "/tmp/ws",
+                 network_access: true,
+                 backend: "bwrap"
+               })
 
-      assert workspace == "[mode: notice]\n" <> NoticeTag.tag("Workspace changed to: /tmp/ws")
-      assert ack == "Workspace directory change confirmed."
+      assert notice ==
+               "[mode: notice]\n" <>
+                 NoticeTag.tag(
+                   "This space's environment changed. Workspace: /tmp/ws. " <>
+                     "Network access: enabled. Sandbox: bwrap."
+                 )
+
+      assert ack == "Space environment change confirmed."
 
       assert {:user, %User{parts: [%Part.Text{text: continuation}]}} =
                MessageList.continuation_prompt()

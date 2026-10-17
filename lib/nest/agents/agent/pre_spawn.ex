@@ -49,6 +49,13 @@ defmodule Nest.Agents.Agent.PreSpawn do
   """
   @spec pre_spawn(map()) :: {:ok, integer()} | {:error, term()}
   def pre_spawn(attrs) do
+    # The space's environment — backend, network access and workspace — is
+    # resolved here, at the one gate every creation path goes through, so a
+    # caller that built its attrs from a parent's mounts cannot hand a child a
+    # stale copy. `Nest.Agents.Agent.Init` reads all three off the attrs and must
+    # never touch the DB.
+    attrs = Persistence.put_space_properties(attrs)
+
     with :ok <- ensure_scratch_name(attrs),
          {:ok, attrs} <- put_mode(attrs) do
       case Map.get(attrs, :fork_message_index) do
@@ -449,7 +456,6 @@ defmodule Nest.Agents.Agent.PreSpawn do
       model: model_override || parent_state.model,
       vocation_id: parent_state.vocation_id,
       vocation: parent_state.vocation,
-      workspace_path: Mounts.workspace(parent_state.mounts),
       sandbox_backend: Mounts.backend(parent_state.mounts),
       network_access: Mounts.network_access(parent_state.mounts),
       parent_id: parent_id,

@@ -276,9 +276,9 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # --- workspace notice ---
 
-  def do_step(%{phase: :idle, work: %{pending_notice: path}} = m, :workspace_notice)
-      when is_binary(path) do
-    pair = WorkspaceHandler.notice_pair(path)
+  def do_step(%{phase: :idle, work: %{pending_notice: values}} = m, :workspace_notice)
+      when is_map(values) do
+    pair = WorkspaceHandler.notice_pair(values)
     projected = messages(m) ++ pair
     limit = m.work.ctx.context_limit
 

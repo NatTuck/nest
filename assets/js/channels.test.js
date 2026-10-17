@@ -707,35 +707,6 @@ describe("channels", () => {
       });
     });
 
-    it("applies the workspace update when agent:updated carries a workspace_path", async () => {
-      setNextJoinResult("lobby", {
-        autoInit: {
-          agents: [
-            { name: "agent-1", model: { name: "m" }, workspace_path: null },
-          ],
-          models: [],
-          broken_agents: [],
-        },
-      });
-      joinLobby();
-
-      await vi.waitFor(() => {
-        assert.strictEqual(useStore.getState().agents.length, 1);
-      });
-
-      simulateServerEvent("lobby", "agent:updated", {
-        name: "agent-1",
-        workspace_path: "/new/ws",
-      });
-
-      await vi.waitFor(() => {
-        assert.strictEqual(
-          useStore.getState().agents[0].workspace_path,
-          "/new/ws",
-        );
-      });
-    });
-
     it("should move a space into archivedSpaces on space:archived", async () => {
       setNextJoinResult("lobby", {
         autoInit: {
@@ -1540,26 +1511,26 @@ describe("channels", () => {
   });
 
   describe("editAgent", () => {
-    it("pushes the model and workspace_path", async () => {
+    it("pushes the model", async () => {
       const { editAgent } = await import("./channels");
       setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
       joinLobby();
       await vi.waitFor(() => true);
 
       const pushPromise = captureNextPush("lobby", "edit_agent");
-      editAgent(
-        "ghost-agent",
-        1,
-        { name: "gpt-4", provider: "openai", thinking_level: "high" },
-        "/new/workspace",
-      );
+      editAgent("ghost-agent", 1, {
+        name: "gpt-4",
+        provider: "openai",
+        thinking_level: "high",
+      });
 
       const payload = await pushPromise;
+      // No `workspace_path`: a workspace is the *space's*, so the agent edit
+      // neither takes nor sends one.
       assert.deepStrictEqual(payload, {
         name: "ghost-agent",
         space_id: 1,
         model: { name: "gpt-4", provider: "openai", thinking_level: "high" },
-        workspace_path: "/new/workspace",
       });
     });
 
@@ -1570,7 +1541,6 @@ describe("channels", () => {
         "ghost-agent",
         1,
         { name: "gpt-4" },
-        null,
         () => {},
         (err) => {
           captured = err;
@@ -1594,7 +1564,6 @@ describe("channels", () => {
         "ghost-agent",
         1,
         { name: "gpt-4", provider: "openai" },
-        "/ws",
         () => {},
         (err) => {
           captured = err;
@@ -1615,7 +1584,7 @@ describe("channels", () => {
 
       setNextPushResult("lobby", "edit_agent", { ok: {} });
       let okCalled = false;
-      editAgent("ghost-agent", 1, { name: "gpt-4" }, "/ws", () => {
+      editAgent("ghost-agent", 1, { name: "gpt-4" }, () => {
         okCalled = true;
       });
 

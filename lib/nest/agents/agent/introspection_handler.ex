@@ -39,7 +39,6 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.ModelHandler
   alias Nest.Agents.Agent.Restore
-  alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.LLM.Client
   alias Nest.Messages.Message
   alias Nest.Messages.Streaming
@@ -202,15 +201,9 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
     ModelHandler.handle(msg, from, state)
   end
 
-  # Forward `{:edit_agent, _, _}` (combined model + workspace edit)
-  # and `{:set_workspace, _}` (standalone workspace change) to
-  # `ModelHandler` / `WorkspaceHandler`.
-  def handle({:edit_agent, _, _} = msg, from, state) do
+  # Forward `{:edit_agent, _}` (the model edit) to `ModelHandler`.
+  def handle({:edit_agent, _model} = msg, from, state) do
     ModelHandler.handle(msg, from, state)
-  end
-
-  def handle({:set_workspace, _path} = msg, from, state) do
-    WorkspaceHandler.handle(msg, from, state)
   end
 
   # Pre-call gate for `file-write`. Looks up the cache entry
@@ -460,7 +453,9 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   defp recorded_matches?(_, _, _), do: false
 
   # The mounts value carries the workspace root the agent struct was built
-  # with (set during `Agent.init/1` from the attrs `:workspace_path`).
+  # with: `Agent.init/1` takes it from the attrs `:workspace_path`, which
+  # `Nest.Persistence` fills from the *space's* row (`spaces.workspace_path`) —
+  # there is no per-agent workspace.
   # `ClientConfig` itself does NOT carry it — it's an LLM-level concern, not a
   # request-level one.
   #

@@ -53,10 +53,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
     {:ok, ^coordinator_name} =
       Nest.Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
         name: coordinator_name,
-        vocation_id: AgentTestHelpers.vocation_id_for_test(),
-        # Every agent needs a workspace, and a spawned child inherits its
-        # parent's. Without one the coordinator could not spawn.
-        workspace_path: AgentTestHelpers.default_test_workspace()
+        vocation_id: AgentTestHelpers.vocation_id_for_test()
       )
 
     AgentTestHelpers.ensure_cleanup(coordinator_name)

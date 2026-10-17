@@ -55,9 +55,15 @@ describe("describeEditError", () => {
     expect(describeEditError("context_overflow")).toMatch(/compact/i);
     expect(describeEditError("not_found")).toMatch(/not found/i);
     expect(describeEditError("invalid_payload")).toMatch(/try again/i);
-    expect(describeEditError("workspace_required")).toMatch(/required/i);
-    expect(describeEditError("workspace_missing")).toMatch(/doesn't exist/i);
-    expect(describeEditError("workspace_under_tmp")).toMatch(/under \/tmp/i);
+  });
+
+  it("does not claim a workspace refusal, which an agent edit cannot produce", () => {
+    // A workspace is a *space* property: `edit_agent` neither takes nor
+    // validates one, so these fall through to the raw-reason fallback rather
+    // than answering with wording the path can never reach.
+    expect(describeEditError("workspace_required")).toContain(
+      "workspace_required",
+    );
   });
 
   it("falls back to the raw reason, or a generic message when absent", () => {
@@ -124,16 +130,6 @@ describe("describeCreateError", () => {
 
     expect(message).toMatch(/scratch path/i);
     expect(message).not.toContain("undefined");
-  });
-
-  it("words the workspace refusals exactly as the edit-agent path does", () => {
-    for (const reason of [
-      "workspace_required",
-      "workspace_missing",
-      "workspace_under_tmp",
-    ]) {
-      expect(describeCreateError({ reason })).toBe(describeEditError(reason));
-    }
   });
 
   it("falls back to the Error message, then to a generic message", () => {

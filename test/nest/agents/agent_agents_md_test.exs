@@ -8,9 +8,12 @@ defmodule Nest.Agents.AgentAgentsMdTest do
 
   import Nest.Test.TmpCleanup
 
+  alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
+  alias Nest.Modes
+  alias Nest.Sandbox.Mounts
   alias Nest.Vocations
 
   setup :verify_on_exit!
@@ -136,23 +139,24 @@ defmodule Nest.Agents.AgentAgentsMdTest do
       MockClient.clear()
     end
 
-    test "omits AGENTS.md section when workspace_path is nil" do
+    test "omits the AGENTS.md section when the mounts carry no workspace" do
+      # An agent always has its *space's* workspace now, so this state is only
+      # reachable through the composer — which is where the clause lives. A
+      # `nil` workspace must not attempt a sandbox read at all.
       vocation = create_vocation()
 
-      MockClient.set_response("OK")
+      {system_prompt, _tools, _vocation} =
+        SystemPrompt.compose_vocation_config(
+          vocation,
+          Mounts.new(nil, nil),
+          {nil, nil},
+          "agent",
+          0,
+          Modes.act()
+        )
 
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          workspace_path: nil,
-          vocation_id: vocation.id
-        })
-
-      system_prompt = get_system_prompt(pid)
       assert is_binary(system_prompt)
       refute system_prompt =~ "Here are AGENTS.md guidelines for this project:"
-
-      MockClient.clear()
     end
 
     test "AGENTS.md changes between init and compaction are reflected in the regenerated system prompt" do

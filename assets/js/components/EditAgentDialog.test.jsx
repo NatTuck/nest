@@ -24,8 +24,6 @@ const current = {
   name: "gpt-4o",
   provider: "openai",
   thinking_level: "high",
-  workspace_path: "/current/workspace",
-  requires_workspace: true,
 };
 
 function setup(overrides = {}) {
@@ -44,82 +42,37 @@ function setup(overrides = {}) {
 }
 
 describe("EditAgentDialog", () => {
-  it("shows the workspace field only for a workspace-requiring agent", () => {
+  it("has no working-directory field", () => {
+    // A workspace is a *space* property (`spaces.workspace_path`), so the agent
+    // dialog neither shows nor sends one.
     setup();
-    expect(screen.getByLabelText("Working Directory")).toBeInTheDocument();
-  });
-
-  it("hides the workspace field for an agent with neither a workspace nor a requirement", () => {
-    setup({
-      current: { ...current, requires_workspace: false, workspace_path: "" },
-    });
     expect(screen.queryByLabelText("Working Directory")).toBeNull();
-  });
-
-  it("shows the workspace field when the agent already has a workspace", () => {
-    setup({
-      current: {
-        ...current,
-        requires_workspace: false,
-        workspace_path: "/existing",
-      },
-    });
-    expect(screen.getByLabelText("Working Directory")).toBeInTheDocument();
-    expect(screen.getByLabelText("Working Directory").value).toBe("/existing");
   });
 
   it("initializes from the current values", () => {
     setup();
-    expect(screen.getByLabelText("Working Directory").value).toBe(
-      "/current/workspace",
-    );
     expect(screen.getByLabelText("Thinking Level").value).toBe("high");
     expect(screen.getByLabelText("Model").value).toBe("gpt-4o");
   });
 
   it("Reset reverts the form to the current values", () => {
     setup();
-    fireEvent.change(screen.getByLabelText("Working Directory"), {
-      target: { value: "/edited" },
-    });
     fireEvent.change(screen.getByLabelText("Thinking Level"), {
       target: { value: "low" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Reset" }));
-    expect(screen.getByLabelText("Working Directory").value).toBe(
-      "/current/workspace",
-    );
     expect(screen.getByLabelText("Thinking Level").value).toBe("high");
   });
 
-  it("Save emits the model + workspace for a workspace agent", () => {
+  it("Save emits the model", () => {
     const { onSave } = setup();
-    fireEvent.change(screen.getByLabelText("Working Directory"), {
-      target: { value: "/edited" },
+    fireEvent.change(screen.getByLabelText("Thinking Level"), {
+      target: { value: "low" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(onSave).toHaveBeenCalledWith({
-      model: { name: "gpt-4o", provider: "openai", thinking_level: "high" },
-      workspace_path: "/edited",
+      model: { name: "gpt-4o", provider: "openai", thinking_level: "low" },
     });
-  });
-
-  it("Save emits a null workspace for a non-workspace agent", () => {
-    const { onSave } = setup({
-      current: { ...current, requires_workspace: false, workspace_path: "" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(onSave).toHaveBeenCalledWith({
-      model: { name: "gpt-4o", provider: "openai", thinking_level: "high" },
-      workspace_path: null,
-    });
-  });
-
-  it("blocks Save when a workspace is required but empty", () => {
-    setup({ current: { ...current, workspace_path: "" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(screen.getByRole("alert")).toHaveTextContent(/working directory/i);
-    expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
   });
 
   it("blocks Save when no model is selected", () => {

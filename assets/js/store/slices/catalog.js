@@ -267,21 +267,6 @@ export function catalogSetters(set) {
         };
       });
     },
-
-    applyAgentWorkspaceUpdate: (name, workspace_path) => {
-      set((state) => {
-        const newAgents = state.agents.map((a) =>
-          a.name === name ? { ...a, workspace_path } : a,
-        );
-        const newCache = state.agentsCache[name]
-          ? {
-              ...state.agentsCache,
-              [name]: { ...state.agentsCache[name], workspace_path },
-            }
-          : state.agentsCache;
-        return { agents: newAgents, agentsCache: newCache };
-      });
-    },
   };
 }
 

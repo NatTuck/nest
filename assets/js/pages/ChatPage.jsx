@@ -137,7 +137,6 @@ export function ChatPage() {
     parentName,
     depth,
     model,
-    workspace_path,
     vocation,
     currentMode: currentModeFromCache,
     waitingForResponse,
@@ -169,7 +168,6 @@ export function ChatPage() {
         parentName: cache?.parentName ?? null,
         depth: cache?.depth ?? 0,
         model: cache?.model ?? null,
-        workspace_path: cache?.workspace_path ?? null,
         vocation: cache?.vocation ?? null,
         currentMode: cache?.currentMode ?? null,
         waitingForResponse: cache?.waitingForResponse ?? false,
@@ -421,16 +419,9 @@ export function ChatPage() {
     setChangeModelError(null);
     setModelPickerOpen(false);
 
-    editAgent(
-      name,
-      spaceId,
-      draft.model,
-      draft.workspace_path,
-      undefined,
-      (err) => {
-        setChangeModelError(describeEditError(err?.reason));
-      },
-    );
+    editAgent(name, spaceId, draft.model, undefined, (err) => {
+      setChangeModelError(describeEditError(err?.reason));
+    });
   };
 
   // Dismiss a chat-task error without re-joining the channel.
@@ -669,8 +660,6 @@ export function ChatPage() {
         onClose={() => setModelPickerOpen(false)}
         onSave={handleSaveAgentEdits}
         model={model}
-        workspace_path={workspace_path}
-        vocation={vocation}
       />
     </div>
   );

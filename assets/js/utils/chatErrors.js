@@ -1,6 +1,10 @@
 /**
- * The workspace refusals the edit-agent and create-space paths share, so the
- * two answer with one wording. Returns `null` for any other reason.
+ * The workspace refusals the *space* create path can carry. Returns `null` for
+ * any other reason.
+ *
+ * Only the space path has them: a workspace is a space property, so an agent
+ * edit cannot produce one (`LobbyChannel`'s `edit_agent` neither takes nor
+ * validates a workspace).
  */
 function describeWorkspaceError(reason) {
   switch (reason) {
@@ -21,9 +25,6 @@ function describeWorkspaceError(reason) {
  * `LobbyChannel.handle_in("edit_agent", …)`.
  */
 export function describeEditError(reason) {
-  const workspace = describeWorkspaceError(reason);
-  if (workspace) return workspace;
-
   switch (reason) {
     case "agent_busy":
       return "Agent is busy. Wait for the current chat to finish before editing.";

@@ -10,8 +10,6 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
 
   import ExUnit.CaptureLog
 
-  import Nest.Test.TmpCleanup
-
   import NestWeb.LobbyChannelTestHelpers
 
   alias Ecto.Adapters.SQL.Sandbox
@@ -200,70 +198,25 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
   end
 
   describe "handle_in(edit_agent)" do
-    test "edits the model and workspace and broadcasts agent:updated", %{socket: socket} do
+    test "edits the model and broadcasts agent:updated", %{socket: socket} do
       {:ok, space_id, name} = create_test_agent(socket, "qwen3.5-plus")
-
-      ws =
-        Path.join([
-          File.cwd!(),
-          "_build",
-          "tmp",
-          "edited-ws-#{System.unique_integer([:positive])}"
-        ])
-
-      File.mkdir_p!(ws)
-      on_exit(fn -> rm_tmp!(ws, "edited-ws-") end)
 
       ref =
         push(socket, "edit_agent", %{
           "name" => name,
           "space_id" => space_id,
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
-          "workspace_path" => ws
+          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
         })
 
       assert_reply ref, :ok, %{}, 750
 
       # The `space_id` in the frame must come from the payload (the lobby
-      # socket has no `space_id` in its assigns), and the edited
-      # workspace_path must round-trip. #41: the frame rides the space topic
-      # and is pushed to this client.
-      assert_push "agent:updated",
-                  %{
-                    "name" => ^name,
-                    "space_id" => ^space_id,
-                    "workspace_path" => ^ws
-                  },
-                  200
-    end
-
-    test "rejects a missing or under-/tmp workspace with a named reason", %{socket: socket} do
-      {:ok, space_id, name} = create_test_agent(socket, "qwen3.5-plus")
-
-      model = %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-
-      # Under /tmp is rejected because the scratch dir is bound there, and a path
-      # that is not there at all is rejected because bwrap cannot bind it. Both
-      # name their reason so the UI can explain the refusal.
-      ref =
-        push(socket, "edit_agent", %{
-          "name" => name,
-          "space_id" => space_id,
-          "model" => model,
-          "workspace_path" => "/tmp/edited-ws"
-        })
-
-      assert_reply ref, :error, %{"reason" => "workspace_under_tmp"}, 750
-
-      ref =
-        push(socket, "edit_agent", %{
-          "name" => name,
-          "space_id" => space_id,
-          "model" => model,
-          "workspace_path" => "/nope/missing-ws"
-        })
-
-      assert_reply ref, :error, %{"reason" => "workspace_missing"}, 750
+      # socket has no `space_id` in its assigns). #41: the frame rides the space
+      # topic and is pushed to this client.
+      #
+      # No `workspace_path` in the frame: a workspace is the *space's*, so the
+      # agent edit neither takes nor reports one.
+      assert_push "agent:updated", %{"name" => ^name, "space_id" => ^space_id}, 200
     end
 
     test "returns :invalid_model for an unknown model", %{socket: socket} do
@@ -273,8 +226,7 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
         push(socket, "edit_agent", %{
           "name" => name,
           "space_id" => space_id,
-          "model" => %{"name" => "totally-bogus-model"},
-          "workspace_path" => "/tmp/edited-ws"
+          "model" => %{"name" => "totally-bogus-model"}
         })
 
       assert_reply ref, :error, %{"reason" => "invalid_model"}, 750

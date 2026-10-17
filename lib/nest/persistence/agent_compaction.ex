@@ -141,7 +141,8 @@ defmodule Nest.Persistence.AgentCompaction do
       SystemPrompt.compose_vocation_config(
         vocation,
         TmpSpace.prompt_mounts(
-          agent.workspace_path,
+          # The workspace is the *space's*; there is no per-agent column.
+          Nest.Spaces.workspace_path(agent.space_id),
           agent.space_id,
           agent.name,
           Nest.Spaces.sandbox_backend(agent.space_id),

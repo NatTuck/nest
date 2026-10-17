@@ -504,7 +504,12 @@ defmodule MachineDebtTest do
   defp with_limit(m, limit),
     do: %{m | work: %{m.work | ctx: %{m.work.ctx | context_limit: limit}}}
 
-  defp with_notice(m), do: %{m | work: %{m.work | pending_notice: "/tmp/AGENTS.md"}}
+  # A space-environment change is what a pending notice now carries: the values
+  # to reconcile, not a bare path.
+  defp with_notice(m) do
+    values = %{workspace: "/tmp/AGENTS.md", network_access: true, backend: "bwrap"}
+    %{m | work: %{m.work | pending_notice: values}}
+  end
 
   defp worker_machine(senders, kind) do
     m = owed(state_at(if(kind == :tools, do: :executing_tools, else: :generating)), senders)

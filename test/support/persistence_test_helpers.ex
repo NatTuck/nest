@@ -21,7 +21,6 @@ defmodule Nest.PersistenceTestHelpers do
       space_id: test_space_id(),
       name: name,
       model: %{name: "test-model", provider: "test"},
-      workspace_path: nil,
       vocation_id: test_vocation_id()
     }
   end

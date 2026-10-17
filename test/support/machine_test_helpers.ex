@@ -95,7 +95,6 @@ defmodule Nest.TestSupport.MachineTestHelpers do
       context_limit_source: :default,
       messages: [system_message()],
       tmp_path: nil,
-      workspace_path: nil,
       mode: "chat",
       next_message_index: 1,
       crossed_thresholds: %MapSet{},

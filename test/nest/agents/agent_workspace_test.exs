@@ -1,29 +1,28 @@
 defmodule Nest.Agents.Agent.WorkspaceTest do
   @moduledoc """
-  Tests for `Agents.edit_agent/4` and `Agents.change_workspace/3` —
-  changing an agent's working directory at runtime.
+  Tests for `WorkspaceHandler.apply_space_environment/2` — applying a change to
+  the **space's** environment on a live agent — and for the workspace validation
+  `Agents.create_agent/3` still performs.
 
-  The workspace change rebuilds the tool closures (which capture
-  `workspace_path`), leaves the persisted system prompt (index 0)
-  untouched to preserve the LLM prefix cache, and appends a
-  user/assistant notice pair (after a compaction preflight check).
+  There is no per-agent workspace to edit: a workspace is
+  `spaces.workspace_path`, so the agent edit dialog no longer carries one and
+  `Agents.change_workspace/3` / `Agents.set_workspace/2` are gone. The function
+  these tests drive has no caller yet — the space edit that will drive it is the
+  next step — so what they pin is the seam it will use: the mounts move, the tool
+  closures are rebuilt against them, the persisted system prompt (index 0) is
+  untouched to preserve the LLM prefix cache, and the change is announced as a
+  user/assistant notice pair naming the values now in force.
   """
 
   use Nest.DataCase, async: true
 
-  alias Ecto.Adapters.SQL.Sandbox
-  alias Nest.Agents
-  alias Nest.Agents.Agent.Config
-  alias Nest.Agents.Agent.Machine
-  alias Nest.Agents.AgentTestHelpers
-  alias Nest.Agents.Supervisor
-  alias Nest.Persistence
-  alias Nest.Repo
-  alias Nest.Sandbox.Mounts
-  import Mimic
   import Nest.Test.TmpCleanup
 
-  setup :verify_on_exit!
+  alias Nest.Agents
+  alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.WorkspaceHandler
+  alias Nest.Agents.AgentTestHelpers
+  alias Nest.Sandbox.Mounts
 
   setup do
     {:ok, _space_id} = AgentTestHelpers.create_test_space()
@@ -31,41 +30,120 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
     :ok
   end
 
-  defp persist_and_start!(attrs) do
-    name = Map.fetch!(attrs, :name)
-    space_id = AgentTestHelpers.current_space_id()
-    attrs_with_vid = attrs |> Map.put(:space_id, space_id)
+  describe "apply_space_environment/2" do
+    test "moves the mounts, rebuilds the tools, and appends the notice pair" do
+      old = new_ws("old")
+      new = new_ws("new")
 
-    {:ok, _row} = Persistence.insert_agent(attrs_with_vid)
-    {:ok, ^name} = Supervisor.fetch_or_start_agent(space_id, attrs_with_vid)
-    {:ok, pid} = Supervisor.get_agent(space_id, name)
+      # A vocation with the file tools, so the rebuild has a closure to rebuild.
+      {:ok, vocation} =
+        Nest.Vocations.create_vocation(%{
+          name: "WS Test (#{System.unique_integer([:positive])})",
+          description: "writes to workspace",
+          system_prompt: "workspace prompt",
+          tools: ["file", "shell", "context"]
+        })
 
-    Sandbox.allow(Repo, self(), pid)
-    AgentTestHelpers.ensure_cleanup(name)
+      {pid, _name} =
+        AgentTestHelpers.start_agent(%{workspace_path: old, vocation_id: vocation.id})
 
-    {pid, name}
+      # allowlist: snapshot — the mounts, tools and messages the apply moves
+      before = :sys.get_state(pid, 1_000)
+      assert Mounts.workspace(before.mounts) == old
+      system_before = List.first(before.chat_state.messages)
+
+      {state, :ok} =
+        WorkspaceHandler.apply_space_environment(before, %{
+          workspace: new,
+          network_access: false,
+          backend: "none"
+        })
+
+      # All three space properties ride the mounts, and all three moved.
+      assert Mounts.workspace(state.mounts) == new
+      assert Mounts.network_access(state.mounts) == false
+      assert Mounts.backend(state.mounts) == "none"
+
+      # Tool closures rebuilt against the new mounts.
+      assert Enum.any?(state.tools, &(&1.name == "file-read"))
+
+      # The system message (index 0) is untouched: rebuilding it would break the
+      # prefix cache.
+      assert List.first(state.chat_state.messages) == system_before
+
+      # The notice pair is the new tail, and it states the values now in force
+      # rather than a delta — a reconciliation, so two edits cannot leave the
+      # agent holding a partial picture.
+      assert [{:user, user}, {:assistant, assistant}] = Enum.take(state.chat_state.messages, -2)
+
+      text = Enum.map_join(user.parts, "", &(&1.text || ""))
+
+      assert text =~ "[nest notice]"
+      assert text =~ "Workspace: #{new}"
+      assert text =~ "Network access: disabled"
+      assert text =~ "Sandbox: none"
+
+      assert Enum.any?(assistant.parts, &(&1.text == "Space environment change confirmed."))
+    end
+
+    test "reapplies the max-depth spawn exclusion when tools are rebuilt" do
+      {:ok, vocation} =
+        Nest.Vocations.create_vocation(%{
+          name: "WS Spawn (#{System.unique_integer([:positive])})",
+          description: "spawn tools",
+          system_prompt: "spawn prompt",
+          tools: ["agents", "file"]
+        })
+
+      first = new_ws("spawn-old")
+      second = new_ws("spawn-new")
+
+      {pid, _name} =
+        AgentTestHelpers.start_agent(%{workspace_path: first, vocation_id: vocation.id})
+
+      # allowlist: snapshot — the tools the apply rebuilds
+      before = :sys.get_state(pid, 1_000)
+      assert Enum.any?(before.tools, &(&1.name == "agents-spawn"))
+
+      # Below max depth the spawn tools survive the rebuild.
+      {below, :ok} = apply_workspace(before, second)
+      assert Enum.any?(below.tools, &(&1.name == "agents-spawn"))
+
+      # At max depth they are dropped, matching `Init` and compaction.
+      at_max = %{before | depth: Config.configured_max_depth()}
+      {dropped, :ok} = apply_workspace(at_max, second)
+
+      refute Enum.any?(dropped.tools, &(&1.name in ["agents-spawn", "agents-batch"]))
+      assert Enum.any?(dropped.tools, &(&1.name == "file-read"))
+    end
   end
 
-  defp workspace_agent! do
-    {:ok, vocation} =
-      Nest.Vocations.create_vocation(%{
-        name: "WS Test (#{System.unique_integer([:positive])})",
-        description: "writes to workspace",
-        system_prompt: "workspace prompt",
-        tools: ["file", "shell", "context"]
-      })
+  describe "Agents.create_agent/3 workspace validation" do
+    test "rejects a space whose workspace is missing or /tmp-rooted" do
+      # The workspace is the space's, so this is where the value is validated on
+      # the way into an agent — `spaces.workspace_path` is checked by
+      # `Spaces.ensure_root_workspace/2` when the space is created, and an agent
+      # start re-checks it because a space row can be backfilled with a path the
+      # sandbox cannot bind.
+      base = new_ws("create-base")
+      model = %{name: "qwen3.5-plus", provider: "model-studio"}
 
-    old_ws = new_ws("old")
+      {:ok, missing_space} =
+        AgentTestHelpers.create_test_space(%{workspace_path: Path.join(base, "missing")})
 
-    {pid, _name} =
-      persist_and_start!(%{
-        name: "ws-agent-#{System.unique_integer([:positive])}",
-        model: %{name: "qwen3.5-plus", provider: "model-studio"},
-        workspace_path: old_ws,
-        vocation_id: vocation.id
-      })
+      assert {:error, :workspace_missing} = Agents.create_agent(missing_space, model)
 
-    {pid, vocation.id, old_ws}
+      {:ok, tmp_space} = AgentTestHelpers.create_test_space(%{workspace_path: "/tmp/ws"})
+      assert {:error, :workspace_under_tmp} = Agents.create_agent(tmp_space, model)
+    end
+  end
+
+  defp apply_workspace(state, path) do
+    WorkspaceHandler.apply_space_environment(state, %{
+      workspace: path,
+      network_access: Mounts.network_access(state.mounts),
+      backend: Mounts.backend(state.mounts)
+    })
   end
 
   # A real workspace directory outside /tmp: the scratch dir is bound at /tmp,
@@ -83,213 +161,4 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
     on_exit(fn -> rm_tmp!(dir, "nest_ws_") end)
     dir
   end
-
-  describe "Agents.edit_agent/4" do
-    test "updates the workspace, rebuilds tools, and appends the notice pair" do
-      {pid, _vid, _old} = workspace_agent!()
-      new = new_ws("new")
-
-      system_before = List.first(Nest.Agents.Agent.get_messages(pid, 1_000))
-
-      :ok =
-        Agents.edit_agent(
-          AgentTestHelpers.current_space_id(),
-          agent_name(pid),
-          test_model(),
-          new
-        )
-
-      # allowlist: snapshot — workspace_path + tools + messages
-      state = :sys.get_state(pid, 1_000)
-      assert Mounts.workspace(state.mounts) == new
-
-      # Tool closures rebuilt against the new path.
-      assert Enum.any?(state.tools, &(&1.name == "file-read"))
-
-      # The system message (index 0) is untouched.
-      system_after = List.first(state.chat_state.messages)
-      assert system_after == system_before
-
-      # The notice pair is the new tail.
-      tail = Enum.take(state.chat_state.messages, -2)
-      assert [{:user, user}, {:assistant, assistant}] = tail
-
-      assert Enum.any?(
-               user.parts,
-               &(&1.text == "[mode: notice]\n[nest notice]\nWorkspace changed to: #{new}")
-             )
-
-      assert Enum.any?(assistant.parts, &(&1.text == "Workspace directory change confirmed."))
-    end
-
-    test "requires a non-null workspace when the vocation needs one" do
-      {pid, _vid, old} = workspace_agent!()
-
-      assert {:error, :workspace_required} =
-               Agents.edit_agent(
-                 AgentTestHelpers.current_space_id(),
-                 agent_name(pid),
-                 test_model(),
-                 nil
-               )
-
-      # The agent's workspace is unchanged.
-      assert Nest.Agents.Agent.get_public_info(pid, 1_000).workspace_path == old
-    end
-
-    test "rejects a missing workspace and an under-/tmp workspace" do
-      {pid, _vid, old} = workspace_agent!()
-
-      assert {:error, :workspace_missing} =
-               Agents.edit_agent(
-                 AgentTestHelpers.current_space_id(),
-                 agent_name(pid),
-                 test_model(),
-                 Path.join(old, "missing")
-               )
-
-      assert {:error, :workspace_under_tmp} =
-               Agents.edit_agent(
-                 AgentTestHelpers.current_space_id(),
-                 agent_name(pid),
-                 test_model(),
-                 "/tmp/under"
-               )
-
-      assert Nest.Agents.Agent.get_public_info(pid, 1_000).workspace_path == old
-    end
-
-    test "refuses while the agent is busy" do
-      {pid, _vid, _old} = workspace_agent!()
-      new = new_ws("new")
-
-      :sys.replace_state(
-        pid,
-        fn state ->
-          %{
-            state
-            | live: %{
-                state.live
-                | machine: Machine.status_to_machine(state.live.machine, :streaming)
-              }
-          }
-        end,
-        1_000
-      )
-
-      assert {:error, :agent_busy} =
-               Agents.edit_agent(
-                 AgentTestHelpers.current_space_id(),
-                 agent_name(pid),
-                 test_model(),
-                 new
-               )
-
-      # The `:streaming` status was fabricated for the refusal check
-      # (there is no real turn). Restore idle so the teardown's
-      # zero-in-flight-agents assertion holds.
-      :sys.replace_state(
-        pid,
-        fn state ->
-          %{
-            state
-            | live: %{
-                state.live
-                | machine: Machine.status_to_machine(state.live.machine, :idle)
-              }
-          }
-        end,
-        1_000
-      )
-    end
-  end
-
-  describe "Agents.change_workspace/3" do
-    test "updates the workspace and appends the notice pair" do
-      {pid, _vid, _old} = workspace_agent!()
-      new = new_ws("new")
-
-      :ok =
-        Agents.change_workspace(
-          AgentTestHelpers.current_space_id(),
-          agent_name(pid),
-          new
-        )
-
-      # allowlist: snapshot — workspace_path + messages
-      state = :sys.get_state(pid, 1_000)
-      assert Mounts.workspace(state.mounts) == new
-      assert {:assistant, %{parts: parts}} = List.last(state.chat_state.messages)
-      assert Enum.any?(parts, &(&1.text == "Workspace directory change confirmed."))
-    end
-
-    test "rejects a missing or under-/tmp workspace, leaving the agent unchanged" do
-      {pid, _vid, old} = workspace_agent!()
-      space_id = AgentTestHelpers.current_space_id()
-
-      assert {:error, :workspace_missing} =
-               Agents.change_workspace(space_id, agent_name(pid), Path.join(old, "missing"))
-
-      assert {:error, :workspace_under_tmp} =
-               Agents.change_workspace(space_id, agent_name(pid), "/tmp/under")
-
-      assert Nest.Agents.Agent.get_public_info(pid, 1_000).workspace_path == old
-    end
-
-    test "reapplies the max-depth spawn exclusion when tools are rebuilt" do
-      {:ok, vocation} =
-        Nest.Vocations.create_vocation(%{
-          name: "WS Spawn (#{System.unique_integer([:positive])})",
-          description: "spawn tools",
-          system_prompt: "spawn prompt",
-          tools: ["agents", "file"]
-        })
-
-      first = new_ws("spawn-old")
-      second = new_ws("spawn-new")
-      third = new_ws("spawn-newer")
-
-      {pid, _name} =
-        persist_and_start!(%{
-          name: "ws-spawn-#{System.unique_integer([:positive])}",
-          model: %{name: "qwen3.5-plus", provider: "model-studio"},
-          workspace_path: first,
-          vocation_id: vocation.id
-        })
-
-      space_id = AgentTestHelpers.current_space_id()
-
-      # Below max depth the spawn tools survive the rebuild.
-      :ok = Agents.change_workspace(space_id, agent_name(pid), second)
-      assert Enum.any?(Nest.Agents.Agent.get_tools(pid, 1_000), &(&1.name == "agents-spawn"))
-
-      # At max depth they are dropped, matching Init/compaction.
-      max = Config.configured_max_depth()
-      :sys.replace_state(pid, fn state -> %{state | depth: max} end, 1_000)
-
-      :ok = Agents.change_workspace(space_id, agent_name(pid), third)
-
-      tools = Nest.Agents.Agent.get_tools(pid, 1_000)
-      refute Enum.any?(tools, &(&1.name in ["agents-spawn", "agents-batch"]))
-      assert Enum.any?(tools, &(&1.name == "file-read"))
-    end
-  end
-
-  describe "Agents.create_agent/3 workspace validation" do
-    test "rejects a missing or /tmp-rooted workspace before starting" do
-      space_id = AgentTestHelpers.current_space_id()
-      model = test_model()
-      base = new_ws("create-base")
-
-      assert {:error, :workspace_missing} =
-               Agents.create_agent(space_id, model, workspace_path: Path.join(base, "missing"))
-
-      assert {:error, :workspace_under_tmp} =
-               Agents.create_agent(space_id, model, workspace_path: "/tmp/ws")
-    end
-  end
-
-  defp agent_name(pid), do: Nest.Agents.Agent.get_public_info(pid, 1_000).name
-
-  defp test_model, do: %{name: "qwen3.5-plus", provider: "model-studio"}
 end

@@ -25,7 +25,6 @@ defmodule Nest.Agents do
   * `opts` — additional parameters:
     * `:name` — explicit agent name (default: auto-generated)
     * `:vocation_id` — id of the vocation to use
-  * `:workspace_path` — path to the workspace directory
   * `:mode` — the mode the agent starts in (`Nest.Modes`); defaults to the
     space's blueprint `default_mode` (`Agent.PreSpawn`)
   * `:created_by_user_id` — the owning user
@@ -69,7 +68,6 @@ defmodule Nest.Agents do
       space_id: space_id,
       model: enrich_model(model),
       vocation_id: Keyword.get(opts, :vocation_id),
-      workspace_path: Keyword.get(opts, :workspace_path),
       mode: Keyword.get(opts, :mode),
       created_by_user_id: Keyword.get(opts, :created_by_user_id),
       shared: Keyword.get(opts, :shared, false),
@@ -446,25 +444,16 @@ defmodule Nest.Agents do
   end
 
   @doc """
-  Change an agent's working directory.
-  """
-  @spec change_workspace(integer(), String.t(), String.t() | nil) :: :ok | {:error, term()}
-  def change_workspace(space_id, name, workspace_path) do
-    case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> Agent.set_workspace(pid, workspace_path)
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  Change an agent's model (and thinking level).
 
-  @doc """
-  Combined edit: change an agent's model (and thinking level) and
-  working directory in one call.
+  The working directory is *not* here: a workspace is a space property
+  (`spaces.workspace_path`), so it is edited on the space, not on one of its
+  agents.
   """
-  @spec edit_agent(integer(), String.t(), map(), String.t() | nil) ::
-          :ok | {:error, term()}
-  def edit_agent(space_id, name, new_model, workspace_path) when is_map(new_model) do
+  @spec edit_agent(integer(), String.t(), map()) :: :ok | {:error, term()}
+  def edit_agent(space_id, name, new_model) when is_map(new_model) do
     case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> Agent.edit_agent(pid, new_model, workspace_path)
+      {:ok, pid} -> Agent.edit_agent(pid, new_model)
       {:error, reason} -> {:error, reason}
     end
   end

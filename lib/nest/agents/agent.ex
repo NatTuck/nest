@@ -48,9 +48,9 @@ defmodule Nest.Agents.Agent do
     # every caller passes to `Nest.Sandbox` and `Nest.Tools.ShellCmd`
     # (`Mounts.from_agent/1` is the one accessor), and because the
     # workspace and the scratch directory are only ever used together.
-    # Built once at init; the backend cannot change afterwards (a space's
-    # is fixed at creation), and `set_workspace`/`edit_agent` move only the
-    # workspace half.
+    # Built once at init from the space's environment. `WorkspaceHandler`
+    # moves all three when the space changes; there is no per-agent
+    # workspace to move on its own.
     mounts: %Nest.Sandbox.Mounts{workspace: nil, scratch: nil},
     # `depth` is the agent's distance from its tree root (0 =
     # root). Children inherit `parent.depth + 1`; `agents-spawn`
@@ -310,16 +310,11 @@ defmodule Nest.Agents.Agent do
   @spec set_model(pid(), map()) :: :ok | {:error, term()}
   def set_model(pid, new_model), do: GenServer.call(pid, {:set_model, new_model}, :infinity)
 
-  # Change the agent's working directory. Handler: `WorkspaceHandler`.
-  @spec set_workspace(pid(), String.t() | nil) :: :ok | {:error, term()}
-  def set_workspace(pid, workspace_path),
-    do: GenServer.call(pid, {:set_workspace, workspace_path}, :infinity)
-
-  # Combined edit: model (and thinking level) + working directory in one
-  # call. Handler: `ModelHandler`.
-  @spec edit_agent(pid(), map(), String.t() | nil) :: :ok | {:error, term()}
-  def edit_agent(pid, model, workspace_path),
-    do: GenServer.call(pid, {:edit_agent, model, workspace_path}, :infinity)
+  # Change the agent's model (and thinking level). Handler: `ModelHandler`.
+  # The working directory is not here: it is a space property, so it is edited
+  # on the space.
+  @spec edit_agent(pid(), map()) :: :ok | {:error, term()}
+  def edit_agent(pid, model), do: GenServer.call(pid, {:edit_agent, model}, :infinity)
 
   @doc """
   Resolve the agent's current effective sandbox caps from its state.

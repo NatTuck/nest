@@ -185,8 +185,6 @@ export function agentCacheSetters(set) {
                 existing?.contextLimitSource ??
                 null,
               usage: payload.usage ?? existing?.usage ?? null,
-              workspace_path:
-                payload.workspace_path ?? existing?.workspace_path ?? null,
               parentId: payload.parentId ?? existing?.parentId ?? null,
               parentName: payload.parentName ?? existing?.parentName ?? null,
               depth: payload.depth ?? existing?.depth ?? 0,

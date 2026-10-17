@@ -246,7 +246,7 @@ defmodule NestWeb.LobbyChannel do
         # the announcement rides the space topic, and a channel does not
         # see its own broadcast, so this session must be listening first.
         socket = reconcile_space_subscriptions(socket)
-        broadcast_space_created(socket, space, agent_name, model, vocation, attrs)
+        broadcast_space_created(socket, space, agent_name, model, vocation)
 
         {:reply, {:ok, %{"space_id" => space.id, "name" => agent_name, "slug" => space.slug}},
          socket}
@@ -274,14 +274,10 @@ defmodule NestWeb.LobbyChannel do
     do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
 
   @impl true
-  def handle_in(
-        "edit_agent",
-        %{"model" => mp, "name" => name, "space_id" => sid} = payload,
-        s
-      )
+  def handle_in("edit_agent", %{"model" => mp, "name" => name, "space_id" => sid}, s)
       when is_map(mp) do
     case Authz.authorize_owner_or_shared(sid, name, s.assigns.current_user) do
-      {:ok, :owner} -> do_edit_agent(sid, s, name, mp, Map.get(payload, "workspace_path"))
+      {:ok, :owner} -> do_edit_agent(sid, s, name, mp)
       {:ok, :shared} -> {:reply, {:error, %{"reason" => "shared_read_only"}}, s}
       {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, s}
     end
@@ -566,19 +562,13 @@ defmodule NestWeb.LobbyChannel do
   defp broadcast_space_unarchived(socket, space_id),
     do: broadcast_to_user(socket, :space_unarchived, %{"space_id" => space_id})
 
-  defp broadcast_space_created(socket, space, agent_name, model, vocation, attrs) do
+  defp broadcast_space_created(socket, space, agent_name, model, vocation) do
     broadcast_to_user(socket, :space_created, %{
       "space" => space,
       "agentName" => agent_name
     })
 
-    broadcast_agent_created(
-      space.id,
-      agent_name,
-      model,
-      vocation,
-      attrs.workspace_path
-    )
+    broadcast_agent_created(space.id, agent_name, model, vocation)
   end
 
   # Announce a space-set change on the per-user topic (#41). Every lobby
@@ -609,13 +599,12 @@ defmodule NestWeb.LobbyChannel do
     end
   end
 
-  defp do_edit_agent(space_id, s, name, mp, workspace_path) do
-    case Agents.edit_agent(space_id, name, build_model_map(mp), workspace_path) do
+  defp do_edit_agent(space_id, s, name, mp) do
+    case Agents.edit_agent(space_id, name, build_model_map(mp)) do
       :ok ->
         Broadcasts.agent_updated(space_id, %{
           "name" => name,
           "model" => mp,
-          "workspace_path" => workspace_path,
           "space_id" => space_id
         })
 
@@ -634,6 +623,8 @@ defmodule NestWeb.LobbyChannel do
     }
   end
 
+  # The *space* creation opts. `:workspace_path` belongs here — it is the
+  # space's — and not in the root agent's, which inherits it from the row.
   defp build_create_opts_from_payload(payload, current_user_id) do
     base_opts =
       build_create_opts(
@@ -660,13 +651,8 @@ defmodule NestWeb.LobbyChannel do
   # the same `model_payload/1` the status broadcast uses — so a root agent's
   # frame now carries the same model shape a subagent's does instead of a
   # narrower one.
-  defp broadcast_agent_created(space_id, name, model, vocation, workspace_path) do
-    Broadcasts.agent_created(space_id,
-      name: name,
-      model: model,
-      vocation: vocation,
-      workspace_path: workspace_path
-    )
+  defp broadcast_agent_created(space_id, name, model, vocation) do
+    Broadcasts.agent_created(space_id, name: name, model: model, vocation: vocation)
   end
 
   defp build_model_map(model_params) do

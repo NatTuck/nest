@@ -122,9 +122,6 @@ export function joinLobby(onOk, onError) {
     if (payload?.name && payload?.model) {
       store.applyAgentModelUpdate(payload.name, payload.model);
     }
-    if (payload?.name && payload?.workspace_path !== undefined) {
-      store.applyAgentWorkspaceUpdate(payload.name, payload.workspace_path);
-    }
   });
 
   // A space-scoped status frame (#53). Only spaces this client is
@@ -190,7 +187,6 @@ export function createSpace(model, vocationSlug, onOk, onError, opts = {}) {
   if (opts.slug) payload.slug = opts.slug;
   if (opts.blueprint_id) payload.blueprint_id = opts.blueprint_id;
   if (opts.agent_name) payload.agent_name = opts.agent_name;
-  if (opts.workspace_path) payload.workspace_path = opts.workspace_path;
   if (typeof opts.network_access === "boolean") {
     payload.network_access = opts.network_access;
   }
@@ -411,10 +407,11 @@ export function changeAgentModel(name, spaceId, model, onOk, onError) {
 }
 
 /**
- * Edit an agent's model (and thinking level) and working directory
- * in a single lobby `edit_agent` action.
+ * Edit an agent's model (and thinking level) via the lobby's `edit_agent`
+ * action. The working directory is not here: a workspace is a *space*
+ * property, so it is edited on the space.
  */
-export function editAgent(name, spaceId, model, workspacePath, onOk, onError) {
+export function editAgent(name, spaceId, model, onOk, onError) {
   if (!lobbyChannel) {
     if (onError) onError(new Error("Not connected to lobby"));
     return;
@@ -428,7 +425,6 @@ export function editAgent(name, spaceId, model, workspacePath, onOk, onError) {
       provider: model.provider ?? null,
       thinking_level: model.thinking_level ?? null,
     },
-    workspace_path: workspacePath ?? null,
   };
 
   lobbyChannel

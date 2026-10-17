@@ -118,7 +118,6 @@ defmodule Nest.TestSupport.ExecutorTestHelpers do
       context_limit_source: :default,
       messages: [],
       tmp_path: nil,
-      workspace_path: nil,
       mode: "act",
       next_message_index: 0,
       crossed_thresholds: %MapSet{},

@@ -8,7 +8,7 @@ defmodule Nest.Agents.Agent.ToolFilter do
     * `Nest.Agents.Agent.Init` — at startup, for non-clone children
       (via the `:exclude_spawn` attr; clones keep the parent's exact
       tool list per the clone rule).
-    * `Nest.Agents.Agent.WorkspaceHandler` — when the workspace changes
+    * `Nest.Agents.Agent.WorkspaceHandler` — when the space's environment changes
       and the tool list is rebuilt.
     * `Nest.Agents.Agent.Machine.Compaction` — on compaction
       (which invalidates the prefix cache, so the list may change).

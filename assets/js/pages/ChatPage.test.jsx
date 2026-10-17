@@ -2178,7 +2178,7 @@ describe("ChatPage model picker (model_missing recovery)", () => {
 
   it("calls editAgent when the user saves", () => {
     mocks.editAgent.mockImplementation(
-      (_name, _spaceId, _model, _workspacePath, _onOk, onError) => {
+      (_name, _spaceId, _model, _onOk, onError) => {
         // Simulate the server error reply so the
         // `setChangeModelError` branch runs end-to-end.
         if (onError) onError({ reason: "agent_busy" });
@@ -2201,11 +2201,11 @@ describe("ChatPage model picker (model_missing recovery)", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /pick/i }));
 
+    // No workspace argument: a workspace is the *space's*.
     expect(mocks.editAgent).toHaveBeenCalledWith(
       "test-agent",
       1,
       { name: "gpt-4", provider: "openai", thinking_level: "medium" },
-      null,
       undefined,
       expect.any(Function),
     );
@@ -2219,7 +2219,6 @@ describe("ChatPage model picker (model_missing recovery)", () => {
 
   it("surfaces each edit-agent error reason inline", () => {
     const cases = [
-      { reason: "workspace_required", match: /working directory is required/i },
       { reason: "invalid_model", match: /isn't configured on the server/i },
       { reason: "context_overflow", match: /too full to record/i },
       { reason: "not_found", match: /agent not found/i },
@@ -2228,7 +2227,7 @@ describe("ChatPage model picker (model_missing recovery)", () => {
     ];
 
     for (const { reason, match } of cases) {
-      mocks.editAgent.mockImplementation((_n, _s, _m, _w, _ok, onError) => {
+      mocks.editAgent.mockImplementation((_n, _s, _m, _ok, onError) => {
         if (onError) onError({ reason });
       });
 

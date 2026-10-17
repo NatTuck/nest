@@ -110,6 +110,25 @@ defmodule Nest.Spaces do
   end
 
   @doc """
+  The workspace path of `space_id`.
+
+  The workspace is a **space** property: every agent in the space binds the
+  same directory, and an agent's value comes from here at start (through
+  `Nest.Persistence.start_attrs/7`, which puts it on the attrs so
+  `Nest.Agents.Agent.Init` never reads the DB). There is no per-agent
+  workspace — `agents.workspace_path` is gone.
+
+  A missing row resolves to `nil`, which is the "no workspace" value every
+  consumer already handles; the caller's agent is about to fail for a better
+  reason than "no such space".
+  """
+  @spec workspace_path(integer()) :: String.t() | nil
+  def workspace_path(space_id) when is_integer(space_id) do
+    from(s in Space, where: s.id == ^space_id, select: s.workspace_path)
+    |> Repo.one()
+  end
+
+  @doc """
   The sandbox backend of `space_id`: one of `Backend.backends/0`.
 
   Resolved from the space row rather than stored per agent, because the
@@ -642,9 +661,9 @@ defmodule Nest.Spaces do
     [
       name: root_agent_name(attrs, space),
       vocation_id: root_vocation_id,
-      # The workspace is a space property; the root agent inherits
-      # the space's path (an explicit override in `attrs` still wins).
-      workspace_path: attrs[:workspace_path] || space.workspace_path,
+      # No `:workspace_path`: a workspace is the space's, and the root agent
+      # inherits it from the row this call just wrote
+      # (`Nest.Persistence.start_attrs/7`).
       created_by_user_id: user_id,
       shared: Map.get(attrs, :shared, false)
     ]

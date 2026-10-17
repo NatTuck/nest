@@ -68,7 +68,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
   from a field the client has never been told about.
 
   `attrs` keys: `:name` (required), `:model`, `:status` (default `"idle"`),
-  `:vocation`, `:workspace_path`, `:parent_id`, `:parent_name`, `:depth`
+  `:vocation`, `:parent_id`, `:parent_name`, `:depth`
   (default `0`).
   """
   @spec agent_created(integer(), keyword()) :: :ok
@@ -87,7 +87,6 @@ defmodule Nest.Agents.Agent.Broadcasts do
       "model" => model_payload(Keyword.get(attrs, :model)),
       "status" => Keyword.get(attrs, :status, "idle"),
       "vocation" => Keyword.get(attrs, :vocation),
-      "workspace_path" => Keyword.get(attrs, :workspace_path),
       "parentId" => Keyword.get(attrs, :parent_id),
       "parentName" => Keyword.get(attrs, :parent_name),
       "depth" => Keyword.get(attrs, :depth, 0)

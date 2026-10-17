@@ -55,9 +55,11 @@ defmodule MachineCompactionTest do
       assert Enum.any?(actions, &match?({:broadcast, {:compaction_error, _}, _}, &1))
     end
 
-    test "resume emits the deferred workspace notice pair" do
+    test "resume emits the deferred space-environment notice pair" do
       base = state_at(:idle)
-      m = %{base | entry: {:compaction, nil}, work: %{base.work | pending_notice: "/tmp/x"}}
+
+      values = %{workspace: "/tmp/x", network_access: true, backend: "bwrap"}
+      m = %{base | entry: {:compaction, nil}, work: %{base.work | pending_notice: values}}
       {:ok, actions, next} = Machine.Compaction.resume(m)
 
       assert next.phase == :idle
