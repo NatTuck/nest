@@ -1,8 +1,8 @@
 defmodule Nest.Agents.Agent.InboxSerializationTest do
   @moduledoc """
   The inbox's wire shape and its pure selection rules: `serialize/1`,
-  `batch/1`, `query_senders/1`, `drain_mode/1`, the two self-produced
-  enqueues, and the delivery-id/consume API.
+  `batch/1`, `query_senders/1`, `Inbox.Mode.drain_mode/1`, the two
+  self-produced enqueues, and the delivery-id/consume API.
 
   Split out of `InboxTest` (which owns the delivery/disposition contract) when
   that file reached the credo source-file cap; the rendering half is
@@ -226,25 +226,36 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       assert Inbox.query_senders(nil) == []
     end
 
-    test "drain_mode/1 picks the most recent human mode and ignores the rest" do
+    test "drain_mode/1 picks the most recent entry that names a mode" do
       # intentional: `drain_mode/1` is total over any entry list and returns the
-      # most recent human-sourced mode, `nil` meaning "leave the agent's mode
-      # alone". A real batch is either a lone human entry or a run of non-human
+      # most recent entry's mode, `nil` meaning "leave the agent's mode alone".
+      # A mode rides a *message* — the human's own request on a `:user` entry,
+      # and a peer's `set_mode` on an `:agent` one — so either kind can name one.
+      # A real batch is either a lone human entry or a run of leading non-human
       # ones (`Inbox.batch/1`), so the mixed lists below are defensive-input
       # coverage for the rule, not a shape a drain can produce.
-      assert Inbox.drain_mode([entry(:agent, "peer", "no mode")]) == nil
-      assert Inbox.drain_mode([entry(:user, "alice", "plan", "plan")]) == "plan"
+      assert Inbox.Mode.drain_mode([entry(:agent, "peer", "no mode")]) == nil
+      assert Inbox.Mode.drain_mode([entry(:user, "alice", "plan", "plan")]) == "plan"
 
-      assert Inbox.drain_mode([
+      # A peer's `set_mode` counts too: the change rides the message it belongs
+      # to, so an agent entry naming a mode is a change the drain applies.
+      assert Inbox.Mode.drain_mode([entry(:agent, "peer", "peer note", "plan")]) == "plan"
+
+      assert Inbox.Mode.drain_mode([
                entry(:user, "alice", "plan", "plan"),
                entry(:agent, "peer", "no mode"),
                entry(:user, "bob", "review", "review")
              ]) == "review"
 
-      assert Inbox.drain_mode([
+      assert Inbox.Mode.drain_mode([
                entry(:user, "alice", "plan", "plan"),
                entry(:user, "bob", "no mode"),
                entry(:agent, "peer", "no mode")
+             ]) == "plan"
+
+      assert Inbox.Mode.drain_mode([
+               entry(:user, "alice", "no mode"),
+               entry(:agent, "peer", "peer note", "plan")
              ]) == "plan"
     end
   end

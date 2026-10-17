@@ -68,7 +68,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
   test "an answer arriving after the batch leaves the inline confirmation", %{vid: vid} do
     {coordinator_pid, coordinator_name, specialist_pid, specialist_name} = start_pair(vid)
 
-    # The peer's answer is parked inside `Nest.Agents.send_message/4` before it
+    # The peer's answer is parked inside `Nest.Agents.send_message/6` before it
     # reaches the coordinator, so it cannot land while the batch below is
     # executing. That gate is the whole difference between the two outcomes, and
     # the test owns it.
@@ -106,10 +106,10 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # no agent identity.
     assert_receive {:chat_message,
                     {:user,
-                     %{parts: [%Part.Text{text: "[mode: chat]\n[Message from agent \"" <> rest}]}}},
+                     %{parts: [%Part.Text{text: "[mode: act]\n[Message from agent \"" <> rest}]}}},
                    1_000
 
-    assert rest == "#{coordinator_name}\"]\nwhat is 2+2?"
+    assert rest == "#{coordinator_name}\" | mode: act]\nwhat is 2+2?"
 
     # ...and its answer, released only now, arrives as a message in the
     # coordinator's inbox — the delivery appends it inside the call, so the
@@ -121,7 +121,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
 
     assert_receive {:chat_message,
                     {:user,
-                     %{parts: [%Part.Text{text: "[mode: chat]\n[Message from agent \"" <> _}]}}},
+                     %{parts: [%Part.Text{text: "[mode: act]\n[Message from agent \"" <> _}]}}},
                    1_000
 
     assert Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "the specialist answer"))
@@ -196,10 +196,10 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # no agent identity.
     assert_receive {:chat_message,
                     {:user,
-                     %{parts: [%Part.Text{text: "[mode: chat]\n[Message from agent \"" <> rest}]}}},
+                     %{parts: [%Part.Text{text: "[mode: act]\n[Message from agent \"" <> rest}]}}},
                    1_000
 
-    assert rest == "#{coordinator_name}\"]\nwhat is 2+2?"
+    assert rest == "#{coordinator_name}\" | mode: act]\nwhat is 2+2?"
 
     assert Agent.get_public_info(coordinator_pid, 1_000).status == :executing_tools
 
@@ -235,7 +235,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # is the fence...
     assert_receive {:chat_message,
                     {:user,
-                     %{parts: [%Part.Text{text: "[mode: chat]\n[Message from agent \"" <> _}]}}},
+                     %{parts: [%Part.Text{text: "[mode: act]\n[Message from agent \"" <> _}]}}},
                    1_000
 
     assert Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "the specialist answer"))
@@ -251,7 +251,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     send(batch, :release_result)
 
     # Every runtime notice is tagged at the head of its own body (issue #102,
-    # `Nest.Messages.NoticeTag`), and the drain's `[mode: chat]` prefix is added
+    # `Nest.Messages.NoticeTag`), and the drain's `[mode: act]` prefix is added
     # in front of the whole message when it is built — so the wire text is the
     # mode prefix, then the marker, then the notice. The client strips them in
     # that order (`stripNoticePrefix(stripModePrefix(…))`), so neither reaches
@@ -261,7 +261,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
                      %{
                        parts: [
                          %Part.Text{
-                           text: "[mode: chat]\n[nest notice]\nYour backgrounded command" <> _
+                           text: "[mode: act]\n[nest notice]\nYour backgrounded command" <> _
                          }
                        ]
                      }}},

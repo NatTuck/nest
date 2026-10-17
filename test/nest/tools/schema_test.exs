@@ -53,12 +53,13 @@ defmodule Nest.Tools.SchemaTest do
       assert function.description =~ "a runtime notice naming the reason"
     end
 
-    test "agents-query schema takes name and prompt and nothing that waits" do
+    test "agents-query schema takes name, prompt and an optional set_mode" do
       function = Tools.get_function("agents-query", Mounts.new("/tmp", nil))
       assert function.name == "agents-query"
 
       props = function.parameters_schema["properties"]
-      assert Map.keys(props) |> Enum.sort() == ["name", "prompt"]
+      assert Map.keys(props) |> Enum.sort() == ["name", "prompt", "set_mode"]
+      assert props["set_mode"]["enum"] == ["mine", "plan", "act"]
 
       assert function.parameters_schema["required"] == ["name", "prompt"]
 

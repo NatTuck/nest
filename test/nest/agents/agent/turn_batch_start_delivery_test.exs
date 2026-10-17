@@ -113,13 +113,13 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
     assert ack =~ "running in the background"
 
     assert text_of(Enum.at(state.chat_state.messages, 5)) ==
-             "[mode: chat]\n[Message from agent \"peer\"]\npeer note"
+             "[mode: act]\n[Message from agent \"peer\" | mode: act]\npeer note"
 
     # The delivered message rides the turn the batch yielded, so the model sees
     # it in this request.
     assert Enum.any?(
              user_texts(delivered_request),
-             &(&1 =~ "[Message from agent \"peer\"]\npeer note")
+             &(&1 =~ "[Message from agent \"peer\" | mode: act]\npeer note")
            )
 
     # Releasing the batch runs its `agents-send` while this agent is streaming,
@@ -161,7 +161,7 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
       |> Enum.find(&(&1 |> text_of() |> String.contains?("backgrounded command")))
       |> text_of()
 
-    assert late =~ "[Message from agent \"#{name}\"]\nnote"
+    assert late =~ "[Message from agent \"#{name}\" | mode: act]\nnote"
     assert late =~ "Message queued for #{name} (busy)"
 
     AgentTestHelpers.assert_unique_message_indices(state.chat_state.messages)
@@ -261,9 +261,9 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
     # by `TurnBackgroundingTest` 1.1.10, because `currentMode` is read from
     # `state.live.mode` — and the undelivered attempt published the agent's own
     # mode again, so the UI is not left showing a mode that never took effect.
-    assert state.live.mode == "chat"
+    assert state.live.mode == "act"
     assert_receive {:chat_status, %{currentMode: "plan"}}, 500
-    assert_receive {:chat_status, %{currentMode: "chat"}}, 500
+    assert_receive {:chat_status, %{currentMode: "act"}}, 500
 
     # Leave the agent idle for the teardown, with the entry dropped: the decline,
     # not the fabricated limit, is what this test pins.

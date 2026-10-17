@@ -151,12 +151,13 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # has to say what happened to the call.
       assert ack =~ "running in the background"
 
-      assert delivered == "[mode: chat]\n[Message from agent \"#{name}\"]\nfirst"
+      first_header = "[Message from agent \"#{name}\" | mode: act]\nfirst"
+      assert delivered == "[mode: act]\n#{first_header}"
 
       # The request the delivered message rides in on: the synthetic result and
       # the message are already there, before the batch returned.
       assert Enum.any?(user_texts(second), &(&1 =~ "queue some messages"))
-      assert Enum.any?(user_texts(second), &(&1 =~ "[Message from agent \"#{name}\"]\nfirst"))
+      assert Enum.any?(user_texts(second), &(&1 =~ first_header))
       refute Enum.any?(user_texts(second), &(&1 =~ "second"))
 
       # The second `agents-send` runs *after* the backgrounding, so this agent
@@ -226,7 +227,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # arrived after the batch left `:executing_tools` was queued behind it.
       late = text_of(Enum.at(messages, late_index))
 
-      assert late =~ "[Message from agent \"#{name}\"]\nsecond"
+      assert late =~ "[Message from agent \"#{name}\" | mode: act]\nsecond"
       assert late =~ "Message delivered to #{name}"
       assert late =~ "Message queued for #{name} (busy)"
 
@@ -280,8 +281,10 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       # A human message with a mode now backgrounds the batch and is delivered
       # mid-batch — never dropped — and its mode is applied at delivery, not
-      # while it was queued.
-      :ok = Agent.chat(pid, "human note", "plan", "alice")
+      # while it was queued. `human?: true`: these are the human's own words, so
+      # the change is stated by the delivered message's own `[mode: plan]` prefix
+      # and not announced with a notice (which would leave the queue non-empty).
+      :ok = Agent.chat(pid, "human note", "plan", "alice", true)
       assert_receive {:chat_inbox, %{count: 1}}, 1_000
 
       {second, llm2} = next_request()
@@ -369,11 +372,11 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       assert text_of(Enum.at(messages, human_index)) == "[mode: plan]\nhuman note"
 
-      # The peer's entry arrives with the batch's late result, in one batch: the
-      # entry keeps the agent label that disambiguates it, and the late result
-      # reports the disposition the delivery resolved.
+      # The peer's entry arrives with the batch's late result, in one batch: its
+      # label names the mode the drain applies (the human's `plan` — no entry here
+      # asks for a change), and the late result reports the disposition.
       late = text_of(Enum.at(messages, peer_index))
-      assert late =~ "[Message from agent \"#{name}\"]\npeer note"
+      assert late =~ "[Message from agent \"#{name}\" | mode: plan]\npeer note"
       assert late =~ "Message queued for #{name} (busy)"
       assert Enum.any?(user_texts(third), &(&1 =~ "peer note"))
 

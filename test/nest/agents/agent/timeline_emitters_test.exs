@@ -206,7 +206,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
              inbox_disposition("inbox_full")
 
     # A drain's own line: the batch it delivered, with the mode it resolved.
-    assert [%{"action" => "drained", "count" => 1, "from" => "peer", "mode" => "chat"}] =
+    assert [%{"action" => "drained", "count" => 1, "from" => "peer", "mode" => "act"}] =
              inbox_action("drained")
 
     # ...and the delivered entry's delivery id (issue #62), so a reader can
@@ -306,7 +306,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
 
     # The human's message backgrounds the batch, and its turn is parked: the
     # delivery is the one the record is about.
-    :ok = Agent.chat(pid, "human note", "chat", "alice")
+    :ok = Agent.chat(pid, "human note", "act", "alice")
     {_second, llm2} = next_request()
 
     # The batch's own send and its late result both queue behind the parked
@@ -326,7 +326,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
                "from" => "alice",
                "kind" => "user",
                "count" => 1,
-               "mode" => "chat",
+               "mode" => "act",
                "disposition" => "delivered"
              }
            ] = inbox_action("delivered")

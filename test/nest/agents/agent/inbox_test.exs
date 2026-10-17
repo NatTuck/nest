@@ -22,10 +22,8 @@ defmodule Nest.Agents.Agent.InboxTest do
   alias Nest.LLM.MockClient
 
   setup do
-    # Modes `plan` and `review` on top of the `chat` default, so the
-    # drain-mode tests can request a mode the agent is not already in.
-    # `chat` stays the default because `Vocations.default_mode/1` is the
-    # lexicographically first mode.
+    # An agent in the permissive default (`Nest.Modes.default/0`), so the
+    # drain-mode tests can request `plan` — a mode the agent is not already in.
     {pid, name} =
       AgentTestHelpers.start_agent(%{
         model: %{name: "qwen3.5-plus"},
@@ -42,7 +40,7 @@ defmodule Nest.Agents.Agent.InboxTest do
 
     assert Enum.any?(
              user_texts(state.chat_state.messages),
-             &(&1 =~ "[Message from agent \"peer\"]" and &1 =~ "do the thing")
+             &(&1 =~ "[Message from agent \"peer\" | mode: act]" and &1 =~ "do the thing")
            )
 
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
@@ -94,8 +92,8 @@ defmodule Nest.Agents.Agent.InboxTest do
         &(&1 =~ "first message" and &1 =~ "second message")
       )
 
-    assert combined =~ "[Message from agent \"alice\"]"
-    assert combined =~ "[Message from agent \"bob\"]"
+    assert combined =~ "[Message from agent \"alice\" | mode: act]"
+    assert combined =~ "[Message from agent \"bob\" | mode: act]"
 
     wait_idle(pid)
   end
@@ -255,7 +253,7 @@ defmodule Nest.Agents.Agent.InboxTest do
 
           assert Enum.any?(
                    user_texts(state.chat_state.messages),
-                   &(&1 =~ "[Message from agent \"peer\"]" and &1 =~ "summarize this")
+                   &(&1 =~ "[Message from agent \"peer\" | mode: act]" and &1 =~ "summarize this")
                  )
 
           assert Machine.owed_senders(state.live.machine) == ["peer"]
@@ -472,17 +470,17 @@ defmodule Nest.Agents.Agent.InboxTest do
       # older one runs under the newer one's caps" wart is gone — and the
       # winner is resolved afresh at each delivery attempt.
       cases = [
-        {[entry(:agent, "peer", "peer note")], ["chat"], "an agent batch keeps the agent's mode"},
-        {[entry(:user, "alice", "plan please", "plan")], ["plan"],
+        {[entry(:agent, "peer", "peer note")], ["act"], "an agent batch keeps the agent's mode"},
+        {[entry(:user, "alice", "plan please", "plan", true)], ["plan"],
          "a human message runs in its own mode"},
         {[
-           entry(:user, "alice", "plan please", "plan"),
-           entry(:user, "bob", "review please", "review")
-         ], ["plan", "review"], "two human messages are two batches, each in its own mode"},
-        {[entry(:agent, "peer", "no mode"), entry(:user, "alice", "plan please", "plan")],
-         ["chat", "plan"], "a human message never merges into the agent run ahead of it"},
-        {[entry(:user, "alice", "bogus please", "bogus")], ["chat"],
-         "an unknown mode falls back to the vocation default, like an idle chat"}
+           entry(:user, "alice", "plan please", "plan", true),
+           entry(:user, "bob", "act please", "act", true)
+         ], ["plan", "act"], "two human messages are two batches, each in its own mode"},
+        {[entry(:agent, "peer", "no mode"), entry(:user, "alice", "plan please", "plan", true)],
+         ["act", "plan"], "a human message never merges into the agent run ahead of it"},
+        {[entry(:user, "alice", "bogus please", "bogus", true)], ["act"],
+         "an unknown mode falls back to the default (`Nest.Modes.default/0`), like an idle chat"}
       ]
 
       for {entries, expected_modes, label} <- cases do
@@ -503,7 +501,7 @@ defmodule Nest.Agents.Agent.InboxTest do
           |> Enum.filter(&match?({:user, _}, &1))
           |> Enum.map(&mode_of/1)
 
-        assert delivered == expected_modes, label
+        assert delivered == expected_modes, "#{label} — got #{inspect(delivered)}"
       end
     end
 
@@ -560,7 +558,7 @@ defmodule Nest.Agents.Agent.InboxTest do
   end
 
   # A live turn (so `stop_chat` reaches the idle transition that drains)
-  # carrying `entries`, with the mode reset to the vocation default so each
+  # carrying `entries`, with the mode reset to `Nest.Modes.default/0` so each
   # drain-mode case starts from a known baseline.
   defp stage_drain(pid, entries) do
     replace_state(pid, fn state ->
@@ -568,7 +566,7 @@ defmodule Nest.Agents.Agent.InboxTest do
         state
         | live: %{
             state.live
-            | mode: "chat",
+            | mode: "act",
               inbox: entries,
               machine: Machine.status_to_machine(state.live.machine, :streaming)
           }

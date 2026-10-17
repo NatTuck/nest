@@ -70,7 +70,7 @@ defmodule Nest.Agents.AgentChatTest do
           assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
           assert_received {:chat_message,
-                           {:user, %{index: 1, parts: [%Part.Text{text: "[mode: chat]\nHello"}]}}}
+                           {:user, %{index: 1, parts: [%Part.Text{text: "[mode: act]\nHello"}]}}}
 
           assert_received {:chat_error, _error}
         end)
@@ -92,7 +92,7 @@ defmodule Nest.Agents.AgentChatTest do
           assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
           assert_received {:chat_message,
-                           {:user, %{index: 1, parts: [%Part.Text{text: "[mode: chat]\nHello"}]}}}
+                           {:user, %{index: 1, parts: [%Part.Text{text: "[mode: act]\nHello"}]}}}
 
           assert_received {:chat_error, _error}
         end)
@@ -206,7 +206,7 @@ defmodule Nest.Agents.AgentChatTest do
       assert ack_text =~ "continuing from here"
       refute Map.has_key?(metadata || %{}, "context_threshold")
 
-      assert {:user, %User{parts: [%Part.Text{text: "[mode: chat]\nnext question"}]}} =
+      assert {:user, %User{parts: [%Part.Text{text: "[mode: act]\nnext question"}]}} =
                Enum.at(tail, 2)
 
       assert :ok = Preflight.validate(messages)

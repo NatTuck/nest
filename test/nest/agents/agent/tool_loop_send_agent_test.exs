@@ -12,13 +12,15 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
   import Mimic
 
   alias Nest.Agents.Agent.ToolLoop
+  alias Nest.Agents.ChildRegistry
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
 
   setup :verify_on_exit!
 
   # `agent_pid` is this test process, so the debt-clear the worker sends to its
-  # own agent lands in the test's mailbox.
+  # own agent lands in the test's mailbox. `mode` is the sending agent's mode —
+  # the value `requested_mode/3` holds a `set_mode` request to.
   defp ctx do
     %{
       space_id: 1,
@@ -27,7 +29,8 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
       context_limit: 100_000,
       messages: [],
       tools: [],
-      caps: %{}
+      caps: %{},
+      mode: "act"
     }
   end
 
@@ -35,17 +38,33 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
     %ToolCall{id: "send-1", name: "agents-send", arguments: args}
   end
 
-  defp run(args) do
-    # The BatchSizer logs an `is_error=true` line for every error result;
-    # capture it so the expected diagnostic doesn't reach the console.
-    {results, _log} =
-      with_log(fn -> ToolLoop.execute(ctx(), nil, [send_call(args)]) end)
-
+  defp run(args, overrides \\ %{}) do
+    {results, _log} = run_with_log(args, overrides)
     results
   end
 
+  # The BatchSizer logs an `is_error=true` line for every error result; capture
+  # it so the expected diagnostic doesn't reach the console (and so a test that
+  # wants to assert on it can).
+  defp run_with_log(args, overrides) do
+    with_log(fn -> ToolLoop.execute(Map.merge(ctx(), overrides), nil, [send_call(args)]) end)
+  end
+
   defp stub_send(fun) do
-    Mimic.stub(Nest.Agents, :send_message, fn _space_id, _from, _name, _msg -> fun.() end)
+    Mimic.stub(Nest.Agents, :send_message, fn _space_id, _from, _name, _msg, _kind, _mode ->
+      fun.()
+    end)
+  end
+
+  # A stub that reports the mode that rode the delivery, for the `set_mode`
+  # cases: what the tool asked for is only observable at the call it makes.
+  defp capture_send(reply) do
+    test_pid = self()
+
+    Mimic.stub(Nest.Agents, :send_message, fn _space, _from, target, content, kind, mode ->
+      send(test_pid, {:sent, target, content, kind, mode})
+      reply
+    end)
   end
 
   test "reports a successful send and clears the debt to that peer" do
@@ -110,5 +129,64 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
 
     # Neither failure cleared the debt: nothing reached the target.
     refute_received {:"$gen_cast", {:reply_sent, _}}
+  end
+
+  describe "set_mode" do
+    test "a plan sender may not raise a descendant's mode, and the refusal is this call's error" do
+      # The monotone rule is checked where the sender's mode is known — the tool
+      # call's own context — so a refused change is the call's own error result
+      # naming why, never a change that quietly does not happen. The target has
+      # to be a real descendant for this to be the *monotone* refusal rather
+      # than the "not an agent you spawned" one.
+      space_id = System.unique_integer([:positive])
+      ChildRegistry.register(space_id, "sender", "bob")
+      capture_send({:ok, :delivered})
+
+      {results, log} =
+        run_with_log(
+          %{"name" => "bob", "message" => "hi", "set_mode" => "act"},
+          %{space_id: space_id, mode: "plan"}
+        )
+
+      assert [%ToolResult{name: "agents-send", is_error: true, content: content}] = results
+      assert content =~ "`plan`"
+      assert content =~ "`act`"
+      assert content =~ "never raised"
+
+      # Nothing was delivered: the change and the message are one delivery, so a
+      # refused change refuses the message with it.
+      refute_received {:sent, _, _, _, _, _}
+
+      # BatchSizer logs every `is_error` result: expected, so assert on it.
+      assert log =~ "BatchSizer produced is_error=true tool result"
+    end
+
+    test "an act sender may lower the target's mode, and it rides the delivery" do
+      space_id = System.unique_integer([:positive])
+      ChildRegistry.register(space_id, "sender", "bob")
+      capture_send({:ok, :delivered})
+
+      assert [%ToolResult{name: "agents-send", is_error: false}] =
+               run(%{"name" => "bob", "message" => "hi", "set_mode" => "plan"}, %{
+                 space_id: space_id
+               })
+
+      assert_received {:sent, "bob", "hi", :agent, "plan"}
+    end
+
+    test "`mine` is the sender's own mode" do
+      # The one-word spelling for "hand this off to someone who may do what I
+      # may": no authority check is needed, because the mode is the sender's.
+      capture_send({:ok, :queued})
+
+      {results, _log} =
+        run_with_log(
+          %{"name" => "bob", "message" => "hi", "set_mode" => "mine"},
+          %{mode: "plan"}
+        )
+
+      assert [%ToolResult{name: "agents-send", is_error: false}] = results
+      assert_received {:sent, "bob", "hi", :agent, "plan"}
+    end
   end
 end

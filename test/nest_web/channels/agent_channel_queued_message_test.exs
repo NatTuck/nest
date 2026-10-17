@@ -171,7 +171,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # so a failing test cannot leave a worker parked.
       park_llm_requests(agent_pid)
 
-      Mimic.stub(Nest.Agents, :send_message, fn space, from, target, content ->
+      Mimic.stub(Nest.Agents, :send_message, fn space, from, target, content, kind, mode ->
         send(test_pid, {:tool_batch_blocked, self()})
 
         receive do
@@ -180,7 +180,14 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
           1_000 -> :ok
         end
 
-        Mimic.call_original(Nest.Agents, :send_message, [space, from, target, content])
+        Mimic.call_original(Nest.Agents, :send_message, [
+          space,
+          from,
+          target,
+          content,
+          kind,
+          mode
+        ])
       end)
 
       Mimic.allow(Nest.Agents, self(), agent_pid)
@@ -238,7 +245,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # entry that arrives behind it (issue #31 decision 8) — as bare human text
       # in the human's mode, with no sender framing: a queued human message must
       # read exactly like one typed while the agent was idle. `"mode" => "plan"`
-      # distinguishes it from the turn-opening message (`"mode" => "chat"`).
+      # distinguishes it from the turn-opening message (the agent's own `"act"`).
       assert_push "chat:message",
                   %{"role" => "user", "mode" => "plan", "parts" => [%{"text" => human_text}]} =
                     delivered,
@@ -295,7 +302,9 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
                   },
                   500
 
-      assert rest =~ "#{name}\"]\npeer note"
+      # The peer's entry's header states the mode the drain applies — the human's
+      # `plan`, since no entry in this batch asks for a change.
+      assert rest =~ "#{name}\" | mode: plan]\npeer note"
       assert rest =~ "Message queued for #{name} (busy)"
 
       assert_push "chat:status", %{status: "idle"}, 1_000
@@ -346,6 +355,12 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       assert state.live.inbox == []
       assert Machine.status_for(state.live.machine) == :idle
       AgentTestHelpers.assert_unique_message_indices(state.chat_state.messages)
+
+      # The mode the backgrounded delivery applied is written down: `agents.mode`
+      # is the truth a restart and a later spawn's inheritance read, and this
+      # drain is the `Inbox.drain_backgroundable/1` → `Turn.drain_inbox/1` path
+      # rather than the idle one.
+      assert {:ok, %{mode: "plan"}} = Nest.Persistence.fetch_agent(space_id, name)
     end
   end
 
