@@ -25,7 +25,6 @@ import {
   fetchShellLog,
   refreshShellJobs,
   requestInbox,
-  setAgentMode,
 } from "../channels";
 import { StatusBanner } from "../components/StatusBanner";
 import { NotificationBanner } from "../components/NotificationBanner";
@@ -43,6 +42,7 @@ import { NeedsRepairBanner } from "../components/NeedsRepairBanner";
 import { ShellJobsPanel } from "../components/ShellJobsPanel";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
+import { useAgentMode } from "../hooks/useAgentMode";
 import { buildChatHistory } from "../utils/chatHistory.js";
 import { describeEditError, getStatusLabel } from "../utils/chatErrors.js";
 import { parseSlashCommand, SLASH_COMMANDS } from "../utils/slashCommands.js";
@@ -88,7 +88,6 @@ export function ChatPage() {
   const [tab, setTab] = useState(CHAT_TAB);
   const [inputValue, setInputValue] = useState("");
   const [sendError, setSendError] = useState(null);
-  const [currentMode, setCurrentMode] = useState(null);
   // Backing state for the model picker modal. Open the
   // picker either from the header chip (always available)
   // or from the prominent :model_missing banner (the
@@ -266,24 +265,16 @@ export function ChatPage() {
     requestHistory(name, { before: oldest.index });
   }, [name, archivedHistory]);
 
-  // Keep the dropdown in sync with the agent's current mode.
-  //
-  // The agent's `state.mode` is the source of truth and is updated
-  // each time a chat is sent ("sticky mode"). The server emits the
-  // new mode on every `chat:status` push (specifically the one that
-  // transitions to `idle` and unlocks the input), which the
-  // channels.js handler writes to `cache.currentMode`. This effect
-  // mirrors that into the local `currentMode` React state so the
-  // dropdown reflects what the server actually has.
-  //
-  // On first mount (before any chat:status has arrived),
-  // `currentModeFromCache` is null and we fall back to `defaultMode`.
-  useEffect(() => {
-    const next = currentModeFromCache ?? defaultMode;
-    if (next) {
-      setCurrentMode(next);
-    }
-  }, [currentModeFromCache, defaultMode]);
+  // The agent's current mode. The server's `state.mode` is the source of
+  // truth ("sticky mode"), mirrored here so the dropdown reflects what the
+  // server actually has; a change is a control-plane push whose refusal
+  // lands in the send-error banner.
+  const { currentMode, setCurrentMode, handleModeChange } = useAgentMode({
+    name,
+    currentModeFromCache,
+    defaultMode,
+    onError: setSendError,
+  });
 
   // When the agent transitions out of "busy" (the server's
   // `chat:status: idle` push has arrived), clear the optimistic
@@ -357,19 +348,6 @@ export function ChatPage() {
       leaveAgent(name);
     };
   }, [name, spaceId]);
-
-  // The mode selector's change: a control-plane push, not a field on the next
-  // message. The mode is persisted, so it applies immediately and from the
-  // agent's next turn, and the server announces it in the transcript. The
-  // optimistic update lives in the channel function; a refusal lands here.
-  const handleModeChange = (mode) => {
-    setSendError(null);
-    setAgentMode(name, mode, (err) => {
-      setSendError(
-        err?.reason || err?.message || "Failed to change the agent's mode",
-      );
-    });
-  };
 
   const handleSendMessage = () => {
     if (!inputValue.trim()) {
