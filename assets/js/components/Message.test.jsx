@@ -247,3 +247,56 @@ describe("attached media renders exactly once", () => {
     });
   }
 });
+
+describe("Message peer deliveries", () => {
+  const peerMessage = (overrides = {}) => ({
+    index: 1,
+    role: "user",
+    parts: [
+      {
+        kind: "text",
+        text: '[Message from agent "peer" | mode: act]\nmay I ask?',
+      },
+    ],
+    // `Message.jsx` renders the badge from the message's own `mode`, and the
+    // wire shape carries it in `metadata` too; a fixture needs both.
+    mode: "act",
+    metadata: { mode: "act" },
+    ...overrides,
+  });
+
+  it("shows the mode once — as the badge — and not a second time in the header", () => {
+    // The server states the recipient's mode in the header of a peer delivery,
+    // which is how an agent whose inbox is all peer traffic learns its own mode.
+    // The bubble already renders the same value as the mode badge, so the
+    // header's copy is dropped from the display (exactly as `stripModePrefix`
+    // drops the `[mode: X]` prefix the badge also shows).
+    render(<MessageBubble agentName="test-agent" message={peerMessage()} />);
+
+    expect(screen.getByText("mode: act")).toBeInTheDocument();
+    expect(
+      screen.getByText(/\[Message from agent "peer"\]/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/may I ask\?/)).toBeInTheDocument();
+  });
+
+  it("keeps a header whose mode disagrees with the message's own", () => {
+    // Nothing is hidden: a disagreement is a bug or an older row, and it stays
+    // on screen rather than being silently resolved either way.
+    render(
+      <MessageBubble
+        agentName="test-agent"
+        message={peerMessage({
+          parts: [
+            {
+              kind: "text",
+              text: '[Message from agent "peer" | mode: plan]\nhi',
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText(/\| mode: plan\]/)).toBeInTheDocument();
+  });
+});

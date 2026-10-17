@@ -26,6 +26,7 @@
  *     or a JSON pretty-printer.
  */
 
+import { stripAgentHeaderMode } from "./agentHeader.js";
 import { stripModePrefix } from "./stripModePrefix.js";
 import { stripNoticePrefix } from "./stripNoticePrefix.js";
 import { splitThinkFromParts } from "./thinkTags.js";
@@ -175,7 +176,12 @@ function stripsThinkTags(role) {
  * stripped here too — the clipboard shows what the renderer shows.
  */
 function visibleForRole(text, role, mode) {
-  if (role === "user") return stripNoticePrefix(stripModePrefix(text, mode));
+  if (role === "user") {
+    return stripAgentHeaderMode(
+      stripNoticePrefix(stripModePrefix(text, mode)),
+      mode,
+    );
+  }
   return stripNoticePrefix(stripsThinkTags(role) ? visibleText(text) : text);
 }
 

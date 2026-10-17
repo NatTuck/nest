@@ -221,7 +221,7 @@ describe("CollapsedHistory", () => {
         {
           role: "user",
           parts: [{ kind: "text", text: "Hello there" }],
-          mode: "chat",
+          mode: "plan",
         },
       ]);
       render(<CollapsedHistory history={history} />);
@@ -238,14 +238,14 @@ describe("CollapsedHistory", () => {
       const history = buildHistory([
         {
           role: "user",
-          parts: [{ kind: "text", text: "[mode: build]\nHello there" }],
-          mode: "build",
+          parts: [{ kind: "text", text: "[mode: act]\nHello there" }],
+          mode: "act",
         },
       ]);
       render(<CollapsedHistory history={history} />);
       const bubble = screen.getByTestId("history-message");
       expect(bubble.textContent).toContain("Hello there");
-      expect(bubble.textContent).not.toContain("[mode: build]");
+      expect(bubble.textContent).not.toContain("[mode: act]");
     });
   });
 
