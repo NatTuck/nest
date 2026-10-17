@@ -177,8 +177,20 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
     Enum.each(names, &await_idle/1)
   end
 
-  def await_idle(name) do
-    assert_receive {:chat_status, %{name: ^name, status: "idle"}}, @idle_fence_ms
+  def await_idle(name), do: await_idle(name, @idle_fence_ms)
+
+  @doc """
+  The same fence with an explicit bound.
+
+  The bound is the *caller's*, not a property of the fence: the fence's contract
+  is "a wait whose frame never arrives fails as a missing frame", and how long it
+  waits before saying so is exactly what the caller is asserting. A test that
+  exercises the failure path therefore passes a short bound — it is proving the
+  timeout, not measuring 1000 ms, and a full second is the longest single test in
+  the suite, which sets the suite's tail.
+  """
+  def await_idle(name, timeout_ms) when is_integer(timeout_ms) do
+    assert_receive {:chat_status, %{name: ^name, status: "idle"}}, timeout_ms
     :ok
   end
 

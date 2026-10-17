@@ -42,10 +42,15 @@ defmodule Nest.Agents.Agent.IdleFenceTest do
 
     # No turn has run, so no `idle` frame has been broadcast — the agent is
     # nonetheless idle, which is exactly what a state-reading wait would report
-    # as success. The fence must not: it burns its own bound (1000 ms) and fails
-    # as a missing frame, not as a state that was wrong.
-    assert_raise ExUnit.AssertionError, ~r/no matching message after 1000ms/, fn ->
-      await_idle(name)
+    # as success. The fence must not: it burns its bound and fails as a missing
+    # frame, not as a state that was wrong.
+    #
+    # The bound is 50 ms rather than the helper's 1000 ms default. The contract
+    # is the *failure*, not the number, and this is the longest single test in
+    # the suite: at 1000 ms it sets the suite's tail, which is not divided by
+    # `max_cases` the way ordinary tests are.
+    assert_raise ExUnit.AssertionError, ~r/no matching message after 50ms/, fn ->
+      await_idle(name, 50)
     end
 
     # The same fence, on the frame the turn ends on: `Agent.chat/2` casts, so the
