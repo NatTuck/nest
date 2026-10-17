@@ -151,10 +151,10 @@ no sandbox can see, and the prompt says so.
 - **A mode is a per-agent runtime property.** It is persisted (`agents.mode`,
 seeded from the blueprint's `default_mode`), so a restart cannot silently widen a
 child that was spawned read-only. It is inherited at spawn (the spawner may
-override it), changeable by the human on any agent (immediately — it does not
-have to ride a message) and by an ancestor on a descendant, and it applies from
-the agent's **next turn**, never mid-turn, with a `[Nest notice]` announcement
-naming who changed it.
+override it), changeable by the user by choosing the mode of the next message
+they send (the selector is a draft, not a push) and by an ancestor on a
+descendant, and it applies from the agent's **next turn**, never mid-turn. No
+change is announced: every message already states the recipient's mode.
 - **The monotone rule lives in exactly one place** —
 `Nest.Agents.Agent.ModeAuthority`, which every mode-setting path goes through. An
 agent may move a *descendant* to a mode it is in itself, or to `plan`; only the

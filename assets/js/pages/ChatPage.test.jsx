@@ -66,7 +66,6 @@ import {
   joinAgent,
   leaveAgent,
   sendMessage,
-  setAgentMode,
   stopMessage,
   retryCompaction,
   compactionLoopOk,
@@ -83,7 +82,6 @@ vi.mock("../channels", async () => {
     joinAgent: vi.fn(),
     leaveAgent: vi.fn(),
     sendMessage: vi.fn(),
-    setAgentMode: vi.fn(),
     stopMessage: vi.fn(),
     retryCompaction: vi.fn(),
     compactionLoopOk: vi.fn(),
@@ -1481,11 +1479,10 @@ describe("ChatPage mode selector", () => {
     expect(select.value).toBe("act");
   });
 
-  it("updates the dropdown when a chat:status broadcast carries a new currentMode", () => {
-    // Regression test for the "mode resets to default after
-    // send" bug: after a chat completes, the chat:status: idle
-    // broadcast should update the dropdown to the just-used mode
-    // (NOT defaultMode).
+  it("follows a chat:status broadcast that moves the agent's mode", () => {
+    // `chat:status` carries the agent's current mode on every frame, and the
+    // draft follows it only when the value actually moves — so a broadcast that
+    // changes the mode moves the dropdown.
     mockAgentsCache = {
       "test-agent": {
         status: "connected",
@@ -1500,22 +1497,11 @@ describe("ChatPage mode selector", () => {
 
     const { rerender } = renderChat();
 
-    // The user picks a mode. The mode is a per-agent runtime property the
-    // server owns (`Nest.Modes`), so the pick is a control-plane push: it
-    // applies immediately rather than riding the next message.
-    fireEvent.change(screen.getByLabelText("Mode"), {
-      target: { value: "plan" },
-    });
+    expect(screen.getByLabelText("Mode").value).toBe("act");
 
-    expect(setAgentMode).toHaveBeenCalledWith(
-      "test-agent",
-      "plan",
-      expect.any(Function),
-    );
-    expect(sendMessage).not.toHaveBeenCalled();
-
-    // The server applies it and publishes the new mode; the channels.js
-    // handler writes that to the cache. We simulate it here.
+    // The server applies a mode (a peer's `set_mode`, or a message that
+    // arrived) and publishes it; the channels.js handler writes that to the
+    // cache. We simulate it here.
     mockAgentsCache["test-agent"].agentState = "streaming";
     mockAgentsCache["test-agent"].currentMode = "plan";
     rerender(
@@ -1528,26 +1514,13 @@ describe("ChatPage mode selector", () => {
 
     // The dropdown reflects the broadcast currentMode, NOT defaultMode.
     expect(screen.getByLabelText("Mode").value).toBe("plan");
-
-    // A message sent now carries the agent's current mode: the mode still rides
-    // the message, which is what makes a recalled prompt re-apply the mode it
-    // originally ran in.
-    const textarea = screen.getByLabelText("Message");
-    fireEvent.change(textarea, { target: { value: "plan this" } });
-    fireEvent.click(screen.getByRole("button", { name: /send/i }));
-
-    expect(sendMessage).toHaveBeenCalledWith(
-      "test-agent",
-      "plan this",
-      "plan",
-      expect.any(Function),
-    );
   });
 
-  it("changing the mode selector pushes set_agent_mode and sends no chat message", () => {
-    // The mode is a per-agent runtime property the server owns, so the selector
-    // is a control-plane push: it must not fabricate a chat message, and the
-    // optimistic update lives in the channel function.
+  it("the selector sets the mode the next chat message carries, and sends nothing", () => {
+    // The selector is a *draft*: it configures the mode the composer sends with
+    // the next message. Choosing a mode must not fabricate a chat message and
+    // must not talk to the server at all — the server learns the mode when the
+    // message arrives.
     mockAgentsCache = {
       "test-agent": {
         status: "connected",
@@ -1566,14 +1539,21 @@ describe("ChatPage mode selector", () => {
       target: { value: "plan" },
     });
 
-    expect(setAgentMode).toHaveBeenCalledWith(
-      "test-agent",
-      "plan",
-      expect.any(Function),
-    );
     expect(sendMessage).not.toHaveBeenCalled();
     expect(joinAgent).toHaveBeenCalledTimes(1); // mount only
     expect(leaveAgent).not.toHaveBeenCalled();
+
+    // ...and the pick is what the next message asks for.
+    const textarea = screen.getByLabelText("Message");
+    fireEvent.change(textarea, { target: { value: "plan this" } });
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      "test-agent",
+      "plan this",
+      "plan",
+      expect.any(Function),
+    );
   });
 
   it("keeps the textarea and mode dropdown enabled while the agent is busy (messages are queued)", () => {

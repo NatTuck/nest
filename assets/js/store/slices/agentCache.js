@@ -405,27 +405,6 @@ export function agentCacheSetters(set) {
       });
     },
 
-    /**
-     * Set the agent's mode locally (`currentMode`).
-     *
-     * The server's `currentMode` is the source of truth — it arrives on
-     * `chat:status`/`init`, and on the status push a mode change publishes. This
-     * exists for the *optimistic* update the mode selector makes, which is taken
-     * back if the `set_agent_mode` push is refused (`channels/agent.js`).
-     */
-    setAgentMode: (id, mode) => {
-      set((state) => {
-        const cache = state.agentsCache[id];
-        if (!cache) return state;
-        return {
-          agentsCache: {
-            ...state.agentsCache,
-            [id]: { ...cache, currentMode: mode },
-          },
-        };
-      });
-    },
-
     setAgentState: (id, agentState, extra) => {
       set((state) => {
         const cache = state.agentsCache[id];

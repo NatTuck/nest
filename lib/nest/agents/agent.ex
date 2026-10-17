@@ -295,8 +295,8 @@ defmodule Nest.Agents.Agent do
   keeps the value it started with and the space's own claim that the change takes
   effect for its agents' subsequent commands is false.
 
-  A **cast**, unlike `set_mode/2`: the edit must not wait on an agent's turn, and
-  there is nothing to refuse — the value is the space's, not the agent's. The
+  A **cast**, unlike `set_model/2`: the edit must not wait on an agent's turn,
+  and there is nothing to refuse — the value is the space's, not the agent's. The
   mounts are updated and the tool closures are rebuilt (they capture the mounts);
   a turn already in flight picks the new value up at its next settle, which is
   when `Turn.build_ctx/2` re-reads them. The caller is
@@ -309,25 +309,6 @@ defmodule Nest.Agents.Agent do
 
   @spec set_model(pid(), map()) :: :ok | {:error, term()}
   def set_model(pid, new_model), do: GenServer.call(pid, {:set_model, new_model}, :infinity)
-
-  @doc """
-  Set this agent's mode (`Nest.Modes`) — the **human's** path, the one the UI
-  channel calls.
-
-  It is the human's alone. An agent's own request goes the other way, on a message
-  (`Nest.Tools.QueryAgent`'s `set_mode`), and that path is what
-  `Nest.Agents.Agent.ModeAuthority` bounds: only the human may raise a mode, and
-  no agent may set its own.
-
-  The mode is *persisted*, so a human's change applies immediately rather than
-  having to ride the next message — but only when the agent is not mid-turn: a
-  mode applies at a settle, and a turn already running is under the old one.
-
-  Returns `:ok`, or `{:error, reason}` where `reason` is a **sentence** to show
-  the user — the channel hands it straight to the client.
-  """
-  @spec set_mode(pid(), String.t()) :: :ok | {:error, String.t()}
-  def set_mode(pid, mode), do: GenServer.call(pid, {:set_mode, mode}, :infinity)
 
   # Change the agent's working directory. Handler: `WorkspaceHandler`.
   @spec set_workspace(pid(), String.t() | nil) :: :ok | {:error, term()}

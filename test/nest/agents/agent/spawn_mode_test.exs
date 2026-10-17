@@ -17,9 +17,9 @@ defmodule Nest.Agents.Agent.SpawnModeTest do
       `BatchCoordinator` via `{:spawn_agent_request, pid, opts}`), which is where
       `BatchPlan.base_opts/1`'s `mode:` used to die.
 
-  The `plan` parent is produced through the human's own path
-  (`Agent.set_mode/2`), because that is the only way to put a live agent in
-  `plan` without a blueprint — and it persists the row, which is what the child's
+  The `plan` parent is created in `plan` (`Agents.create_agent/3`'s `:mode`),
+  because a mode is a property of the message that asked for it and there is no
+  post-hoc setter — and the row is written from it, which is what the child's
   inherited mode is read from.
 
   It also pins that the **live** mode is the row's on both spawn paths, which is
@@ -217,16 +217,20 @@ defmodule Nest.Agents.Agent.SpawnModeTest do
   # Start a real coordinator in `space_id` and return its runtime state — the
   # spawn paths need a real parent (its name, its depth, and its persisted row
   # for `parent_id`).
-  defp coordinator_state(space_id) do
+  defp coordinator_state(space_id, opts \\ []) do
     name = unique("coord")
 
     {:ok, ^name} =
-      Agents.create_agent(space_id, test_model(),
-        name: name,
-        vocation_id: AgentTestHelpers.vocation_id_for_test(),
-        # Every agent needs a workspace, and a spawned child inherits its
-        # parent's. Without one the coordinator could not spawn.
-        workspace_path: AgentTestHelpers.default_test_workspace()
+      Agents.create_agent(
+        space_id,
+        test_model(),
+        [
+          name: name,
+          vocation_id: AgentTestHelpers.vocation_id_for_test(),
+          # Every agent needs a workspace, and a spawned child inherits its
+          # parent's. Without one the coordinator could not spawn.
+          workspace_path: AgentTestHelpers.default_test_workspace()
+        ] ++ opts
       )
 
     AgentTestHelpers.ensure_cleanup(name)
@@ -240,16 +244,16 @@ defmodule Nest.Agents.Agent.SpawnModeTest do
   # does, which is the only reason the difference is invisible elsewhere.
   defp bridge(pid), do: Sandbox.allow(Nest.Repo, self(), pid)
 
-  # The same coordinator, put in `plan` by the human's own path — which applies
-  # immediately *and* writes the row, so a child's inherited mode is `plan`.
+  # The same coordinator, created in `plan`. There is no post-hoc setter: a mode
+  # is a property of the message that asked for it, and a root agent is created
+  # in the mode its creator names (`create_agent/3`'s `:mode`). The row is
+  # written from it, so a child's inherited mode is `plan`.
   defp plan_coordinator(space_id) do
-    state = coordinator_state(space_id)
-    pid = child_pid(space_id, state.name)
+    state = coordinator_state(space_id, mode: "plan")
 
-    assert :ok = Agent.set_mode(pid, "plan")
     assert %{mode: "plan"} = row_for(space_id, state.name)
 
-    state_of(state.name, space_id)
+    state
   end
 
   defp state_of(name, space_id) do

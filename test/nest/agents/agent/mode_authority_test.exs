@@ -129,21 +129,4 @@ defmodule Nest.Agents.Agent.ModeAuthorityTest do
       refute :ok == ModeAuthority.authorize(agent(nil, :child), "plan")
     end
   end
-
-  describe "notice/2" do
-    test "names the new mode and who set it" do
-      assert ModeAuthority.notice("plan", :human) =~ "Your mode is now `plan`"
-      assert ModeAuthority.notice("plan", :human) =~ "set by the user"
-      assert ModeAuthority.notice("act", {:agent, "boss"}) =~ ~s(set by agent "boss")
-    end
-
-    test "is a tagged runtime notice, not a message from anyone" do
-      # The client strips the marker on render, and the model reads the notice as
-      # the runtime speaking rather than as a peer's words.
-      notice = ModeAuthority.notice("plan", {:agent, "boss"})
-
-      assert notice =~ "[nest notice]"
-      refute notice =~ "Message from agent"
-    end
-  end
 end

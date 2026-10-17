@@ -266,15 +266,14 @@ export function ChatPage() {
     requestHistory(name, { before: oldest.index });
   }, [name, archivedHistory]);
 
-  // The agent's current mode. The server's `state.mode` is the source of
-  // truth ("sticky mode"), mirrored here so the dropdown reflects what the
-  // server actually has; a change is a control-plane push whose refusal
-  // lands in the send-error banner.
+  // The mode the next message will ask for. A draft: the selector configures
+  // the message, it does not push a setting — the mode rides the message and
+  // the server learns it then. The server's `currentMode` seeds the draft and
+  // re-seeds it only when it actually moves.
   const { currentMode, setCurrentMode, handleModeChange } = useAgentMode({
     name,
     currentModeFromCache,
     defaultMode,
-    onError: setSendError,
   });
 
   // When the agent transitions out of "busy" (the server's
@@ -377,13 +376,11 @@ export function ChatPage() {
     }
 
     const content = inputValue.trim();
+    // The draft the selector holds is what this message asks for; the server
+    // applies it on delivery and states it back in the message's own prefix.
     const mode = currentMode ?? defaultMode;
     setInputValue("");
     setSendError(null);
-    // The mode for the next message is set by the chat:status: idle
-    // broadcast (which updates `cache.currentMode`); the effect
-    // above mirrors that into the local `currentMode` state. No
-    // client-side reset here.
 
     sendMessage(name, content, mode, (err) => {
       setSendError(err.message || "Failed to send message");

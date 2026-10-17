@@ -140,8 +140,7 @@ defmodule Nest.Modes do
   defp catalog_intro do
     "You are always in exactly one mode, and it is shown on every message you " <>
       "receive — as a prefix on a message from the user, and in the header of a " <>
-      "message from another agent. It can change while you are working, and the " <>
-      "change is announced when it happens."
+      "message from another agent. It can change while you are working."
   end
 
   defp catalog_switching do

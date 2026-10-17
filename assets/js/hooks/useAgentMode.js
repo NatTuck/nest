@@ -1,63 +1,51 @@
 /**
- * The agent's current mode, as the UI sees it.
+ * The mode the *next message* will ask for — a draft, not a server setting.
  *
- * The server's `state.mode` is the source of truth ("sticky mode"): it
- * emits the agent's mode on every `chat:status` push (specifically the one
- * that transitions to `idle` and unlocks the input), which the channel
- * layer writes to `cache.currentMode`. This hook mirrors that into React
- * state so the selector reflects what the server actually has, and pushes a
- * change back as a control-plane event rather than as a field on the next
- * message.
+ * A mode is a per-agent runtime property, and every message already states the
+ * recipient's mode: a human's chat message carries it as a `[mode: X]\n`
+ * prefix, a peer's in its header. So there is nothing to push. This hook holds
+ * the selection the composer sends with the next message (`sendMessage`'s
+ * `mode` argument), and the server learns it when that message arrives.
  *
- * The mode is a per-agent runtime property, so a change applies from the
- * agent's next turn and the server announces it in the transcript.
+ * `chat:status` carries the agent's *current* mode on every frame, which is
+ * what the next message inherits if the user does not choose. Re-seeding on
+ * every frame would overwrite a selection still in progress, so the draft
+ * follows the server only when the server's value actually moves.
  */
 
-import { useEffect, useState } from "react";
-import { setAgentMode } from "../channels";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * @param {object} options
- * @param {string} options.name the agent whose mode this is
  * @param {string|null} options.currentModeFromCache the mode the server last
  *   reported for this agent, from its cache entry
  * @param {string|null} options.defaultMode the mode a new agent starts in,
  *   from the server (`Nest.Modes` and the blueprint's `default_mode`)
- * @param {(message: string|null) => void} options.onError receives a refusal
- *   message, or `null` before a push
  * @returns {{
  *   currentMode: string|null,
  *   setCurrentMode: (mode: string|null) => void,
  *   handleModeChange: (mode: string) => void,
- * }} the mode to show, a local override for prompt recall, and the push
+ * }} the draft, a setter for the history walk to restore a selection with, and
+ *   the selector's change handler (also just a local set)
  */
-export function useAgentMode({
-  name,
-  currentModeFromCache,
-  defaultMode,
-  onError,
-}) {
+export function useAgentMode({ currentModeFromCache, defaultMode }) {
   const [currentMode, setCurrentMode] = useState(null);
 
-  // On first mount (before any `chat:status` has arrived)
-  // `currentModeFromCache` is null and we fall back to `defaultMode`.
+  // The server value the draft was last seeded from. `undefined` means "never
+  // seeded" — distinct from `null`, which is what the cache holds before the
+  // first `chat:status` arrives and must still fall through to `defaultMode`.
+  const seededFrom = useRef(undefined);
+
   useEffect(() => {
-    const next = currentModeFromCache ?? defaultMode;
-    if (next) setCurrentMode(next);
+    const serverMode = currentModeFromCache ?? defaultMode;
+    if (!serverMode || seededFrom.current === serverMode) return;
+    seededFrom.current = serverMode;
+    setCurrentMode(serverMode);
   }, [currentModeFromCache, defaultMode]);
 
-  // A control-plane push, not a field on the next message: the mode is
-  // persisted, so it applies immediately and from the agent's next turn.
-  // The optimistic update lives in the channel function; a refusal comes
-  // back through `onError`.
-  const handleModeChange = (mode) => {
-    onError(null);
-    setAgentMode(name, mode, (err) => {
-      onError(
-        err?.reason || err?.message || "Failed to change the agent's mode",
-      );
-    });
+  return {
+    currentMode,
+    setCurrentMode,
+    handleModeChange: setCurrentMode,
   };
-
-  return { currentMode, setCurrentMode, handleModeChange };
 }

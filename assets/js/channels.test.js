@@ -25,7 +25,6 @@ import {
   leaveAgent,
   requestHistory,
   sendMessage,
-  setAgentMode,
   stopMessage,
   retryCompaction,
   compactionLoopOk,
@@ -3877,84 +3876,6 @@ describe("channels", () => {
       // Optimistic user message also has the mode
       const cache = useStore.getState().agentsCache["agent-1"];
       assert.strictEqual(cache.messages[0].mode, "build");
-    });
-
-    it("setAgentMode pushes the change and shows it optimistically", async () => {
-      setNextJoinResult("agent:1:agent-1", {
-        autoInit: {
-          id: "agent-1",
-          model: { name: "gpt-4", provider: "openai" },
-          messageCount: 0,
-          status: "idle",
-          modes: ["plan", "act"],
-          defaultMode: "act",
-          currentMode: "act",
-        },
-      });
-      joinAgent("agent-1", 1);
-
-      await vi.waitFor(() => {
-        assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.status,
-          "connected",
-        );
-      });
-
-      const pushCapture = captureNextPush("agent:1:agent-1", "set_agent_mode");
-
-      setAgentMode("agent-1", "plan");
-
-      // The change is a control-plane push, not a field on a chat message.
-      assert.deepStrictEqual(await pushCapture, { mode: "plan" });
-
-      // And the selector shows it at once, before the server answers.
-      assert.strictEqual(
-        useStore.getState().agentsCache["agent-1"].currentMode,
-        "plan",
-      );
-    });
-
-    it("setAgentMode takes the optimistic mode back when the server refuses it", async () => {
-      setNextJoinResult("agent:1:agent-1", {
-        autoInit: {
-          id: "agent-1",
-          model: { name: "gpt-4", provider: "openai" },
-          messageCount: 0,
-          status: "idle",
-          modes: ["plan", "act"],
-          defaultMode: "act",
-          currentMode: "act",
-        },
-      });
-      joinAgent("agent-1", 1);
-
-      await vi.waitFor(() => {
-        assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.status,
-          "connected",
-        );
-      });
-
-      // The monotone rule refuses a mode an agent may not grant; the reason has
-      // to reach the caller rather than being swallowed.
-      setNextPushResult("agent:1:agent-1", "set_agent_mode", {
-        error: { reason: "mode_escalation_refused" },
-      });
-
-      const onError = vi.fn();
-      setAgentMode("agent-1", "plan", onError);
-
-      await vi.waitFor(() => {
-        assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"].currentMode,
-          "act",
-        );
-      });
-
-      assert.strictEqual(
-        onError.mock.calls[0][0].reason,
-        "mode_escalation_refused",
-      );
     });
 
     it("omits the mode key from the payload when no mode is passed", async () => {

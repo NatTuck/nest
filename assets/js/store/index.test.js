@@ -280,36 +280,6 @@ describe("store", () => {
       expect(cache.currentMode).toBe("act");
     });
 
-    it("setAgentMode sets the cached currentMode (the selector's optimistic update)", () => {
-      useStore.getState().setAgentConnected("agent-1", {
-        messageCount: 0,
-        modes: ["plan", "act"],
-        defaultMode: "act",
-        currentMode: "act",
-      });
-
-      useStore.getState().setAgentMode("agent-1", "plan");
-      expect(useStore.getState().agentsCache["agent-1"].currentMode).toBe(
-        "plan",
-      );
-
-      // The same call takes an optimistic value back, which is exactly what
-      // `channels/agent.js` does when the server refuses the change.
-      useStore.getState().setAgentMode("agent-1", "act");
-      expect(useStore.getState().agentsCache["agent-1"].currentMode).toBe(
-        "act",
-      );
-    });
-
-    it("setAgentMode is a no-op for an agent with no cache", () => {
-      // The channel can be asked for an agent this client has never joined.
-      expect(() =>
-        useStore.getState().setAgentMode("no-such-agent", "plan"),
-      ).not.toThrow();
-
-      expect(useStore.getState().agentsCache["no-such-agent"]).toBeUndefined();
-    });
-
     it("initializes mode fields to null when payload omits them and no existing cache", () => {
       useStore.getState().setAgentConnected("agent-1", {
         messageCount: 0,
