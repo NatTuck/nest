@@ -110,34 +110,56 @@ defmodule Nest.Agents.Agent.Turn do
   # announced. `restore_undelivered_mode/3` has already undone one whose drain
   # consumed nothing, so reaching here with a different mode means the message
   # that asked for it was delivered.
-  #
-  # The row is written here, not where the mode is applied, and that is what
-  # keeps an undone change out of it: the row is the truth a restart and a later
-  # spawn read (`Nest.Agents.Agent.PreSpawn`), so it must hold exactly what the
-  # agent is actually working under.
-  #
-  # The announcement is for a **peer's** change. The human's own selection is
-  # already stated by the delivered message's `[mode: X]` prefix, while a peer's
-  # `set_mode` is a change nothing else would mention — and the agent has to be
-  # told, or it keeps working under a rule it never heard about.
-  defp commit_mode_change(state, pre_mode, _pre_inbox) when state.live.mode == pre_mode,
-    do: state
-
-  defp commit_mode_change(state, _pre_mode, pre_inbox) do
+  defp commit_mode_change(state, pre_mode, pre_inbox) do
     case Inbox.Mode.drain_mode_change(Inbox.batch(pre_inbox)) do
-      %{mode: mode, actor: actor} ->
-        Nest.Persistence.update_agent_mode(state.space_id, state.name, mode)
+      %{actor: actor} -> keep_mode(state, pre_mode, actor)
+      nil -> state
+    end
+  end
 
-        case actor do
-          :human ->
-            state
+  @doc """
+  Write down a mode change the turn **kept**, and announce a peer's.
 
-          {:agent, _name} ->
-            Inbox.enqueue_internal(state, nil, ModeAuthority.notice(mode, actor), :notice)
-        end
+  The row is written here, not where the mode is applied, and that is what keeps
+  an undone change out of it: `restore_undelivered_mode/3` runs first, so
+  reaching here with a different mode means the message that asked for it was
+  delivered. The row is the truth a restart and a later spawn read
+  (`Nest.Agents.Agent.PreSpawn`), so it must hold exactly what the agent is
+  actually working under.
 
-      nil ->
+  It is `state.live.mode` that is written — the *resolved* mode — rather than the
+  name an entry carried: a request this build does not implement is resolved
+  (`Nest.Modes`) before it is applied, and the row must not keep the stale name.
+
+  The callers are the two places a kept change can be observed:
+  `commit_mode_change/3`, which covers every drain `run/6` runs *and* the one
+  `drain_inbox/1` runs itself (the settle inside it reads the already applied
+  mode, so `run/6`'s own snapshot cannot see that change), and
+  `ChatPipeline.handle_chat/4`, for the human's own selection riding a chat
+  message.
+
+  The announcement is for a **peer's** change — a change nothing else would
+  mention, so the agent has to be told or it keeps working under a rule it never
+  heard about. The human's own change is already stated by the delivered
+  message's `[mode: X]` prefix, so it announces nothing.
+  """
+  @spec keep_mode(Agent.t(), String.t(), :human | {:agent, String.t()}) :: Agent.t()
+  def keep_mode(state, pre_mode, _actor) when state.live.mode == pre_mode, do: state
+
+  def keep_mode(state, _pre_mode, actor) do
+    Nest.Persistence.update_agent_mode(state.space_id, state.name, state.live.mode)
+
+    case actor do
+      :human ->
         state
+
+      {:agent, _name} ->
+        Inbox.enqueue_internal(
+          state,
+          nil,
+          ModeAuthority.notice(state.live.mode, actor),
+          :notice
+        )
     end
   end
 
@@ -388,6 +410,13 @@ defmodule Nest.Agents.Agent.Turn do
           else
             state
           end
+
+        # This drain is the one `run/6` cannot see: the settle above runs its own
+        # `run/6`, whose `pre_mode` is read *after* the peek applied the batch's
+        # mode, so its `commit_mode_change/3` finds nothing to do. A mode this
+        # drain kept is therefore written here — and one it delivered nothing for
+        # was just undone above, so there is no change left to write.
+        state = commit_mode_change(state, pre_mode, entries)
 
         delivered? = not Enum.any?(entries, &(&1 in state.live.inbox))
         {state, if(delivered?, do: :delivered, else: :queued)}

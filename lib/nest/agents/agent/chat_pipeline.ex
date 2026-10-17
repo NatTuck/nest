@@ -32,11 +32,19 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     {effective_mode, _caps} =
       resolve_mode_and_caps(mode, state.vocation, Mounts.from_agent(state))
 
+    # The mode is applied *before* the settle, because the user message is built
+    # with it (the `[mode: X]` prefix and the UI badge) and the turn runs under
+    # it. That is also why the write has to happen here: the settle's own `run/6`
+    # reads `pre_mode` from the already-applied state, so it cannot see the
+    # change. A mode this message kept is the agent's mode from here on — the row
+    # is what a restart and a later spawn read — so it is written down, and
+    # nothing is announced: the message's own prefix is what states it.
+    pre_mode = state.live.mode
     state = %{state | live: %{state.live | mode: effective_mode, cancelled: false}}
     user = build_user_message(content, effective_mode, human?)
 
     {:ok, state} = Turn.settle(state, {:chat_request, {:user_message, user}})
-    {:noreply, state}
+    {:noreply, Turn.keep_mode(state, pre_mode, :human)}
   end
 
   # Build the persisted user message. The mode is encoded both on
