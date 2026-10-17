@@ -47,6 +47,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Children
+  alias Nest.Agents.Agent.PreSpawn
   alias Nest.Agents.Agent.Timeline
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Watch
@@ -72,15 +73,23 @@ defmodule Nest.Agents.Agent.SubAgent do
 
   Returns the attrs map ready to pass to `start_link/1`.
   """
-  @spec build_fresh_child_attrs(map(), String.t(), integer(), integer(), boolean(), map() | nil) ::
-          map()
+  @spec build_fresh_child_attrs(
+          map(),
+          String.t(),
+          integer(),
+          integer(),
+          boolean(),
+          map() | nil,
+          String.t() | nil
+        ) :: map()
   def build_fresh_child_attrs(
         parent_state,
         child_name,
         parent_id,
         vocation_id,
         exclude_spawn,
-        model_override \\ nil
+        model_override \\ nil,
+        mode \\ nil
       ) do
     %{
       name: child_name,
@@ -102,6 +111,7 @@ defmodule Nest.Agents.Agent.SubAgent do
       last_compaction_index: -1,
       next_message_index: 1
     }
+    |> PreSpawn.put_named_mode(mode)
   end
 
   @doc """
@@ -190,7 +200,12 @@ defmodule Nest.Agents.Agent.SubAgent do
     with {:ok, model_override} <- resolve_model_override(Map.get(opts, :model, "")) do
       result =
         if Map.get(opts, :clone_context, false) do
-          Supervisor.start_agent_with_parent(state, Map.get(opts, :query, ""), model_override)
+          Supervisor.start_agent_with_parent(
+            state,
+            Map.get(opts, :query, ""),
+            model_override,
+            mode: Map.get(opts, :mode)
+          )
         else
           # The supervisor resolves `vocation` (a slug) against the
           # space's blueprint: an omitted one takes the blueprint's
@@ -201,7 +216,8 @@ defmodule Nest.Agents.Agent.SubAgent do
             state,
             Map.get(opts, :name, ""),
             Map.get(opts, :vocation),
-            model_override
+            model_override,
+            mode: Map.get(opts, :mode)
           )
         end
 

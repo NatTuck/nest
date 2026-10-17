@@ -155,13 +155,21 @@ defmodule Nest.Agents.Agent do
   instruction. Pure data shaping — no DB writes, no spawning. Full
   contract: `Nest.Agents.Agent.PreSpawn.build_child_attrs/5`.
   """
-  @spec build_child_attrs(map(), String.t(), String.t(), integer(), map() | nil) :: map()
+  @spec build_child_attrs(
+          map(),
+          String.t(),
+          String.t(),
+          integer(),
+          map() | nil,
+          String.t() | nil
+        ) :: map()
   defdelegate build_child_attrs(
                 parent_state,
                 instruction,
                 child_name,
                 parent_id,
-                model_override \\ nil
+                model_override \\ nil,
+                mode \\ nil
               ),
               to: PreSpawn
 
