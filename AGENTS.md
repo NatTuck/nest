@@ -21,6 +21,9 @@ Do normal testing by running `mix test` and/or (`pnpm --dir assets test` or
 - Use as few test runs as you can. They take time.
 - Don't ever run the same test command repeatedly in a loop without an explicit
 human request to do exactly that.
+- Performance on `mix test` isn't optional. It should be 4 seconds on vampire.
+If it's slower than that after your work, then it's time to put in some serious
+optimization effort.
 
 ## Important: Core Process Rules
 

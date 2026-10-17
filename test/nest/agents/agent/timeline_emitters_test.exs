@@ -225,7 +225,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     # result reads "Message delivered to …", so a line claiming `queued` would
     # contradict both the sender and the transcript.
     {pid, name} =
-      start_agent(%{
+      start_spawnable_agent(%{
         model: %{name: "qwen3.5-plus"},
         vocation_id: programmer_vocation_id_for_test()
       })
@@ -277,7 +277,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     # A `queued` line for a message the transcript already carries would
     # contradict the transcript, and the human is told nothing at all.
     {pid, name} =
-      start_agent(%{
+      start_spawnable_agent(%{
         model: %{name: "qwen3.5-plus"},
         vocation_id: programmer_vocation_id_for_test()
       })
@@ -373,11 +373,11 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     MockClient.set_response("spawned it")
     MockClient.set_response("thanks for the answer")
 
-    {pid, name} = start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: parent_vocation})
+    {pid, name} =
+      start_spawnable_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: parent_vocation})
+
     track_agent(name)
 
-    # The spawned specialist must not run a turn of its own here: its chat is
-    # stubbed, and the parent is the process that calls it.
     Mimic.allow(Agents, self(), pid)
 
     :ok = Agent.chat(pid, "delegate this")

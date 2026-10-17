@@ -346,7 +346,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
   # -- helpers --
 
   defp start_agent(vid) do
-    AgentTestHelpers.start_agent(%{
+    AgentTestHelpers.start_spawnable_agent(%{
       model: %{name: "qwen3.5-plus", provider: "model-studio"},
       vocation_id: vid
     })

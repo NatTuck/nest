@@ -514,7 +514,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   # real chat cycle) and allow the coordinator to call the stub.
   defp start_batch_parent(vid) do
     {parent_pid, parent_name} =
-      AgentTestHelpers.start_agent(%{
+      AgentTestHelpers.start_spawnable_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
         vocation_id: vid
       })

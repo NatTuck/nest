@@ -89,15 +89,10 @@ defmodule Nest.Agents.AgentTestHelpers do
   def put_space_id(space_id), do: Process.put(@space_id_key, space_id)
 
   @doc """
-  A fresh workspace directory for a test agent: a real directory under
-  `_build/tmp`, outside `/tmp` (the scratch bind is mounted at `/tmp` and would
-  shadow a `/tmp`-rooted workspace), removed when the test ends.
-
-  Every space needs one now: a space's workspace is a property its agents
-  inherit, `Nest.Spaces.Space.create_changeset/2` requires it, and the `act`
-  mode — which every agent can be in — writes it. A test that *means* "no
-  workspace" passes `workspace_path: nil` explicitly, which both `Map.get/3`
-  call sites here honour.
+  A fresh workspace directory under `_build/tmp` — outside `/tmp`, whose bind
+  would shadow it — removed when the test ends. A space requires one
+  (`Space.create_changeset/2`); an *agent* does not, and `start_agent/1` leaves
+  it `nil` on purpose (see `start_spawnable_agent/1`).
   """
   @spec default_test_workspace() :: String.t()
   def default_test_workspace do
@@ -117,6 +112,11 @@ defmodule Nest.Agents.AgentTestHelpers do
     end)
 
     dir
+  end
+
+  # A spawn requires the child to inherit a workspace (`:workspace_required`).
+  def start_spawnable_agent(attrs \\ %{}) do
+    start_agent(Map.put_new(attrs, :workspace_path, default_test_workspace()))
   end
 
   @doc """
@@ -465,7 +465,15 @@ defmodule Nest.Agents.AgentTestHelpers do
       # (nullable column) and `Init.build_state/2` reads it via
       # `Map.get/2` so `nil` is fine. Tests that need a workspace
       # can override `:workspace_path` in `attrs`.
-      workspace_path: default_test_workspace(),
+      #
+      # It stays `nil` by default on purpose. A workspace is not free: composing
+      # the system prompt reads `AGENTS.md` through the sandbox
+      # (`SystemPrompt.agents_md_section/2`), and a *sandboxed* read forks a
+      # `bwrap` — measured at ~9 ms, and ~5 s across the suite because every agent
+      # start pays it. The `nil` clause returns `""` without a read at all. So the
+      # default is "no workspace", and the tests that actually need one pass it;
+      # they are the ones that exercise the read.
+      workspace_path: nil,
       # Multi-user identity. Defaults to `nil` so tests that
       # pre-date the multi-user migration keep working
       # without changes. Tests that exercise ownership /
@@ -684,7 +692,7 @@ defmodule Nest.Agents.AgentTestHelpers do
       Map.get(attrs, :model),
       name: Map.get(attrs, :name),
       vocation_id: Map.get(attrs, :vocation_id),
-      workspace_path: Map.get(attrs, :workspace_path, default_test_workspace()),
+      workspace_path: Map.get(attrs, :workspace_path),
       created_by_user_id: Map.get(attrs, :created_by_user_id),
       shared: Map.get(attrs, :shared, false)
     )
