@@ -494,16 +494,7 @@ defmodule Nest.SpacesTest do
           name: "WS Root #{System.unique_integer([:positive])}",
           description: "writes workspace",
           system_prompt: "ws",
-          tools: [],
-          modes: %{
-            "build" => %{
-              "description" => "writes workspace",
-              "caps" => %{
-                "net" => false,
-                "fs" => %{"read" => ["/"], "write" => [":workspace"]}
-              }
-            }
-          }
+          tools: []
         })
 
       base = %{

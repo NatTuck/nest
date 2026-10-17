@@ -172,8 +172,8 @@ defmodule Nest.Agents.Agent do
   LLM. Responses are broadcast via PubSub to all subscribers.
 
   The optional `mode` selects the sandbox capability profile for this message's
-  tool calls. When `nil`, the agent falls back to its default mode (first key in
-  the vocation's `modes` map, or `"chat"` if no modes are defined).
+  tool calls. When `nil`, the agent keeps the mode it is in (`state.live.mode`); a
+  name this build does not implement resolves to `Nest.Modes.default/0`.
 
   `sender` identifies the human behind the message (the channel passes the
   socket's username). It is recorded on a queued inbox entry so the delivered
@@ -303,22 +303,23 @@ defmodule Nest.Agents.Agent do
   def set_model(pid, new_model), do: GenServer.call(pid, {:set_model, new_model}, :infinity)
 
   @doc """
-  Set this agent's mode (`Nest.Modes`), on behalf of `actor`.
+  Set this agent's mode (`Nest.Modes`) — the **human's** path, the one the UI
+  channel calls.
 
-  This is the human's path — the one the UI channel calls — and the mode is
-  *persisted*, so a human's change applies immediately rather than having to ride
-  the next message. An agent's own request goes the other way, on a message
-  (`Nest.Tools.QueryAgent`'s `set_mode`), and both are held to
-  `Nest.Agents.Agent.ModeAuthority`: only the human may raise a mode, and no
-  agent may set its own.
+  It is the human's alone. An agent's own request goes the other way, on a message
+  (`Nest.Tools.QueryAgent`'s `set_mode`), and that path is what
+  `Nest.Agents.Agent.ModeAuthority` bounds: only the human may raise a mode, and
+  no agent may set its own.
 
-  `actor` is `:human` or `{:agent, name}` (the acting agent's name). Returns
-  `:ok`, or `{:error, reason}` where `reason` is a sentence to show whoever
-  asked — the channel hands it to the client, a tool hands it to the model.
+  The mode is *persisted*, so a human's change applies immediately rather than
+  having to ride the next message — but only when the agent is not mid-turn: a
+  mode applies at a settle, and a turn already running is under the old one.
+
+  Returns `:ok`, or `{:error, reason}` where `reason` is a **sentence** to show
+  the user — the channel hands it straight to the client.
   """
-  @spec set_mode(pid(), String.t(), :human | {:agent, String.t()}) :: :ok | {:error, String.t()}
-  def set_mode(pid, mode, actor \\ :human),
-    do: GenServer.call(pid, {:set_mode, mode, actor}, :infinity)
+  @spec set_mode(pid(), String.t()) :: :ok | {:error, String.t()}
+  def set_mode(pid, mode), do: GenServer.call(pid, {:set_mode, mode}, :infinity)
 
   # Change the agent's working directory. Handler: `WorkspaceHandler`.
   @spec set_workspace(pid(), String.t() | nil) :: :ok | {:error, term()}
@@ -355,7 +356,9 @@ defmodule Nest.Agents.Agent do
   end
 
   def resolve_caps(%__MODULE__{} = state) do
-    Nest.ProjectConfig.resolve_caps(Nest.Sandbox.default_caps(), Mounts.from_agent(state))
+    state.live.mode
+    |> Nest.Modes.caps()
+    |> Nest.ProjectConfig.resolve_caps(Mounts.from_agent(state))
   end
 
   def resolve_caps(_), do: Nest.Sandbox.default_caps()

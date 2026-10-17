@@ -297,10 +297,7 @@ defmodule Nest.Agents.AgentChatTest do
           name: "StateVocation-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "Test",
-          tools: [],
-          modes: %{
-            "build" => %{"caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}}
-          }
+          tools: []
         })
 
       {pid, _id} = start_agent(%{vocation_id: vocation.id, vocation: vocation})

@@ -419,6 +419,12 @@ defmodule Nest.Agents.Agent.Turn.Executor do
         # The mode comes first: the delivered message is *rendered* with the mode
         # the turn will run in (a peer delivery's header states it), and
         # `applied_mode/2` is what decides it — the batch's own request, resolved.
+        #
+        # It is *not* re-authorized here, and that is deliberate: the authority
+        # ran where the change was **asked** (the send tool, with the sender's
+        # mode as it was then), and the actor was entitled when it asked. A
+        # delivery-time re-check would refuse a change that was legitimate when
+        # it was made, which is a different rule, not a stricter one.
         mode = applied_mode(state, batch)
         mode_changed? = mode != state.live.mode
         state = %{state | live: %{state.live | mode: mode}}
