@@ -35,14 +35,14 @@ defmodule Nest.Agents.AgentSpawnDepthPromptTest do
   end
 
   test "a started agent's system message names its real spawn depth, not its mode" do
-    workspace = new_ws("spawn-depth")
+    workspace = default_test_workspace()
 
     {pid, _agent_id} =
       start_agent(%{model: %{name: "qwen3.5-plus"}, workspace_path: workspace})
 
     # allowlist: snapshot — the system message the *start path* composed, which is
     # the thing under test; nothing else exposes the composed prompt.
-    [system | _rest] = :sys.get_state(pid).chat_state.messages
+    [{:system, system} | _rest] = :sys.get_state(pid).chat_state.messages
 
     text = system.parts |> Enum.map_join("\n", & &1.text)
 
