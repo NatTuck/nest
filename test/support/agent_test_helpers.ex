@@ -89,6 +89,36 @@ defmodule Nest.Agents.AgentTestHelpers do
   def put_space_id(space_id), do: Process.put(@space_id_key, space_id)
 
   @doc """
+  A fresh workspace directory for a test agent: a real directory under
+  `_build/tmp`, outside `/tmp` (the scratch bind is mounted at `/tmp` and would
+  shadow a `/tmp`-rooted workspace), removed when the test ends.
+
+  Every agent needs one now — `Vocations.requires_workspace?/1` is a constant, so
+  a space with a root agent, an agent's own start and a spawn all require a
+  workspace. A test that *means* "no workspace" passes `workspace_path: nil`
+  explicitly, which both `Map.get/3` call sites here honour.
+  """
+  @spec default_test_workspace() :: String.t()
+  def default_test_workspace do
+    dir =
+      Path.join([
+        File.cwd!(),
+        "_build",
+        "tmp",
+        "agent-ws-#{System.unique_integer([:positive])}"
+      ])
+
+    File.mkdir_p!(dir)
+
+    on_exit(fn ->
+      # Guarded by the identifying string, as SMELLS.md requires of any `rm_rf`.
+      if String.contains?(dir, "agent-ws-"), do: File.rm_rf(dir)
+    end)
+
+    dir
+  end
+
+  @doc """
   Assert a shell_cmd tool result succeeded (`is_error == false`).
 
   When the command errored (`is_error == true`), dump the full
@@ -384,7 +414,7 @@ defmodule Nest.Agents.AgentTestHelpers do
 
   @doc """
   Returns a fresh `vocation_id` with three modes: `"chat"` (the default,
-  since `Vocations.default_mode/1` is the lexicographically first mode),
+  since `Nest.Modes.default/0` is the lexicographically first mode),
   `"plan"`, and `"review"`. For tests that need a mode the agent is not
   already in — e.g. asserting that a queued message's requested mode is
   applied when it is delivered.
@@ -432,7 +462,7 @@ defmodule Nest.Agents.AgentTestHelpers do
       # (nullable column) and `Init.build_state/2` reads it via
       # `Map.get/2` so `nil` is fine. Tests that need a workspace
       # can override `:workspace_path` in `attrs`.
-      workspace_path: nil,
+      workspace_path: default_test_workspace(),
       # Multi-user identity. Defaults to `nil` so tests that
       # pre-date the multi-user migration keep working
       # without changes. Tests that exercise ownership /
@@ -651,7 +681,7 @@ defmodule Nest.Agents.AgentTestHelpers do
       Map.get(attrs, :model),
       name: Map.get(attrs, :name),
       vocation_id: Map.get(attrs, :vocation_id),
-      workspace_path: Map.get(attrs, :workspace_path),
+      workspace_path: Map.get(attrs, :workspace_path, default_test_workspace()),
       created_by_user_id: Map.get(attrs, :created_by_user_id),
       shared: Map.get(attrs, :shared, false)
     )

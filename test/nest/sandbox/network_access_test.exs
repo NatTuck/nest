@@ -35,12 +35,12 @@ defmodule Nest.Sandbox.NetworkAccessTest do
     end
   end
 
-  describe "apply_or_default/2" do
+  describe "resolve_caps/2" do
     test "injects the space's value, so every caps resolution gets it" do
       # Both resolution paths (`Agent.resolve_caps/1` and
       # `ChatPipeline.resolve_mode_and_caps/3`) end here, which is what makes this
       # the one injection point rather than two copies.
-      assert ProjectConfig.apply_or_default(caps_with_net(false), mounts(true))["net"] == true
+      assert ProjectConfig.resolve_caps(caps_with_net(false), mounts(true))["net"] == true
     end
 
     test "injects it even when the project config is malformed" do
@@ -55,7 +55,7 @@ defmodule Nest.Sandbox.NetworkAccessTest do
       log =
         capture_log(fn ->
           caps =
-            ProjectConfig.apply_or_default(
+            ProjectConfig.resolve_caps(
               caps_with_net(false),
               Mounts.new(dir, nil, "bwrap", 7, true)
             )
@@ -83,7 +83,7 @@ defmodule Nest.Sandbox.NetworkAccessTest do
       on_exit(fn -> if String.contains?(dir, "nest_net_build_"), do: File.rm_rf(dir) end)
 
       caps =
-        ProjectConfig.apply_or_default(
+        ProjectConfig.resolve_caps(
           caps_with_net(false),
           Mounts.new(dir, nil, "bwrap", 7, true)
         )

@@ -202,12 +202,12 @@ defmodule Nest.ProjectConfigTest do
       assert [%{"source" => "/dev/null"}] = merged["fs"]["protected"]
     end
 
-    test "apply_or_default leaves caps unchanged when malformed", %{dir: dir} do
+    test "resolve_caps leaves caps unchanged when malformed", %{dir: dir} do
       write_nest(dir, "not [valid")
 
       log =
         capture_log(fn ->
-          assert ProjectConfig.apply_or_default(caps(), Mounts.new(dir, "/tmp/agent")) == caps()
+          assert ProjectConfig.resolve_caps(caps(), Mounts.new(dir, "/tmp/agent")) == caps()
         end)
 
       assert log =~ "ignoring"

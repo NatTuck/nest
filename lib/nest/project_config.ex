@@ -63,7 +63,7 @@ defmodule Nest.ProjectConfig do
   ## Failures
 
   A malformed `.nest` never degrades silently: `load/1` logs an error,
-  `apply_or_default/2` leaves the mode's caps unchanged, and
+  `resolve_caps/2` leaves the mode's caps unchanged, and
   `section/1` renders a visible error block into the system prompt.
   """
 
@@ -291,12 +291,20 @@ defmodule Nest.ProjectConfig do
   end
 
   @doc """
-  Like `effective_caps/2` but never fails: a malformed `.nest` leaves `caps`
-  unchanged (the mode's default sandbox is in effect). `load/1` logs
-  the error.
+  Resolve the caps a *call* runs under, from the caps a *mode* gives.
+
+  This is where a mode's caps become a call's caps, and the name says so: the
+  space's network access is injected first, then the project's `.nest` is merged
+  on top. Never fails — a malformed `.nest` leaves `caps` unchanged (the mode's
+  default sandbox is in effect) and `load/1` logs the error.
+
+  It is the one funnel both caps-resolution paths share
+  (`Nest.Agents.Agent.resolve_caps/1` and
+  `Nest.Agents.Agent.ChatPipeline.resolve_mode_and_caps/3`), which is why the
+  space's `net` goes in here rather than in either of them.
   """
-  @spec apply_or_default(map(), Mounts.t()) :: map()
-  def apply_or_default(caps, mounts) do
+  @spec resolve_caps(map(), Mounts.t()) :: map()
+  def resolve_caps(caps, mounts) do
     # The space's network access goes in *here*, before the project config, so
     # that a malformed `.nest` cannot drop it and so that both caps-resolution
     # paths (`Nest.Agents.Agent.resolve_caps/1` and

@@ -612,13 +612,14 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   defp refresh_vocation_and_tools(state) do
     fresh_vocation = fetch_fresh_vocation(state)
 
-    {system_prompt, _mode, tool_names, fresh_vocation} =
+    {system_prompt, tool_names, fresh_vocation} =
       SystemPrompt.compose_vocation_config(
         fresh_vocation,
         Mounts.from_agent(state),
         {state.llm_metrics.context_limit, state.llm_metrics.context_limit_source},
         state.name,
-        state.depth
+        state.depth,
+        state.live.mode
       )
 
     tool_names = ToolFilter.exclude_spawn_at_max_depth(tool_names, state.depth)

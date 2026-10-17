@@ -1,8 +1,8 @@
 defmodule Nest.Agents.AgentSystemPromptCompositionTest do
   @moduledoc """
   Tests for the system-prompt composition in
-  `Nest.Agents.Agent.ChatPipeline` (the workspace line, the
-  mode catalog, the AGENTS.md section, etc.). Extracted from
+  `Nest.Agents.Agent.SystemPrompt` (the workspace line, the universal modes
+  section, the AGENTS.md section, etc.). Extracted from
   `agent_chat_test.exs` so the chat-flow file stays under the
   500-line credo limit.
   """
@@ -30,7 +30,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
   import Nest.Agents.AgentTestHelpers
 
   describe "vocation system_prompt composition" do
-    test "vocation system_prompt gets the mode catalog and a [Workspace] section" do
+    test "vocation system_prompt gets the universal modes section and a [Workspace] section" do
       valid_caps = %{
         "net" => false,
         "fs" => %{"read" => ["/"], "write" => []}
@@ -66,20 +66,31 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
       assert system_prompt =~ "Base prompt."
       assert system_prompt =~ "\n\n[Available modes]\n\n"
-      assert system_prompt =~ ~s(- build: Read only "/")
 
-      # The mode's caps say `net: false`, but network access is the *space's* now
-      # (and this space defaults to `true`), so that is what the catalog must say:
-      # the mode's `net` is dead data, and rendering it would tell the agent
-      # something the sandbox does not do.
-      assert system_prompt =~ "Network enabled"
-      assert system_prompt =~ "You're clear to edit the project in the workspace."
+      # The modes are universal constants now, so the section is the same bytes
+      # for every vocation — including this one, whose stored `modes` map is dead
+      # data (`Nest.Modes.catalog/2`).
+      assert system_prompt =~ "**`plan`**"
+      assert system_prompt =~ "**`act`**"
+      assert system_prompt =~ "shown on every message you receive"
+      # This space can reach the network and its sandbox enforces `plan`, so the
+      # one space-specific sentence says the restriction is real. (The *network*
+      # is no longer described here: it is the space's, not a mode's, so a mode
+      # section that mentioned it would be lying.)
+      assert system_prompt =~ "is enforced by the sandbox"
+      refute system_prompt =~ "cannot enforce"
+      # The vocation's own per-mode description is no longer rendered anywhere:
+      # the capability/posture content lives in the universal text now.
+      refute system_prompt =~ "You're clear to edit the project in the workspace."
+
       assert system_prompt =~ "\n\nWorkspace and tool working directory: #{workspace}"
-      # `compact` is rendered into the catalog alongside the
-      # user-configured modes, with `Vocations.compact_description/0`
-      # as the body. The `[mode: compact]` prefix lives only in
-      # the per-call suffix at runtime, not in the initial prompt.
-      assert system_prompt =~ ~r/^- compact: We are out of context.*summary alone\.\.$/m
+      # `compact` is rendered next to the modes, with
+      # `Vocations.compact_description/0` as the body. The `[mode: compact]`
+      # prefix lives only in the per-call suffix at runtime, not in the initial
+      # prompt.
+      assert system_prompt =~ "- compact: We are out of context"
+      assert system_prompt =~ "summary alone."
+      refute system_prompt =~ "[mode: compact]"
     end
 
     test "no workspace line when workspace_path is nil" do
@@ -102,10 +113,15 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
           }
         })
 
+      # `workspace_path: nil` on purpose: the fixture otherwise supplies one, and
+      # this test is about the composer's no-workspace case. (An agent with no
+      # workspace is refused where one is *required* — a space with a root agent,
+      # a spawn, an edit — but starting one directly still composes a prompt.)
       {pid, _agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
-          vocation_id: vocation.id
+          vocation_id: vocation.id,
+          workspace_path: nil
         })
 
       system_prompt = get_system_prompt(pid)
@@ -144,7 +160,16 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       system_prompt = get_system_prompt(pid)
 
       assert system_prompt =~ "Tool-less."
-      assert system_prompt =~ "- chat: General conversation."
+      # No tools, so nothing for a mode to restrict: no modes section at all —
+      # not even its prose. The `[Available modes]` marker stays, because the
+      # compaction contract below it is what the runtime's `[mode: compact]`
+      # suffix refers to.
+      assert system_prompt =~ "\n\n[Available modes]\n\n"
+      refute system_prompt =~ "**`plan`**"
+      refute system_prompt =~ "**`act`**"
+      refute system_prompt =~ "shown on every message you receive"
+      # ... and the compaction contract survives anyway: a tool-less agent still
+      # compacts.
       assert system_prompt =~ Vocations.compact_description()
       refute system_prompt =~ "Workspace and tool working directory"
       refute system_prompt =~ "Tool call budget"

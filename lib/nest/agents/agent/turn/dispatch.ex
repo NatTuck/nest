@@ -193,13 +193,14 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
   # vocation).
   defp system_prompt(ctx, messages) do
     if ctx[:vocation] do
-      {system_prompt, _mode, _tools, _vocation} =
+      {system_prompt, _tools, _vocation} =
         SystemPrompt.compose_vocation_config(
           ctx.vocation,
           ctx.mounts,
           {ctx.context_limit, ctx.context_limit_source},
           ctx.agent_name,
-          ctx.depth
+          ctx.depth,
+          ctx.mode
         )
 
       system_prompt

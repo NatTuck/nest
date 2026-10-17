@@ -2,21 +2,17 @@ defmodule Nest.VocationsModesTest do
   @moduledoc """
   Tests for the `Vocations` modes / caps surface — split from
   `VocationsTest` so the parent file stays under the credo
-  500-line cap. Same data setup (shared `@valid_caps` and
-  `@plan_caps` module attributes) — duplicated here so the
-  split file can run independently.
+  500-line cap.
 
-  Covers:
-
-    * `modes` field validation in the changeset
-    * `get_caps/2` lookup (with the default-caps fallback)
-    * `list_modes/1` (sorted, with chat fallback)
-    * `default_mode/1` (first sorted, with chat fallback)
-    * `mode_catalog/2` (the LLM-facing mode description string)
+  The modes themselves are universal code constants (`Nest.Modes`), so what is
+  left to test here is the *schema*: the `modes` column's validation (it is dead
+  data from this stage on, and stage 4 drops it), and the three functions that
+  used to read it and now answer from the constants.
   """
 
   use Nest.DataCase, async: true
 
+  alias Nest.Modes
   alias Nest.Vocations
   alias Nest.Vocations.Vocation
 
@@ -111,147 +107,67 @@ defmodule Nest.VocationsModesTest do
   end
 
   describe "get_caps/2" do
-    test "returns caps for an existing mode" do
-      vocation = %Vocation{
-        modes: %{"build" => %{"caps" => @valid_caps}, "plan" => %{"caps" => @valid_caps}}
-      }
+    test "returns the universal caps for a mode, whatever the vocation says" do
+      # Two vocations whose stored `modes` disagree with each other and with the
+      # constants: the answer is the constant either way, because the column is
+      # dead data from here on.
+      one = %Vocation{modes: %{"plan" => %{"caps" => @valid_caps}}}
+      two = %Vocation{modes: %{"act" => %{"caps" => @plan_caps}}}
+      none = %Vocation{modes: nil}
 
-      assert {:ok, caps} = Vocations.get_caps(vocation, "build")
-      assert caps == @valid_caps
+      for vocation <- [one, two, none, nil] do
+        assert {:ok, caps} = Vocations.get_caps(vocation, "plan")
+        assert caps == Modes.caps("plan")
+
+        assert {:ok, caps} = Vocations.get_caps(vocation, "act")
+        assert caps == Modes.caps("act")
+      end
     end
 
-    test "returns :unknown_mode for a missing mode" do
-      vocation = %Vocation{modes: %{"build" => %{"caps" => @valid_caps}}}
-      assert {:error, :unknown_mode} = Vocations.get_caps(vocation, "nonexistent")
-    end
-
-    test "returns default caps for \"chat\" on a vocation with no modes" do
-      vocation = %Vocation{modes: nil}
-      assert {:ok, caps} = Vocations.get_caps(vocation, "chat")
-      assert caps == Nest.Sandbox.default_caps()
-    end
-
-    test "returns default caps for \"chat\" on a nil vocation" do
-      assert {:ok, caps} = Vocations.get_caps(nil, "chat")
-      assert caps == Nest.Sandbox.default_caps()
-    end
-
-    test "returns :unknown_mode for non-chat on a vocation with no modes" do
-      assert {:error, :unknown_mode} = Vocations.get_caps(nil, "build")
-      assert {:error, :unknown_mode} = Vocations.get_caps(%Vocation{modes: nil}, "build")
-    end
-
-    test "returns :unknown_mode when the mode has no caps key" do
-      vocation = %Vocation{modes: %{"build" => %{"description" => "no caps"}}}
-      assert {:error, :unknown_mode} = Vocations.get_caps(vocation, "build")
+    test "returns :unknown_mode for a name this build does not implement" do
+      for name <- ["chat", "build", "nonexistent", ""] do
+        assert {:error, :unknown_mode} = Vocations.get_caps(nil, name)
+        assert {:error, :unknown_mode} = Vocations.get_caps(%Vocation{modes: nil}, name)
+      end
     end
   end
 
   describe "list_modes/1" do
-    test "returns sorted mode names" do
-      vocation = %Vocation{
-        modes: %{
-          "plan" => %{"caps" => @valid_caps},
-          "build" => %{"caps" => @valid_caps},
-          "audit" => %{"caps" => @valid_caps}
-        }
-      }
-
-      assert Vocations.list_modes(vocation) == ["audit", "build", "plan"]
+    test "is every mode, for every vocation" do
+      # The vocation is ignored: the modes are universal. `compact` is
+      # deliberately not in the list — it is a protocol marker that rides the
+      # `[mode: …]` prefix, not a mode an agent can be in.
+      for vocation <- [
+            nil,
+            %Vocation{modes: nil},
+            %Vocation{modes: %{}},
+            %Vocation{modes: %{"plan" => %{"caps" => @valid_caps}}},
+            %Vocation{modes: %{"build" => %{"caps" => @valid_caps}, "audit" => %{}}}
+          ] do
+        assert Vocations.list_modes(vocation) == ["plan", "act"]
+      end
     end
 
-    test "returns [\"chat\"] for a vocation with nil modes" do
-      assert Vocations.list_modes(nil) == ["chat"]
-      assert Vocations.list_modes(%Vocation{modes: nil}) == ["chat"]
-    end
-
-    test "returns [\"chat\"] for a vocation with empty modes" do
-      assert Vocations.list_modes(%Vocation{modes: %{}}) == ["chat"]
-    end
-  end
-
-  describe "default_mode/1" do
-    test "returns the first sorted mode" do
-      vocation = %Vocation{
-        modes: %{
-          "plan" => %{"caps" => @valid_caps},
-          "audit" => %{"caps" => @valid_caps}
-        }
-      }
-
-      assert Vocations.default_mode(vocation) == "audit"
-    end
-
-    test "returns \"chat\" for a vocation with no modes" do
-      assert Vocations.default_mode(nil) == "chat"
-      assert Vocations.default_mode(%Vocation{modes: nil}) == ["chat"] |> hd()
+    test "agrees with the constants it now answers from" do
+      assert Vocations.list_modes(nil) == Modes.names()
+      refute "compact" in Vocations.list_modes(nil)
     end
   end
 
-  describe "mode_catalog/2" do
-    test "builds a sorted catalog with caps-derived paths followed by the description" do
-      vocation = %Vocation{
-        name: "Programmer #{System.unique_integer([:positive])}",
-        modes: %{
-          "build" => %{
-            "description" => "You're clear to edit the project in the workspace.",
-            "caps" => @valid_caps
-          },
-          "plan" => %{
-            "description" => "Read-only planning only, can still run commands.",
-            "caps" => @plan_caps
-          }
-        }
-      }
-
-      catalog = Vocations.mode_catalog(vocation, ["shell-cmd"], false)
-
-      assert catalog =~ "\n\n[Available modes]\n"
-
-      assert catalog =~
-               ~s(- build: Read only "/". Read and write workspace and /tmp. Network disabled. You're clear to edit the project in the workspace.)
-
-      assert catalog =~
-               ~s(- plan: Read only "/". Read and write /tmp. Network disabled. Read-only planning only, can still run commands.)
-    end
-
-    test "plan mode without :workspace does NOT say workspace is writable" do
-      vocation = %Vocation{
-        name: "Programmer #{System.unique_integer([:positive])}",
-        modes: %{
-          "plan" => %{
-            "description" => "Read-only planning.",
-            "caps" => @plan_caps
-          }
-        }
-      }
-
-      catalog = Vocations.mode_catalog(vocation, ["shell-cmd"], false)
-
-      refute catalog =~ "Read and write workspace"
-      assert catalog =~ "plan: Read only \"/\". Read and write /tmp."
-    end
-
-    test "a tool-less vocation omits caps and tool guidance but keeps descriptions + compact" do
-      vocation = %Vocation{
-        name: "Chat",
-        modes: %{
-          "chat" => %{
-            "description" => "General conversation.",
-            "caps" => @valid_caps
-          }
-        }
-      }
-
-      catalog = Vocations.mode_catalog(vocation, [], false)
-
-      assert catalog =~ "\n\n[Available modes]\n"
-      assert catalog =~ "- chat: General conversation."
-      assert catalog =~ Vocations.compact_description()
-      refute catalog =~ "Read only"
-      refute catalog =~ "Read and write"
-      refute catalog =~ "Network disabled"
-      refute catalog =~ "errors in tool calls"
+  describe "requires_workspace?/1" do
+    test "is true for every vocation, because every space has a workspace" do
+      # It used to be derived from the mode caps (a vocation needed a workspace
+      # iff some mode wrote `:workspace`). Now `act` is the only thing that
+      # writes it and every agent can be in `act`, so the answer is a constant.
+      for vocation <- [
+            nil,
+            %Vocation{modes: nil},
+            %Vocation{modes: %{}},
+            %Vocation{modes: %{"plan" => %{"caps" => @plan_caps}}},
+            %Vocation{modes: %{"build" => %{"caps" => @valid_caps}}}
+          ] do
+        assert Vocations.requires_workspace?(vocation) == true
+      end
     end
   end
 end

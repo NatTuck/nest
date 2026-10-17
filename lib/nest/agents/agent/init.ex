@@ -117,13 +117,20 @@ defmodule Nest.Agents.Agent.Init do
     cache_lookup = Map.get(attrs, :context_limit_lookup, &Nest.Models.context_limit/2)
     {context_limit, context_limit_source} = initial_context_limit(model, cache_lookup)
 
-    {system_prompt, mode, tool_names, cached_vocation} =
+    # The agent's own mode, which seeds `live.mode`. It is the persisted row's
+    # once the start path carries it (`agents.mode`, part B of stage 3) and the
+    # universal default until then; the composer needs it only for the caps the
+    # `AGENTS.md` read is authorized with.
+    mode = Map.get(attrs, :mode, Nest.Modes.default())
+
+    {system_prompt, tool_names, cached_vocation} =
       SystemPrompt.compose_vocation_config(
         Map.get(attrs, :vocation),
         mounts,
         {context_limit, context_limit_source},
         Map.get(attrs, :name, ""),
-        Map.get(attrs, :depth, 0)
+        Map.get(attrs, :depth, 0),
+        mode
       )
 
     tool_names = maybe_exclude_spawn(tool_names, attrs)

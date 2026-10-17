@@ -226,7 +226,7 @@ defmodule Nest.Sandbox do
   The network is a *space* property (`spaces.network_access`), not a vocation
   mode's, so this is where the mode's own `"net"` is overridden — and it is the
   one place, because every caps resolution ends in
-  `Nest.ProjectConfig.apply_or_default/2`, which calls this. Nothing downstream
+  `Nest.ProjectConfig.resolve_caps/2`, which calls this. Nothing downstream
   changes: `Nest.Sandbox.build/2` and both backends keep reading `caps["net"]`.
 
   The value travels on the `Mounts` value (resolved once at agent start, like the

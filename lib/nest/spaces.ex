@@ -541,10 +541,13 @@ defmodule Nest.Spaces do
     end
   end
 
-  defp ensure_workspace_for(%Nest.Vocations.Vocation{} = vocation, attrs) do
+  # Every space requires a workspace now (`Vocations.requires_workspace?/1` is a
+  # constant), so this is unconditional: a space created without one is refused
+  # rather than left with agents whose file and shell tools could never work.
+  defp ensure_workspace_for(%Nest.Vocations.Vocation{} = _vocation, attrs) do
     workspace = attrs[:workspace_path]
 
-    if Vocations.requires_workspace?(vocation) and is_nil(workspace) do
+    if is_nil(workspace) do
       {:error, :workspace_required}
     else
       Nest.Sandbox.workspace_error(workspace)

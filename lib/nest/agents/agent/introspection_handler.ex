@@ -292,7 +292,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
         # `Protocol.UndefinedError` at `Jason.encode/1` time.
         partial: Streaming.to_json_safe(state.live.streaming_acc),
         modes: Vocations.list_modes(state.vocation),
-        default_mode: Vocations.default_mode(state.vocation),
+        default_mode: Nest.Modes.default(),
         current_mode: state.live.mode,
         context_limit: state.llm_metrics.context_limit,
         context_limit_source: state.llm_metrics.context_limit_source,
