@@ -76,32 +76,6 @@ defmodule Nest.Agents.Agent.ModeAuthority do
   end
 
   @doc """
-  The actor map for an **agent** acting on `target`, with the actor's own mode
-  read from its row.
-
-  A tool call already holds the acting agent's mode (`ctx.mode`), so it passes it
-  in; a `handle_call` on behalf of another agent does not, and the row is the
-  truth about what that agent may pass on anyway.
-  """
-  @spec actor_for(integer(), String.t(), String.t()) :: actor()
-  def actor_for(space_id, name, target) do
-    %{
-      kind: :agent,
-      space_id: space_id,
-      name: name,
-      mode: row_mode(space_id, name),
-      target: target
-    }
-  end
-
-  defp row_mode(space_id, name) do
-    case Nest.Persistence.fetch_agent(space_id, name) do
-      {:ok, %{mode: mode}} when is_binary(mode) -> mode
-      _other -> Modes.default()
-    end
-  end
-
-  @doc """
   The transcript notice for a mode change: a `[Nest notice]`-tagged message
   naming the new mode and who set it.
 

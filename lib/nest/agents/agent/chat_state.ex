@@ -179,11 +179,11 @@ defmodule Nest.Agents.Agent.ChatState.Live do
             # `nil` when no projection is in flight.
             context_projection: nil,
             tool_index_map: %{},
-            # The agent's currently active conversation mode (e.g.
-            # "chat", "build", "plan"). Reset to the vocation's
-            # default on `init/1` and changed at runtime by the
-            # mode selector / `change_mode`.
-            mode: "chat",
+            # The agent's currently active conversation mode - one of
+            # `Nest.Modes.names/0`. Initialised from the row on `init/1` (the row
+            # is seeded from the blueprint's `default_mode`) and changed at
+            # runtime by the human's selector or a message's `set_mode`.
+            mode: Nest.Modes.default(),
             # The outstanding interest registrations (issue #54): a
             # `agents-wait` or `shell-wait` call that returned
             # immediately and left the agent idle. Keyed by a `make_ref/0`

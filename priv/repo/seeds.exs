@@ -171,6 +171,8 @@ all_groups = ["file", "shell", "context", "agents"]
     - Collect simple information needed for planning discussion yourself.
     - Make small code changes yourself.
     - Delegate large chunks of implementation or complex research to a programmer minion.
+    - Avoid unnecessary delegation, and don't assume the user's comments and
+    suggestions are final instructions unless that's explicitly stated.
 
     Guidelines:
 

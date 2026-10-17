@@ -15,6 +15,9 @@ defmodule Nest.Agents.Agent.Callbacks do
   avoid an `alias` cycle with `Agent`.
   """
 
+  require Logger
+
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Handlers
   alias Nest.Agents.Agent.Inbox
@@ -26,19 +29,34 @@ defmodule Nest.Agents.Agent.Callbacks do
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Watch
-  alias Nest.Messages.{Assistant, Part, User}
+  alias Nest.Messages.{Assistant, NoticeTag, Part, User}
+
+  # The space's network access changed (`Nest.Spaces.set_network_access/2`).
+  #
+  # Two things move together and must not drift: the mounts (and the tool closures
+  # built from them) and the agent's *knowledge* of the change. The system prompt's
+  # network sentence was composed from the value the agent started with and is
+  # deliberately never rebuilt — changing it would break the prefix cache — so a
+  # `[Nest notice]` in the transcript is the only thing that makes the change
+  # visible to the model. It is a message, not a system-message edit.
+  #
+  # Nothing is refused and nothing waits: the value is the space's. The notice is
+  # *queued*, not appended, and this is the one judgement call in the change:
+  # `Turn.drain_inbox/1` would append it immediately, but draining starts a turn,
+  # and a turn is an LLM call — a space-wide toggle would cost one per live agent,
+  # which is not a cost a checkbox should have. Queued is also what a peer's mode
+  # notice does (`Turn.keep_mode/3` → `Inbox.enqueue_internal/4`), so the agent
+  # learns it at the start of its next turn, which is when it can act on it.
+  # A turn in flight re-reads the mounts at its next settle.
+  def handle_cast({:set_network_access, value}, state) do
+    state = apply_network_access(state, value)
+    {:noreply, Inbox.enqueue_internal(state, nil, network_notice(value), :notice)}
+  end
 
   # A tool worker's "my `agents-send` reached its target": a turn event for this
   # agent, translated by `Turn.handle/2` like the other worker results. The
   # worker casts it *before* its `{:tool_results, …}`, so the debt is discharged
   # before the response that settles the turn (issue #31 §1.4).
-  # The space's network access changed (`Nest.Spaces.set_network_access/2`).
-  # Nothing is refused and nothing waits: the value is the space's, and a turn in
-  # flight re-reads the mounts at its next settle.
-  def handle_cast({:set_network_access, value}, state) do
-    {:noreply, apply_network_access(state, value)}
-  end
-
   def handle_cast({:reply_sent, sender}, state) do
     Turn.handle({:reply_sent, sender}, state)
   end
@@ -137,6 +155,29 @@ defmodule Nest.Agents.Agent.Callbacks do
     mounts = %{state.mounts | network_access: value}
 
     %{state | mounts: mounts, tools: Nest.Tools.get_functions(tool_names(state), mounts)}
+  end
+
+  # What the agent is told when the space's network access changes. One sentence,
+  # in one place: the prompt's own sentence is the value the agent started with
+  # (`SystemPrompt.network_sentence/2`, never rebuilt while a conversation is
+  # live), so this is the only thing that makes a change visible. The
+  # `[mode: notice]` prefix and `NoticeTag` are the shape `ModeAuthority.notice/2`
+  # and `WorkspaceHandler.notice_pair/1` already use, so every runtime notice is
+  # built alike.
+  defp network_notice(true) do
+    "[mode: notice]\n" <>
+      NoticeTag.tag(
+        "Network access for this space is now enabled: your commands can reach the " <>
+          "network."
+      )
+  end
+
+  defp network_notice(false) do
+    "[mode: notice]\n" <>
+      NoticeTag.tag(
+        "Network access for this space is now disabled: the sandbox blocks your " <>
+          "commands from reaching the network."
+      )
   end
 
   # The tool *names* an agent was built with, so the closures can be rebuilt
@@ -329,7 +370,6 @@ defmodule Nest.Agents.Agent.Callbacks do
     end
   end
 
-  # Catch-all dispatcher for introspection calls.
   # A mode change on the human's behalf (the UI selector). A *busy* agent is
   # refused rather than changed: `Turn.build_ctx/2` reads `state.live.mode` on
   # every settle, so applying it now would re-resolve the caps of the *ongoing*
@@ -343,14 +383,15 @@ defmodule Nest.Agents.Agent.Callbacks do
   # announcement is a user/assistant notice pair, like a workspace change's: the
   # user row is the runtime speaking and carries the notice marker, the assistant
   # row is the acknowledgement, and neither is an LLM request.
-  def handle_call({:set_mode, mode, actor}, _from, state) do
-    if Machine.status_for(state.live.machine) in [:idle, :model_missing] do
-      change_mode(state, mode, actor)
+  def handle_call({:set_mode, mode}, _from, state) do
+    if Inbox.busy_status?(Machine.status_for(state.live.machine)) do
+      {:reply, {:error, busy_sentence()}, state}
     else
-      {:reply, {:error, :agent_busy}, state}
+      change_mode(state, mode)
     end
   end
 
+  # Catch-all dispatcher for introspection calls.
   def handle_call(msg, from, state) do
     IntrospectionHandler.handle(msg, from, state)
   end
@@ -360,28 +401,60 @@ defmodule Nest.Agents.Agent.Callbacks do
   # clause's own `if` already spends one level of nesting on "can this agent take
   # a change at all". It lives after the dispatcher clause so the `handle_call/3`
   # clauses stay grouped.
-  defp change_mode(state, mode, actor) do
-    actor_map =
-      if actor == :human,
-        do: %{kind: :human},
-        else: ModeAuthority.actor_for(state.space_id, elem(actor, 1), state.name)
-
-    with :ok <- ModeAuthority.authorize(actor_map, mode),
+  defp change_mode(state, mode) do
+    with :ok <- ModeAuthority.authorize(%{kind: :human}, mode),
          :ok <- Nest.Persistence.update_agent_mode(state.space_id, state.name, mode) do
       state = %{state | live: %{state.live | mode: mode}}
 
-      # The notice pair is the runtime's own, appended in-process, so the
-      # tagged result is the shape every in-process append returns
-      # (`MessageAppender.append_in_process/2`) — and a broken sequence is the
-      # caller's error rather than a crash inside the agent.
-      case MessageAppender.handle_batch(state, mode_notice_pair(mode, actor)) do
-        {:ok, _stamped, state} -> {:reply, :ok, state}
-        {:stale, state} -> {:reply, {:error, :stale_append}, state}
-        {:invalid, reason, state} -> {:reply, {:error, reason}, state}
-      end
+      # `currentMode` only rides `chat:status`, and the settle loop broadcasts
+      # only on a status *change* — which this is not — so a second client
+      # watching this agent would keep the old badge until the next frame. The
+      # selector path publishes it here or it is published by accident.
+      Broadcasts.status(state)
+
+      announce_mode_change(state, mode)
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
+  end
+
+  # The notice pair is the runtime's own, appended in-process, so the tagged
+  # result is the shape every in-process append returns
+  # (`MessageAppender.append_in_process/2`).
+  #
+  # The row is already written and `live.mode` already moved by the time this
+  # runs, so **the change has happened whatever this returns**. Reporting an
+  # error here would tell the user the change failed when it took effect; a
+  # notice that could not be appended is a change with a missing announcement,
+  # and that is what it says.
+  defp announce_mode_change(state, mode) do
+    case MessageAppender.handle_batch(state, mode_notice_pair(mode, :human)) do
+      {:ok, _stamped, state} ->
+        {:reply, :ok, state}
+
+      {:stale, state} ->
+        Logger.warning(
+          "mode change to #{inspect(mode)} on #{state.space_id}/#{state.name} applied, " <>
+            "but its notice could not be appended: the tail moved under it"
+        )
+
+        {:reply, :ok, state}
+
+      {:invalid, reason, state} ->
+        Logger.warning(
+          "mode change to #{inspect(mode)} on #{state.space_id}/#{state.name} applied, " <>
+            "but its notice was rejected: #{inspect(reason)}"
+        )
+
+        {:reply, :ok, state}
+    end
+  end
+
+  # A sentence the client can show, not the atom `:agent_busy`: the channel hands
+  # this straight to the user.
+  defp busy_sentence do
+    "The agent is mid-turn. A mode applies at the start of a turn, so try again " <>
+      "when it is idle."
   end
 
   # The notice pair a mode change appends: the runtime speaking for itself (the

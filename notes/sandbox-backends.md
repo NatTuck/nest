@@ -83,8 +83,9 @@ cannot write the workspace, a project mount, or `/tmp`, and it cannot write
 
 * `plan` *sees* the project mounts, read-only. Under bwrap it sees the
   host paths themselves, read-only, through bwrap's own root bind — so the
-  capability is the same on both, and only what a `mode = "tmp"` mount resolves
-  to differs.
+  capability is the same on both for `mode = "rw"` mounts. A `mode = "tmp"` mount
+  is *refused* on a docker space rather than resolved differently — see the known
+  limitations.
 * A `caps.fs.write` path outside the symbolic entries and the `.nest` mounts
   names a host path the container does not have. `Docker.command/3` refuses that
   by name rather than letting the inner bwrap fail with `Can't bind mount …: No
@@ -327,15 +328,23 @@ the agent as `Execution failed: …`; it is never a half-built sandbox.
 
 ## Testing
 
-* A docker space's *start* reaches the daemon now. Every space has a workspace
-  (`Space.create_changeset/2`), so composing the prompt attempts the `AGENTS.md`
-  read — the literal `docker exec -i …` `Docker.command/3` builds, which is the
-  one call the inert `docker_runner` in `config/test.exs` does **not** cover. It
-  fails against a container that is not there, and
-  `SystemPrompt.agents_md_section/2`'s `else` clause swallows that (a project
-  with no `AGENTS.md` is the ordinary case), so nothing is printed and no
-  container is left behind. The call sites that build the prompt's mounts are
-  covered through `TmpSpace.prompt_mounts/5` and through that start path
+* **A docker space's *start* does not reach the daemon**, and that is a property
+  of the mounts rather than of the backend. Composing a prompt reads `AGENTS.md`
+  only when the *agent's* mounts name a workspace:
+  `SystemPrompt.agents_md_section/2`'s first clause returns `""` for
+  `%Mounts{workspace: nil}` without calling `Sandbox.read/3` at all. An agent
+  created through `Nest.Agents.create_agent/3` takes its workspace from that
+  call's `:workspace_path` option — a clone or a spawned child takes it from its
+  parent's mounts instead — and a space's own path reaches the root agent only
+  through `Nest.Spaces.create_space_with_root_agent/2`. The one docker-space agent
+  the suite starts (`none_scratch_name_test.exs`) names no workspace, so it never
+  makes the read; `config/test.exs`'s `docker_runner` note says why that is one
+  line from false. A docker agent *with* a workspace would make the read — the
+  literal `docker exec -i …` `Docker.command/3` builds, the one call the inert
+  runner does **not** cover — fail against a container that is not there, and be
+  logged at `:warning` as `sandbox_setup_failed` by
+  `Nest.Sandbox.Failure.log(:read, …)`. Nothing in the suite covers that today. The call sites that build the prompt's mounts are covered through
+  `TmpSpace.prompt_mounts/5` and through that start path
   (`none_scratch_name_test.exs`), which reads the mounts it built.
 * Everything that decides *what* to run is pure and asserted exactly:
   `Docker.container_name/1`, `layout/3`, `image_tag/1`, `dockerfile/1`,
@@ -423,6 +432,15 @@ docker ps -a --format '{{.Names}}' | grep '^nest-space-' || echo "no nest contai
   refused on a docker space**, by name, with a pointer at `.nest` mounts. The
   container's binds are fixed when it is created and one container serves every
   mode of a space, so a per-mode host path cannot be one of them.
+* **A `mode = "tmp"` `.nest` mount is refused on a docker space**, by name, with a
+  pointer at `mode = "rw"`. Such a mount is backed by a directory Nest makes, and
+  its source is derived from the scratch root — which on this backend names a path
+  *inside the container*, so the source that comes out is a **host** path. The
+  daemon would create it as root, and because a container's binds are fixed at
+  creation and shared by the whole space, that directory would belong to whichever
+  agent ran first and every other agent in the space would write into it. The real
+  fix is a container-local directory made by `mkdir_prefix/2` and bound by the
+  inner bwrap; that is not done here.
 * **A timed-out or cancelled docker command is not killed inside the container.**
   `ShellCmd` kills the process it started, which is the `docker` CLI; the command
   in the container keeps running (the inner `--die-with-parent` only covers the

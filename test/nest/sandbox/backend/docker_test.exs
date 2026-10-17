@@ -291,6 +291,10 @@ defmodule Nest.Sandbox.Backend.DockerTest do
       assert payload(read_only) =~ "--ro-bind '/ws' '/ws'"
       assert payload(read_only) =~ "--ro-bind '/tmp' '/tmp'"
       refute payload(read_only) =~ "--bind '/ws' '/ws'"
+      # And not merely the two expected self-binds: a read-only call's payload must
+      # contain no `--bind` at all. `--ro-bind / /` is recursive *and* recursively
+      # read-only, so a stray `--bind` is exactly what would loosen it.
+      refute payload(read_only) =~ "--bind"
     end
 
     test "starts in the workspace, and in the scratch root when there is none" do
@@ -316,6 +320,33 @@ defmodule Nest.Sandbox.Backend.DockerTest do
 
       assert payload(command) =~ "--chdir " <> ShellEscape.escape(ws)
       assert payload(command) =~ ShellEscape.escape("/tmp/.cmds/it's.sh")
+    end
+
+    test ~s(refuses a `mode = "tmp"` .nest mount, by name, and says the way out) do
+      # A `mode = "tmp"` mount is backed by a directory Nest makes, and its source
+      # is derived from the scratch root — which on this backend names a path
+      # *inside the container*. The source that comes out is therefore a host path,
+      # which the daemon would create as root, and a container's binds are fixed at
+      # creation and shared by the whole space, so that directory would be one
+      # agent's and every other agent in the space would write into it.
+      caps =
+        caps_with(%{
+          "project" => [
+            %{"mode" => "rw", "dest" => "/proj/data", "source" => "/proj/data"},
+            %{
+              "mode" => "tmp",
+              "dest" => "/proj/build",
+              "source" => "/tmp/agent-a/project/df5ca6c5eb41b38e"
+            }
+          ]
+        })
+
+      assert {:error, reason} = Docker.command(mounts("/ws"), caps, "/tmp/.cmds/x.sh")
+
+      assert reason =~ "/proj/build"
+      # `mode = "rw"` binds a path the container already has, so it is unaffected.
+      refute reason =~ "/proj/data"
+      assert reason =~ ~s(mode = "rw")
     end
 
     test "refuses a write path the container does not have, by name" do

@@ -83,22 +83,36 @@ describe("ModeSelector", () => {
     expect(screen.getByLabelText("Mode")).toBeDisabled();
   });
 
-  it("renders nothing until the server has said which mode the agent is in", () => {
+  it("shows an obvious indicator when the server has not said which mode the agent is in", () => {
     // The value is the server's (`currentMode`), so before the agent's `init`
-    // there is nothing to show. Rendering anyway would display the first option
-    // as selected — a mode the agent is not in.
+    // there is nothing to show. AGENTS.md's transparency rule asks for an obvious
+    // indicator rather than nothing — and a `<select>` would display its first
+    // option as selected, a mode the agent is not in.
     const { container } = render(
       <ModeSelector modes={["plan", "act"]} value={null} onChange={() => {}} />,
     );
+
     expect(container.querySelector("select")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("mode: (missing)");
   });
 
-  it("renders nothing for a value the server's list does not contain", () => {
+  it("shows an obvious indicator for a value the server's list does not contain", () => {
     // A mode the server does not have cannot be displayed as the current one,
-    // and must not be silently replaced by the first option either.
+    // must not be silently replaced by the first option, and must not be hidden.
     const { container } = render(
       <ModeSelector modes={["plan", "act"]} value="chat" onChange={() => {}} />,
     );
+
     expect(container.querySelector("select")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("mode: unknown (chat)");
+  });
+
+  it("still renders nothing for a single-mode agent, which is not a missing value", () => {
+    const { container } = render(
+      <ModeSelector modes={["act"]} value="act" onChange={() => {}} />,
+    );
+
+    expect(container.querySelector("select")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

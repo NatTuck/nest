@@ -15,8 +15,9 @@ defmodule Nest.Agents.Agent.Inbox do
 
   An entry is `%{id, from, content, timestamp, kind, mode, human?, fulfilled_ids,
   retrieved}`. `content` is stored **verbatim** (no `[mode: ...]` prefix — that
-  is added when the entry is delivered), `mode` is the human's requested mode,
-  always `nil` for an `agents-send` entry, and the producer-supplied fields are
+  is added when the entry is delivered), `mode` is the mode the entry asks the
+  recipient to run under — a human's own, or a peer's `set_mode` — and is `nil`
+  for an entry that asks for no change, and the producer-supplied fields are
   `human?` (the human's own words) and `fulfilled_ids` (the tool-call ids a
   backgrounded batch's result answers, issue #36), empty for other producers.
 
@@ -81,9 +82,9 @@ defmodule Nest.Agents.Agent.Inbox do
 
   ## One mode per delivery
 
-  A delivered batch runs in one mode: the most recent human-sourced entry that
-  carries a mode wins (`drain_mode/1`), and `nil` leaves the agent's current
-  mode unchanged. Because a human message is delivered alone, that winner is
+  A delivered batch runs in one mode: the most recent entry that carries a mode
+  wins (`drain_mode/1`), whatever its kind — a peer's `set_mode` counts as much
+  as a human's — and `nil` leaves the agent's current mode unchanged. Because a human message is delivered alone, that winner is
   simply its own requested mode, so every human message runs in the mode it
   asked for. The winner is resolved at **delivery-attempt time**, against the
   batch actually delivered — the executor applies it when it peeks the queue,
@@ -205,7 +206,7 @@ defmodule Nest.Agents.Agent.Inbox do
     * `{:error, reason}` — the target is in a broken state or the inbox
       is full.
   """
-  @spec handle_delivery(Agent.t(), String.t(), String.t(), kind()) ::
+  @spec handle_delivery(Agent.t(), String.t(), String.t(), kind(), String.t() | nil) ::
           {:reply, {:ok, :delivered | :queued} | {:error, term()}, Agent.t()}
   def handle_delivery(state, sender, content, kind \\ :agent, mode \\ nil) do
     state = satisfy_watch(state, sender, kind)

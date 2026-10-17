@@ -61,7 +61,17 @@ rather than being silently resolved either way
   (a decline, a park, a block) does not keep the mode
   (`Turn.restore_undelivered_mode/3`).
 * **Announced.** A `[Nest notice]` message in the target's transcript names the
-  actor and the new mode.
+  actor and the new mode — for the human's selector and for another agent's
+  `set_mode`. A mode carried on a message the agent itself received is stated by
+  that message's own `[mode: X]` prefix (or its header), so it gets no second
+  notice.
+* **Stated twice on the wire, once in the UI — deliberately.** A peer delivery
+  carries the recipient's mode in *both* the user-role row's `[mode: X]` prefix
+  and the `[Message from agent … | mode: M]` header. That is not redundancy to be
+  tidied away: the prefix is what the runtime's mode machinery reads and the
+  header is what a reader sees, and the UI drops whichever copy agrees with the
+  row's badge so that a disagreement stays visible
+  (`assets/js/utils/agentHeader.js`).
 * **Never propagated.** A parent's own change does not touch existing
   descendants: the user flipping the root to `plan` for a planning discussion
   must not jam background workers that are mid-task in `act`.

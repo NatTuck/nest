@@ -399,5 +399,11 @@ defmodule Nest.Agents.Agent.BatchPlan do
   def spawn_error_message(:max_depth_reached),
     do: "Could not spawn batch children: max delegation depth reached."
 
+  # The spawner named a mode the monotone rule refuses. A batch is one call, so a
+  # per-child mode that cannot be honoured fails the whole call rather than being
+  # dropped for that child — the model asked for it and has to hear why not.
+  def spawn_error_message({:mode_refused, reason}),
+    do: "Could not spawn batch children: #{reason}"
+
   def spawn_error_message(reason), do: "Could not spawn batch children: #{inspect(reason)}"
 end
