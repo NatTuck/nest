@@ -109,11 +109,43 @@ defmodule Nest.Sandbox.Binds do
     |> Enum.reject(&(&1 in bound))
   end
 
+  @doc """
+  The `.nest` project mounts a backend whose scratch is not a host path cannot
+  back.
+
+  A `mode = "tmp"` mount is backed by a directory *Nest makes*, and its source is
+  derived from the scratch root (`Nest.ProjectConfig.source_for/2`). Under a
+  backend whose scratch is the container's own `/tmp`, that root names a path
+  **inside the container**, so the source that comes out is a *host* path — which
+  the daemon would create as root, and which is one agent's directory shared by
+  every other agent in the space, because a container's binds are fixed at
+  creation and serve the whole space. `mode = "rw"` binds a path the container
+  already has, so it is unaffected.
+
+  Returns the dests, for the backend to refuse by name. Empty on a backend whose
+  scratch is a host directory, where the derived source is exactly right.
+  """
+  @spec non_host_project_mounts(map(), Mounts.t()) :: [String.t()]
+  def non_host_project_mounts(caps, mounts) do
+    if Mounts.host_scratch?(mounts) do
+      []
+    else
+      caps
+      |> project_list()
+      |> Enum.filter(&(&1["mode"] == "tmp"))
+      |> Enum.map(& &1["dest"])
+    end
+  end
+
   # The caps shape of a mode that writes the workspace and the scratch — what a
   # container has to be able to serve — with the `.nest` project mounts and mask
   # merged in by `Nest.ProjectConfig`, which is the only thing that knows how to
   # read them. A malformed `.nest` leaves the shape alone, exactly as
   # `ProjectConfig.resolve_caps/2` does everywhere else.
+  #
+  # The `"net" => false` here is a placeholder, not a decision: the container's
+  # network comes from the *call's* caps (`layout/3`), because the network is the
+  # space's and a container is created once for the space. Nothing reads this key.
   defp container_caps(mounts) do
     caps = %{"net" => false, "fs" => %{"read" => ["/"], "write" => [":workspace", "/tmp"]}}
 

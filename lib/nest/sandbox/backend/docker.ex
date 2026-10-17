@@ -65,7 +65,6 @@ defmodule Nest.Sandbox.Backend.Docker do
   # required because that same bind made them read-only, so redirects to
   # `/dev/null` and `/proc/self` would otherwise break. There is deliberately no
   # `--unshare-all`, `--unshare-user` or `--unshare-net`.
-  @inner_flags ~w(--die-with-parent --new-session --ro-bind / / --dev-bind /dev /dev --proc /proc)
 
   # The flags every container of this backend is created with.
   @container_flags [
@@ -103,12 +102,11 @@ defmodule Nest.Sandbox.Backend.Docker do
     "Error response from daemon"
   ]
 
-  alias Nest.FSPath
   alias Nest.Hardware
   alias Nest.ProjectConfig
   alias Nest.Sandbox
+  alias Nest.Sandbox.Backend.Docker.CommandLine
   alias Nest.Sandbox.{Binds, Failure, Installation, Mounts, Paths}
-  alias Nest.Tools.ShellEscape
 
   # ---- the backend contract ----
 
@@ -131,7 +129,7 @@ defmodule Nest.Sandbox.Backend.Docker do
 
     with :ok <- check_binds(mounts, caps),
          {:ok, name} <- ensure_container(mounts, caps) do
-      {:ok, %{command: exec_line(name, mounts, caps, script, nil), cd: nil}}
+      {:ok, %{command: CommandLine.exec_line(name, mounts, caps, script, nil), cd: nil}}
     end
   end
 
@@ -150,7 +148,7 @@ defmodule Nest.Sandbox.Backend.Docker do
     caps = caps || Sandbox.default_caps()
 
     with {:ok, name} <- container_name(mounts) do
-      {:ok, %{command: exec_line(name, mounts, caps, script, log_path), cd: nil}}
+      {:ok, %{command: CommandLine.exec_line(name, mounts, caps, script, log_path), cd: nil}}
     end
   end
 
@@ -185,81 +183,17 @@ defmodule Nest.Sandbox.Backend.Docker do
 
   defp docker_failure?(stderr), do: Enum.any?(@docker_markers, &String.contains?(stderr, &1))
 
-  # ---- the command line ----
-
-  defp exec_line(name, mounts, caps, script, log_path) do
-    "docker exec -i #{name} /bin/bash -c " <>
-      ShellEscape.escape(payload(mounts, caps, script, log_path))
-  end
-
-  # The script the container's bash runs. Two shell layers read it — the BEAM's
-  # command parser, which sees the whole thing as one quoted argument, and the
-  # container's bash, which runs it — so every path is escaped for the second and
-  # the whole payload for the first.
-  defp payload(mounts, caps, script, log_path) do
-    pipefail = if log_path, do: "set -o pipefail; ", else: ""
-
-    pipefail <>
-      mkdir_prefix(mounts, log_path) <>
-      "exec " <> sandbox_line(mounts, caps, script) <> tee_suffix(log_path)
-  end
-
-  # The agent's scratch directory is the container's own `/tmp/<agent>`, so the
-  # command that runs is what makes it — nothing on the host can.
-  defp mkdir_prefix(mounts, log_path) do
-    dirs =
-      [Mounts.scratch(mounts), log_path && Path.dirname(log_path)]
-      |> Enum.reject(&is_nil/1)
-      |> Enum.uniq()
-
-    case dirs do
-      [] -> ""
-      dirs -> "mkdir -p " <> Enum.map_join(dirs, " ", &ShellEscape.escape/1) <> " && "
-    end
-  end
-
-  defp tee_suffix(nil), do: ""
-
-  defp tee_suffix(log_path) do
-    " 2>&1 | tee " <> ShellEscape.escape(log_path)
-  end
-
-  defp sandbox_line(mounts, caps, script) do
-    binds =
-      (Binds.specs(caps, mounts) ++ workspace_spelling(mounts, Binds.workspace_mode(caps)))
-      |> Enum.flat_map(&inner_bind/1)
-
-    args =
-      @inner_flags ++
-        binds ++
-        ["--chdir", ShellEscape.escape(chdir(mounts))] ++
-        ["/bin/bash", ShellEscape.escape(script)]
-
-    Enum.join(["bwrap" | args], " ")
-  end
-
-  # The container has already put this bind's source at its `dest`, so what the
-  # sandbox inside has to do is set the *mode* of that path: `--ro-bind / /` made
-  # everything read-only, and a read-only bind cannot be upgraded from inside.
-  # A self-bind is exactly "set this path's mode", and bwrap applies it to the
-  # mount that is already there.
-  defp inner_bind({_source, dest, mode}) do
-    [bind_flag(mode), ShellEscape.escape(dest), ShellEscape.escape(dest)]
-  end
-
-  defp bind_flag(:rw), do: "--bind"
-  defp bind_flag(:ro), do: "--ro-bind"
-
-  # No workspace means "start in the scratch root", exactly as bwrap's own
-  # `--chdir` does when it has a scratch bind and no workspace.
-  defp chdir(%Mounts{workspace: nil}), do: Paths.sandbox_root()
-  defp chdir(%Mounts{workspace: workspace}), do: workspace
-
   # A `caps.fs.write` path outside the symbolic entries and the `.nest` mounts
   # names a *host* path the container does not have, so the sandbox inside cannot
   # bind it. Refuse by name rather than let it fail as `bwrap: Can't bind mount
   # …: No such file or directory`, an ordinary `:enoent`.
   defp check_binds(mounts, caps) do
+    with :ok <- check_unbound_writes(mounts, caps) do
+      check_project_mounts(mounts, caps)
+    end
+  end
+
+  defp check_unbound_writes(mounts, caps) do
     case Binds.unbound_write_paths(caps, mounts) do
       [] ->
         :ok
@@ -269,6 +203,25 @@ defmodule Nest.Sandbox.Backend.Docker do
          "The docker backend cannot bind #{Enum.join(paths, ", ")}: its binds are " <>
            "the container's, which does not have that path. Declare it as a " <>
            "[[mount]] in .nest instead."}
+    end
+  end
+
+  # A `mode = "tmp"` mount is backed by a directory Nest makes, and its source is
+  # derived from the scratch root — which on this backend names a path *inside the
+  # container*, so the source that comes out is a host path. Refuse it by name and
+  # say the way out, rather than let the daemon create a root-owned host directory
+  # that the whole space shares. See `Binds.non_host_project_mounts/2`.
+  defp check_project_mounts(mounts, caps) do
+    case Binds.non_host_project_mounts(caps, mounts) do
+      [] ->
+        :ok
+
+      dests ->
+        {:error,
+         "The docker backend cannot back #{Enum.join(dests, ", ")}: a " <>
+           "`mode = \"tmp\"` .nest mount needs a directory Nest makes, and on a " <>
+           "docker space that directory would be a host path shared by every agent " <>
+           "in the space. Use `mode = \"rw\"` for that mount."}
     end
   end
 
@@ -326,7 +279,33 @@ defmodule Nest.Sandbox.Backend.Docker do
       {:error, reason} -> Logger.warning("#{@log_tag} #{reason}")
     end
 
+    remove_stage_dir(space_id)
     :ok
+  end
+
+  # The staging directory is the one thing this backend leaves on the host, and it
+  # is per space, so an archive, a delete or a network change takes it along. It is
+  # recreated lazily by `stage_script/2`.
+  #
+  # `File.rm_rf` on a path derived from an id is the shape `SMELLS.md` warns about,
+  # so the guard is explicit: the directory has to be a `nest-docker-…` one, which
+  # is the only thing this module ever creates there, and anything else is refused
+  # and logged rather than removed.
+  defp remove_stage_dir(space_id) do
+    parent = space_id |> Paths.docker_stage_dir() |> Path.dirname()
+
+    if String.starts_with?(Path.basename(parent), "nest-docker-") do
+      case File.rm_rf(parent) do
+        {:ok, _paths} ->
+          :ok
+
+        {:error, reason, path} ->
+          Logger.warning("#{@log_tag} could not remove #{path}: #{inspect(reason)}")
+      end
+    else
+      Logger.warning("#{@log_tag} refusing to remove #{parent}: not a docker staging directory")
+      :error
+    end
   end
 
   defp list_containers(space_id, runner) do
@@ -547,25 +526,7 @@ defmodule Nest.Sandbox.Backend.Docker do
   """
   @spec container_binds(Mounts.t()) :: [Binds.spec()]
   def container_binds(mounts) do
-    Binds.container_specs(mounts) ++ workspace_spelling(mounts, :rw)
-  end
-
-  # The workspace at the path the *caller* named, when the shared bind list uses
-  # a different one. `Nest.Sandbox.Binds` binds the canonical path, and under
-  # bwrap the caller's spelling still resolves — the host's `/` is bound
-  # read-only underneath it, so the kernel follows the symlink to the writable
-  # bind. A container sees only the image and the explicit binds, so nothing
-  # resolves it, and every path the model was given names that spelling. So the
-  # container materializes it, and the sandbox inside re-binds it with the call's
-  # own mode, making a write through either spelling equally writable.
-  defp workspace_spelling(%Mounts{workspace: nil}, _mode), do: []
-
-  defp workspace_spelling(%Mounts{workspace: workspace}, mode) do
-    if FSPath.canonical(workspace) == workspace do
-      []
-    else
-      [{workspace, workspace, mode}]
-    end
+    Binds.container_specs(mounts) ++ CommandLine.workspace_spelling(mounts, :rw)
   end
 
   @doc """
