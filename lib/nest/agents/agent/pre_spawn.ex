@@ -247,11 +247,10 @@ defmodule Nest.Agents.Agent.PreSpawn do
   # Root and fresh-child path: own the system row at index 0.
   defp pre_spawn_with_system(attrs) do
     # Compose the system prompt here, in the caller, and carry it on the attrs so
-    # `init/1` reuses it. Composing it runs the sandbox (`AGENTS.md` is read
-    # through it, which spawns a `bwrap`), and `init/1` runs with the supervisor
-    # blocked until it returns — so composing it there was serial across every
-    # agent start. Only this path needs it: the clone path writes no system row.
-    # See `Init.prepare/1`.
+    # `init/1` reuses it. Composing it reads `AGENTS.md` and `.nest` from disk,
+    # and `init/1` runs with the supervisor blocked until it returns — so
+    # composing it there was serial across every agent start. Only this path
+    # needs it: the clone path writes no system row. See `Init.prepare/1`.
     attrs = Init.prepare(attrs)
 
     # Refuse an agent without a non-empty system message (validate first).

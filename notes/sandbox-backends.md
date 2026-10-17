@@ -22,7 +22,7 @@ already travels with every call. Adding a backend means adding a module under
 | Scratch (`/tmp`) | the space scratch dir, bound at `/tmp` | the container's own `/tmp`, made writable by a self-bind | the host's real `/tmp` |
 | `caps.net` (the space's `network_access`) | `--share-net` / `--unshare-net` | no flag / `--network none` | ignored |
 | `.nest` mounts | `--bind` / `--ro-bind` | `-v` | not bound (the host path is already visible) |
-| `.nest` read-only mask | a `/dev/null` `--ro-bind` | the same bind, in both layers | **not enforced** |
+| `.nest` + `AGENTS.md` read-only mask | a `/dev/null` (or the file's own) `--ro-bind` | the same bind, in both layers | **not enforced** |
 | `caps.shell.background` | enforced by `ShellJobs` | enforced by `ShellJobs` | enforced by `ShellJobs` |
 | HPU devices | host `/dev` `--dev-bind` + writable Habana log dir | `--device` per path | already visible |
 | Process/net namespace | unshared | the container's | the host's |
@@ -34,7 +34,8 @@ once at agent start, carried on the `Mounts` value, and injected by
 
 **`none` enforces nothing.** It is the escape hatch for a space that must reach
 the real machine, and its caps are unenforceable by construction — including the
-`.nest` read-only mask, so an agent in a `none` space can edit its own `.nest`.
+read-only mask over `.nest` and `AGENTS.md`, so an agent in a `none` space can
+edit either.
 That is stated in `Nest.Sandbox.Backend.None`'s moduledoc, in `Nest.Spaces.Space`'s
 and in the New Space form's help text, rather than papered over.
 
@@ -45,7 +46,8 @@ scratch and the workspace's own path for the workspace.
 
 `Nest.Sandbox.Binds` is the one derivation of the binds a call makes — the
 workspace, the extra `caps.fs.write` paths, the scratch root at `/tmp`, the
-`.nest` project mounts and the `.nest` mask — as `{source, dest, mode}` triples.
+`.nest` project mounts and the `.nest`/`AGENTS.md` mask — as
+`{source, dest, mode}` triples.
 Both binding backends render that list, so they cannot drift:
 
 * `Nest.Sandbox.Backend.Bwrap` renders each triple as `--bind`/`--ro-bind` over
@@ -303,6 +305,28 @@ A `"none"` space enforces none of this: it runs the bare command on the host, so
 there is nothing to bind a mask with and an agent there can edit or create
 either file. Same statement as "caps cannot be enforced for a `none` space".
 
+### Residuals
+
+* **A pre-existing *symlink* at either path is neither read nor masked.**
+  `--ro-bind SRC DEST` makes `DEST` a mount point and the kernel resolves the
+  final component, so for a symlink the mount lands on the *target* and the link
+  stays an ordinary entry in the read-write workspace bind — the mask would be a
+  no-op. A target *outside* the workspace is worse: `bwrap` cannot create the
+  mount point and every command in that workspace fails. So
+  `ProjectConfig.config_file_state/1` reports `{:not_regular, :symlink}` and all
+  three consumers treat it as "not config": `.nest` is treated as empty,
+  `AGENTS.md` is replaced in the prompt by a notice telling the agent it is a
+  symlink it may read but must not trust as policy, and **neither is bound**. An
+  agent cannot create a symlink there (when the file is masked the path is
+  already a mount point), so this is only ever a pre-existing human setup. It is
+  logged once per path per BEAM.
+* **Adding or removing `AGENTS.md` mid-session replaces the space's docker
+  container.** The presence of either config file is part of `nest.layout`, so a
+  change replaces the container — which takes every agent's `/tmp` with it:
+  offloads, background-job logs, and any running background job. Unlike `.nest`,
+  people do add an `AGENTS.md` while agents are running, so it is worth knowing
+  before you do.
+
 ## The derived image
 
 ```
@@ -344,22 +368,13 @@ the agent as `Execution failed: …`; it is never a half-built sandbox.
 
 ## Testing
 
-* **A docker space's *start* does not reach the daemon**, and that is a property
-  of the mounts rather than of the backend. Composing a prompt reads `AGENTS.md`
-  only when the *agent's* mounts name a workspace:
-  `SystemPrompt.agents_md_section/2`'s first clause returns `""` for
-  `%Mounts{workspace: nil}` without calling `Sandbox.read/3` at all. An agent
-  created through `Nest.Agents.create_agent/3` takes its workspace from that
-  call's `:workspace_path` option — a clone or a spawned child takes it from its
-  parent's mounts instead — and a space's own path reaches the root agent only
-  through `Nest.Spaces.create_space_with_root_agent/2`. The one docker-space agent
-  the suite starts (`none_scratch_name_test.exs`) names no workspace, so it never
-  makes the read; `config/test.exs`'s `docker_runner` note says why that is one
-  line from false. A docker agent *with* a workspace would make the read — the
-  literal `docker exec -i …` `Docker.command/3` builds, the one call the inert
-  runner does **not** cover — fail against a container that is not there, and be
-  logged at `:warning` as `sandbox_setup_failed` by
-  `Nest.Sandbox.Failure.log(:read, …)`. Nothing in the suite covers that today. The call sites that build the prompt's mounts are covered through
+* **No test can reach the daemon from a prompt composition**, and that is now
+  structural rather than a property of a fixture: `AGENTS.md` is a **host** read
+  (`SystemPrompt.agents_md_section/1` -> `ProjectConfig.read_config_file/1`), so
+  composing a prompt reaches no backend on any of the three. There is no agent
+  whose workspace would make it shell out, and no `sandbox_setup_failed` line to
+  print. `config/test.exs`'s `docker_runner` note says the same thing.
+  The call sites that build the prompt's mounts are covered through
   `TmpSpace.prompt_mounts/5` and through that start path
   (`none_scratch_name_test.exs`), which reads the mounts it built.
 * Everything that decides *what* to run is pure and asserted exactly:

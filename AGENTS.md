@@ -59,9 +59,10 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   not visible in it and `caps.fs.read` is not what docker binds: **the image is
   the read set**, which makes it *stricter* than bwrap, not looser. `none` runs
   the bare command on the host, so **caps cannot be enforced** for that space
-  (nor the read-only mask over `.nest` and `AGENTS.md`). Say all of that plainly wherever a backend is
-  offered or documented; never imply otherwise. `notes/sandbox-backends.md` has
-  the full table, the container flags bwrap needs and what they cost.
+  (nor the read-only mask over `.nest` and `AGENTS.md`). Say all of that
+  plainly wherever a backend is offered or documented; never imply otherwise.
+  `notes/sandbox-backends.md` has the full table, the container flags bwrap
+  needs and what they cost.
 - **Two files are masked read-only in a writable workspace, not one**: `.nest`
   and `AGENTS.md`. Both are human-authored project config — one grants host
   access, the other is the project's policy — and an agent that can rewrite

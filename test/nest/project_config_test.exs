@@ -137,14 +137,19 @@ defmodule Nest.ProjectConfigTest do
       expect_error(dir, body, "duplicate")
     end
 
-    test "reports a .nest it cannot read", %{dir: dir} do
-      # A directory where the file should be is the cheapest way to make the
-      # read fail, and unlike a permission bit it behaves the same for any user.
-      File.mkdir_p!(nest_path(dir))
+    test "reports a regular .nest it cannot read", %{dir: dir} do
+      # A *regular* file with no read bit: the one state that still reaches the
+      # error branch. A directory (or a symlink) is a non-regular path, and that
+      # is a different answer — it is neither read nor masked, and grants
+      # nothing (see the describe below).
+      write_nest(dir, "")
+      File.chmod!(nest_path(dir), 0o000)
+
+      on_exit(fn -> File.chmod(nest_path(dir), 0o644) end)
 
       log =
         capture_log(fn ->
-          assert ProjectConfig.load(dir) == {:error, "could not read .nest: :eisdir"}
+          assert ProjectConfig.load(dir) == {:error, "could not read .nest: :eacces"}
         end)
 
       # Asserted for inclusion only: `capture_log` collects every process's
@@ -154,6 +159,57 @@ defmodule Nest.ProjectConfigTest do
       # deliberate — a `.nest` we cannot read must not degrade silently — and it
       # is not assertable from here.
       assert log =~ "could not read .nest"
+    end
+
+    test "treats a .nest that is a directory as empty", %{dir: dir} do
+      # A directory is not a regular file, so it is neither read nor masked.
+      File.mkdir_p!(nest_path(dir))
+
+      capture_log(fn ->
+        assert ProjectConfig.load(dir) == {:ok, %{"mounts" => []}}
+        assert ProjectConfig.section(dir) == ""
+      end)
+    end
+  end
+
+  describe "a config path that is not a regular file" do
+    test "a symlinked .nest grants nothing, and is reported once", %{dir: dir} do
+      target = Path.join(dir, "real.nest")
+      File.write!(target, "[[mount]]\npath = \"~/x\"\nmode = \"rw\"\n")
+      File.ln_s!(target, nest_path(dir))
+
+      # A symlink is neither read nor masked: `--ro-bind` would resolve the final
+      # component and mount on the *target*, leaving the link an ordinary entry
+      # in the read-write workspace bind. So it grants nothing at all.
+      log = capture_log(fn -> assert {:ok, %{"mounts" => []}} = ProjectConfig.load(dir) end)
+      assert log =~ nest_path(dir)
+      assert log =~ "not a regular file"
+
+      assert ProjectConfig.section(dir) == ""
+
+      # Warned *once*: the path is unique to this test, so a concurrent test's
+      # lines cannot contain it and the absence assertion is sound even though
+      # `capture_log` is not process-scoped.
+      second = capture_log(fn -> assert {:ok, %{"mounts" => []}} = ProjectConfig.load(dir) end)
+      refute second =~ nest_path(dir)
+    end
+
+    test "a symlinked config file contributes no protected entry", %{dir: dir} do
+      # `.nest` is a regular file, `AGENTS.md` is a symlink: the first is masked
+      # over itself, the second gets no entry at all — masking it would either be
+      # a no-op (target inside the workspace) or wedge every command in it
+      # (target outside).
+      write_nest(dir, "")
+      File.write!(Path.join(dir, "real-agents.md"), "# rules\n")
+      File.ln_s!(Path.join(dir, "real-agents.md"), Path.join(dir, "AGENTS.md"))
+
+      capture_log(fn ->
+        assert {:ok, merged} = ProjectConfig.effective_caps(caps(), Mounts.new(dir, "/tmp/agent"))
+
+        assert [%{"path" => nest, "source" => nest_src}] = merged["fs"]["protected"]
+        assert nest == nest_path(dir)
+        assert nest_src == nest
+      end)
     end
   end
 

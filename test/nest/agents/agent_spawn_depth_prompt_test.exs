@@ -2,16 +2,16 @@ defmodule Nest.Agents.AgentSpawnDepthPromptTest do
   @moduledoc """
   The spawn-depth line in an agent's own system message.
 
-  `SystemPrompt.compose_vocation_config/5`'s last two arguments are `depth` and
-  `mode` — both short, adjacent, and easy to transpose — and transposing them
-  renders `You are at spawn depth act of 3` into every prompt the start path
-  composes, and authorizes the `AGENTS.md` read with the wrong mode's caps.
+  `SystemPrompt.compose_vocation_config/5` takes `name` and `depth` as adjacent,
+  short arguments, and transposing them renders `You are at spawn depth <name> of
+  3` into every prompt the start path composes. (There used to be a third
+  transposable argument, `mode`, which also authorized the `AGENTS.md` read with
+  the wrong mode's caps; that read is now a host read, so the argument is gone —
+  issue #132.)
 
   The unit tests call the composer directly, so they cannot see a *caller* that
   passes its arguments in the wrong order; this goes through the **start path**,
-  which is the only caller that matters. It is the assertion that would have
-  caught the transposition when part A's `compose_vocation_config/5` met part B's
-  call site.
+  which is the only caller that matters.
   """
 
   use Nest.DataCase, async: true

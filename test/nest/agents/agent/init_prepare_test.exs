@@ -26,6 +26,7 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
 
   use Nest.DataCase, async: true
 
+  import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Agents.Agent.Config
@@ -89,8 +90,8 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
 
       unprepared_text = attrs |> Init.build_active_state(client_config()) |> system_text()
 
-      prepared_text =
-        attrs |> Init.prepare() |> Init.build_active_state(client_config()) |> system_text()
+      prepared_attrs = Init.prepare(attrs)
+      prepared_text = prepared_attrs |> Init.build_active_state(client_config()) |> system_text()
 
       # Both compositions really composed — the workspace's `AGENTS.md` is in
       # each — and the prepared result is what the unprepared one would have
@@ -99,10 +100,9 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
       assert prepared_text =~ "Always use pnpm."
       assert prepared_text == unprepared_text
 
-      # And the prepared one reused the caller's work rather than composing
-      # again: `build_active_state/2` reads the `:prepared` attrs key.
-      assert %{prepared: prepared} = Init.prepare(attrs)
-      assert is_tuple(prepared)
+      # And `prepare/1` is idempotent: a caller that prepares twice pays once,
+      # which is what lets both start paths call it without coordinating.
+      assert Init.prepare(prepared_attrs) == prepared_attrs
     end
   end
 
@@ -140,6 +140,33 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
       # already forwards to its callers. Nothing rescues it and nothing logs it.
       assert {:error, {%File.Error{}, _stacktrace}} =
                Supervisor.fetch_or_start_agent(space_id, %{name: attrs.name})
+    end
+  end
+
+  describe "the supervisor's boundary guard" do
+    test "a raise out of composition reaches a channel caller as {:error, {:prepare_failed, _}}",
+         %{space_id: space_id, vocation: vocation} do
+      attrs =
+        agent_attrs(space_id, vocation, %{
+          name: "prepare-raise-#{System.unique_integer([:positive])}",
+          workspace_path: AgentTestHelpers.default_test_workspace()
+        })
+
+      {:ok, _row} = Persistence.insert_agent(attrs)
+
+      # No cause is reachable today — see `Supervisor.prepare_for_start/1`'s
+      # comment — so the guard is exercised by making composition raise
+      # directly. What it must not do is escape: `fetch_or_start_agent/2` is
+      # called from channels and logs nothing itself.
+      stub(Init, :prepare, fn _attrs -> raise "boom" end)
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:prepare_failed, %RuntimeError{message: "boom"}}} =
+                   Supervisor.fetch_or_start_agent(space_id, %{name: attrs.name})
+        end)
+
+      assert log =~ "Could not prepare"
     end
   end
 

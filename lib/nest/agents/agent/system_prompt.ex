@@ -33,8 +33,6 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   alias Nest.Tools.Groups
   alias Nest.Vocations
 
-  @agents_md_file "AGENTS.md"
-
   @max_fraction_of_context 0.25
 
   # Conservative upper-bound token estimate used by the
@@ -314,24 +312,39 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   defp agents_md_section(mounts) do
     # `AGENTS.md` lives at the workspace root and is read on the **host**, the
     # same way `Nest.ProjectConfig.load/1` reads `.nest` for the section
-    # rendered just above. The two files are one class: both are
-    # human-authored project config, both are masked read-only into the sandbox
-    # by `Nest.ProjectConfig.protected_entries/1`, and neither is agent-mutable
-    # state — so the sandbox's view at that path *is* the host file, by
-    # construction, on every backend.
+    # rendered just above. Both files are masked read-only into the sandbox by
+    # `Nest.ProjectConfig.protected_entries/1` — *when they are regular files* —
+    # so an agent's view at that path is the host file, by construction.
     #
     # Reading it through the sandbox instead would buy nothing and cost a
     # `bwrap` fork per agent start (measured at ~9ms, ~1.5s of the suite). It
     # was never the read set doing the work either: both modes have
     # `fs.read: ["/"]`, so the caps could not have refused it.
-    with workspace when is_binary(workspace) <- Mounts.workspace(mounts),
-         {:ok, content} <- File.read(Path.join(workspace, @agents_md_file)) do
-      # The file is arbitrary user bytes: NUL / invalid UTF-8 cannot be
-      # stored in the system message's jsonb row. Replace them rather
-      # than crash the Agent.
-      "\n\nHere are AGENTS.md guidelines for this project:\n\n#{Sanitize.text(content)}\n"
-    else
-      _ -> ""
+    path = Path.join(Mounts.workspace(mounts), Nest.ProjectConfig.agents_md_name())
+
+    case Nest.ProjectConfig.read_config_file(path) do
+      {:ok, content} -> agents_md_block(content)
+      # A symlink is not masked (see `ProjectConfig.config_file_state/1`), so
+      # the sandbox's view of it is not the host's — the agent is told rather
+      # than handed policy it cannot trust.
+      {:not_regular, :symlink} -> symlinked_agents_md_notice()
+      _absent_or_unreadable -> ""
     end
+  end
+
+  defp agents_md_block(content) do
+    # The file is arbitrary user bytes: NUL / invalid UTF-8 cannot be
+    # stored in the system message's jsonb row. Replace them rather
+    # than crash the Agent.
+    "\n\nHere are AGENTS.md guidelines for this project:\n\n#{Sanitize.text(content)}\n"
+  end
+
+  # Prompt prose, not a wire notice: no `[nest notice]` marker, because the model
+  # reads it as part of its instructions rather than as something the runtime
+  # said to it mid-conversation.
+  defp symlinked_agents_md_notice do
+    "\n\nAGENTS.md is a symlink so Nest refuses to put it in your system prompt. " <>
+      "Read it to see what it is, but keep in mind that it's not protected policy " <>
+      "this session\n"
   end
 end

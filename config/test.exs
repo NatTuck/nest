@@ -48,18 +48,11 @@ config :nest, hpu_device_paths: []
 # real `docker` — and print an `[error]` from the failed exec — rather than being
 # silently inert.
 #
-# No test does that today, and the reason is worth knowing because it is one line
-# from false. Composing a prompt reads `AGENTS.md` only when the *agent's* mounts
-# name a workspace: `Nest.Agents.Agent.SystemPrompt.agents_md_section/2`'s first
-# clause returns `""` for `%Mounts{workspace: nil}` without calling
-# `Sandbox.read/3` at all. An agent created through
-# `Nest.Agents.create_agent/3` takes its workspace from that call's
-# `:workspace_path` option — a clone or a spawned child takes it from its parent's
-# mounts instead — and a space's own path reaches the root agent only through
-# `Nest.Spaces.create_space_with_root_agent/2`. The one docker-space agent the
-# suite starts names no workspace, so it never makes the read. A docker agent
-# *with* a workspace would: it would fail against a container that is not there
-# and print `sandbox_setup_failed`, at `:warning`.
+# No test can do that, and not because of a fixture: `AGENTS.md` is a **host**
+# read (`Nest.Agents.Agent.SystemPrompt.agents_md_section/1` ->
+# `Nest.ProjectConfig.read_config_file/1`), so composing a prompt reaches no
+# backend at all — on docker, bwrap or none. There is no agent whose workspace
+# would make it shell out, and no `sandbox_setup_failed` line to print.
 config :nest, docker_runner: fn _argv -> {"", 0} end
 
 # `Nest.Hostname.get/0` titles every page (and feeds

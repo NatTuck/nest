@@ -225,19 +225,14 @@ defmodule Nest.Agents.NoneScratchNameTest do
     test "carry the agent's real scratch, so a command can be staged" do
       {:ok, space_id} = AgentTestHelpers.create_test_space(%{sandbox_backend: "docker"})
 
-      # The space has a workspace — every space does now
-      # (`Space.create_changeset/2`) — but this agent's *mounts* do not: a
-      # workspace reaches an agent through `Agents.create_agent/3`'s
-      # `:workspace_path` option and from nowhere else, and `start_named/3` names
-      # none. So composing the prompt takes
-      # `SystemPrompt.agents_md_section/2`'s first clause, which returns `""` for
-      # `%Mounts{workspace: nil}` without reading — no `docker exec`, nothing
-      # printed. (A docker agent *with* a workspace would make that read; it is the
-      # one docker call the inert `docker_runner` in `config/test.exs` does not
-      # cover.) What this asserts is the thing that made a docker space silently
-      # lose its `AGENTS.md` section — the mounts the prompt is composed through
-      # must name the agent's scratch, or the staged transcript lands where the
-      # container cannot reach it.
+      # This agent's *mounts* name no workspace: a workspace reaches an agent
+      # through `Agents.create_agent/3`'s `:workspace_path` option and from
+      # nowhere else, and `start_named/3` names none. That no longer decides
+      # whether the prompt makes a `docker exec` — the `AGENTS.md` read is a host
+      # read, so no agent of any shape reaches a backend from composition — but
+      # what this asserts is unaffected: the mounts the prompt is composed
+      # through must name the agent's scratch, so the mounts are the agent's real
+      # ones rather than a second spelling of them.
       name = start_named(space_id, unique("docker-mounts"))
       {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
 

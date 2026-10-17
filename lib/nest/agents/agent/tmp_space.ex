@@ -244,20 +244,21 @@ defmodule Nest.Agents.Agent.TmpSpace do
   @doc """
   The mounts a prompt for `name` is composed through.
 
-  Composing a prompt *runs* the sandbox — `Nest.Agents.Agent.SystemPrompt` reads
-  `AGENTS.md` through it — so the mounts have to be the agent's real ones, and
-  the scratch directory has to be named even though it may not exist yet:
-  `Nest.Sandbox.Backend.Docker.command/3` can only stage a script the container
-  can reach through the scratch bind, and without it the read fails as a
-  not-found that the prompt then swallows. The directory is created on demand by
-  `Nest.Sandbox.Mounts.ensure_scratch!/1` before anything is staged.
+  Composing a prompt runs nothing and reads no file through the sandbox —
+  `Nest.Agents.Agent.SystemPrompt` reads `AGENTS.md` on the **host** — so what
+  the prompt needs from these mounts is the *values* it states: the workspace
+  path, the network sentence and the backend's enforcement sentence. They are
+  the agent's real mounts for that reason, and the scratch directory is named
+  even though it may not exist yet, so a later comparison of a prompt's mounts
+  with the agent's is a comparison of like with like.
 
   `nil` scratch for a name that cannot be a path component: such an agent is
   refused by its own changeset, and nothing composes a prompt for it.
 
-  The directory is made on demand — by `create/3` when the agent starts, or by
-  `Nest.Sandbox.Mounts.ensure_scratch!/1` when the prompt's read is staged, which
-  happens first. Both mark what they make.
+  Naming is not creating. The directory is made by `create/3` when the agent
+  starts — that is the only creator on the prompt's path — or by
+  `Nest.Sandbox.Mounts.ensure_scratch!/1` when a command is staged. Both mark
+  what they make.
   """
   @spec prompt_mounts(String.t() | nil, integer(), String.t(), String.t(), boolean()) ::
           Mounts.t()

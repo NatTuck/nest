@@ -4,6 +4,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
   """
   use Nest.DataCase, async: true
 
+  import ExUnit.CaptureLog
   import Mimic
 
   import Nest.Test.TmpCleanup
@@ -132,6 +133,71 @@ defmodule Nest.Agents.AgentAgentsMdTest do
       system_prompt = get_system_prompt(pid)
       assert is_binary(system_prompt)
       refute system_prompt =~ "Here are AGENTS.md guidelines for this project:"
+
+      MockClient.clear()
+    end
+
+    test "a symlinked AGENTS.md is replaced by a notice, and is reported once" do
+      vocation = create_vocation()
+
+      workspace_path =
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
+          "nest-tmp-agents-md-link-#{System.unique_integer([:positive])}"
+        ])
+
+      File.mkdir_p!(workspace_path)
+      on_exit(fn -> rm_tmp!(workspace_path, "nest-tmp-agents-md-") end)
+
+      target = Path.join(workspace_path, "real-agents.md")
+      File.write!(target, "# Rules the sandbox cannot protect\n")
+      File.ln_s!(target, Path.join(workspace_path, "AGENTS.md"))
+
+      MockClient.set_response("OK")
+
+      # A symlink is not masked, so the sandbox's view of it is not the host's.
+      # The agent is told rather than handed policy it cannot trust — and the
+      # file's own text must NOT be in the prompt.
+      log =
+        capture_log(fn ->
+          {pid, _agent_id} =
+            start_agent(%{
+              model: %{name: "qwen3.5-plus"},
+              workspace_path: workspace_path,
+              vocation_id: vocation.id
+            })
+
+          system_prompt = get_system_prompt(pid)
+
+          assert system_prompt =~
+                   "AGENTS.md is a symlink so Nest refuses to put it in your system prompt. " <>
+                     "Read it to see what it is, but keep in mind that it's not protected " <>
+                     "policy this session"
+
+          refute system_prompt =~ "Rules the sandbox cannot protect"
+        end)
+
+      assert log =~ Path.join(workspace_path, "AGENTS.md")
+
+      # Warned once per path per BEAM: a second agent in the same workspace
+      # composes twice more and reports nothing. The path is unique to this test,
+      # so the absence assertion is sound even though `capture_log` is not
+      # process-scoped.
+      second =
+        capture_log(fn ->
+          {pid, _agent_id} =
+            start_agent(%{
+              model: %{name: "qwen3.5-plus"},
+              workspace_path: workspace_path,
+              vocation_id: vocation.id
+            })
+
+          get_system_prompt(pid)
+        end)
+
+      refute second =~ Path.join(workspace_path, "AGENTS.md")
 
       MockClient.clear()
     end
