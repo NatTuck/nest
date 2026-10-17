@@ -441,13 +441,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
         name: "SpawnTools #{System.unique_integer([:positive])}",
         description: "Coordinator with sub-agent tools",
         system_prompt: "Coordinate specialists in this space.",
-        tools: tools,
-        modes: %{
-          "chat" => %{
-            "description" => "Chat",
-            "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp"]}}
-          }
-        }
+        tools: tools
       })
 
     vid
@@ -459,8 +453,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
         name: "SpawnPeer #{System.unique_integer([:positive])}",
         description: "A peer specialist",
         system_prompt: "You are a peer.",
-        tools: ["context"],
-        modes: %{}
+        tools: ["context"]
       })
 
     slug

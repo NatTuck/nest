@@ -140,20 +140,13 @@ defmodule Nest.Sandbox do
   alias Nest.Tools.{ShellCmd, ShellEscape}
 
   @doc """
-  The default "build" profile (full host read, workspace + /tmp
-  writable, no network). Used by callers that haven't been migrated to
-  pass real caps (and as the fallback in `ShellCmd.execute/4`).
+  The default capability profile: the **default mode's** caps, derived rather
+  than written a second time (`Nest.Modes.caps(Nest.Modes.default())` - full host
+  read, workspace + /tmp writable, no network). Used by callers that have not
+  been migrated to pass real caps (and as the fallback in `ShellCmd.execute/4`).
   """
   @spec default_caps() :: map()
-  def default_caps do
-    %{
-      "net" => false,
-      "fs" => %{
-        "read" => ["/"],
-        "write" => ["/tmp", ":workspace"]
-      }
-    }
-  end
+  def default_caps, do: Nest.Modes.caps(Nest.Modes.default())
 
   @doc """
   Build bwrap args using `default_caps/0`.

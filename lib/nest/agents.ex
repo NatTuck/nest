@@ -356,15 +356,18 @@ defmodule Nest.Agents do
   This is the one path that may raise a mode: the rule that bounds an agent's own
   changes is `Nest.Agents.Agent.ModeAuthority`, and the human is above it. The
   mode is persisted, so it does not have to ride a message — and it applies
-  immediately when the agent is idle. `{:error, :agent_busy}` means it is
-  mid-turn: a mode applies at a settle, and a turn already running is under the
-  old one, so the caller retries.
+  immediately when the agent is idle. A mid-turn agent refuses: a mode applies at
+  a settle, and a turn already running is under the old one, so the caller
+  retries.
+
+  Every error is a **sentence** for the user. The channel hands it straight to
+  the client, so an atom here would be shown verbatim.
   """
-  @spec set_mode(integer(), String.t(), String.t()) :: :ok | {:error, term()}
+  @spec set_mode(integer(), String.t(), String.t()) :: :ok | {:error, String.t()}
   def set_mode(space_id, name, mode) do
     case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> Agent.set_mode(pid, mode, :human)
-      {:error, _} = err -> err
+      {:ok, pid} -> Agent.set_mode(pid, mode)
+      {:error, :not_found} -> {:error, "There is no agent named #{inspect(name)} in this space."}
     end
   end
 
