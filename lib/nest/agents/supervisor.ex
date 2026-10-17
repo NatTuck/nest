@@ -18,6 +18,7 @@ defmodule Nest.Agents.Supervisor do
   alias Nest.Agents.{Agent, ChildRegistry, NameGenerator, Registry}
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.Turn.GiveUpDelivery
   alias Nest.Agents.PersistedAgent
   alias Nest.Persistence
@@ -105,11 +106,38 @@ defmodule Nest.Agents.Supervisor do
   end
 
   defp start_under_supervisor(attrs, name) do
-    case DynamicSupervisor.start_child(@supervisor_name, {Agent, attrs}) do
-      {:ok, _pid} -> {:ok, name}
+    with {:ok, prepared} <- prepare_for_start(attrs),
+         {:ok, _pid} <- DynamicSupervisor.start_child(@supervisor_name, {Agent, prepared}) do
+      {:ok, name}
+    else
       {:error, {:already_started, _pid}} -> {:ok, name}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  # Compose the expensive part of the initial state here, in the caller, rather
+  # than inside `init/1` — `init/1` runs with this supervisor blocked until it
+  # returns, so the sandbox read it does for `AGENTS.md` was paid *serially* by
+  # every agent start. See `Nest.Agents.Agent.Init.prepare/1`.
+  #
+  # Composing the prompt creates the agent's scratch directory on the way
+  # (`Sandbox.read` -> `Mounts.ensure_scratch!/1`, whose `File.mkdir_p!` raises
+  # `File.Error`). That used to happen inside `init/1`, where
+  # `DynamicSupervisor.start_child/2` reported the raise as `{:error, reason}`;
+  # out here it would escape `fetch_or_start_agent/2` and `get_agent/2`, which
+  # are specced `{:error, term()}` and are called from channels. So the raise is
+  # mapped back to that shape. (Deliberately not done in `Agent.pre_spawn/1`:
+  # `start_pre_spawned/3` re-raises after rolling the row back, and that path
+  # already behaved this way.)
+  defp prepare_for_start(attrs) do
+    {:ok, Init.prepare(attrs)}
+  rescue
+    exception ->
+      # Previously this raise happened inside `init/1`, so the child crash was
+      # reported; mapped to a tuple out here it would be silent, and nothing
+      # downstream of `fetch_or_start_agent/2` logs the refusal.
+      Logger.error("Could not prepare the agent's initial state: #{Exception.message(exception)}")
+      {:error, {:prepare_failed, exception}}
   end
 
   @doc """
@@ -209,8 +237,10 @@ defmodule Nest.Agents.Supervisor do
   def start_under_test(attrs) do
     _name = Map.fetch!(attrs, :name)
 
-    case DynamicSupervisor.start_child(@supervisor_name, {Agent, Agent.pre_load_heal(attrs)}) do
-      {:ok, pid} -> {:ok, pid}
+    with {:ok, prepared} <- prepare_for_start(Agent.pre_load_heal(attrs)),
+         {:ok, pid} <- DynamicSupervisor.start_child(@supervisor_name, {Agent, prepared}) do
+      {:ok, pid}
+    else
       {:error, {:already_started, pid}} -> {:ok, pid}
       {:error, reason} -> {:error, reason}
     end

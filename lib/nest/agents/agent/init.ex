@@ -11,6 +11,11 @@ defmodule Nest.Agents.Agent.Init do
   `Nest.Agents.Agent.init/1`). The initial system message row and
   the load-time sequence heal are written by the *caller*, in
   `Agent.pre_spawn/1` and `Agent.pre_load_heal/1`.
+
+  `prepare/1` is the one exception to the purity above: composing the system
+  prompt runs the sandbox (`AGENTS.md` is read through it, which forks a
+  `bwrap`) and creates the agent's scratch directory. It is never called from
+  `init/1` — it runs in the caller, which is the whole point (see its docs).
   """
 
   require Logger
@@ -25,6 +30,7 @@ defmodule Nest.Agents.Agent.Init do
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.Agent.TreePosition
   alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Messages.Part
@@ -62,7 +68,7 @@ defmodule Nest.Agents.Agent.Init do
     mounts = agent_mounts(attrs, name, space_id, workspace, backend, network_access)
 
     {system_prompt, mode, tool_names, cached_vocation, llm_metrics} =
-      build_vocation_pipeline(attrs, mounts)
+      prepared_pipeline(attrs, mounts)
 
     tools = Tools.get_functions(tool_names, mounts)
 
@@ -89,6 +95,96 @@ defmodule Nest.Agents.Agent.Init do
       chat_state: build_chat_state(initial_messages, next_index, Map.get(attrs, :agent_row_id)),
       live: build_live_state(mode)
     }
+  end
+
+  @doc """
+  Compose the expensive part of the initial state in the *caller*.
+
+  `build_state/2` composes the system prompt, and composing it runs the
+  sandbox: the `AGENTS.md` section reads the file through it, which spawns a
+  `bwrap` (measured at 7.8-10.2 ms). That work used to happen only inside
+  `init/1`, which runs in the pid `DynamicSupervisor.start_child/2` spawned —
+  with the supervisor blocked until it returns — so every agent start paid it
+  *serially*. Measured on this suite: 3.1 s of a 5.5 s run.
+
+  So it happens here instead, in the caller, which is already concurrent, and
+  the result travels on the attrs as `:prepared`. `PreSpawn`'s
+  `build_initial_system_message/1` reuses it for the persisted index-0 row, and
+  `build_state/2` reuses it for the process when the attrs still carry it.
+
+  Idempotent: attrs that already carry `:prepared` come back unchanged.
+
+  ## Who calls this, and how often
+
+  `PreSpawn.pre_spawn/1` calls it, in the caller, before the index-0 system row
+  is written; `Nest.Agents.Supervisor` calls it before handing the attrs to
+  `DynamicSupervisor.start_child/2`, so the child's `init/1` reuses the
+  composition instead of doing it under the supervisor's lock.
+
+  A start therefore composes **twice**: once in `pre_spawn` for the persisted
+  row, and once in the supervisor for the process. `pre_spawn/1` returns
+  `{:ok, id}`, not the attrs it derived, so every caller starts from its own
+  attrs and `:prepared` does not reach the supervisor — for a caller-created
+  agent those attrs are re-read from the row
+  (`Persistence.build_attrs_for_start/2`), and for a spawn they are the
+  spawner's. It is still the right trade: neither composition happens with the
+  supervisor blocked.
+
+  ## Only on attrs `PreSpawn.put_mode/1` has already seen
+
+  The composed prompt depends on the mode for one thing — the caps the
+  `AGENTS.md` read is authorized with — and `build_vocation_pipeline/2` reads it
+  from `:mode`. So this must only be called on attrs that have been through
+  `PreSpawn.put_mode/1`; calling it on attrs that do not yet carry their mode
+  composes under `Nest.Modes.default()` and authorizes the read with the wrong
+  mode's caps.
+
+  ## The mounts are the naming ones
+
+  They are `TmpSpace.prompt_mounts/5`, not the creating ones, because
+  `pre_spawn` calls this before the scratch name has been validated: a scratch
+  path that cannot be made must fail where the agent starts, not as a raise out
+  of a caller that is only composing a prompt. The paths are the same either
+  way, so the prompt's bytes are unchanged.
+  """
+  @spec prepare(map()) :: map()
+  def prepare(%{prepared: _} = attrs), do: attrs
+
+  def prepare(attrs) do
+    if compose_ready?(attrs) do
+      Map.put(attrs, :prepared, build_vocation_pipeline(attrs, prepared_mounts(attrs)))
+    else
+      attrs
+    end
+  end
+
+  # Everything `build_vocation_pipeline/2` needs to compose in the caller. Attrs
+  # missing any of it are left alone: `build_state/2` still composes them,
+  # exactly as it did before this existed, so no start path gains a new failure
+  # mode.
+  defp compose_ready?(attrs) do
+    is_binary(Map.get(attrs, :name)) and is_integer(Map.get(attrs, :space_id)) and
+      is_binary(Map.get(attrs, :sandbox_backend)) and
+      is_boolean(Map.get(attrs, :network_access)) and is_map(Map.get(attrs, :model))
+  end
+
+  defp prepared_mounts(attrs) do
+    TmpSpace.prompt_mounts(
+      Map.get(attrs, :workspace_path),
+      Map.fetch!(attrs, :space_id),
+      Map.fetch!(attrs, :name),
+      Map.fetch!(attrs, :sandbox_backend),
+      Map.fetch!(attrs, :network_access)
+    )
+  end
+
+  # The pipeline the caller already computed (see `prepare/1`), or this
+  # process's own composition for a caller that did not prepare.
+  defp prepared_pipeline(attrs, mounts) do
+    case Map.get(attrs, :prepared) do
+      nil -> build_vocation_pipeline(attrs, mounts)
+      prepared -> prepared
+    end
   end
 
   # Vocation-derived attributes: context limit, system prompt,
