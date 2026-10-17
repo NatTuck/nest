@@ -18,7 +18,7 @@ defmodule Nest.Agents.Agent.SpawnModeTest do
       `BatchPlan.base_opts/1`'s `mode:` used to die.
 
   The `plan` parent is produced through the human's own path
-  (`Agent.set_mode/3`), because that is the only way to put a live agent in
+  (`Agent.set_mode/2`), because that is the only way to put a live agent in
   `plan` without a blueprint — and it persists the row, which is what the child's
   inherited mode is read from.
   """
@@ -194,7 +194,7 @@ defmodule Nest.Agents.Agent.SpawnModeTest do
     state = coordinator_state(space_id)
     pid = child_pid(space_id, state.name)
 
-    assert :ok = Agent.set_mode(pid, "plan", :human)
+    assert :ok = Agent.set_mode(pid, "plan")
     assert %{mode: "plan"} = row_for(space_id, state.name)
 
     state_of(state.name, space_id)
