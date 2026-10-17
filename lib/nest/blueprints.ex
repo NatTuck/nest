@@ -67,7 +67,8 @@ defmodule Nest.Blueprints do
   * `attrs` — map with `:name` (required), `:slug`
     (optional; derived from `:name`), `:root_vocation`
     (required vocation slug), `:description`,
-    `:spawnable_vocations`, `:workspace_template`,
+    `:spawnable_vocations`, `:default_mode`, `:default_net`,
+    `:default_spawnable_vocation`, `:workspace_template`,
     `:main_view_config` (all optional).
 
   ## Returns
@@ -164,6 +165,48 @@ defmodule Nest.Blueprints do
     case get_blueprint(blueprint_id) do
       nil -> nil
       %Blueprint{spawnable_vocations: slugs} -> slugs || []
+    end
+  end
+
+  @doc """
+  Resolve a blueprint's `default_net` by `blueprint_id`.
+
+  Returns `nil` when the blueprint id is `nil` or names no row — the same
+  "no opinion to offer" answer `spawnable_vocations/1` gives, so a caller with a
+  space that has no blueprint is not handed a value it did not ask for. A row
+  that somehow holds `nil` in the column also reads as `nil`, even though the
+  column is `NOT NULL`: the reader stays total, and the caller decides what
+  "no value" means.
+
+  `Spaces.create_space/2` is the caller, and it treats `nil` as `true` — what a
+  space got before blueprints had a `default_net`.
+  """
+  @spec default_net(integer() | nil) :: boolean() | nil
+  def default_net(nil), do: nil
+
+  def default_net(blueprint_id) when is_integer(blueprint_id) do
+    case get_blueprint(blueprint_id) do
+      nil -> nil
+      %Blueprint{default_net: value} -> value
+    end
+  end
+
+  @doc """
+  Resolve a blueprint's `default_spawnable_vocation` by `blueprint_id`.
+
+  Returns `nil` when the blueprint id is `nil`, names no row, **or** names a row
+  that has no default — the three cases are the same answer on purpose: "this
+  space has no default to offer", which `agents-spawn` turns into a refusal
+  naming the missing `vocation` argument rather than falling back to the
+  caller's own vocation.
+  """
+  @spec default_spawnable_vocation(integer() | nil) :: String.t() | nil
+  def default_spawnable_vocation(nil), do: nil
+
+  def default_spawnable_vocation(blueprint_id) when is_integer(blueprint_id) do
+    case get_blueprint(blueprint_id) do
+      nil -> nil
+      %Blueprint{default_spawnable_vocation: slug} -> slug
     end
   end
 end

@@ -59,7 +59,7 @@ describe("InboxPanel", () => {
           content: "second message",
           timestamp: "t2",
           kind: "user",
-          mode: "build",
+          mode: "act",
         },
       ],
       pendingMessageCount: 2,
@@ -81,7 +81,7 @@ describe("InboxPanel", () => {
     // The human entry's `from` is the signed-in user (ME), so it reads
     // as yours and carries the mode it will be delivered with.
     expect(screen.getByText("From you")).toBeInTheDocument();
-    expect(screen.getByText("Mode: build")).toBeInTheDocument();
+    expect(screen.getByText("Mode: act")).toBeInTheDocument();
     expect(screen.getByText("second message")).toBeInTheDocument();
   });
 
@@ -100,13 +100,13 @@ describe("InboxPanel", () => {
           content: "empty sender",
           timestamp: "t2",
           kind: "user",
-          mode: "build",
+          mode: "act",
         },
         {
           content: "missing sender",
           timestamp: "t3",
           kind: "user",
-          mode: "build",
+          mode: "act",
         },
       ],
       pendingMessageCount: 3,

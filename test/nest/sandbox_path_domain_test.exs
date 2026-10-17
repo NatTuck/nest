@@ -211,6 +211,7 @@ defmodule Nest.SandboxPathDomainTest do
     "lib/nest/sandbox/glob.ex",
     "lib/nest/sandbox/paths.ex",
     "lib/nest/sandbox/shell_jobs.ex",
+    "lib/nest/sandbox/shell_jobs/job_log.ex",
     "lib/nest/tools/shell_cmd.ex"
   ]
 
@@ -233,12 +234,14 @@ defmodule Nest.SandboxPathDomainTest do
     {:io, :binread}
   ]
 
-  # The only reads on the host allowed in the scanned files. `Sandbox.ShellJobs`
-  # reads its own job log: a Nest artifact written by Nest and exposed with the
-  # same bytes by the mount, not an agent-visible read, so it is allowlisted
-  # explicitly. A *second* such read in that file still fails the guard.
+  # The only reads on the host allowed in the scanned files.
+  # `Sandbox.ShellJobs.JobLog` reads its own job log: a Nest artifact written by
+  # Nest and exposed with the same bytes by the mount, not an agent-visible read,
+  # so it is allowlisted explicitly. A *second* such read in that file still
+  # fails the guard — and it is the only file that reads one, which is why the
+  # manager itself no longer appears here.
   @allowed_host_reads %{
-    "lib/nest/sandbox/shell_jobs.ex" => [{:file, :read}]
+    "lib/nest/sandbox/shell_jobs/job_log.ex" => [{:file, :read}]
   }
 
   test "read/stat/glob execute inside bwrap, not against the host (AST guard)" do

@@ -104,6 +104,13 @@ export function joinLobby(onOk, onError) {
     }
   });
 
+  lobbyChannel.on("space:updated", (payload) => {
+    const space = payload?.space;
+    if (space?.id != null && typeof space.network_access === "boolean") {
+      getStore().setSpaceNetworkAccess(space.id, space.network_access);
+    }
+  });
+
   lobbyChannel.on("space:unarchived", (payload) => {
     if (payload?.space_id != null) {
       getStore().unarchiveSpace(payload.space_id);
@@ -184,6 +191,10 @@ export function createSpace(model, vocationSlug, onOk, onError, opts = {}) {
   if (opts.blueprint_id) payload.blueprint_id = opts.blueprint_id;
   if (opts.agent_name) payload.agent_name = opts.agent_name;
   if (opts.workspace_path) payload.workspace_path = opts.workspace_path;
+  if (typeof opts.network_access === "boolean") {
+    payload.network_access = opts.network_access;
+  }
+  if (opts.sandbox_backend) payload.sandbox_backend = opts.sandbox_backend;
   if (opts.shared) payload.shared = true;
 
   lobbyChannel
@@ -203,6 +214,26 @@ export function archiveSpace(spaceId, onOk, onError) {
   if (!lobbyChannel) return;
   lobbyChannel
     .push("archive_space", { space_id: spaceId })
+    .receive("ok", (resp) => {
+      if (onOk) onOk(resp);
+    })
+    .receive("error", (err) => {
+      if (onError) onError(err);
+    });
+}
+
+/**
+ * Turn a space's network access on or off. It is a space property, editable
+ * after creation, and it takes effect for the space's agents' subsequent
+ * commands.
+ */
+export function setSpaceNetwork(spaceId, networkAccess, onOk, onError) {
+  if (!lobbyChannel) return;
+  lobbyChannel
+    .push("set_space_network", {
+      space_id: spaceId,
+      network_access: networkAccess,
+    })
     .receive("ok", (resp) => {
       if (onOk) onOk(resp);
     })

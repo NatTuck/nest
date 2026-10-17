@@ -43,6 +43,32 @@ describe("store", () => {
       expect(useStore.getState().archivedSpaces).toEqual([]);
     });
 
+    it("setSpaceNetworkAccess updates a space in either list", () => {
+      const store = useStore.getState();
+      const active = { id: 1, name: "a", network_access: true };
+      const archived = { id: 2, name: "b", network_access: true };
+      useStore.setState({ spaces: [active], archivedSpaces: [archived] });
+
+      useStore.getState().setSpaceNetworkAccess(1, false);
+      useStore.getState().setSpaceNetworkAccess(2, false);
+
+      expect(useStore.getState().spaces[0].network_access).toBe(false);
+      expect(useStore.getState().archivedSpaces[0].network_access).toBe(false);
+      // Everything else about the space is left alone.
+      expect(useStore.getState().spaces[0].name).toBe("a");
+      expect(store).toBeDefined();
+    });
+
+    it("setSpaceNetworkAccess is a no-op for an unknown id", () => {
+      useStore.setState({
+        spaces: [{ id: 1, name: "a", network_access: true }],
+      });
+
+      useStore.getState().setSpaceNetworkAccess(999, false);
+
+      expect(useStore.getState().spaces[0].network_access).toBe(true);
+    });
+
     it("unarchiveSpace moves a space back to the active list", () => {
       useStore.getState().setSpaces([s2]);
       useStore.getState().setArchivedSpaces([s1]);
@@ -243,15 +269,45 @@ describe("store", () => {
     it("stores modes, defaultMode, and currentMode from the init payload", () => {
       useStore.getState().setAgentConnected("agent-1", {
         messageCount: 0,
-        modes: ["chat", "build", "plan"],
-        defaultMode: "build",
-        currentMode: "build",
+        modes: ["plan", "act"],
+        defaultMode: "act",
+        currentMode: "act",
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
-      expect(cache.modes).toEqual(["chat", "build", "plan"]);
-      expect(cache.defaultMode).toBe("build");
-      expect(cache.currentMode).toBe("build");
+      expect(cache.modes).toEqual(["plan", "act"]);
+      expect(cache.defaultMode).toBe("act");
+      expect(cache.currentMode).toBe("act");
+    });
+
+    it("setAgentMode sets the cached currentMode (the selector's optimistic update)", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        modes: ["plan", "act"],
+        defaultMode: "act",
+        currentMode: "act",
+      });
+
+      useStore.getState().setAgentMode("agent-1", "plan");
+      expect(useStore.getState().agentsCache["agent-1"].currentMode).toBe(
+        "plan",
+      );
+
+      // The same call takes an optimistic value back, which is exactly what
+      // `channels/agent.js` does when the server refuses the change.
+      useStore.getState().setAgentMode("agent-1", "act");
+      expect(useStore.getState().agentsCache["agent-1"].currentMode).toBe(
+        "act",
+      );
+    });
+
+    it("setAgentMode is a no-op for an agent with no cache", () => {
+      // The channel can be asked for an agent this client has never joined.
+      expect(() =>
+        useStore.getState().setAgentMode("no-such-agent", "plan"),
+      ).not.toThrow();
+
+      expect(useStore.getState().agentsCache["no-such-agent"]).toBeUndefined();
     });
 
     it("initializes mode fields to null when payload omits them and no existing cache", () => {
@@ -269,9 +325,9 @@ describe("store", () => {
       // Initial connection with full mode info
       useStore.getState().setAgentConnected("agent-1", {
         messageCount: 0,
-        modes: ["chat", "build"],
-        defaultMode: "build",
-        currentMode: "build",
+        modes: ["plan", "act"],
+        defaultMode: "act",
+        currentMode: "act",
       });
 
       // Mid-stream rejoin (e.g. via chat:status) — payload has no modes
@@ -280,29 +336,29 @@ describe("store", () => {
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
-      expect(cache.modes).toEqual(["chat", "build"]);
-      expect(cache.defaultMode).toBe("build");
-      expect(cache.currentMode).toBe("build");
+      expect(cache.modes).toEqual(["plan", "act"]);
+      expect(cache.defaultMode).toBe("act");
+      expect(cache.currentMode).toBe("act");
     });
 
     it("overrides existing mode values when a new payload provides them", () => {
       useStore.getState().setAgentConnected("agent-1", {
         messageCount: 0,
-        modes: ["chat", "build"],
-        defaultMode: "build",
-        currentMode: "build",
+        modes: ["plan", "act"],
+        defaultMode: "act",
+        currentMode: "act",
       });
 
-      // A later init (e.g. after mode switch) replaces the values
+      // A later init (e.g. after a mode switch) replaces the values
       useStore.getState().setAgentConnected("agent-1", {
         messageCount: 4,
-        modes: ["chat", "build", "plan"],
+        modes: ["plan", "act"],
         defaultMode: "plan",
         currentMode: "plan",
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
-      expect(cache.modes).toEqual(["chat", "build", "plan"]);
+      expect(cache.modes).toEqual(["plan", "act"]);
       expect(cache.defaultMode).toBe("plan");
       expect(cache.currentMode).toBe("plan");
     });

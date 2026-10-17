@@ -8,8 +8,10 @@
  * default "space overview" (active agents + status).
  */
 
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useStore } from "../store";
+import { setSpaceNetwork } from "../channels";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { StatusDot } from "../components/StatusDot";
 
@@ -21,8 +23,11 @@ export function SpaceView() {
   const spaces = useStore((s) => s.spaces);
   const agents = useStore((s) => s.agents);
   const blueprints = useStore((s) => s.blueprints);
+  const setSpaceNetworkAccess = useStore((s) => s.setSpaceNetworkAccess);
 
   const space = spaces.find((s) => s.slug === spaceSlug);
+  const [networkPending, setNetworkPending] = useState(false);
+  const [networkError, setNetworkError] = useState(null);
   // The tab names the host and the space. The name falls back to the
   // slug when the store hasn't loaded the space yet (a hard load of a
   // deep URL) -- the slug is real information, so it beats a blank or
@@ -57,6 +62,57 @@ export function SpaceView() {
             Blueprint: {blueprint.name}
           </p>
         )}
+
+        {/* Network access is the *space's*, not a mode's: it applies to every
+            agent here, and it takes effect for their next commands. */}
+        <div className="mt-4 flex items-start gap-3">
+          <input
+            id="space-network-access"
+            type="checkbox"
+            checked={space.network_access === true}
+            disabled={networkPending}
+            onChange={(e) => {
+              const next = e.target.checked;
+              setNetworkPending(true);
+              setNetworkError(null);
+              setSpaceNetwork(
+                space.id,
+                next,
+                () => {
+                  setSpaceNetworkAccess(space.id, next);
+                  setNetworkPending(false);
+                },
+                (err) => {
+                  setNetworkPending(false);
+                  setNetworkError(
+                    err?.reason || "Failed to change network access",
+                  );
+                },
+              );
+            }}
+            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+          />
+          <div>
+            <label
+              htmlFor="space-network-access"
+              className="text-sm font-medium text-gray-700"
+            >
+              Network access
+            </label>
+            <p className="text-sm text-gray-500">
+              {space.network_access === true
+                ? "Agents in this space can reach the network."
+                : "Agents in this space cannot reach the network."}
+              {space.sandbox_backend === "none" &&
+                " This space has no sandbox, so nothing enforces that."}
+              {space.sandbox_backend === "docker" &&
+                " Changing this restarts this space's container, which clears every agent's /tmp here (offloads and background-job logs) and stops any background job that is still running."}
+            </p>
+            {networkError && (
+              <p className="text-sm text-red-600 mt-1">{networkError}</p>
+            )}
+          </div>
+        </div>
       </div>
 
       <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">

@@ -93,7 +93,20 @@ defmodule Nest.Persistence do
   def build_agent_attrs(attrs) do
     attrs
     |> maybe_load_vocation()
+    |> put_sandbox_backend()
   end
+
+  # The space's sandbox backend, resolved once per start and carried on the
+  # attrs so `Nest.Agents.Agent.Init` never has to read the DB for it (see
+  # `Nest.Sandbox.Backend`). `put_new` so a caller that already named one — a
+  # spawned child inheriting its parent's — keeps it.
+  defp put_sandbox_backend(%{space_id: space_id} = attrs) when is_integer(space_id) do
+    attrs
+    |> Map.put_new(:sandbox_backend, Nest.Spaces.sandbox_backend(space_id))
+    |> Map.put_new(:network_access, Nest.Spaces.network_access(space_id))
+  end
+
+  defp put_sandbox_backend(attrs), do: attrs
 
   defp maybe_load_vocation(%{vocation: _vocation} = attrs), do: attrs
 
@@ -143,6 +156,12 @@ defmodule Nest.Persistence do
         name: name,
         space_id: space_id,
         model: model,
+        # The mode `PreSpawn` derived for this agent (`PreSpawn.put_mode/1`),
+        # seeded from the blueprint's `default_mode` or inherited from the
+        # parent. It is what a restart reads back, so omitting it here would let
+        # the column's default quietly widen a child that was spawned `plan` —
+        # the one thing the mode being persisted exists to prevent.
+        mode: Map.get(attrs, :mode, Nest.Modes.default()),
         vocation_id: Map.get(attrs, :vocation_id),
         workspace_path: Map.get(attrs, :workspace_path),
         next_message_index: Map.get(attrs, :next_message_index, 0),
@@ -518,8 +537,11 @@ defmodule Nest.Persistence do
       model: row.model,
       vocation_id: row.vocation_id,
       workspace_path: row.workspace_path,
+      sandbox_backend: Nest.Spaces.sandbox_backend(row.space_id),
+      network_access: Nest.Spaces.network_access(row.space_id),
       next_message_index: row.next_message_index,
       last_compaction_index: boundary,
+      mode: row.mode,
       parent_id: row.parent_id,
       parent_name: parent_name,
       depth: row.depth || 0,
@@ -616,6 +638,19 @@ defmodule Nest.Persistence do
   defdelegate update_agent_workspace(space_id, name, workspace_path),
     to: Nest.Persistence.AgentAttrs,
     as: :update_agent_workspace
+
+  @doc """
+  Persist an agent's mode (`Nest.Modes`).
+
+  The mode is a per-agent runtime property that has to survive a restart — a
+  child spawned read-only must not be widened by one — so it is written down
+  rather than kept in memory. Who may change it is
+  `Nest.Agents.Agent.ModeAuthority`'s business.
+  """
+  @spec update_agent_mode(integer(), String.t(), String.t()) :: :ok | {:error, term()}
+  defdelegate update_agent_mode(space_id, name, mode),
+    to: Nest.Persistence.AgentAttrs,
+    as: :update_agent_mode
 
   @doc """
   List every persisted agent row in `space_id`, ordered by name.

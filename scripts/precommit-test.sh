@@ -7,18 +7,23 @@
 # ⚠️  THESE VALUES ARE TEMPORARY. They were raised on 2026-10-13 to unblock
 # work while the suite is slower than it should be:
 #
-#     vampire   8s   (was 5s)
-#     others   24s   (was 15s)
+#     vampire   7s   (was 5s, then 8s)
+#     others   21s   (was 15s, then 24s)
 #
 # The real goal is that the suite reliably finishes in 4 seconds of wall
 # clock on vampire, with other hosts getting a proportional budget. That is
 # tracked by #94. When it is done, these values go back down.
 #
-# In the meantime: do not raise them again, and do not read a pass at 8s as
-# evidence that the suite is healthy. The suite currently spends 4.0–4.7s
-# in ExUnit plus ~0.85s of process overhead, so 8s is headroom, not a
+# In the meantime: do not raise them again, and do not read a pass at 7s as
+# evidence that the suite is healthy. The suite currently spends 5.0–5.5s
+# in ExUnit plus ~1.0s of process overhead, so 7s is headroom, not a
 # target — and the old 5s gate failed on `main` as well as on `issue-21`,
 # so a failure here is not automatically a regression in your change.
+#
+# 8s -> 7s on 2026-10-16 (#123/#125): the suite had regressed to 9.8s ExUnit
+# because every test agent start forked a `bwrap` to read an `AGENTS.md` that
+# was not there. Fixing that took it to 5.3s. The remaining ~1.3s over the
+# pre-PR 4.1s is the ~220 new tests plus diffuse per-agent cost; see #94.
 #
 # The test DB is prepared *outside* the timed window: `mix test` normally
 # does it itself, but the gate is for the suite, and the prep — two
@@ -52,7 +57,7 @@ mix ecto.migrate --quiet || {
 # should be able to do this in 4s; the long-term goal is to put it back to 5
 # and then down to 4, not to leave it at 8.
 if [ "$(hostname)" = "vampire" ]; then
-  timeout 8 env NEST_TEST_NO_DB_PREP=1 mix test
+  timeout 7 env NEST_TEST_NO_DB_PREP=1 mix test
 else
-  timeout 24 env NEST_TEST_NO_DB_PREP=1 mix test
+  timeout 21 env NEST_TEST_NO_DB_PREP=1 mix test
 fi

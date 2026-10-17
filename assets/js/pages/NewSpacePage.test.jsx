@@ -41,6 +41,11 @@ vi.mock("../channels", async () => {
 });
 
 import { NewSpacePage, validateNewSpaceForm } from "./NewSpacePage";
+import {
+  DEFAULT_SANDBOX_BACKEND,
+  SANDBOX_BACKENDS,
+  sandboxBackendHelp,
+} from "../utils/newSpaceForm";
 
 function SpaceRoute() {
   const { spaceSlug } = useParams();
@@ -65,27 +70,23 @@ const sampleBlueprints = [
     name: "Chat",
     description: "A conversational space.",
     root_vocation: "chat",
+    // The seeded Chat blueprint is the one whose agents are offline by default.
+    default_net: false,
   },
   {
     id: 2,
     name: "Grading",
     description: "A grading space.",
     root_vocation: "grading-coordinator",
+    default_net: true,
   },
 ];
 
 const sampleVocations = [
   { id: 10, name: "Chat", slug: "chat" },
-  {
-    id: 20,
-    name: "Grading Coordinator",
-    slug: "grading-coordinator",
-    modes: {
-      chat: {
-        caps: { net: true, fs: { read: ["/"], write: ["/tmp", ":workspace"] } },
-      },
-    },
-  },
+  // No `modes`: the modes are universal code constants now, so a vocation no
+  // longer carries any — nothing in the form reads one.
+  { id: 20, name: "Grading Coordinator", slug: "grading-coordinator" },
 ];
 
 const sampleModels = [
@@ -125,13 +126,18 @@ describe("validateNewSpaceForm", () => {
   });
 
   it("returns null when all fields are valid", () => {
-    expect(
-      validateNewSpaceForm({
-        name: "My Space",
-        selectedBlueprint: "1",
-        selectedModel: "gpt-4o",
-      }),
-    ).toBeNull();
+    for (const sandboxBackend of SANDBOX_BACKENDS) {
+      expect(
+        validateNewSpaceForm({
+          name: "My Space",
+          selectedBlueprint: "1",
+          selectedModel: "gpt-4o",
+          sandboxBackend,
+          requiresWorkspace: true,
+          workspacePath: "/home/nat/proj",
+        }),
+      ).toBeNull();
+    }
   });
 
   it("requires a workspace path when the vocation needs one", () => {
@@ -140,6 +146,7 @@ describe("validateNewSpaceForm", () => {
         name: "My Space",
         selectedBlueprint: "2",
         selectedModel: "gpt-4o",
+        sandboxBackend: "bwrap",
         requiresWorkspace: true,
         workspacePath: "",
       }),
@@ -152,10 +159,45 @@ describe("validateNewSpaceForm", () => {
         name: "My Space",
         selectedBlueprint: "2",
         selectedModel: "gpt-4o",
+        sandboxBackend: "bwrap",
         requiresWorkspace: true,
-        workspacePath: "/tmp/proj",
+        workspacePath: "/home/nat/proj",
       }),
     ).toBeNull();
+  });
+
+  it("rejects a sandbox backend that isn't one of the three", () => {
+    const base = {
+      name: "My Space",
+      selectedBlueprint: "1",
+      selectedModel: "gpt-4o",
+    };
+    expect(
+      validateNewSpaceForm({ ...base, sandboxBackend: "kubernetes" }),
+    ).toBe("Please select a sandbox backend");
+    expect(validateNewSpaceForm(base)).toBe("Please select a sandbox backend");
+  });
+});
+
+describe("sandbox backends", () => {
+  it("defaults to bwrap and offers it first", () => {
+    expect(SANDBOX_BACKENDS).toEqual(["bwrap", "docker", "none"]);
+    expect(DEFAULT_SANDBOX_BACKEND).toBe("bwrap");
+  });
+
+  it("describes each backend and says none can't enforce the caps", () => {
+    for (const backend of SANDBOX_BACKENDS) {
+      expect(sandboxBackendHelp(backend)).toBeTruthy();
+    }
+    expect(sandboxBackendHelp("docker")).toMatch(/docker/i);
+    expect(sandboxBackendHelp("none")).toMatch(/cannot be enforced/i);
+  });
+
+  it("renders an obvious error rather than nothing for an unknown backend", () => {
+    expect(sandboxBackendHelp("kubernetes")).toMatch(
+      /unknown sandbox backend/i,
+    );
+    expect(sandboxBackendHelp(undefined)).toMatch(/unknown sandbox backend/i);
   });
 });
 
@@ -214,6 +256,28 @@ describe("NewSpacePage", () => {
     expect(document.title).toBe("vampire · New space");
   });
 
+  it("offers the three sandbox backends with bwrap selected by default", () => {
+    renderPage();
+
+    const select = screen.getByLabelText("Sandbox");
+    expect(select).toHaveValue(DEFAULT_SANDBOX_BACKEND);
+    for (const backend of SANDBOX_BACKENDS) {
+      expect(screen.getByRole("option", { name: backend })).toBeInTheDocument();
+    }
+    expect(screen.getByText(sandboxBackendHelp("bwrap"))).toBeInTheDocument();
+  });
+
+  it("shows the selected backend's help text, including that none can't enforce caps", () => {
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText("Sandbox"), {
+      target: { value: "none" },
+    });
+
+    expect(screen.getByText(/cannot be enforced/i)).toBeInTheDocument();
+    expect(screen.queryByText(sandboxBackendHelp("bwrap"))).toBeNull();
+  });
+
   it("shows the selected blueprint's root agent vocation", () => {
     renderPage();
 
@@ -240,24 +304,20 @@ describe("NewSpacePage", () => {
     expect(screen.getByRole("option", { name: "gpt-4o" })).toBeInTheDocument();
   });
 
-  it("shows the workspace path input when the blueprint's vocation needs one", () => {
+  it("always shows the workspace path input, whichever blueprint is selected", () => {
+    // Every space has a workspace now: `vocationRequiresWorkspace` is a constant
+    // (`true`), because the modes are universal code constants — `act` writes the
+    // workspace, and every agent can be in `act`. There is no vocation left for
+    // the form to hide the input for.
     renderPage();
 
-    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
-      target: { value: "2" },
-    });
+    for (const blueprint of ["1", "2"]) {
+      fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+        target: { value: blueprint },
+      });
 
-    expect(screen.getByLabelText("Workspace Path")).toBeInTheDocument();
-  });
-
-  it("hides the workspace path input when the blueprint's vocation does not need one", () => {
-    renderPage();
-
-    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
-      target: { value: "1" },
-    });
-
-    expect(screen.queryByLabelText("Workspace Path")).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Workspace Path")).toBeInTheDocument();
+    }
   });
 
   it("blocks submission when a required workspace path is missing", () => {
@@ -302,7 +362,7 @@ describe("NewSpacePage", () => {
     expect(screen.getByText("A grading space.")).toBeInTheDocument();
   });
 
-  it("calls createSpace with the space name, blueprint_id, and workspace_path on valid submit", () => {
+  it("calls createSpace with the space name, blueprint_id, workspace_path, and sandbox_backend on valid submit", () => {
     renderPage();
 
     fireEvent.change(screen.getByLabelText("Space Name"), {
@@ -315,7 +375,10 @@ describe("NewSpacePage", () => {
       target: { value: "gpt-4o" },
     });
     fireEvent.change(screen.getByLabelText("Workspace Path"), {
-      target: { value: "/tmp/proj" },
+      target: { value: "/home/nat/proj" },
+    });
+    fireEvent.change(screen.getByLabelText("Sandbox"), {
+      target: { value: "docker" },
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
@@ -334,8 +397,97 @@ describe("NewSpacePage", () => {
     expect(opts).toEqual({
       name: "My Project",
       blueprint_id: 2,
-      workspace_path: "/tmp/proj",
+      workspace_path: "/home/nat/proj",
+      sandbox_backend: "docker",
+      // Network access is a space property, chosen here and editable later; the
+      // toggle defaults to on.
+      network_access: true,
     });
+  });
+
+  it("sends network access off when the toggle is cleared", () => {
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText("Space Name"), {
+      target: { value: "Closed Project" },
+    });
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "2" },
+    });
+    fireEvent.change(screen.getByLabelText("Select Model"), {
+      target: { value: "gpt-4o" },
+    });
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/home/nat/proj" },
+    });
+
+    fireEvent.click(screen.getByLabelText("Network access"));
+    fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
+
+    const opts = mocks.createSpace.mock.calls[0][4];
+    expect(opts.network_access).toBe(false);
+  });
+
+  it("pre-fills network access from the selected blueprint, and follows a change", () => {
+    renderPage();
+
+    // Nothing selected yet: the toggle keeps the value a space got before
+    // blueprints had a `default_net`.
+    expect(screen.getByLabelText("Network access")).toBeChecked();
+
+    // Chat's default is off...
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "1" },
+    });
+    expect(screen.getByLabelText("Network access")).not.toBeChecked();
+
+    // ...and Grading's is on.
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "2" },
+    });
+    expect(screen.getByLabelText("Network access")).toBeChecked();
+  });
+
+  it("keeps the user's own choice when the blueprint changes", () => {
+    renderPage();
+
+    // Chat's default is off; the user turns it on anyway.
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "1" },
+    });
+    fireEvent.click(screen.getByLabelText("Network access"));
+    expect(screen.getByLabelText("Network access")).toBeChecked();
+
+    // Going to Grading and *back to Chat* must not resurrect Chat's default: a
+    // blueprint's value is a default, and the user's choice is the choice.
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "2" },
+    });
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "1" },
+    });
+    expect(screen.getByLabelText("Network access")).toBeChecked();
+  });
+
+  it("sends the blueprint's default when the user leaves the toggle alone", () => {
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText("Space Name"), {
+      target: { value: "My Project" },
+    });
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "1" },
+    });
+    fireEvent.change(screen.getByLabelText("Select Model"), {
+      target: { value: "gpt-4o" },
+    });
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/home/nat/proj" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
+
+    expect(mocks.createSpace.mock.calls[0][4].network_access).toBe(false);
   });
 
   it("navigates to the new space's page on success", () => {
@@ -349,6 +501,9 @@ describe("NewSpacePage", () => {
     });
     fireEvent.change(screen.getByLabelText("Select Model"), {
       target: { value: "gpt-4o" },
+    });
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/home/nat/proj" },
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
@@ -378,6 +533,9 @@ describe("NewSpacePage", () => {
     fireEvent.change(screen.getByLabelText("Select Model"), {
       target: { value: "gpt-4" },
     });
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/home/nat/proj" },
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
 
@@ -396,6 +554,9 @@ describe("NewSpacePage", () => {
     });
     fireEvent.change(screen.getByLabelText("Select Model"), {
       target: { value: "gpt-4o" },
+    });
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/home/nat/proj" },
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
@@ -423,6 +584,9 @@ describe("NewSpacePage", () => {
     fireEvent.change(screen.getByLabelText("Select Model"), {
       target: { value: "gpt-4o" },
     });
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/home/nat/proj" },
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
 
@@ -447,6 +611,9 @@ describe("NewSpacePage", () => {
     fireEvent.change(screen.getByLabelText("Select Model"), {
       target: { value: "gpt-4o" },
     });
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/home/nat/proj" },
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
 
@@ -454,6 +621,7 @@ describe("NewSpacePage", () => {
       screen.getByRole("button", { name: "Creating Space..." }),
     ).toBeDisabled();
     expect(screen.getByLabelText("Space Name")).toBeDisabled();
+    expect(screen.getByLabelText("Sandbox")).toBeDisabled();
   });
 
   it("renders a fallback model option when models is empty", () => {

@@ -54,13 +54,7 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
         name: "WaitTurn #{System.unique_integer([:positive])}",
         description: "Wait tools for the turn-level tests",
         system_prompt: "Wait for peers in this space.",
-        tools: ["context", "agents", "shell"],
-        modes: %{
-          "chat" => %{
-            "description" => "Chat",
-            "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp"]}}
-          }
-        }
+        tools: ["context", "agents", "shell"]
       })
 
     {pid, name} =
@@ -471,7 +465,7 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
       # The agent's own scratch directory — the space dir plus the bare agent
       # name (`TmpSpace`'s layout) — so the job's log lives where the agent's
       # own `shell-list` would find it.
-      scratch = Path.join(TmpSpace.space_dir(space_id), name)
+      scratch = Path.join(TmpSpace.space_dir(space_id, "bwrap"), name)
       workspace = Agent.get_public_info(pid, 1_000).workspace_path
       key = {space_id, name}
 

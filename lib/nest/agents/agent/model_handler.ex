@@ -86,10 +86,11 @@ defmodule Nest.Agents.Agent.ModelHandler do
     end
   end
 
-  # A vocation that writes to `:workspace` requires a non-null working
-  # directory; otherwise the workspace field is absent (nil).
-  defp validate_workspace(state, workspace_path) do
-    if Nest.Vocations.requires_workspace?(state.vocation) and is_nil(workspace_path) do
+  # Every agent requires a non-null working directory (the modes are universal
+  # and `act` — which every agent can be in — writes the workspace), so this is
+  # unconditional.
+  defp validate_workspace(_state, workspace_path) do
+    if is_nil(workspace_path) do
       {:error, :workspace_required}
     else
       Nest.Sandbox.workspace_error(workspace_path)

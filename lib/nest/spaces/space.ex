@@ -1,4 +1,11 @@
 defmodule Nest.Spaces.Space do
+  # The list and the default live in `Nest.Sandbox.Backend`, the module that
+  # dispatches on them; this schema reads them rather than owning a second copy.
+  # Declared as an attribute before the `@moduledoc` because the moduledoc
+  # interpolates both.
+  @sandbox_backends Nest.Sandbox.Backend.backends()
+  @default_sandbox_backend Nest.Sandbox.Backend.default()
+
   @moduledoc """
   Ecto schema for the `spaces` table.
 
@@ -16,6 +23,34 @@ defmodule Nest.Spaces.Space do
 
   * `created_by_user_id` — FK to `users.id`. The user who created
     the space.
+
+  ## Sandbox backend
+
+  * `sandbox_backend` — how this space's agents are sandboxed:
+    `#{inspect(@sandbox_backends)}` (see `Nest.Sandbox.Backend`). It is chosen
+    **once, at creation**:
+    `create_changeset/2` sets it and `changeset/2` (the update path)
+    deliberately cannot change it, because swapping a backend means
+    replacing the environment the space's agents run in — not a live
+    edit. `#{@default_sandbox_backend}` is the default, so every
+    pre-existing row is a bwrap space.
+
+    `"bwrap"` runs commands under bubblewrap and enforces the mode's
+    caps. `"docker"` runs them in a container the space shares, which sees
+    the workspace and the explicit `.nest` mounts and nothing else of the
+    host. `"none"` runs the bare command on the host, so **caps cannot be
+    enforced** for that space. See `Nest.Sandbox.Backend`.
+
+  ## Network access
+
+  * `network_access` — whether this space's agents may reach the network. It is
+    a **space** property (not a vocation mode's), and unlike `sandbox_backend`
+    it is **editable** (`Nest.Spaces.set_network_access/2`): a space can be
+    closed off, or opened up, without recreating it. The resolved caps carry it
+    as `"net"`, injected at caps-resolution time
+    (`Nest.Sandbox.with_network_access/2`), which is what
+    `Nest.Sandbox.build/2` and both backends read. A `"none"` space cannot
+    enforce it, like every other cap.
   """
 
   use Ecto.Schema
@@ -39,6 +74,8 @@ defmodule Nest.Spaces.Space do
              :slug,
              :blueprint_id,
              :workspace_path,
+             :sandbox_backend,
+             :network_access,
              :created_by_user_id,
              :archived,
              :inserted_at,
@@ -51,6 +88,8 @@ defmodule Nest.Spaces.Space do
     field :slug, :string
     field :blueprint_id, :integer
     field :workspace_path, :string
+    field :sandbox_backend, :string, default: @default_sandbox_backend
+    field :network_access, :boolean, default: true
     field :created_by_user_id, :integer
 
     # Lifecycle. `archived` soft-hides the space from the main
@@ -63,11 +102,17 @@ defmodule Nest.Spaces.Space do
   end
 
   @doc """
-  Build a changeset for inserting or updating a space row.
+  Build the changeset for **updating** a space row (rename).
 
   Required: `:name`, `:created_by_user_id`. `:slug` is derived
   from `:name` if not provided. `:blueprint_id` and
-  `:workspace_path` are optional.
+  `:workspace_path` are optional — on this path only; a *new* space
+  requires a workspace (`create_changeset/2`).
+
+  `:sandbox_backend` is deliberately absent from the cast list: it is a
+  creation-only choice (see `create_changeset/2`), so no update can move
+  a space between backends. `:network_access` *is* cast here, because it is
+  editable — `Nest.Spaces.set_network_access/2` goes through this changeset.
 
   `:slug` must be usable as the root agent's name (`<slug>-root`), so it
   is held to `PersistedAgent`'s filename-safe rule. A client-supplied
@@ -77,7 +122,14 @@ defmodule Nest.Spaces.Space do
   """
   def changeset(source, params) do
     source
-    |> cast(params, [:name, :slug, :blueprint_id, :workspace_path, :created_by_user_id])
+    |> cast(params, [
+      :name,
+      :slug,
+      :blueprint_id,
+      :workspace_path,
+      :network_access,
+      :created_by_user_id
+    ])
     |> validate_required([:name])
     |> maybe_generate_slug()
     |> validate_required([:slug])
@@ -85,6 +137,69 @@ defmodule Nest.Spaces.Space do
     |> unique_constraint(:name)
     |> unique_constraint(:slug)
     |> foreign_key_constraint(:blueprint_id)
+  end
+
+  @doc """
+  Build the changeset for **inserting** a space row: `changeset/2` plus the
+  creation-only `:sandbox_backend`.
+
+  An absent or blank backend takes `Nest.Sandbox.Backend.default/0`; anything
+  outside `Nest.Sandbox.Backend.backends/0` is refused with an error on the
+  field, so a client cannot introduce a backend this build does not implement.
+
+  `:workspace_path` is required **here and not in `changeset/2`**. Every space has
+  a workspace — its agents inherit it, and the `act` mode writes it — so a space
+  row without one is not a space this build can run, and no new row may be one.
+  The update path stays permissive on purpose: `rename_space/1` must keep working
+  on a row a previous build left without one, and a rename is not the place to
+  refuse it. (Rows already in that state are backfilled with a deliberately fake
+  path — see `Nest.Repo.Migrations.BackfillSpaceWorkspacePath`.)
+  """
+  def create_changeset(source, params) do
+    params =
+      params
+      |> Map.put(:sandbox_backend, sandbox_backend_param(params))
+      |> Map.put(:network_access, network_access_param(params))
+
+    source
+    |> changeset(params)
+    |> validate_required([:workspace_path])
+    |> cast(params, [:sandbox_backend])
+    |> validate_required([:sandbox_backend])
+    |> validate_inclusion(:sandbox_backend, @sandbox_backends,
+      message: "must be one of #{Enum.join(@sandbox_backends, ", ")}"
+    )
+  end
+
+  # The backend the caller asked for, from either key shape, falling back to
+  # the default only when neither names one. A blank counts as absent: the New
+  # Space form sends `nil` when the user leaves the picker alone, and `cast/4`
+  # would otherwise write that `nil` through and fail `validate_required/2` on a
+  # value the client never chose. An *unknown* value is passed through
+  # unchanged, so `validate_inclusion/3` refuses it by name rather than the
+  # default quietly replacing it.
+  defp sandbox_backend_param(params) do
+    [:sandbox_backend, "sandbox_backend"]
+    |> Enum.map(&Map.get(params, &1))
+    |> Enum.find(&present?/1)
+    |> Kernel.||(@default_sandbox_backend)
+  end
+
+  defp present?(value), do: value not in [nil, ""]
+
+  # The network value the caller asked for, from either key shape, falling back to
+  # the column's default when neither names one. `false` is a value, not an
+  # absence — which is why this cannot be a `||` — and an unknown shape is passed
+  # through so `cast/4` refuses it by name rather than the default quietly
+  # replacing it.
+  defp network_access_param(params) do
+    case Enum.find(
+           [Map.get(params, :network_access), Map.get(params, "network_access")],
+           &present?/1
+         ) do
+      nil -> true
+      value -> value
+    end
   end
 
   @doc """

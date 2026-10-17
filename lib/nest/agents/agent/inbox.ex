@@ -15,8 +15,9 @@ defmodule Nest.Agents.Agent.Inbox do
 
   An entry is `%{id, from, content, timestamp, kind, mode, human?, fulfilled_ids,
   retrieved}`. `content` is stored **verbatim** (no `[mode: ...]` prefix — that
-  is added when the entry is delivered), `mode` is the human's requested mode,
-  always `nil` for an `agents-send` entry, and the producer-supplied fields are
+  is added when the entry is delivered), `mode` is the mode the entry asks the
+  recipient to run under — a human's own, or a peer's `set_mode` — and is `nil`
+  for an entry that asks for no change, and the producer-supplied fields are
   `human?` (the human's own words) and `fulfilled_ids` (the tool-call ids a
   backgrounded batch's result answers, issue #36), empty for other producers.
 
@@ -81,9 +82,9 @@ defmodule Nest.Agents.Agent.Inbox do
 
   ## One mode per delivery
 
-  A delivered batch runs in one mode: the most recent human-sourced entry that
-  carries a mode wins (`drain_mode/1`), and `nil` leaves the agent's current
-  mode unchanged. Because a human message is delivered alone, that winner is
+  A delivered batch runs in one mode: the most recent entry that carries a mode
+  wins (`drain_mode/1`), whatever its kind — a peer's `set_mode` counts as much
+  as a human's — and `nil` leaves the agent's current mode unchanged. Because a human message is delivered alone, that winner is
   simply its own requested mode, so every human message runs in the mode it
   asked for. The winner is resolved at **delivery-attempt time**, against the
   batch actually delivered — the executor applies it when it peeks the queue,
@@ -205,9 +206,9 @@ defmodule Nest.Agents.Agent.Inbox do
     * `{:error, reason}` — the target is in a broken state or the inbox
       is full.
   """
-  @spec handle_delivery(Agent.t(), String.t(), String.t(), kind()) ::
+  @spec handle_delivery(Agent.t(), String.t(), String.t(), kind(), String.t() | nil) ::
           {:reply, {:ok, :delivered | :queued} | {:error, term()}, Agent.t()}
-  def handle_delivery(state, sender, content, kind \\ :agent) do
+  def handle_delivery(state, sender, content, kind \\ :agent, mode \\ nil) do
     state = satisfy_watch(state, sender, kind)
     status = Machine.status_for(state.live.machine)
 
@@ -217,11 +218,11 @@ defmodule Nest.Agents.Agent.Inbox do
         {:reply, {:error, :inbox_full}, state}
 
       busy_status?(status) ->
-        {state, disposition} = busy_delivery(state, sender, content, kind, nil, false)
+        {state, disposition} = busy_delivery(state, sender, content, kind, mode, false)
         {:reply, {:ok, disposition}, state}
 
       status == :idle ->
-        idle_delivery(state, sender, content, kind)
+        idle_delivery(state, sender, content, kind, mode)
 
       true ->
         record_inbox(state, :refused, sender, kind, content, disposition: {:status, status})
@@ -254,7 +255,8 @@ defmodule Nest.Agents.Agent.Inbox do
     state = satisfy_watch(state, sender, kind)
 
     if Machine.status_for(state.live.machine) == :idle do
-      idle_delivery(state, sender, content, kind)
+      # The runtime's own result carries no mode: it is an outcome, not a request.
+      idle_delivery(state, sender, content, kind, nil)
     else
       {state, disposition} = busy_delivery(state, sender, content, kind, nil, false)
       {:reply, {:ok, disposition}, state}
@@ -287,8 +289,8 @@ defmodule Nest.Agents.Agent.Inbox do
 
   # The idle arm: enqueue, drain through the turn executor, and report the
   # disposition the drain resolved.
-  defp idle_delivery(state, sender, content, kind) do
-    {state, entry} = put_entry(state, sender, content, kind, nil)
+  defp idle_delivery(state, sender, content, kind, mode) do
+    {state, entry} = put_entry(state, sender, content, kind, mode)
     queued_before = length(state.live.inbox)
     {state, result} = Turn.drain_inbox(state)
 
@@ -458,25 +460,6 @@ defmodule Nest.Agents.Agent.Inbox do
   # has one loss), sorted so the line is stable.
   defp queued_query_senders(state) do
     state.live.inbox |> query_senders() |> Enum.uniq() |> Enum.sort()
-  end
-
-  @doc """
-  The mode a drain batch runs in: the most recent human-sourced entry that
-  carries a mode wins, and `nil` (no such entry) leaves the agent's current
-  mode unchanged. Since `batch/1` delivers a human message alone, that is
-  simply its own requested mode. The winner is the *requested* mode; the
-  executor's drain resolves it against the vocation (falling back to the
-  vocation's default mode) before storing it, exactly as an idle chat turn
-  resolves its request.
-  """
-  @spec drain_mode([entry()]) :: String.t() | nil
-  def drain_mode(entries) do
-    entries
-    |> Enum.reverse()
-    |> Enum.find_value(fn
-      %{kind: :user, mode: mode} when is_binary(mode) -> mode
-      _ -> nil
-    end)
   end
 
   @doc """

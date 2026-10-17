@@ -43,16 +43,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
           name: "Oversized-#{System.unique_integer([:positive])}",
           description: "Oversized system test",
           system_prompt: "Original-small-prompt",
-          tools: ["context"],
-          modes: %{
-            "chat" => %{
-              "description" => "General conversation.",
-              "caps" => %{
-                "net" => false,
-                "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
-              }
-            }
-          }
+          tools: ["context"]
         },
         attrs
       )
@@ -109,7 +100,6 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       name: "test-agent-#{System.unique_integer([:positive])}",
       vocation: vocation,
       vocation_id: vocation.id,
-      workspace_path: nil,
       depth: 0,
       llm_metrics: %Nest.Agents.Agent.LlmMetrics{
         context_limit: context_limit,
@@ -235,7 +225,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # helper only loads the struct into the attrs when
       # `vocation_id` is a non-zero integer AND the helper
       # wants the struct. Here we override `vocation: nil`
-      # explicitly to exercise the `compose_vocation_config/5`
+      # explicitly to exercise the `compose_vocation_config/6`
       # nil-vocation clause. `Dispatch.compaction_plan/1`'s
       # `system_prompt/2` falls back to extracting the rendered text
       # from `messages[0]` so the compaction can still proceed

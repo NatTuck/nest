@@ -50,7 +50,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
   test "agents-spawn tool creates a specialist and returns its name", %{vid: vid} do
     {coordinator_pid, coordinator_name} =
-      AgentTestHelpers.start_agent(%{
+      AgentTestHelpers.start_spawnable_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
         vocation_id: vid
       })
@@ -116,7 +116,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
   test "agents-spawn with a model argument spawns the child on that model", %{vid: vid} do
     {coordinator_pid, coordinator_name} =
-      AgentTestHelpers.start_agent(%{
+      AgentTestHelpers.start_spawnable_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
         vocation_id: vid
       })
@@ -155,7 +155,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
   test "agents-spawn with an unparseable model argument reports an error", %{vid: vid} do
     {coordinator_pid, coordinator_name} =
-      AgentTestHelpers.start_agent(%{
+      AgentTestHelpers.start_spawnable_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
         vocation_id: vid
       })
@@ -208,7 +208,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     vid: vid
   } do
     {coordinator_pid, coordinator_name} =
-      AgentTestHelpers.start_agent(%{
+      AgentTestHelpers.start_spawnable_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
         vocation_id: vid
       })
@@ -297,7 +297,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
   test "agents-send tool delivers a message to a peer asynchronously", %{vid: vid} do
     {coordinator_pid, coordinator_name} =
-      AgentTestHelpers.start_agent(%{
+      AgentTestHelpers.start_spawnable_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
         vocation_id: vid
       })
@@ -361,7 +361,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
   test "agents-send to a missing agent reports an error", %{vid: vid} do
     {coordinator_pid, coordinator_name} =
-      AgentTestHelpers.start_agent(%{
+      AgentTestHelpers.start_spawnable_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
         vocation_id: vid
       })
@@ -406,7 +406,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
   test "agents-wait returns immediately when every other agent is idle", %{vid: vid} do
     {coordinator_pid, coordinator_name} =
-      AgentTestHelpers.start_agent(%{
+      AgentTestHelpers.start_spawnable_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
         vocation_id: vid
       })

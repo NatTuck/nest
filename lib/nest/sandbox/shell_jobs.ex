@@ -2,25 +2,30 @@ defmodule Nest.Sandbox.ShellJobs do
   @moduledoc """
   Per-agent manager for background shell jobs.
 
-  A `shell-cmd` call with `background: true` hands its bwrap command to
+  A `shell-cmd` call with `background: true` hands its sandbox command to
   this manager instead of waiting for it. The manager owns the `:exec`
   port, streams the job's stdout/stderr to a per-job log file under the
   agent's scratch directory (`<scratch>/shell-jobs/<id>.log`), tracks its status,
   and lets `shell-list` / `shell-wait` / `shell-kill` inspect and control
-  it. The sandbox is unchanged: the job is an ordinary bwrap invocation,
-  so its PID/mount/net isolation is identical to a foreground call. It
-  survives only because the manager outlives the tool call.
+  it. The sandbox is unchanged: the job is an ordinary invocation of the
+  agent's backend (see `Nest.Sandbox.Backend`), so its isolation is
+  identical to a foreground call. It survives only because the manager
+  outlives the tool call.
 
-  A job's log has two names. The manager reads and writes it under the
-  agent's scratch directory (`<scratch>/shell-jobs/<id>.log`); the sandbox
-  sees the same file at
-  `/tmp/<agent-name>/shell-jobs/<id>.log`, because the *space* scratch
-  dir is bound at `/tmp` inside it and the agent's own dir is
-  `<agent-name>` beneath that. Everything an agent is told — the
-  "started" message, `shell-list`, the `shell:jobs` broadcast — uses the
-  sandbox path, since that is the only one that resolves inside a
-  `shell-cmd`. A scratch-directory path handed to an agent is unusable (and
-  leaks the harness's layout).
+  A job's log has two names. Under every backend whose environment is the host,
+  the manager reads and writes it under the agent's scratch directory
+  (`<scratch>/shell-jobs/<id>.log`), and the sandbox sees the same file at
+  `/tmp/<agent-name>/shell-jobs/<id>.log`, because the *space* scratch dir is
+  bound at `/tmp` inside it and the agent's own dir is `<agent-name>` beneath
+  that. Under `"docker"` there is only one name, and it is a *container* path:
+  the scratch is the container's own `/tmp`, so the command writes the log
+  itself and the manager reads it through the container — see
+  `Nest.Sandbox.ShellJobs.JobLog`, which is the whole of that difference.
+
+  Everything an agent is told — the "started" message, `shell-list`, the
+  `shell:jobs` broadcast — uses the sandbox path, since that is the only one that
+  resolves inside a `shell-cmd`. A scratch-directory path handed to an agent is
+  unusable (and leaks the harness's layout).
 
   ## Limits and lifetime
 
@@ -42,12 +47,14 @@ defmodule Nest.Sandbox.ShellJobs do
 
   This GenServer never blocks for an unknown amount of time. Every
   callback does bounded, local work: `:exec.run`/`:exec.kill` are
-  synchronous OS calls, and the only file I/O is `File.write` of a
-  streamed chunk, `File.read` of a job's log (proportional to that
-  log's size; logs are not capped on disk by design), and the
-  `File.rm_rf` of a dropped agent's scratch directory. It never waits
-  on an agent, an LLM, or another process, so a `GenServer.call/3` to
-  it is ordinary synchronous communication, not a blocking hand-off.
+  synchronous OS calls, and the only file I/O is the job log — `File.write` of
+  a streamed chunk, `File.read` of the log (proportional to that log's size;
+  logs are not capped on disk by design), and the `File.rm_rf` of a dropped
+  agent's scratch directory. Under `"docker"` those three are one `docker exec`
+  (the read, bounded like the `File.read` it replaces), a no-op (the command
+  writes its own log), and a no-op (the scratch is the container's). It never
+  waits on an agent, an LLM, or another process, so a `GenServer.call/3` to it
+  is ordinary synchronous communication, not a blocking hand-off.
 
   The `rm_rf` is the one cost this process carries that scales with the
   agent's own data (the uncapped logs under its scratch). It stays here
@@ -62,7 +69,8 @@ defmodule Nest.Sandbox.ShellJobs do
 
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.PubSub
-  alias Nest.Sandbox.ShellJobs.Launcher
+  alias Nest.Sandbox.{Backend, Mounts}
+  alias Nest.Sandbox.ShellJobs.{JobLog, Launcher}
   alias Nest.Sandbox.ShellJobs.Waiters
   alias Nest.Tools.Exec
   alias Nest.Tools.ShellCmd
@@ -112,12 +120,16 @@ defmodule Nest.Sandbox.ShellJobs do
     * `:agent_key` — `{space_id, agent_name}`, the ownership key
     * `:agent_pid` — monitored; all the agent's jobs die with it
     * `:command` — the original command (for display)
-    * `:bwrap` — the full bwrap command line to run
-    * `:script_path` — the staged script's path, removed once
+    * `:caps` — the mode's caps, which the backend needs to build the job's
+      command line (`Nest.Sandbox.Backend.job_spec/4`)
+    * `:script_sandbox` — the staged script's spelling *inside* the
+      environment, which is what the command line hands the shell
+    * `:script_path` — the staged script's host path, removed once
       the job ends
     * `:mounts` — the `Nest.Sandbox.Mounts` value for the agent; the log
       lives under its scratch directory (which the sandbox sees at
-      `/tmp/<agent-name>`)
+      `/tmp/<agent-name>`), and its backend is what decides where that
+      scratch directory is when the agent is dropped
     * `:max_jobs` — the per-agent ceiling (default #{@default_max_jobs})
 
   Returns `{:ok, job_id, log_path}`, where `log_path` is the path inside
@@ -279,7 +291,7 @@ defmodule Nest.Sandbox.ShellJobs do
 
   def handle_call({:output, agent_key, job_id}, _from, state) do
     case fetch_job(state, agent_key, job_id) do
-      {:ok, job} -> {:reply, {:ok, read_log(job.log_path)}, state}
+      {:ok, job} -> {:reply, {:ok, JobLog.read(job.mounts, job.log_path)}, state}
       :error -> {:reply, {:error, :not_found}, state}
     end
   end
@@ -405,7 +417,7 @@ defmodule Nest.Sandbox.ShellJobs do
         state
 
       job ->
-        File.write(job.log_path, data, [:append])
+        JobLog.append(job.mounts, job.log_path, data)
         state
     end
   end
@@ -430,23 +442,36 @@ defmodule Nest.Sandbox.ShellJobs do
   # ---- Agent tracking ----
 
   # Monitor the agent pid the first time we see an agent, so its jobs die
-  # with it. On DOWN we drop every job under the key.
+  # with it, and remember the agent's `mounts` so dropping the agent knows
+  # which backend's scratch directory to remove. On DOWN we drop every job
+  # under the key.
   defp track_agent(state, agent_key, attrs) do
     case Map.get(state.agents, agent_key) do
       nil ->
-        case Map.get(attrs, :agent_pid) do
-          pid when is_pid(pid) ->
-            ref = Process.monitor(pid)
-            %{state | agents: Map.put(state.agents, agent_key, %{pid: pid, ref: ref})}
-
-          _ ->
-            state
-        end
+        %{
+          state
+          | agents: Map.put(state.agents, agent_key, agent_record(attrs))
+        }
 
       _existing ->
         state
     end
   end
+
+  # A key that is already tracked keeps its first record: a space's backend is
+  # fixed at creation, so a later job cannot bring a different one.
+  defp agent_record(attrs) do
+    pid = Map.get(attrs, :agent_pid)
+
+    %{
+      pid: pid,
+      ref: monitor_agent_pid(pid),
+      mounts: Map.fetch!(attrs, :mounts)
+    }
+  end
+
+  defp monitor_agent_pid(pid) when is_pid(pid), do: Process.monitor(pid)
+  defp monitor_agent_pid(_pid), do: nil
 
   defp drop_agent(agent_key, state, owner) do
     jobs = state.jobs |> Map.values() |> Enum.filter(&(&1.agent_key == agent_key))
@@ -463,13 +488,12 @@ defmodule Nest.Sandbox.ShellJobs do
     # The jobs above are stopped, so the scratch directory can go now; removing
     # it first would let a running job recreate files under a deleted path.
     # `owner` is the incarnation this drop is for, so a stale monitor for a
-    # previous one cannot delete the scratch a live agent is using.
-    TmpSpace.cleanup_agent_key(agent_key, owner)
+    # previous one cannot delete the scratch a live agent is using, and the
+    # backend comes from the agent's own record because a `"none"` space's
+    # scratch is the host's `/tmp/<agent-name>` rather than a per-space dir.
+    TmpSpace.cleanup_agent_key(agent_key, owner, tracked_backend(state, agent_key))
 
-    case Map.get(state.agents, agent_key) do
-      %{ref: ref} -> Process.demonitor(ref, [:flush])
-      _ -> :ok
-    end
+    demonitor_agent(state, agent_key)
 
     state = %{
       state
@@ -502,10 +526,31 @@ defmodule Nest.Sandbox.ShellJobs do
     _kind, _ -> :ok
   end
 
+  # Stop monitoring the dropped agent. A key with no record, or a record with
+  # no pid (an agent the manager never saw a pid for), has no monitor to
+  # cancel.
+  defp demonitor_agent(state, agent_key) do
+    case Map.get(state.agents, agent_key) do
+      %{ref: ref} when is_reference(ref) -> Process.demonitor(ref, [:flush])
+      _ -> :ok
+    end
+  end
+
+  # The backend the dropped agent's jobs ran on, from the record
+  # `track_agent/3` kept. An untracked key falls back to the default backend:
+  # a drop with no record is a key that never started a job, and the default is
+  # the only backend that can have one.
+  defp tracked_backend(state, agent_key) do
+    case Map.get(state.agents, agent_key) do
+      %{mounts: mounts} -> Mounts.backend(mounts)
+      _ -> Backend.default()
+    end
+  end
+
   # ---- Retention / cleanup ----
 
   # Remove the job's staged script. `script_path` is the staging path
-  # `ShellCmd.stage_script/2` writes to; the spelling the bwrap command line
+  # `ShellCmd.stage_script/2` writes to; the spelling the backend's command line
   # uses is a different thing and must never be passed here.
   defp remove_script(%{script_path: nil}), do: :ok
 
@@ -529,7 +574,7 @@ defmodule Nest.Sandbox.ShellJobs do
       finished
       |> Enum.take(excess)
       |> Enum.reduce(state, fn job, acc ->
-        File.rm(job.log_path)
+        JobLog.remove(job.mounts, job.log_path)
         %{acc | jobs: Map.delete(acc.jobs, job.id), waiters: Map.delete(acc.waiters, job.id)}
       end)
     else
@@ -596,13 +641,6 @@ defmodule Nest.Sandbox.ShellJobs do
       log_path: Map.get(job, :sandbox_log_path, job.log_path),
       started_at: job.started_at
     }
-  end
-
-  defp read_log(path) do
-    case File.read(path) do
-      {:ok, content} -> content
-      {:error, _} -> ""
-    end
   end
 
   # ---- Broadcast ----

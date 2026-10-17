@@ -14,7 +14,7 @@ defmodule Nest.Sandbox.Glob do
   terminal `**` is refused: bash would eagerly expand the whole subtree.
   """
 
-  alias Nest.Sandbox.{Failure, Mounts, Paths}
+  alias Nest.Sandbox.{Backend, Failure, Mounts}
   alias Nest.Tools.{ShellCmd, ShellEscape}
 
   @glob_limit 1_000
@@ -34,7 +34,12 @@ defmodule Nest.Sandbox.Glob do
   def run(pattern, caps, mounts, opts \\ []) do
     limit = Keyword.get(opts, :limit, @glob_limit)
 
-    with {:ok, full} <- Mounts.resolve(pattern, mounts),
+    # The backend is resolved *here*, before `stage_dir_sandbox/1` needs it: that
+    # accessor raises on a backend this build does not implement, and every
+    # sibling executor (`read/3`, `stat/4`, `run/4`) answers with the same
+    # `{:error, reason}` instead. Resolving first is what keeps glob one of them.
+    with {:ok, _backend} <- Backend.resolve(mounts),
+         {:ok, full} <- Mounts.resolve(pattern, mounts),
          :ok <- reject_terminal_double_star(full) do
       execute(full, caps, mounts, limit)
     end
@@ -51,7 +56,7 @@ defmodule Nest.Sandbox.Glob do
         {:error, :glob_too_broad}
 
       {:ok, _exit_code, _stdout, stderr} ->
-        reason = Failure.classify(stderr)
+        reason = Backend.classify(mounts, stderr)
         Failure.log(:glob, full, reason, stderr)
         {:error, reason}
 
@@ -60,14 +65,15 @@ defmodule Nest.Sandbox.Glob do
     end
   end
 
-  defp stage_dir_sandbox(mounts), do: Paths.stage_dir_sandbox(Mounts.scratch(mounts))
+  defp stage_dir_sandbox(mounts), do: Backend.stage_dir_sandbox(mounts)
 
   # `full` is a resolved absolute pattern in the sandbox domain. Bash resolves
   # symlinks and the `/tmp` bind exactly as a shell inside the sandbox would.
   #
-  # Nest stages command transcripts in `Paths.stage_dir_sandbox/1` (visible
-  # inside at `/tmp/.cmds`, or at the same path through the read-only root bind
-  # when there is no scratch bind). The loop skips that whole directory so
+  # Nest stages command transcripts in the backend's staging directory
+  # (visible inside at `/tmp/.cmds`, or at the same path through the read-only
+  # root bind when there is no scratch bind, or as the host's own
+  # `/tmp/.nest-cmds` on the bare-command backend). The loop skips that whole directory so
   # Nest's own scripts never appear in results, while a real file an agent
   # names `.nest-cmd-notes.sh` is no longer hidden by a basename-prefix check.
   defp script(escaped_pattern, escaped_stage_dir, limit) do

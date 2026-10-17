@@ -53,13 +53,13 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       # The isolation defect's shape. A turn's *tool* worker is a Task under the
       # application-wide `Nest.Agents.TaskSupervisor`, so nothing in
       # `Agent.terminate/2` used to reach it — and its DB work is not the
-      # agent's: `agents-send` reaches `Agents.send_message/5` →
+      # agent's: `agents-send` reaches `Agents.send_message/6` →
       # `Supervisor.get_agent/2`'s on-demand load → `Init.LoadHeal.heal/2`, which
       # *appends* in the worker's own DB context. A worker left running past the
       # test process appends on the test's checked-in sandbox connection
       # (`DBConnection.ConnectionError: owner … exited`), after the teardown has
       # stopped every agent it can see. `park_agent_sends/2` holds the worker
-      # exactly there: before its `send_message/4`, with the turn still
+      # exactly there: before its `send_message/6`, with the turn still
       # `:executing_tools`.
       {pid, name} =
         AgentTestHelpers.start_agent(%{
@@ -222,7 +222,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
 
     test "does not report an idle agent whose teardown is slow" do
       # The regression this guard was fixed for. `Agent.terminate/2` ends with
-      # `cleanup_tmp/2` -> `TmpSpace.cleanup/2` -> `File.rm_rf/1`, so the stop
+      # `cleanup_tmp/2` -> `TmpSpace.cleanup/3` -> `File.rm_rf/1`, so the stop
       # handshake contains real filesystem work — a `File.rm_rf` per agent — and
       # it is not a measurement of the agent's receive loop. The bound used to be
       # 10 ms, and that handshake reaches it on a busy machine — 12 provably idle
@@ -246,7 +246,7 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       {pid, name} = AgentTestHelpers.start_agent()
       space_id = AgentTestHelpers.current_space_id()
 
-      scratch = TmpSpace.create(space_id, name)
+      scratch = TmpSpace.create(space_id, name, "bwrap")
       Enum.each(1..20, fn i -> File.write!(Path.join(scratch, "f#{i}"), "x") end)
 
       result = AgentTestLifecycle.stop_test_agents()

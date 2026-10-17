@@ -206,7 +206,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
              inbox_disposition("inbox_full")
 
     # A drain's own line: the batch it delivered, with the mode it resolved.
-    assert [%{"action" => "drained", "count" => 1, "from" => "peer", "mode" => "chat"}] =
+    assert [%{"action" => "drained", "count" => 1, "from" => "peer", "mode" => "act"}] =
              inbox_action("drained")
 
     # ...and the delivered entry's delivery id (issue #62), so a reader can
@@ -225,7 +225,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     # result reads "Message delivered to …", so a line claiming `queued` would
     # contradict both the sender and the transcript.
     {pid, name} =
-      start_agent(%{
+      start_spawnable_agent(%{
         model: %{name: "qwen3.5-plus"},
         vocation_id: programmer_vocation_id_for_test()
       })
@@ -277,7 +277,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     # A `queued` line for a message the transcript already carries would
     # contradict the transcript, and the human is told nothing at all.
     {pid, name} =
-      start_agent(%{
+      start_spawnable_agent(%{
         model: %{name: "qwen3.5-plus"},
         vocation_id: programmer_vocation_id_for_test()
       })
@@ -306,7 +306,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
 
     # The human's message backgrounds the batch, and its turn is parked: the
     # delivery is the one the record is about.
-    :ok = Agent.chat(pid, "human note", "chat", "alice")
+    :ok = Agent.chat(pid, "human note", "act", "alice")
     {_second, llm2} = next_request()
 
     # The batch's own send and its late result both queue behind the parked
@@ -326,7 +326,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
                "from" => "alice",
                "kind" => "user",
                "count" => 1,
-               "mode" => "chat",
+               "mode" => "act",
                "disposition" => "delivered"
              }
            ] = inbox_action("delivered")
@@ -373,11 +373,11 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     MockClient.set_response("spawned it")
     MockClient.set_response("thanks for the answer")
 
-    {pid, name} = start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: parent_vocation})
+    {pid, name} =
+      start_spawnable_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: parent_vocation})
+
     track_agent(name)
 
-    # The spawned specialist must not run a turn of its own here: its chat is
-    # stubbed, and the parent is the process that calls it.
     Mimic.allow(Agents, self(), pid)
 
     :ok = Agent.chat(pid, "delegate this")

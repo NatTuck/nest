@@ -10,10 +10,16 @@
  * comes from the route params via a real MemoryRouter.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 
 let mockState = { spaces: [], agents: [], blueprints: [] };
+
+const mocks = vi.hoisted(() => ({ setSpaceNetwork: vi.fn() }));
+
+vi.mock("../channels", () => ({
+  setSpaceNetwork: mocks.setSpaceNetwork,
+}));
 
 vi.mock("../store", () => ({
   useStore: (selector) => selector(mockState),
@@ -39,7 +45,14 @@ beforeEach(() => {
 
   mockState = {
     spaces: [
-      { id: 1, name: "My Space", slug: "my-space", blueprint_id: 10 },
+      {
+        id: 1,
+        name: "My Space",
+        slug: "my-space",
+        blueprint_id: 10,
+        network_access: true,
+        sandbox_backend: "bwrap",
+      },
       { id: 2, name: "Other Space", slug: "other-space", blueprint_id: null },
     ],
     agents: [
@@ -120,6 +133,44 @@ describe("SpaceView", () => {
     expect(
       screen.getByText("No agents in this space yet."),
     ).toBeInTheDocument();
+  });
+
+  it("shows the space's network access and pushes a change to the channel", () => {
+    renderView();
+
+    const toggle = screen.getByLabelText("Network access");
+    expect(toggle.checked).toBe(true);
+
+    fireEvent.click(toggle);
+
+    expect(mocks.setSpaceNetwork).toHaveBeenCalledWith(
+      1,
+      false,
+      expect.any(Function),
+      expect.any(Function),
+    );
+  });
+
+  it("says a space with no sandbox cannot enforce network access", () => {
+    mockState.spaces[0].sandbox_backend = "none";
+
+    renderView();
+
+    expect(screen.getByText(/nothing enforces that/i)).toBeInTheDocument();
+  });
+
+  it("warns that a docker space's container restarts when the network changes", () => {
+    // `--network none` is fixed when a container is created, so the change
+    // releases it — and with it the agents' `/tmp` (offloads, job logs) and any
+    // running background job. The user is told before flipping the toggle, not
+    // after.
+    mockState.spaces[0].sandbox_backend = "docker";
+
+    renderView();
+
+    const warning = screen.getByText(/restarts this space's container/i);
+    expect(warning).toBeInTheDocument();
+    expect(warning.textContent).toMatch(/background-job logs/i);
   });
 
   it("renders the not-found state for an unknown slug", () => {

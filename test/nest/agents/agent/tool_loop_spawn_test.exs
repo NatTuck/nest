@@ -20,6 +20,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
 
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Agents.ChildRegistry
   alias Nest.Agents.PersistedAgent
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.LLM.MockClient
@@ -159,7 +160,9 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
           reply_failure: changeset
         )
 
-      {results, _log} =
+      # BatchSizer logs every `is_error` result: expected, so assert on it — a
+      # capture nobody asserts on could only hide a print (SMELLS.md).
+      {results, log} =
         with_log(fn -> spawn_from("parent-bad-name", %{"name" => "Code Reviewer"}) end)
 
       assert [%ToolResult{name: "agents-spawn", is_error: true, content: content}] = results
@@ -167,6 +170,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
       assert content =~ "letters, digits"
       assert content =~ "no spaces or slashes"
       refute content =~ "Ecto.Changeset"
+      assert log =~ "is_error=true tool result"
     end
   end
 
@@ -198,9 +202,11 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
 
       cast_child_event(parent_pid, {:child_completed, child_name, "the answer", usage()})
 
-      # Exactly one delivery, framed as the child's own words.
+      # Exactly one delivery, framed as the child's own words. The header also
+      # states the mode the parent's delivered turn runs in — the child
+      # inherited the parent's `act`.
       assert [delivered] = await_delivery(parent_pid, "the answer")
-      assert delivered =~ ~s([Message from agent "#{child_name}"])
+      assert delivered =~ ~s([Message from agent "#{child_name}" | mode: act])
       assert delivered =~ "the answer"
 
       # The child's usage merged into the parent's descendant totals.
@@ -237,6 +243,35 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
   end
 
   describe "agents-query" do
+    test "a plan sender may not raise the target's mode, and the refusal is this call's error", %{
+      vid: vid
+    } do
+      # The same rule `agents-send` is held to, through the same
+      # `ToolLoop.requested_mode/3`: a `plan` sender may hold or lower, never
+      # raise, and the refusal is the call's own error result naming why.
+      {parent_pid, parent_name} = start_agent(vid)
+      ChildRegistry.register(AgentTestHelpers.current_space_id(), parent_name, "peer")
+
+      {results, log} =
+        with_log(fn ->
+          ToolLoop.execute(%{ctx(parent_pid, parent_name) | mode: "plan"}, nil, [
+            %ToolCall{
+              id: "query-1",
+              name: "agents-query",
+              arguments: %{"name" => "peer", "prompt" => "hi", "set_mode" => "act"}
+            }
+          ])
+        end)
+
+      assert [%ToolResult{name: "agents-query", is_error: true, content: content}] = results
+      assert content =~ "`plan`"
+      assert content =~ "`act`"
+      assert content =~ "never raised"
+
+      # BatchSizer logs every `is_error` result: expected, so assert on it.
+      assert log =~ "BatchSizer produced is_error=true tool result"
+    end
+
     test "delivers with the query kind and reports the disposition", %{vid: vid} do
       # intentional: nothing waits. The tool result is the disposition, the kind
       # is `:query` — which is what makes the peer owe the caller a reply — and
@@ -244,7 +279,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
       {parent_pid, parent_name} = start_agent(vid)
       test_pid = self()
 
-      Mimic.stub(Nest.Agents, :send_message, fn _space_id, from, name, content, kind ->
+      Mimic.stub(Nest.Agents, :send_message, fn _space_id, from, name, content, kind, _mode ->
         send(test_pid, {:delivered_query, from, name, content, kind})
         {:ok, :delivered}
       end)
@@ -262,7 +297,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
     test "reports a queued delivery and every refusal", %{vid: vid} do
       {parent_pid, parent_name} = start_agent(vid)
 
-      Mimic.stub(Nest.Agents, :send_message, fn _space_id, _from, _name, _content, _kind ->
+      Mimic.stub(Nest.Agents, :send_message, fn _space_id, _from, _name, _content, _kind, _mode ->
         {:ok, :queued}
       end)
 
@@ -284,7 +319,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
           ]
 
           for {reply, expected} <- cases do
-            Mimic.stub(Nest.Agents, :send_message, fn _s, _f, _n, _c, _k -> reply end)
+            Mimic.stub(Nest.Agents, :send_message, fn _s, _f, _n, _c, _k, _m -> reply end)
 
             [result] =
               run_query(parent_pid, parent_name, %{"name" => "peer", "prompt" => "hi"})
@@ -311,7 +346,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
   # -- helpers --
 
   defp start_agent(vid) do
-    AgentTestHelpers.start_agent(%{
+    AgentTestHelpers.start_spawnable_agent(%{
       model: %{name: "qwen3.5-plus", provider: "model-studio"},
       vocation_id: vid
     })
@@ -323,7 +358,10 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
       agent_name: agent_name,
       space_id: AgentTestHelpers.current_space_id(),
       context_limit: 100_000,
-      messages: []
+      messages: [],
+      # The sender's mode: what a `set_mode` on a send is held to
+      # (`Nest.Agents.Agent.ModeAuthority`).
+      mode: "act"
     }
   end
 
@@ -403,13 +441,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
         name: "SpawnTools #{System.unique_integer([:positive])}",
         description: "Coordinator with sub-agent tools",
         system_prompt: "Coordinate specialists in this space.",
-        tools: tools,
-        modes: %{
-          "chat" => %{
-            "description" => "Chat",
-            "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp"]}}
-          }
-        }
+        tools: tools
       })
 
     vid
@@ -421,8 +453,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
         name: "SpawnPeer #{System.unique_integer([:positive])}",
         description: "A peer specialist",
         system_prompt: "You are a peer.",
-        tools: ["context"],
-        modes: %{}
+        tools: ["context"]
       })
 
     slug

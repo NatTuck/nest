@@ -138,7 +138,7 @@ defmodule Nest.AgentsTest do
       space_id = AgentTestHelpers.current_space_id()
       name = fresh_name()
 
-      # `:vocation_id` is omitted → no vocation struct → `compose_vocation_config/5`
+      # `:vocation_id` is omitted → no vocation struct → `compose_vocation_config/6`
       # returns `nil` → creation is refused.
       assert {:error, :missing_system_prompt} =
                Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
@@ -156,12 +156,12 @@ defmodule Nest.AgentsTest do
       # retry with that name fail on `unique_constraint([:space_id,
       # :name])`.
       #
-      # Make `init/1` fail deterministically: `TmpSpace.create/2` does
+      # Make `init/1` fail deterministically: `TmpSpace.create/3` does
       # `File.mkdir_p!` on the agent's scratch dir, so a *file* sitting
       # where that directory belongs raises `File.Error` during start.
       space_id = AgentTestHelpers.current_space_id()
       name = fresh_name()
-      space_dir = TmpSpace.space_dir(space_id)
+      space_dir = TmpSpace.space_dir(space_id, "bwrap")
       blocker = Path.join(space_dir, name)
 
       File.mkdir_p!(space_dir)

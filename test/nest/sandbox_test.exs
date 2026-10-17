@@ -386,6 +386,30 @@ defmodule Nest.SandboxTest do
       assert {:error, msg} = Sandbox.validate_caps("not a map")
       assert msg =~ "invalid caps"
     end
+
+    test "the project's declared docker packages are checked for shape" do
+      # `Nest.ProjectConfig` validates the list where it parses `.nest`; this is
+      # the check for a caps map that reached a backend another way, so the docker
+      # backend never interpolates something that is not a list of strings into an
+      # `apt-get install` line.
+      valid = Map.put(build_caps(), "sandbox", %{"packages" => ["nodejs"]})
+      assert :ok = Sandbox.validate_caps(valid)
+
+      assert {:error, msg} =
+               Sandbox.validate_caps(Map.put(build_caps(), "sandbox", "nodejs"))
+
+      assert msg =~ "caps.sandbox must be a map"
+
+      assert {:error, msg} =
+               Sandbox.validate_caps(Map.put(build_caps(), "sandbox", %{"packages" => "nodejs"}))
+
+      assert msg =~ "caps.sandbox.packages must be a list"
+
+      assert {:error, msg} =
+               Sandbox.validate_caps(Map.put(build_caps(), "sandbox", %{"packages" => [3]}))
+
+      assert msg =~ "caps.sandbox.packages entries must be strings"
+    end
   end
 
   describe "glob/4" do

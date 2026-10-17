@@ -1,10 +1,22 @@
 /**
  * Mode selector — small dropdown shown next to the chat input when
  * an agent has more than one mode. Renders nothing for agents with
- * exactly one mode (e.g. legacy "chat"-only vocations).
+ * exactly one mode.
+ *
+ * Both the list and the value come from the server (`Nest.Modes` is the
+ * authority on which modes exist, and the agent's `init` payload names the one
+ * it is in): this component never holds a mode list of its own, so a mode the
+ * server does not have cannot be picked here.
  */
 export function ModeSelector({ modes, value, onChange, disabled }) {
   if (!modes || modes.length <= 1) return null;
+  // A single mode is not worth a control, so that case renders nothing. A
+  // *missing or unknown* value is different: it means we cannot say which mode
+  // the agent is in, and AGENTS.md's transparency rule wants an obvious
+  // indicator rather than nothing. A `<select>` with no value would display its
+  // first option — a mode the agent is not in — and an empty space would hide
+  // the fact that we do not know.
+  if (!value || !modes.includes(value)) return <UnknownMode value={value} />;
 
   return (
     <select
@@ -20,5 +32,23 @@ export function ModeSelector({ modes, value, onChange, disabled }) {
         </option>
       ))}
     </select>
+  );
+}
+
+/**
+ * The "we do not know which mode this agent is in" indicator. It is a `role`
+ * alert rather than a disabled select, because the useful thing to show is that
+ * something is wrong — a disabled control would look like a choice the user
+ * cannot make.
+ */
+function UnknownMode({ value }) {
+  return (
+    <span
+      role="alert"
+      title="The server reported no mode, or one this build does not know. This is a bug, not a choice you can make."
+      className="px-3 py-3 border border-red-300 bg-red-50 text-red-700 rounded-lg text-sm font-medium"
+    >
+      {value == null ? "mode: (missing)" : `mode: unknown (${value})`}
+    </span>
   );
 }

@@ -22,6 +22,7 @@ defmodule Nest.Agents.Agent.Turn do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Children
   alias Nest.Agents.Agent.Machine.Phase
+  alias Nest.Agents.Agent.ModeAuthority
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.Timeline
   alias Nest.Agents.Agent.Turn.Executor
@@ -92,13 +93,73 @@ defmodule Nest.Agents.Agent.Turn do
 
     if Machine.status_for(state.live.machine) != old_status, do: Broadcasts.status(state)
 
-    case follow do
-      nil ->
-        {:ok, restore_undelivered_mode(state, pre_mode, pre_inbox)}
+    state =
+      case follow do
+        nil ->
+          restore_undelivered_mode(state, pre_mode, pre_inbox)
 
-      event ->
-        {:ok, settled} = settle(state, event, depth + 1)
-        {:ok, restore_undelivered_mode(settled, pre_mode, pre_inbox)}
+        event ->
+          {:ok, settled} = settle(state, event, depth + 1)
+          restore_undelivered_mode(settled, pre_mode, pre_inbox)
+      end
+
+    {:ok, commit_mode_change(state, pre_mode, pre_inbox)}
+  end
+
+  # A mode a drain applied and *kept* is a real change, so it is written down and
+  # announced. `restore_undelivered_mode/3` has already undone one whose drain
+  # consumed nothing, so reaching here with a different mode means the message
+  # that asked for it was delivered.
+  defp commit_mode_change(state, pre_mode, pre_inbox) do
+    case Inbox.Mode.drain_mode_change(Inbox.batch(pre_inbox)) do
+      %{actor: actor} -> keep_mode(state, pre_mode, actor)
+      nil -> state
+    end
+  end
+
+  @doc """
+  Write down a mode change the turn **kept**, and announce a peer's.
+
+  The row is written here, not where the mode is applied, and that is what keeps
+  an undone change out of it: `restore_undelivered_mode/3` runs first, so
+  reaching here with a different mode means the message that asked for it was
+  delivered. The row is the truth a restart and a later spawn read
+  (`Nest.Agents.Agent.PreSpawn`), so it must hold exactly what the agent is
+  actually working under.
+
+  It is `state.live.mode` that is written — the *resolved* mode — rather than the
+  name an entry carried: a request this build does not implement is resolved
+  (`Nest.Modes`) before it is applied, and the row must not keep the stale name.
+
+  The callers are the two places a kept change can be observed:
+  `commit_mode_change/3`, which covers every drain `run/6` runs *and* the one
+  `drain_inbox/1` runs itself (the settle inside it reads the already applied
+  mode, so `run/6`'s own snapshot cannot see that change), and
+  `ChatPipeline.handle_chat/4`, for the human's own selection riding a chat
+  message.
+
+  The announcement is for a **peer's** change — a change nothing else would
+  mention, so the agent has to be told or it keeps working under a rule it never
+  heard about. The human's own change is already stated by the delivered
+  message's `[mode: X]` prefix, so it announces nothing.
+  """
+  @spec keep_mode(Agent.t(), String.t(), :human | {:agent, String.t()}) :: Agent.t()
+  def keep_mode(state, pre_mode, _actor) when state.live.mode == pre_mode, do: state
+
+  def keep_mode(state, _pre_mode, actor) do
+    Nest.Persistence.update_agent_mode(state.space_id, state.name, state.live.mode)
+
+    case actor do
+      :human ->
+        state
+
+      {:agent, _name} ->
+        Inbox.enqueue_internal(
+          state,
+          nil,
+          ModeAuthority.notice(state.live.mode, actor),
+          :notice
+        )
     end
   end
 
@@ -146,9 +207,10 @@ defmodule Nest.Agents.Agent.Turn do
   # so the short-circuit above already returned.
   #
   # What would break it: a new action that enqueued a *mode-carrying* entry
-  # before a drain in the same list (`Inbox.enqueue_internal/5` passes
-  # `mode: nil`, so only a `:user` enqueue carries one today), or one that
-  # inserted at the head instead of appending. Either would make the peek's
+  # before a drain in the same list (every action's enqueue goes through
+  # `Inbox.enqueue_internal/5`, which passes `mode: nil`, so a mode arrives only
+  # from a *delivery* — the human's chat, or a peer's `set_mode` — and never from
+  # inside the list), or one that inserted at the head instead of appending. Either would make the peek's
   # batch differ from `Inbox.batch(pre_inbox)` — and the restore would then be
   # skipped with `pre_inbox == []`, or tested against entries the peek never
   # saw, leaking the applied mode. Making the check robust instead would mean
@@ -348,6 +410,13 @@ defmodule Nest.Agents.Agent.Turn do
           else
             state
           end
+
+        # This drain is the one `run/6` cannot see: the settle above runs its own
+        # `run/6`, whose `pre_mode` is read *after* the peek applied the batch's
+        # mode, so its `commit_mode_change/3` finds nothing to do. A mode this
+        # drain kept is therefore written here — and one it delivered nothing for
+        # was just undone above, so there is no change left to write.
+        state = commit_mode_change(state, pre_mode, entries)
 
         delivered? = not Enum.any?(entries, &(&1 in state.live.inbox))
         {state, if(delivered?, do: :delivered, else: :queued)}

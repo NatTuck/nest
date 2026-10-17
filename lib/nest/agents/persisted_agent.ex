@@ -85,6 +85,13 @@ defmodule Nest.Agents.PersistedAgent do
     field :workspace_path, :string
     field :next_message_index, :integer, default: 0
 
+    # The agent's mode (`Nest.Modes`): a per-agent runtime property, not a
+    # per-vocation one. `null: false` with the permissive default, so a row
+    # inserted by a caller that says nothing about a mode still has one — and so
+    # that "the column is the truth" holds for every read path, including a
+    # restart, which must not widen a child that was spawned read-only.
+    field :mode, :string, default: "act"
+
     # Boundary pointer for the active/history partition of an
     # agent's messages. `state.chat_state.messages` is exactly
     # `messages WHERE message_index > agents.last_compaction_index`.
@@ -168,6 +175,7 @@ defmodule Nest.Agents.PersistedAgent do
       :space_id,
       :vocation_id,
       :model,
+      :mode,
       :workspace_path,
       :next_message_index,
       :last_compaction_index,
@@ -192,6 +200,19 @@ defmodule Nest.Agents.PersistedAgent do
     # surfaces the error as a changeset error instead of
     # letting the DB raise.
     |> validate_number(:depth, greater_than_or_equal_to: 0)
+    |> validate_change(:mode, &validate_mode/2)
+  end
+
+  # A mode this build does not implement is refused at the boundary rather than
+  # stored and resolved to something else on the way out: `Nest.Modes.caps/1`
+  # falls back to the default so that a stale row still runs, but a row should
+  # never *hold* a name nothing can honour.
+  defp validate_mode(:mode, mode) do
+    if Nest.Modes.valid?(mode) do
+      []
+    else
+      [mode: "must be one of #{Enum.join(Nest.Modes.names(), ", ")}"]
+    end
   end
 
   @doc """

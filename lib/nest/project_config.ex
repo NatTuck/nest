@@ -19,9 +19,12 @@ defmodule Nest.ProjectConfig do
     * `"rw"` — bind the host path read-write at its own path.
     * `"tmp"` — bind a directory under the agent's scratch dir (the
       agent's own sub-directory of the space scratch dir) at `path`.
-      Writes never touch the host; the backing directory persists for
-      the agent's lifetime (and is visible inside the sandbox under
-      `/tmp/<agent-name>/project/<slug>`).
+      On a `bwrap` space the backing directory is a host directory, so
+      writes never touch the project; the directory persists for the
+      agent's lifetime (and is visible inside the sandbox under
+      `/tmp/<agent-name>/project/<slug>`). A `docker` space's scratch is
+      the container's own `/tmp`, so there is no host directory to back
+      this with and the mount is **refused by name** — use `"rw"` there.
 
   `create = true` makes Nest `mkdir_p` the path before mounting, so a
   project can declare a scratch path whose parents don't exist yet.
@@ -33,6 +36,18 @@ defmodule Nest.ProjectConfig do
   a writable workspace: it is not a filesystem grant, so it applies in
   every mode.
 
+  The optional `[sandbox]` table declares Debian packages to add to a
+  `"docker"` space's image:
+
+      [sandbox]
+      packages = ["nodejs", "elixir"]
+
+  Names must look like Debian package names (`^[a-z0-9][a-z0-9+.-]*$`); the
+  list is additive and only affects the docker backend's derived image
+  (`Nest.Sandbox.Backend.Docker`). Like `[shell]`, it is not a filesystem
+  grant, so it applies in every mode — the toolchain is in the container,
+  not on the host.
+
   ## Gating
 
   Project mounts are merged into a mode's caps **only when that mode
@@ -42,10 +57,16 @@ defmodule Nest.ProjectConfig do
   sandbox. When `.nest` is absent, a read-only `/dev/null` is masked
   over the path so an agent can't create one either.
 
+  Both halves of that are **binds**, so they hold only on a backend that
+  binds: a `"none"` space has no sandbox to protect, and an agent there can
+  edit or create its own `.nest` like any other file. That is the same
+  statement as "caps cannot be enforced for a `"none"` space" (see
+  `Nest.Sandbox.Backend.None`), not a separate hole.
+
   ## Failures
 
   A malformed `.nest` never degrades silently: `load/1` logs an error,
-  `apply_or_default/2` leaves the mode's caps unchanged, and
+  `resolve_caps/2` leaves the mode's caps unchanged, and
   `section/1` renders a visible error block into the system prompt.
   """
 
@@ -64,8 +85,11 @@ defmodule Nest.ProjectConfig do
   @typedoc "The `[shell]` sandbox settings from `.nest`."
   @type shell :: %{optional(String.t()) => non_neg_integer()}
 
-  @typedoc "The parsed `.nest` file: mounts plus optional `[shell]` settings."
-  @type config :: %{optional(String.t()) => [mount()] | shell() | nil}
+  @typedoc "The `[sandbox]` settings from `.nest`."
+  @type sandbox :: %{optional(String.t()) => [String.t()]}
+
+  @typedoc "The parsed `.nest` file: mounts plus optional `[shell]` and `[sandbox]` settings."
+  @type config :: %{optional(String.t()) => [mount()] | shell() | sandbox() | nil}
 
   @doc """
   Load and parse `<workspace>/.nest`.
@@ -133,10 +157,42 @@ defmodule Nest.ProjectConfig do
   defp validate(raw, workspace) do
     with {:ok, mounts} <- validate_mounts(Map.get(raw, "mount", []), workspace),
          :ok <- reject_duplicates(mounts),
-         {:ok, shell} <- validate_shell(Map.get(raw, "shell")) do
+         {:ok, shell} <- validate_shell(Map.get(raw, "shell")),
+         {:ok, sandbox} <- validate_sandbox(Map.get(raw, "sandbox")) do
       config = %{"mounts" => mounts}
+
       {:ok, if(shell, do: Map.put(config, "shell", shell), else: config)}
+      |> put_sandbox(sandbox)
     end
+  end
+
+  defp put_sandbox({:ok, config}, nil), do: {:ok, config}
+  defp put_sandbox({:ok, config}, sandbox), do: {:ok, Map.put(config, "sandbox", sandbox)}
+  defp put_sandbox(error, _sandbox), do: error
+
+  defp validate_sandbox(nil), do: {:ok, nil}
+
+  defp validate_sandbox(raw) when is_map(raw) do
+    case Map.get(raw, "packages", []) do
+      packages when is_list(packages) ->
+        if Enum.all?(packages, &valid_package?/1) do
+          {:ok, %{"packages" => Enum.uniq(packages)}}
+        else
+          {:error, "sandbox packages must be Debian package names"}
+        end
+
+      _other ->
+        {:error, "sandbox packages must be a list"}
+    end
+  end
+
+  defp validate_sandbox(_raw), do: {:error, "sandbox must be a table"}
+
+  # Debian package names: lower-case, digits, and `+`, `.` or `-` after the
+  # first character. Refusing anything else keeps a malformed name from reaching
+  # an `apt-get install` line.
+  defp valid_package?(name) do
+    is_binary(name) and Regex.match?(~r/\A[a-z0-9][a-z0-9+.-]*\z/, name)
   end
 
   defp validate_shell(nil), do: {:ok, nil}
@@ -238,24 +294,41 @@ defmodule Nest.ProjectConfig do
   end
 
   @doc """
-  Like `effective_caps/2` but never fails: a malformed `.nest` leaves `caps`
-  unchanged (the mode's default sandbox is in effect). `load/1` logs
-  the error.
+  Resolve the caps a *call* runs under, from the caps a *mode* gives.
+
+  This is where a mode's caps become a call's caps, and the name says so: the
+  space's network access is injected first, then the project's `.nest` is merged
+  on top. Never fails — a malformed `.nest` leaves `caps` unchanged (the mode's
+  default sandbox is in effect) and `load/1` logs the error.
+
+  It is the one funnel both caps-resolution paths share
+  (`Nest.Agents.Agent.resolve_caps/1` and
+  `Nest.Agents.Agent.ChatPipeline.resolve_mode_and_caps/3`), which is why the
+  space's `net` goes in here rather than in either of them.
   """
-  @spec apply_or_default(map(), Mounts.t()) :: map()
-  def apply_or_default(caps, mounts) do
+  @spec resolve_caps(map(), Mounts.t()) :: map()
+  def resolve_caps(caps, mounts) do
+    # The space's network access goes in *here*, before the project config, so
+    # that a malformed `.nest` cannot drop it and so that both caps-resolution
+    # paths (`Nest.Agents.Agent.resolve_caps/1` and
+    # `Nest.Agents.Agent.ChatPipeline.resolve_mode_and_caps/3`) inject it by
+    # calling this one function — it is not a project setting, but this is the
+    # one place a mode's caps become the caps for a call.
+    caps = Nest.Sandbox.with_network_access(caps, mounts)
+
     case effective_caps(caps, mounts) do
       {:ok, merged} -> merged
       {:error, _reason} -> caps
     end
   end
 
-  # The `[shell]` background cap applies in every mode: it is not a
-  # filesystem grant, so a read-only mode can still lower it (including
-  # to 0 to disable background jobs) or raise it.
+  # The `[shell]` background cap and the `[sandbox]` packages apply in every
+  # mode: neither is a filesystem grant (one is a job ceiling, the other is
+  # tooling inside the container), so a read-only mode gets both.
   defp merge(caps, config, mounts) do
     caps
     |> put_shell(config)
+    |> put_sandbox_packages(config)
     |> maybe_put_project_mounts(mounts, config)
   end
 
@@ -283,11 +356,30 @@ defmodule Nest.ProjectConfig do
 
   defp put_shell(caps, _config), do: caps
 
+  # The declared package set, carried in caps so the docker backend reads it
+  # from the value it already has instead of re-reading `.nest` on every command.
+  defp put_sandbox_packages(caps, %{"sandbox" => %{"packages" => packages}}) do
+    sandbox = caps |> Map.get("sandbox", %{}) |> Map.put("packages", packages)
+    Map.put(caps, "sandbox", sandbox)
+  end
+
+  defp put_sandbox_packages(caps, _config), do: caps
+
   defp mounts(%{"mounts" => mounts}), do: mounts
   defp mounts(_config), do: []
 
   defp shell(%{"shell" => shell}), do: shell
   defp shell(_config), do: nil
+
+  @doc """
+  The Debian packages a project's `.nest` adds to a `"docker"` space's image.
+
+  Reads them from `caps` (where `effective_caps/2` put them) so a caller needs
+  no `.nest` read of its own, and returns `[]` for a mode whose `.nest` declares
+  none.
+  """
+  @spec sandbox_packages(map() | nil) :: [String.t()]
+  def sandbox_packages(caps), do: get_in(caps, ["sandbox", "packages"]) || []
 
   defp workspace_writable?(caps), do: ":workspace" in (get_in(caps, ["fs", "write"]) || [])
 
@@ -311,7 +403,11 @@ defmodule Nest.ProjectConfig do
   # workspace. When the file is absent we mask `/dev/null` over the
   # path so an agent can't create one (which would be picked up on the
   # next spawn and grant it extra host access). The mask is a real bind
-  # inside bwrap, so `stat`/`read` see the char device directly.
+  # inside the sandbox, so `stat`/`read` see the char device directly —
+  # and, because bwrap's `--ro-bind` mounts with `nodev`, *reading* it
+  # fails with `EACCES` rather than returning empty bytes. That is what
+  # both binding backends do, identically. A backend that binds nothing
+  # has nothing to mask with (see the moduledoc's Gating section).
   defp protected_entries(workspace) do
     nest = Path.join(canonical_ws(workspace), @file_name)
     source = if File.exists?(nest), do: nest, else: "/dev/null"
@@ -353,7 +449,7 @@ defmodule Nest.ProjectConfig do
   end
 
   @doc """
-  `mkdir_p` project-mount backing dirs before bwrap runs: `tmp` sources
+  `mkdir_p` project-mount backing dirs before the sandbox starts: `tmp` sources
   must exist to be bind sources, and `create = true` dirs must exist to
   be mount points.
   """
@@ -386,10 +482,14 @@ defmodule Nest.ProjectConfig do
     end
   end
 
-  defp empty_config?(config), do: mounts(config) == [] and shell(config) == nil
+  defp empty_config?(config) do
+    mounts(config) == [] and shell(config) == nil and sandbox_packages_config(config) == []
+  end
 
   defp render_section(config) do
-    lines = Enum.map(mounts(config), &render_mount/1) ++ shell_lines(config)
+    lines =
+      Enum.map(mounts(config), &render_mount/1) ++
+        shell_lines(config) ++ package_lines(config)
 
     "\n\n[Project sandbox config]\n\n" <>
       "This project has a `.nest` file granting extra sandbox settings " <>
@@ -402,6 +502,22 @@ defmodule Nest.ProjectConfig do
   end
 
   defp shell_lines(_config), do: []
+
+  # The packages are in the docker image, not on the host, so the line says
+  # where they are — an agent that reaches for `node` on a bwrap space would
+  # otherwise read this as a promise about its own environment.
+  defp package_lines(config) do
+    case sandbox_packages_config(config) do
+      [] ->
+        []
+
+      packages ->
+        ["- a docker sandbox image with these packages: #{Enum.join(packages, ", ")}"]
+    end
+  end
+
+  defp sandbox_packages_config(%{"sandbox" => %{"packages" => packages}}), do: packages
+  defp sandbox_packages_config(_config), do: []
 
   defp render_mount(%{"dest" => dest, "mode" => "rw"}),
     do: "- read-write access to #{dest}"

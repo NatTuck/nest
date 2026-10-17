@@ -18,6 +18,7 @@ defmodule Nest.Persistence.AgentCompaction do
   alias Nest.Agents.Agent.Config, as: AgentConfig
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.PersistedAgent
   alias Nest.ChatModel
   alias Nest.DotConfig
@@ -26,7 +27,6 @@ defmodule Nest.Persistence.AgentCompaction do
   alias Nest.Persistence.AgentCompaction.Planner
   alias Nest.Persistence.AgentCompaction.Summarizer
   alias Nest.Persistence.AgentCompaction.Writer
-  alias Nest.Sandbox.Mounts
   alias Nest.Spaces
   alias Nest.Vocations
 
@@ -137,13 +137,22 @@ defmodule Nest.Persistence.AgentCompaction do
   defp render_system(_agent, nil, _limit, _source), do: nil
 
   defp render_system(agent, vocation, limit, source) do
-    {system_prompt, _mode, _tools, _vocation} =
+    {system_prompt, _tools, _vocation} =
       SystemPrompt.compose_vocation_config(
         vocation,
-        Mounts.new(agent.workspace_path, nil),
+        TmpSpace.prompt_mounts(
+          agent.workspace_path,
+          agent.space_id,
+          agent.name,
+          Nest.Spaces.sandbox_backend(agent.space_id),
+          Nest.Spaces.network_access(agent.space_id)
+        ),
         {limit, source},
         agent.name,
-        agent.depth || 0
+        agent.depth || 0,
+        # The mode the agent is in, which only decides the caps the `AGENTS.md`
+        # read is authorized with.
+        Map.get(agent, :mode, Nest.Modes.default())
       )
 
     system_prompt

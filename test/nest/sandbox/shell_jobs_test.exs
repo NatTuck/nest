@@ -3,10 +3,14 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
   import Nest.Test.TmpCleanup
 
+  import Nest.Sandbox.Backend.DockerTestHelpers
+
   alias Nest.Agents.Agent.TmpSpace
-  alias Nest.Sandbox.Mounts
+  alias Nest.Sandbox.Backend.Docker
+  alias Nest.Sandbox.{Mounts, Paths}
   alias Nest.Sandbox.ShellJobs
-  alias Nest.Tools.ShellCmd
+  alias Nest.Sandbox.ShellJobs.JobLog
+  alias Nest.Tools.{ShellCmd, ShellEscape}
 
   setup do
     # A real space id: the manager's job-list broadcast is keyed by
@@ -158,10 +162,10 @@ defmodule Nest.Sandbox.ShellJobsTest do
     space_id = System.unique_integer([:positive])
     name = "incarnation-#{System.unique_integer([:positive])}"
     key = {space_id, name}
-    tmp = TmpSpace.create(space_id, name)
+    tmp = TmpSpace.create(space_id, name, "bwrap")
     test_pid = self()
 
-    on_exit(fn -> TmpSpace.cleanup(space_id, name) end)
+    on_exit(fn -> TmpSpace.cleanup(space_id, name, "bwrap") end)
 
     # A live incarnation registered under the key. The scratch path is derived
     # from the key, so a monitor for a *previous* incarnation can fire after this
@@ -249,12 +253,15 @@ defmodule Nest.Sandbox.ShellJobsTest do
   test "list returns jobs oldest-first" do
     name = "order-agent-#{System.unique_integer([:positive])}"
     key = {7, name}
-    tmp = Path.join(System.tmp_dir!(), "nest_jobs_order_#{System.unique_integer([:positive])}")
+    root = Path.join(System.tmp_dir!(), "nest_jobs_order_#{System.unique_integer([:positive])}")
+    # A real scratch shape: the *space* dir is the bind root, so a scratch that
+    # is a direct child of `/tmp` is one the sandbox refuses.
+    tmp = Path.join([root, "space-1", name])
     File.mkdir_p!(tmp)
 
     on_exit(fn ->
       ShellJobs.stop_all(key)
-      rm_tmp!(tmp, "nest_jobs_order_")
+      rm_tmp!(root, "nest_jobs_order_")
     end)
 
     ids =
@@ -263,7 +270,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
           ShellJobs.start_job(%{
             agent_key: key,
             command: "true #{i}",
-            bwrap: "true",
+            script_sandbox: stage_script!(tmp),
             script_path: nil,
             mounts: Mounts.new(nil, tmp),
             max_jobs: 100
@@ -273,6 +280,17 @@ defmodule Nest.Sandbox.ShellJobsTest do
       end
 
     assert ShellJobs.list(key) |> Enum.map(& &1.id) == ids
+  end
+
+  # A job's command line is the backend's to build, from the *staged* script
+  # (`Nest.Sandbox.Backend.job_spec/4`) — a job's output has to reach a log file
+  # inside the environment, which only the backend can arrange. So a test that
+  # starts one directly has to have staged one, exactly as `ShellCmd` does.
+  defp stage_script!(tmp) do
+    dir = Paths.stage_dir(tmp)
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "run.sh"), "exit 0\n")
+    Path.join(Paths.stage_dir_sandbox(tmp), "run.sh")
   end
 
   test "kill broadcasts an updated job list" do
@@ -299,5 +317,74 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     assert :ok = ShellJobs.kill(key, id)
     assert_receive {:shell_jobs, %{jobs: [%{id: ^id, killed: true}]}}, 1_000
+  end
+
+  describe "the job log on a container scratch" do
+    test "is the container's own file: the manager writes nothing, and reads through it" do
+      mounts = container_mounts()
+      path = Path.join(Mounts.scratch(mounts), "shell-jobs/job-1.log")
+      {:ok, name} = Docker.container_name(mounts)
+
+      # The command itself writes the log (its `tee`), so the manager appends
+      # nothing: the bytes it receives on the exec's stream are that same output.
+      assert :ok = JobLog.append(mounts, path, "chunk")
+
+      # And it reads it through the container, because nothing on the host can.
+      runner = scripted_runner(%{["exec"] => {"job output\n", 0}})
+
+      assert JobLog.read(mounts, path, runner: runner) == "job output\n"
+      assert calls() == [["exec", name, "cat", path]]
+
+      assert :ok = JobLog.remove(mounts, path, runner: runner)
+      assert List.last(calls()) == ["exec", name, "rm", "-f", path]
+    end
+
+    test "the path the command tees into is the path the manager reads back" do
+      # The two halves of a docker job's log: the command writes it, because it
+      # is the only thing that can, and the manager reads it through the
+      # container. They have to agree on the file, or a job's output would be
+      # written where nothing ever looks.
+      mounts = container_mounts()
+      log = Path.join(Mounts.scratch(mounts), "shell-jobs/job-1.log")
+      {:ok, name} = Docker.container_name(mounts)
+
+      assert {:ok, spec} = Docker.job_spec(mounts, nil, "/tmp/.cmds/nest-cmd-1.sh", log)
+      assert payload(spec.command) =~ "tee " <> ShellEscape.escape(log)
+
+      runner = scripted_runner(%{["exec"] => {"the job's output\n", 0}})
+
+      assert JobLog.read(mounts, log, runner: runner) == "the job's output\n"
+      assert calls() == [["exec", name, "cat", log]]
+    end
+
+    test "prepares nothing on the host, because the scratch is not on the host" do
+      mounts = container_mounts()
+
+      assert :ok =
+               JobLog.prepare(mounts, Path.join(Mounts.scratch(mounts), "shell-jobs/job-1.log"))
+
+      refute File.exists?(Mounts.scratch(mounts))
+    end
+
+    test "reads empty when the container is gone" do
+      # Archiving a space removes its containers, and a job record can outlive
+      # one. An unreadable log is an empty one, exactly as a missing host file is.
+      mounts = container_mounts()
+      path = Path.join(Mounts.scratch(mounts), "shell-jobs/job-1.log")
+      runner = fn _argv -> {"Error response from daemon: No such container\n", 1} end
+
+      assert JobLog.read(mounts, path, runner: runner) == ""
+    end
+  end
+
+  # A docker call's scratch is the *container's* `/tmp/<agent>`, so this is a
+  # path nothing on the host may hold.
+  defp container_mounts do
+    Mounts.new(
+      nil,
+      Path.join("/tmp", "log-agent-#{System.unique_integer([:positive])}"),
+      "docker",
+      7
+    )
   end
 end

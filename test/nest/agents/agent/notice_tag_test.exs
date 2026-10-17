@@ -127,7 +127,7 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
       ]
 
       for {label, content} <- cases do
-        assert Render.combine_and_offload([entry(:notice, content)], %Agent{tmp_path: nil}) ==
+        assert Render.combine_and_offload([entry(:notice, content)], %Agent{}) ==
                  NoticeTag.tag(content),
                label
       end

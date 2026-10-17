@@ -200,6 +200,12 @@ defmodule NestWeb.LobbyChannel do
   end
 
   @impl true
+  def handle_info({:space_updated, payload}, socket) do
+    push(socket, "space:updated", payload)
+    {:noreply, socket}
+  end
+
+  @impl true
   def handle_info({:space_archived, payload}, socket) do
     push(socket, "space:archived", payload)
     {:noreply, socket}
@@ -322,6 +328,37 @@ defmodule NestWeb.LobbyChannel do
   end
 
   def handle_in("archive_space", _payload, socket),
+    do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
+
+  @impl true
+  def handle_in("set_space_network", %{"space_id" => space_id, "network_access" => value}, socket)
+      when is_integer(space_id) and is_boolean(value) do
+    case Authz.authorize_space_owner(space_id, socket.assigns.current_user) do
+      {:ok, :owner} ->
+        case Spaces.set_network_access(space_id, value) do
+          {:ok, space} ->
+            # Announced on the per-user topic like every other space-set change,
+            # so the owner's other sessions show the same value — and so the
+            # toggle is not the only place it exists.
+            broadcast_space_updated(socket, space)
+            {:reply, {:ok, %{"network_access" => space.network_access}}, socket}
+
+          {:error, :not_found} ->
+            {:reply, {:error, %{"reason" => "not_found"}}, socket}
+
+          {:error, other} ->
+            # A changeset refusal here would be a bug: the value is a boolean and
+            # the row already exists and is valid.
+            Logger.error("Failed to set network access on space #{space_id}: #{inspect(other)}")
+            {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+    end
+  end
+
+  def handle_in("set_space_network", _payload, socket),
     do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
 
   @impl true
@@ -506,6 +543,12 @@ defmodule NestWeb.LobbyChannel do
       # the default-vocation behavior.
       vocation: maybe_vocation(payload, vocation),
       workspace_path: Keyword.get(opts, :workspace_path),
+      # Chosen once, at creation, and immutable afterwards. Absent or blank
+      # means the default; an unknown value is refused by
+      # `Space.create_changeset/2` rather than silently replaced.
+      sandbox_backend: payload["sandbox_backend"],
+      # A space property, editable later; absent means the column's default.
+      network_access: payload["network_access"],
       agent_name: payload["agent_name"],
       shared: payload["shared"] == true
     }
@@ -516,6 +559,9 @@ defmodule NestWeb.LobbyChannel do
 
   defp broadcast_space_archived(socket, space_id),
     do: broadcast_to_user(socket, :space_archived, %{"space_id" => space_id})
+
+  defp broadcast_space_updated(socket, space),
+    do: broadcast_to_user(socket, :space_updated, %{"space" => space})
 
   defp broadcast_space_unarchived(socket, space_id),
     do: broadcast_to_user(socket, :space_unarchived, %{"space_id" => space_id})

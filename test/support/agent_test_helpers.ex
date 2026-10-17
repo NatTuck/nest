@@ -89,6 +89,37 @@ defmodule Nest.Agents.AgentTestHelpers do
   def put_space_id(space_id), do: Process.put(@space_id_key, space_id)
 
   @doc """
+  A fresh workspace directory under `_build/tmp` — outside `/tmp`, whose bind
+  would shadow it — removed when the test ends. A space requires one
+  (`Space.create_changeset/2`); an *agent* does not, and `start_agent/1` leaves
+  it `nil` on purpose (see `start_spawnable_agent/1`).
+  """
+  @spec default_test_workspace() :: String.t()
+  def default_test_workspace do
+    dir =
+      Path.join([
+        File.cwd!(),
+        "_build",
+        "tmp",
+        "agent-ws-#{System.unique_integer([:positive])}"
+      ])
+
+    File.mkdir_p!(dir)
+
+    on_exit(fn ->
+      # Guarded by the identifying string, as SMELLS.md requires of any `rm_rf`.
+      if String.contains?(dir, "agent-ws-"), do: File.rm_rf(dir)
+    end)
+
+    dir
+  end
+
+  # A spawn requires the child to inherit a workspace (`:workspace_required`).
+  def start_spawnable_agent(attrs \\ %{}) do
+    start_agent(Map.put_new(attrs, :workspace_path, default_test_workspace()))
+  end
+
+  @doc """
   Assert a shell_cmd tool result succeeded (`is_error == false`).
 
   When the command errored (`is_error == true`), dump the full
@@ -111,12 +142,20 @@ defmodule Nest.Agents.AgentTestHelpers do
   Create a fresh space for the test. Returns `{:ok, space_id}`.
   The row is rolled back by the sandbox on test exit.
   """
-  def create_test_space do
-    {:ok, space} =
-      Spaces.create_space(nil, %{
+  def create_test_space(attrs \\ %{}) do
+    params =
+      %{
         name: "test-space-#{System.unique_integer([:positive])}",
         slug: "test-space-#{System.unique_integer([:positive])}"
-      })
+      }
+      |> Map.merge(attrs)
+      # A space requires a workspace (`Nest.Spaces.Space.create_changeset/2`).
+      # `put_new_lazy` so a test that *means* "no workspace" keeps its explicit
+      # `workspace_path: nil`, and so the directory is only made when one is
+      # actually wanted.
+      |> Map.put_new_lazy(:workspace_path, &default_test_workspace/0)
+
+    {:ok, space} = Spaces.create_space(nil, params)
 
     Process.put(@space_id_key, space.id)
     {:ok, space.id}
@@ -378,7 +417,7 @@ defmodule Nest.Agents.AgentTestHelpers do
 
   @doc """
   Returns a fresh `vocation_id` with three modes: `"chat"` (the default,
-  since `Vocations.default_mode/1` is the lexicographically first mode),
+  since `Nest.Modes.default/0` is the lexicographically first mode),
   `"plan"`, and `"review"`. For tests that need a mode the agent is not
   already in — e.g. asserting that a queued message's requested mode is
   applied when it is delivered.
@@ -426,6 +465,14 @@ defmodule Nest.Agents.AgentTestHelpers do
       # (nullable column) and `Init.build_state/2` reads it via
       # `Map.get/2` so `nil` is fine. Tests that need a workspace
       # can override `:workspace_path` in `attrs`.
+      #
+      # It stays `nil` by default on purpose. A workspace is not free: composing
+      # the system prompt reads `AGENTS.md` through the sandbox
+      # (`SystemPrompt.agents_md_section/2`), and a *sandboxed* read forks a
+      # `bwrap` — measured at ~9 ms, and ~5 s across the suite because every agent
+      # start pays it. The `nil` clause returns `""` without a read at all. So the
+      # default is "no workspace", and the tests that actually need one pass it;
+      # they are the ones that exercise the read.
       workspace_path: nil,
       # Multi-user identity. Defaults to `nil` so tests that
       # pre-date the multi-user migration keep working

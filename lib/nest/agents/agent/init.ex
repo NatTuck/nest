@@ -45,18 +45,26 @@ defmodule Nest.Agents.Agent.Init do
   """
   @spec build_state(map(), Nest.LLM.ClientConfig.t()) :: Nest.Agents.Agent.t()
   def build_state(attrs, client_config) do
-    {system_prompt, mode, tool_names, cached_vocation, llm_metrics} =
-      build_vocation_pipeline(attrs)
+    backend = Map.fetch!(attrs, :sandbox_backend)
+    network_access = Map.fetch!(attrs, :network_access)
+    workspace = Map.get(attrs, :workspace_path)
 
     name = Map.fetch!(attrs, :name)
     space_id = Map.fetch!(attrs, :space_id)
-    tmp_path = create_tmp_space(space_id, name)
 
-    tools =
-      Tools.get_functions(
-        tool_names,
-        Mounts.new(Map.get(attrs, :workspace_path), tmp_path)
-      )
+    # The agent's whole sandbox, built once: the backend its space runs, the
+    # workspace it binds, and the scratch directory just created for it. The
+    # tools capture it (a tool closure runs the command it is handed through
+    # this value), and composing the prompt runs the sandbox too, so both must
+    # carry the real backend and the real scratch — a `"none"` space's reads
+    # must not run under bwrap, and a `"docker"` one can only stage through the
+    # scratch bind (see `Nest.Sandbox.Backend.Docker.command/3`).
+    mounts = agent_mounts(attrs, name, space_id, workspace, backend, network_access)
+
+    {system_prompt, mode, tool_names, cached_vocation, llm_metrics} =
+      build_vocation_pipeline(attrs, mounts)
+
+    tools = Tools.get_functions(tool_names, mounts)
 
     {initial_messages, next_index} = initial_messages_with_system(system_prompt)
 
@@ -67,8 +75,7 @@ defmodule Nest.Agents.Agent.Init do
       client_config: client_config,
       vocation: cached_vocation,
       vocation_id: Map.fetch!(attrs, :vocation_id),
-      workspace_path: Map.get(attrs, :workspace_path),
-      tmp_path: tmp_path,
+      mounts: mounts,
       tools: tools,
       llm_metrics: llm_metrics,
       tree_position: %TreePosition{
@@ -88,26 +95,57 @@ defmodule Nest.Agents.Agent.Init do
   # tool list, cached vocation struct, and the `llm_metrics`
   # initializer. Kept as its own helper so `build_state/2`
   # stays under the credo ABC cap.
-  defp build_vocation_pipeline(attrs) do
+  #
+  # The agent's sandbox: the backend its space runs, its network access, the
+  # workspace it binds, and the scratch directory just created for it.
+  defp agent_mounts(_attrs, name, space_id, workspace, backend, network_access) do
+    Mounts.new(
+      workspace,
+      create_tmp_space(space_id, name, backend),
+      backend,
+      space_id,
+      network_access
+    )
+  end
+
+  # The prompt is composed through `mounts` because composing it *runs* the
+  # sandbox: the `AGENTS.md` section reads the file through it (see
+  # `Nest.Agents.Agent.TmpSpace.prompt_mounts/5`).
+  defp build_vocation_pipeline(attrs, mounts) do
     model = Map.fetch!(attrs, :model)
     # Internal/test-only cache-tier override; see `initial_context_limit/2`.
     cache_lookup = Map.get(attrs, :context_limit_lookup, &Nest.Models.context_limit/2)
     {context_limit, context_limit_source} = initial_context_limit(model, cache_lookup)
 
-    {system_prompt, mode, tool_names, cached_vocation} =
+    # The agent's own mode, which seeds `live.mode`: the persisted row's, which
+    # `PreSpawn` derived (the parent's mode, or the space's blueprint's default).
+    # The composer needs it only for the caps the `AGENTS.md` read is authorized
+    # with, so the prompt carries no mode of its own.
+    mode = initial_mode(attrs)
+
+    {system_prompt, tool_names, cached_vocation} =
       SystemPrompt.compose_vocation_config(
         Map.get(attrs, :vocation),
-        Mounts.new(Map.get(attrs, :workspace_path), nil),
+        mounts,
         {context_limit, context_limit_source},
         Map.get(attrs, :name, ""),
-        Map.get(attrs, :depth, 0)
+        Map.get(attrs, :depth, 0),
+        mode
       )
 
     tool_names = maybe_exclude_spawn(tool_names, attrs)
 
+    # The mode is the *row's*, not the prompt's: `PreSpawn` decided it and put it
+    # in the attrs, so a restart restores what the agent was created with instead
+    # of widening a child that was spawned read-only.
     {system_prompt, mode, tool_names, cached_vocation,
      build_llm_metrics(context_limit, context_limit_source)}
   end
+
+  # The mode the row carries. `PreSpawn` derived it; the fallback is for a caller
+  # that built attrs without one, and it is the permissive default — what an
+  # agent had before a mode was a per-agent property at all.
+  defp initial_mode(attrs), do: Map.get(attrs, :mode) || Nest.Modes.default()
 
   # Non-clone agents spawned at max depth must not be able to
   # spawn children, so `agents-spawn` and `agents-batch` are
@@ -510,7 +548,7 @@ defmodule Nest.Agents.Agent.Init do
     %Nest.Agents.Agent.ChatState.Live{mode: mode}
   end
 
-  defp create_tmp_space(space_id, agent_name) do
-    Nest.Agents.Agent.__create_tmp_space__(space_id, agent_name)
+  defp create_tmp_space(space_id, agent_name, backend) do
+    Nest.Agents.Agent.__create_tmp_space__(space_id, agent_name, backend)
   end
 end

@@ -66,6 +66,7 @@ import {
   joinAgent,
   leaveAgent,
   sendMessage,
+  setAgentMode,
   stopMessage,
   retryCompaction,
   compactionLoopOk,
@@ -82,6 +83,7 @@ vi.mock("../channels", async () => {
     joinAgent: vi.fn(),
     leaveAgent: vi.fn(),
     sendMessage: vi.fn(),
+    setAgentMode: vi.fn(),
     stopMessage: vi.fn(),
     retryCompaction: vi.fn(),
     compactionLoopOk: vi.fn(),
@@ -463,9 +465,9 @@ describe("ChatPage sending while the agent is busy", () => {
         status: "connected",
         agentState: "streaming",
         messages: [],
-        currentMode: "build",
-        defaultMode: "build",
-        modes: ["build", "plan"],
+        currentMode: "act",
+        defaultMode: "act",
+        modes: ["plan", "act"],
         model: { name: "qwen3.5-plus" },
       },
     };
@@ -481,7 +483,7 @@ describe("ChatPage sending while the agent is busy", () => {
     expect(sendMessage).toHaveBeenCalledWith(
       "test-agent",
       "queue this",
-      "build",
+      "act",
       expect.any(Function),
     );
     // The composer clears so the next message can be typed.
@@ -698,7 +700,7 @@ describe("ChatPage message rendering", () => {
           {
             index: 0,
             role: "user",
-            mode: "build",
+            mode: "act",
             parts: [{ kind: "text", text: "Hello" }],
           },
         ],
@@ -708,7 +710,7 @@ describe("ChatPage message rendering", () => {
 
     renderChat();
 
-    expect(screen.getByText(/mode: build/)).toBeInTheDocument();
+    expect(screen.getByText(/mode: act/)).toBeInTheDocument();
   });
 
   it("strips the [mode: X]\\n prefix from user message content on render", () => {
@@ -725,8 +727,8 @@ describe("ChatPage message rendering", () => {
           {
             index: 0,
             role: "user",
-            parts: [{ kind: "text", text: "[mode: build]\nHello there" }],
-            mode: "build",
+            parts: [{ kind: "text", text: "[mode: act]\nHello there" }],
+            mode: "act",
           },
         ],
         model: { name: "qwen3.5-plus" },
@@ -737,9 +739,9 @@ describe("ChatPage message rendering", () => {
 
     // The badge shows the mode and the visible body shows just the
     // user text. The prefix itself is not rendered.
-    expect(screen.getByText(/mode: build/)).toBeInTheDocument();
+    expect(screen.getByText(/mode: act/)).toBeInTheDocument();
     expect(screen.getByText("Hello there")).toBeInTheDocument();
-    expect(screen.queryByText(/^\[mode: build\]/)).toBeNull();
+    expect(screen.queryByText(/^\[mode: act\]/)).toBeNull();
   });
 
   it("renders an assistant message with the agent ID as the label", () => {
@@ -1449,8 +1451,8 @@ describe("ChatPage mode selector", () => {
         agentState: "idle",
         messages: [],
         currentMode: "plan",
-        defaultMode: "build",
-        modes: ["build", "plan"],
+        defaultMode: "act",
+        modes: ["plan", "act"],
         model: { name: "qwen3.5-plus" },
       },
     };
@@ -1467,8 +1469,8 @@ describe("ChatPage mode selector", () => {
         status: "connected",
         agentState: "idle",
         messages: [],
-        defaultMode: "build",
-        modes: ["build", "plan"],
+        defaultMode: "act",
+        modes: ["plan", "act"],
         model: { name: "qwen3.5-plus" },
       },
     };
@@ -1476,7 +1478,7 @@ describe("ChatPage mode selector", () => {
     renderChat();
 
     const select = screen.getByLabelText("Mode");
-    expect(select.value).toBe("build");
+    expect(select.value).toBe("act");
   });
 
   it("updates the dropdown when a chat:status broadcast carries a new currentMode", () => {
@@ -1489,35 +1491,31 @@ describe("ChatPage mode selector", () => {
         status: "connected",
         agentState: "idle",
         messages: [],
-        currentMode: "build",
-        defaultMode: "build",
-        modes: ["build", "plan"],
+        currentMode: "act",
+        defaultMode: "act",
+        modes: ["plan", "act"],
         model: { name: "qwen3.5-plus" },
       },
     };
 
     const { rerender } = renderChat();
 
-    // User sends a "plan" message. The mode the user picked
-    // is sent in the payload.
-    const select = screen.getByLabelText("Mode");
-    fireEvent.change(select, { target: { value: "plan" } });
-    const textarea = screen.getByLabelText("Message");
-    fireEvent.change(textarea, { target: { value: "plan this" } });
-    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+    // The user picks a mode. The mode is a per-agent runtime property the
+    // server owns (`Nest.Modes`), so the pick is a control-plane push: it
+    // applies immediately rather than riding the next message.
+    fireEvent.change(screen.getByLabelText("Mode"), {
+      target: { value: "plan" },
+    });
 
-    // The send pushes a chat:message with the user-picked mode.
-    expect(sendMessage).toHaveBeenCalledWith(
+    expect(setAgentMode).toHaveBeenCalledWith(
       "test-agent",
-      "plan this",
       "plan",
       expect.any(Function),
     );
+    expect(sendMessage).not.toHaveBeenCalled();
 
-    // Simulate the server's response: the agent transitions to
-    // streaming, then to idle with currentMode: "plan". The
-    // channels.js handler would update the cache; we
-    // simulate that here.
+    // The server applies it and publishes the new mode; the channels.js
+    // handler writes that to the cache. We simulate it here.
     mockAgentsCache["test-agent"].agentState = "streaming";
     mockAgentsCache["test-agent"].currentMode = "plan";
     rerender(
@@ -1528,22 +1526,36 @@ describe("ChatPage mode selector", () => {
       </MemoryRouter>,
     );
 
-    // The dropdown now reflects the broadcast currentMode,
-    // NOT defaultMode.
+    // The dropdown reflects the broadcast currentMode, NOT defaultMode.
     expect(screen.getByLabelText("Mode").value).toBe("plan");
+
+    // A message sent now carries the agent's current mode: the mode still rides
+    // the message, which is what makes a recalled prompt re-apply the mode it
+    // originally ran in.
+    const textarea = screen.getByLabelText("Message");
+    fireEvent.change(textarea, { target: { value: "plan this" } });
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      "test-agent",
+      "plan this",
+      "plan",
+      expect.any(Function),
+    );
   });
 
-  it("changing the mode selector does not call sendMessage or any other server push", () => {
-    // The mode dropdown is a local UI draft. Messing with it
-    // must not affect Agent state.
+  it("changing the mode selector pushes set_agent_mode and sends no chat message", () => {
+    // The mode is a per-agent runtime property the server owns, so the selector
+    // is a control-plane push: it must not fabricate a chat message, and the
+    // optimistic update lives in the channel function.
     mockAgentsCache = {
       "test-agent": {
         status: "connected",
         agentState: "idle",
         messages: [],
-        currentMode: "build",
-        defaultMode: "build",
-        modes: ["build", "plan"],
+        currentMode: "act",
+        defaultMode: "act",
+        modes: ["plan", "act"],
         model: { name: "qwen3.5-plus" },
       },
     };
@@ -1554,7 +1566,11 @@ describe("ChatPage mode selector", () => {
       target: { value: "plan" },
     });
 
-    // No server push should have been made.
+    expect(setAgentMode).toHaveBeenCalledWith(
+      "test-agent",
+      "plan",
+      expect.any(Function),
+    );
     expect(sendMessage).not.toHaveBeenCalled();
     expect(joinAgent).toHaveBeenCalledTimes(1); // mount only
     expect(leaveAgent).not.toHaveBeenCalled();
@@ -1566,9 +1582,9 @@ describe("ChatPage mode selector", () => {
         status: "connected",
         agentState: "streaming",
         messages: [],
-        currentMode: "build",
-        defaultMode: "build",
-        modes: ["build", "plan"],
+        currentMode: "act",
+        defaultMode: "act",
+        modes: ["plan", "act"],
         model: { name: "qwen3.5-plus" },
       },
     };
@@ -1641,8 +1657,8 @@ describe("ChatPage message copy button", () => {
           {
             index: 0,
             role: "user",
-            mode: "build",
-            parts: [{ kind: "text", text: "[mode: build]\nHello world" }],
+            mode: "act",
+            parts: [{ kind: "text", text: "[mode: act]\nHello world" }],
           },
         ],
         model: { name: "qwen3.5-plus" },
@@ -2298,8 +2314,8 @@ describe("ChatPage slash commands", () => {
         status: "connected",
         agentState: "streaming",
         messages: [],
-        currentMode: "build",
-        defaultMode: "build",
+        currentMode: "act",
+        defaultMode: "act",
         model: { name: "qwen3.5-plus" },
       },
     };
@@ -2316,7 +2332,7 @@ describe("ChatPage slash commands", () => {
     expect(sendMessage).toHaveBeenCalledWith(
       "test-agent",
       "/compact",
-      "build",
+      "act",
       expect.any(Function),
     );
   });

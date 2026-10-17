@@ -105,7 +105,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
   #
   # This is a **liveness** bound — did the process die at all — and deliberately
   # not a tight one, because the handshake it bounds is not the agent's receive
-  # loop. `Agent.terminate/2` ends with `cleanup_tmp/2` -> `TmpSpace.cleanup/2`
+  # loop. `Agent.terminate/2` ends with `cleanup_tmp/2` -> `TmpSpace.cleanup/3`
   # -> `File.rm_rf/1`, so the stop includes blocking filesystem work. The comment
   # this replaces said the opposite — "`Agent.terminate/2` keeps no cross-process
   # or filesystem work of its own ... the handshake measures the loop, not the

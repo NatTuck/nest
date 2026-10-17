@@ -177,8 +177,21 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   @spec release_llm(pid()) :: :ok
   def release_llm(worker), do: send(worker, :release_llm)
 
+  # The parks each installed harness has armed, keyed by the `kind` the send
+  # carries (`:agent` for `agents-send`, `:query` for `agents-query`).
+  #
+  # The two harnesses install one stub over the one function both tools reach —
+  # `Nest.Agents.send_message/6` (the mode rides the message, so there is no
+  # longer a four-arity and a five-arity clause to keep them apart) — and each
+  # arms the park for its own `kind`. A test that parks both an `agents-send`
+  # and an `agents-query` therefore gets both parks, instead of the second
+  # install silently replacing the first. The map is read and re-written in the
+  # test process at install time and captured by the closure, so the stub a
+  # worker calls already holds the merged set.
+  @park_config_key :nest_agent_send_park_config
+
   @doc """
-  Park the tool worker inside `Nest.Agents.send_message/4` — the `agents-send`
+  Park the tool worker inside `Nest.Agents.send_message/6` — the `agents-send`
   entry point — so the test decides when the batch's call reaches its target.
 
   The worker always parks *before* the real delivery: it sends
@@ -192,62 +205,90 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   """
   @spec park_agent_sends(pid(), keyword()) :: :ok
   def park_agent_sends(pid, opts \\ []) do
+    install_park(
+      pid,
+      :agent,
+      %{blocked: :send_blocked, release: :release_send, delivered: :send_delivered},
+      opts
+    )
+  end
+
+  @doc """
+  Park the tool worker inside `Nest.Agents.send_message/6` — the `agents-query`
+  entry point — so the test decides when the batch's query reaches its target
+  and when the batch returns.
+
+  `park_agent_sends/2`'s sibling for the querying tool, kept apart by the `kind`
+  the call carries: only `kind: :query` calls park here, so a runtime notice or a
+  peer's own send is never held. The worker parks *before* the real delivery
+  (sending `{:query_blocked, worker}` and waiting for `:release_query`); with
+  `hold_result: true` it parks a second time *after* it
+  (`{:query_delivered, worker}`, released by `:release_result`), which is the
+  shape where the peer's answer can land while the caller's batch is still in
+  flight — the batch is backgrounded, not the answer queued behind it.
+
+  Both harnesses install one stub, so a test may arm both; see
+  `@park_config_key`. Both parks end on the test's release or on the test
+  process's own `:DOWN` — see `park/3`; there is no timer on either path.
+  """
+  @spec park_agent_queries(pid(), keyword()) :: :ok
+  def park_agent_queries(pid, opts \\ []) do
+    install_park(
+      pid,
+      :query,
+      %{blocked: :query_blocked, release: :release_query, delivered: :query_delivered},
+      opts
+    )
+  end
+
+  # Arm one kind's park and (re)install the stub both kinds share, merged with
+  # whatever an earlier harness already armed. `frames` is the kind's three
+  # frame names (`:blocked`, `:release`, `:delivered`).
+  defp install_park(pid, kind, frames, opts) do
     test_pid = self()
-    hold_result? = Keyword.get(opts, :hold_result, false)
 
-    Mimic.stub(Nest.Agents, :send_message, fn space_id, from, target, content ->
-      park(test_pid, :send_blocked, :release_send)
+    config =
+      Process.get(@park_config_key, %{})
+      |> Map.put(kind, Map.put(frames, :hold, Keyword.get(opts, :hold_result, false)))
 
-      result = Mimic.call_original(Nest.Agents, :send_message, [space_id, from, target, content])
+    Process.put(@park_config_key, config)
 
-      if hold_result?, do: park(test_pid, :send_delivered, :release_result)
-
-      result
+    Mimic.stub(Nest.Agents, :send_message, fn space_id, from, target, content, call_kind, mode ->
+      deliver_parked(test_pid, config, call_kind, [
+        space_id,
+        from,
+        target,
+        content,
+        call_kind,
+        mode
+      ])
     end)
 
     Mimic.allow(Nest.Agents, self(), pid)
   end
 
-  @doc """
-  Park the tool worker inside `Nest.Agents.send_message/5` — the `agents-query`
-  entry point — so the test decides when the batch's query reaches its target
-  and when the batch returns.
+  # Deliver one send, parking around it when this test armed a park for the
+  # call's kind. `args` is the call's own argument list, replayed through
+  # `Mimic.call_original/3`.
+  defp deliver_parked(test_pid, config, call_kind, args) do
+    case Map.get(config, call_kind) do
+      nil -> Mimic.call_original(Nest.Agents, :send_message, args)
+      park -> park_around(test_pid, park, args)
+    end
+  end
 
-  `park_agent_sends/2`'s sibling for the querying tool: `agents-query` carries
-  its `kind` positionally, so it calls the five-arity clause while `agents-send`
-  calls the four-arity one, and both harnesses can be used in one test without
-  interfering. Only `kind: :query` calls park — anything else falls straight
-  through, so a runtime notice is never held.
+  # Park before the real delivery, and — when the harness asked to hold the
+  # result — again after it, so the batch is still in flight while the delivered
+  # message's turn runs.
+  defp park_around(test_pid, park, args) do
+    park(test_pid, park.blocked, park.release)
+    result = Mimic.call_original(Nest.Agents, :send_message, args)
 
-  The worker parks *before* the real delivery (sending `{:query_blocked,
-  worker}` and waiting for `:release_query`); with `hold_result: true` it parks
-  a second time *after* it (`{:query_delivered, worker}`, released by
-  `:release_result`), which is the shape where the peer's answer can land while
-  the caller's batch is still in flight — the batch is backgrounded, not the
-  answer queued behind it.
+    if park.hold do
+      park(test_pid, park.delivered, :release_result)
+    end
 
-  Both parks end on the test's release or on the test process's own `:DOWN` —
-  see `park/3`; there is no timer on either path.
-  """
-  @spec park_agent_queries(pid(), keyword()) :: :ok
-  def park_agent_queries(pid, opts \\ []) do
-    test_pid = self()
-    hold_result? = Keyword.get(opts, :hold_result, false)
-
-    Mimic.stub(Nest.Agents, :send_message, fn space_id, from, target, content, kind ->
-      if kind == :query, do: park(test_pid, :query_blocked, :release_query)
-
-      result =
-        Mimic.call_original(Nest.Agents, :send_message, [space_id, from, target, content, kind])
-
-      if kind == :query and hold_result? do
-        park(test_pid, :query_delivered, :release_result)
-      end
-
-      result
-    end)
-
-    Mimic.allow(Nest.Agents, self(), pid)
+    result
   end
 
   # Both exits are events, and there is deliberately **no timer**. The `after`

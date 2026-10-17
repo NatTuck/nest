@@ -14,6 +14,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
 
   import ExUnit.CaptureLog
 
+  import NestWeb.LobbyChannelTestHelpers
+
   alias Nest.Accounts
   alias Nest.Accounts.AuthToken
   alias Nest.Accounts.Invite, as: InviteSchema
@@ -60,6 +62,7 @@ defmodule NestWeb.LobbyChannelScopingTest do
   defp owned_space_id do
     {:ok, %Space{} = space} =
       Spaces.create_space(Process.get(:lobby_scoping_test_user_id), %{
+        workspace_path: AgentTestHelpers.default_test_workspace(),
         name: "owned-#{System.unique_integer([:positive])}",
         slug: "owned-#{System.unique_integer([:positive])}"
       })
@@ -148,10 +151,14 @@ defmodule NestWeb.LobbyChannelScopingTest do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_space", %{
-          "name" => "later-space-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-        })
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "later-space-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
 
       assert_reply ref, :ok, %{"space_id" => new_space_id, "name" => new_name}, 500
       AgentTestHelpers.ensure_cleanup(new_name)
@@ -269,10 +276,14 @@ defmodule NestWeb.LobbyChannelScopingTest do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_space", %{
-          "name" => "per-user-space-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-        })
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "per-user-space-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
 
       assert_reply ref, :ok, %{"name" => new_name}, 500
       AgentTestHelpers.ensure_cleanup(new_name)
@@ -395,13 +406,30 @@ defmodule NestWeb.LobbyChannelScopingTest do
       second = join_as(alice)
 
       ref =
-        push(second, "create_space", %{
-          "name" => "second-session-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-        })
+        push(
+          second,
+          "create_space",
+          create_space_payload(%{
+            "name" => "second-session-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
 
       assert_reply ref, :ok, %{"space_id" => new_space_id, "name" => new_name}, 500
       AgentTestHelpers.ensure_cleanup(new_name)
+
+      # The barrier the status broadcast needs, and the reason this test used to
+      # flake under cover-load: the first session reconciles from the per-user
+      # `{:spaces_changed, _}` frame, which is a *different* mailbox delivery from
+      # the synchronous reconcile the pushing session does. Broadcasting the
+      # status before the first session has handled it means there is no
+      # subscription to receive it, and the push never arrives at all — so waiting
+      # for its `space:created` frame (pushed after the reconcile, on the same
+      # topic and in the same process) is what makes the status broadcast
+      # deterministic. Two frames, because both sockets push into this mailbox and
+      # the *count* is the only thing that attributes a frame to a session.
+      assert_push "space:created", %{"space" => %Nest.Spaces.Space{id: ^new_space_id}}, 1_000
+      assert_push "space:created", %{"space" => %Nest.Spaces.Space{id: ^new_space_id}}, 1_000
 
       Phoenix.PubSub.broadcast(
         Nest.PubSub,
@@ -505,10 +533,14 @@ defmodule NestWeb.LobbyChannelScopingTest do
       bob_socket = join_as(bob)
 
       ref =
-        push(alice_socket, "create_space", %{
-          "name" => "alice-later-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-        })
+        push(
+          alice_socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "alice-later-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
 
       assert_reply ref, :ok, %{"name" => new_name}, 500
       AgentTestHelpers.ensure_cleanup(new_name)
@@ -551,6 +583,7 @@ defmodule NestWeb.LobbyChannelScopingTest do
   defp owned_space(user) do
     {:ok, %Space{} = space} =
       Spaces.create_space(user.id, %{
+        workspace_path: AgentTestHelpers.default_test_workspace(),
         name: "owned-#{System.unique_integer([:positive])}",
         slug: "owned-#{System.unique_integer([:positive])}"
       })

@@ -4,6 +4,8 @@ defmodule NestWeb.LobbyChannelTest do
   """
   use NestWeb.ChannelCase, async: true
 
+  import NestWeb.LobbyChannelTestHelpers
+
   alias Nest.Accounts
   alias Nest.Accounts.AuthToken
   alias Nest.Accounts.Invite, as: InviteSchema
@@ -110,12 +112,7 @@ defmodule NestWeb.LobbyChannelTest do
           name: "Test Vocation",
           description: "A test vocation",
           system_prompt: "You are a test assistant.",
-          tools: ["file"],
-          modes: %{
-            "chat" => %{
-              "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
-            }
-          }
+          tools: ["file"]
         })
 
       # Now connect socket and join lobby
@@ -130,12 +127,6 @@ defmodule NestWeb.LobbyChannelTest do
       assert test_vocation.description == "A test vocation"
       assert test_vocation.system_prompt == "You are a test assistant."
       assert test_vocation.tools == ["file"]
-
-      assert test_vocation.modes == %{
-               "chat" => %{
-                 "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
-               }
-             }
     end
 
     test "vocations are JSON-serializable and roundtrip correctly" do
@@ -145,15 +136,7 @@ defmodule NestWeb.LobbyChannelTest do
           name: "JSON Test Vocation",
           description: "Testing JSON encoding",
           system_prompt: "System prompt here",
-          tools: ["file"],
-          modes: %{
-            "chat" => %{
-              "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
-            },
-            "build" => %{
-              "caps" => %{"net" => true, "fs" => %{"read" => ["/"], "write" => []}}
-            }
-          }
+          tools: ["file"]
         })
 
       # Now connect socket and join lobby
@@ -177,15 +160,6 @@ defmodule NestWeb.LobbyChannelTest do
       assert test_vocation["description"] == "Testing JSON encoding"
       assert test_vocation["system_prompt"] == "System prompt here"
       assert test_vocation["tools"] == ["file"]
-
-      assert test_vocation["modes"] == %{
-               "chat" => %{
-                 "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
-               },
-               "build" => %{
-                 "caps" => %{"net" => true, "fs" => %{"read" => ["/"], "write" => []}}
-               }
-             }
     end
 
     test "returns models with correct JSON structure" do
@@ -376,10 +350,14 @@ defmodule NestWeb.LobbyChannelTest do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_space", %{
-          "name" => "test-space-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-        })
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "test-space-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
 
       assert_reply ref, :ok, %{"space_id" => space_id, "name" => name, "slug" => slug}, 500
       # The 500ms timeouts on the create_space `assert_reply` calls in
@@ -422,10 +400,14 @@ defmodule NestWeb.LobbyChannelTest do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_space", %{
-          "name" => "test-space-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-        })
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "test-space-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
 
       assert_reply ref, :ok, %{"space_id" => space_id, "name" => name, "slug" => _slug}, 500
       AgentTestHelpers.ensure_cleanup(name)
@@ -455,8 +437,7 @@ defmodule NestWeb.LobbyChannelTest do
           name: "lobby-blueprint-voc-#{System.unique_integer([:positive])}",
           description: "Blueprint root vocation",
           system_prompt: "You are the blueprint root.",
-          tools: [],
-          modes: %{}
+          tools: []
         })
         |> elem(1)
 
@@ -470,17 +451,78 @@ defmodule NestWeb.LobbyChannelTest do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_space", %{
-          "name" => "blueprint-space-#{System.unique_integer([:positive])}",
-          "blueprint_id" => blueprint.id,
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-        })
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "blueprint-space-#{System.unique_integer([:positive])}",
+            "blueprint_id" => blueprint.id,
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
 
       assert_reply ref, :ok, %{"space_id" => space_id, "name" => name, "slug" => _slug}, 500
       AgentTestHelpers.ensure_cleanup(name)
 
       assert {:ok, info} = Agents.get_info(space_id, name)
       assert info.vocation_id == vocation.id
+    end
+
+    test "creates a none-backend space and reports it back" do
+      {socket, _payload} = join_lobby()
+
+      ref =
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "none-space-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+            "sandbox_backend" => "none"
+          })
+        )
+
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}, 500
+      AgentTestHelpers.ensure_cleanup(name)
+
+      assert Nest.Spaces.get_space(space_id).sandbox_backend == "none"
+    end
+
+    test "carries the client's network choice into the created space" do
+      {socket, _payload} = join_lobby()
+
+      ref =
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "net-space-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+            "network_access" => false
+          })
+        )
+
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}, 500
+      AgentTestHelpers.ensure_cleanup(name)
+
+      assert Nest.Spaces.get_space(space_id).network_access == false
+    end
+
+    test "refuses a sandbox backend this build does not implement" do
+      {socket, _payload} = join_lobby()
+
+      ref =
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "bad-backend-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+            "sandbox_backend" => "podman"
+          })
+        )
+
+      assert_reply ref, :error, %{"reason" => "invalid_sandbox_backend"}, 500
     end
 
     test "names the workspace refusal instead of a generic failure" do
@@ -502,6 +544,66 @@ defmodule NestWeb.LobbyChannelTest do
 
         assert_reply ref, :error, %{"reason" => ^reason}, 500
       end
+    end
+  end
+
+  describe "handle_in(set_space_network)" do
+    test "flips the space's network access and announces it" do
+      {socket, _payload} = join_lobby()
+
+      ref =
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "net-toggle-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
+
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}, 500
+      AgentTestHelpers.ensure_cleanup(name)
+      assert Nest.Spaces.get_space(space_id).network_access == true
+
+      toggle =
+        push(socket, "set_space_network", %{"space_id" => space_id, "network_access" => false})
+
+      assert_reply toggle, :ok, %{"network_access" => false}, 500
+      assert Nest.Spaces.get_space(space_id).network_access == false
+
+      # The frame carries the whole space, so another session of the same user
+      # shows the same value rather than its stale one.
+      assert_push "space:updated",
+                  %{"space" => %Nest.Spaces.Space{id: ^space_id, network_access: false}},
+                  500
+    end
+
+    test "refuses a payload that is not a boolean, or names no space" do
+      {socket, _payload} = join_lobby()
+
+      for payload <- [
+            %{"space_id" => 1, "network_access" => "yes"},
+            %{"space_id" => 1},
+            %{"network_access" => true},
+            %{}
+          ] do
+        assert_reply push(socket, "set_space_network", payload),
+                     :error,
+                     %{"reason" => "invalid_payload"},
+                     500
+      end
+    end
+
+    test "refuses a space the user does not own" do
+      {socket, _payload} = join_lobby()
+
+      assert_reply push(socket, "set_space_network", %{
+                     "space_id" => -1,
+                     "network_access" => false
+                   }),
+                   :error,
+                   %{"reason" => _reason},
+                   500
     end
   end
 

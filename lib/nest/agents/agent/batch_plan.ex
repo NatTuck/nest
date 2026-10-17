@@ -97,7 +97,11 @@ defmodule Nest.Agents.Agent.BatchPlan do
       clone_context: false,
       model: Map.get(args, "model", ""),
       query: "",
-      archive: Map.get(args, "archive", true)
+      archive: Map.get(args, "archive", true),
+      # Every child of a batch runs in this mode. `"mine"` (the sender's own) is
+      # resolved by `Nest.Agents.Agent.PreSpawn`, which is where a spawn's mode is
+      # decided and where the monotone rule is applied.
+      mode: Map.get(args, "set_mode")
     }
   end
 
@@ -371,8 +375,35 @@ defmodule Nest.Agents.Agent.BatchPlan do
   def spawn_error_message({:vocation_not_found, slug}),
     do: "Could not spawn batch children: no vocation with slug #{inspect(slug)} exists."
 
+  # The space has no default vocation, so an omitted `vocation` has no answer
+  # (see `Nest.Agents.Supervisor.resolve_spawn_vocation/2`). Worded for a batch,
+  # like every other clause here.
+  def spawn_error_message({:vocation_required, allowed}) do
+    allowed_hint =
+      case allowed do
+        # An empty list means the space has no whitelist, i.e. it is unrestricted
+        # — not that nothing is allowed.
+        [] ->
+          "this space has no whitelist, so any vocation is allowed"
+
+        labels ->
+          "allowed: " <>
+            Enum.map_join(labels, ", ", fn {name, slug} -> "#{name} (#{slug})" end)
+      end
+
+    "Could not spawn batch children: `vocation` is required — this space has no " <>
+      "default spawn vocation, so it cannot be omitted; #{allowed_hint}. Pass " <>
+      "one as `vocation`."
+  end
+
   def spawn_error_message(:max_depth_reached),
     do: "Could not spawn batch children: max delegation depth reached."
+
+  # The spawner named a mode the monotone rule refuses. A batch is one call, so a
+  # per-child mode that cannot be honoured fails the whole call rather than being
+  # dropped for that child — the model asked for it and has to hear why not.
+  def spawn_error_message({:mode_refused, reason}),
+    do: "Could not spawn batch children: #{reason}"
 
   def spawn_error_message(reason), do: "Could not spawn batch children: #{inspect(reason)}"
 end

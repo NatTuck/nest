@@ -270,7 +270,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
       # ...and the children's own answers still arrive: with the reporting
       # target gone, delivery falls back to the parent's inbox.
       assert [message] = await_message(parent_pid, "alpha-done")
-      assert message =~ ~s([Message from agent "#{child0}"])
+      assert message =~ ~s([Message from agent "#{child0}" | mode: act])
     end)
   end
 
@@ -514,7 +514,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   # real chat cycle) and allow the coordinator to call the stub.
   defp start_batch_parent(vid) do
     {parent_pid, parent_name} =
-      AgentTestHelpers.start_agent(%{
+      AgentTestHelpers.start_spawnable_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
         vocation_id: vid
       })
@@ -528,6 +528,10 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   # start answer with MockClient's random fallback: this test is about the
   # batch's own messages.)
   defp run_batch(parent_pid, id, args) do
+    # Named, not omitted: the parent's own, which the removed fallback picked.
+    args =
+      Map.put_new(args, "vocation", Agent.get_public_info(parent_pid, 1_000).vocation_slug)
+
     MockClient.set_tool_response(%{
       text: "batching",
       tool_calls: [%{id: id, name: "agents-batch", arguments: args}]
@@ -674,22 +678,16 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     Mimic.stub(Agents, :chat, fn _space_id, _name, _content -> :ok end)
   end
 
-  # The coordinator's vocation exposes `agents-batch`. Children inherit this
-  # vocation (`vocation_id` is omitted in the call), which is fine: their chat
-  # cycle is stubbed.
+  # The coordinator's vocation exposes `agents-batch`. The children take the
+  # vocation `run_batch/3` names explicitly, because `agents-batch` no longer hands
+  # a child the caller's own when `vocation` is omitted (stage 4b).
   defp upsert_batch_vocation do
     {:ok, %Vocations.Vocation{id: vid}} =
       Vocations.upsert_vocation(%{
         name: "AgentsBatch #{System.unique_integer([:positive])}",
         description: "End-to-end agents-batch test",
         system_prompt: "Batch work over items.",
-        tools: ["context", "agents"],
-        modes: %{
-          "chat" => %{
-            "description" => "Chat",
-            "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp"]}}
-          }
-        }
+        tools: ["context", "agents"]
       })
 
     vid

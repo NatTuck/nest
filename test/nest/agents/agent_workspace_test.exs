@@ -10,19 +10,18 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
   """
 
   use Nest.DataCase, async: true
-  alias Nest.Agents.Agent.Machine
-
-  import Mimic
-
-  import Nest.Test.TmpCleanup
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents
   alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.Persistence
   alias Nest.Repo
+  alias Nest.Sandbox.Mounts
+  import Mimic
+  import Nest.Test.TmpCleanup
 
   setup :verify_on_exit!
 
@@ -53,16 +52,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
         name: "WS Test (#{System.unique_integer([:positive])})",
         description: "writes to workspace",
         system_prompt: "workspace prompt",
-        tools: ["file", "shell", "context"],
-        modes: %{
-          "build" => %{
-            "description" => "writes workspace",
-            "caps" => %{
-              "net" => false,
-              "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
-            }
-          }
-        }
+        tools: ["file", "shell", "context"]
       })
 
     old_ws = new_ws("old")
@@ -111,7 +101,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
 
       # allowlist: snapshot — workspace_path + tools + messages
       state = :sys.get_state(pid, 1_000)
-      assert state.workspace_path == new
+      assert Mounts.workspace(state.mounts) == new
 
       # Tool closures rebuilt against the new path.
       assert Enum.any?(state.tools, &(&1.name == "file-read"))
@@ -228,7 +218,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
 
       # allowlist: snapshot — workspace_path + messages
       state = :sys.get_state(pid, 1_000)
-      assert state.workspace_path == new
+      assert Mounts.workspace(state.mounts) == new
       assert {:assistant, %{parts: parts}} = List.last(state.chat_state.messages)
       assert Enum.any?(parts, &(&1.text == "Workspace directory change confirmed."))
     end
@@ -252,16 +242,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
           name: "WS Spawn (#{System.unique_integer([:positive])})",
           description: "spawn tools",
           system_prompt: "spawn prompt",
-          tools: ["agents", "file"],
-          modes: %{
-            "build" => %{
-              "description" => "writes workspace",
-              "caps" => %{
-                "net" => false,
-                "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
-              }
-            }
-          }
+          tools: ["agents", "file"]
         })
 
       first = new_ws("spawn-old")

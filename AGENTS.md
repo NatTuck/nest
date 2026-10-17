@@ -21,6 +21,9 @@ Do normal testing by running `mix test` and/or (`pnpm --dir assets test` or
 - Use as few test runs as you can. They take time.
 - Don't ever run the same test command repeatedly in a loop without an explicit
 human request to do exactly that.
+- Performance on `mix test` isn't optional. It should be 4 seconds on vampire.
+If it's slower than that after your work, then it's time to put in some serious
+optimization effort.
 
 ## Important: Core Process Rules
 
@@ -28,20 +31,59 @@ human request to do exactly that.
 - Never revert stuff, not even temporarily, without an explicit human request. 
 If the tree is so screwed up that reverting is the only option then stop and report.
 
-### Sandbox reads always go through bwrap
+### Sandbox reads always go through the active backend
 
-- The sandbox's filesystem view *is* bwrap's view. There is **no host-side
-  emulation** of `read`, `stat`, or `glob`: all three execute inside bwrap, so
-  their results come from exactly the mounts bwrap exposes and can never
-  disagree with what a shell inside the sandbox sees.
+- The sandbox's filesystem view *is* the active backend's view. There is **no
+  host-side emulation** of `read`, `stat`, or `glob`: all three execute inside
+  the sandbox, so their results come from exactly what the backend exposes and
+  can never disagree with what a shell inside it sees.
+- Which backend that is, is a **per-space, creation-only** choice
+  (`spaces.sandbox_backend`: `bwrap`, `docker` or `none`). It is picked when the
+  space is created and cannot be changed afterwards, because changing it would
+  mean replacing the environment the space's agents run in. It travels to every
+  command on the `Nest.Sandbox.Mounts` value, and `Nest.Sandbox.Backend` is the
+  one dispatch point (`Nest.Tools.ShellCmd` is the only caller that matters).
+- **Network access is the space's, not a mode's.** `spaces.network_access`
+  (boolean, editable) is the only source of `caps["net"]`: it is resolved once at
+  agent start and carried on `Nest.Sandbox.Mounts`, and
+  `Nest.Sandbox.with_network_access/2` injects it at caps-resolution time (called
+  from `Nest.ProjectConfig.resolve_caps/2`, the one funnel both resolution paths
+  share). There is no per-mode `net` key left to read: `vocations.modes` is gone,
+  and `Nest.Modes`' caps maps carry `net` only as a placeholder nothing reads.
+  A value naming no space keeps `default_caps/0`'s `net: false`. Do not add a
+  second place that reads either.
+- `bwrap` (the default) enforces the mode's caps with binds and namespaces.
+  `docker` runs **bwrap inside a container the space shares**, and the two bind
+  the *same* list (`Nest.Sandbox.Binds`) — over the host there, over the derived
+  image here. The container's root filesystem is the image, so the host's `/` is
+  not visible in it and `caps.fs.read` is not what docker binds: **the image is
+  the read set**, which makes it *stricter* than bwrap, not looser. `none` runs
+  the bare command on the host, so **caps cannot be enforced** for that space
+  (nor the `.nest` read-only mask). Say all of that plainly wherever a backend is
+  offered or documented; never imply otherwise. `notes/sandbox-backends.md` has
+  the full table, the container flags bwrap needs and what they cost.
+- A `docker` space's container is keyed on **the space and the installation**,
+  never on a caps signature or on the BEAM: it binds the superset a space can
+  need (what a mode that writes the workspace gets) and the bwrap *inside* it
+  tightens per call, so a read-only mode keeps its teeth without needing a
+  container of its own. The name is therefore stable across restarts — nothing
+  per-BEAM is bound any more, since the scratch is the container's own `/tmp` and
+  the staging directory is keyed on the space — and the layout travels as a
+  `nest.layout` **label** instead, which `ensure_container/3` compares so that a
+  `.nest`, workspace, hardware or network change replaces the container rather
+  than silently reusing the old environment. There is no sweep and no pid
+  parsing: nothing is ever orphaned. `Nest.Sandbox.Installation` keeps two
+  installations that share a space id from adopting each other's container.
+  `Mounts.scratch` for a docker space is a path *inside* the container, which
+  nothing on the host may create or write (`Mounts.host_scratch?/1`).
 - Do **not** add a host fast path for any of them. There is no second spelling
-  of a path an agent uses: the two directories the sandbox binds — the workspace
-  and the agent's own scratch directory — live in one `Nest.Sandbox.Mounts`
-  value that travels with the turn, and `Nest.Sandbox` is what turns it into
-  binds. A module that needs a real directory reads it from that value; none of
-  them needs one in order to name a path an agent uses, and
+  of a path an agent uses: the backend plus the two directories the sandbox
+  binds — the workspace and the agent's own scratch directory — live in one
+  `Nest.Sandbox.Mounts` value that travels with the turn, and `Nest.Sandbox` is
+  what turns it into binds. A module that needs a real directory reads it from
+  that value; none of them needs one in order to name a path an agent uses, and
   `/tmp/<agent-name>/...` is the only scratch spelling an agent is ever told
-  about or hands back.
+  about or hands back — on **every** backend.
 - The path mapping lives in exactly one place: `Nest.Sandbox.Paths`.
 - A workspace at or under `/tmp` is rejected **unconditionally**, because the
   space scratch dir is bound at `/tmp` and would shadow it. A workspace can
@@ -49,6 +91,30 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   Both are rejected at the point the workspace is chosen (create-space,
   create-agent, `set_workspace`, edit-agent) and again at the final gate in
   `Nest.Sandbox.build/4`.
+- A `none` space's scratch is the host's real `/tmp/<agent-name>`, so agent
+  names are unique across `none` spaces: the creation boundary refuses a
+  collision (`{:scratch_name_in_use, other_space_name}`) and the name generator
+  never proposes one. The name is client- and model-controlled and cannot
+  distinguish Nest's directory from the host's own `/tmp` entries, so a `none`
+  scratch carries a `.nest-scratch` marker and **every** `rm_rf` of a `none`
+  scratch requires it. Both creators write it — `TmpSpace.create/3` and
+  `Nest.Sandbox.Mounts.ensure_scratch!/1`, which stages a transcript before the
+  agent starts — and neither will mark a directory that already exists without
+  it, because marking a directory Nest did not make is what would license the
+  next `rm_rf` to delete it. A name whose path already holds something that is
+  not Nest's is refused by name (`{:scratch_path_taken, path}`) rather than
+  adopted. A removal that would take a live same-named agent's scratch in
+  another space is refused too.
+- Anything that composes a prompt or runs a command must be given the agent's
+  *real* mounts (`TmpSpace.prompt_mounts/4` builds the prompt's mounts): the
+  backend is resolved from them, and under `"docker"` the agent's scratch names a
+  path *inside the container* — so a call that leaves the scratch out loses the
+  agent's own scratch (its job logs, its offloads) rather than failing loudly.
+  `Nest.Sandbox.Backend.Docker.command/3` refuses a call that belongs to no
+  space outright.
+- Nothing under `lib/nest/sandbox/` reads the spaces schema. `Nest.Sandbox.Backend`
+  owns the backend list and the default, `Nest.Spaces.Space` consumes them, and
+  the dependency runs schema → sandbox only.
 
 ## Project Design
 
@@ -61,11 +127,60 @@ doesn't restrict codebase changes during development.
 - Specifically, that means our main system message is fixed once set and does
 not change except potentially on compaction.
 - The main system message explains things that will always be true for the
-current session. This includes a fixed vocation (and thus mode list) and a
-project root (and thus an AGENTS.md if present).
-- User messages are tagged with a `[mode: $MODE]\n` prefix.
-- Agent messages are tagged with a `[Message from agent "$NAME"]\n` prefix.
+current session. This includes a fixed vocation, a fixed mode *catalog* (the two
+modes are code constants — `Nest.Modes` — so the catalog's bytes are the same for
+every agent in a space) and a project root (and thus an AGENTS.md if present).
+The agent's own *mode* is deliberately not in it: it is a per-agent runtime
+property that can change while the agent works, so it travels on the messages
+instead (see "Modes" below).
+- User messages are tagged with a `[mode: $MODE]\n` prefix, and a message from
+another agent carries the recipient's mode in its header
+(`[Message from agent "$NAME" | mode: $MODE]\n`). Both state the **recipient's**
+mode — the mode the turn will run in — which is the only mechanism by which an
+agent whose inbox is all peer traffic learns its own mode.
 - System notices should be tagged with a `[Nest notice]\n` prefix.
+
+### Modes
+
+- There are exactly two modes, and they are code constants (`Nest.Modes`), not
+per-vocation data: `plan` may write only the space's scratch directory, `act` may
+also write the workspace, and nothing else varies per call (the network is the
+space's). A mode's caps are `Nest.Modes.caps/1`'s map; `plan` mode is about
+*effects*, not only writes — an HTTP request that creates something is a change
+no sandbox can see, and the prompt says so.
+- **A mode is a per-agent runtime property.** It is persisted (`agents.mode`,
+seeded from the blueprint's `default_mode`), so a restart cannot silently widen a
+child that was spawned read-only. It is inherited at spawn (the spawner may
+override it), changeable by the human on any agent (immediately — it does not
+have to ride a message) and by an ancestor on a descendant, and it applies from
+the agent's **next turn**, never mid-turn, with a `[Nest notice]` announcement
+naming who changed it.
+- **The monotone rule lives in exactly one place** —
+`Nest.Agents.Agent.ModeAuthority`, which every mode-setting path goes through. An
+agent may move a *descendant* to a mode it is in itself, or to `plan`; only the
+human may raise a mode; **an agent may never set its own mode** (including by
+sending itself a `set_mode`). The rule applies to the spawn too: a `plan` parent
+must not spawn an `act` child, nor spawn one and then raise it. A refused change
+reaches the sender as a tool error naming why.
+- **A mode change never propagates** to existing descendants: the user flipping
+the root to `plan` for a planning discussion must not jam background workers that
+are mid-task in `act`.
+- `set_mode` rides the send tools (`agents-query`, `agents-send`,
+`agents-batch` — an enum of `"mine" | "plan" | "act"`) rather than being its own
+tool, so the change and the instruction that depends on it arrive together.
+- **The modes are not in the database.** `vocations.modes` no longer exists: a
+vocation is its prompt and its tools, and the modes every agent may be in are
+`Nest.Modes.names/0`. A blueprint is where the per-space defaults live —
+`default_mode` (the mode a new agent starts in), `default_net` (the space's
+`network_access`, used only when the caller names none) and
+`default_spawnable_vocation` (what `agents-spawn`/`agents-batch` use when the
+caller names no `vocation`; with none set the spawn is **refused**, naming the
+missing argument, rather than silently getting the caller's own vocation).
+- **A space requires a workspace on create** (`Space.create_changeset/2`): the
+workspace is a space property its agents inherit, and `act` mode writes it. The
+update path stays permissive, so `rename_space/1` still works on a row a previous
+build left without one.
+
 
 ### UI Transparency
 

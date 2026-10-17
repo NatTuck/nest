@@ -13,6 +13,7 @@ defmodule Nest.Sandbox.PathsTest do
 
   alias Nest.FSPath
   alias Nest.Sandbox
+  alias Nest.Sandbox.Installation
   alias Nest.Sandbox.Paths
 
   defp tmp_path do
@@ -94,6 +95,24 @@ defmodule Nest.Sandbox.PathsTest do
 
     test "the sandbox spelling is always under /tmp when a scratch bind exists" do
       assert Paths.stage_dir_sandbox(tmp_path()) == Path.join(Paths.sandbox_root(), ".cmds")
+    end
+  end
+
+  describe "the docker staging directory" do
+    test "is one directory per space and installation, bound at /tmp/.cmds" do
+      assert Paths.docker_stage_dir(7) ==
+               Path.join([
+                 System.tmp_dir!(),
+                 "nest-docker-#{Installation.segment()}-space-7",
+                 ".cmds"
+               ])
+
+      # Keyed on the space, never on the BEAM's pid: the container that binds it
+      # outlives a restart, so the directory it binds has to as well.
+      assert Paths.docker_stage_dir(7) == Paths.docker_stage_dir(7)
+      refute Paths.docker_stage_dir(7) == Paths.docker_stage_dir(8)
+
+      assert Paths.docker_stage_dir_sandbox() == "/tmp/.cmds"
     end
   end
 

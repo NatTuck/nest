@@ -42,6 +42,7 @@ import { NeedsRepairBanner } from "../components/NeedsRepairBanner";
 import { ShellJobsPanel } from "../components/ShellJobsPanel";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
+import { useAgentMode } from "../hooks/useAgentMode";
 import { buildChatHistory } from "../utils/chatHistory.js";
 import { describeEditError, getStatusLabel } from "../utils/chatErrors.js";
 import { parseSlashCommand, SLASH_COMMANDS } from "../utils/slashCommands.js";
@@ -52,7 +53,6 @@ import { parseSlashCommand, SLASH_COMMANDS } from "../utils/slashCommands.js";
 // literal each call and trip zustand's `Object.is` check.
 const EMPTY_MESSAGES = [];
 const EMPTY_HISTORY = [];
-const EMPTY_MODES = ["chat"];
 const EMPTY_JOBS = [];
 
 // Slash-command dispatch: a command's name (from `SLASH_COMMANDS`) maps
@@ -88,7 +88,6 @@ export function ChatPage() {
   const [tab, setTab] = useState(CHAT_TAB);
   const [inputValue, setInputValue] = useState("");
   const [sendError, setSendError] = useState(null);
-  const [currentMode, setCurrentMode] = useState(null);
   // Backing state for the model picker modal. Open the
   // picker either from the header chip (always available)
   // or from the prominent :model_missing banner (the
@@ -157,8 +156,11 @@ export function ChatPage() {
         // has reported one, which is not the same as zero.
         messageCount: cache?.messageCount ?? null,
         agentState: cache?.agentState ?? "idle",
-        availableModes: cache?.modes ?? EMPTY_MODES,
-        defaultMode: cache?.defaultMode ?? "chat",
+        // Both from the server (`Nest.Modes`): the UI does not decide which
+        // modes exist, and a fallback of its own would show a mode the agent
+        // cannot be in.
+        availableModes: cache?.modes ?? [],
+        defaultMode: cache?.defaultMode ?? null,
         contextLimit: cache?.contextLimit ?? null,
         usage: cache?.usage ?? null,
         descendantUsage: cache?.descendantUsage ?? null,
@@ -263,24 +265,16 @@ export function ChatPage() {
     requestHistory(name, { before: oldest.index });
   }, [name, archivedHistory]);
 
-  // Keep the dropdown in sync with the agent's current mode.
-  //
-  // The agent's `state.mode` is the source of truth and is updated
-  // each time a chat is sent ("sticky mode"). The server emits the
-  // new mode on every `chat:status` push (specifically the one that
-  // transitions to `idle` and unlocks the input), which the
-  // channels.js handler writes to `cache.currentMode`. This effect
-  // mirrors that into the local `currentMode` React state so the
-  // dropdown reflects what the server actually has.
-  //
-  // On first mount (before any chat:status has arrived),
-  // `currentModeFromCache` is null and we fall back to `defaultMode`.
-  useEffect(() => {
-    const next = currentModeFromCache ?? defaultMode;
-    if (next) {
-      setCurrentMode(next);
-    }
-  }, [currentModeFromCache, defaultMode]);
+  // The agent's current mode. The server's `state.mode` is the source of
+  // truth ("sticky mode"), mirrored here so the dropdown reflects what the
+  // server actually has; a change is a control-plane push whose refusal
+  // lands in the send-error banner.
+  const { currentMode, setCurrentMode, handleModeChange } = useAgentMode({
+    name,
+    currentModeFromCache,
+    defaultMode,
+    onError: setSendError,
+  });
 
   // When the agent transitions out of "busy" (the server's
   // `chat:status: idle` push has arrived), clear the optimistic
@@ -651,7 +645,8 @@ export function ChatPage() {
             }
             modes={availableModes}
             mode={currentMode ?? defaultMode}
-            onModeChange={setCurrentMode}
+            onModeChange={handleModeChange}
+            onModeRestore={setCurrentMode}
             history={history}
             commands={SLASH_COMMANDS}
             hasNewContent={hasNewContent}

@@ -10,13 +10,18 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
 
   The scratch dir comes from `ctx.mounts` — the agent's own sub-directory of
   the space scratch dir (which the sandbox binds read-write at `/tmp`, so the
-  agent sees it at `/tmp/<agent-name>`). Writing to it directly (rather than
-  through the sandbox gatekeeper) is intentional internal scratch management,
-  mirroring `BatchSizer`. What `write/4` returns is the `/tmp/<agent-name>/...`
-  spelling the agent uses; the directory the bytes land in never reaches the
-  LLM.
+  agent sees it at `/tmp/<agent-name>`). What `write/4` returns is the
+  `/tmp/<agent-name>/...` spelling the agent uses; the directory the bytes land
+  in never reaches the LLM.
+
+  Writing is `Nest.Sandbox.scratch_write/3`'s, not this module's: under a
+  backend whose scratch directory is a host directory the bytes are written
+  directly (which is what keeps an offload off the sandbox's hot path), and
+  under `"docker"` the scratch is the container's own `/tmp`, which only the
+  container can write, so they go through the gatekeeper instead.
   """
 
+  alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Estimator
 
@@ -39,26 +44,24 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   """
   @spec write(binary(), map(), String.t(), String.t(), String.t() | nil) :: String.t() | nil
   def write(content, ctx, prefix, ext, id \\ nil) do
-    case scratch_dir(ctx) do
+    case mounts(ctx) do
       nil ->
         nil
 
-      dir ->
+      mounts ->
         name = "#{prefix}-#{id || token()}.#{ext}"
-        path = Path.join(dir, name)
 
         try do
-          File.write!(path, content)
-          Path.join(Nest.Sandbox.sandbox_tmp_path(dir), name)
+          Sandbox.scratch_write(mounts, name, content)
         rescue
           _ -> nil
         end
     end
   end
 
-  defp scratch_dir(ctx) do
+  defp mounts(ctx) do
     case Map.get(ctx, :mounts) do
-      %Mounts{} = mounts -> Mounts.scratch(mounts)
+      %Mounts{} = mounts -> mounts
       _ -> nil
     end
   end

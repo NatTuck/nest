@@ -1,8 +1,8 @@
 defmodule Nest.Agents.AgentSystemPromptCompositionTest do
   @moduledoc """
   Tests for the system-prompt composition in
-  `Nest.Agents.Agent.ChatPipeline` (the workspace line, the
-  mode catalog, the AGENTS.md section, etc.). Extracted from
+  `Nest.Agents.Agent.SystemPrompt` (the workspace line, the universal modes
+  section, the AGENTS.md section, etc.). Extracted from
   `agent_chat_test.exs` so the chat-flow file stays under the
   500-line credo limit.
   """
@@ -12,7 +12,11 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
   import Nest.Test.TmpCleanup
 
+  alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.SystemPrompt
   alias Nest.LLM.MockClient
+  alias Nest.Modes
+  alias Nest.Sandbox.Mounts
   alias Nest.Vocations
 
   setup :verify_on_exit!
@@ -30,24 +34,13 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
   import Nest.Agents.AgentTestHelpers
 
   describe "vocation system_prompt composition" do
-    test "vocation system_prompt gets the mode catalog and a [Workspace] section" do
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
+    test "vocation system_prompt gets the universal modes section and a [Workspace] section" do
       {:ok, vocation} =
         Vocations.create_vocation(%{
           name: "TestSysPrompt-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "Base prompt.",
-          tools: ["shell"],
-          modes: %{
-            "build" => %{
-              "description" => "You're clear to edit the project in the workspace.",
-              "caps" => valid_caps
-            }
-          }
+          tools: ["shell"]
         })
 
       workspace = new_ws("test-workspace")
@@ -66,41 +59,60 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
       assert system_prompt =~ "Base prompt."
       assert system_prompt =~ "\n\n[Available modes]\n\n"
-      assert system_prompt =~ ~s(- build: Read only "/")
-      assert system_prompt =~ "Network disabled"
-      assert system_prompt =~ "You're clear to edit the project in the workspace."
+
+      # The modes are universal constants now, so the section is the same bytes
+      # for every vocation — including this one, whose stored `modes` map is dead
+      # data (`Nest.Modes.catalog/2`).
+      assert system_prompt =~ "**`plan`**"
+      assert system_prompt =~ "**`act`**"
+      assert system_prompt =~ "shown on every message you receive"
+      # The space's sandbox enforces `plan`, so the one space-specific sentence
+      # in the modes section says the restriction is real. (The *network* is not
+      # a mode's — it is the space's, and the tool sections below state it.)
+      assert system_prompt =~ "is enforced by the sandbox"
+      refute system_prompt =~ "cannot enforce"
+      # The vocation's own per-mode description is no longer rendered anywhere:
+      # the capability/posture content lives in the universal text now.
+      refute system_prompt =~ "You're clear to edit the project in the workspace."
+
       assert system_prompt =~ "\n\nWorkspace and tool working directory: #{workspace}"
-      # `compact` is rendered into the catalog alongside the
-      # user-configured modes, with `Vocations.compact_description/0`
-      # as the body. The `[mode: compact]` prefix lives only in
-      # the per-call suffix at runtime, not in the initial prompt.
-      assert system_prompt =~ ~r/^- compact: We are out of context.*summary alone\.\.$/m
+
+      # The network is a space property, so the tool sections state it. This
+      # space is a bwrap space with the column's `true` default, so the setting
+      # is a real permission rather than one the sandbox cannot enforce.
+      assert system_prompt =~ "Network access is enabled for this space"
+
+      # The identity line is composed by `PreSpawn` from the attrs the start
+      # path built, so this pins that path's argument order: a transposed
+      # `depth`/`mode` renders the mode where the depth belongs.
+      assert system_prompt =~ "at spawn depth 0 of #{Config.configured_max_depth()}"
+      # `compact` is rendered next to the modes, with
+      # `Vocations.compact_description/0` as the body. The `[mode: compact]`
+      # prefix lives only in the per-call suffix at runtime, not in the initial
+      # prompt.
+      assert system_prompt =~ "- compact: We are out of context"
+      assert system_prompt =~ "summary alone."
+      refute system_prompt =~ "[mode: compact]"
     end
 
     test "no workspace line when workspace_path is nil" do
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
       {:ok, vocation} =
         Vocations.create_vocation(%{
           name: "TestNoWorkspace-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "Chat only.",
-          tools: ["shell"],
-          modes: %{
-            "chat" => %{
-              "description" => "General conversation.",
-              "caps" => valid_caps
-            }
-          }
+          tools: ["shell"]
         })
 
+      # `workspace_path: nil` on purpose: the fixture otherwise supplies one, and
+      # this test is about the composer's no-workspace case. (An agent with no
+      # workspace is refused where one is *required* — a space with a root agent,
+      # a spawn, an edit — but starting one directly still composes a prompt.)
       {pid, _agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
-          vocation_id: vocation.id
+          vocation_id: vocation.id,
+          workspace_path: nil
         })
 
       system_prompt = get_system_prompt(pid)
@@ -110,23 +122,12 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
     end
 
     test "a tool-less vocation gets no tool sections or caps, but keeps compact guidance" do
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
       {:ok, vocation} =
         Vocations.create_vocation(%{
           name: "TestNoTools-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "Tool-less.",
-          tools: [],
-          modes: %{
-            "chat" => %{
-              "description" => "General conversation.",
-              "caps" => valid_caps
-            }
-          }
+          tools: []
         })
 
       {pid, _agent_id} =
@@ -139,7 +140,16 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       system_prompt = get_system_prompt(pid)
 
       assert system_prompt =~ "Tool-less."
-      assert system_prompt =~ "- chat: General conversation."
+      # No tools, so nothing for a mode to restrict: no modes section at all —
+      # not even its prose. The `[Available modes]` marker stays, because the
+      # compaction contract below it is what the runtime's `[mode: compact]`
+      # suffix refers to.
+      assert system_prompt =~ "\n\n[Available modes]\n\n"
+      refute system_prompt =~ "**`plan`**"
+      refute system_prompt =~ "**`act`**"
+      refute system_prompt =~ "shown on every message you receive"
+      # ... and the compaction contract survives anyway: a tool-less agent still
+      # compacts.
       assert system_prompt =~ Vocations.compact_description()
       refute system_prompt =~ "Workspace and tool working directory"
       refute system_prompt =~ "Tool call budget"
@@ -148,28 +158,19 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       # `SystemPrompt.tool_sections/3`).
       refute system_prompt =~ "Your own scratch directory"
       refute system_prompt =~ "errors in tool calls"
-      refute system_prompt =~ "Network disabled"
+      # The network sentence is tool-gated too: a tool-less agent has no command
+      # that could reach the network.
+      refute system_prompt =~ "Network access"
       refute system_prompt =~ ~s(Read only "/")
     end
 
     test "compact-mode body lives once in the [Available modes] list" do
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
       {:ok, vocation} =
         Vocations.create_vocation(%{
           name: "TestCompactPar-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "Base.",
-          tools: [],
-          modes: %{
-            "chat" => %{
-              "description" => "Just chatting.",
-              "caps" => valid_caps
-            }
-          }
+          tools: []
         })
 
       {pid, _agent_id} =
@@ -202,18 +203,12 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       # priv/config.toml (512000). The system prompt should
       # render the "resolved from config" line, not the
       # "default" caveat.
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
       {:ok, vocation} =
         Vocations.create_vocation(%{
           name: "TestCtxCfg-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "x",
-          tools: [],
-          modes: %{"chat" => %{"description" => "Chat", "caps" => valid_caps}}
+          tools: []
         })
 
       {pid, _agent_id} =
@@ -250,18 +245,12 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       # without a hit there, the context-limit resolution falls
       # back to the 128k `:default` floor, and the prompt still
       # renders a context-limit section (sourced from `default`).
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
       {:ok, vocation} =
         Vocations.create_vocation(%{
           name: "TestCtxDef-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "x",
-          tools: [],
-          modes: %{"chat" => %{"description" => "Chat", "caps" => valid_caps}}
+          tools: []
         })
 
       {pid, _agent_id} =
@@ -276,6 +265,54 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       assert system_prompt =~ "resolved from default"
       refute system_prompt =~ "may differ"
     end
+  end
+
+  describe "the space's network access" do
+    # The network is the *space's*, not a mode's, so it is stated in the
+    # tool-gated sections. Composed directly rather than through a started agent
+    # because the `"none"` case is what the sentence has to get right and no
+    # start path here builds a `"none"` space.
+    test "states the setting, and that a `none` space cannot enforce it" do
+      {:ok, vocation} =
+        Vocations.create_vocation(%{
+          name: "TestNetwork-#{System.unique_integer([:positive])}",
+          description: "Test",
+          system_prompt: "Base.",
+          tools: ["shell"]
+        })
+
+      # An enforcing backend states the setting as a permission or a rule.
+      assert compose_for(vocation, "bwrap", true) =~ "Network access is enabled for this space"
+      assert compose_for(vocation, "bwrap", false) =~ "Network access is disabled for this space"
+      refute compose_for(vocation, "bwrap", true) =~ "cannot enforce"
+
+      # A `"none"` space has no sandbox, so it names the setting *and* says it
+      # cannot be enforced — it must not claim a restriction that is not there.
+      for {value, word} <- [{true, "enabled"}, {false, "disabled"}] do
+        prompt = compose_for(vocation, "none", value)
+
+        assert prompt =~ "Network access is #{word} for this space"
+        assert prompt =~ "no sandbox to enforce it"
+      end
+    end
+  end
+
+  # Compose the prompt for a tool-capable vocation on `backend`, with the
+  # space's network setting: no workspace and no scratch, so no section here
+  # reads a file and the mounts only decide the network and enforcement
+  # sentences.
+  defp compose_for(vocation, backend, network_access) do
+    {prompt, _tools, _vocation} =
+      SystemPrompt.compose_vocation_config(
+        vocation,
+        Mounts.new(nil, nil, backend, nil, network_access),
+        {nil, nil},
+        "agent",
+        0,
+        Modes.act()
+      )
+
+    prompt
   end
 
   # A real workspace directory outside /tmp: the scratch dir is bound at /tmp,

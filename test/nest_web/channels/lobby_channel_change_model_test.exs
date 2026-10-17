@@ -12,6 +12,8 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
 
   import Nest.Test.TmpCleanup
 
+  import NestWeb.LobbyChannelTestHelpers
+
   alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Accounts
   alias Nest.Accounts.Invite, as: InviteSchema
@@ -62,12 +64,16 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
     vocation = AgentTestHelpers.vocation_slug_for_test()
 
     ref =
-      push(socket, "create_space", %{
-        "name" => "test-space-#{System.unique_integer([:positive])}",
-        "model" => model_attrs,
-        "shared" => true,
-        "vocation" => vocation
-      })
+      push(
+        socket,
+        "create_space",
+        create_space_payload(%{
+          "name" => "test-space-#{System.unique_integer([:positive])}",
+          "model" => model_attrs,
+          "shared" => true,
+          "vocation" => vocation
+        })
+      )
 
     # `assert_reply/3` defaults to a 100ms receive timeout, which is
     # too tight here. Agent creation is genuinely heavy under the
@@ -104,12 +110,16 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
       vocation = AgentTestHelpers.vocation_slug_for_test()
 
       ref =
-        push(socket, "create_space", %{
-          "name" => "test-space-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
-          "shared" => true,
-          "vocation" => vocation
-        })
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "test-space-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+            "shared" => true,
+            "vocation" => vocation
+          })
+        )
 
       assert_reply ref, :ok, %{"space_id" => space_id, "name" => name, "slug" => _slug}, 500
 

@@ -5,10 +5,10 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
   drain delivers it to the model.
 
   The pure rules are the module's own contract — a human entry and a runtime
-  `:notice` render bare, every other kind keeps its `[Message from agent "X"]`
-  label, a retrieved body is tagged as a re-delivery, an over-cap batch is
-  replaced by a scratch-file pointer, and the delivered message carries the
-  batch's metadata. The last group drives that same rendering through a real
+  `:notice` render bare, every other kind keeps its `[Message from agent "X" |
+  mode: M]` label (M being the mode the recipient's turn will run in), a
+  retrieved body is tagged as a re-delivery, an over-cap batch is replaced by a
+  scratch-file pointer, and the delivered message carries the batch's metadata. The last group drives that same rendering through a real
   drain, so the pointer is asserted on the text the transcript actually
   carries.
 
@@ -29,6 +29,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
   alias Nest.Agents.Agent.Inbox.Render
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Messages.MessageList
+  alias Nest.Sandbox.Mounts
 
   # A big-enough body to exceed the default 8000-token cap.
   @oversized String.duplicate("hello world ", 4_000)
@@ -43,7 +44,9 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       # name rather than printing `nil` or `""`. A runtime notice has no label
       # (no agent said it) but does carry the `[nest notice]` marker at the head
       # of its own text, which is what tells the model the body is the runtime's.
-      state = %Agent{tmp_path: nil}
+      # The label also states the mode the recipient's turn will run in, so the
+      # fixture names a real one (`Nest.Modes.default/0`).
+      state = %Agent{live: %Agent.ChatState.Live{mode: "act"}}
 
       assert Render.combine_and_offload([entry(:user, "alice", "from a human", "plan")], state) ==
                "from a human"
@@ -59,16 +62,16 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
                ],
                state
              ) ==
-               "[Message from agent \"peer\"]\nfrom an agent\n\n" <>
-                 "[Message from agent]\nfrom a blank agent\n\n" <>
-                 "[Message from agent]\nfrom nobody"
+               "[Message from agent \"peer\" | mode: act]\nfrom an agent\n\n" <>
+                 "[Message from agent | mode: act]\nfrom a blank agent\n\n" <>
+                 "[Message from agent | mode: act]\nfrom nobody"
 
       # A query is a peer's words and keeps the label (decision 7); a notice
       # is the runtime's own and must never be framed as an agent's (decision
       # 9) — it carries no label, exactly like a human's, plus the notice
       # marker the client strips on render.
       assert Render.combine_and_offload([entry(:query, "peer", "may I ask?")], state) ==
-               "[Message from agent \"peer\"]\nmay I ask?"
+               "[Message from agent \"peer\" | mode: act]\nmay I ask?"
 
       assert Render.combine_and_offload([entry(:notice, "peer", "peer never answered")], state) ==
                "[nest notice]\npeer never answered"
@@ -79,7 +82,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       # `batch/1`, so this is the safety net: if both channels ever carry the
       # body, the second copy is explicitly a re-delivery and can never be
       # mistaken for a fresh human turn.
-      state = %Agent{tmp_path: nil}
+      state = %Agent{}
 
       taken = %{entry(:agent, "peer", "the report", nil, "a") | retrieved: true}
 
@@ -96,7 +99,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       File.mkdir_p!(dir)
       on_exit(fn -> rm_tmp!(dir, "inbox-id-") end)
 
-      state = %Agent{name: "offload-id", space_id: 1, tmp_path: dir}
+      state = %Agent{name: "offload-id", space_id: 1, mounts: Mounts.new(nil, dir)}
       first = %{entry(:agent, "peer", "hello world", nil, "firstid") | content: @oversized}
 
       content = Render.combine_and_offload([first], state)
@@ -189,7 +192,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
         end
 
         # One scratch file per delivery, holding the batch's whole text.
-        files = Path.wildcard(Path.join(state.tmp_path, "agent-inbox-*.txt"))
+        files = Path.wildcard(Path.join(Mounts.scratch(state.mounts), "agent-inbox-*.txt"))
         assert length(files) == n, label
         assert Enum.all?(files, &(File.read!(&1) =~ "hello world"))
 
@@ -230,7 +233,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       assert pointer =~ "Read that file to see them"
 
       # One scratch file for the whole batch, holding both entries' text.
-      assert [file] = Path.wildcard(Path.join(state.tmp_path, "agent-inbox-*.txt"))
+      assert [file] = Path.wildcard(Path.join(Mounts.scratch(state.mounts), "agent-inbox-*.txt"))
       assert File.read!(file) =~ "hello world"
 
       wait_idle(pid)

@@ -47,7 +47,10 @@ defmodule NestWeb.LobbyChannelArchiveTest do
       user: user
     } do
       {:ok, %Space{id: space_id}} =
-        Spaces.create_space(user.id, %{name: "arch-lobby-#{System.unique_integer([:positive])}"})
+        Spaces.create_space(user.id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: "arch-lobby-#{System.unique_integer([:positive])}"
+        })
 
       {socket, init} = join_lobby()
 
@@ -82,6 +85,7 @@ defmodule NestWeb.LobbyChannelArchiveTest do
 
       {:ok, %Space{id: space_id}} =
         Spaces.create_space(bob.id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
           name: "arch-foreign-#{System.unique_integer([:positive])}"
         })
 
@@ -128,7 +132,10 @@ defmodule NestWeb.LobbyChannelArchiveTest do
 
     test "change_model is rejected on an archived space", %{user: user} do
       {:ok, %Space{id: space_id}} =
-        Spaces.create_space(user.id, %{name: "arch-change-#{System.unique_integer([:positive])}"})
+        Spaces.create_space(user.id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: "arch-change-#{System.unique_integer([:positive])}"
+        })
 
       assert :ok = Spaces.archive_space(space_id)
 
@@ -160,6 +167,7 @@ defmodule NestWeb.LobbyChannelArchiveTest do
     test "change_model on a nonexistent agent in a valid space returns not_found", %{user: user} do
       {:ok, %Space{id: space_id}} =
         Spaces.create_space(user.id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
           name: "arch-missing-agent-#{System.unique_integer([:positive])}"
         })
 
@@ -180,6 +188,7 @@ defmodule NestWeb.LobbyChannelArchiveTest do
     test "the owner restores an archived agent", %{user: user} do
       {:ok, %Space{id: space_id}} =
         Spaces.create_space(user.id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
           name: "arch-restore-#{System.unique_integer([:positive])}"
         })
 
@@ -213,6 +222,7 @@ defmodule NestWeb.LobbyChannelArchiveTest do
 
       {:ok, %Space{id: space_id}} =
         Spaces.create_space(alice.id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
           name: "arch-foreign-agent-#{System.unique_integer([:positive])}"
         })
 
@@ -246,6 +256,7 @@ defmodule NestWeb.LobbyChannelArchiveTest do
 
       {:ok, %Space{id: space_id}} =
         Spaces.create_space(bob.id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
           name: "arch-shared-agent-#{System.unique_integer([:positive])}"
         })
 
@@ -276,6 +287,7 @@ defmodule NestWeb.LobbyChannelArchiveTest do
     } do
       {:ok, %Space{id: space_id}} =
         Spaces.create_space(user.id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
           name: "arch-nested-#{System.unique_integer([:positive])}"
         })
 

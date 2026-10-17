@@ -47,6 +47,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Children
+  alias Nest.Agents.Agent.PreSpawn
   alias Nest.Agents.Agent.Timeline
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Watch
@@ -54,6 +55,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
   alias Nest.Persistence
+  alias Nest.Sandbox.Mounts
 
   @doc """
   Build a fresh-context child agent's attrs from a parent
@@ -71,22 +73,34 @@ defmodule Nest.Agents.Agent.SubAgent do
 
   Returns the attrs map ready to pass to `start_link/1`.
   """
-  @spec build_fresh_child_attrs(map(), String.t(), integer(), integer(), boolean(), map() | nil) ::
-          map()
+  @spec build_fresh_child_attrs(
+          map(),
+          String.t(),
+          integer(),
+          integer(),
+          boolean(),
+          map() | nil,
+          String.t() | nil
+        ) :: map()
   def build_fresh_child_attrs(
         parent_state,
         child_name,
         parent_id,
         vocation_id,
         exclude_spawn,
-        model_override \\ nil
+        model_override \\ nil,
+        mode \\ nil
       ) do
     %{
       name: child_name,
       space_id: parent_state.space_id,
       model: model_override || parent_state.model,
       vocation_id: vocation_id,
-      workspace_path: parent_state.workspace_path,
+      workspace_path: Mounts.workspace(parent_state.mounts),
+      # The child lives in its parent's space, so it shares the space's
+      # sandbox backend and its network access.
+      sandbox_backend: Mounts.backend(parent_state.mounts),
+      network_access: Mounts.network_access(parent_state.mounts),
       parent_id: parent_id,
       parent_name: parent_state.name,
       created_by_user_id: parent_state.created_by_user_id,
@@ -97,6 +111,7 @@ defmodule Nest.Agents.Agent.SubAgent do
       last_compaction_index: -1,
       next_message_index: 1
     }
+    |> PreSpawn.put_named_mode(mode)
   end
 
   @doc """
@@ -185,17 +200,24 @@ defmodule Nest.Agents.Agent.SubAgent do
     with {:ok, model_override} <- resolve_model_override(Map.get(opts, :model, "")) do
       result =
         if Map.get(opts, :clone_context, false) do
-          Supervisor.start_agent_with_parent(state, Map.get(opts, :query, ""), model_override)
+          Supervisor.start_agent_with_parent(
+            state,
+            Map.get(opts, :query, ""),
+            model_override,
+            mode: Map.get(opts, :mode)
+          )
         else
           # The supervisor resolves `vocation` (a slug) against the
-          # space's blueprint whitelist: omitted defaults to the
-          # parent's vocation (or the space's sole allowed vocation when
-          # the parent's isn't allowed).
+          # space's blueprint: an omitted one takes the blueprint's
+          # `default_spawnable_vocation`, which is held to the whitelist
+          # like an explicit slug, and is refused when the blueprint
+          # names no default.
           Supervisor.spawn_agent_in_space(
             state,
             Map.get(opts, :name, ""),
             Map.get(opts, :vocation),
-            model_override
+            model_override,
+            mode: Map.get(opts, :mode)
           )
         end
 
@@ -420,7 +442,7 @@ defmodule Nest.Agents.Agent.SubAgent do
       name: child_name,
       model: state.model,
       vocation: state.vocation.slug,
-      workspace_path: state.workspace_path,
+      workspace_path: Mounts.workspace(state.mounts),
       parent_id: parent_db_id,
       parent_name: state.name,
       depth: state.depth + 1

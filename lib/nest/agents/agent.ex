@@ -39,11 +39,19 @@ defmodule Nest.Agents.Agent do
     :client_config,
     :vocation_id,
     :vocation,
-    :workspace_path,
-    :tmp_path,
     :tools,
     :llm_metrics,
     :created_by_user_id,
+    # The agent's sandbox: the backend its space runs plus the two
+    # directories it binds — the workspace and the agent's own scratch
+    # directory. One value rather than three fields, because that is what
+    # every caller passes to `Nest.Sandbox` and `Nest.Tools.ShellCmd`
+    # (`Mounts.from_agent/1` is the one accessor), and because the
+    # workspace and the scratch directory are only ever used together.
+    # Built once at init; the backend cannot change afterwards (a space's
+    # is fixed at creation), and `set_workspace`/`edit_agent` move only the
+    # workspace half.
+    mounts: %Nest.Sandbox.Mounts{workspace: nil, scratch: nil},
     # `depth` is the agent's distance from its tree root (0 =
     # root). Children inherit `parent.depth + 1`; `agents-spawn`
     # is disabled at `depth >= configured_max_depth()`. Persisted
@@ -82,8 +90,7 @@ defmodule Nest.Agents.Agent do
           model: map(),
           client_config: ClientConfig.t(),
           vocation: Vocations.Vocation.t(),
-          workspace_path: String.t() | nil,
-          tmp_path: String.t() | nil,
+          mounts: Mounts.t(),
           tools: [Nest.LLM.Tool.t()],
           llm_metrics: __MODULE__.LlmMetrics.t(),
           tree_position: __MODULE__.TreePosition.t(),
@@ -148,13 +155,21 @@ defmodule Nest.Agents.Agent do
   instruction. Pure data shaping — no DB writes, no spawning. Full
   contract: `Nest.Agents.Agent.PreSpawn.build_child_attrs/5`.
   """
-  @spec build_child_attrs(map(), String.t(), String.t(), integer(), map() | nil) :: map()
+  @spec build_child_attrs(
+          map(),
+          String.t(),
+          String.t(),
+          integer(),
+          map() | nil,
+          String.t() | nil
+        ) :: map()
   defdelegate build_child_attrs(
                 parent_state,
                 instruction,
                 child_name,
                 parent_id,
-                model_override \\ nil
+                model_override \\ nil,
+                mode \\ nil
               ),
               to: PreSpawn
 
@@ -165,8 +180,8 @@ defmodule Nest.Agents.Agent do
   LLM. Responses are broadcast via PubSub to all subscribers.
 
   The optional `mode` selects the sandbox capability profile for this message's
-  tool calls. When `nil`, the agent falls back to its default mode (first key in
-  the vocation's `modes` map, or `"chat"` if no modes are defined).
+  tool calls. When `nil`, the agent keeps the mode it is in (`state.live.mode`); a
+  name this build does not implement resolves to `Nest.Modes.default/0`.
 
   `sender` identifies the human behind the message (the channel passes the
   socket's username). It is recorded on a queued inbox entry so the delivered
@@ -188,11 +203,16 @@ defmodule Nest.Agents.Agent do
   runtime speaking for itself, which no agent said.
   Returns `{:ok, :delivered}` for an idle target, `{:ok, :queued}` for a busy
   one, `{:error, reason}` for a broken target or a full inbox.
+  `mode` is the mode the *recipient* is asked to move to, or `nil` for a message
+  that asks for no change. It rides the message because the change and the
+  instruction that depends on it belong together: the recipient applies it when
+  the message is delivered (never mid-turn), and the send tools have already
+  checked that the sender may ask (`Nest.Agents.Agent.ModeAuthority`).
   """
-  @spec deliver_message(pid(), String.t(), String.t(), Inbox.kind()) ::
+  @spec deliver_message(pid(), String.t(), String.t(), Inbox.kind(), String.t() | nil) ::
           {:ok, :delivered | :queued} | {:error, term()}
-  def deliver_message(pid, sender, content, kind \\ :agent) do
-    GenServer.call(pid, {:deliver_async, sender, content, kind}, 5_000)
+  def deliver_message(pid, sender, content, kind \\ :agent, mode \\ nil) do
+    GenServer.call(pid, {:deliver_async, sender, content, kind, mode}, 5_000)
   end
 
   @doc """
@@ -267,8 +287,47 @@ defmodule Nest.Agents.Agent do
 
   # Change the agent's resolved LLM client + persisted `model` map.
   # Handler: `IntrospectionHandler` → `ModelHandler`.
+  @doc """
+  Point this agent at the space's current network access.
+
+  A space's network access is editable, and it rides the agent's `Mounts` — which
+  are built once, at start. So a change has to *reach* the agent, or a live agent
+  keeps the value it started with and the space's own claim that the change takes
+  effect for its agents' subsequent commands is false.
+
+  A **cast**, unlike `set_mode/2`: the edit must not wait on an agent's turn, and
+  there is nothing to refuse — the value is the space's, not the agent's. The
+  mounts are updated and the tool closures are rebuilt (they capture the mounts);
+  a turn already in flight picks the new value up at its next settle, which is
+  when `Turn.build_ctx/2` re-reads them. The caller is
+  `Nest.Spaces.set_network_access/2`.
+  """
+  @spec set_network_access(pid(), boolean()) :: :ok
+  def set_network_access(pid, value) when is_boolean(value) do
+    GenServer.cast(pid, {:set_network_access, value})
+  end
+
   @spec set_model(pid(), map()) :: :ok | {:error, term()}
   def set_model(pid, new_model), do: GenServer.call(pid, {:set_model, new_model}, :infinity)
+
+  @doc """
+  Set this agent's mode (`Nest.Modes`) — the **human's** path, the one the UI
+  channel calls.
+
+  It is the human's alone. An agent's own request goes the other way, on a message
+  (`Nest.Tools.QueryAgent`'s `set_mode`), and that path is what
+  `Nest.Agents.Agent.ModeAuthority` bounds: only the human may raise a mode, and
+  no agent may set its own.
+
+  The mode is *persisted*, so a human's change applies immediately rather than
+  having to ride the next message — but only when the agent is not mid-turn: a
+  mode applies at a settle, and a turn already running is under the old one.
+
+  Returns `:ok`, or `{:error, reason}` where `reason` is a **sentence** to show
+  the user — the channel hands it straight to the client.
+  """
+  @spec set_mode(pid(), String.t()) :: :ok | {:error, String.t()}
+  def set_mode(pid, mode), do: GenServer.call(pid, {:set_mode, mode}, :infinity)
 
   # Change the agent's working directory. Handler: `WorkspaceHandler`.
   @spec set_workspace(pid(), String.t() | nil) :: :ok | {:error, term()}
@@ -284,25 +343,30 @@ defmodule Nest.Agents.Agent do
   @doc """
   Resolve the agent's current effective sandbox caps from its state.
 
-  Uses the same `Vocations.get_caps/2` lookup as the chat pipeline so
-  bookkeeping file access (AGENTS.md reads, policy stats) is
-  authorized by the same caps the tools run under. Falls back to the
-  `Nest.Sandbox` default profile when there is no vocation or the
-  mode is unknown.
+  The caps are the mode's — `Nest.Modes.caps/1` — resolved through
+  `Nest.ProjectConfig.resolve_caps/2`, so bookkeeping file access (AGENTS.md
+  reads, policy stats) is authorized by the same caps the tools run under. The
+  mode is read from `live.mode`, which is the row's mode and can change while the
+  agent works.
+
+  `Nest.Modes.caps/1` is total: a mode name this build does not implement — a row
+  written by another build, a client that made one up — resolves to the default
+  mode's caps rather than to nothing. Falling back to
+  `Nest.Sandbox.default_caps/0` instead would be *stricter* than the agent's own
+  tools, which is the one thing this must not be: the same mode has to authorize
+  both.
   """
   @spec resolve_caps(t()) :: map()
-  def resolve_caps(%__MODULE__{vocation: %Nest.Vocations.Vocation{} = vocation} = state) do
-    caps =
-      case Nest.Vocations.get_caps(vocation, state.live.mode) do
-        {:ok, caps} -> caps
-        _ -> Nest.Sandbox.default_caps()
-      end
-
-    Nest.ProjectConfig.apply_or_default(caps, Mounts.from_agent(state))
+  def resolve_caps(%__MODULE__{vocation: %Nest.Vocations.Vocation{}} = state) do
+    state.live.mode
+    |> Nest.Modes.caps()
+    |> Nest.ProjectConfig.resolve_caps(Mounts.from_agent(state))
   end
 
   def resolve_caps(%__MODULE__{} = state) do
-    Nest.ProjectConfig.apply_or_default(Nest.Sandbox.default_caps(), Mounts.from_agent(state))
+    state.live.mode
+    |> Nest.Modes.caps()
+    |> Nest.ProjectConfig.resolve_caps(Mounts.from_agent(state))
   end
 
   def resolve_caps(_), do: Nest.Sandbox.default_caps()
@@ -502,7 +566,7 @@ defmodule Nest.Agents.Agent do
     # the manager's, in `ShellJobs.drop_agent/2`: it removes the same directory
     # *after* it has stopped this agent's jobs, so a job cannot recreate files
     # under a just-deleted path and leave them behind.
-    cleanup_tmp(state.space_id, state.name)
+    cleanup_tmp(state.mounts, state.space_id, state.name)
 
     # Note: workspace is preserved for review/debugging (per design)
 
@@ -557,9 +621,11 @@ defmodule Nest.Agents.Agent do
 
   # Clean up this agent's own tmp sub-directory. Never touches the
   # space directory or a sibling's files. Delegates to
-  # `Nest.Agents.Agent.TmpSpace.cleanup/2` so this module doesn't carry
-  # the boilerplate.
-  defp cleanup_tmp(space_id, agent_name), do: TmpSpace.cleanup(space_id, agent_name)
+  # `Nest.Agents.Agent.TmpSpace.cleanup/3` so this module doesn't carry
+  # the boilerplate; the backend comes from the agent's own mounts, because
+  # it decides which root the scratch directory is under.
+  defp cleanup_tmp(%Mounts{} = mounts, space_id, agent_name),
+    do: TmpSpace.cleanup(space_id, agent_name, Mounts.backend(mounts))
 
   # Every worker this process's turn is running: the live one, the batches it
   # moved to the background (`Machine.Backgrounding.pids/1`), and the batch
@@ -596,7 +662,7 @@ defmodule Nest.Agents.Agent do
   # `__` prefix marks these as internal. See that module for
   # why.
   @doc false
-  defdelegate __create_tmp_space__(space_id, agent_name), to: TmpSpace, as: :create
+  defdelegate __create_tmp_space__(space_id, agent_name, backend), to: TmpSpace, as: :create
 
   @doc false
   # In-process variant of `handle_call({:append_message, _})`.

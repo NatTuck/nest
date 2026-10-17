@@ -15,80 +15,67 @@ import { ModeSelector } from "./ModeSelector";
 describe("ModeSelector", () => {
   it("renders nothing when modes is undefined", () => {
     const { container } = render(
-      <ModeSelector modes={undefined} value="chat" onChange={() => {}} />,
+      <ModeSelector modes={undefined} value="plan" onChange={() => {}} />,
     );
     expect(container.firstChild).toBeNull();
   });
 
   it("renders nothing when modes is empty", () => {
     const { container } = render(
-      <ModeSelector modes={[]} value="chat" onChange={() => {}} />,
+      <ModeSelector modes={[]} value="plan" onChange={() => {}} />,
     );
     expect(container.firstChild).toBeNull();
   });
 
   it("renders nothing when modes has only one entry", () => {
     const { container } = render(
-      <ModeSelector modes={["chat"]} value="chat" onChange={() => {}} />,
+      <ModeSelector modes={["plan"]} value="plan" onChange={() => {}} />,
     );
     expect(container.firstChild).toBeNull();
   });
 
   it("renders a select with one option per mode", () => {
     render(
-      <ModeSelector
-        modes={["chat", "build", "plan"]}
-        value="chat"
-        onChange={() => {}}
-      />,
+      <ModeSelector modes={["plan", "act"]} value="plan" onChange={() => {}} />,
     );
     const select = screen.getByLabelText("Mode");
     expect(select).toBeInTheDocument();
     expect(select.tagName).toBe("SELECT");
 
     const options = screen.getAllByRole("option");
-    expect(options).toHaveLength(3);
-    expect(options[0]).toHaveTextContent("chat");
-    expect(options[1]).toHaveTextContent("build");
-    expect(options[2]).toHaveTextContent("plan");
+    expect(options).toHaveLength(2);
+    expect(options[0]).toHaveTextContent("plan");
+    expect(options[1]).toHaveTextContent("act");
   });
 
   it("marks the matching option as selected", () => {
     render(
-      <ModeSelector
-        modes={["chat", "build"]}
-        value="build"
-        onChange={() => {}}
-      />,
+      <ModeSelector modes={["plan", "act"]} value="act" onChange={() => {}} />,
     );
-    const buildOption = screen.getByRole("option", { name: "build" });
+    const buildOption = screen.getByRole("option", { name: "act" });
     expect(buildOption.selected).toBe(true);
 
-    const chatOption = screen.getByRole("option", { name: "chat" });
+    const chatOption = screen.getByRole("option", { name: "plan" });
     expect(chatOption.selected).toBe(false);
   });
 
   it("calls onChange when the user picks a different option", () => {
     const onChange = vi.fn();
     render(
-      <ModeSelector
-        modes={["chat", "build"]}
-        value="chat"
-        onChange={onChange}
-      />,
+      <ModeSelector modes={["plan", "act"]} value="plan" onChange={onChange} />,
     );
 
     fireEvent.change(screen.getByLabelText("Mode"), {
-      target: { value: "build" },
+      target: { value: "act" },
     });
-    expect(onChange).toHaveBeenCalledWith("build");
+    expect(onChange).toHaveBeenCalledWith("act");
   });
 
   it("renders as disabled when the disabled prop is set", () => {
     render(
       <ModeSelector
-        modes={["chat", "build"]}
-        value="chat"
+        modes={["plan", "act"]}
+        value="plan"
         onChange={() => {}}
         disabled={true}
       />,
@@ -96,17 +83,36 @@ describe("ModeSelector", () => {
     expect(screen.getByLabelText("Mode")).toBeDisabled();
   });
 
-  it("falls back to empty string when value is null", () => {
+  it("shows an obvious indicator when the server has not said which mode the agent is in", () => {
+    // The value is the server's (`currentMode`), so before the agent's `init`
+    // there is nothing to show. AGENTS.md's transparency rule asks for an obvious
+    // indicator rather than nothing — and a `<select>` would display its first
+    // option as selected, a mode the agent is not in.
     const { container } = render(
-      <ModeSelector
-        modes={["chat", "build"]}
-        value={null}
-        onChange={() => {}}
-      />,
+      <ModeSelector modes={["plan", "act"]} value={null} onChange={() => {}} />,
     );
-    // The code path `value ?? ""` runs regardless of how React
-    // serializes the attribute. Assert on the element being a
-    // select element so the render doesn't crash.
-    expect(container.querySelector("select")).toBeInTheDocument();
+
+    expect(container.querySelector("select")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("mode: (missing)");
+  });
+
+  it("shows an obvious indicator for a value the server's list does not contain", () => {
+    // A mode the server does not have cannot be displayed as the current one,
+    // must not be silently replaced by the first option, and must not be hidden.
+    const { container } = render(
+      <ModeSelector modes={["plan", "act"]} value="chat" onChange={() => {}} />,
+    );
+
+    expect(container.querySelector("select")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("mode: unknown (chat)");
+  });
+
+  it("still renders nothing for a single-mode agent, which is not a missing value", () => {
+    const { container } = render(
+      <ModeSelector modes={["act"]} value="act" onChange={() => {}} />,
+    );
+
+    expect(container.querySelector("select")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

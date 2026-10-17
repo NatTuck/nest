@@ -1,9 +1,14 @@
 defmodule NestWeb.AgentChannelWorkspaceTest do
   @moduledoc """
   AgentChannel init payload fields for workspace editing: the `vocation`
-  must carry its `modes` (so the frontend can resolve `requires_workspace`)
-  and the `workspace_path` must be present so the Edit agent dialog can
-  prefill + Reset the working-directory field.
+  must carry the agent's role (its id, name and slug) and the `workspace_path`
+  must be present so the Edit agent dialog can prefill + Reset the
+  working-directory field.
+
+  The vocation carries no `modes` any more: the modes are universal code
+  constants (`Nest.Modes`), so there is nothing per-vocation for the frontend to
+  read — `vocationRequiresWorkspace/1` is a constant on the client for the same
+  reason, and the modes the selector offers come from the agent's own `modes`.
   """
 
   use NestWeb.ChannelCase, async: true
@@ -18,12 +23,16 @@ defmodule NestWeb.AgentChannelWorkspaceTest do
   setup :verify_on_exit!
 
   describe "init payload workspace fields" do
-    test "includes the vocation with its modes", %{socket: _socket} do
+    test "carries the vocation's identity", %{socket: _socket} do
       assert_push "init", payload
-      # `get_vocation_info/1` now carries `modes` so the frontend can
-      # resolve `requires_workspace` from the agent channel init.
-      assert is_map(payload["vocation"])
-      assert Map.has_key?(payload["vocation"], "modes")
+      # `get_vocation_info/1` carries the role the agent was created with, which
+      # is what the header shows. It carries no `modes`: there is nothing
+      # per-vocation left to describe.
+      assert %{"id" => id, "name" => name, "slug" => slug} = payload["vocation"]
+      assert is_integer(id)
+      assert is_binary(name)
+      assert is_binary(slug)
+      refute Map.has_key?(payload["vocation"], "modes")
     end
 
     test "carries the agent workspace_path", %{user: user} do

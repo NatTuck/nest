@@ -197,7 +197,9 @@ defmodule Nest.Agents.AgentObservabilityTest do
            name: agent_name,
            space_id: space_id,
            model: %{name: "qwen3.5-plus"},
-           vocation_id: AgentTestHelpers.vocation_id_for_test()
+           vocation_id: AgentTestHelpers.vocation_id_for_test(),
+           sandbox_backend: "bwrap",
+           network_access: true
          }}
       )
 

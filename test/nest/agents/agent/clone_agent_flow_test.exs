@@ -39,7 +39,8 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     * The tool result for `call_clone_1` is the **confirmation**, not the
       child's text: nothing waited for the answer.
     * The child's answer reaches the parent as a **delivered message** — a user
-      message labelled `[Message from agent "<child>"]` — in the same turn, at
+      message labelled `[Message from agent "<child>" | mode: act]` (the header
+      states the mode the parent's turn runs in) — in the same turn, at
       the boundary after the tool result.
     * `parent.llm_metrics.descendant_usage.output_tokens > 0` — the usage merge
       ran.
@@ -161,7 +162,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     # The answer itself is delivered into the parent's own transcript as the
     # child's words, labelled with the child it came from, in the same turn.
     assert [delivered] = delivered_texts(mid, "the answer is 4")
-    assert delivered =~ ~s([Message from agent "#{child_name}"])
+    assert delivered =~ ~s([Message from agent "#{child_name}" | mode: act])
     assert Enum.any?(user_texts(second), &(&1 =~ "the answer is 4"))
 
     # The batch returns: its real result has no live worker to settle it, so it
@@ -333,13 +334,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
         name: "CloneAgentFlow #{System.unique_integer([:positive])}",
         description: "End-to-end agents-spawn test",
         system_prompt: "Delegate work to a subagent when asked.",
-        tools: ["agents"],
-        modes: %{
-          "chat" => %{
-            "description" => "Chat",
-            "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp"]}}
-          }
-        }
+        tools: ["agents"]
       })
 
     vid
