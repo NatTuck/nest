@@ -47,8 +47,7 @@ defmodule Nest.SpacesTest do
         slug: "phase2-#{System.unique_integer([:positive])}",
         blueprint_id: blueprint.id,
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
-        # Every space needs a workspace now (`Vocations.requires_workspace?/1`
-        # is a constant).
+        # Every space needs a workspace now.
         workspace_path: AgentTestHelpers.default_test_workspace()
       }
 
@@ -219,6 +218,7 @@ defmodule Nest.SpacesTest do
 
       {:ok, %Space{id: space_id}} =
         Spaces.create_space(user_id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
           name: "delete-cascade-#{System.unique_integer([:positive])}"
         })
 
@@ -256,7 +256,10 @@ defmodule Nest.SpacesTest do
 
     test "deleting an empty space succeeds", %{user_id: user_id} do
       {:ok, %Space{id: space_id}} =
-        Spaces.create_space(user_id, %{name: "empty-del-#{System.unique_integer([:positive])}"})
+        Spaces.create_space(user_id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: "empty-del-#{System.unique_integer([:positive])}"
+        })
 
       assert :ok = Spaces.delete_space(space_id)
       assert Spaces.get_space(space_id) == nil
@@ -270,7 +273,10 @@ defmodule Nest.SpacesTest do
   describe "rename_space/2" do
     test "updates the name and re-derives the slug", %{user_id: user_id} do
       {:ok, %Space{id: id}} =
-        Spaces.create_space(user_id, %{name: "original-#{System.unique_integer([:positive])}"})
+        Spaces.create_space(user_id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: "original-#{System.unique_integer([:positive])}"
+        })
 
       new_name = "Renamed Space #{System.unique_integer([:positive])}"
 
@@ -287,10 +293,17 @@ defmodule Nest.SpacesTest do
     test "rejects a name that collides with another space", %{user_id: user_id} do
       name_a = "space-a-#{System.unique_integer([:positive])}"
 
-      {:ok, %Space{}} = Spaces.create_space(user_id, %{name: name_a})
+      {:ok, %Space{}} =
+        Spaces.create_space(user_id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: name_a
+        })
 
       {:ok, %Space{id: id_b}} =
-        Spaces.create_space(user_id, %{name: "space-b-#{System.unique_integer([:positive])}"})
+        Spaces.create_space(user_id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: "space-b-#{System.unique_integer([:positive])}"
+        })
 
       # Renaming space B to A's exact name collides on the unique
       # `name` index (the auto-derived slug would also collide with
@@ -304,7 +317,10 @@ defmodule Nest.SpacesTest do
     test "hides an archived space from list_for_user/1 and shows it in list_archived_for_user/1",
          %{user_id: user_id} do
       {:ok, %Space{id: space_id}} =
-        Spaces.create_space(user_id, %{name: "arch-1-#{System.unique_integer([:positive])}"})
+        Spaces.create_space(user_id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: "arch-1-#{System.unique_integer([:positive])}"
+        })
 
       assert [%Space{id: ^space_id}] = Spaces.list_for_user(user_id)
       assert Spaces.list_archived_for_user(user_id) == []
@@ -327,7 +343,10 @@ defmodule Nest.SpacesTest do
       vid = AgentTestHelpers.vocation_id_for_test()
 
       {:ok, %Space{id: space_id}} =
-        Spaces.create_space(user_id, %{name: "arch-stop-#{System.unique_integer([:positive])}"})
+        Spaces.create_space(user_id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: "arch-stop-#{System.unique_integer([:positive])}"
+        })
 
       model = %{name: "qwen3.5-plus", provider: "model-studio"}
       agent_a = "arch-agent-a-#{System.unique_integer([:positive])}"
@@ -354,7 +373,10 @@ defmodule Nest.SpacesTest do
     test "archiving other users' spaces is not possible via list queries (owner-only listing)",
          %{user_id: user_id} do
       {:ok, %Space{id: space_id}} =
-        Spaces.create_space(user_id, %{name: "arch-owner-#{System.unique_integer([:positive])}"})
+        Spaces.create_space(user_id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: "arch-owner-#{System.unique_integer([:positive])}"
+        })
 
       assert :ok = Spaces.archive_space(space_id)
 
@@ -373,7 +395,10 @@ defmodule Nest.SpacesTest do
       user_id: user_id
     } do
       {:ok, %Space{id: space_id}} =
-        Spaces.create_space(user_id, %{name: "arch-idem-#{System.unique_integer([:positive])}"})
+        Spaces.create_space(user_id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: "arch-idem-#{System.unique_integer([:positive])}"
+        })
 
       assert :ok = Spaces.archive_space(space_id)
       assert :ok = Spaces.archive_space(space_id)
@@ -389,7 +414,10 @@ defmodule Nest.SpacesTest do
       vid = AgentTestHelpers.vocation_id_for_test()
 
       {:ok, %Space{id: space_id}} =
-        Spaces.create_space(user_id, %{name: "arch-multi-#{System.unique_integer([:positive])}"})
+        Spaces.create_space(user_id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: "arch-multi-#{System.unique_integer([:positive])}"
+        })
 
       model = %{name: "qwen3.5-plus", provider: "model-studio"}
 
@@ -426,6 +454,7 @@ defmodule Nest.SpacesTest do
     test "does not collide with an existing space name", %{user_id: user_id} do
       {:ok, %Space{name: existing}} =
         Spaces.create_space(user_id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
           name: "existing-space-#{System.unique_integer([:positive])}"
         })
 

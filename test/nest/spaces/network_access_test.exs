@@ -6,6 +6,7 @@ defmodule Nest.Spaces.NetworkAccessTest do
 
   use Nest.DataCase, async: true
 
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.Persistence
   alias Nest.Repo
   alias Nest.Spaces
@@ -27,7 +28,12 @@ defmodule Nest.Spaces.NetworkAccessTest do
   # deliberately set to the *opposite* of what the derivation should produce, so
   # the statement's effect is observable.
   defp space_with_root_agent(modes) do
-    {:ok, space} = Spaces.create_space(nil, %{name: unique("net")})
+    {:ok, space} =
+      Spaces.create_space(nil, %{
+        workspace_path: AgentTestHelpers.default_test_workspace(),
+        name: unique("net")
+      })
+
     {:ok, _} = Repo.update(Ecto.Changeset.change(space, network_access: false))
 
     {:ok, vocation} =
@@ -86,7 +92,12 @@ defmodule Nest.Spaces.NetworkAccessTest do
     end
 
     test "false for a space with no root agent" do
-      {:ok, space} = Spaces.create_space(nil, %{name: unique("net-orphan")})
+      {:ok, space} =
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("net-orphan")
+        })
+
       {:ok, _} = Repo.update(Ecto.Changeset.change(space, network_access: true))
 
       derive!()
@@ -115,13 +126,22 @@ defmodule Nest.Spaces.NetworkAccessTest do
 
   describe "network_access/1" do
     test "resolves the space's value" do
-      {:ok, space} = Spaces.create_space(nil, %{name: unique("net-read"), network_access: false})
+      {:ok, space} =
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("net-read"),
+          network_access: false
+        })
 
       assert Spaces.network_access(space.id) == false
     end
 
     test "defaults to true for a new space, and for a missing row" do
-      {:ok, space} = Spaces.create_space(nil, %{name: unique("net-default")})
+      {:ok, space} =
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("net-default")
+        })
 
       assert space.network_access == true
       assert Spaces.network_access(space.id) == true
@@ -131,7 +151,11 @@ defmodule Nest.Spaces.NetworkAccessTest do
 
   describe "set_network_access/2" do
     test "turns it off and back on" do
-      {:ok, space} = Spaces.create_space(nil, %{name: unique("net-set")})
+      {:ok, space} =
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("net-set")
+        })
 
       assert {:ok, %Space{network_access: false}} = Spaces.set_network_access(space.id, false)
       assert Spaces.network_access(space.id) == false
@@ -146,7 +170,11 @@ defmodule Nest.Spaces.NetworkAccessTest do
 
     test "leaves the space's other properties alone" do
       {:ok, space} =
-        Spaces.create_space(nil, %{name: unique("net-keep"), sandbox_backend: "none"})
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("net-keep"),
+          sandbox_backend: "none"
+        })
 
       assert {:ok, updated} = Spaces.set_network_access(space.id, false)
 
@@ -164,12 +192,21 @@ defmodule Nest.Spaces.NetworkAccessTest do
       # is asserted here is that the hook is on the path and does not interfere,
       # and that a space whose backend keeps nothing is unaffected.
       {:ok, docker} =
-        Spaces.create_space(nil, %{name: unique("net-release"), sandbox_backend: "docker"})
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("net-release"),
+          sandbox_backend: "docker"
+        })
 
       assert {:ok, %Space{network_access: false}} = Spaces.set_network_access(docker.id, false)
       assert {:ok, %Space{network_access: true}} = Spaces.set_network_access(docker.id, true)
 
-      {:ok, plain} = Spaces.create_space(nil, %{name: unique("net-release-plain")})
+      {:ok, plain} =
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("net-release-plain")
+        })
+
       assert {:ok, %Space{network_access: false}} = Spaces.set_network_access(plain.id, false)
     end
   end

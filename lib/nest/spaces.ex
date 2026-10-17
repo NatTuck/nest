@@ -485,7 +485,9 @@ defmodule Nest.Spaces do
       as `Agents.create_agent/3`'s `model` arg)
     * `:vocation` — root agent's vocation **slug** (optional;
       derived from blueprint when omitted)
-    * `:workspace_path` — optional root agent workspace path
+    * `:workspace_path` — the space's workspace path (**required**;
+      refused by name when it is missing, is not a directory, or is at
+      or under the sandbox scratch root)
     * `:sandbox_backend` — optional space sandbox backend
       (defaults to `Backend.default/0`)
     * `:agent_name` — root agent's name (optional; defaults
@@ -531,7 +533,7 @@ defmodule Nest.Spaces do
     # constraint on insert (a raw `Ecto.ConstraintError`) instead
     # of surfacing a clean `{:error, :blueprint_missing}`.
     with {:ok, root_vocation_id} <- resolve_root_vocation(attrs),
-         :ok <- ensure_root_workspace(attrs, root_vocation_id),
+         :ok <- ensure_root_workspace(attrs),
          {:ok, %Space{} = space} <-
            create_space(
              user_id,
@@ -552,33 +554,30 @@ defmodule Nest.Spaces do
     end
   end
 
-  # The workspace is a space property that agents inherit. When the
-  # resolved root vocation's agents expect a workspace (their caps
-  # write to `":workspace"`), the space must be given one up front —
-  # otherwise the root agent would start with a nil workspace and its
-  # file/shell tools would fail at runtime. Reject the creation
-  # immediately instead.
-  defp ensure_root_workspace(attrs, root_vocation_id) do
-    case Vocations.get_vocation(root_vocation_id) do
-      nil -> :ok
-      vocation -> ensure_workspace_for(vocation, attrs)
+  # A space's workspace is a space property its agents inherit, and a space now
+  # *requires* one — `Nest.Spaces.Space.create_changeset/2` is where that
+  # invariant lives, so this is not the gate for it. What this adds, before the
+  # row is built, is a refusal a user can act on:
+  #
+  #   * a missing path, which the changeset would also refuse but only as a
+  #     generic `failed_to_create` — an `Ecto.Changeset` is not fit to show
+  #     anyone, so the named reason `:workspace_required` is worth keeping here;
+  #   * a path the sandbox cannot bind, which `Nest.Sandbox.workspace_error/1`
+  #     names precisely (`:workspace_missing`, `:workspace_under_tmp`) and which
+  #     `Nest.Sandbox.build/4` would refuse anyway — but only later, once the
+  #     space existed and every command in it had already failed.
+  #
+  # No vocation lookup any more: every space has a workspace, so there is nothing
+  # left to derive the requirement from.
+  defp ensure_root_workspace(attrs) do
+    case attrs[:workspace_path] do
+      workspace when is_binary(workspace) and workspace != "" ->
+        Nest.Sandbox.workspace_error(workspace)
+
+      _absent ->
+        {:error, :workspace_required}
     end
   end
-
-  # Every space requires a workspace now (`Vocations.requires_workspace?/1` is a
-  # constant), so this is unconditional: a space created without one is refused
-  # rather than left with agents whose file and shell tools could never work.
-  defp ensure_workspace_for(%Nest.Vocations.Vocation{} = _vocation, attrs) do
-    workspace = attrs[:workspace_path]
-
-    if is_nil(workspace) do
-      {:error, :workspace_required}
-    else
-      Nest.Sandbox.workspace_error(workspace)
-    end
-  end
-
-  defp ensure_workspace_for(_vocation, _attrs), do: :ok
 
   # Vocation resolution order:
   #

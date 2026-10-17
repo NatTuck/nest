@@ -53,9 +53,8 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       Agents.create_agent(space_id, test_model(),
         name: name,
         vocation_id: AgentTestHelpers.vocation_id_for_test(),
-        # Every vocation requires a workspace now
-        # (`Vocations.requires_workspace?/1` is a constant), and a spawned child
-        # inherits its parent's. Without one the coordinator could not spawn.
+        # Every agent needs a workspace, and a spawned child inherits its
+        # parent's. Without one the coordinator could not spawn.
         workspace_path: AgentTestHelpers.default_test_workspace()
       )
 
@@ -252,6 +251,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
       {:ok, space} =
         Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
           name: "whitelist-space-#{System.unique_integer([:positive])}",
           slug: "whitelist-space-#{System.unique_integer([:positive])}",
           blueprint_id: blueprint.id
@@ -287,6 +287,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
       {:ok, space} =
         Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
           name: "auto-wl-space-#{System.unique_integer([:positive])}",
           slug: "auto-wl-space-#{System.unique_integer([:positive])}",
           blueprint_id: blueprint.id
@@ -320,6 +321,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
       {:ok, space} =
         Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
           name: "ambig-wl-space-#{System.unique_integer([:positive])}",
           slug: "ambig-wl-space-#{System.unique_integer([:positive])}",
           blueprint_id: blueprint.id
@@ -347,6 +349,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
       {:ok, space} =
         Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
           name: "empty-wl-space-#{System.unique_integer([:positive])}",
           slug: "empty-wl-space-#{System.unique_integer([:positive])}",
           blueprint_id: blueprint.id

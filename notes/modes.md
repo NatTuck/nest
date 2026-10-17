@@ -85,8 +85,16 @@ why, never silently.
 
 ## Where the state lives
 
-`agents.mode` (string, `null: false`, default `"act"`), seeded at creation from
-the blueprint's `default_mode`. `live.mode` is initialized from the row, and a
-restart **restores the row's mode** rather than the default — a child spawned
-read-only must not be widened by a restart. The mode is exposed to the UI as
-`currentMode`, alongside `modes` and `defaultMode` from `Nest.Modes`.
+**No mode data is in the database.** The modes are a code constant
+(`Nest.Modes`): their names, their ordering, their caps and the catalog the
+system prompt carries all live there, and `vocations.modes` — the JSONB column
+that used to hold them per vocation — no longer exists. A vocation is its prompt
+and its tools. A blueprint holds only *defaults*: `default_mode`, `default_net`
+and `default_spawnable_vocation`.
+
+What the database holds is the one thing that is genuinely per agent: the mode
+that agent is in. `agents.mode` (string, `null: false`, default `"act"`), seeded
+at creation from the blueprint's `default_mode`. `live.mode` is initialized from
+the row, and a restart **restores the row's mode** rather than the default — a
+child spawned read-only must not be widened by a restart. The mode is exposed to
+the UI as `currentMode`, alongside `modes` and `defaultMode` from `Nest.Modes`.

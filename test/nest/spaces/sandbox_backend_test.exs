@@ -7,6 +7,7 @@ defmodule Nest.Spaces.SandboxBackendTest do
 
   use Nest.DataCase, async: true
 
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.Sandbox.Backend
   alias Nest.Spaces
   alias Nest.Spaces.Space
@@ -27,18 +28,26 @@ defmodule Nest.Spaces.SandboxBackendTest do
   describe "create_space/2" do
     test "defaults the backend to bwrap" do
       assert {:ok, %Space{sandbox_backend: "bwrap"}} =
-               Spaces.create_space(nil, %{name: unique("sb-default")})
+               Spaces.create_space(nil, %{
+                 workspace_path: AgentTestHelpers.default_test_workspace(),
+                 name: unique("sb-default")
+               })
     end
 
     test "keeps an explicit backend" do
       assert {:ok, %Space{sandbox_backend: "none"}} =
-               Spaces.create_space(nil, %{name: unique("sb-none"), sandbox_backend: "none"})
+               Spaces.create_space(nil, %{
+                 workspace_path: AgentTestHelpers.default_test_workspace(),
+                 name: unique("sb-none"),
+                 sandbox_backend: "none"
+               })
     end
 
     test "treats a blank backend as absent" do
       for blank <- [nil, ""] do
         assert {:ok, %Space{sandbox_backend: "bwrap"}} =
                  Spaces.create_space(nil, %{
+                   workspace_path: AgentTestHelpers.default_test_workspace(),
                    name: unique("sb-blank"),
                    sandbox_backend: blank
                  })
@@ -47,14 +56,23 @@ defmodule Nest.Spaces.SandboxBackendTest do
 
     test "refuses a backend this build does not implement" do
       assert {:error, %Ecto.Changeset{} = changeset} =
-               Spaces.create_space(nil, %{name: unique("sb-bad"), sandbox_backend: "podman"})
+               Spaces.create_space(nil, %{
+                 workspace_path: AgentTestHelpers.default_test_workspace(),
+                 name: unique("sb-bad"),
+                 sandbox_backend: "podman"
+               })
 
       assert {"must be one of bwrap, docker, none", _meta} =
                changeset.errors[:sandbox_backend]
     end
 
     test "carries the backend into the JSON a client sees" do
-      {:ok, space} = Spaces.create_space(nil, %{name: unique("sb-json"), sandbox_backend: "none"})
+      {:ok, space} =
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("sb-json"),
+          sandbox_backend: "none"
+        })
 
       assert Jason.encode!(space) =~ ~s("sandbox_backend":"none")
     end
@@ -63,7 +81,11 @@ defmodule Nest.Spaces.SandboxBackendTest do
   describe "immutability" do
     test "rename_space/2 cannot move a space between backends" do
       {:ok, space} =
-        Spaces.create_space(nil, %{name: unique("sb-keep"), sandbox_backend: "none"})
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("sb-keep"),
+          sandbox_backend: "none"
+        })
 
       assert {:ok, renamed} =
                Spaces.rename_space(space.id, %{
@@ -78,7 +100,12 @@ defmodule Nest.Spaces.SandboxBackendTest do
 
   describe "sandbox_backend/1" do
     test "resolves the space's backend" do
-      {:ok, space} = Spaces.create_space(nil, %{name: unique("sb-read"), sandbox_backend: "none"})
+      {:ok, space} =
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("sb-read"),
+          sandbox_backend: "none"
+        })
 
       assert Spaces.sandbox_backend(space.id) == "none"
     end
@@ -91,9 +118,17 @@ defmodule Nest.Spaces.SandboxBackendTest do
   describe "none_space_ids/0" do
     test "lists exactly the none-backend spaces" do
       {:ok, none_space} =
-        Spaces.create_space(nil, %{name: unique("sb-ids-none"), sandbox_backend: "none"})
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("sb-ids-none"),
+          sandbox_backend: "none"
+        })
 
-      {:ok, bwrap_space} = Spaces.create_space(nil, %{name: unique("sb-ids-bwrap")})
+      {:ok, bwrap_space} =
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("sb-ids-bwrap")
+        })
 
       ids = Spaces.none_space_ids()
 
@@ -111,7 +146,11 @@ defmodule Nest.Spaces.SandboxBackendTest do
       # `Nest.Sandbox.Backend.DockerTest`, because the test environment installs
       # an inert runner rather than talking to a daemon (`config/test.exs`).
       {:ok, space} =
-        Spaces.create_space(nil, %{name: unique("sb-docker"), sandbox_backend: "docker"})
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("sb-docker"),
+          sandbox_backend: "docker"
+        })
 
       assert :ok = Spaces.archive_space(space.id)
       assert Spaces.get_space(space.id).archived == true
@@ -124,7 +163,11 @@ defmodule Nest.Spaces.SandboxBackendTest do
     end
 
     test "archiving a space whose backend keeps nothing still works" do
-      {:ok, space} = Spaces.create_space(nil, %{name: unique("sb-plain")})
+      {:ok, space} =
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("sb-plain")
+        })
 
       assert :ok = Spaces.archive_space(space.id)
       assert Spaces.get_space(space.id).archived == true
