@@ -43,11 +43,16 @@ config :nest, hpu_device_paths: []
 # This covers the *setup* calls only — `inspect`, `start`, `image`, `build`,
 # `run`, `ps`, `rm`. It does **not** cover the command an agent runs: that is the
 # literal `docker exec -i …` string `Docker.command/3` builds and
-# `Nest.Tools.ShellCmd` hands to erlexec, which never goes through the runner. So
-# a test that runs a command through the docker backend would shell out to the
-# real `docker` — and print an `[error]` from the failed exec — rather than being
-# silently inert. No test does that today; this comment exists so the next one
-# knows.
+# `Nest.Tools.ShellCmd` hands to erlexec, which never goes through the runner.
+# One path does reach it in tests: composing a docker space's system prompt reads
+# the workspace's `AGENTS.md` through `Nest.Sandbox`
+# (`Nest.Agents.Agent.SystemPrompt.agents_md_section/2`, called from `PreSpawn`
+# for the index-0 row), so starting a docker-space agent attempts a real
+# `docker exec`. That is harmless rather than inert — a project with no
+# `AGENTS.md` is the ordinary case, so the read's failure is swallowed by that
+# function's `else` clause and nothing is printed, no container is left behind —
+# but it is a real shell-out. A test that runs a command through the docker
+# backend *and* asserts on its output still gets the real `docker`.
 config :nest, docker_runner: fn _argv -> {"", 0} end
 
 # `Nest.Hostname.get/0` titles every page (and feeds
