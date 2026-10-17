@@ -130,6 +130,7 @@ defmodule NestWeb.AgentChannelTest do
       # arbitrary.
       {:ok, %Nest.Spaces.Space{id: space_id}} =
         Nest.Spaces.create_space(user.id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
           name: "arch-join-#{System.unique_integer([:positive])}"
         })
 

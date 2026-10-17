@@ -112,12 +112,7 @@ defmodule NestWeb.LobbyChannelTest do
           name: "Test Vocation",
           description: "A test vocation",
           system_prompt: "You are a test assistant.",
-          tools: ["file"],
-          modes: %{
-            "chat" => %{
-              "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
-            }
-          }
+          tools: ["file"]
         })
 
       # Now connect socket and join lobby
@@ -132,12 +127,6 @@ defmodule NestWeb.LobbyChannelTest do
       assert test_vocation.description == "A test vocation"
       assert test_vocation.system_prompt == "You are a test assistant."
       assert test_vocation.tools == ["file"]
-
-      assert test_vocation.modes == %{
-               "chat" => %{
-                 "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
-               }
-             }
     end
 
     test "vocations are JSON-serializable and roundtrip correctly" do
@@ -147,15 +136,7 @@ defmodule NestWeb.LobbyChannelTest do
           name: "JSON Test Vocation",
           description: "Testing JSON encoding",
           system_prompt: "System prompt here",
-          tools: ["file"],
-          modes: %{
-            "chat" => %{
-              "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
-            },
-            "build" => %{
-              "caps" => %{"net" => true, "fs" => %{"read" => ["/"], "write" => []}}
-            }
-          }
+          tools: ["file"]
         })
 
       # Now connect socket and join lobby
@@ -179,15 +160,6 @@ defmodule NestWeb.LobbyChannelTest do
       assert test_vocation["description"] == "Testing JSON encoding"
       assert test_vocation["system_prompt"] == "System prompt here"
       assert test_vocation["tools"] == ["file"]
-
-      assert test_vocation["modes"] == %{
-               "chat" => %{
-                 "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
-               },
-               "build" => %{
-                 "caps" => %{"net" => true, "fs" => %{"read" => ["/"], "write" => []}}
-               }
-             }
     end
 
     test "returns models with correct JSON structure" do
@@ -465,8 +437,7 @@ defmodule NestWeb.LobbyChannelTest do
           name: "lobby-blueprint-voc-#{System.unique_integer([:positive])}",
           description: "Blueprint root vocation",
           system_prompt: "You are the blueprint root.",
-          tools: [],
-          modes: %{}
+          tools: []
         })
         |> elem(1)
 
