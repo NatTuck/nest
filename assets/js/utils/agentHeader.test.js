@@ -22,12 +22,12 @@ describe("agentHeaderMode", () => {
     expect(agentHeaderMode(null)).toBe(null);
   });
 
-  it("finds the header behind a re-delivery tag", () => {
-    // `Inbox.Render` puts the re-delivery marker on the line in front of the
-    // body it wraps, so the header is not the first line of the content.
+  it("finds the header when it is not the first line of the content", () => {
+    // A drained batch joins its bodies with a blank line, so a peer's header
+    // can sit behind another body.
     expect(
       agentHeaderMode(
-        '[re-delivery: 3]\n[Message from agent "peer" | mode: plan]\nbody',
+        'a note from someone else\n\n[Message from agent "peer" | mode: plan]\nbody',
       ),
     ).toBe("plan");
   });
@@ -65,12 +65,12 @@ describe("stripAgentHeaderMode", () => {
 
   it("strips only the header line, and only the header's own clause", () => {
     const text =
-      '[re-delivery: 1]\n[Message from agent "peer" | mode: plan]\n' +
+      'a note from someone else\n[Message from agent "peer" | mode: plan]\n' +
       "the body mentions | mode: plan] as text\n\n" +
       '[Message from agent "other" | mode: plan]\nsecond';
 
     expect(stripAgentHeaderMode(text, "plan")).toBe(
-      '[re-delivery: 1]\n[Message from agent "peer"]\n' +
+      'a note from someone else\n[Message from agent "peer"]\n' +
         "the body mentions | mode: plan] as text\n\n" +
         '[Message from agent "other"]\nsecond',
     );

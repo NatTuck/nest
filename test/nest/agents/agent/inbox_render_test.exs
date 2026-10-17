@@ -6,11 +6,11 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
 
   The pure rules are the module's own contract — a human entry and a runtime
   `:notice` render bare, every other kind keeps its `[Message from agent "X" |
-  mode: M]` label (M being the mode the recipient's turn will run in), a
-  retrieved body is tagged as a re-delivery, an over-cap batch is replaced by a
-  scratch-file pointer, and the delivered message carries the batch's metadata. The last group drives that same rendering through a real
-  drain, so the pointer is asserted on the text the transcript actually
-  carries.
+  mode: M]` label (M being the mode the recipient's turn will run in), an
+  over-cap batch is replaced by a scratch-file pointer, and the delivered
+  message carries the batch's metadata. The last group drives that same
+  rendering through a real drain, so the pointer is asserted on the text the
+  transcript actually carries.
 
   Split out of `InboxTest` (which owns the delivery/disposition contract) and
   `InboxSerializationTest` (which owns the wire shape and the selection rules)
@@ -77,24 +77,9 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
                "[nest notice]\npeer never answered"
     end
 
-    test "a retrieved entry is tagged as a re-delivery" do
-      # intentional: requirement 5. A retrieved entry is normally suppressed by
-      # `batch/1`, so this is the safety net: if both channels ever carry the
-      # body, the second copy is explicitly a re-delivery and can never be
-      # mistaken for a fresh human turn.
-      state = %Agent{}
-
-      taken = %{entry(:agent, "peer", "the report", nil, "a") | retrieved: true}
-
-      rendered = Render.combine_and_offload([taken], state)
-      assert rendered =~ "[re-delivery:"
-      assert rendered =~ "already retrieved with agents-last-message"
-      assert rendered =~ "the report"
-    end
-
     test "an over-cap batch is offloaded to a file named after its first entry's id" do
-      # intentional: requirement 4 — the id is on the pointer's path too, so a
-      # caller that fetched the body recognises the file it names.
+      # intentional: requirement 4 — the id is on the pointer's path too, so the
+      # file is traceable to the entry it carries.
       dir = Path.join(System.tmp_dir!(), "inbox-id-#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)
       on_exit(fn -> rm_tmp!(dir, "inbox-id-") end)
@@ -249,8 +234,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       kind: kind,
       mode: mode,
       human?: human?,
-      fulfilled_ids: [],
-      retrieved: false
+      fulfilled_ids: []
     }
   end
 end

@@ -18,11 +18,10 @@
  *
  * **A marker heads a body, not the message.** `Inbox.Render` joins a drain
  * batch's entries with a blank line, so a notice behind a peer's entry puts
- * the marker at the head of the *second* body, and the re-delivery tag
- * (issue #62) is a line in front of the body it wraps. So a marker is removed
- * when it is the whole of a line and that line is the first of the content,
- * follows a blank line, or follows the re-delivery line. Anywhere else — mid
- * line, or mid body — it is text someone wrote, and it stays.
+ * the marker at the head of the *second* body. So a marker is removed when it
+ * is the whole of a line and that line is the first of the content or follows
+ * a blank line. Anywhere else — mid line, or mid body — it is text someone
+ * wrote, and it stays.
  */
 
 // The marker itself, without the trailing newline. The server's copy of this
@@ -30,10 +29,6 @@
 // the browser bundle cannot read Elixir — and the two are kept in step by the
 // notice tests on each side.
 export const NOTICE_TAG = "[nest notice]";
-
-// The prefix of the re-delivery marker `Inbox.Render` puts in front of a body
-// a caller already fetched (`@redelivery_tag`, issue #62).
-const REDELIVERY_PREFIX = "[re-delivery:";
 
 export function stripNoticePrefix(content) {
   if (typeof content !== "string") return content;
@@ -48,9 +43,8 @@ export function stripNoticePrefix(content) {
 }
 
 // Whether the line about to be examined starts a body: it is the first line of
-// the content, it follows a blank line, or it follows the re-delivery marker.
+// the content, or it follows a blank line.
 function headsABody(kept) {
   if (kept.length === 0) return true;
-  const previous = kept[kept.length - 1];
-  return previous === "" || previous.startsWith(REDELIVERY_PREFIX);
+  return kept[kept.length - 1] === "";
 }

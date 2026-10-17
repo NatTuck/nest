@@ -30,13 +30,11 @@ defmodule Nest.Agents.Agent.Inbox.Render do
 
   The marker heads the notice **body**, not the delivered message: a batch is
   its bodies joined by a blank line, so a notice behind a peer's entry puts
-  the marker at the head of the second body, and the re-delivery tag
-  (`@redelivery_tag`, issue #62) is a line in front of the body it wraps. The
-  client's strip is therefore a marker-at-the-head-of-any-body removal rather
-  than a single leading-prefix removal
-  (`assets/js/utils/stripNoticePrefix.js`); this module's contract is only
-  that a notice's own body starts with it, which `render_entry/1` guarantees
-  by tagging the entry's content before the re-delivery tag wraps it.
+  the marker at the head of the second body. The client's strip is therefore a
+  marker-at-the-head-of-any-body removal rather than a single leading-prefix
+  removal (`assets/js/utils/stripNoticePrefix.js`); this module's contract is
+  only that a notice's own body starts with it, which `render_entry/1`
+  guarantees by tagging the entry's content.
 
   `build_drained_message/3` is the seam's other half: the one place a drained
   batch becomes the message the transcript carries, so the batch's metadata —
@@ -56,11 +54,6 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   alias Nest.Messages.User
   alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Estimator
-
-  # The marker a re-delivery carries (issue #62 requirement 5). A retrieved
-  # entry is normally suppressed by `Inbox.batch/1`; if one still reaches this
-  # renderer the body must never look like a fresh human turn.
-  @redelivery_tag "[re-delivery: this body was already retrieved with agents-last-message]"
 
   @doc """
   Combine one drain batch and, when over the async-message cap, offload the
@@ -115,21 +108,12 @@ defmodule Nest.Agents.Agent.Inbox.Render do
     Enum.map_join(entries, "\n\n", &render_entry(&1, mode))
   end
 
-  # A retrieved entry is normally suppressed by `Inbox.batch/1` before it can
-  # reach here, so this is the safety net issue #62 requirement 5 asks for: if
-  # both channels ever carry the body, the second copy is explicitly a
-  # re-delivery and can never read as a fresh human turn.
-  defp render_entry(%{kind: :notice, content: content} = entry, _mode),
-    do: tag_redelivery(entry, NoticeTag.tag(content))
+  defp render_entry(%{kind: :notice, content: content}, _mode), do: NoticeTag.tag(content)
 
-  defp render_entry(%{kind: :user, content: content} = entry, _mode),
-    do: tag_redelivery(entry, content)
+  defp render_entry(%{kind: :user, content: content}, _mode), do: content
 
   defp render_entry(%{content: content} = entry, mode),
-    do: tag_redelivery(entry, "#{agent_label(entry, mode)}\n#{content}")
-
-  defp tag_redelivery(%{retrieved: true}, body), do: "#{@redelivery_tag}\n#{body}"
-  defp tag_redelivery(_entry, body), do: body
+    do: "#{agent_label(entry, mode)}\n#{content}"
 
   # The LLM-facing label for one `:agent` entry: who sent it, and the mode the
   # *recipient* will run the delivered turn in. The mode is the recipient's

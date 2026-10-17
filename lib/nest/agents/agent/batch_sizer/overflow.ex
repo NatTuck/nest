@@ -38,9 +38,8 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
 
   `id` names the file (`"<prefix>-<id>.<ext>"`); when it is `nil` a
   random token is used. The inbox passes its entry id so an offloaded
-  delivery is named after the message it carries (issue #62) — the
-  caller can then recognise `agent-inbox-<id>.txt` as the body it
-  already fetched.
+  delivery is named after the note it carries (issue #62), which keeps
+  the pointer's path traceable to the entry it came from.
   """
   @spec write(binary(), map(), String.t(), String.t(), String.t() | nil) :: String.t() | nil
   def write(content, ctx, prefix, ext, id \\ nil) do

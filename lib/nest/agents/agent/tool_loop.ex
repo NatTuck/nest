@@ -8,7 +8,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
     * Split the batch by tool — sub-agent tools (`agents-spawn`,
       `agents-query`, `agents-send`, `agents-wait`,
-      `agents-last-message`, `agents-history`, `agents-status`,
+      `agents-history`, `agents-status`,
       `agents-list`, `agents-list-archived`,
       `agents-archive`, `agents-unarchive`, `agents-batch`,
       `models-list`) are routed through their `run_*` handlers, which run
@@ -29,7 +29,6 @@ defmodule Nest.Agents.Agent.ToolLoop do
   alias Nest.Agents.Agent.BatchCoordinator
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.History
-  alias Nest.Agents.Agent.LastMessage
   alias Nest.Agents.Agent.ModeAuthority
   alias Nest.Agents.Agent.SpawnErrors
   alias Nest.Agents.Agent.Status
@@ -132,7 +131,6 @@ defmodule Nest.Agents.Agent.ToolLoop do
               "agents-batch",
               "agents-send",
               "agents-wait",
-              "agents-last-message",
               "agents-history",
               "agents-status",
               "models-list"
@@ -147,9 +145,6 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-wait"} = tc),
     do: run_wait_for_idle(ctx, tc)
-
-  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-last-message"} = tc),
-    do: run_last_message(ctx, tc)
 
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-history"} = tc),
     do: run_history(ctx, tc)
@@ -212,8 +207,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
     "Spawned agent #{spawned_name} with your query. Its answer will arrive as a " <>
       "message in your inbox; if it fails or is stopped before it answers, a " <>
       "runtime notice saying so will arrive instead. Use `agents-wait` " <>
-      "to be notified when it finishes, and `agents-last-message` to read its " <>
-      "message."
+      "to be notified when it finishes."
   end
 
   # Extract the `agents-spawn` args into an opts map, applying defaults. Kept
@@ -398,8 +392,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp query_confirmation(target, :delivered) do
     "Query delivered to #{target}, which now owes you a reply: it stays in its " <>
       "turn until it answers, and its answer will arrive as a message in your " <>
-      "inbox. Use `agents-wait` to be notified when it answers, and " <>
-      "`agents-last-message` to read its message."
+      "inbox. Use `agents-wait` to be notified when it answers."
   end
 
   defp query_confirmation(target, :queued) do
@@ -485,19 +478,6 @@ defmodule Nest.Agents.Agent.ToolLoop do
       {:waiting, content} -> build_tool_result(tc, "agents-wait", content, false, "waiting")
       {:ok, content} -> build_tool_result(tc, "agents-wait", content)
       {:error, content} -> build_tool_result(tc, "agents-wait", content, true)
-    end
-  end
-
-  # `agents-last-message`: the explicit content fetch (issue #62). Reads the
-  # pending delivery from `name` out of the caller's own inbox, mid-turn, and
-  # consumes it.
-  defp run_last_message(ctx, %ToolCall{} = tc) do
-    case LastMessage.run(ctx, tc) do
-      {:ok, content} ->
-        build_tool_result(tc, "agents-last-message", SubAgentResults.bound(content, tc, ctx))
-
-      {:error, content} ->
-        build_tool_result(tc, "agents-last-message", content, true)
     end
   end
 

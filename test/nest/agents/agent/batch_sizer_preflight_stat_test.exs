@@ -290,17 +290,12 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
       end
 
       # The oracle is frozen at the pre-#62 name `agents-wait` (its moduledoc:
-      # do not "fix" it to track the real module). Issue #62 split that tool
-      # into the wait and the fetch, and issue #54 un-renamed the wait back to
-      # `agents-wait` — so both names this tree ships must project exactly what
-      # the oracle's `agents-wait` clause projects, never its catch-all. That is
-      # the comparison the frozen name makes possible.
+      # do not "fix" it to track the real module). The real module's
+      # `agents-wait` clause must project exactly what the oracle's does, never
+      # its catch-all — that is the comparison the frozen name makes possible.
       frozen_wait = ProjectedSizeOracle.project(call("c-wait", "agents-wait", %{}), c)
 
-      for name <- ~w(agents-wait agents-last-message) do
-        assert ProjectedSize.project(call("c-#{name}", name, %{}), c) == frozen_wait,
-               "projection differs for #{name}"
-      end
+      assert ProjectedSize.project(call("c-wait", "agents-wait", %{}), c) == frozen_wait
     end
 
     test "projection is byte-identical to the naive per-call sum" do

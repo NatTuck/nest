@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { NOTICE_TAG, stripNoticePrefix } from "./stripNoticePrefix.js";
 
-// The re-delivery line `Inbox.Render` puts in front of a body a caller already
-// fetched (issue #62).
-const REDELIVERY =
-  "[re-delivery: this body was already retrieved with agents-last-message]";
-
 describe("stripNoticePrefix", () => {
   it("strips the marker when it heads the content", () => {
     expect(stripNoticePrefix("[nest notice]\nContext at 50%.")).toBe(
@@ -42,17 +37,6 @@ describe("stripNoticePrefix", () => {
     expect(stripNoticePrefix("[nest notice]\nA\n\n[nest notice]\nB")).toBe(
       "A\n\nB",
     );
-  });
-
-  it("strips the marker after the re-delivery line", () => {
-    expect(
-      stripNoticePrefix(`${REDELIVERY}\n[nest notice]\nContext at 50%.`),
-    ).toBe(`${REDELIVERY}\nContext at 50%.`);
-    expect(
-      stripNoticePrefix(
-        `[Message from agent "peer"]\nhi\n\n${REDELIVERY}\n[nest notice]\nContext at 50%.`,
-      ),
-    ).toBe(`[Message from agent "peer"]\nhi\n\n${REDELIVERY}\nContext at 50%.`);
   });
 
   it("keeps the blank lines inside a notice's own content", () => {
