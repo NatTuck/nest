@@ -143,7 +143,8 @@ defmodule Nest.Spaces do
 
   Read once, at agent start, and carried on the agent's
   `Nest.Sandbox.Mounts` value from then on, so caps resolution never reads the
-  DB.
+  DB. A change to the column is pushed to the space's live agents by
+  `set_network_access/2` rather than re-read here.
   """
   @spec network_access(integer()) :: boolean()
   def network_access(space_id) when is_integer(space_id) do
@@ -159,9 +160,9 @@ defmodule Nest.Spaces do
   Turn this space's network access on or off.
 
   Editable, unlike `sandbox_backend`: a space can be closed off or opened up
-  without recreating it. Takes effect for the agents' *subsequent* commands — the
-  value is resolved at agent start and carried on the agent's mounts, so a live
-  agent keeps the value it started with until it is restarted.
+  without recreating it. Every live agent in the space is told as part of the
+  change, so the *next* command it runs already resolves its caps with the new
+  value; a command already in flight keeps the caps it started with.
 
   A `"docker"` space's container is removed as part of the change, because
   `--network none` is fixed when the container is created: without that, the next
@@ -185,6 +186,7 @@ defmodule Nest.Spaces do
         case space |> Space.changeset(%{network_access: value}) |> Repo.update() do
           {:ok, updated} ->
             remove_sandbox(updated)
+            tell_agents(updated, value)
             {:ok, updated}
 
           error ->
@@ -393,6 +395,28 @@ defmodule Nest.Spaces do
   # command has to build one with the new value.
   defp remove_sandbox(%Space{id: id, sandbox_backend: backend}) do
     Backend.remove_space(id, backend)
+  end
+
+  # Hand the space's new network access to every live agent in it. The value
+  # travels on an agent's `Nest.Sandbox.Mounts`, which is what its caps are
+  # resolved from and what its tool closures were built with, so an agent that
+  # started before the change would otherwise keep the old value for the rest of
+  # its life — this is the only thing that closes that window short of a restart.
+  #
+  # A cast, not a call: the value is the *space's*, so there is nothing an agent
+  # could refuse, and an edit to a space must not wait on a turn. Nothing is
+  # reported back either — a name in the registry with no live process behind it
+  # is skipped, which the registry already guarantees but the lookup is what makes
+  # true rather than assumed.
+  defp tell_agents(%Space{id: id}, value) do
+    id
+    |> Agents.Registry.list_for_space()
+    |> Enum.each(fn name ->
+      case Agents.Registry.lookup(id, name) do
+        {:ok, pid} -> Agents.Agent.set_network_access(pid, value)
+        {:error, :not_found} -> :ok
+      end
+    end)
   end
 
   defp set_archived(id, archived) do

@@ -180,6 +180,14 @@ any running background job. The UI says so before the toggle is flipped. For a
 `none` space nothing is released — its caps were never enforceable, and the
 toggle has always been advisory there.
 
+The space's live agents are told the new value as part of the same change
+(`Nest.Agents.Agent.set_network_access/2`, a cast), because the value is carried
+on an agent's `Nest.Sandbox.Mounts` and that is what its caps are resolved from.
+Without that push an agent that started before the change would keep the old
+value until it was restarted, which is what the toggle used to do. A command
+already in flight keeps the caps it started with — the mounts are re-read at the
+turn's next settle.
+
 ## One container per space
 
 The container is named `nest-space-<space_id>-<installation>`, where the
