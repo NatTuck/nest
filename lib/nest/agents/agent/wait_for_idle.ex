@@ -12,8 +12,8 @@ defmodule Nest.Agents.Agent.WaitForIdle do
       idle (issue #54) and a human can message it;
     * the watch's task runs `await/6` off the agent's turn. When the event
       fires the caller is woken with a bare notice — no payload (issue #62:
-      the payload is what made every report arrive twice) — and can fetch the
-      body with `agents-last-message`.
+      the payload is what made every report arrive twice) — and the body is
+      delivered to its inbox.
 
   ## A read-only wait
 
@@ -373,7 +373,7 @@ defmodule Nest.Agents.Agent.WaitForIdle do
 
   @doc """
   The bare notice a fired watch delivers (issue #54). No payload: the body
-  comes from the delivery or `agents-last-message`.
+  arrives as an ordinary inbox delivery.
   """
   @spec notice_text(partition()) :: String.t()
   def notice_text(partition) do

@@ -538,7 +538,7 @@ defmodule Nest.ToolsTest do
 
       assert takers ==
                ~w(file-read file-write file-edit file-inspect shell-cmd shell-list shell-wait
-                  context-check agents-wait agents-last-message agents-list
+                  context-check agents-wait agents-list
                   agents-list-archived models-list)
     end
   end

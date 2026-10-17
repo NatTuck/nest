@@ -36,15 +36,8 @@ defmodule Nest.Agents.Agent.InboxDeltaTest do
   end
 
   # Apply one frame to a client-side list, exactly as the JS store does:
-  # `append` concatenates, `update` replaces by id in place, `remove` filters
-  # the named ids out.
+  # `append` concatenates, `remove` filters the named ids out.
   defp apply_frame(list, %{op: "append", messages: messages}), do: list ++ messages
-
-  defp apply_frame(list, %{op: "update", messages: messages}) do
-    Enum.map(list, fn held ->
-      Enum.find(messages, held, &(&1["id"] == held["id"]))
-    end)
-  end
 
   defp apply_frame(list, %{op: "remove", ids: ids}),
     do: Enum.reject(list, &(&1["id"] in ids))
@@ -69,79 +62,38 @@ defmodule Nest.Agents.Agent.InboxDeltaTest do
   end
 
   test "every mutation is one frame, and the frames fold back into the queue", %{state: state} do
-    # The whole protocol in one pass: an enqueue (append), an
-    # `agents-last-message` fetch (update, in place), a consume (remove) and a
-    # prune (remove). The client applies each frame to its own list, and the
-    # result must be the server's queue — which is what makes the sequence
-    # number meaningful and the resync frame a repair rather than a guess.
+    # The whole protocol in one pass: an enqueue (append) and a consume
+    # (remove). The client applies each frame to its own list, and the result
+    # must be the server's queue — which is what makes the sequence number
+    # meaningful and the resync frame a repair rather than a guess.
     client = []
 
     {state, _first, frame1} = enqueue(state, "one")
     client = apply_frame(client, frame1)
 
-    {state, second, frame2} = enqueue(state, "two")
+    {state, _second, frame2} = enqueue(state, "two")
     client = apply_frame(client, frame2)
 
     assert frame1.inboxSeq == 1
     assert frame2.inboxSeq == 2
     assert frame2.count == 2
 
-    # The fetch marks the entry retrieved in place: the frame is an update for
-    # that entry — the copy the queue now holds — and the length is unchanged.
-    {state, marked} = Inbox.mark_retrieved(state, "peer")
-    assert marked.id == second.id
-    assert marked.retrieved == true
-    # The suite's fence for `test/` (`test/test_helper.exs:157`); the frame is
-    # broadcast in this process, so the wait is already over.
-    assert_receive {:chat_inbox, frame3}, 1_000
-    client = apply_frame(client, frame3)
-
-    assert frame3.op == "update"
-    assert frame3.inboxSeq == 3
-    assert frame3.count == 2
-    assert [%{"retrieved" => true, "id" => id}] = frame3.messages
-    assert id == marked.id
-
-    # A drain consumes the peeked batch: the frame names every id that went —
-    # the delivered batch *and* the retrieved entry the consume drops with it.
+    # A drain consumes the peeked batch: the frame names every id that went.
     before = state.live.inbox
     batch = Inbox.batch(before)
     state = Inbox.consume_and_broadcast(state, batch)
     # The suite's fence for `test/` (`test/test_helper.exs:157`); the frame is
     # broadcast in this process, so the wait is already over.
-    assert_receive {:chat_inbox, frame4}, 1_000
-    client = apply_frame(client, frame4)
+    assert_receive {:chat_inbox, frame3}, 1_000
+    client = apply_frame(client, frame3)
 
-    assert frame4.op == "remove"
-    assert frame4.inboxSeq == 4
-    assert frame4.count == 0
-    assert Enum.sort(frame4.ids) == Enum.sort(Enum.map(before, & &1.id))
+    assert frame3.op == "remove"
+    assert frame3.inboxSeq == 3
+    assert frame3.count == 0
+    assert Enum.sort(frame3.ids) == Enum.sort(Enum.map(before, & &1.id))
 
     assert state.live.inbox == []
     assert client == Inbox.serialize(state.live.inbox)
-  end
-
-  test "a prune broadcasts the ids it dropped, not the queue it left", %{state: state} do
-    {state, _first, _frame} = enqueue(state, "one")
-    {state, second, _frame} = enqueue(state, "two")
-
-    # `agents-last-message` takes the newest entry from that sender, marking it
-    # retrieved in place; a drain that finds only retrieved entries left prunes
-    # them instead of delivering.
-    {state, marked} = Inbox.mark_retrieved(state, "peer")
-    assert marked.id == second.id
-    assert marked.retrieved == true
-    # The suite's fence for `test/` (`test/test_helper.exs:157`); the frame is
-    # broadcast in this process, so the wait is already over.
-    assert_receive {:chat_inbox, %{op: "update"}}, 1_000
-
-    state = Inbox.prune_retrieved(state)
-
-    # The suite's fence for `test/` (`test/test_helper.exs:157`); the frame is
-    # broadcast in this process, so the wait is already over.
-    assert_receive {:chat_inbox, %{op: "remove", count: 1, ids: [id]}}, 1_000
-    assert id == marked.id
-    assert Enum.map(state.live.inbox, & &1.content) == ["one"]
   end
 
   test "a resync snapshot carries the list and the sequence the last frame named" do

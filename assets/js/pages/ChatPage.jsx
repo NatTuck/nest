@@ -54,6 +54,7 @@ import { parseSlashCommand, SLASH_COMMANDS } from "../utils/slashCommands.js";
 const EMPTY_MESSAGES = [];
 const EMPTY_HISTORY = [];
 const EMPTY_JOBS = [];
+const EMPTY_MODES = [];
 
 // Slash-command dispatch: a command's name (from `SLASH_COMMANDS`) maps
 // to the action run when it is submitted. The action receives the parsed
@@ -159,7 +160,7 @@ export function ChatPage() {
         // Both from the server (`Nest.Modes`): the UI does not decide which
         // modes exist, and a fallback of its own would show a mode the agent
         // cannot be in.
-        availableModes: cache?.modes ?? [],
+        availableModes: cache?.modes ?? EMPTY_MODES,
         defaultMode: cache?.defaultMode ?? null,
         contextLimit: cache?.contextLimit ?? null,
         usage: cache?.usage ?? null,

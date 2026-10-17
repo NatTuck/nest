@@ -108,9 +108,10 @@ defmodule Nest.Tools.SchemaTest do
       refute function.description =~ "when you need the response now"
     end
 
-    test "the wait and fetch schemas" do
-      # Issue #62: the wait is synchronisation only and the fetch consumes;
-      # issue #54: the wait never blocks, so it offers no way to block — no
+    test "the wait schemas" do
+      # Issue #62: the wait is synchronisation only — it carries no message
+      # content, because the body arrives as an ordinary inbox delivery.
+      # Issue #54: the wait never blocks, so it offers no way to block — no
       # `block` property at all, not merely a `false` default. An empty
       # `names` is meaningful, so nothing is required.
       wait = Tools.get_function("agents-wait", Mounts.new("/tmp", nil))
@@ -145,12 +146,6 @@ defmodule Nest.Tools.SchemaTest do
       refute shell_wait.description =~ "block"
       assert shell_props["timeout"]["type"] == "integer"
       assert shell_wait.parameters_schema["required"] == ["id"]
-
-      fetch = Tools.get_function("agents-last-message", Mounts.new("/tmp", nil))
-      assert fetch.name == "agents-last-message"
-      assert fetch.parameters_schema["properties"]["name"]["type"] == "string"
-      assert fetch.parameters_schema["required"] == ["name"]
-      assert fetch.description =~ "consumed"
     end
 
     test "the history schema states its indexing rule and its search shape" do

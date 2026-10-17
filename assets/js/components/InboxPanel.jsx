@@ -200,7 +200,7 @@ export function InboxPanel({ name, onFetch }) {
               <div className="mb-1 text-xs font-semibold text-sky-700">
                 {senderLabel(message, currentUsername)}
                 {message.kind === "user" && <ModeLabel mode={message.mode} />}
-                <DeliveryId id={message.id} retrieved={message.retrieved} />
+                <DeliveryId id={message.id} />
               </div>
               <div className="whitespace-pre-wrap break-words text-sm text-gray-800">
                 {message.content}
@@ -214,14 +214,13 @@ export function InboxPanel({ name, onFetch }) {
 }
 
 /**
- * The delivery id of a queued entry, plus whether an `agents-last-message`
- * fetch already consumed the body (issue #62).
+ * The delivery id of a queued entry (issue #62): the identity a removal frame
+ * names an entry by.
  *
- * The id is what lets a caller recognise a copy it already has, so a frame
- * that arrives without one is surfaced explicitly rather than rendered as
- * nothing — a missing id is a contract violation, not "no id here".
+ * A frame that arrives without one is surfaced explicitly rather than rendered
+ * as nothing — a missing id is a contract violation, not "no id here".
  */
-function DeliveryId({ id, retrieved }) {
+function DeliveryId({ id }) {
   return (
     <>
       {typeof id === "string" && id.length > 0 ? (
@@ -237,14 +236,6 @@ function DeliveryId({ id, retrieved }) {
           className="ml-2 rounded bg-red-100 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-red-700"
         >
           id: (missing)
-        </span>
-      )}
-      {retrieved === true && (
-        <span
-          data-testid="inbox-retrieved"
-          className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-amber-800"
-        >
-          retrieved
         </span>
       )}
     </>

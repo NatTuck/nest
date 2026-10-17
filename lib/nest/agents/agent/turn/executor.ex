@@ -301,7 +301,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
 
   defp execute({:drain_inbox}, state) do
     case peek_inbox(state) do
-      :empty -> {Inbox.prune_retrieved(state), :continue}
+      :empty -> {state, :continue}
       {state, batch, content} -> {state, {:follow, {:inbox_drain, batch, content}}}
     end
   end
@@ -311,7 +311,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   defp execute({:drain_inbox, :append}, state) do
     case peek_inbox(state) do
       :empty ->
-        {Inbox.prune_retrieved(state), :continue}
+        {state, :continue}
 
       {state, batch, content} ->
         # The batch's `fulfilled_ids` ride it too (`Inbox.build_drained_message/3`).
@@ -445,10 +445,9 @@ defmodule Nest.Agents.Agent.Turn.Executor do
     # Drop exactly the peeked batch, not the whole queue: the executor runs
     # synchronously inside one settle, so nothing can be enqueued between the
     # peek and the consume, and anything the peek did not deliver stays queued.
-    # A retrieved entry is dropped too (issue #62): `batch/1` skipped it, so the
-    # consume is the only thing that can clear it. The frame is the removal
-    # delta for exactly those ids (issue #27) — `Inbox.consume_and_broadcast/2`
-    # owns both the write and the frame so they cannot disagree.
+    # The frame is the removal delta for exactly those ids (issue #27) —
+    # `Inbox.consume_and_broadcast/2` owns both the write and the frame so they
+    # cannot disagree.
     state = Inbox.consume_and_broadcast(state, entries)
     Timeline.drained(state, entries)
     {state, :continue}

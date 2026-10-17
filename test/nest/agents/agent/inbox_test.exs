@@ -204,9 +204,9 @@ defmodule Nest.Agents.Agent.InboxTest do
 
   test "delivery is rejected when the inbox is full", %{pid: pid} do
     # `entry/5` builds the whole documented entry shape (`id`, `human?`,
-    # `fulfilled_ids`, `retrieved`), which matters now that the count below is
-    # read through `get_public_info/2` — that serializes the queue, and a
-    # hand-rolled partial entry would crash it.
+    # `fulfilled_ids`), which matters now that the count below is read through
+    # `get_public_info/2` — that serializes the queue, and a hand-rolled partial
+    # entry would crash it.
     full = for n <- 1..100, do: entry(:agent, "peer", "msg #{n}")
 
     :sys.replace_state(pid, fn state -> %{state | live: %{state.live | inbox: full}} end, 1_000)
@@ -583,8 +583,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       kind: kind,
       mode: mode,
       human?: human?,
-      fulfilled_ids: [],
-      retrieved: false
+      fulfilled_ids: []
     }
   end
 

@@ -31,9 +31,9 @@ defmodule Nest.Agents.Agent.Status do
   alias Nest.Messages.ToolCall
   alias Nest.Vocations
 
-  # The live read is a call into another process. Bounded like
-  # `agents-last-message`'s: a target that does not answer inside it is reported
-  # as unresponsive rather than holding this worker (and its caller's turn).
+  # The live read is a call into another process. Bounded so a target that does
+  # not answer inside it is reported as unresponsive rather than holding this
+  # worker (and its caller's turn).
   @call_timeout 5_000
 
   @doc """

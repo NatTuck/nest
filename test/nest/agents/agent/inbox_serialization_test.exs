@@ -34,8 +34,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           timestamp: at,
           kind: :agent,
           mode: nil,
-          human?: false,
-          retrieved: false
+          human?: false
         },
         %{
           id: "e2",
@@ -44,8 +43,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           timestamp: at,
           kind: :user,
           mode: "plan",
-          human?: true,
-          retrieved: false
+          human?: true
         },
         %{
           id: "e3",
@@ -54,8 +52,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           timestamp: at,
           kind: :user,
           mode: nil,
-          human?: false,
-          retrieved: false
+          human?: false
         },
         %{
           id: "e4",
@@ -64,8 +61,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           timestamp: at,
           kind: :query,
           mode: nil,
-          human?: false,
-          retrieved: false
+          human?: false
         },
         %{
           id: "e5",
@@ -74,8 +70,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           timestamp: at,
           kind: :notice,
           mode: nil,
-          human?: false,
-          retrieved: false
+          human?: false
         }
       ]
 
@@ -87,8 +82,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "agent",
                  "mode" => nil,
-                 "human" => false,
-                 "retrieved" => false
+                 "human" => false
                },
                %{
                  "id" => "e2",
@@ -97,8 +91,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "user",
                  "mode" => "plan",
-                 "human" => true,
-                 "retrieved" => false
+                 "human" => true
                },
                %{
                  "id" => "e3",
@@ -107,8 +100,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "user",
                  "mode" => nil,
-                 "human" => false,
-                 "retrieved" => false
+                 "human" => false
                },
                %{
                  "id" => "e4",
@@ -117,8 +109,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "query",
                  "mode" => nil,
-                 "human" => false,
-                 "retrieved" => false
+                 "human" => false
                },
                %{
                  "id" => "e5",
@@ -127,8 +118,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "notice",
                  "mode" => nil,
-                 "human" => false,
-                 "retrieved" => false
+                 "human" => false
                }
              ]
     end
@@ -159,6 +149,14 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       assert Inbox.batch([peer, query, alice]) == [peer, query]
       assert Inbox.batch([notice, bob]) == [notice, bob]
       assert Inbox.batch([peer, notice, alice]) == [peer, notice]
+
+      # The invariant the removed `prune_retrieved/1` used to mop up after: a
+      # non-empty queue always selects a non-empty batch, so the drain can never
+      # peek `:empty` while entries are still queued. A new `select_batch/1`
+      # clause that skipped a head would strand the queue instead.
+      for queued <- [alice, peer, query, notice] do
+        assert Inbox.batch([queued]) != []
+      end
     end
 
     test "deliver_user_message/4 normalizes a non-binary sender and mode to nil" do
@@ -275,46 +273,13 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       assert Enum.all?(ids, &(is_binary(&1) and &1 != ""))
     end
 
-    test "batch/1 skips a retrieved entry and consume/2 drops it" do
-      # intentional: an `agents-last-message` fetch consumes the body, so the
-      # drain must neither deliver it nor leave it queued forever. A retrieved
-      # entry is never a human message (the fetch refuses `:user`), so skipping
-      # it cannot swallow a human turn.
+    test "consume/2 drops exactly the delivered batch and leaves the rest" do
       peer = entry(:agent, "peer", "peer note", nil, "a")
       human = entry(:user, "alice", "human note", "plan", "b")
-      taken = %{entry(:agent, "peer", "fetched", nil, "c") | retrieved: true}
 
-      assert Inbox.batch([taken, peer]) == [peer]
-      assert Inbox.batch([taken]) == []
-      assert Inbox.consume([taken, peer, human], [peer]) == [human]
-      assert Inbox.consume([taken], []) == []
-    end
-
-    test "take_last/2 fetches the newest non-human entry from a name" do
-      # intentional: `agents-last-message` reads the pending delivery, never a
-      # human message, and consumes only the entry it returns.
-      peer = entry(:agent, "peer", "older", nil, "a")
-      bob = entry(:query, "bob", "a question", nil, "b")
-      human = entry(:user, "bob", "from the human bob", nil, "c")
-      newest = entry(:notice, "peer", "newer", nil, "d")
-
-      {left, taken} = Inbox.take_last([peer, bob, human, newest], "peer")
-      assert taken.id == "d"
-      # The copy returned is the one the queue now holds, so a caller that
-      # publishes the change as the update frame (issue #27) serializes exactly
-      # what it wrote rather than re-deriving it.
-      assert taken == Enum.find(left, &(&1.id == "d"))
-      assert taken.retrieved == true
-      assert Enum.find(left, &(&1.id == "a")).retrieved == false
-
-      # A name with only a human entry has nothing to fetch: the human's words
-      # must never be consumed out from under the drain.
-      {left, nil} = Inbox.take_last([human], "bob")
-      assert [^human] = left
-
-      # A name that is not queued at all.
-      assert {[], nil} = Inbox.take_last([], "ghost")
-      assert {[^human], nil} = Inbox.take_last([human], "ghost")
+      assert Inbox.consume([peer, human], [peer]) == [human]
+      assert Inbox.consume([peer, human], []) == [peer, human]
+      assert Inbox.consume([peer, human], [peer, human]) == []
     end
   end
 
@@ -327,8 +292,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       kind: kind,
       mode: mode,
       human?: false,
-      fulfilled_ids: [],
-      retrieved: false
+      fulfilled_ids: []
     }
   end
 end

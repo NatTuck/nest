@@ -339,7 +339,10 @@ defmodule Nest.Agents.Agent.BatchCoordinator do
   # `:normal`, and the batch's whole output would vanish — a `:normal` exit is
   # not a lost batch, so nothing else would report it either.
   defp deliver(content, plan) do
-    Agent.deliver_internal(plan.parent_pid, "agents-batch", content, :notice)
+    # The sender is `nil`, not a name: the aggregate is the runtime's own
+    # result, so no agent row resolves it and no agent label frames it. Every
+    # other runtime note is enqueued the same way (`Inbox.deliver_notice/3`).
+    Agent.deliver_internal(plan.parent_pid, nil, content, :notice)
   catch
     # `:noproc` is the only case where the aggregate is certainly gone: there is
     # no parent process left to hold it. A *timeout* is not that — the

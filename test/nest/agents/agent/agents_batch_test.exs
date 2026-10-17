@@ -480,16 +480,19 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     # allowlist: snapshot — inbox + messages
     state = :sys.get_state(parent_pid, 1_000)
 
-    aggregate =
-      Enum.find_value(state.live.inbox, fn entry ->
-        if entry.content =~ "alpha-done", do: entry.content
-      end)
+    aggregate_entry =
+      Enum.find(state.live.inbox, fn entry -> entry.content =~ "alpha-done" end)
 
-    assert aggregate =~ ~s(["alpha-done","beta-done"])
+    assert aggregate_entry.content =~ ~s(["alpha-done","beta-done"])
+
+    # Its sender is `nil`, not a name: the aggregate is the runtime's own
+    # result, so no agent frames it and no row has to resolve a synthetic
+    # "agents-batch".
+    assert aggregate_entry.from == nil
 
     # It is queued, not refused and not lost: the parent's transcript does not
     # have it yet, and it sits behind the 100 peers in the queue.
-    assert List.last(state.live.inbox).content == aggregate
+    assert List.last(state.live.inbox).content == aggregate_entry.content
     assert delivered_texts(state.chat_state.messages, "alpha-done") == []
 
     reset_to_idle(parent_pid)

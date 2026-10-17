@@ -329,7 +329,6 @@ defmodule Nest.Agents.Agent.Broadcasts do
   #
   #     {:chat_inbox, %{op: "append", messages: [entry], count: n, inboxSeq: s}}
   #     {:chat_inbox, %{op: "remove", ids: [id], count: n, inboxSeq: s}}
-  #     {:chat_inbox, %{op: "update", messages: [entry], count: n, inboxSeq: s}}
   #
   # `count` is the authoritative queue length *after* the mutation. `inboxSeq`
   # is the frame's position in this agent's stream (one per frame, never
@@ -348,13 +347,6 @@ defmodule Nest.Agents.Agent.Broadcasts do
   """
   @spec inbox_remove(Agent.t(), [String.t()]) :: Agent.t()
   def inbox_remove(state, ids), do: inbox_delta(state, "remove", %{ids: ids})
-
-  @doc """
-  Broadcast the entries whose serialized form changed in place — an
-  `agents-last-message` fetch marking one `retrieved`.
-  """
-  @spec inbox_update(Agent.t(), [map()]) :: Agent.t()
-  def inbox_update(state, entries), do: inbox_delta(state, "update", %{messages: entries})
 
   # The single construction site for an inbox frame, and the only writer of
   # `live.inbox_seq`: the counter is the number of frames this agent has

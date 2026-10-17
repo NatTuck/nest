@@ -253,7 +253,7 @@ defmodule NestWeb.AgentChannel do
 
   # Handle an async-inbox delta from PubSub (broadcast by
   # `Nest.Agents.Agent.Inbox` on every queue change). The payload is one
-  # incremental frame — `op` is `"append"`, `"remove"` or `"update"`, with
+  # incremental frame — `op` is `"append"` or `"remove"`, with
   # `count` and `inboxSeq` — never the whole list (issue #27); a client that
   # finds a gap in `inboxSeq` re-requests the full list over the `chat:inbox`
   # push, whose reply is the `op: "replace"` frame.

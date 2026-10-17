@@ -5061,22 +5061,6 @@ describe("store", () => {
       expect(cache.inboxSeq).toBe(4);
     });
 
-    it("replaces an entry in place on an update delta", () => {
-      seed([{ ...entry("d1"), retrieved: false }], 1);
-
-      useStore.getState().applyAgentInboxDelta("agent-1", {
-        op: "update",
-        messages: [{ ...entry("d1"), retrieved: true }],
-        count: 1,
-        inboxSeq: 2,
-      });
-
-      const cache = useStore.getState().agentsCache["agent-1"];
-      expect(cache.inbox).toHaveLength(1);
-      expect(cache.inbox[0].retrieved).toBe(true);
-      expect(cache.inboxSeq).toBe(2);
-    });
-
     it("does not apply a frame that skips a sequence", () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       seed();
@@ -5129,21 +5113,6 @@ describe("store", () => {
       const cache = useStore.getState().agentsCache["agent-1"];
       expect(cache.inbox).toEqual([]);
       expect(cache.inboxSeq).toBe(0);
-      expect(warnSpy).toHaveBeenCalled();
-    });
-
-    it("does not apply an update for an entry it does not hold", () => {
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-      seed();
-
-      const result = useStore.getState().applyAgentInboxDelta("agent-1", {
-        op: "update",
-        messages: [entry("never-seen")],
-        count: 0,
-        inboxSeq: 1,
-      });
-
-      expect(result).toEqual({ applied: false, needsResync: true });
       expect(warnSpy).toHaveBeenCalled();
     });
 
