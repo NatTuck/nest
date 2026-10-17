@@ -211,7 +211,20 @@ Application.ensure_all_started(:nest)
 # `Code.ensure_loaded?/1` is enough for each: what is being removed is the
 # *load* — one code-server round trip per module — and it does not matter which
 # call site would have paid it.
+#
+# `Argon2` and `Argon2.Base` are here from an observed frame, like the rest: a
+# `--cover` run on a loaded host lost four tests in
+# `agent_channel_needs_repair_test.exs`'s setup to a 3000 ms `ExUnit.TimeoutError`
+# whose innermost frame was `:code_server.call/1` reached from
+# `:error_handler.undefined_function/3` -> `Argon2.hash_pwd_salt/2` ->
+# `Nest.Accounts.put_password_hash/2`. The first user a run creates pays that
+# load, so whichever test happens to create one first is charged for it.
+# `Argon2.Base` is the module that matters as well as `Argon2`: it carries
+# `@on_load {:init, 0}`, which is where the NIF is loaded, so loading it here
+# removes the first-call cost too.
 for mod <- [
+      Argon2,
+      Argon2.Base,
       Jason,
       Jason.Decoder,
       Jason.Encoder,
