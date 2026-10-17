@@ -77,8 +77,10 @@ defmodule Nest.Agents.Agent.PreSpawn do
     case Map.get(attrs, :mode) do
       # `"mine"` is the send tools' spelling for "the sender's own mode", and for
       # a spawn that is exactly the inherited one: `agents-batch` takes `set_mode`
-      # with that enum, and every child of a batch is a spawn.
-      "mine" -> {:ok, Map.put(attrs, :mode, inherited_mode(attrs))}
+      # with that enum, and every child of a batch is a spawn. It is a spelling,
+      # not a shortcut — it resolves to a mode and then goes through the same
+      # authority as any other request, because *who is asking* is the whole rule.
+      "mine" -> authorize_mode(attrs, inherited_mode(attrs))
       # A blank counts as unnamed: a client that sends `""` gets the inherited
       # mode rather than a refusal for a mode called "".
       mode when is_binary(mode) and mode != "" -> authorize_mode(attrs, mode)
