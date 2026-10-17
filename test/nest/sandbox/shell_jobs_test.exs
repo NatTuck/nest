@@ -10,7 +10,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
   alias Nest.Sandbox.{Mounts, Paths}
   alias Nest.Sandbox.ShellJobs
   alias Nest.Sandbox.ShellJobs.JobLog
-  alias Nest.Tools.ShellCmd
+  alias Nest.Tools.{ShellCmd, ShellEscape}
 
   setup do
     # A real space id: the manager's job-list broadcast is keyed by
@@ -337,6 +337,24 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
       assert :ok = JobLog.remove(mounts, path, runner: runner)
       assert List.last(calls()) == ["exec", name, "rm", "-f", path]
+    end
+
+    test "the path the command tees into is the path the manager reads back" do
+      # The two halves of a docker job's log: the command writes it, because it
+      # is the only thing that can, and the manager reads it through the
+      # container. They have to agree on the file, or a job's output would be
+      # written where nothing ever looks.
+      mounts = container_mounts()
+      log = Path.join(Mounts.scratch(mounts), "shell-jobs/job-1.log")
+      {:ok, name} = Docker.container_name(mounts)
+
+      assert {:ok, spec} = Docker.job_spec(mounts, nil, "/tmp/.cmds/nest-cmd-1.sh", log)
+      assert payload(spec.command) =~ "tee " <> ShellEscape.escape(log)
+
+      runner = scripted_runner(%{["exec"] => {"the job's output\n", 0}})
+
+      assert JobLog.read(mounts, log, runner: runner) == "the job's output\n"
+      assert calls() == [["exec", name, "cat", log]]
     end
 
     test "prepares nothing on the host, because the scratch is not on the host" do
