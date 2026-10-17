@@ -17,7 +17,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
 
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Sandbox
-  alias Nest.Sandbox.Mounts
+  alias Nest.Sandbox.{Mounts, Paths}
   alias Nest.Test.TmpCleanup
 
   # A `"none"` agent's scratch is the host's own `/tmp/<name>`, so these tests
@@ -372,6 +372,37 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
         assert File.read!(Path.join(space_dir, leak)) == "x\n"
         refute File.exists?(Path.join("/tmp", leak))
       end)
+    end
+  end
+
+  describe "a docker space's scratch" do
+    test "is a path inside the container, and nothing on the host is created for it" do
+      name = unique("docker-agent")
+
+      # The container's own `/tmp` is the scratch root, so the agent's directory
+      # is the bare name under the `/tmp` spelling — the same spelling every
+      # agent is told it has, on every backend.
+      assert TmpSpace.space_dir(7, "docker") == Paths.sandbox_root()
+      assert TmpSpace.agent_dir(7, name, "docker") == Path.join("/tmp", name)
+
+      # `create/3` only *names* it: the container makes it, in the command that
+      # runs. Making it here would leave a host directory at a spelling the
+      # container would never see.
+      assert TmpSpace.create(7, name, "docker") == Path.join("/tmp", name)
+      refute File.exists?(Path.join("/tmp", name))
+    end
+
+    test "has nothing to remove, and removes nothing that shares its name" do
+      name = unique("docker-agent")
+      host_dir = Path.join("/tmp", name)
+      File.mkdir_p!(host_dir)
+      on_exit(fn -> rm_tmp!(host_dir, "docker-agent-") end)
+
+      # A host directory that happens to have the agent's name is not this
+      # space's to delete: the scratch it stands for is in the container.
+      assert :ok = TmpSpace.cleanup(7, name, "docker")
+      assert :ok = TmpSpace.remove_stale(7, name, "docker")
+      assert File.dir?(host_dir)
     end
   end
 end

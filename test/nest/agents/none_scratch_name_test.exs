@@ -17,7 +17,7 @@ defmodule Nest.Agents.NoneScratchNameTest do
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.Persistence
-  alias Nest.Sandbox.Mounts
+  alias Nest.Sandbox.{Mounts, Paths}
   alias Nest.Spaces
   alias Nest.Test.TmpCleanup
 
@@ -269,7 +269,14 @@ defmodule Nest.Agents.NoneScratchNameTest do
       assert Mounts.scratch(mounts) == TmpSpace.agent_dir(space_id, name, "docker")
       assert Mounts.space_id(mounts) == space_id
       assert Mounts.backend(mounts) == "docker"
-      assert File.dir?(Mounts.scratch(mounts))
+
+      # The scratch names a path *inside* the container — the container's own
+      # `/tmp/<agent>` — so nothing on the host holds it, and the command that
+      # runs is what makes it. What this pins is that the mounts the prompt is
+      # composed through name that spelling rather than a host directory, which
+      # is what the container's bind of `/tmp/.cmds` is independent of.
+      assert Mounts.scratch(mounts) == Path.join(Paths.sandbox_root(), name)
+      refute Mounts.host_scratch?(mounts)
     end
   end
 

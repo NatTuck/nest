@@ -105,6 +105,8 @@ export function SpaceView() {
                 : "Agents in this space cannot reach the network."}
               {space.sandbox_backend === "none" &&
                 " This space has no sandbox, so nothing enforces that."}
+              {space.sandbox_backend === "docker" &&
+                " Changing this restarts this space's container, which clears every agent's /tmp here (offloads and background-job logs) and stops any background job that is still running."}
             </p>
             {networkError && (
               <p className="text-sm text-red-600 mt-1">{networkError}</p>

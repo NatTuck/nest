@@ -7,9 +7,11 @@ defmodule Nest.Sandbox.Backend.DockerTestHelpers do
   the two agree on the caps they build and on how a call is recorded.
   """
 
-  alias Nest.Sandbox.Mounts
+  alias Nest.Sandbox.Backend.Docker
+  alias Nest.Sandbox.{Mounts, Paths}
 
   @space_id 7
+  @agent "agent-a"
   @calls {__MODULE__, :docker_calls}
 
   @doc "The space these fixtures belong to."
@@ -17,25 +19,36 @@ defmodule Nest.Sandbox.Backend.DockerTestHelpers do
 
   @doc """
   A `Mounts` value for a `"docker"` call in this space.
+
+  The scratch is the *container's* `/tmp/<agent>` — the one scratch spelling an
+  agent ever names, and a path nothing on the host holds (see
+  `Nest.Sandbox.Mounts.host_scratch?/1`).
   """
-  def mounts(workspace \\ nil, scratch \\ nil) do
+  def mounts(workspace \\ nil, scratch \\ default_scratch()) do
     Mounts.new(workspace, scratch, "docker", @space_id)
   end
 
+  @doc "The scratch directory a docker call's mounts carry."
+  def default_scratch, do: Path.join(Paths.sandbox_root(), @agent)
+
+  @doc "The host staging directory this space's command transcripts go in."
+  def stage_dir, do: Paths.docker_stage_dir(@space_id)
+
   @doc """
-  A scratch directory with the real shape (`<space_dir>/<agent>`), so
-  `Nest.Sandbox.Paths.scratch_root/1` derives the space dir rather than refusing
-  it. A fresh one per call, so a test that means "the same layout" has to bind
-  it once.
+  The argv answers for a container that is already there and was built for
+  `mounts` + `caps`.
+
+  `docker inspect --format '{{.State.Status}}|{{…nest.layout}}'` is the *one*
+  call the lifecycle makes about an existing container — status and layout in
+  the same call — so "the container is running and matches this call" is exactly
+  this answer.
   """
-  def scratch do
-    Path.join([
-      "/tmp",
-      "nest-docker-test-#{System.unique_integer([:positive])}",
-      "space-#{@space_id}",
-      "agent-a"
-    ])
+  def existing(mounts, caps, status \\ "running") do
+    %{["inspect"] => {"#{status}|#{Docker.layout(mounts, caps, [])}\n", 0}}
   end
+
+  @doc "The argv answers for a container that is not there."
+  def missing, do: %{["inspect"] => {"No such object\n", 1}}
 
   @doc """
   Caps for a docker mode: the network and the two symbolic writes by default.
@@ -55,6 +68,27 @@ defmodule Nest.Sandbox.Backend.DockerTestHelpers do
 
   @doc "Caps carrying a project's declared docker packages."
   def caps_with_packages(packages), do: Map.put(caps(), "sandbox", %{"packages" => packages})
+
+  @doc """
+  A workspace directory under `_build/tmp`, removed when the test ends.
+
+  The `.nest` the docker backend reads its project mounts from is a file in the
+  workspace, so a test that means "this project declares a mount" has to have a
+  real one.
+  """
+  def workspace(name \\ "nest_docker_ws") do
+    dir =
+      Path.join([File.cwd!(), "_build", "tmp", "#{name}_#{System.unique_integer([:positive])}"])
+
+    File.mkdir_p!(dir)
+
+    ExUnit.Callbacks.on_exit(fn ->
+      # Guarded by the identifying string, as SMELLS.md requires of any `rm_rf`.
+      if String.contains?(dir, name), do: File.rm_rf(dir)
+    end)
+
+    dir
+  end
 
   @doc """
   A runner answering from a map of argv prefixes, recording every call.
@@ -91,6 +125,27 @@ defmodule Nest.Sandbox.Backend.DockerTestHelpers do
   @doc "Every argv the runner was asked for, oldest first."
   def calls, do: Enum.reverse(Process.get(@calls, []))
 
-  @doc "The argv of the first recorded call matching `prefix`."
+  @doc """
+  The argv of the first recorded call matching `prefix`.
+  """
   def call_with(prefix), do: Enum.find(calls(), &List.starts_with?(&1, prefix))
+
+  @doc """
+  The payload a `docker exec` command line hands the container's bash.
+
+  A built command is `docker exec -i <name> /bin/bash -c '<payload>'`, and the
+  payload is escaped as one shell word for the BEAM's own command parser. That is
+  a layer the *container* never sees, so an assertion about what the container
+  runs reads better against the payload — where the paths carry exactly the one
+  escaping the container's bash needs.
+  """
+  def payload(command) do
+    [_, escaped] = String.split(command, " /bin/bash -c ", parts: 2)
+    escaped = String.trim(escaped)
+    inner = binary_part(escaped, 1, byte_size(escaped) - 2)
+    String.replace(inner, "'\\''", "'")
+  end
+
+  @doc "The container name these fixtures resolve to."
+  def name, do: Docker.container_name(mounts("/ws")) |> elem(1)
 end

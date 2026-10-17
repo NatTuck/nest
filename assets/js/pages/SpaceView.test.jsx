@@ -159,6 +159,20 @@ describe("SpaceView", () => {
     expect(screen.getByText(/nothing enforces that/i)).toBeInTheDocument();
   });
 
+  it("warns that a docker space's container restarts when the network changes", () => {
+    // `--network none` is fixed when a container is created, so the change
+    // releases it — and with it the agents' `/tmp` (offloads, job logs) and any
+    // running background job. The user is told before flipping the toggle, not
+    // after.
+    mockState.spaces[0].sandbox_backend = "docker";
+
+    renderView();
+
+    const warning = screen.getByText(/restarts this space's container/i);
+    expect(warning).toBeInTheDocument();
+    expect(warning.textContent).toMatch(/background-job logs/i);
+  });
+
   it("renders the not-found state for an unknown slug", () => {
     renderView("nope");
 

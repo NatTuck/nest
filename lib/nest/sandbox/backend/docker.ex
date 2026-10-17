@@ -2,85 +2,56 @@ defmodule Nest.Sandbox.Backend.Docker do
   # The image's identity, declared before the `@moduledoc` because the moduledoc
   # interpolates two of them.
   @base_image "debian:trixie-slim"
-  @base_packages ~w(bash coreutils file git curl ca-certificates procps ripgrep)
+
+  # `bubblewrap` is not optional: the container is only half the sandbox. The
+  # mode's caps are enforced by a bwrap *inside* it (see the moduledoc), so an
+  # image without it could run nothing at all.
+  @base_packages ~w(bash coreutils file git curl ca-certificates procps ripgrep bubblewrap)
+
+  # The label a container carries its layout in. Declared before the moduledoc
+  # because the moduledoc names it.
+  @layout_label "nest.layout"
 
   @moduledoc """
-  The docker backend: commands run inside a container the space shares.
+  The docker backend: bwrap runs *inside* a container the space shares.
 
-  ## What the container exposes
+  ## Two layers, one bind list
 
-  Its root filesystem is the derived image, so the host's `/` is not visible at
-  all. The container sees the workspace, the space scratch dir at `/tmp`, the
-  explicit `.nest` mounts, and nothing else — which means `caps.fs.read` is
-  **deliberately ignored**: the image *is* the read set. That makes this backend
-  *stricter* than bwrap, not looser, and it is why a project that needs a host
-  path read-only has to declare it as a `.nest` mount. `/dev` is the image's own
-  (the equivalent of bwrap's fresh devtmpfs); only HPU device paths are passed
-  through, with `--device`.
+  The container's root filesystem is the derived image — the host's `/` is not
+  visible in it at all — and every command runs inside a `bwrap` in that
+  container:
 
-  `caps.net` and the write flags *are* honoured: `--network none` when the mode
-  denies the network, and `rw`/`ro` per bind from `caps.fs.write`.
+      docker exec -i <container> /bin/bash -c 'mkdir -p … && exec bwrap …'
 
-  ## One container per `(space, caps signature)`
+  The *same* bind list (`Nest.Sandbox.Binds.specs/2`) is applied over the
+  container's root instead of over the host's, so the two backends cannot drift,
+  and a read-only mode keeps its teeth here for the same reason it does there.
+  The container binds the **superset** a space can need, because its mounts are
+  fixed at creation and one container serves every mode its space can run; the
+  sandbox inside it tightens per call, by re-applying each bind the call's caps
+  ask for as a self-bind of the path the container already put there. And
+  `caps.fs.read` is not what docker binds: **the image is the read set**, made
+  read-only, so a host path that is read-only under bwrap is simply absent here.
 
-  Caps are per *agent* — they come from the vocation's mode — and one container's
-  binds and network namespace cannot vary per `docker exec`. Binding the union of
-  every mode's caps would silently hand a read-only mode a writable workspace,
-  which is exactly the silent capability weakening this codebase forbids. So each
-  distinct caps signature gets its own container, named
-  `nest-space-<space_id>-<BEAM pid>-<hash>`:
+  ## The container
 
-  * the hash covers exactly what the container's layout depends on — `net`, the
-    bind list with its rw/ro flags, the workspace path, and the HPU device paths;
-  * agents that resolve to the same signature share a container, and in practice
-    a space has one or two.
+  Named `nest-space-<space_id>-<installation>` (`Nest.Sandbox.Installation`), and
+  **stable across BEAM restarts**: nothing per-BEAM is bound any more, because
+  the scratch is the container's own `/tmp` and the one host directory a call
+  needs (`Nest.Sandbox.Paths.docker_stage_dir/1`) is keyed on the space. That is
+  what lets the container outlive a restart — the original design's intent, and
+  what its pid-keyed layout made impossible.
 
-  The *image* is per space rather than per signature (it comes from the space's
-  `.nest`), so the two names are keyed differently on purpose.
-
-  The container is created lazily on first use, `docker start`ed when it exists
-  but is stopped, and removed when the space is archived or deleted
-  (`Nest.Spaces` → `Nest.Sandbox.Backend.remove_space/3`).
-
-  ## A container does *not* outlive its BEAM
-
-  The layout includes the scratch bind, whose source is the space scratch dir —
-  `/tmp/nest-<BEAM pid>/space-<id>`. A restart is therefore a different layout, and
-  it gets a different container, on purpose: a container's mounts are fixed when
-  it is created, so reusing one would leave its `/tmp` pointing at the *previous*
-  BEAM's scratch directory, a directory this BEAM never writes to, which would
-  make every staged script unreadable inside the container.
-
-  The superseded container does not leak: the next create for that space sweeps
-  every container of the space whose BEAM is gone (`sweep_dead_beams/2`), which is
-  what the pid segment in the name is for. A *live* BEAM's container is left
-  alone — two BEAMs can share a space id — and so is any name that is not this
-  space's exact format.
-
-  So "one container for the life of the space" holds within a BEAM, not across
-  restarts. Making it hold across restarts would mean a scratch root that does not
-  embed the BEAM's pid, i.e. a change to `Nest.Agents.Agent.TmpSpace.space_dir/2`,
-  which is a deliberate design and out of scope here.
-
-  ## The derived image
-
-  `#{@base_image}` plus the packages a usable shell needs and the slim base lacks
-  (`#{Enum.join(@base_packages, " ")}`), plus whatever the project's `.nest`
-  `[sandbox] packages` adds. The tag is keyed on the base reference and the
-  package set, so a changed set is a different tag and rebuilds automatically,
-  and a failed build surfaces as a clear error rather than a half-built sandbox.
-
-  The project toolchain (Elixir, Node, Rust) is deliberately **not** in the base:
-  a project that needs it declares it in `.nest`.
-
-  ## Testing
-
-  Everything that decides *what* to run is pure and asserted exactly
-  (`container_name/4`, `image_tag/1`, `dockerfile/1`, `bind_specs/2`,
-  `run_args/4`). The lifecycle takes an injectable `:runner` (`fn argv ->
-  {output, exit_code} end`) so create / reuse / start-if-stopped / remove are all
-  tested against a fake; `system/1`, the `System.cmd` default, is the only line
-  the suite does not execute (see `config/test.exs`).
+  Because the name cannot move when the layout does, the layout travels as a
+  `#{@layout_label}` **label** instead, covering the binds, the image and the
+  network: every call inspects the container once (status and label in one call),
+  and a container whose label does not match is removed and created again.
+  Nothing is ever orphaned, so there is no sweep — a `.nest` package change, a
+  workspace change, a hardware change or a **net edit** replaces the container in
+  place on the next command. `notes/sandbox-backends.md` has the rest: the
+  measured table of the container flags, what the one narrowable flag costs, why
+  the staging directory is bound read-only, and why nothing on the host may touch
+  the agent's scratch.
   """
 
   require Logger
@@ -89,10 +60,36 @@ defmodule Nest.Sandbox.Backend.Docker do
   @image_prefix "nest-sandbox:"
   @build_dir_prefix "nest-docker-build-"
 
-  # 4 bytes of hex for the layout hash and 6 for the image: both are read by a
-  # human in `docker ps` output, and neither has a collision worth worrying about
-  # (a collision needs two different layouts of one space to agree on 32 bits).
-  @name_hash_bytes 4
+  # The bwrap that runs inside the container. `--ro-bind / /` is the whole point
+  # (the image becomes read-only); `--dev-bind /dev /dev` and `--proc /proc` are
+  # required because that same bind made them read-only, so redirects to
+  # `/dev/null` and `/proc/self` would otherwise break. There is deliberately no
+  # `--unshare-all`, `--unshare-user` or `--unshare-net`.
+  @inner_flags ~w(--die-with-parent --new-session --ro-bind / / --dev-bind /dev /dev --proc /proc)
+
+  # The flags every container of this backend is created with.
+  @container_flags [
+    "--cap-add",
+    "SYS_ADMIN",
+    "--security-opt",
+    "apparmor=unconfined",
+    "--security-opt",
+    "seccomp=unconfined"
+  ]
+
+  # The status and the layout label in one `docker inspect`: a container that is
+  # there but was built for a different layout has to be replaced, not started.
+  @inspect_format ~s({{.State.Status}}|{{index .Config.Labels "#{@layout_label}"}})
+
+  # A container name segment: what a docker object name may contain after the
+  # first character. `this_space?/2` uses it to decide whether a name the
+  # daemon's substring filter matched is really this space's container.
+  @segment_format ~r/\A[A-Za-z0-9_.-]+\z/
+
+  # 6 bytes of hex for the layout label and 6 for the image tag: both are read by
+  # a human, and a collision needs two different layouts of one space to agree on
+  # 48 bits.
+  @layout_bytes 6
   @image_hash_bytes 6
 
   @log_tag "[Nest.Sandbox.Backend.Docker]"
@@ -110,56 +107,66 @@ defmodule Nest.Sandbox.Backend.Docker do
   alias Nest.Hardware
   alias Nest.ProjectConfig
   alias Nest.Sandbox
-  alias Nest.Sandbox.{Failure, Mounts, Paths}
+  alias Nest.Sandbox.{Binds, Failure, Installation, Mounts, Paths}
   alias Nest.Tools.ShellEscape
 
   # ---- the backend contract ----
 
   @doc """
-  `docker exec -i <container> /bin/bash '<script>'`.
+  `docker exec -i <container> /bin/bash -c '<payload>'`, where the payload makes
+  the agent's scratch directory and then `exec`s the inner bwrap.
 
-  `-i` is required: without it the exec's stdin is closed and a `shell-cmd`
-  with `:stdin` (a `file-write`, an `file-edit`) would silently write nothing.
+  `-i` is required: without it the exec's stdin is closed and a `shell-cmd` with
+  `:stdin` (a `file-write`, a `file-edit`) would silently write nothing. The
+  command text itself is never an argv element — it is a staged file the payload
+  hands to bash — so the escaping here only has to survive the paths this module
+  builds.
 
-  `cd` is `nil`: the container was started with `-w`, so docker sets the working
-  directory itself.
+  `cd` is `nil`: the container was started with `-w`.
   """
   @spec command(Mounts.t(), map() | nil, String.t()) ::
           {:ok, Nest.Sandbox.Backend.spec()} | {:error, String.t()}
   def command(mounts, caps, script) do
-    # The staged script has to be reachable *inside* the container, and the only
-    # bind that can make it so is the scratch bind at `/tmp`. Without it the
-    # staging directory is the host's own `<tmp>/.nest-cmds`, which bwrap reaches
-    # through its read-only root bind and this backend cannot reach at all: the
-    # container's `/tmp` is its own, so bash would exit 127 and the failure would
-    # be classified `:enoent` — an ordinary "not found" that is not logged and
-    # that a caller like the system prompt would swallow. Refuse loudly instead.
-    if Mounts.scratch(mounts) do
-      with {:ok, name} <- ensure_container(mounts, caps) do
-        {:ok,
-         %{
-           command: "docker exec -i #{name} /bin/bash #{ShellEscape.escape(script)}",
-           cd: nil
-         }}
-      end
-    else
-      {:error, "A docker sandbox needs the agent's scratch bind to stage its script"}
+    caps = caps || Sandbox.default_caps()
+
+    with :ok <- check_binds(mounts, caps),
+         {:ok, name} <- ensure_container(mounts, caps) do
+      {:ok, %{command: exec_line(name, mounts, caps, script, nil), cd: nil}}
     end
   end
 
   @doc """
-  The host staging directory: the space scratch dir's own `.cmds`, reached
-  inside the container through the `<space_dir>:/tmp` bind as `/tmp/.cmds`.
+  The same command, with the job's output also written to `log_path` **inside
+  the container**.
 
-  `Mounts.scratch` is `<space_dir>/<agent>`, so `Paths.scratch_root/1` derives
-  `<space_dir>` and does not refuse it.
+  A background job's log is a file under the agent's scratch directory, which is
+  the container's own `/tmp`: nothing on the host can write it, so the command
+  has to. `set -o pipefail` keeps the exit code the command's rather than
+  `tee`'s. The container is not touched here: `command/3` has already ensured it.
+  """
+  @spec job_spec(Mounts.t(), map() | nil, String.t(), String.t()) ::
+          {:ok, Nest.Sandbox.Backend.spec()} | {:error, String.t()}
+  def job_spec(mounts, caps, script, log_path) do
+    caps = caps || Sandbox.default_caps()
+
+    with {:ok, name} <- container_name(mounts) do
+      {:ok, %{command: exec_line(name, mounts, caps, script, log_path), cd: nil}}
+    end
+  end
+
+  @doc """
+  The host staging directory: a stable directory per space and installation
+  (`Nest.Sandbox.Paths.docker_stage_dir/1`), which the container is given at
+  `#{Nest.Sandbox.Paths.docker_stage_dir_sandbox()}` read-only. A call that
+  belongs to no space cannot run at all (`command/3` refuses it), so it gets the
+  no-bind spelling rather than a directory named after a space it does not have.
   """
   @spec stage_dir(Mounts.t()) :: String.t()
-  def stage_dir(mounts), do: Paths.stage_dir(Mounts.scratch(mounts))
-
+  def stage_dir(%Mounts{space_id: id}) when is_integer(id), do: Paths.docker_stage_dir(id)
+  def stage_dir(_mounts), do: Paths.stage_dir(nil)
   @doc "The staging directory's spelling inside the container."
   @spec stage_dir_sandbox(Mounts.t()) :: String.t()
-  def stage_dir_sandbox(mounts), do: Paths.stage_dir_sandbox(Mounts.scratch(mounts))
+  def stage_dir_sandbox(_mounts), do: Paths.docker_stage_dir_sandbox()
 
   @doc "The name this backend is logged under."
   @spec display_name(Mounts.t()) :: String.t()
@@ -167,9 +174,9 @@ defmodule Nest.Sandbox.Backend.Docker do
 
   @doc """
   Classify stderr: the daemon's own failures are a broken sandbox
-  (`:sandbox_setup_failed`, which the file tools already render as "the sandbox
-  failed to start; this is a Nest configuration problem"), and everything else is
-  the command's own, classified from the shared errno table.
+  (`:sandbox_setup_failed`, which the file tools render as "the sandbox failed to
+  start; this is a Nest configuration problem"); everything else is the command's
+  own, from the shared errno table.
   """
   @spec classify(Mounts.t(), String.t()) :: atom()
   def classify(_mounts, stderr) do
@@ -178,45 +185,137 @@ defmodule Nest.Sandbox.Backend.Docker do
 
   defp docker_failure?(stderr), do: Enum.any?(@docker_markers, &String.contains?(stderr, &1))
 
+  # ---- the command line ----
+
+  defp exec_line(name, mounts, caps, script, log_path) do
+    "docker exec -i #{name} /bin/bash -c " <>
+      ShellEscape.escape(payload(mounts, caps, script, log_path))
+  end
+
+  # The script the container's bash runs. Two shell layers read it — the BEAM's
+  # command parser, which sees the whole thing as one quoted argument, and the
+  # container's bash, which runs it — so every path is escaped for the second and
+  # the whole payload for the first.
+  defp payload(mounts, caps, script, log_path) do
+    pipefail = if log_path, do: "set -o pipefail; ", else: ""
+
+    pipefail <>
+      mkdir_prefix(mounts, log_path) <>
+      "exec " <> sandbox_line(mounts, caps, script) <> tee_suffix(log_path)
+  end
+
+  # The agent's scratch directory is the container's own `/tmp/<agent>`, so the
+  # command that runs is what makes it — nothing on the host can.
+  defp mkdir_prefix(mounts, log_path) do
+    dirs =
+      [Mounts.scratch(mounts), log_path && Path.dirname(log_path)]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    case dirs do
+      [] -> ""
+      dirs -> "mkdir -p " <> Enum.map_join(dirs, " ", &ShellEscape.escape/1) <> " && "
+    end
+  end
+
+  defp tee_suffix(nil), do: ""
+
+  defp tee_suffix(log_path) do
+    " 2>&1 | tee " <> ShellEscape.escape(log_path)
+  end
+
+  defp sandbox_line(mounts, caps, script) do
+    binds =
+      (Binds.specs(caps, mounts) ++ workspace_spelling(mounts, Binds.workspace_mode(caps)))
+      |> Enum.flat_map(&inner_bind/1)
+
+    args =
+      @inner_flags ++
+        binds ++
+        ["--chdir", ShellEscape.escape(chdir(mounts))] ++
+        ["/bin/bash", ShellEscape.escape(script)]
+
+    Enum.join(["bwrap" | args], " ")
+  end
+
+  # The container has already put this bind's source at its `dest`, so what the
+  # sandbox inside has to do is set the *mode* of that path: `--ro-bind / /` made
+  # everything read-only, and a read-only bind cannot be upgraded from inside.
+  # A self-bind is exactly "set this path's mode", and bwrap applies it to the
+  # mount that is already there.
+  defp inner_bind({_source, dest, mode}) do
+    [bind_flag(mode), ShellEscape.escape(dest), ShellEscape.escape(dest)]
+  end
+
+  defp bind_flag(:rw), do: "--bind"
+  defp bind_flag(:ro), do: "--ro-bind"
+
+  # No workspace means "start in the scratch root", exactly as bwrap's own
+  # `--chdir` does when it has a scratch bind and no workspace.
+  defp chdir(%Mounts{workspace: nil}), do: Paths.sandbox_root()
+  defp chdir(%Mounts{workspace: workspace}), do: workspace
+
+  # A `caps.fs.write` path outside the symbolic entries and the `.nest` mounts
+  # names a *host* path the container does not have, so the sandbox inside cannot
+  # bind it. Refuse by name rather than let it fail as `bwrap: Can't bind mount
+  # …: No such file or directory`, an ordinary `:enoent`.
+  defp check_binds(mounts, caps) do
+    case Binds.unbound_write_paths(caps, mounts) do
+      [] ->
+        :ok
+
+      paths ->
+        {:error,
+         "The docker backend cannot bind #{Enum.join(paths, ", ")}: its binds are " <>
+           "the container's, which does not have that path. Declare it as a " <>
+           "[[mount]] in .nest instead."}
+    end
+  end
+
   # ---- lifecycle ----
 
   @doc """
-  Ensure this call's container exists and is running, and return its name.
+  Ensure this call's container exists, is running, and was built for this call's
+  layout, and return its name.
 
-  `opts`:
-
-    * `:runner` — `fn argv -> {output, exit_code} end`, defaulting to
-      `system/1`. The injectable seam the lifecycle is tested through.
-    * `:devices` — the host device paths to pass through, defaulting to
-      `Nest.Hardware.hpu_device_paths/0`. Threaded explicitly for the same
-      reason `Nest.Sandbox.build/4` threads it: so a test can exercise both
-      branches without mutating global config.
-
-  Returns `{:error, reason}` — never a half-built sandbox — when the space is
-  unknown, the image cannot be built, or the container cannot be started.
+  `opts`: `:runner` (`fn argv -> {output, exit_code} end`, defaulting to
+  `system/1` — the injectable seam the lifecycle is tested through) and
+  `:devices` (the host device paths, defaulting to
+  `Nest.Hardware.hpu_device_paths/0`). Returns `{:error, reason}` — never a
+  half-built sandbox — when the space is unknown, the image cannot be built, the
+  container cannot be started, or a container built for another layout will not
+  go away.
   """
   @spec ensure_container(Mounts.t(), map() | nil, keyword()) ::
           {:ok, String.t()} | {:error, String.t()}
   def ensure_container(mounts, caps, opts \\ []) do
     runner = Keyword.get_lazy(opts, :runner, &default_runner/0)
     devices = Keyword.get_lazy(opts, :devices, &Hardware.hpu_device_paths/0)
+    caps = caps || Sandbox.default_caps()
 
-    with {:ok, name} <- container_name(mounts, caps, devices) do
-      case status(name, runner) do
-        :running -> {:ok, name}
-        :stopped -> start(name, runner)
-        :missing -> create(mounts, caps, devices, name, runner)
-      end
+    with {:ok, name} <- container_name(mounts) do
+      use_container(mounts, caps, devices, name, runner)
+    end
+  end
+
+  # The container that is there, if any, decides: a matching layout is reused or
+  # started, and anything else has to be replaced (see `replace/6`).
+  defp use_container(mounts, caps, devices, name, runner) do
+    layout = layout(mounts, caps, devices)
+
+    case inspect_container(name, runner) do
+      :missing -> create(mounts, caps, devices, name, layout, runner)
+      {:ok, %{layout: ^layout, status: :running}} -> {:ok, name}
+      {:ok, %{layout: ^layout}} -> start(name, runner)
+      {:ok, _stale} -> replace(mounts, caps, devices, name, layout, runner)
     end
   end
 
   @doc """
-  Remove every container this space's agents ran in.
-
-  Called by `Nest.Spaces` when a space is archived or deleted. Archiving is
-  reversible — the containers are simply recreated lazily after an unarchive — so
-  this is cleanup rather than part of either operation's success: a daemon
-  failure is logged and the caller carries on.
+  Remove every container this space's agents ran in, for an archive or a delete
+  (or a network change). Archiving is reversible — the containers are recreated
+  lazily after an unarchive — so this is cleanup rather than part of either
+  operation's success: a daemon failure is logged and the caller carries on.
   """
   @spec remove_space(integer(), keyword()) :: :ok
   def remove_space(space_id, opts \\ []) do
@@ -244,7 +343,7 @@ defmodule Nest.Sandbox.Backend.Docker do
       {output, 0} ->
         # `--filter name=` is a substring match, so the filter narrows the list
         # and the pattern decides: only this space's own containers, whose names
-        # are exactly `<prefix><pid>-<8 hex>`.
+        # are exactly `<prefix><installation>`.
         {:ok, output |> String.split("\n", trim: true) |> Enum.filter(&this_space?(&1, space_id))}
 
       {output, code} ->
@@ -253,20 +352,17 @@ defmodule Nest.Sandbox.Backend.Docker do
     end
   end
 
-  defp this_space?(name, space_id), do: beam_pid_of(name, space_id) != :error
-
-  # The BEAM pid segment of a container name that is exactly this space's format,
-  # or `:error` for anything else — another space's container, an older naming
-  # scheme, or a name someone made up. Only a name this matches is ever removed.
-  defp beam_pid_of(name, space_id) do
-    case Regex.run(container_pattern(space_id), name, capture: :all_but_first) do
-      [os_pid] -> {:ok, os_pid}
-      _other -> :error
+  # Whether `name` is one of this space's containers. The prefix carries a
+  # trailing `-`, so another space's container (`nest-space-78-…` against space
+  # 7's `nest-space-7-`) is not a prefix match, and what follows the prefix has
+  # to be a name segment rather than whatever the substring filter happened to
+  # match.
+  defp this_space?(name, space_id) do
+    case String.replace_prefix(name, container_prefix(space_id), "") do
+      ^name -> false
+      "" -> false
+      segment -> Regex.match?(@segment_format, segment)
     end
-  end
-
-  defp container_pattern(space_id) do
-    ~r/\A#{Regex.escape(container_prefix(space_id))}(\d+)-[0-9a-f]{#{@name_hash_bytes * 2}}\z/
   end
 
   defp remove_container(name, runner) do
@@ -278,20 +374,28 @@ defmodule Nest.Sandbox.Backend.Docker do
         Logger.warning(
           "#{@log_tag} could not remove container #{name} (exit #{code}): #{trim(output)}"
         )
+
+        {:error, failure("docker rm -f", name, output, code)}
     end
   end
 
-  defp status(name, runner) do
-    case runner.(["inspect", "--format", "{{.State.Status}}", name]) do
-      {output, 0} -> status_of(String.trim(output))
+  defp inspect_container(name, runner) do
+    case runner.(["inspect", "--format", @inspect_format, name]) do
+      {output, 0} -> parse_inspect(output)
       {_output, _code} -> :missing
     end
   end
 
+  defp parse_inspect(output) do
+    case output |> String.trim() |> String.split("|", parts: 2) do
+      [status, layout] -> {:ok, %{status: status_of(status), layout: String.trim(layout)}}
+      _other -> :missing
+    end
+  end
+
   # `exited`, `created` and `paused` all mean "there is a container and it is not
-  # serving": `docker start` brings it back *with the binds it was created with*,
-  # which is why only the BEAM whose scratch root those binds name can use it —
-  # see `sweep_dead_beams/2`.
+  # serving": `docker start` brings it back with the binds it was created with,
+  # which is why only a container whose layout matches may be started.
   defp status_of("running"), do: :running
   defp status_of(_other), do: :stopped
 
@@ -302,76 +406,40 @@ defmodule Nest.Sandbox.Backend.Docker do
     end
   end
 
-  defp create(mounts, caps, devices, name, runner) do
-    # Reclaim this space's containers whose BEAM is gone, before making another
-    # one. See `sweep_dead_beams/2` for why they are there at all.
-    sweep_dead_beams(Mounts.space_id(mounts), runner)
+  # The container is there but was built for a different layout, and a
+  # container's mounts, image and network are fixed at creation: it has to be
+  # replaced. A removal that fails is an error rather than something to adopt —
+  # adopting would run this call in the old environment.
+  defp replace(mounts, caps, devices, name, layout, runner) do
+    with :ok <- remove_container(name, runner) do
+      create(mounts, caps, devices, name, layout, runner)
+    end
+  end
 
+  defp create(mounts, caps, devices, name, layout, runner) do
     with {:ok, image} <- ensure_image(caps, runner) do
-      run_container(name, mounts, caps, devices, image, runner)
+      run_container(name, mounts, caps, devices, image, layout, runner)
     end
   end
 
-  # Remove this space's containers left by a BEAM that is no longer running.
-  #
-  # The scratch root is part of the layout, and its path embeds the BEAM's OS pid
-  # (`Nest.Agents.Agent.TmpSpace`), so a restart is a *different* layout and gets
-  # a fresh container: a container's mounts are fixed when it is created, and
-  # reusing one would leave its `/tmp` pointing at the previous BEAM's scratch
-  # directory, which this BEAM never writes to. The superseded container would
-  # otherwise sit there — running `sleep infinity`, holding nothing useful —
-  # until the space is archived or deleted, which on a dev loop means one per
-  # restart. This is the only place that reclaims them.
-  #
-  # Liveness is `/proc/<pid>`, which is Linux-specific — fine, because
-  # `Nest.Application.check_system_dependencies!/0` already requires bwrap, i.e.
-  # Linux. A *live* pid is deliberately kept: two BEAMs can share a space id (a
-  # dev BEAM and a prod BEAM on one daemon, same serial), and neither may remove
-  # the other's container. Only a name in this space's own format is ever a
-  # candidate, so another space's containers and anything unrecognised are left
-  # alone.
-  defp sweep_dead_beams(space_id, runner) do
-    case list_containers(space_id, runner) do
-      {:ok, names} ->
-        Enum.each(names, &sweep_one(&1, space_id, runner))
+  defp run_container(name, mounts, caps, devices, image, layout, runner) do
+    args = run_args(mounts, caps, image, devices, layout)
 
-      {:error, reason} ->
-        # Opportunistic cleanup: the `docker run` this precedes reports the same
-        # daemon failure properly, so this is a debugging line rather than a
-        # second report of it.
-        Logger.debug("#{@log_tag} #{reason}")
-    end
-
-    :ok
-  end
-
-  defp sweep_one(name, space_id, runner) do
-    with {:ok, os_pid} <- beam_pid_of(name, space_id),
-         true <- os_pid != beam_pid() and not File.exists?("/proc/#{os_pid}") do
-      Logger.info("#{@log_tag} removing #{name}: BEAM #{os_pid} is gone")
-      remove_container(name, runner)
-    else
-      # This BEAM's own container, a live BEAM's, or a name that is not this
-      # space's format: not ours to remove.
-      _kept -> :ok
-    end
-  end
-
-  defp run_container(name, mounts, caps, devices, image, runner) do
-    case runner.(["run", "-d", "--name", name | run_args(mounts, caps, image, devices)]) do
+    case runner.(["run", "-d", "--name", name | args]) do
       {_output, 0} -> {:ok, name}
       {output, code} -> adopt_or_fail(name, output, code, runner)
     end
   end
 
   # Two agents can resolve to the same container and race to create it. A refused
-  # `run` because the name is taken is "someone else got there first", not a
-  # failure: re-inspect and use whatever is there.
+  # `run` because the name is taken is "someone else got there first" — and they
+  # built it for the same layout, since the name is a function of the space — so
+  # re-inspect and use whatever is there.
   defp adopt_or_fail(name, output, code, runner) do
-    case status(name, runner) do
+    case inspect_container(name, runner) do
       :missing -> {:error, failure("docker run", name, output, code)}
-      :running -> {:ok, name}
-      :stopped -> start(name, runner)
+      {:ok, %{status: :running}} -> {:ok, name}
+      {:ok, _stopped} -> start(name, runner)
     end
   end
 
@@ -393,8 +461,8 @@ defmodule Nest.Sandbox.Backend.Docker do
           {:ok, tag}
 
         {output, code} ->
-          # The same race as `create/6`: a concurrent build of this tag means the
-          # image exists after all.
+          # The same race as `run_container/7`: a concurrent build of this tag
+          # means the image exists after all.
           case runner.(["image", "inspect", tag]) do
             {_output, 0} -> {:ok, tag}
             {_output, _code} -> {:error, failure("docker build", tag, output, code)}
@@ -426,41 +494,23 @@ defmodule Nest.Sandbox.Backend.Docker do
   # ---- what the container is ----
 
   @doc """
-  The container's name: `nest-space-<space_id>-<BEAM pid>-<hash of the layout>`.
+  The container's name: `nest-space-<space_id>-<installation>`.
 
   `{:error, reason}` when the mounts carry no space: a container shared by
   accident is worse than a clear refusal, and only a caller that built its value
   without one can hit this.
 
-  The BEAM's OS pid is a segment because the layout contains the scratch root,
-  whose path embeds it — a restart is a different layout, and its container has
-  to be a different container (see `sweep_dead_beams/2`). It is also what lets
-  the sweep tell a dead BEAM's container from a live one's.
-
-  `os_pid` is threaded for the tests, which have one BEAM and could otherwise not
-  exercise two.
+  Nothing per-BEAM is in it, which is what lets the container survive a restart
+  and what makes two agents in one space share it; `Nest.Sandbox.Installation` is
+  the last segment so two installations sharing a space id do not adopt each
+  other's container. A name that cannot encode the layout means the layout has to
+  be checked instead — see `layout/3`.
   """
-  @spec container_name(Mounts.t(), map() | nil, [String.t()], String.t()) ::
-          {:ok, String.t()} | {:error, String.t()}
-  def container_name(mounts, caps, devices, os_pid \\ nil) do
+  @spec container_name(Mounts.t()) :: {:ok, String.t()} | {:error, String.t()}
+  def container_name(mounts) do
     case Mounts.space_id(mounts) do
-      id when is_integer(id) ->
-        # The image is part of the signature because it *is* the container's root
-        # filesystem: a `.nest` that changes its `[sandbox] packages` changes the
-        # image, and a container reused across that change would run the old one
-        # (`ensure_image/2` runs only on the create path).
-        signature = {
-          net?(caps),
-          bind_specs(mounts, caps),
-          Mounts.workspace(mounts),
-          devices,
-          image_tag(caps)
-        }
-
-        {:ok, name(id, os_pid || beam_pid(), hash(signature, @name_hash_bytes))}
-
-      _other ->
-        {:error, "A docker sandbox needs the space it belongs to"}
+      id when is_integer(id) -> {:ok, "#{container_prefix(id)}#{Installation.segment()}"}
+      _other -> {:error, "A docker sandbox needs the space it belongs to"}
     end
   end
 
@@ -468,26 +518,67 @@ defmodule Nest.Sandbox.Backend.Docker do
   @spec container_prefix(integer()) :: String.t()
   def container_prefix(space_id), do: "#{@name_prefix}#{space_id}-"
 
-  defp name(space_id, os_pid, hash), do: "#{container_prefix(space_id)}#{os_pid}-#{hash}"
+  @doc """
+  Everything a container's layout depends on, as the label it carries: the binds,
+  the network, the devices and the image. A container is created with all four
+  fixed, so a change to any of them has to be a *different* container; the name
+  cannot say so (it is stable across restarts by design), so this does, and
+  `ensure_container/3` compares it on every call.
 
-  # The BEAM's OS pid, spelled explicitly so an alias for `Nest.Messages.System`
-  # (as several agent modules have) could never change what this means.
-  defp beam_pid, do: Elixir.System.pid()
+  Deliberately excludes anything per-call: two agents in one space with different
+  modes resolve to the same container, which is the point of the container
+  binding the superset.
+  """
+  @spec layout(Mounts.t(), map() | nil, [String.t()]) :: String.t()
+  def layout(mounts, caps, devices) do
+    caps = caps || Sandbox.default_caps()
+
+    hash(
+      {net?(caps), container_binds(mounts), devices, image_tag(caps)},
+      @layout_bytes
+    )
+  end
 
   @doc """
-  The tag of the image derived for `caps`' package set.
+  The binds the container makes, as `{source, dest, mode}` with `source` a host
+  path: the superset a space can need, plus the workspace at the path the caller
+  named when that is not the path the shared bind list uses. See
+  `Nest.Sandbox.Binds.container_specs/1`.
+  """
+  @spec container_binds(Mounts.t()) :: [Binds.spec()]
+  def container_binds(mounts) do
+    Binds.container_specs(mounts) ++ workspace_spelling(mounts, :rw)
+  end
 
-  Keyed on the base reference and the (sorted) package list, so a `.nest` that
-  changes its packages is a different tag and rebuilds on next use.
+  # The workspace at the path the *caller* named, when the shared bind list uses
+  # a different one. `Nest.Sandbox.Binds` binds the canonical path, and under
+  # bwrap the caller's spelling still resolves — the host's `/` is bound
+  # read-only underneath it, so the kernel follows the symlink to the writable
+  # bind. A container sees only the image and the explicit binds, so nothing
+  # resolves it, and every path the model was given names that spelling. So the
+  # container materializes it, and the sandbox inside re-binds it with the call's
+  # own mode, making a write through either spelling equally writable.
+  defp workspace_spelling(%Mounts{workspace: nil}, _mode), do: []
+
+  defp workspace_spelling(%Mounts{workspace: workspace}, mode) do
+    if FSPath.canonical(workspace) == workspace do
+      []
+    else
+      [{workspace, workspace, mode}]
+    end
+  end
+
+  @doc """
+  The tag of the image derived for `caps`' package set: keyed on the base
+  reference and the sorted package list, so a `.nest` that changes its packages
+  is a different tag and rebuilds on next use.
   """
   @spec image_tag(map() | nil) :: String.t()
   def image_tag(caps), do: @image_prefix <> hash({@base_image, packages(caps)}, @image_hash_bytes)
 
   @doc """
-  The generated Dockerfile for `caps`' package set.
-
-  One `RUN`, so the layer is a single apt transaction and the lists are not left
-  behind; `--no-install-recommends` keeps the image close to what was asked for.
+  The generated Dockerfile for `caps`' package set: one `RUN`, so the layer is a
+  single apt transaction and the lists are not left behind.
   """
   @spec dockerfile(map() | nil) :: String.t()
   def dockerfile(caps) do
@@ -500,104 +591,47 @@ defmodule Nest.Sandbox.Backend.Docker do
   end
 
   @doc """
-  The `docker run` arguments after `-d --name <name>`: the network flag, the
-  binds, the devices, the working directory, the image, and its keep-alive.
+  The `docker run` arguments after `-d --name <name>`: the flags bwrap needs, the
+  network, the layout label, the binds, the devices, the working directory, the
+  image, and its keep-alive.
   """
   @spec run_args(Mounts.t(), map() | nil, String.t(), [String.t()]) :: [String.t()]
   def run_args(mounts, caps, image, devices) do
-    net_args(caps) ++
-      bind_args(mounts, caps) ++
+    run_args(mounts, caps, image, devices, layout(mounts, caps, devices))
+  end
+
+  @doc "`run_args/4` with the layout already computed, so a caller that has it does not hash the bind list again."
+  @spec run_args(Mounts.t(), map() | nil, String.t(), [String.t()], String.t()) :: [String.t()]
+  def run_args(mounts, caps, image, devices, layout) do
+    @container_flags ++
+      net_args(caps) ++
+      ["--label", "#{@layout_label}=#{layout}"] ++
+      bind_args(mounts) ++
       Enum.flat_map(devices, &["--device", &1]) ++
       workdir_args(mounts) ++
       [image, "sleep", "infinity"]
   end
 
-  @doc """
-  The binds this call makes, as `{source, dest, mode}` with `mode` `"rw"`/`"ro"`,
-  in the order they must be applied.
-
-  This mirrors `Nest.Sandbox.build/2`'s derivation of the same set — the workspace
-  bind, the extra `caps.fs.write` paths, the scratch bind at `/tmp`, the `.nest`
-  project mounts, and the read-only `.nest` mask — because both backends must
-  bind the *same* things; only the spelling differs (`--bind`/`--ro-bind` there,
-  `-v` here). The difference is the readable roots: bwrap binds the host's `/`
-  read-only and docker has no such bind, which is what
-  `Nest.Sandbox.Backend.DockerTest` pins as the one intended divergence.
-  """
-  @spec bind_specs(Mounts.t(), map() | nil) :: [{String.t(), String.t(), String.t()}]
-  def bind_specs(mounts, caps) do
-    caps = normalize_caps(caps)
-    workspace = Mounts.workspace(mounts)
-    writes = write_list(caps)
-
-    workspace_bind(workspace, writes) ++
-      extra_write_binds(caps, workspace) ++
-      scratch_bind(mounts, writes) ++
-      project_binds(caps) ++
-      protected_binds(caps)
+  # The container's binds, plus the staging directory the BEAM stages command
+  # transcripts in — read-only, because the agent can write `/tmp` and a writable
+  # staging bind would be a host write path.
+  defp bind_args(mounts) do
+    (container_binds(mounts) ++ staging_bind(mounts))
+    |> Enum.map(fn {source, dest, mode} -> ["-v", "#{source}:#{dest}:#{mode_name(mode)}"] end)
+    |> List.flatten()
   end
 
-  defp workspace_bind(workspace, writes) when is_binary(workspace) do
-    [{workspace, workspace, write_mode(":workspace" in writes)}]
+  defp staging_bind(mounts) do
+    [{stage_dir(mounts), Paths.docker_stage_dir_sandbox(), :ro}]
   end
 
-  defp workspace_bind(_workspace, _writes), do: []
-
-  defp scratch_bind(%Mounts{scratch: nil}, _writes), do: []
-
-  defp scratch_bind(%Mounts{scratch: scratch}, writes) do
-    [{Paths.scratch_root(scratch), Paths.sandbox_root(), write_mode("/tmp" in writes)}]
-  end
-
-  defp extra_write_binds(caps, workspace) do
-    bound = already_bound(caps, workspace)
-
-    caps
-    |> write_list()
-    |> Enum.reject(&(&1 in bound))
-    |> Enum.map(&FSPath.canonical/1)
-    |> Enum.uniq()
-    |> Enum.map(&{&1, &1, "rw"})
-  end
-
-  # The paths a dedicated step already binds.
-  defp already_bound(caps, workspace) do
-    [":workspace", "/tmp"] ++
-      if(is_binary(workspace), do: [workspace, FSPath.canonical(workspace)], else: []) ++
-      Enum.map(project_list(caps), & &1["dest"]) ++
-      Enum.map(protected_list(caps), & &1["path"])
-  end
-
-  defp project_binds(caps) do
-    caps
-    |> project_list()
-    |> Enum.filter(&is_binary(&1["source"]))
-    |> Enum.map(fn %{"dest" => dest, "source" => source} -> {source, dest, "rw"} end)
-  end
-
-  defp protected_binds(caps) do
-    caps
-    |> protected_list()
-    |> Enum.flat_map(fn %{"path" => path, "source" => source} -> [{source, path, "ro"}] end)
-  end
-
-  defp write_mode(true), do: "rw"
-  defp write_mode(false), do: "ro"
-
-  defp bind_args(mounts, caps) do
-    mounts
-    |> bind_specs(caps)
-    |> Enum.flat_map(fn {source, dest, mode} -> ["-v", "#{source}:#{dest}:#{mode}"] end)
-  end
+  defp mode_name(:rw), do: "rw"
+  defp mode_name(:ro), do: "ro"
 
   defp net_args(caps), do: if(net?(caps), do: [], else: ["--network", "none"])
 
-  defp workdir_args(mounts) do
-    case Mounts.workspace(mounts) do
-      nil -> []
-      workspace -> ["-w", workspace]
-    end
-  end
+  defp workdir_args(%Mounts{workspace: nil}), do: []
+  defp workdir_args(%Mounts{workspace: workspace}), do: ["-w", workspace]
 
   @doc """
   The packages the derived image installs: the base set plus the project's.
@@ -606,16 +640,7 @@ defmodule Nest.Sandbox.Backend.Docker do
   def packages(caps),
     do: Enum.sort(Enum.uniq(@base_packages ++ ProjectConfig.sandbox_packages(caps)))
 
-  # `caps: nil` means the legacy default profile, exactly as
-  # `ShellCmd.execute/4` documents.
-  defp normalize_caps(nil), do: Sandbox.default_caps()
-  defp normalize_caps(caps), do: caps
-
   defp net?(caps), do: get_in(caps, ["net"]) == true
-
-  defp write_list(caps), do: get_in(caps, ["fs", "write"]) || []
-  defp project_list(caps), do: get_in(caps, ["fs", "project"]) || []
-  defp protected_list(caps), do: get_in(caps, ["fs", "protected"]) || []
 
   # ---- the daemon ----
 
@@ -623,12 +648,30 @@ defmodule Nest.Sandbox.Backend.Docker do
   The default runner: `docker <argv>` on the host, with stderr folded into the
   output so a failure message is what the caller reports.
 
-  The only line of this module the suite does not execute — `config/test.exs`
-  installs an inert runner for the test environment, because the suite must never
-  talk to a daemon (see the moduledoc).
+  The one line of this module the suite does not execute — `config/test.exs`
+  installs an inert runner, because the suite must never talk to a daemon.
   """
   @spec system([String.t()]) :: {String.t(), non_neg_integer()}
   def system(argv), do: System.cmd("docker", argv, stderr_to_stdout: true)
+
+  @doc """
+  Run `argv` against the daemon with the configured runner, returning
+  `{output, exit_code}`.
+
+  `opts` takes the same `:runner` as `ensure_container/3` — the injectable seam
+  the callers that have no lifecycle of their own are tested through.
+
+  The lifecycle goes through the `:runner` option instead; this is for the one
+  caller with no lifecycle of its own — a background job's log lives in the
+  container, so reading or removing it is a `docker exec`
+  (`Nest.Sandbox.ShellJobs.JobLog`). Going through the configured runner keeps
+  that on the same seam, so the suite still never talks to a daemon.
+  """
+  @spec run([String.t()], keyword()) :: {String.t(), non_neg_integer()}
+  def run(argv, opts \\ []) do
+    runner = Keyword.get_lazy(opts, :runner, &default_runner/0)
+    runner.(argv)
+  end
 
   defp default_runner, do: Application.get_env(:nest, :docker_runner, &system/1)
 

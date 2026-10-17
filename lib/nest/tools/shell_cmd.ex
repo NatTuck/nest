@@ -112,16 +112,16 @@ defmodule Nest.Tools.ShellCmd do
           {:ok, String.t()} | {:error, String.t()}
   def execute(command, mounts, caps \\ nil, opts \\ []) do
     with {:ok, mounts} <- validate_workspace(mounts),
-         {:ok, spec, script} <- build_command(command, mounts, caps) do
-      dispatch(command, script, spec, mounts, caps, opts)
+         {:ok, spec, script, script_sandbox} <- build_command(command, mounts, caps) do
+      dispatch(command, spec, script, script_sandbox, mounts, caps, opts)
     end
   end
 
   # Foreground vs background selection for a built command, kept out of
   # `execute/4` to hold its ABC size down.
-  defp dispatch(command, script, spec, mounts, caps, opts) do
+  defp dispatch(command, spec, script, script_sandbox, mounts, caps, opts) do
     if Keyword.get(opts, :background, false) do
-      run_background(command, script, spec, mounts, caps, opts)
+      run_background(command, script, script_sandbox, mounts, caps, opts)
     else
       timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
       stdin = normalize_stdin(Keyword.get(opts, :stdin))
@@ -158,7 +158,7 @@ defmodule Nest.Tools.ShellCmd do
     stdin = normalize_stdin(Keyword.get(opts, :stdin))
 
     with {:ok, mounts} <- validate_workspace(mounts),
-         {:ok, spec, script} <- build_command(command, mounts, caps) do
+         {:ok, spec, script, _script_sandbox} <- build_command(command, mounts, caps) do
       try do
         run_with_erlexec_raw(spec, timeout, stdin)
       after
@@ -172,15 +172,20 @@ defmodule Nest.Tools.ShellCmd do
   # before anything is written, and when the command cannot be built (e.g. a
   # workspace under the scratch bind) the staged script is removed and the
   # reason is returned rather than raised.
+  #
+  # Returns the spec, the staged file's host path, and the spelling the backend
+  # hands the shell. The last one is only needed by a background job, whose
+  # command line is built later (by `Nest.Sandbox.ShellJobs.Launcher`, which
+  # knows the log path) — so it travels rather than being derived a second time.
   defp build_command(command, mounts, caps) do
     case Backend.resolve(mounts) do
       {:ok, _backend} ->
         Mounts.ensure_scratch!(mounts)
-        {script, script_path} = stage_script(command, mounts)
+        {script, script_sandbox} = stage_script(command, mounts)
 
-        case Backend.command(mounts, caps, script_path) do
+        case Backend.command(mounts, caps, script_sandbox) do
           {:ok, spec} ->
-            {:ok, spec, script}
+            {:ok, spec, script, script_sandbox}
 
           {:error, reason} ->
             File.rm(script)
@@ -209,10 +214,15 @@ defmodule Nest.Tools.ShellCmd do
 
   # Start the command as a background job and either report an immediate
   # exit (within the grace window) as a normal result, or hand the caller a
-  # job handle. `ShellJobs` removes the job's staged script when the job ends;
-  # the backend's spelling of the script is only used to build the command
-  # line.
-  defp run_background(command, script, spec, mounts, caps, opts) do
+  # job handle. `ShellJobs` removes the job's staged script when the job ends.
+  #
+  # The command line is the *launcher's* to build rather than this module's: a
+  # job's output also has to reach its log file inside the environment, and for
+  # the docker backend that means the command itself writes it — which needs the
+  # log path, which the manager allocates. So the launcher is handed what the
+  # backend needs (`caps` and the script's sandbox spelling) and asks for a job
+  # spec (`Nest.Sandbox.Backend.job_spec/4`).
+  defp run_background(command, script, script_sandbox, mounts, caps, opts) do
     if is_nil(Mounts.scratch(mounts)) do
       File.rm(script)
       {:error, "Background jobs require a tmp directory"}
@@ -229,8 +239,8 @@ defmodule Nest.Tools.ShellCmd do
              agent_key: agent_key,
              agent_pid: Keyword.get(opts, :agent_pid),
              command: command,
-             command_line: spec.command,
-             cd: spec.cd,
+             caps: caps,
+             script_sandbox: script_sandbox,
              script_path: script,
              mounts: mounts,
              max_jobs: background_cap(caps)

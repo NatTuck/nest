@@ -392,9 +392,11 @@ defmodule Nest.ProjectConfig do
   # workspace. When the file is absent we mask `/dev/null` over the
   # path so an agent can't create one (which would be picked up on the
   # next spawn and grant it extra host access). The mask is a real bind
-  # inside the sandbox, so `stat`/`read` see the char device directly.
-  # A backend that binds nothing has nothing to mask with (see the
-  # moduledoc's Gating section).
+  # inside the sandbox, so `stat`/`read` see the char device directly —
+  # and, because bwrap's `--ro-bind` mounts with `nodev`, *reading* it
+  # fails with `EACCES` rather than returning empty bytes. That is what
+  # both binding backends do, identically. A backend that binds nothing
+  # has nothing to mask with (see the moduledoc's Gating section).
   defp protected_entries(workspace) do
     nest = Path.join(canonical_ws(workspace), @file_name)
     source = if File.exists?(nest), do: nest, else: "/dev/null"

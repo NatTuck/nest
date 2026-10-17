@@ -37,6 +37,15 @@ defmodule Nest.Sandbox.Backend.None do
   end
 
   @doc """
+  A background job's command line: the same as `command/3`, because this
+  environment *is* the host — the job's log is a file the manager writes
+  directly.
+  """
+  @spec job_spec(Mounts.t(), map() | nil, String.t(), String.t()) ::
+          {:ok, Nest.Sandbox.Backend.spec()} | {:error, String.t()}
+  def job_spec(mounts, caps, script, _log_path), do: command(mounts, caps, script)
+
+  @doc """
   The host staging directory: `Nest.Sandbox.Paths.stage_dir/1`'s
   no-scratch-bind form, because a `"none"` space has no scratch bind at all
   (its scratch *is* the host's `/tmp`).
