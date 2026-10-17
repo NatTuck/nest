@@ -48,7 +48,9 @@ defmodule Nest.Tools.SpawnAgent do
       "(one-shot). Use `agents-wait` to wait for the new agent to finish. " <>
       "Spawned vocations may be restricted by this space's blueprint. " <>
       "Sub-agents can be spawned down to a maximum depth of " <>
-      "#{Config.configured_max_depth()}. Set `model` to a " <>
+      "#{Config.configured_max_depth()}. `mode` sets the mode the new agent " <>
+      "starts in (it inherits your own when omitted, and may not exceed it). " <>
+      "Set `model` to a " <>
       "\"provider/model-name\" string (e.g. as returned by `models-list`) " <>
       "to spawn the child on a specific model; it inherits your own model " <>
       "when omitted."
@@ -90,6 +92,14 @@ defmodule Nest.Tools.SpawnAgent do
           "description" =>
             "When true (with `query`), stop and archive the agent after it " <>
               "responds. Makes the spawn one-shot."
+        },
+        "mode" => %{
+          "type" => "string",
+          "enum" => ["mine", "plan", "act"],
+          "description" =>
+            "Optional: the mode the new agent starts in. `\"mine\"` — the " <>
+              "default — means your own. You may not spawn an agent with more " <>
+              "permission than you have: only the user can raise a mode."
         },
         "model" => %{
           "type" => "string",

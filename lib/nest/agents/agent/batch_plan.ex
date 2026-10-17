@@ -97,7 +97,11 @@ defmodule Nest.Agents.Agent.BatchPlan do
       clone_context: false,
       model: Map.get(args, "model", ""),
       query: "",
-      archive: Map.get(args, "archive", true)
+      archive: Map.get(args, "archive", true),
+      # Every child of a batch runs in this mode. `"mine"` (the sender's own) is
+      # resolved by `Nest.Agents.Agent.PreSpawn`, which is where a spawn's mode is
+      # decided and where the monotone rule is applied.
+      mode: Map.get(args, "set_mode")
     }
   end
 

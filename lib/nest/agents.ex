@@ -343,9 +343,27 @@ defmodule Nest.Agents do
   """
   @spec send_message(integer(), String.t(), String.t(), String.t(), Agent.Inbox.kind()) ::
           {:ok, :delivered | :queued} | {:error, term()}
-  def send_message(space_id, from_name, name, content, kind \\ :agent) do
+  def send_message(space_id, from_name, name, content, kind \\ :agent, mode \\ nil) do
     case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> Agent.deliver_message(pid, from_name, content, kind)
+      {:ok, pid} -> Agent.deliver_message(pid, from_name, content, kind, mode)
+      {:error, _} = err -> err
+    end
+  end
+
+  @doc """
+  Set the mode of the named agent in this space, on the **human's** behalf.
+
+  This is the one path that may raise a mode: the rule that bounds an agent's own
+  changes is `Nest.Agents.Agent.ModeAuthority`, and the human is above it. The
+  mode is persisted, so it does not have to ride a message — and it applies
+  immediately when the agent is idle. `{:error, :agent_busy}` means it is
+  mid-turn: a mode applies at a settle, and a turn already running is under the
+  old one, so the caller retries.
+  """
+  @spec set_mode(integer(), String.t(), String.t()) :: :ok | {:error, term()}
+  def set_mode(space_id, name, mode) do
+    case Supervisor.get_agent(space_id, name) do
+      {:ok, pid} -> Agent.set_mode(pid, mode, :human)
       {:error, _} = err -> err
     end
   end
