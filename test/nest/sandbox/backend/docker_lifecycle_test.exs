@@ -1,120 +1,128 @@
 defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
   @moduledoc """
-  What the docker backend asks the daemon to do: the exec line, the container's
-  lifecycle, the dead-BEAM sweep, and removal — all against a fake runner, so the
-  suite never talks to a daemon.
+  What the docker backend asks the daemon to do: the container's lifecycle and
+  removal — all against a fake runner, so the suite never talks to a daemon.
 
   The pure decisions (the container's name and layout, the image, the binds, the
-  `run` arguments) are in `Nest.Sandbox.Backend.DockerTest`.
+  `run` arguments, the command line) are in `Nest.Sandbox.Backend.DockerTest`.
   """
 
   use ExUnit.Case, async: true
 
   import Nest.Sandbox.Backend.DockerTestHelpers
 
-  alias Nest.Sandbox.Backend
   alias Nest.Sandbox.Backend.Docker
   alias Nest.Sandbox.Mounts
 
-  # A pid above any real `pid_max`, so `/proc/<pid>` cannot exist.
-  @dead_pid "999999999"
-
-  # ---- the command line ----
-
-  describe "command/3" do
-    test "is docker exec with the container, stdin and the staged script" do
-      assert {:ok, %{command: command, cd: nil}} =
-               Docker.command(mounts("/ws", scratch()), caps(), "/tmp/.cmds/nest-cmd-1.sh")
-
-      assert command =~
-               ~r/\Adocker exec -i nest-space-7-\d+-[0-9a-f]{8} \/bin\/bash '\/tmp\/\.cmds\/nest-cmd-1\.sh'\z/
-    end
-
-    test "refuses to build a command with no scratch bind" do
-      # The staged transcript has to be reachable *inside* the container, and only
-      # the scratch bind puts it there: without it the staging directory is the
-      # host's own `<tmp>/.nest-cmds`, which the container cannot see at all —
-      # bash would exit 127, the failure would classify as `:enoent` (an ordinary
-      # not-found, deliberately not logged), and a caller like the system prompt
-      # would swallow it. Refusing is what makes the next such caller loud.
-      assert {:error, reason} =
-               Docker.command(mounts("/ws", nil), caps(), "/tmp/.nest-cmds/x.sh")
-
-      assert reason =~ "needs the agent's scratch bind"
-    end
-
-    test "stages where the container can reach the transcript" do
-      write = scratch()
-      mounts = mounts("/ws", write)
-      space_dir = Path.dirname(write)
-
-      staged = Backend.stage_dir(mounts)
-      handed = Backend.stage_dir_sandbox(mounts)
-
-      # Staged inside the space scratch root — the directory the container gets at
-      # `/tmp` — and handed to bash as that same file's `/tmp` spelling.
-      assert staged == Path.join(space_dir, ".cmds")
-      assert String.starts_with?(staged, space_dir <> "/")
-      assert handed == "/tmp/.cmds"
-      assert handed == String.replace_prefix(staged, space_dir, "/tmp")
-
-      assert {:ok, %{command: command}} =
-               Docker.command(mounts, caps(), Path.join(handed, "nest-cmd-1.sh"))
-
-      assert command =~ "'/tmp/.cmds/nest-cmd-1.sh'"
-    end
-
-    test "escapes a script path that needs it" do
-      assert {:ok, %{command: command}} =
-               Docker.command(mounts("/ws", scratch()), caps(), "/tmp/.cmds/it's.sh")
-
-      assert command =~ ~r/'\/tmp\/\.cmds\/it'\\''s\.sh'\z/
-    end
-
-    test "reports a container that cannot be created instead of returning one" do
-      # The image is there (the default answer), `run` is refused, and the
-      # re-inspect still says missing — so this is a real failure, not a race.
-      runner =
-        scripted_runner(%{["inspect"] => {"No such object\n", 1}, ["run"] => {"boom\n", 1}})
-
-      assert {:error, reason} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      assert reason =~ "docker run failed"
-      assert reason =~ "boom"
-    end
-  end
+  # The one `docker inspect` the lifecycle makes about an existing container:
+  # the status *and* the layout label, in a single call. Spelled out here rather
+  # than read back from the module, because it is the thing that keeps a call
+  # from having to inspect twice.
+  @inspect_format ~s({{.State.Status}}|{{index .Config.Labels "nest.layout"}})
 
   # ---- the lifecycle ----
 
   describe "ensure_container/3" do
-    test "reuses a running container without touching the image" do
-      runner = scripted_runner(%{["inspect"] => {"running\n", 0}})
-      write = scratch()
+    test "reuses a running container whose layout matches, in one inspect" do
+      mounts = mounts("/ws")
+      runner = scripted_runner(existing(mounts, caps()))
 
-      assert {:ok, name} = Docker.ensure_container(mounts("/ws", write), caps(), runner: runner)
-      assert {:ok, ^name} = Docker.ensure_container(mounts("/ws", write), caps(), runner: runner)
+      assert {:ok, name} = Docker.ensure_container(mounts, caps(), runner: runner)
+      assert {:ok, ^name} = Docker.ensure_container(mounts, caps(), runner: runner)
 
-      # Two inspects, no create: that is what "shared by the space" means.
+      # Two calls, one inspect each, no create: that is what "shared by the
+      # space" means, and the layout check rides along for free.
       assert calls() == [
-               ["inspect", "--format", "{{.State.Status}}", name],
-               ["inspect", "--format", "{{.State.Status}}", name]
+               ["inspect", "--format", @inspect_format, name],
+               ["inspect", "--format", @inspect_format, name]
              ]
     end
 
     test "starts an existing but stopped container" do
-      runner = scripted_runner(%{["inspect"] => {"exited\n", 0}, ["start"] => {"", 0}})
+      runner =
+        scripted_runner(Map.put(existing(mounts("/ws"), caps(), "exited"), ["start"], {"", 0}))
 
-      assert {:ok, name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
+      assert {:ok, name} = Docker.ensure_container(mounts("/ws"), caps(), runner: runner)
 
       assert calls() == [
-               ["inspect", "--format", "{{.State.Status}}", name],
+               ["inspect", "--format", @inspect_format, name],
                ["start", name]
              ]
     end
 
+    test "replaces a container whose layout no longer matches" do
+      # A container's binds, image and network are fixed when it is created, and
+      # the name is stable across restarts, so the layout cannot be in the name:
+      # the label is what says a container has to be replaced rather than started.
+      # Here the space could reach the network when this one was built.
+      mounts = mounts("/ws")
+      stale = Docker.layout(mounts, caps(net: true), [])
+
+      runner =
+        scripted_runner(%{
+          ["inspect"] => {"running|#{stale}\n", 0},
+          ["rm"] => {"", 0},
+          ["image"] => {"", 0},
+          ["run"] => {"", 0}
+        })
+
+      assert {:ok, name} = Docker.ensure_container(mounts, caps(), runner: runner)
+
+      assert [
+               ["inspect", "--format", @inspect_format, ^name],
+               ["rm", "-f", ^name],
+               ["image", "inspect", _tag],
+               ["run", "-d", "--name", ^name | _args]
+             ] = calls()
+    end
+
+    test "replaces a container that carries no layout at all" do
+      # One from another build of Nest, or one someone made by hand: it cannot be
+      # trusted to have this call's binds, so it goes.
+      runner =
+        scripted_runner(%{
+          ["inspect"] => {"running|\n", 0},
+          ["rm"] => {"", 0},
+          ["image"] => {"", 0},
+          ["run"] => {"", 0}
+        })
+
+      assert {:ok, _name} = Docker.ensure_container(mounts("/ws"), caps(), runner: runner)
+      assert ["rm", "-f", _name] = call_with(["rm"])
+    end
+
+    test "refuses rather than adopting a container it could not remove" do
+      # `docker rm -f` can fail (a paused container). Adopting what is left would
+      # run this call in the environment the container was built for, which is
+      # exactly what the layout check just said it must not do.
+      mounts = mounts("/ws")
+      stale = Docker.layout(mounts, caps(net: true), [])
+
+      runner =
+        scripted_runner(%{
+          ["inspect"] => {"running|#{stale}\n", 0},
+          ["rm"] => {"Error response from daemon: container is paused\n", 1}
+        })
+
+      # The failure is logged by the removal *and* returned, so the caller can
+      # report it; capture the line rather than letting it print. Inclusion only:
+      # `capture_log` is not process-scoped, so an absence assertion would test
+      # nothing.
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:error, reason} = Docker.ensure_container(mounts, caps(), runner: runner)
+          assert reason =~ "docker rm -f failed"
+          assert reason =~ "container is paused"
+        end)
+
+      assert log =~ "could not remove container"
+      refute call_with(["run"])
+    end
+
     test "creates the container when it is missing, building the image first" do
+      mounts = mounts("/ws")
+      caps = caps()
+
       runner =
         scripted_runner(%{
           ["inspect"] => {"No such object\n", 1},
@@ -123,22 +131,19 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
           ["run"] => {"container-id\n", 0}
         })
 
-      write = scratch()
+      assert {:ok, name} = Docker.ensure_container(mounts, caps, runner: runner)
 
-      assert {:ok, name} = Docker.ensure_container(mounts("/ws", write), caps(), runner: runner)
-
-      tag = Docker.image_tag(caps())
+      tag = Docker.image_tag(caps)
 
       assert [
-               ["inspect", "--format", "{{.State.Status}}", ^name],
-               ["ps" | _],
+               ["inspect", "--format", @inspect_format, ^name],
                ["image", "inspect", ^tag],
                ["build", "-t", ^tag, context],
                ["run", "-d", "--name", ^name | run_args]
              ] = calls()
 
       assert context =~ ~r|/nest-docker-build-\d+\z|
-      assert run_args == Docker.run_args(mounts("/ws", write), caps(), tag, [])
+      assert run_args == Docker.run_args(mounts, caps, tag, [])
     end
 
     test "skips the build when the image already exists" do
@@ -149,28 +154,31 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
           ["run"] => {"", 0}
         })
 
-      assert {:ok, _name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
+      assert {:ok, _name} = Docker.ensure_container(mounts("/ws"), caps(), runner: runner)
 
       refute Enum.any?(calls(), &match?(["build" | _], &1))
     end
 
     test "adopts a container a racing agent created" do
+      # Two agents can resolve to the same container and race to create it. A
+      # refused `run` because the name is taken is "someone else got there
+      # first" — and they built it for the same layout, because the name is a
+      # function of the space.
+      mounts = mounts("/ws")
+      layout = Docker.layout(mounts, caps(), [])
+
       runner =
         sequenced_runner(fn argv, n ->
           case {argv, n} do
             {["inspect" | _], 1} -> {"No such object\n", 1}
-            {["ps" | _], _} -> {"", 0}
             {["image" | _], _} -> {"", 0}
             {["run" | _], _} -> {"Conflict. The container name is already in use\n", 125}
-            {["inspect" | _], _} -> {"running\n", 0}
+            {["inspect" | _], _} -> {"running|#{layout}\n", 0}
           end
         end)
 
-      assert {:ok, name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      assert name =~ ~r/\Anest-space-#{space_id()}-/
+      assert {:ok, name} = Docker.ensure_container(mounts, caps(), runner: runner)
+      assert name == Docker.container_name(mounts) |> elem(1)
     end
 
     test "adopts an image a racing agent built" do
@@ -178,16 +186,14 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
         sequenced_runner(fn argv, n ->
           case {argv, n} do
             {["inspect" | _], 1} -> {"No such object\n", 1}
-            {["ps" | _], _} -> {"", 0}
-            {["image" | _], 3} -> {"No such image\n", 1}
+            {["image" | _], 2} -> {"No such image\n", 1}
             {["build" | _], _} -> {"", 1}
             {["image" | _], _} -> {"", 0}
             {["run" | _], _} -> {"", 0}
           end
         end)
 
-      assert {:ok, _name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
+      assert {:ok, _name} = Docker.ensure_container(mounts("/ws"), caps(), runner: runner)
     end
 
     test "keeps a long daemon message bounded" do
@@ -200,8 +206,7 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
           ["build"] => {String.duplicate("E: no\n", 500), 100}
         })
 
-      assert {:error, reason} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
+      assert {:error, reason} = Docker.ensure_container(mounts("/ws"), caps(), runner: runner)
 
       assert reason =~ "docker build failed"
       assert String.length(reason) < 600
@@ -216,11 +221,22 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
           ["build"] => {"E: Unable to locate package nodejs\n", 100}
         })
 
-      assert {:error, reason} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
+      assert {:error, reason} = Docker.ensure_container(mounts("/ws"), caps(), runner: runner)
 
       assert reason =~ "docker build failed"
       assert reason =~ "Unable to locate package nodejs"
+    end
+
+    test "reports a container that cannot be created instead of returning one" do
+      # The image is there (the default answer), `run` is refused, and the
+      # re-inspect still says missing — so this is a real failure, not a race.
+      runner =
+        scripted_runner(%{["inspect"] => {"No such object\n", 1}, ["run"] => {"boom\n", 1}})
+
+      assert {:error, reason} = Docker.ensure_container(mounts("/ws"), caps(), runner: runner)
+
+      assert reason =~ "docker run failed"
+      assert reason =~ "boom"
     end
 
     test "leaves no build context behind" do
@@ -231,8 +247,7 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
           ["run"] => {"", 0}
         })
 
-      assert {:ok, _name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
+      assert {:ok, _name} = Docker.ensure_container(mounts("/ws"), caps(), runner: runner)
 
       assert Path.wildcard(Path.join(System.tmp_dir!(), "nest-docker-build-*")) == []
     end
@@ -247,172 +262,23 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
     end
   end
 
-  describe "the dead-BEAM sweep" do
-    test "removes a dead BEAM's container before creating this one" do
-      dead = "nest-space-#{space_id()}-#{@dead_pid}-aaaaaaaa"
-
-      runner =
-        scripted_runner(%{
-          ["inspect"] => {"No such object\n", 1},
-          ["ps"] => {"#{dead}\n", 0},
-          ["image"] => {"", 0},
-          ["run"] => {"", 0},
-          ["rm"] => {"", 0}
-        })
-
-      assert {:ok, _name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      # The removal is a step of its own, before the create.
-      assert [
-               ["inspect", "--format", "{{.State.Status}}", _name],
-               ["ps" | _],
-               ["rm", "-f", ^dead],
-               ["image" | _],
-               ["run" | _]
-             ] = calls()
-    end
-
-    test "names the BEAM it is reclaiming for in its log line" do
-      # The sweep logs each removal at `:info` with the pid it is reclaiming for,
-      # so an operator can watch it work. That line is deliberately *not* asserted
-      # here: the test logger is configured at `:warning`, so an `:info` line is
-      # never generated at all — `capture_log/2` cannot capture it, with or without
-      # `level: :info`, and lowering the primary level would race the async suite.
-      # (Measured, not assumed: all three forms return "" in this suite.) The
-      # observable the test can have is the removal itself, above; what this pins
-      # is that the sweep parses the name for the pid, which is what the line
-      # reports.
-      dead = "nest-space-#{space_id()}-#{@dead_pid}-aaaaaaaa"
-
-      runner =
-        scripted_runner(%{
-          ["inspect"] => {"No such object\n", 1},
-          ["ps"] => {"#{dead}\n", 0},
-          ["image"] => {"", 0},
-          ["run"] => {"", 0},
-          ["rm"] => {"", 0}
-        })
-
-      assert {:ok, _name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      assert ["rm", "-f", ^dead] = Enum.find(calls(), &match?(["rm" | _], &1))
-    end
-
-    test "keeps this BEAM's own container" do
-      mine = "nest-space-#{space_id()}-#{Elixir.System.pid()}-aaaaaaaa"
-
-      runner =
-        scripted_runner(%{
-          ["inspect"] => {"No such object\n", 1},
-          ["ps"] => {"#{mine}\n", 0},
-          ["image"] => {"", 0},
-          ["run"] => {"", 0}
-        })
-
-      assert {:ok, _name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      refute Enum.any?(calls(), &match?(["rm" | _], &1))
-    end
-
-    test "keeps another live BEAM's container" do
-      # Two BEAMs can share a space id — a dev BEAM and a prod BEAM on one
-      # daemon, same serial — and neither may remove the other's container. `/proc/1`
-      # is the one pid that is certainly live and certainly not this BEAM's.
-      other = "nest-space-#{space_id()}-1-aaaaaaaa"
-
-      runner =
-        scripted_runner(%{
-          ["inspect"] => {"No such object\n", 1},
-          ["ps"] => {"#{other}\n", 0},
-          ["image"] => {"", 0},
-          ["run"] => {"", 0}
-        })
-
-      assert {:ok, _name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      refute Enum.any?(calls(), &match?(["rm" | _], &1))
-    end
-
-    test "never touches a name that is not this space's exact format" do
-      # Another space's container, an older naming scheme, a name someone made
-      # up, and a name with the pid in the wrong place.
-      strangers = [
-        "nest-space-#{space_id() + 1}-#{@dead_pid}-aaaaaaaa",
-        "nest-space-#{space_id()}-aaaaaaaa",
-        "nest-space-#{space_id()}-#{@dead_pid}-NOTHEX!!",
-        "not-a-nest-container",
-        "#{@dead_pid}-nest-space-#{space_id()}-aaaaaaaa"
-      ]
-
-      runner =
-        scripted_runner(%{
-          ["inspect"] => {"No such object\n", 1},
-          ["ps"] => {Enum.join(strangers, "\n") <> "\n", 0},
-          ["image"] => {"", 0},
-          ["run"] => {"", 0}
-        })
-
-      assert {:ok, _name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      refute Enum.any?(calls(), &match?(["rm" | _], &1))
-    end
-
-    test "does not sweep when the container is reused" do
-      runner = scripted_runner(%{["inspect"] => {"running\n", 0}})
-
-      assert {:ok, _name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      refute Enum.any?(calls(), &match?(["ps" | _], &1))
-    end
-
-    test "does not sweep when the container is merely started" do
-      runner = scripted_runner(%{["inspect"] => {"exited\n", 0}, ["start"] => {"", 0}})
-
-      assert {:ok, _name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      refute Enum.any?(calls(), &match?(["ps" | _], &1))
-    end
-
-    test "a daemon that cannot list does not stop the create" do
-      runner =
-        scripted_runner(%{
-          ["inspect"] => {"No such object\n", 1},
-          ["ps"] => {"Cannot connect to the Docker daemon\n", 1},
-          ["image"] => {"", 0},
-          ["run"] => {"", 0}
-        })
-
-      # The `run` that follows reports the same daemon failure properly, so the
-      # sweep's failure is a debugging line rather than a second report of it —
-      # and it must not turn a working create into an error.
-      assert {:ok, _name} =
-               Docker.ensure_container(mounts("/ws", scratch()), caps(), runner: runner)
-
-      assert Enum.any?(calls(), &match?(["run" | _], &1))
-    end
-  end
-
   describe "remove_space/2" do
     test "removes only this space's containers, by name" do
-      other = "nest-space-#{space_id() + 1}-999999999-deadbeef"
+      mine = "nest-space-#{space_id()}-nest_dev"
+      other_installation = "nest-space-#{space_id()}-nest_test"
+      other_space = "nest-space-#{space_id() + 1}-nest_dev"
 
       runner =
         scripted_runner(%{
-          ["ps"] => {"nest-space-#{space_id()}-999999999-aaaaaaaa\n#{other}\nnot-ours\n", 0},
+          ["ps"] => {"#{mine}\n#{other_installation}\n#{other_space}\nnot-ours\n", 0},
           ["rm"] => {"", 0}
         })
 
       assert :ok = Docker.remove_space(space_id(), runner: runner)
 
-      # The filter narrows the list and the pattern decides: another space's
-      # container, and anything else the daemon happens to match, is left alone.
+      # The filter narrows the list and the pattern decides: every installation
+      # of *this* space (archiving a space releases all of them), and nothing
+      # else the daemon's substring filter happened to match.
       assert calls() == [
                [
                  "ps",
@@ -422,8 +288,25 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
                  "--format",
                  "{{.Names}}"
                ],
-               ["rm", "-f", "nest-space-#{space_id()}-999999999-aaaaaaaa"]
+               ["rm", "-f", mine],
+               ["rm", "-f", other_installation]
              ]
+    end
+
+    test "leaves a name that is not this space's exact shape" do
+      # The prefix alone is not enough: what follows it has to be a name segment.
+      strangers = [
+        "nest-space-#{space_id()}-",
+        "nest-space-#{space_id()}-!!",
+        "nest-space-#{space_id() + 1}-nest_dev",
+        "not-a-nest-container"
+      ]
+
+      runner =
+        scripted_runner(%{["ps"] => {Enum.join(strangers, "\n") <> "\n", 0}, ["rm"] => {"", 0}})
+
+      assert :ok = Docker.remove_space(space_id(), runner: runner)
+      refute Enum.any?(calls(), &match?(["rm" | _], &1))
     end
 
     test "logs a daemon failure and does not raise" do
@@ -442,9 +325,11 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
     end
 
     test "logs a container that will not go away" do
+      name = "nest-space-#{space_id()}-nest_dev"
+
       runner =
         scripted_runner(%{
-          ["ps"] => {"nest-space-#{space_id()}-999999999-aaaaaaaa\n", 0},
+          ["ps"] => {"#{name}\n", 0},
           ["rm"] => {"Error response from daemon: container is paused\n", 1}
         })
 
@@ -453,40 +338,7 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
           assert :ok = Docker.remove_space(space_id(), runner: runner)
         end)
 
-      assert log =~ "could not remove container nest-space-#{space_id()}-999999999-aaaaaaaa"
-    end
-  end
-
-  # ---- classification and staging ----
-
-  describe "classify/2" do
-    test "calls the daemon's own failures a broken sandbox" do
-      for stderr <- [
-            "docker: Error response from daemon: No such container: nest-space-7-aaaaaaaa",
-            "Error response from daemon: Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
-            "container abc is not running"
-          ] do
-        assert Backend.classify(mounts(), stderr) == :sandbox_setup_failed
-      end
-    end
-
-    test "leaves the command's own failures to the errno table" do
-      assert Backend.classify(mounts(), "cat: /x: No such file or directory") == :enoent
-      assert Backend.classify(mounts(), "cat: /x: Permission denied") == :read_permission_denied
-      assert Backend.classify(mounts(), "sh: 1: nope: not found") == :read_failed
-      assert Backend.classify(mounts(), "[Command timed out after 5ms]") == :read_timeout
-    end
-  end
-
-  describe "staging" do
-    test "stages where the container's /tmp reaches" do
-      write = scratch()
-      mounts = mounts("/ws", write)
-
-      assert Docker.stage_dir(mounts) == Path.join(Path.dirname(write), ".cmds")
-      assert Docker.stage_dir_sandbox(mounts) == "/tmp/.cmds"
-      assert Backend.stage_dir(mounts) == Docker.stage_dir(mounts)
-      assert Backend.display_name(mounts) == "docker exec"
+      assert log =~ "could not remove container #{name}"
     end
   end
 end

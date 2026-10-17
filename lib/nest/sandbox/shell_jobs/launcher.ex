@@ -11,7 +11,8 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
   """
 
   alias Nest.Sandbox
-  alias Nest.Sandbox.Mounts
+  alias Nest.Sandbox.{Backend, Mounts}
+  alias Nest.Sandbox.ShellJobs.JobLog
 
   # The subdirectory the job logs live in beneath the agent's own dir.
   @log_subdir "shell-jobs"
@@ -24,36 +25,40 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
   Build the job record for `attrs` and start its process.
 
   `job_id` is the id the manager allocated (`"job-<n>"`). The log is
-  written to `<scratch>/shell-jobs/<job_id>.log` and handed back as the
-  path the *sandbox* sees for it
-  (`/tmp/<agent-name>/shell-jobs/<id>.log`) — the only spelling that
-  resolves inside a `shell-cmd`.
+  `<scratch>/shell-jobs/<job_id>.log`, which under every backend whose scratch
+  is a host directory is a real file the manager writes, and under `"docker"` is
+  a path in the container that the command itself writes — so the path handed
+  back is the path the *sandbox* sees
+  (`/tmp/<agent-name>/shell-jobs/<id>.log`), which is the only spelling that
+  resolves inside a `shell-cmd` either way.
 
-  The command line and its working directory come from
-  `Nest.Sandbox.Backend`'s spec (`attrs[:command_line]` / `attrs[:cd]`), so a
-  background job starts in exactly the environment its backend builds for a
-  foreground one.
+  The command line comes from the backend's job spec
+  (`Nest.Sandbox.Backend.job_spec/4`), which needs the mode's caps and the
+  script's sandbox spelling: a job whose output has to reach a log file inside
+  the environment is a command line only the backend can build. So a background
+  job starts in exactly the environment its backend builds for a foreground one.
 
   Returns `{:ok, job, sandbox_log_path}` or `{:error, reason}`.
   """
   @spec launch(map(), {term(), term()}, String.t()) ::
           {:ok, map(), String.t()} | {:error, String.t()}
   def launch(attrs, agent_key, job_id) do
-    scratch = attrs |> Map.fetch!(:mounts) |> Mounts.scratch()
-    log_dir = Path.join(scratch, @log_subdir)
-    log_path = Path.join(log_dir, "#{job_id}.log")
+    mounts = Map.fetch!(attrs, :mounts)
+    scratch = Mounts.scratch(mounts)
+    log_path = Path.join([scratch, @log_subdir, "#{job_id}.log"])
 
     sandbox_log_path =
       Path.join([Sandbox.sandbox_tmp_path(scratch), @log_subdir, "#{job_id}.log"])
 
-    with :ok <- File.mkdir_p(log_dir),
-         :ok <- File.write(log_path, ""),
-         {:ok, erl_pid, os_pid} <- run_process(attrs) do
+    with :ok <- JobLog.prepare(mounts, log_path),
+         {:ok, spec} <- job_spec(attrs, mounts, sandbox_log_path),
+         {:ok, erl_pid, os_pid} <- run_process(spec) do
       job = %{
         id: job_id,
         agent_key: agent_key,
         command: Map.fetch!(attrs, :command),
         script_path: Map.get(attrs, :script_path),
+        mounts: mounts,
         log_path: log_path,
         sandbox_log_path: sandbox_log_path,
         erl_pid: erl_pid,
@@ -69,15 +74,24 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
       {:error, reason} ->
         # Don't leave the empty log file (or partial dir) behind when the
         # process never started.
-        File.rm(log_path)
+        JobLog.remove(mounts, log_path)
         {:error, start_error(reason)}
     end
   end
 
-  defp run_process(attrs) do
+  defp job_spec(attrs, mounts, sandbox_log_path) do
+    Backend.job_spec(
+      mounts,
+      Map.get(attrs, :caps),
+      Map.fetch!(attrs, :script_sandbox),
+      sandbox_log_path
+    )
+  end
+
+  defp run_process(spec) do
     :exec.run(
-      to_charlist(Map.fetch!(attrs, :command_line)),
-      exec_options(Map.get(attrs, :cd))
+      to_charlist(spec.command),
+      exec_options(spec.cd)
     )
   end
 
@@ -87,6 +101,7 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
 
   defp exec_options(dir), do: [{:cd, dir} | @exec_options]
 
+  defp start_error(reason) when is_binary(reason), do: "Failed to start process: #{reason}"
   defp start_error(reason) when is_atom(reason), do: "Failed to start process: #{reason}"
   defp start_error({:error, reason}), do: start_error(reason)
   defp start_error(reason), do: "Failed to start process: #{inspect(reason)}"

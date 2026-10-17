@@ -8,13 +8,17 @@ defmodule Nest.Sandbox.Paths do
   The space scratch dir is bound at `#{@sandbox_root}` inside the sandbox
   (by the backends that bind anything), so an agent's own scratch dir (the
   space dir plus `<agent-name>`) is `#{@sandbox_root}/<agent-name>` inside.
-  `scratch_root/1` is the one bind source (`Nest.Sandbox.append_tmp_bind/2`
-  uses it) and `sandbox_tmp_path/1` is the one inverse mapping, so the mount
+  `scratch_root/1` is the one bind source (`Nest.Sandbox.Binds` uses it) and
+  `sandbox_tmp_path/1` is the one inverse mapping, so the mount
   and the spelling cannot drift.
 
   A `"none"` space binds nothing: its scratch root *is* the host's
   `#{@sandbox_root}`, so the spelling and the directory coincide there (see
-  `Nest.Sandbox.Backend.None`).
+  `Nest.Sandbox.Backend.None`). A `"docker"` space's scratch is the
+  *container's* own `#{@sandbox_root}`, which is likewise nothing to bind —
+  but its staged command transcripts are the one thing that has to live on the
+  host and be reached from inside, so they get a directory of their own
+  (`docker_stage_dir/1`).
 
   There is deliberately **no** path translation here: the sandbox's
   filesystem view is the active backend's view, and every `read`/`stat`/`glob`
@@ -37,6 +41,7 @@ defmodule Nest.Sandbox.Paths do
   """
 
   alias Nest.FSPath
+  alias Nest.Sandbox.Installation
 
   # The staging directory name, relative to the space scratch root (when a
   # scratch bind exists) or to `System.tmp_dir!()`/`@sandbox_root` (when it
@@ -119,4 +124,39 @@ defmodule Nest.Sandbox.Paths do
   @spec stage_dir_sandbox(String.t() | nil) :: String.t()
   def stage_dir_sandbox(nil), do: stage_dir(nil)
   def stage_dir_sandbox(_tmp_path), do: Path.join(@sandbox_root, @stage_subdir)
+
+  @doc """
+  The host directory a `"docker"` space stages its command transcripts in.
+
+  A docker space has no host scratch directory — its scratch is the container's
+  own `#{@sandbox_root}` — but the transcript is written by the BEAM and read
+  by the container, so it needs a directory on the host that the container can
+  be given. This is that directory, bound at
+  `#{Path.join(@sandbox_root, @stage_subdir)}` read-only (see
+  `Nest.Sandbox.Backend.Docker`).
+
+  It is keyed on the space and the *installation*
+  (`Nest.Sandbox.Installation`) and deliberately **not** on the BEAM's pid: the
+  container outlives a restart, so the directory it binds has to as well. Two
+  installations that share a space id get different directories, exactly as
+  they get different containers.
+  """
+  @spec docker_stage_dir(integer()) :: String.t()
+  def docker_stage_dir(space_id) do
+    Path.join([System.tmp_dir!(), docker_space_dir(space_id), @stage_subdir])
+  end
+
+  @doc """
+  The spelling of `docker_stage_dir/1` inside the container.
+
+  Always `#{Path.join(@sandbox_root, @stage_subdir)}`: the container's own
+  `#{@sandbox_root}` is its scratch, so the staging directory is the one thing
+  bound into it rather than derived from it.
+  """
+  @spec docker_stage_dir_sandbox() :: String.t()
+  def docker_stage_dir_sandbox, do: Path.join(@sandbox_root, @stage_subdir)
+
+  defp docker_space_dir(space_id) do
+    "nest-docker-#{Installation.segment()}-space-#{space_id}"
+  end
 end

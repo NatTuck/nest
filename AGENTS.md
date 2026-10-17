@@ -49,21 +49,29 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   never rendered into the prompt — and a value naming no space keeps
   `default_caps/0`'s `net: false`. Do not add a second place that reads either.
 - `bwrap` (the default) enforces the mode's caps with binds and namespaces.
-  `docker` runs commands in a container the space shares: its root filesystem is
-  the derived image, so it sees the workspace and the explicit `.nest` mounts and
-  **nothing else of the host** — `caps.fs.read` is deliberately ignored there,
-  which makes it *stricter* than bwrap, not looser. `none` runs the bare command
-  on the host, so **caps cannot be enforced** for that space (nor the `.nest`
-  read-only mask). Say all of that plainly wherever a backend is offered or
-  documented; never imply otherwise. `notes/sandbox-backends.md` has the full
-  table.
-- A `docker` space's container is keyed on `(space, BEAM, caps signature)`, never
-  on the space alone: caps are per agent, and one container's binds and network
-  namespace cannot vary per `docker exec`, so a union would silently hand a
-  read-only mode a writable workspace. The BEAM's pid is in the name because the
-  layout includes the scratch root (which embeds it), so a restart gets a fresh
-  container — and the create path sweeps the ones whose BEAM is gone, because
-  otherwise every restart would leave one behind.
+  `docker` runs **bwrap inside a container the space shares**, and the two bind
+  the *same* list (`Nest.Sandbox.Binds`) — over the host there, over the derived
+  image here. The container's root filesystem is the image, so the host's `/` is
+  not visible in it and `caps.fs.read` is not what docker binds: **the image is
+  the read set**, which makes it *stricter* than bwrap, not looser. `none` runs
+  the bare command on the host, so **caps cannot be enforced** for that space
+  (nor the `.nest` read-only mask). Say all of that plainly wherever a backend is
+  offered or documented; never imply otherwise. `notes/sandbox-backends.md` has
+  the full table, the container flags bwrap needs and what they cost.
+- A `docker` space's container is keyed on **the space and the installation**,
+  never on a caps signature or on the BEAM: it binds the superset a space can
+  need (what a mode that writes the workspace gets) and the bwrap *inside* it
+  tightens per call, so a read-only mode keeps its teeth without needing a
+  container of its own. The name is therefore stable across restarts — nothing
+  per-BEAM is bound any more, since the scratch is the container's own `/tmp` and
+  the staging directory is keyed on the space — and the layout travels as a
+  `nest.layout` **label** instead, which `ensure_container/3` compares so that a
+  `.nest`, workspace, hardware or network change replaces the container rather
+  than silently reusing the old environment. There is no sweep and no pid
+  parsing: nothing is ever orphaned. `Nest.Sandbox.Installation` keeps two
+  installations that share a space id from adopting each other's container.
+  `Mounts.scratch` for a docker space is a path *inside* the container, which
+  nothing on the host may create or write (`Mounts.host_scratch?/1`).
 - Do **not** add a host fast path for any of them. There is no second spelling
   of a path an agent uses: the backend plus the two directories the sandbox
   binds — the workspace and the agent's own scratch directory — live in one
@@ -94,11 +102,12 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   adopted. A removal that would take a live same-named agent's scratch in
   another space is refused too.
 - Anything that composes a prompt or runs a command must be given the agent's
-  *real* scratch bind (`TmpSpace.prompt_mounts/4` builds the prompt's mounts):
-  the staged transcript is only reachable inside a docker container through the
-  `<space_dir>:/tmp` bind, so a call that leaves the scratch out silently loses
-  the read instead of failing loudly (`Nest.Sandbox.Backend.Docker.command/3`
-  refuses outright).
+  *real* mounts (`TmpSpace.prompt_mounts/4` builds the prompt's mounts): the
+  backend is resolved from them, and under `"docker"` the agent's scratch names a
+  path *inside the container* — so a call that leaves the scratch out loses the
+  agent's own scratch (its job logs, its offloads) rather than failing loudly.
+  `Nest.Sandbox.Backend.Docker.command/3` refuses a call that belongs to no
+  space outright.
 - Nothing under `lib/nest/sandbox/` reads the spaces schema. `Nest.Sandbox.Backend`
   owns the backend list and the default, `Nest.Spaces.Space` consumes them, and
   the dependency runs schema → sandbox only.

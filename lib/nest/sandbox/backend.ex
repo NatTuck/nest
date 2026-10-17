@@ -21,6 +21,9 @@ defmodule Nest.Sandbox.Backend do
     * `command/3` — the command line that runs the staged script, plus the
       working directory to start it in (`nil` when the backend's own arguments
       already set one).
+    * `job_spec/4` — the same for a *background* job, whose output also has to
+      land at a log path inside the environment. Every backend but docker
+      answers `command/3`, because the manager writes that file itself.
     * `stage_dir/1` — the host directory the command's transcript is staged
       into, and `stage_dir_sandbox/1` — the spelling the script is handed at
       *inside* that environment. The two differ whenever the staging directory
@@ -30,16 +33,21 @@ defmodule Nest.Sandbox.Backend do
       atoms are the shared vocabulary the file tools render
       (`Nest.Sandbox.Failure`).
 
+  The *binds* are not part of this contract: both binding backends derive them
+  from `Nest.Sandbox.Binds`, so they cannot drift.
+
   ## The three backends
 
   * `"bwrap"` (the default) — `Nest.Sandbox.Backend.Bwrap`. Commands run under
     bubblewrap, which enforces the mode's caps: the workspace and scratch
     binds, the network namespace, the project mounts.
   * `"docker"` — `Nest.Sandbox.Backend.Docker`. Commands run inside a container
-    the space shares, which sees the workspace and the explicit `.nest` mounts
-    and nothing else of the host — its root filesystem is the derived image, so
-    the host's `/` is not visible at all and `caps.fs.read` is deliberately
-    ignored. That makes docker *stricter* than bwrap, not looser.
+    the space shares, which sees the derived image and the explicit binds and
+    nothing else of the host — and *inside* that container, under the same
+    bubblewrap, applying the same bind list over the image instead of over the
+    host. The host's `/` is not visible at all, so a host path that is read-only
+    under bwrap is absent here: that is what makes docker *stricter* than bwrap,
+    not looser.
   * `"none"` — `Nest.Sandbox.Backend.None`. Commands run on the host with no
     sandbox at all. **Caps cannot be enforced** for a space on this backend;
     it is the escape hatch for a space that must reach the real machine, and it
@@ -112,6 +120,24 @@ defmodule Nest.Sandbox.Backend do
   def command(mounts, caps, script) do
     with {:ok, backend} <- resolve(mounts) do
       backend.command(mounts, caps, script)
+    end
+  end
+
+  @doc """
+  Build the command line that runs `script` as a **background job** whose output
+  also lands at `log_path` inside the environment.
+
+  For every backend whose environment is the host this is exactly `command/3`:
+  the job's log file is an ordinary host file that `Nest.Sandbox.ShellJobs`
+  appends to as the output streams in. The docker backend is the one that has to
+  differ — its log file lives in the container, which nothing on the host can
+  write, so the command itself writes it.
+  """
+  @spec job_spec(Mounts.t(), map() | nil, String.t(), String.t()) ::
+          {:ok, spec()} | {:error, String.t()}
+  def job_spec(mounts, caps, script, log_path) do
+    with {:ok, backend} <- resolve(mounts) do
+      backend.job_spec(mounts, caps, script, log_path)
     end
   end
 

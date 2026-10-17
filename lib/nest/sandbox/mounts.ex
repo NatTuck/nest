@@ -22,9 +22,11 @@ defmodule Nest.Sandbox.Mounts do
       `Nest.Sandbox.default_caps/0` has.
     * `workspace` — bound at its own path when the mode's caps grant
       `":workspace"`, and the base a relative tool path resolves against.
-    * `scratch` — the agent's own scratch directory. Its *parent* is bound at
-      `/tmp`, so the agent's scratch area appears inside the sandbox at
-      `/tmp/<agent-name>`.
+    * `scratch` — the agent's own scratch directory, which the agent names as
+      `/tmp/<agent-name>`. Its *parent* is bound at `/tmp` under a backend whose
+      scratch is a host directory (see `scratch_bind_source/1`); under `"docker"`
+      it is a path *inside the container*, whose `/tmp` is the scratch and which
+      nothing on the host may create or write (`host_scratch?/1`).
 
   A caller passes what its call actually needs, and `nil` is a legitimate
   half — the value describes one call's binds, not the agent's.
@@ -88,6 +90,7 @@ defmodule Nest.Sandbox.Mounts do
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.FSPath
   alias Nest.Sandbox.Backend
+  alias Nest.Sandbox.Paths
 
   @enforce_keys [:workspace, :scratch]
   # The backend default comes from `Nest.Sandbox.Backend`, the list's one home —
@@ -207,6 +210,38 @@ defmodule Nest.Sandbox.Mounts do
   def space_id(%__MODULE__{space_id: space_id}), do: space_id
 
   @doc """
+  The directory this call binds at `/tmp`, or `nil` when it binds none.
+
+  That is the scratch *root* — the parent of the agent's own scratch dir —
+  under a backend whose scratch is a host directory. `"docker"` answers the
+  container's own `/tmp`: there is nothing there to bind, but the bind still
+  has a job, because `Nest.Sandbox.Binds` renders it as a self-bind whose *mode*
+  is what makes the scratch writable at all. A `"none"` space binds nothing
+  (it has no sandbox), so its answer is unused; it is `/tmp` for the same
+  reason the spelling and the directory coincide there.
+  """
+  @spec scratch_bind_source(t()) :: String.t() | nil
+  def scratch_bind_source(%__MODULE__{scratch: nil}), do: nil
+
+  def scratch_bind_source(%__MODULE__{backend: backend}) when backend in ["docker", "none"],
+    do: Paths.sandbox_root()
+
+  def scratch_bind_source(%__MODULE__{scratch: scratch}), do: Paths.scratch_root(scratch)
+
+  @doc """
+  Whether this call's scratch directory is a directory on the host.
+
+  It is under every backend whose environment *is* the host: a bwrap space's
+  scratch is a real directory, and a `"none"` space's scratch is the host's own
+  `/tmp/<agent-name>`. Under `"docker"` it is not — `scratch/1` names a path
+  inside the container, and only the container can write it — which is what the
+  few callers that write a scratch file directly have to ask before doing so.
+  """
+  @spec host_scratch?(t()) :: boolean()
+  def host_scratch?(%__MODULE__{backend: "docker"}), do: false
+  def host_scratch?(%__MODULE__{}), do: true
+
+  @doc """
   Whether this call may reach the network: the space's value, or `false` for a
   call that names no space.
   """
@@ -227,6 +262,13 @@ defmodule Nest.Sandbox.Mounts do
   """
   @spec ensure_scratch!(t()) :: :ok
   def ensure_scratch!(%__MODULE__{scratch: nil}), do: :ok
+
+  # A docker scratch names a path inside the container, which nothing on the
+  # host may make: creating it here would create a *host* directory at a path
+  # the agent only ever means inside the container, and the container could not
+  # see it anyway. The container makes it, in the command that runs (see
+  # `Nest.Sandbox.Backend.Docker`).
+  def ensure_scratch!(%__MODULE__{backend: "docker"}), do: :ok
 
   def ensure_scratch!(%__MODULE__{scratch: dir} = mounts) do
     unless File.dir?(dir) do

@@ -7,26 +7,37 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # root depends on the space's sandbox backend, because the backend decides
   # what the agent's `/tmp` is (see `Nest.Sandbox.Backend`):
   #
-  #     bwrap / docker:  /tmp/nest-<BEAM ospid>/space-<space_id>/<agent-name>
-  #     none:            /tmp/<agent-name>
+  #     bwrap:   /tmp/nest-<BEAM ospid>/space-<space_id>/<agent-name>
+  #     docker:  /tmp/<agent-name>       (a path inside the container)
+  #     none:    /tmp/<agent-name>       (the host's real /tmp)
   #
-  # The **space** directory (`space-<space_id>`) is what `Nest.Sandbox`
-  # bind-mounts at `/tmp`, so every agent in a space sees the same `/tmp`
-  # and can read any sibling's scratch files. The per-agent subdirectory
-  # keeps that shared root tidy and avoids filename collisions between
-  # agents. `terminate/2` removes only the agent's own subdirectory.
+  # The **space** directory (`space-<space_id>`) is what `Nest.Sandbox` binds at
+  # `/tmp` under bwrap, so every agent in a space sees the same `/tmp` and can
+  # read any sibling's scratch files. The per-agent subdirectory keeps that
+  # shared root tidy and avoids filename collisions between agents.
+  # `terminate/2` removes only the agent's own subdirectory.
   #
-  # ## The `"none"` root is the host's real `/tmp`
+  # ## Two backends whose scratch is not a directory on the host
   #
   # A `"none"` space runs bare commands on the host, so there is no bind to
   # place and no per-space root to isolate: the agent's `/tmp/<agent-name>` is
   # *literally* the host's `/tmp/<agent-name>`, which is what makes the
-  # agent-visible spelling identical on every backend. The consequence is that
-  # two `"none"` spaces share one namespace of agent names — `/tmp/<name>` is
-  # one directory whoever owns it — so a `"none"` agent may not take a name a
-  # live agent in another `"none"` space is using (see
-  # `Nest.Agents.Agent.PreSpawn.pre_spawn/1` and
-  # `Nest.Agents.Supervisor.existing_names_for_space/1`).
+  # agent-visible spelling identical on every backend.
+  #
+  # A `"docker"` space's `/tmp` is the *container's* own, so `/tmp/<agent-name>`
+  # names a path in the container: nothing on the host may create or write it
+  # (`Nest.Sandbox.Mounts.host_scratch?/1`), and the container makes it, in the
+  # command that runs (see `Nest.Sandbox.Backend.Docker`). Everything this module
+  # does to a scratch directory is therefore a no-op for `"docker"` — `create/3`
+  # only names the path, and neither removal has anything to remove — which is
+  # the same shape as the `"none"` root, one level further away.
+  #
+  # ## Two `"none"` spaces share one namespace of agent names
+  #
+  # Because a `"none"` scratch is the host's own `/tmp/<name>`, one directory is
+  # one name whoever owns it: a `"none"` agent may not take a name a live agent
+  # in another `"none"` space is using (see `Nest.Agents.Agent.PreSpawn.pre_spawn/1`
+  # and `Nest.Agents.Supervisor.existing_names_for_space/1`).
   #
   # ## A `"none"` scratch carries Nest's own marker
   #
@@ -50,8 +61,8 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # marker and is therefore never removed (and its name cannot be reused, because
   # `create/3` will not adopt it) — clear it by hand; and an agent that deletes
   # its own marker leaves a directory in the same state. Only `"none"` needs the
-  # marker — a bwrap or docker scratch is under
-  # `nest-<BEAM pid>/space-<id>/`, which already says whose it is.
+  # marker — a bwrap scratch is under `nest-<BEAM pid>/space-<id>/`, which
+  # already says whose it is, and a docker scratch is not on the host at all.
   #
   # ## Space-directory lifecycle
   #
@@ -68,11 +79,15 @@ defmodule Nest.Agents.Agent.TmpSpace do
 
   @tmp_prefix "/tmp/nest-"
 
-  # The root a `"none"` space's agents live under: the host's real `/tmp`.
-  # `Paths.scratch_root/1` refuses this value as a *bind* source (binding it
-  # would be a sandbox escape) — which is exactly why a `"none"` space has no
-  # bind and stages its command transcripts through `Paths.stage_dir(nil)`.
-  @none_root Paths.sandbox_root()
+  # The `/tmp` spelling inside the sandbox. It is also the directory itself for
+  # the two backends whose `/tmp` *is* their scratch root — the host's own under
+  # `"none"`, the container's own under `"docker"` — which is why those two need
+  # no bind to place the agent's directory and why the spelling and the
+  # directory coincide for them. `Paths.scratch_root/1` refuses this value as a
+  # *bind* source (binding the host's `/tmp` would be a sandbox escape), which
+  # is exactly why a `"none"` space has no bind and stages its command
+  # transcripts through `Paths.stage_dir(nil)`.
+  @sandbox_tmp Paths.sandbox_root()
 
   # An agent name must be usable verbatim as a single filename component:
   # letters, digits, `_` and `-` only. No `/` (would nest a path), no `.`
@@ -105,6 +120,14 @@ defmodule Nest.Agents.Agent.TmpSpace do
   loudly is what keeps the scratch layout sound.
   """
   @spec create(integer(), String.t(), String.t()) :: String.t()
+  def create(space_id, agent_name, "docker") do
+    # A docker scratch is a path *inside the container*. Making it here would
+    # create a host directory at the same spelling that the container could never
+    # see, so this only names it (and validates the name, as `agent_dir/3` does);
+    # the container makes it, in the command that runs.
+    agent_dir(space_id, agent_name, "docker")
+  end
+
   def create(space_id, agent_name, backend) do
     path = agent_dir(space_id, agent_name, backend)
 
@@ -162,6 +185,14 @@ defmodule Nest.Agents.Agent.TmpSpace do
   (and every sibling's subdirectory) untouched.
   """
   @spec cleanup(integer(), String.t(), String.t()) :: :ok
+  def cleanup(_space_id, _agent_name, "docker") do
+    # Nothing to remove: a docker scratch lives in the container and goes when
+    # the container does (`Nest.Spaces` → `Nest.Sandbox.Backend.remove_space/3`).
+    # Falling through to `remove/4` would `rm_rf` a *host* directory that happens
+    # to have the same spelling — the agent's own name under the host's `/tmp`.
+    :ok
+  end
+
   def cleanup(space_id, agent_name, backend) do
     if single_segment?(agent_name) do
       remove(space_id, agent_name, backend, :cleanup)
@@ -201,6 +232,8 @@ defmodule Nest.Agents.Agent.TmpSpace do
   caller has nothing to do about a refusal.
   """
   @spec remove_stale(integer(), String.t(), String.t()) :: :ok
+  def remove_stale(_space_id, _agent_name, "docker"), do: :ok
+
   def remove_stale(space_id, agent_name, backend) do
     # A name that cannot be a path component is the row changeset's refusal to
     # make; there is no directory of that name, and nothing here may raise.
@@ -354,11 +387,16 @@ defmodule Nest.Agents.Agent.TmpSpace do
   `/tmp/<agent-name>` is literally true there too.
   """
   @spec space_dir(integer(), String.t()) :: String.t()
-  def space_dir(_space_id, "none"), do: @none_root
+  # The two backends whose `/tmp` *is* the scratch root: the host's own under
+  # `"none"`, the container's own under `"docker"`. Neither has a per-space root
+  # on the host — one because it binds nothing, the other because its root is
+  # inside the container — so the agent's directory is the bare name under the
+  # `/tmp` spelling, which is what every agent is told it has.
+  def space_dir(_space_id, backend) when backend in ["none", "docker"], do: @sandbox_tmp
 
-  # Every backend that binds anything gets its own per-space root. The clause is
-  # open rather than listing `bwrap` and `docker`, because a backend string this
-  # build does not know is refused when a command runs
+  # Every other backend gets its own per-space root on the host, under a
+  # per-BEAM parent. The clause is open rather than naming `bwrap`, because a
+  # backend string this build does not know is refused when a command runs
   # (`Nest.Sandbox.Backend.resolve/1`) and this module is also reached from
   # `terminate/2`, where raising would lose the cleanup.
   def space_dir(space_id, _backend) do

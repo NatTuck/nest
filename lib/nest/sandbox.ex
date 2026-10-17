@@ -35,12 +35,15 @@ defmodule Nest.Sandbox do
 
   `Nest.Sandbox.Backend` is the dispatch, and each backend is a module under it.
   The three differ in *what* they enforce — `bwrap` binds and unshares,
-  `docker` runs in a container whose rootfs is the derived image (so the host's
-  `/` is not visible at all and `caps.fs.read` is deliberately ignored), and
-  `none` runs the bare command on the host and enforces nothing. Everything
-  below that names bwrap — the argument builder, the caps section's bind rules,
-  the device passthrough — is `Nest.Sandbox.Backend.Bwrap`'s, and the full
-  comparison is in `notes/sandbox-backends.md`.
+  `docker` runs bwrap inside a container whose root filesystem is the derived
+  image (so `caps.fs.read`'s readable roots are not what it binds: the image is
+  the read set, and the same bind list is applied over the image instead of over
+  the host), and `none` runs the bare command on the host and enforces nothing.
+  The bind list itself is shared: `Nest.Sandbox.Binds` derives it once and both
+  binding backends render it. Everything below that names bwrap — the argument
+  builder, the caps section's bind rules, the device passthrough — is
+  `Nest.Sandbox.Backend.Bwrap`'s, and the full comparison is in
+  `notes/sandbox-backends.md`.
 
   ## bwrap argument builder
 
@@ -132,7 +135,7 @@ defmodule Nest.Sandbox do
 
   alias Nest.FSPath
   alias Nest.Hardware
-  alias Nest.Sandbox.{Backend, Caps, Failure, Glob, Mounts, Paths, StatBatch}
+  alias Nest.Sandbox.{Backend, Binds, Caps, Failure, Glob, Mounts, Paths, StatBatch}
   alias Nest.Tools.{ShellCmd, ShellEscape}
 
   @doc """
@@ -210,11 +213,7 @@ defmodule Nest.Sandbox do
       args =
         base_args(caps, hpu_device_paths)
         |> append_net_flag(caps)
-        |> append_workspace_bind(caps, workspace)
-        |> append_write_binds(caps, workspace)
-        |> append_tmp_bind(mounts, caps)
-        |> append_project_binds(caps)
-        |> append_protected_binds(caps)
+        |> append_binds(caps, mounts)
         |> append_chdir(chdir_path, mounts)
 
       {:ok, args}
@@ -428,6 +427,49 @@ defmodule Nest.Sandbox do
     )
   end
 
+  @doc """
+  Write `content` to `name` in the agent's scratch directory and return the
+  agent-visible `/tmp/<agent-name>/<name>` spelling, or `nil` when there is no
+  scratch directory or the write fails.
+
+  This is the sandbox's own bookkeeping rather than the agent-facing `write/4`:
+  its one caller is `Nest.Agents.Agent.BatchSizer.Overflow`, which offloads a
+  result too large to inline, and all the caller keeps is the path it returns.
+
+  A backend whose scratch directory is a host directory takes the bytes
+  directly, which keeps an offload off the sandbox's hot path. Under `"docker"`
+  the scratch is the container's own `/tmp`, which only the container can write,
+  so the bytes go through the gatekeeper instead — one `docker exec` per
+  offload, which is rare enough to be worth it.
+  """
+  @spec scratch_write(Mounts.t(), String.t(), binary()) :: String.t() | nil
+  def scratch_write(mounts, name, content) do
+    case Mounts.scratch(mounts) do
+      nil ->
+        nil
+
+      dir ->
+        if write_scratch_file(mounts, Path.join(dir, name), content) do
+          Path.join(Paths.sandbox_tmp_path(dir), name)
+        end
+    end
+  end
+
+  defp write_scratch_file(%Mounts{} = mounts, path, content) do
+    if Mounts.host_scratch?(mounts) do
+      try do
+        File.write!(path, content)
+        true
+      rescue
+        _ -> false
+      end
+    else
+      command = "cat > " <> ShellEscape.escape(path)
+
+      match?({:ok, _output}, ShellCmd.execute(command, mounts, nil, stdin: content))
+    end
+  end
+
   # ---- stat ----
 
   defp parse_stat(stdout, opts) do
@@ -559,87 +601,21 @@ defmodule Nest.Sandbox do
   defp append_net_flag(args, %{"net" => true}), do: args ++ ["--share-net"]
   defp append_net_flag(args, %{"net" => false}), do: args ++ ["--unshare-net"]
 
-  # Bind the canonical workspace read-write ONLY when the mode's caps
-  # include ":workspace". Otherwise the workspace stays read-only via
-  # the `--ro-bind / /`, so writes to it fail at the kernel level.
-  defp append_workspace_bind(args, %{"fs" => %{"write" => writes}}, workspace)
-       when is_binary(workspace) do
-    if ":workspace" in writes do
-      ws = FSPath.canonical(workspace)
-      args ++ ["--bind", ws, ws]
-    else
-      args
-    end
-  end
-
-  defp append_workspace_bind(args, _caps, _workspace), do: args
-
-  # Bind each project mount at its declared path.
-  defp append_project_binds(args, caps) do
+  # Every bind this call makes, rendered as bwrap's own flags. The set itself is
+  # `Nest.Sandbox.Binds`'s — the docker backend renders the same triples over the
+  # container's root, which is what keeps the two backends binding the same
+  # things.
+  defp append_binds(args, caps, mounts) do
     binds =
       caps
-      |> project_list()
-      |> Enum.filter(&is_binary(&1["source"]))
-      |> Enum.flat_map(fn %{"dest" => dest, "source" => source} ->
-        ["--bind", source, dest]
-      end)
+      |> Binds.specs(mounts)
+      |> Enum.flat_map(fn {source, dest, mode} -> [bind_flag(mode), source, dest] end)
 
     args ++ binds
   end
 
-  # Force the `.nest` file read-only AFTER the workspace bind so the
-  # overlay wins. When `.nest` is absent the source is `/dev/null`, so
-  # the path is a read-only empty file an agent can't replace.
-  defp append_protected_binds(args, caps) do
-    binds =
-      caps
-      |> protected_list()
-      |> Enum.flat_map(fn %{"path" => path, "source" => source} ->
-        ["--ro-bind", source, path]
-      end)
-
-    args ++ binds
-  end
-
-  # Bind the remaining fs.write paths at their canonical paths.
-  defp append_write_binds(args, %{"fs" => %{"write" => writes}} = caps, workspace) do
-    bound = already_bound(caps, workspace)
-
-    extras =
-      writes
-      |> Enum.reject(&(&1 in bound))
-      |> Enum.map(&FSPath.canonical/1)
-      |> Enum.uniq()
-      |> Enum.flat_map(fn path -> ["--bind", path, path] end)
-
-    args ++ extras
-  end
-
-  # Paths already covered by a dedicated bind step.
-  defp already_bound(caps, workspace) do
-    [":workspace", "/tmp"] ++
-      if(is_binary(workspace), do: [workspace, FSPath.canonical(workspace)], else: []) ++
-      Enum.map(project_list(caps), & &1["dest"]) ++
-      Enum.map(protected_list(caps), & &1["path"])
-  end
-
-  # Bind the *space* scratch directory at /tmp inside the sandbox. The
-  # agent's own scratch dir is `<space_dir>/<agent-name>`, so the space
-  # dir (its parent) is what gets bound. This is what makes "/tmp"
-  # symbolic AND shared: every agent in a space sees the same /tmp, so a
-  # file path handed from one agent to a sibling resolves for the
-  # recipient. The agent's own dir appears at `/tmp/<agent-name>` inside.
-  #
-  # The scratch is writable only when the mode grants the symbolic `"/tmp"`
-  # write; otherwise it is bound read-only, so a read-only mode's scratch stays
-  # readable at `/tmp/<agent>` but cannot be written through the sandbox. No
-  # scratch directory means no scratch bind at all.
-  defp append_tmp_bind(args, %Mounts{scratch: nil}, _caps), do: args
-
-  defp append_tmp_bind(args, %Mounts{scratch: scratch}, caps) do
-    flag = if "/tmp" in write_list(caps), do: "--bind", else: "--ro-bind"
-    args ++ [flag, Paths.scratch_root(scratch), Paths.sandbox_root()]
-  end
+  defp bind_flag(:rw), do: "--bind"
+  defp bind_flag(:ro), do: "--ro-bind"
 
   # `nil` chdir means "no workspace": land in the scratch root when one is
   # bound (the effective cwd before the workspace was made explicit), else
@@ -652,10 +628,4 @@ defmodule Nest.Sandbox do
   defp append_chdir(args, chdir_path, _mounts), do: args ++ ["--chdir", chdir_path]
 
   defp read_list(caps), do: get_in(caps, ["fs", "read"]) || []
-
-  defp write_list(caps), do: get_in(caps, ["fs", "write"]) || []
-
-  defp project_list(caps), do: get_in(caps, ["fs", "project"]) || []
-
-  defp protected_list(caps), do: get_in(caps, ["fs", "protected"]) || []
 end

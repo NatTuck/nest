@@ -163,14 +163,33 @@ defmodule Nest.Spaces do
   value is resolved at agent start and carried on the agent's mounts, so a live
   agent keeps the value it started with until it is restarted.
 
+  A `"docker"` space's container is removed as part of the change, because
+  `--network none` is fixed when the container is created: without that, the next
+  command would keep using the container's old network. The container is
+  recreated lazily by that next command, and everything that lived only in it —
+  the agents' `/tmp` (offloads, background-job logs) and any running background
+  job — goes with it. The UI says so before the toggle is flipped. For a
+  `"none"` space nothing is released: the caps were never enforceable there, and
+  the toggle has always been advisory.
+
   Returns `{:ok, space}` or `{:error, reason}`.
   """
   @spec set_network_access(integer(), boolean()) ::
           {:ok, Space.t()} | {:error, Ecto.Changeset.t() | :not_found}
   def set_network_access(id, value) when is_integer(id) and is_boolean(value) do
     case get_space(id) do
-      nil -> {:error, :not_found}
-      %Space{} = space -> space |> Space.changeset(%{network_access: value}) |> Repo.update()
+      nil ->
+        {:error, :not_found}
+
+      %Space{} = space ->
+        case space |> Space.changeset(%{network_access: value}) |> Repo.update() do
+          {:ok, updated} ->
+            remove_sandbox(updated)
+            {:ok, updated}
+
+          error ->
+            error
+        end
     end
   end
 
@@ -367,6 +386,11 @@ defmodule Nest.Spaces do
   # backend is passed from the row rather than looked up in the sandbox layer,
   # which must not read this schema (see `Nest.Sandbox.Mounts`); every backend
   # but docker is a no-op, and a failure is logged by that layer, not raised.
+  #
+  # Three callers, and the third is not a lifecycle event: archiving and deleting
+  # a space release its containers, and so does a change to the space's network
+  # access, because a container's network is fixed at creation and the next
+  # command has to build one with the new value.
   defp remove_sandbox(%Space{id: id, sandbox_backend: backend}) do
     Backend.remove_space(id, backend)
   end

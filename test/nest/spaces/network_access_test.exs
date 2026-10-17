@@ -153,5 +153,24 @@ defmodule Nest.Spaces.NetworkAccessTest do
       assert updated.sandbox_backend == "none"
       assert updated.name == space.name
     end
+
+    test "releases the space's sandbox environment, so the new value is built" do
+      # A container's network is fixed when it is created (`--network none`), so
+      # the next command has to build one with the new value — which means the
+      # change has to release the container, exactly as an archive or a delete
+      # does. What that asks the daemon is asserted against a fake in
+      # `Nest.Sandbox.Backend.DockerTest`, because the test environment installs
+      # an inert runner rather than talking to a daemon (`config/test.exs`); what
+      # is asserted here is that the hook is on the path and does not interfere,
+      # and that a space whose backend keeps nothing is unaffected.
+      {:ok, docker} =
+        Spaces.create_space(nil, %{name: unique("net-release"), sandbox_backend: "docker"})
+
+      assert {:ok, %Space{network_access: false}} = Spaces.set_network_access(docker.id, false)
+      assert {:ok, %Space{network_access: true}} = Spaces.set_network_access(docker.id, true)
+
+      {:ok, plain} = Spaces.create_space(nil, %{name: unique("net-release-plain")})
+      assert {:ok, %Space{network_access: false}} = Spaces.set_network_access(plain.id, false)
+    end
   end
 end

@@ -37,6 +37,18 @@ defmodule Nest.Sandbox.Backend.Bwrap do
   end
 
   @doc """
+  A background job's command line: the same as `command/3`.
+
+  The job's log is an ordinary file under the agent's scratch directory, which
+  this backend's environment reaches as a host directory, so
+  `Nest.Sandbox.ShellJobs` writes it as the output arrives and there is nothing
+  for the command to do.
+  """
+  @spec job_spec(Mounts.t(), map() | nil, String.t(), String.t()) ::
+          {:ok, Nest.Sandbox.Backend.spec()} | {:error, String.t()}
+  def job_spec(mounts, caps, script, _log_path), do: command(mounts, caps, script)
+
+  @doc """
   The host staging directory: inside the bound space scratch dir when there is
   one, else under the system tmp dir (see `Nest.Sandbox.Paths.stage_dir/1`).
   """
