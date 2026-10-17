@@ -113,7 +113,7 @@ defmodule Nest.Sandbox.Binds do
   # container has to be able to serve — with the `.nest` project mounts and mask
   # merged in by `Nest.ProjectConfig`, which is the only thing that knows how to
   # read them. A malformed `.nest` leaves the shape alone, exactly as
-  # `ProjectConfig.apply_or_default/2` does everywhere else.
+  # `ProjectConfig.resolve_caps/2` does everywhere else.
   defp container_caps(mounts) do
     caps = %{"net" => false, "fs" => %{"read" => ["/"], "write" => [":workspace", "/tmp"]}}
 

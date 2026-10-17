@@ -278,18 +278,15 @@ defmodule Nest.Agents.Agent.PreSpawn do
     # `"none"` space must not read it under bwrap, and a `"docker"` space can
     # only reach the staged transcript through the scratch bind (see
     # `Nest.Agents.Agent.TmpSpace.prompt_mounts/4`).
-    {system_prompt, _mode, _tools, _cached_vocation} =
+    {system_prompt, _tools, _cached_vocation} =
       SystemPrompt.compose_vocation_config(
         vocation,
-        TmpSpace.prompt_mounts(
-          Map.get(attrs, :workspace_path),
-          Map.fetch!(attrs, :space_id),
-          name,
-          Map.fetch!(attrs, :sandbox_backend),
-          Map.fetch!(attrs, :network_access)
-        ),
+        prompt_mounts(attrs, name),
         {context_limit, context_limit_source},
         name,
+        # The mode the child will run in. `Nest.Modes.default/0` until the
+        # agent's own persisted mode is threaded through (part B of stage 3).
+        Map.get(attrs, :mode, Nest.Modes.default()),
         depth
       )
 
@@ -458,5 +455,18 @@ defmodule Nest.Agents.Agent.PreSpawn do
       )
 
     {fork_index, preloaded, next_index}
+  end
+
+  # The prompt is composed through the agent's own mounts (see
+  # `Nest.Agents.Agent.TmpSpace.prompt_mounts/5`), gathered here so the call site
+  # stays a plain argument list.
+  defp prompt_mounts(attrs, name) do
+    TmpSpace.prompt_mounts(
+      Map.get(attrs, :workspace_path),
+      Map.fetch!(attrs, :space_id),
+      name,
+      Map.fetch!(attrs, :sandbox_backend),
+      Map.fetch!(attrs, :network_access)
+    )
   end
 end

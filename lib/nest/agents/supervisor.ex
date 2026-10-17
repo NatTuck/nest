@@ -381,9 +381,11 @@ defmodule Nest.Agents.Supervisor do
       nil ->
         :ok
 
-      vocation ->
-        if Vocations.requires_workspace?(vocation) and
-             is_nil(Mounts.workspace(parent_state.mounts)) do
+      _vocation ->
+        # Every vocation requires a workspace now
+        # (`Vocations.requires_workspace?/1` is a constant), so the child's
+        # inheritance is all that is left to check.
+        if is_nil(Mounts.workspace(parent_state.mounts)) do
           {:error, :workspace_required}
         else
           Nest.Sandbox.workspace_error(Mounts.workspace(parent_state.mounts))

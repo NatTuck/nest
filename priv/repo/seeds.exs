@@ -92,8 +92,6 @@ all_groups = ["file", "shell", "context", "agents"]
         "description" => """
         You have read-only access to the workspace. You are free to make tool calls, but workspace 
         writes will fail because you're supposed to be inspecting the workspace but not changing it right now.
-        You should generally avoid non-trivial modifications to anything outside of your /tmp tree even if the
-        sandbox won't stop those changes (e.g. avoid HTTP POST requests that will create something).
         """,
         "caps" => %{
           "net" => true,
@@ -246,13 +244,6 @@ all_groups = ["file", "shell", "context", "agents"]
        implementation yourself.
     6. Report progress and the final result to the user clearly, including
        what changed and how it was verified.
-
-    Plan mode: If you're in plan mode, the user wants to discuss with you to build
-    an effective plan. Avoid unnessisary delegation, and don't assume the users's
-    comments and suggestions are final instructions unless that's explicitly stated.
-    Ask the user to clarify unclear points. Try to find flaws in the proposed plan 
-    and push back on them. Try to find improvements and suggest them. We want the
-    best plan we can get to accomplish our goals before starting work.
 
     Doing work yourself vs. spawning minions:
 

@@ -323,11 +323,11 @@ defmodule Nest.Agents.Agent do
         _ -> Nest.Sandbox.default_caps()
       end
 
-    Nest.ProjectConfig.apply_or_default(caps, Mounts.from_agent(state))
+    Nest.ProjectConfig.resolve_caps(caps, Mounts.from_agent(state))
   end
 
   def resolve_caps(%__MODULE__{} = state) do
-    Nest.ProjectConfig.apply_or_default(Nest.Sandbox.default_caps(), Mounts.from_agent(state))
+    Nest.ProjectConfig.resolve_caps(Nest.Sandbox.default_caps(), Mounts.from_agent(state))
   end
 
   def resolve_caps(_), do: Nest.Sandbox.default_caps()

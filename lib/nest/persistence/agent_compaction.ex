@@ -137,7 +137,7 @@ defmodule Nest.Persistence.AgentCompaction do
   defp render_system(_agent, nil, _limit, _source), do: nil
 
   defp render_system(agent, vocation, limit, source) do
-    {system_prompt, _mode, _tools, _vocation} =
+    {system_prompt, _tools, _vocation} =
       SystemPrompt.compose_vocation_config(
         vocation,
         TmpSpace.prompt_mounts(
@@ -149,7 +149,10 @@ defmodule Nest.Persistence.AgentCompaction do
         ),
         {limit, source},
         agent.name,
-        agent.depth || 0
+        agent.depth || 0,
+        # The mode the agent is in, which only decides the caps the `AGENTS.md`
+        # read is authorized with.
+        Map.get(agent, :mode, Nest.Modes.default())
       )
 
     system_prompt

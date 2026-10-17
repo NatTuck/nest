@@ -117,23 +117,28 @@ defmodule Nest.Agents.Agent.Init do
     cache_lookup = Map.get(attrs, :context_limit_lookup, &Nest.Models.context_limit/2)
     {context_limit, context_limit_source} = initial_context_limit(model, cache_lookup)
 
-    {system_prompt, _prompt_mode, tool_names, cached_vocation} =
+    # The agent's own mode, which seeds `live.mode`: the persisted row's, which
+    # `PreSpawn` derived (the parent's mode, or the space's blueprint's default).
+    # The composer needs it only for the caps the `AGENTS.md` read is authorized
+    # with, so the prompt carries no mode of its own.
+    mode = initial_mode(attrs)
+
+    {system_prompt, tool_names, cached_vocation} =
       SystemPrompt.compose_vocation_config(
         Map.get(attrs, :vocation),
         mounts,
         {context_limit, context_limit_source},
         Map.get(attrs, :name, ""),
-        Map.get(attrs, :depth, 0)
+        Map.get(attrs, :depth, 0),
+        mode
       )
 
     tool_names = maybe_exclude_spawn(tool_names, attrs)
 
-    # The mode is the *row's*, not the prompt's: `PreSpawn` decided it (the
-    # parent's mode, or the space's blueprint's default) and put it in the attrs,
-    # so a restart restores what the agent was created with instead of widening a
-    # child that was spawned read-only. The composition still reports a mode; it
-    # is ignored, because a prompt cannot know a runtime property.
-    {system_prompt, initial_mode(attrs), tool_names, cached_vocation,
+    # The mode is the *row's*, not the prompt's: `PreSpawn` decided it and put it
+    # in the attrs, so a restart restores what the agent was created with instead
+    # of widening a child that was spawned read-only.
+    {system_prompt, mode, tool_names, cached_vocation,
      build_llm_metrics(context_limit, context_limit_source)}
   end
 
