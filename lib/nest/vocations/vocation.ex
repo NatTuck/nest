@@ -23,7 +23,7 @@ defmodule Nest.Vocations.Vocation do
     field :system_prompt, :string
     field :tools, {:array, :string}, default: []
 
-    timestamps(type: :utc_datetime)
+    timestamps(type: :utc_datetime_usec)
   end
 
   @type t :: %__MODULE__{

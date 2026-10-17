@@ -233,19 +233,30 @@ defmodule Nest.PersistenceAgentsTest do
   end
 
   describe "update_agent_model/2" do
-    test "replaces the jsonb model column with the new map" do
+    test "replaces the jsonb model column and touches updated_at" do
       attrs = agent_attrs("update-model-#{Elixir.System.unique_integer([:positive])}")
-      {:ok, _} = Persistence.insert_agent(attrs)
+      {:ok, %PersistedAgent{id: agent_id}} = Persistence.insert_agent(attrs)
+
+      # Pin the original stamp into the past rather than relying on the clock's
+      # resolution. `updated_at` used to be second-precision, so this had to
+      # accept `:eq` for two writes inside the same second; the column is
+      # `timestamp(6)` now (`notes/timestamp-precision.md`) and the update must
+      # be strictly later.
+      original_ts = ~U[2020-01-01 00:00:00Z]
+
+      from(a in PersistedAgent, where: a.id == ^agent_id)
+      |> Nest.Repo.update_all(set: [updated_at: original_ts])
 
       new_model = %{"name" => "claude-3-opus-20240229", "provider" => "anthropic-provider"}
 
       assert :ok = Persistence.update_agent_model(test_space_id(), attrs.name, new_model)
 
-      {:ok, %PersistedAgent{model: persisted_model}} =
+      {:ok, %PersistedAgent{model: persisted_model, updated_at: new_ts}} =
         Persistence.fetch_agent(test_space_id(), attrs.name)
 
       # jsonb columns come back with string keys.
       assert persisted_model == new_model
+      assert DateTime.compare(new_ts, original_ts) == :gt
     end
 
     test "returns :not_found when the agent row is absent" do
@@ -257,22 +268,6 @@ defmodule Nest.PersistenceAgentsTest do
                  "missing-agent",
                  new_model
                )
-    end
-
-    test "touches updated_at on the existing row" do
-      attrs = agent_attrs("update-model-ts-#{Elixir.System.unique_integer([:positive])}")
-      {:ok, %PersistedAgent{updated_at: original_ts}} = Persistence.insert_agent(attrs)
-
-      new_model = %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-      :ok = Persistence.update_agent_model(test_space_id(), attrs.name, new_model)
-
-      {:ok, %PersistedAgent{updated_at: new_ts}} =
-        Persistence.fetch_agent(test_space_id(), attrs.name)
-
-      # Both timestamps may equal each other within the second
-      # truncation window. Compare using `>=` so a fast-clock
-      # tick between the two writes counts.
-      assert DateTime.compare(new_ts, original_ts) in [:gt, :eq]
     end
   end
 

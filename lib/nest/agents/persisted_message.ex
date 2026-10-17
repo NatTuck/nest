@@ -108,7 +108,7 @@ defmodule Nest.Agents.PersistedMessage do
     field :metadata, :map
     field :compaction_archived_count, :integer
     field :compaction_count, :integer
-    field :compaction_occurred_at, :utc_datetime
+    field :compaction_occurred_at, :utc_datetime_usec
     # Token-count stats for the compaction boundary the
     # marker represents. Both nullable: nil for non-compaction
     # rows and for pre-existing compaction marker rows that
@@ -117,7 +117,7 @@ defmodule Nest.Agents.PersistedMessage do
     field :compaction_tokens_compacted, :integer
     field :compaction_tokens_compacted_to, :integer
 
-    timestamps(type: :utc_datetime, updated_at: false)
+    timestamps(type: :utc_datetime_usec, updated_at: false)
   end
 
   @doc """

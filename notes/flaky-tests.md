@@ -203,3 +203,33 @@ has pushed `space:created` has already handled `{:spaces_changed, _}` and is
 subscribed. Two frames, because both sockets push into the test's one mailbox
 and the count is the only thing that attributes a frame to a session. The 1000 ms
 waits are unchanged.
+
+## 2026-10-17 — `page_controller_test.exs` in `get_csrf_token/0` (UNRESOLVED)
+
+Observed **once**, in one `mix test` run during the timestamp-precision work
+(branch `timestamp-precision`, 2879 tests):
+
+```
+test/nest_web/controllers/page_controller_test.exs:81
+** (ExUnit.TimeoutError) test timed out after 3000ms
+```
+
+with `:code_server.call/1` as the innermost frame, reached from
+`lib/nest_web/components/layouts/root.html.heex:6` (`get_csrf_token/0`).
+
+Not reproduced: the same branch passed 2878/0 twice in plain `mix test` and once
+under `mix test --cover`, and the file passes alone (9/9). No view, controller or
+template code is touched by that branch.
+
+This is the code-server contention class `test/test_helper.exs` documents (an
+idle host does not reproduce it), but the warm-up list **already** includes
+`Plug.CSRFProtection`, `Phoenix.Controller`, `Phoenix.HTML`, `Phoenix.Template`,
+`Plug.Conn` and `Plug.Session`, so the lazy load is something else in the
+template render path and has not been identified. Recorded rather than guessed
+at: a warm-up entry added from a guess would hide the next occurrence without
+removing the load.
+
+Next step for whoever hits it again: capture the full `:code_server.call/1`
+frame (not just the call site) and name the module, then add it to the list.
+Do not raise the 3000 ms.
+

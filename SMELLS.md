@@ -63,6 +63,12 @@ match, and common sense domain correctness.
 
 ## Testing
 
+- **Never degrade persisted data to make a test deterministic.** The canonical
+  example: timestamp columns were `timestamp(0)` and `Nest.Persistence.now/0`
+  truncated to match, so the in-memory struct would equal the row — which threw
+  away the standard representation of an instant to make assertions easier, and
+  made sub-second ordering of persisted events impossible. If a test needs a
+  coarse timestamp, the *test* truncates. See `notes/timestamp-precision.md`.
 - **Never assert the *absence* of a log line against `capture_log` output** —
   no `refute log =~ ...`, no `assert log == ""`, and no filtered version of
   either. `capture_log` captures globally, not per process, so such an

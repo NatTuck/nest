@@ -54,7 +54,12 @@ Eliminate the architectural mismatch between Phoenix Channels + Zustand + React 
      end
      ```
    - Update `create_invite/1` to enforce the 10-invite limit:
-     ```elixir
+
+   > **Superseded detail:** the `|> DateTime.truncate(:second)` in the snippet
+   > below must not be reintroduced — the timestamp columns are `timestamp(6)`
+   > now. See `notes/timestamp-precision.md`.
+
+   ```elixir
      def create_invite(user_id) when is_integer(user_id) do
        if count_user_invites(user_id) >= 10 do
          {:error, :too_many_invites}

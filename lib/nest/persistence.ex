@@ -686,8 +686,13 @@ defmodule Nest.Persistence do
     as: :unarchive_agent
 
   @doc """
-  Current UTC timestamp truncated to second precision.
+  Current UTC timestamp, at the database's full `:utc_datetime_usec`
+  precision.
+
+  Deliberately **not** truncated: the columns are `timestamp(6)`, and the
+  stored instant is data. A caller that needs a coarse value truncates it
+  itself — see `notes/timestamp-precision.md`.
   """
   @spec now() :: DateTime.t()
-  def now, do: DateTime.utc_now() |> DateTime.truncate(:second)
+  def now, do: DateTime.utc_now()
 end
