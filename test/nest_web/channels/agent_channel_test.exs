@@ -283,7 +283,7 @@ defmodule NestWeb.AgentChannelTest do
       # to the resolved mode. The status push that transitions
       # to `idle` (the one that unlocks the input) carries the
       # new currentMode so the client can reset the dropdown.
-      ref = push(socket, "chat:message", %{"content" => "Hello", "mode" => "chat"})
+      ref = push(socket, "chat:message", %{"content" => "Hello", "mode" => "plan"})
       assert_reply ref, :ok, %{}
 
       # The user message lands first, then the LLM streams and
@@ -299,7 +299,7 @@ defmodule NestWeb.AgentChannelTest do
 
       # The broadcast carries the queued count too (here 0: nothing is queued).
       assert_push "chat:status",
-                  %{status: "idle", currentMode: "chat", pendingMessageCount: 0},
+                  %{status: "idle", currentMode: "plan", pendingMessageCount: 0},
                   500
     end
 
