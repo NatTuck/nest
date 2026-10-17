@@ -32,8 +32,10 @@ defmodule Nest.Agents.Agent.NetworkAccessNoticeTest do
 
   import Mimic
 
+  alias Nest.Agents
   alias Nest.Agents.Agent
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
   alias Nest.Sandbox.Mounts
   alias Nest.Spaces
@@ -76,6 +78,35 @@ defmodule Nest.Agents.Agent.NetworkAccessNoticeTest do
     assert on_notice =~ "Network access for this space is now enabled"
     assert on_notice =~ "your commands can reach the network"
     assert AgentTestHelpers.get_system_prompt(pid) == prompt
+  end
+
+  test "on a `none` space the notice does not claim a sandbox the space does not have" do
+    # `none` runs the bare command on the host, so a "disabled" flip restricts
+    # nothing. The prompt's sentence already says so
+    # (`SystemPrompt.network_sentence("none", …)`), and the notice is built from
+    # the same fact — otherwise the two halves of one change contradict each
+    # other, and the agent is told its commands are blocked when they are not.
+    {:ok, space_id} = AgentTestHelpers.create_test_space(%{sandbox_backend: "none"})
+    AgentTestHelpers.put_space_id(space_id)
+    name = "agent#{System.unique_integer([:positive])}"
+
+    {:ok, ^name} =
+      Agents.create_agent(
+        space_id,
+        %{name: "qwen3.5-plus", provider: "model-studio"},
+        name: name,
+        vocation_id: AgentTestHelpers.vocation_id_for_test()
+      )
+
+    AgentTestHelpers.ensure_cleanup(name)
+    {:ok, pid} = Supervisor.get_agent(space_id, name)
+
+    assert {:ok, _space} = Spaces.set_network_access(space_id, false)
+
+    assert [notice] = notices(pid)
+    assert notice =~ "Network access for this space is now disabled"
+    assert notice =~ "no sandbox to enforce it"
+    refute notice =~ "the sandbox blocks your commands"
   end
 
   # The runtime notices waiting in the agent's inbox. `pending_messages` is

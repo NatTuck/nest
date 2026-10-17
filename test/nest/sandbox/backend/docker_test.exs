@@ -16,6 +16,7 @@ defmodule Nest.Sandbox.Backend.DockerTest do
 
   import Nest.Sandbox.Backend.DockerTestHelpers
 
+  alias Nest.FSPath
   alias Nest.Sandbox
   alias Nest.Sandbox.Backend
   alias Nest.Sandbox.Backend.Docker
@@ -347,6 +348,77 @@ defmodule Nest.Sandbox.Backend.DockerTest do
       # `mode = "rw"` binds a path the container already has, so it is unaffected.
       refute reason =~ "/proj/data"
       assert reason =~ ~s(mode = "rw")
+    end
+
+    test ~s(the container's binds drop a `mode = "tmp"` .nest mount, rather than binding a host path) do
+      # The refusal above reads the *call's* caps, but a container's binds are
+      # fixed when it is created and are derived from a synthetic caps that always
+      # writes `":workspace"` — so the project mounts are merged in for every
+      # space, including one whose calling mode (`plan`) is granted none.
+      # Refusing per call would therefore still let `ensure_container` emit
+      # `-v <container scratch>/project/<slug>:<dest>:rw`: the daemon would create
+      # that host directory as root, and one container serves the whole space, so
+      # every agent in it would write into the first agent's directory. The spec
+      # has to be dropped at the container.
+      ws = workspace("nest_docker_tmp_bind")
+
+      File.write!(Path.join(ws, ".nest"), """
+      [[mount]]
+      path = "build"
+      mode = "tmp"
+
+      [[mount]]
+      path = "data"
+      mode = "rw"
+      """)
+
+      mounts = mounts(ws)
+      binds = Docker.container_binds(mounts)
+      scratch_project = Path.join(Mounts.scratch(mounts), "project") <> "/"
+
+      refute Enum.any?(binds, fn {source, _dest, _mode} ->
+               String.starts_with?(source, scratch_project)
+             end)
+
+      # `mode = "rw"` binds a path the container already has, so it survives.
+      dests = Enum.map(binds, fn {_source, dest, _mode} -> dest end)
+      assert FSPath.canonical(Path.join(ws, "data")) in dests
+    end
+
+    test "a background job gets the same refusals, instead of failing inside the container" do
+      # `ShellJobs.Launcher` builds a job through `job_spec/4`, never through
+      # `command/3`, so without its own check it would be the one path that
+      # skipped both refusals. The failure would then surface from the inner
+      # bwrap as `Can't bind mount …: No such file or directory`, which
+      # classifies as an ordinary `:enoent` and reads to the agent as a missing
+      # file rather than as a sandbox restriction it can act on.
+      unbound = caps_with(%{"write" => ["/tmp", ":workspace", "/var/cache/thing"]})
+
+      assert {:error, unbound_reason} =
+               Docker.job_spec(mounts("/ws"), unbound, "/tmp/.cmds/x.sh", "/tmp/agent-a/job.log")
+
+      assert unbound_reason =~ "/var/cache/thing"
+
+      tmp_mount =
+        caps_with(%{
+          "project" => [
+            %{
+              "mode" => "tmp",
+              "dest" => "/proj/build",
+              "source" => "/tmp/agent-a/project/df5ca6c5eb41b38e"
+            }
+          ]
+        })
+
+      assert {:error, tmp_reason} =
+               Docker.job_spec(
+                 mounts("/ws"),
+                 tmp_mount,
+                 "/tmp/.cmds/x.sh",
+                 "/tmp/agent-a/job.log"
+               )
+
+      assert tmp_reason =~ "/proj/build"
     end
 
     test "refuses a write path the container does not have, by name" do

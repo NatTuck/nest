@@ -19,9 +19,12 @@ defmodule Nest.ProjectConfig do
     * `"rw"` — bind the host path read-write at its own path.
     * `"tmp"` — bind a directory under the agent's scratch dir (the
       agent's own sub-directory of the space scratch dir) at `path`.
-      Writes never touch the host; the backing directory persists for
-      the agent's lifetime (and is visible inside the sandbox under
-      `/tmp/<agent-name>/project/<slug>`).
+      On a `bwrap` space the backing directory is a host directory, so
+      writes never touch the project; the directory persists for the
+      agent's lifetime (and is visible inside the sandbox under
+      `/tmp/<agent-name>/project/<slug>`). A `docker` space's scratch is
+      the container's own `/tmp`, so there is no host directory to back
+      this with and the mount is **refused by name** — use `"rw"` there.
 
   `create = true` makes Nest `mkdir_p` the path before mounting, so a
   project can declare a scratch path whose parents don't exist yet.

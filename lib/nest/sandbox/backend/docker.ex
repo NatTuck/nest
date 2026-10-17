@@ -147,7 +147,14 @@ defmodule Nest.Sandbox.Backend.Docker do
   def job_spec(mounts, caps, script, log_path) do
     caps = caps || Sandbox.default_caps()
 
-    with {:ok, name} <- container_name(mounts) do
+    # A background job is built by `Nest.Sandbox.ShellJobs.Launcher` and never
+    # goes through `command/3`, so without this it would be the one path that
+    # skipped the refusals below — for a `mode = "tmp"` `.nest` mount *and* for a
+    # `caps.fs.write` path the container cannot bind. Both would then reach the
+    # inner bwrap and fail there as `Can't bind mount …: No such file or
+    # directory`, which tells the agent nothing it can act on.
+    with :ok <- check_binds(mounts, caps),
+         {:ok, name} <- container_name(mounts) do
       {:ok, %{command: CommandLine.exec_line(name, mounts, caps, script, log_path), cd: nil}}
     end
   end

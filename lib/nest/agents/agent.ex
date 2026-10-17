@@ -295,7 +295,7 @@ defmodule Nest.Agents.Agent do
   keeps the value it started with and the space's own claim that the change takes
   effect for its agents' subsequent commands is false.
 
-  A **cast**, unlike `set_mode/3`: the edit must not wait on an agent's turn, and
+  A **cast**, unlike `set_mode/2`: the edit must not wait on an agent's turn, and
   there is nothing to refuse — the value is the space's, not the agent's. The
   mounts are updated and the tool closures are rebuilt (they capture the mounts);
   a turn already in flight picks the new value up at its next settle, which is

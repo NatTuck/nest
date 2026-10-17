@@ -30,6 +30,7 @@ defmodule Nest.Agents.Agent.Callbacks do
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Watch
   alias Nest.Messages.{Assistant, NoticeTag, Part, User}
+  alias Nest.Sandbox.Mounts
 
   # The space's network access changed (`Nest.Spaces.set_network_access/2`).
   #
@@ -50,7 +51,14 @@ defmodule Nest.Agents.Agent.Callbacks do
   # A turn in flight re-reads the mounts at its next settle.
   def handle_cast({:set_network_access, value}, state) do
     state = apply_network_access(state, value)
-    {:noreply, Inbox.enqueue_internal(state, nil, network_notice(value), :notice)}
+
+    {:noreply,
+     Inbox.enqueue_internal(
+       state,
+       nil,
+       network_notice(value, Mounts.backend(state.mounts)),
+       :notice
+     )}
   end
 
   # A tool worker's "my `agents-send` reached its target": a turn event for this
@@ -164,7 +172,15 @@ defmodule Nest.Agents.Agent.Callbacks do
   # `[mode: notice]` prefix and `NoticeTag` are the shape `ModeAuthority.notice/2`
   # and `WorkspaceHandler.notice_pair/1` already use, so every runtime notice is
   # built alike.
-  defp network_notice(true) do
+  defp network_notice(false, "none") do
+    "[mode: notice]\n" <>
+      NoticeTag.tag(
+        "Network access for this space is now disabled, but this space has no " <>
+          "sandbox to enforce it: your commands can reach the network either way."
+      )
+  end
+
+  defp network_notice(true, _backend) do
     "[mode: notice]\n" <>
       NoticeTag.tag(
         "Network access for this space is now enabled: your commands can reach the " <>
@@ -172,7 +188,7 @@ defmodule Nest.Agents.Agent.Callbacks do
       )
   end
 
-  defp network_notice(false) do
+  defp network_notice(false, _backend) do
     "[mode: notice]\n" <>
       NoticeTag.tag(
         "Network access for this space is now disabled: the sandbox blocks your " <>

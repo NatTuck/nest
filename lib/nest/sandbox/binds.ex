@@ -84,10 +84,25 @@ defmodule Nest.Sandbox.Binds do
   """
   @spec container_specs(Mounts.t()) :: [spec()]
   def container_specs(mounts) do
-    mounts
-    |> container_caps()
+    caps = container_caps(mounts)
+
+    # The `mode = "tmp"` project mounts are dropped here, at the *container*,
+    # not at the call. A container's binds are host paths fixed at creation, and
+    # this superset is derived from a synthetic caps that always writes
+    # `":workspace"` — so it merges the project mounts for *every* space,
+    # including one whose calling mode (`plan`) is granted none. Refusing them
+    # per call would leave the container emitting `-v <host path>` anyway: the
+    # daemon would create that directory as root, and because one container
+    # serves the whole space, every agent in it would write into the first
+    # agent's directory. Dropping the spec is what makes "no host path is ever
+    # bound for a `mode = "tmp"` mount" true rather than merely claimed; the
+    # per-call refusal (`Nest.Sandbox.Backend.Docker`) stays, because it is what
+    # gives the agent a sentence it can act on.
+    unbackable = MapSet.new(non_host_project_mounts(caps, mounts))
+
+    caps
     |> specs(mounts)
-    |> Enum.reject(&container_scratch?/1)
+    |> Enum.reject(&(container_scratch?(&1) or unbackable?(&1, unbackable)))
   end
 
   @doc """
@@ -156,6 +171,8 @@ defmodule Nest.Sandbox.Binds do
   end
 
   defp container_scratch?({source, _dest, _mode}), do: source == Paths.sandbox_root()
+
+  defp unbackable?({_source, dest, _mode}, unbackable), do: MapSet.member?(unbackable, dest)
 
   # The workspace is bound at its *canonical* path — symlinks resolved — so a
   # workspace reached through a symlink binds to its real target. The path the
