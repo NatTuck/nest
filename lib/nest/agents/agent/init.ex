@@ -110,7 +110,7 @@ defmodule Nest.Agents.Agent.Init do
 
   # The prompt is composed through `mounts` because composing it *runs* the
   # sandbox: the `AGENTS.md` section reads the file through it (see
-  # `Nest.Agents.Agent.TmpSpace.prompt_mounts/4`).
+  # `Nest.Agents.Agent.TmpSpace.prompt_mounts/5`).
   defp build_vocation_pipeline(attrs, mounts) do
     model = Map.fetch!(attrs, :model)
     # Internal/test-only cache-tier override; see `initial_context_limit/2`.

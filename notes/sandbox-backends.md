@@ -265,7 +265,7 @@ A scratch directory has exactly two creators, and both mark what they make:
 `"none"` scratch it made carried no marker, and a start that never happened left a
 directory no later agent could remove. An *existing* directory is never touched,
 so something that is not Nest's is never marked by accident.
-`TmpSpace.prompt_mounts/4` only *names* the directory; it does not make it, so a
+`TmpSpace.prompt_mounts/5` only *names* the directory; it does not make it, so a
 scratch path that cannot be made fails where the agent starts rather than as a
 raise out of a caller that is merely composing a prompt.
 
@@ -335,7 +335,7 @@ the agent as `Execution failed: …`; it is never a half-built sandbox.
   `SystemPrompt.agents_md_section/2`'s `else` clause swallows that (a project
   with no `AGENTS.md` is the ordinary case), so nothing is printed and no
   container is left behind. The call sites that build the prompt's mounts are
-  covered through `TmpSpace.prompt_mounts/4` and through that start path
+  covered through `TmpSpace.prompt_mounts/5` and through that start path
   (`none_scratch_name_test.exs`), which reads the mounts it built.
 * Everything that decides *what* to run is pure and asserted exactly:
   `Docker.container_name/1`, `layout/3`, `image_tag/1`, `dockerfile/1`,

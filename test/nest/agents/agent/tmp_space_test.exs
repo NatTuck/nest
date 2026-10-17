@@ -150,7 +150,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
     end
   end
 
-  describe "prompt_mounts/4" do
+  describe "prompt_mounts/5" do
     test "names the agent's real scratch, space and backend", %{space_id: space_id} do
       mounts = TmpSpace.prompt_mounts("/ws", space_id, unique("agent-a"), "docker", true)
 

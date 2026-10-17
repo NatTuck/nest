@@ -36,7 +36,7 @@ defmodule Nest.Sandbox.Mounts do
   and a backend whose staging directory is only reachable through the scratch
   bind cannot run at all without it (`Nest.Sandbox.Backend.Docker.command/3`).
   The prompt therefore uses the agent's real mounts, scratch included —
-  `Nest.Agents.Agent.TmpSpace.prompt_mounts/4` is the one place that builds them.
+  `Nest.Agents.Agent.TmpSpace.prompt_mounts/5` is the one place that builds them.
   Under bwrap a scratch bind cannot change the bytes a read of an absolute
   workspace path returns, which is what made the omission look harmless; under
   docker it loses the read entirely.

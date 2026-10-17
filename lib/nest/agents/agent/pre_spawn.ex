@@ -281,7 +281,7 @@ defmodule Nest.Agents.Agent.PreSpawn do
     # included: composing it reads `AGENTS.md` through the sandbox, so a
     # `"none"` space must not read it under bwrap, and a `"docker"` space can
     # only reach the staged transcript through the scratch bind (see
-    # `Nest.Agents.Agent.TmpSpace.prompt_mounts/4`).
+    # `Nest.Agents.Agent.TmpSpace.prompt_mounts/5`).
     #
     # The call's last two arguments are `depth` and `mode`: both short, adjacent
     # and easy to transpose, and a swap renders "You are at spawn depth act of 3"
