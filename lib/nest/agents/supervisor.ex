@@ -52,18 +52,14 @@ defmodule Nest.Agents.Supervisor do
   @doc """
   Fetch or start the agent with the given `space_id` and attrs.
 
-  The DB is the source of truth for "does this agent exist in
-  this space?":
+  The DB is the source of truth for "does this agent exist in this space?": a
+  row starts a fresh process under the supervisor seeded with the active
+  messages, and no row is `{:error, :not_found}`.
 
-    * If the row exists in `agents`, start a fresh process
-      under the supervisor seeded with the active messages.
-    * If no row exists, return `{:error, :not_found}`.
-
-  The load-time sequence heal (`Agent.pre_load_heal/1`) runs here,
-  in the caller's DB context, before the child is spawned — never in
-  the child's `init/1` (see the hard rule there). It is idempotent: a
-  caller that finds the tail already healed appends nothing, and both
-  callers get `{:ok, name}`.
+  The load-time sequence heal (`Agent.pre_load_heal/1`) runs here, in the
+  caller's DB context, before the child is spawned — never in the child's
+  `init/1` (see the hard rule there). It is idempotent: a caller that finds the
+  tail already healed appends nothing, and both callers get `{:ok, name}`.
 
   Returns `{:ok, name}` on success.
   """
@@ -122,20 +118,17 @@ defmodule Nest.Agents.Supervisor do
   #
   # Composing the prompt creates the agent's scratch directory on the way
   # (`Sandbox.read` -> `Mounts.ensure_scratch!/1`, whose `File.mkdir_p!` raises
-  # `File.Error`). That used to happen inside `init/1`, where
-  # `DynamicSupervisor.start_child/2` reported the raise as `{:error, reason}`;
-  # out here it would escape `fetch_or_start_agent/2` and `get_agent/2`, which
-  # are specced `{:error, term()}` and are called from channels. So the raise is
-  # mapped back to that shape. (Deliberately not done in `Agent.pre_spawn/1`:
-  # `start_pre_spawned/3` re-raises after rolling the row back, and that path
-  # already behaved this way.)
+  # `File.Error`). Inside `init/1` that raise came back as `{:error, reason}`
+  # from `DynamicSupervisor.start_child/2`; out here it would escape
+  # `fetch_or_start_agent/2` and `get_agent/2`, which are specced
+  # `{:error, term()}`, are called from channels, and log nothing themselves —
+  # so it is mapped back to that shape and logged here. (Deliberately not in
+  # `Agent.pre_spawn/1`: `start_pre_spawned/3` re-raises after rolling the row
+  # back, and that path already behaved this way.)
   defp prepare_for_start(attrs) do
     {:ok, Init.prepare(attrs)}
   rescue
     exception ->
-      # Previously this raise happened inside `init/1`, so the child crash was
-      # reported; mapped to a tuple out here it would be silent, and nothing
-      # downstream of `fetch_or_start_agent/2` logs the refusal.
       Logger.error("Could not prepare the agent's initial state: #{Exception.message(exception)}")
       {:error, {:prepare_failed, exception}}
   end
@@ -145,13 +138,11 @@ defmodule Nest.Agents.Supervisor do
   that row when no process started.
 
   Every pre-spawn site has the same shape: insert the row (and its system
-  message), then start the process. The row is in the database before the
-  process exists, so a start that does not happen leaves an orphan that also
-  blocks every retry with the same name
-  (`unique_constraint([:space_id, :name])`). `start` is the call that starts
-  the agent — `fetch_or_start_agent/2` for a caller-created agent,
-  `start_under_supervisor/2` for a spawn — and its `{:ok, name}` is passed
-  through untouched.
+  message), then start the process. A start that does not happen leaves an
+  orphan that also blocks every retry with the same name
+  (`unique_constraint([:space_id, :name])`). `start` is the call that starts the
+  agent — `fetch_or_start_agent/2` for a caller-created agent,
+  `start_under_supervisor/2` for a spawn — and its `{:ok, name}` passes through.
 
   Anything else means no process exists for `attrs`:
 
@@ -161,11 +152,9 @@ defmodule Nest.Agents.Supervisor do
       is re-raised unchanged after the cleanup — it is the caller's failure
       to report, not ours to swallow.
 
-  The delete is by `id`, never by name: this can only ever remove the row
-  the caller inserted. A concurrent caller cannot take the name until the
-  delete has happened, and its row would be a different `id`, so the
-  "removes only its own row" guarantee holds even across the race. Deleting
-  also cascades to the messages the same `pre_spawn/1` wrote
+  The delete is by `id`, never by name: this can only ever remove the row the
+  caller inserted, and a concurrent caller's row would be a different `id`.
+  Deleting also cascades to the messages the same `pre_spawn/1` wrote
   (`messages.agent_id` is `on_delete: :delete_all`).
 
   A start that reports `{:ok, name}` (including `:already_started`, which
@@ -205,15 +194,28 @@ defmodule Nest.Agents.Supervisor do
   # `start_pre_spawned/3` bound to this module's own start call. Kept as a
   # function so the `with` in the spawn paths stays under the ABC cap.
   #
-  # The row id is attached to the attrs here rather than returned from
-  # `pre_spawn/1`: a spawned child is started straight from these attrs
-  # (a caller-created agent's come from
-  # `Persistence.build_attrs_for_start/2`), and the child's session must
-  # know which row it owns before its first append (see
-  # `Persistence.insert_message/4`).
+  # The row id and the row's mode are attached here rather than returned from
+  # `pre_spawn/1`: a spawned child starts straight from these attrs (a
+  # caller-created agent's come from `Persistence.build_attrs_for_start/2`), so
+  # its session must know which row it owns before its first append (see
+  # `Persistence.insert_message/4`), and its mode must be the *row's* —
+  # `PreSpawn.put_mode/1` derived it into its own copy of the attrs, so a spawn
+  # that named none would otherwise fall back to `Nest.Modes.default()`: a
+  # `plan` parent's child running `act`, writing a workspace its parent may not
+  # touch, while its row, the UI and every restart say `plan`.
+  # `fetch_or_start_agent/2` reads the same field from
+  # `build_attrs_for_start/2`.
   defp start_pre_spawned_child(attrs, agent_id, name) do
     attrs = Map.put(attrs, :agent_row_id, agent_id)
-    start_pre_spawned(attrs, agent_id, fn -> start_under_supervisor(attrs, name) end)
+    # Inside the closure, so a missing row is rolled back (see `start_pre_spawned/3`).
+    start_pre_spawned(attrs, agent_id, fn ->
+      start_under_supervisor(Map.put(attrs, :mode, persisted_mode(attrs)), name)
+    end)
+  end
+
+  defp persisted_mode(attrs) do
+    {:ok, %PersistedAgent{mode: mode}} = Persistence.fetch_agent(attrs.space_id, attrs.name)
+    mode
   end
 
   defp rollback_pre_spawned(attrs, agent_id, reason) do

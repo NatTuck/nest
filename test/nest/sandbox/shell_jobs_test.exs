@@ -94,8 +94,9 @@ defmodule Nest.Sandbox.ShellJobsTest do
     # `finish_job/3`'s broadcast never sees that frame. It is not a visible
     # failure either: `ShellJobs.subscribe/3` has a late-subscribe clause that
     # still sends `{:shell_job_exit, …}` for an already-exited job, so the exit
-    # frame arrives and only the frame below it hangs. The broadcast test further
-    # down subscribes first for the same reason.
+    # frame still arrives and only the `assert_receive` below it fails — with an
+    # empty mailbox, which reads like a hang. The broadcast test further down
+    # subscribes first for the same reason.
     {space_id, name} = key
     Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
 
@@ -103,6 +104,9 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert [%{id: id}] = ShellJobs.list(key)
 
     assert :ok = ShellJobs.subscribe(key, id, self())
+    # Measured: a whole `bwrap` + `true` start->exit->`DOWN`->manager cycle is
+    # 10-20 ms, and 3 `--cover` runs of this file under 16 CPU burners were 18
+    # tests, 0 failures each.
     assert_receive {:shell_job_exit, ^id, 0}, 500
 
     # `finish_job/3` removes the host script and *then* broadcasts the job list,

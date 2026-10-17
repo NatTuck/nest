@@ -127,8 +127,9 @@ defmodule Nest.Agents.Agent.Init do
   attrs and `:prepared` does not reach the supervisor — for a caller-created
   agent those attrs are re-read from the row
   (`Persistence.build_attrs_for_start/2`), and for a spawn they are the
-  spawner's. It is still the right trade: neither composition happens with the
-  supervisor blocked.
+  spawner's, with the mode added from the row `pre_spawn/1` just wrote (see
+  `Nest.Agents.Supervisor.start_pre_spawned_child/3`). It is still the right
+  trade: neither composition happens with the supervisor blocked.
 
   ## Only on attrs `PreSpawn.put_mode/1` has already seen
 
@@ -139,13 +140,19 @@ defmodule Nest.Agents.Agent.Init do
   composes under `Nest.Modes.default()` and authorizes the read with the wrong
   mode's caps.
 
-  ## The mounts are the naming ones
+  ## The mounts are the prompt's ones
 
-  They are `TmpSpace.prompt_mounts/5`, not the creating ones, because
-  `pre_spawn` calls this before the scratch name has been validated: a scratch
-  path that cannot be made must fail where the agent starts, not as a raise out
-  of a caller that is only composing a prompt. The paths are the same either
-  way, so the prompt's bytes are unchanged.
+  They come from `TmpSpace.prompt_mounts/5`, the one builder of a prompt's
+  mounts, and it *names* the scratch directory without creating it: the two
+  creators are `TmpSpace.create/3` (the start path) and
+  `Mounts.ensure_scratch!/1` (staging), so naming the mounts is not itself a
+  side effect that makes a directory. Composing still creates it on demand,
+  though — the `AGENTS.md` read stages a command, and
+  `Mounts.ensure_scratch!/1`'s `File.mkdir_p!` raises `File.Error` out of
+  *this* caller when it cannot make the directory (which is what
+  `Nest.Agents.Supervisor` maps back to `{:error, {:prepare_failed, _}}`). The
+  paths are the same as the creating mounts', so the prompt's bytes are
+  unchanged.
   """
   @spec prepare(map()) :: map()
   def prepare(%{prepared: _} = attrs), do: attrs
@@ -160,8 +167,10 @@ defmodule Nest.Agents.Agent.Init do
 
   # Everything `build_vocation_pipeline/2` needs to compose in the caller. Attrs
   # missing any of it are left alone: `build_state/2` still composes them,
-  # exactly as it did before this existed, so no start path gains a new failure
-  # mode.
+  # exactly as it did before this existed. `PreSpawn.pre_spawn/1` has no such
+  # fallback — its `initial_system_prompt/1` raises `ArgumentError` on attrs
+  # that fail this — so an attrs builder that drops one of these keys fails
+  # loudly there rather than composing half a prompt.
   defp compose_ready?(attrs) do
     is_binary(Map.get(attrs, :name)) and is_integer(Map.get(attrs, :space_id)) and
       is_binary(Map.get(attrs, :sandbox_backend)) and

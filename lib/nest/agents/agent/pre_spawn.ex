@@ -292,8 +292,9 @@ defmodule Nest.Agents.Agent.PreSpawn do
     end)
   end
 
-  # Render the system prompt in the calling process (so the DB write
-  # runs in a pid with DB access); `nil` only when the vocation is missing.
+  # Wrap the prompt `Init.prepare/1` composed — in this same process, so the DB
+  # write runs in a pid with DB access — in the index-0 system message. An empty
+  # or missing prompt is `{:error, :missing_system_prompt}`.
   defp build_initial_system_message(attrs) do
     case initial_system_prompt(attrs) do
       text when is_binary(text) and text != "" ->

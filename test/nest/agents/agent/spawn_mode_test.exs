@@ -59,7 +59,9 @@ defmodule Nest.Agents.Agent.SpawnModeTest do
       assert %{current_mode: "plan"} = Agent.get_public_info(child_pid(space_id, name), 1_000)
     end
 
-    test "an omitted mode inherits the parent's, and the row agrees", %{space_id: space_id} do
+    test "an omitted mode inherits the parent's, on the row and in the live state", %{
+      space_id: space_id
+    } do
       state = plan_coordinator(space_id)
       name = unique("inherit-child")
 
@@ -68,6 +70,13 @@ defmodule Nest.Agents.Agent.SpawnModeTest do
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
 
       assert %{mode: "plan"} = row_for(space_id, name)
+
+      # The row alone is not enough: the live mode is what `ctx.mode`/`ctx.caps`
+      # are built from, so a child whose row says `plan` while its process runs
+      # `act` writes the workspace the parent may not touch. The spawned child is
+      # started from the *spawner's* attrs, which never carry the mode
+      # `PreSpawn.put_mode/1` derived, so this is the assertion that catches it.
+      assert %{current_mode: "plan"} = Agent.get_public_info(child_pid(space_id, name), 1_000)
     end
 
     test "a `plan` parent may spawn a `plan` child", %{space_id: space_id} do
@@ -117,6 +126,19 @@ defmodule Nest.Agents.Agent.SpawnModeTest do
       # happens before the child has one.
       assert {:error, {:mode_refused, _reason}} =
                Supervisor.start_agent_with_parent(state, "carry on", nil, mode: "act")
+    end
+
+    test "an omitted mode inherits the parent's, on the row and in the live state", %{
+      space_id: space_id
+    } do
+      state = plan_coordinator(space_id)
+
+      assert {:ok, child} = Supervisor.start_agent_with_parent(state, "carry on")
+
+      on_exit(fn -> _ = Supervisor.stop_agent(space_id, child) end)
+
+      assert %{mode: "plan"} = row_for(space_id, child)
+      assert %{current_mode: "plan"} = Agent.get_public_info(child_pid(space_id, child), 1_000)
     end
   end
 

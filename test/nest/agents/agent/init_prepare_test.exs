@@ -21,18 +21,28 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
   `PreSpawn.pre_spawn/1` with a blueprint whose `default_mode` is `"plan"` and
   asserts the caps of the read. Until it exists the ordering is held only by
   `Init.prepare/1`'s docs.
+
+  What it does pin, in "the supervisor's rescue", is the *other* half of the
+  caller-side move: a composition that raises (composing creates the scratch
+  directory, so a path that cannot be made raises `File.Error` out of the
+  caller) reaches a channel caller as `{:error, {:prepare_failed, exception}}`
+  and is logged, rather than escaping `Supervisor.fetch_or_start_agent/2`.
   """
 
   use Nest.DataCase, async: true
 
+  import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Agents.Supervisor
   alias Nest.Modes
+  alias Nest.Persistence
   alias Nest.Sandbox
+  alias Nest.Spaces
   alias Nest.Vocations
 
   setup :verify_on_exit!
@@ -72,7 +82,6 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
         |> Map.drop([:sandbox_backend, :network_access])
 
       assert Init.prepare(unable) == unable
-      refute Map.has_key?(Init.prepare(unable), :prepared)
     end
   end
 
@@ -116,6 +125,47 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
       assert Path.basename(path) == "AGENTS.md"
       assert_received {:agents_md_read, _path, ^plan_caps}
       refute_received {:agents_md_read, _path, _other_caps}
+    end
+  end
+
+  # Composing creates the scratch directory on demand (the `AGENTS.md` read
+  # stages a command, and `Mounts.ensure_scratch!/1` makes the directory it
+  # stages into), so a scratch path that cannot be made raises `File.Error` out
+  # of the *composing caller*. That caller is the supervisor, which maps it back
+  # to the `{:error, term()}` its callers are specced for and logs it.
+  describe "the supervisor's rescue" do
+    test "a composition that cannot make the scratch is {:error, {:prepare_failed, _}}, logged",
+         %{space_id: space_id, vocation: vocation} do
+      name = "prepare-fail-#{System.unique_integer([:positive])}"
+
+      {:ok, _row} =
+        Persistence.insert_agent(%{
+          space_id: space_id,
+          name: name,
+          model: %{name: "qwen3.5-plus", provider: "model-studio"},
+          vocation_id: vocation.id,
+          # A workspace, so the composition does read `AGENTS.md` through the
+          # sandbox — without one `agents_md_section/2` is empty and no command
+          # (so no scratch directory) is ever needed.
+          workspace_path: AgentTestHelpers.default_test_workspace()
+        })
+
+      # A *file* where the scratch directory goes: `File.dir?` is false and
+      # `File.mkdir_p!` raises `File.Error{reason: :eexist}`.
+      scratch = TmpSpace.agent_dir(space_id, name, Spaces.sandbox_backend(space_id))
+      File.mkdir_p!(Path.dirname(scratch))
+      File.write!(scratch, "")
+      on_exit(fn -> File.rm(scratch) end)
+
+      # Asserted inside the capture: `Logger.error` is synchronous, so the
+      # line is guaranteed to have been emitted by the time the call returns.
+      log =
+        capture_log(fn ->
+          assert {:error, {:prepare_failed, %File.Error{}}} =
+                   Supervisor.fetch_or_start_agent(space_id, %{name: name})
+        end)
+
+      assert log =~ "Could not prepare"
     end
   end
 

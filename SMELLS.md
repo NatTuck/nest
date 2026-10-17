@@ -85,7 +85,6 @@ match, and common sense domain correctness.
   - `capture_io` *is* process-scoped (it swaps the calling process's group
     leader), so `capture_io` is fine for both presence and absence assertions.
 - Sleeps in tests are strictly disallowed.
-- Message drain loops in tests are strictly prohibited.
 - Timeouts in tests should be as low as possible. Typically 50ms, absolutely
 no more than 500ms unless there are comments describing the concrete timings
 (with real, measured numbers) and a clear justification.
@@ -96,8 +95,9 @@ we need to find and fix the bug *and* refactor the test with the long timeout.
 - If we're doing something that's going to block in a test (like a receive), it's because
 we know for sure the block will end in a fixed time - optimally we should only
 be doing a receive if the message is *already* in the mailbox.
-- We don't do "drain loops" in tests to drain mailboxes. Ever. Any PR that has
-any of these fails review, even if it was somehow already there.
+- We don't do "drain loops" in tests to drain mailboxes — message drain loops
+are strictly prohibited. Ever. Any PR that has any of these fails review, even
+if it was somehow already there.
 - We don't do "async: false" just because a test hits the DB. Any "async: false"
 must have a clear and concrete justification that explains some atypical
 situation.
