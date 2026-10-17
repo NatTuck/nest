@@ -327,15 +327,23 @@ the agent as `Execution failed: …`; it is never a half-built sandbox.
 
 ## Testing
 
-* A docker space's *start* reaches the daemon now. Every space has a workspace
-  (`Space.create_changeset/2`), so composing the prompt attempts the `AGENTS.md`
-  read — the literal `docker exec -i …` `Docker.command/3` builds, which is the
-  one call the inert `docker_runner` in `config/test.exs` does **not** cover. It
-  fails against a container that is not there, and
-  `SystemPrompt.agents_md_section/2`'s `else` clause swallows that (a project
-  with no `AGENTS.md` is the ordinary case), so nothing is printed and no
-  container is left behind. The call sites that build the prompt's mounts are
-  covered through `TmpSpace.prompt_mounts/5` and through that start path
+* **A docker space's *start* does not reach the daemon**, and that is a property
+  of the mounts rather than of the backend. Composing a prompt reads `AGENTS.md`
+  only when the *agent's* mounts name a workspace:
+  `SystemPrompt.agents_md_section/2`'s first clause returns `""` for
+  `%Mounts{workspace: nil}` without calling `Sandbox.read/3` at all. An agent
+  created through `Nest.Agents.create_agent/3` takes its workspace from that
+  call's `:workspace_path` option — a clone or a spawned child takes it from its
+  parent's mounts instead — and a space's own path reaches the root agent only
+  through `Nest.Spaces.create_space_with_root_agent/2`. The one docker-space agent
+  the suite starts (`none_scratch_name_test.exs`) names no workspace, so it never
+  makes the read; `config/test.exs`'s `docker_runner` note says why that is one
+  line from false. A docker agent *with* a workspace would make the read — the
+  literal `docker exec -i …` `Docker.command/3` builds, the one call the inert
+  runner does **not** cover — fail against a container that is not there, and
+  print `sandbox_setup_failed` at `:warning`. Nothing in the suite covers that
+  today. The call sites that build the prompt's mounts are covered through
+  `TmpSpace.prompt_mounts/5` and through that start path
   (`none_scratch_name_test.exs`), which reads the mounts it built.
 * Everything that decides *what* to run is pure and asserted exactly:
   `Docker.container_name/1`, `layout/3`, `image_tag/1`, `dockerfile/1`,
