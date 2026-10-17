@@ -345,38 +345,7 @@ defmodule Nest.Agents.Agent.Callbacks do
   # row is the acknowledgement, and neither is an LLM request.
   def handle_call({:set_mode, mode, actor}, _from, state) do
     if Machine.status_for(state.live.machine) in [:idle, :model_missing] do
-      actor_map =
-        if actor == :human,
-          do: %{kind: :human},
-          else: ModeAuthority.actor_for(state.space_id, elem(actor, 1), state.name)
-
-      with :ok <- ModeAuthority.authorize(actor_map, mode),
-           :ok <- Nest.Persistence.update_agent_mode(state.space_id, state.name, mode) do
-        state = %{state | live: %{state.live | mode: mode}}
-
-        {state, _reply} =
-          MessageAppender.handle_batch(state, [
-            {:user,
-             %User{
-               index: nil,
-               timestamp: DateTime.utc_now(),
-               parts: [%Part.Text{text: ModeAuthority.notice(mode, actor)}],
-               metadata: %{"mode" => "notice"},
-               api_logs: []
-             }},
-            {:assistant,
-             %Assistant{
-               index: nil,
-               timestamp: DateTime.utc_now(),
-               parts: [%Part.Text{text: "Mode change confirmed."}],
-               api_logs: []
-             }}
-          ])
-
-        {:reply, :ok, state}
-      else
-        {:error, reason} -> {:reply, {:error, reason}, state}
-      end
+      change_mode(state, mode, actor)
     else
       {:reply, {:error, :agent_busy}, state}
     end
@@ -384,6 +353,58 @@ defmodule Nest.Agents.Agent.Callbacks do
 
   def handle_call(msg, from, state) do
     IntrospectionHandler.handle(msg, from, state)
+  end
+
+  # The change itself, for an agent that can take one now: validate → persist →
+  # mutate → announce. Split out of the `handle_call` clause above because that
+  # clause's own `if` already spends one level of nesting on "can this agent take
+  # a change at all". It lives after the dispatcher clause so the `handle_call/3`
+  # clauses stay grouped.
+  defp change_mode(state, mode, actor) do
+    actor_map =
+      if actor == :human,
+        do: %{kind: :human},
+        else: ModeAuthority.actor_for(state.space_id, elem(actor, 1), state.name)
+
+    with :ok <- ModeAuthority.authorize(actor_map, mode),
+         :ok <- Nest.Persistence.update_agent_mode(state.space_id, state.name, mode) do
+      state = %{state | live: %{state.live | mode: mode}}
+
+      # The notice pair is the runtime's own, appended in-process, so the
+      # tagged result is the shape every in-process append returns
+      # (`MessageAppender.append_in_process/2`) — and a broken sequence is the
+      # caller's error rather than a crash inside the agent.
+      case MessageAppender.handle_batch(state, mode_notice_pair(mode, actor)) do
+        {:ok, _stamped, state} -> {:reply, :ok, state}
+        {:stale, state} -> {:reply, {:error, :stale_append}, state}
+        {:invalid, reason, state} -> {:reply, {:error, reason}, state}
+      end
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  # The notice pair a mode change appends: the runtime speaking for itself (the
+  # user row carries the notice marker) and its acknowledgement. Neither is an
+  # LLM request.
+  defp mode_notice_pair(mode, actor) do
+    [
+      {:user,
+       %User{
+         index: nil,
+         timestamp: DateTime.utc_now(),
+         parts: [%Part.Text{text: ModeAuthority.notice(mode, actor)}],
+         metadata: %{"mode" => "notice"},
+         api_logs: []
+       }},
+      {:assistant,
+       %Assistant{
+         index: nil,
+         timestamp: DateTime.utc_now(),
+         parts: [%Part.Text{text: "Mode change confirmed."}],
+         api_logs: []
+       }}
+    ]
   end
 
   # The tagged append result maps to the legacy GenServer reply for
