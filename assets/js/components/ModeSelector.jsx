@@ -10,10 +10,13 @@
  */
 export function ModeSelector({ modes, value, onChange, disabled }) {
   if (!modes || modes.length <= 1) return null;
-  // Nothing to show until the server has said which mode the agent is in.
-  // Without this the `<select>` would display its first option while the value
-  // it was handed is absent — i.e. it would show a mode the agent is not in.
-  if (!value || !modes.includes(value)) return null;
+  // A single mode is not worth a control, so that case renders nothing. A
+  // *missing or unknown* value is different: it means we cannot say which mode
+  // the agent is in, and AGENTS.md's transparency rule wants an obvious
+  // indicator rather than nothing. A `<select>` with no value would display its
+  // first option — a mode the agent is not in — and an empty space would hide
+  // the fact that we do not know.
+  if (!value || !modes.includes(value)) return <UnknownMode value={value} />;
 
   return (
     <select
@@ -29,5 +32,23 @@ export function ModeSelector({ modes, value, onChange, disabled }) {
         </option>
       ))}
     </select>
+  );
+}
+
+/**
+ * The "we do not know which mode this agent is in" indicator. It is a `role`
+ * alert rather than a disabled select, because the useful thing to show is that
+ * something is wrong — a disabled control would look like a choice the user
+ * cannot make.
+ */
+function UnknownMode({ value }) {
+  return (
+    <span
+      role="alert"
+      title="The server reported no mode, or one this build does not know. This is a bug, not a choice you can make."
+      className="px-3 py-3 border border-red-300 bg-red-50 text-red-700 rounded-lg text-sm font-medium"
+    >
+      {value == null ? "mode: (missing)" : `mode: unknown (${value})`}
+    </span>
   );
 }

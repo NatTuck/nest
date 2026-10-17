@@ -10,6 +10,9 @@ defmodule Nest.Spaces.NetworkAccessTest do
   # concurrently running test that touches a vocation while this one waits on
   # `agents`/`spaces` — a lock-ordering deadlock, not a theoretical one. ExUnit
   # runs `async: false` modules serially, so nothing else is in flight here.
+  # The lock is taken against the **shared** `nest_test`, so it would also block
+  # another worktree's suite on the same database; the `flock` convention (one
+  # suite at a time) is the assumption that makes that safe.
   use Nest.DataCase, async: false
 
   alias Nest.Agents.AgentTestHelpers
