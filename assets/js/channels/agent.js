@@ -539,6 +539,36 @@ export function sendMessage(agentId, content, mode, onError) {
 }
 
 /**
+ * Change an agent's mode.
+ *
+ * The mode is a per-agent runtime property the *server* owns (`Nest.Modes`), so
+ * this is a control-plane push rather than a field on the next chat message:
+ * the change applies immediately and from the agent's next turn, and the server
+ * announces it in the agent's transcript.
+ *
+ * Optimistic, like `sendMessage`: the selector shows the new mode at once, and
+ * a refusal takes it back and reports the reason (the monotone rule refuses a
+ * mode an agent may not grant, and the server names why). A no-op when the
+ * channel isn't connected.
+ */
+export function setAgentMode(agentId, mode, onError) {
+  const channel = agentChannels.get(agentId);
+  if (!channel) {
+    if (onError) onError(new Error("Not connected to agent"));
+    return;
+  }
+
+  const store = getStore();
+  const previous = store.agentsCache[agentId]?.currentMode ?? null;
+  store.setAgentMode(agentId, mode);
+
+  channel.push("set_agent_mode", { mode }).receive("error", (err) => {
+    store.setAgentMode(agentId, previous);
+    if (onError) onError(err);
+  });
+}
+
+/**
  * Request that the in-flight chat task for the agent halt
  * immediately. A no-op when the channel isn't connected.
  */

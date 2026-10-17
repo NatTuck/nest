@@ -19,6 +19,7 @@ defmodule Nest.Spaces do
   alias Nest.Persistence
   alias Nest.Repo
   alias Nest.Sandbox.Backend
+  alias Nest.Spaces.CreationParams
   alias Nest.Spaces.Space
   alias Nest.Vocations
 
@@ -143,7 +144,8 @@ defmodule Nest.Spaces do
 
   Read once, at agent start, and carried on the agent's
   `Nest.Sandbox.Mounts` value from then on, so caps resolution never reads the
-  DB.
+  DB. A change to the column is pushed to the space's live agents by
+  `set_network_access/2` rather than re-read here.
   """
   @spec network_access(integer()) :: boolean()
   def network_access(space_id) when is_integer(space_id) do
@@ -159,9 +161,9 @@ defmodule Nest.Spaces do
   Turn this space's network access on or off.
 
   Editable, unlike `sandbox_backend`: a space can be closed off or opened up
-  without recreating it. Takes effect for the agents' *subsequent* commands — the
-  value is resolved at agent start and carried on the agent's mounts, so a live
-  agent keeps the value it started with until it is restarted.
+  without recreating it. Every live agent in the space is told as part of the
+  change, so the *next* command it runs already resolves its caps with the new
+  value; a command already in flight keeps the caps it started with.
 
   A `"docker"` space's container is removed as part of the change, because
   `--network none` is fixed when the container is created: without that, the next
@@ -185,6 +187,7 @@ defmodule Nest.Spaces do
         case space |> Space.changeset(%{network_access: value}) |> Repo.update() do
           {:ok, updated} ->
             remove_sandbox(updated)
+            tell_agents(updated, value)
             {:ok, updated}
 
           error ->
@@ -238,7 +241,7 @@ defmodule Nest.Spaces do
   def create_space(user_id, attrs) do
     with {:ok, %Space{} = space} <-
            %Space{}
-           |> Space.create_changeset(Map.put(attrs, :created_by_user_id, user_id))
+           |> Space.create_changeset(CreationParams.for_create(attrs, user_id))
            |> Repo.insert() do
       # Announced here so `create_space/2` is self-contained: whoever creates a
       # space announces it, whatever they do next. When the caller is
@@ -395,6 +398,28 @@ defmodule Nest.Spaces do
     Backend.remove_space(id, backend)
   end
 
+  # Hand the space's new network access to every live agent in it. The value
+  # travels on an agent's `Nest.Sandbox.Mounts`, which is what its caps are
+  # resolved from and what its tool closures were built with, so an agent that
+  # started before the change would otherwise keep the old value for the rest of
+  # its life — this is the only thing that closes that window short of a restart.
+  #
+  # A cast, not a call: the value is the *space's*, so there is nothing an agent
+  # could refuse, and an edit to a space must not wait on a turn. Nothing is
+  # reported back either — a name in the registry with no live process behind it
+  # is skipped, which the registry already guarantees but the lookup is what makes
+  # true rather than assumed.
+  defp tell_agents(%Space{id: id}, value) do
+    id
+    |> Agents.Registry.list_for_space()
+    |> Enum.each(fn name ->
+      case Agents.Registry.lookup(id, name) do
+        {:ok, pid} -> Agents.Agent.set_network_access(pid, value)
+        {:error, :not_found} -> :ok
+      end
+    end)
+  end
+
   defp set_archived(id, archived) do
     from(s in Space, where: s.id == ^id)
     |> Repo.update_all(set: [archived: archived, updated_at: Persistence.now()])
@@ -445,6 +470,26 @@ defmodule Nest.Spaces do
   end
 
   @doc """
+  Resolve the blueprint's default spawn vocation for a space.
+
+  Returns `nil` when the space has no blueprint, the blueprint is gone, **or**
+  the blueprint has no default. The three cases are deliberately one answer,
+  because `agents-spawn` treats them identically: an omitted `vocation` is
+  refused with an error naming the missing argument rather than falling back to
+  the caller's own vocation.
+
+  `Nest.Agents.Supervisor.resolve_spawn_vocation/2` is the caller.
+  """
+  @spec default_spawnable_vocation_for_space(integer()) :: String.t() | nil
+  def default_spawnable_vocation_for_space(space_id) when is_integer(space_id) do
+    case get_space(space_id) do
+      %Space{blueprint_id: nil} -> nil
+      %Space{blueprint_id: bid} -> Blueprints.default_spawnable_vocation(bid)
+      _ -> nil
+    end
+  end
+
+  @doc """
   Create a space and its root agent in a single transaction.
 
   ## Parameters
@@ -461,7 +506,9 @@ defmodule Nest.Spaces do
       as `Agents.create_agent/3`'s `model` arg)
     * `:vocation` — root agent's vocation **slug** (optional;
       derived from blueprint when omitted)
-    * `:workspace_path` — optional root agent workspace path
+    * `:workspace_path` — the space's workspace path (**required**;
+      refused by name when it is missing, is not a directory, or is at
+      or under the sandbox scratch root)
     * `:sandbox_backend` — optional space sandbox backend
       (defaults to `Backend.default/0`)
     * `:agent_name` — root agent's name (optional; defaults
@@ -507,7 +554,7 @@ defmodule Nest.Spaces do
     # constraint on insert (a raw `Ecto.ConstraintError`) instead
     # of surfacing a clean `{:error, :blueprint_missing}`.
     with {:ok, root_vocation_id} <- resolve_root_vocation(attrs),
-         :ok <- ensure_root_workspace(attrs, root_vocation_id),
+         :ok <- ensure_root_workspace(attrs),
          {:ok, %Space{} = space} <-
            create_space(
              user_id,
@@ -528,30 +575,30 @@ defmodule Nest.Spaces do
     end
   end
 
-  # The workspace is a space property that agents inherit. When the
-  # resolved root vocation's agents expect a workspace (their caps
-  # write to `":workspace"`), the space must be given one up front —
-  # otherwise the root agent would start with a nil workspace and its
-  # file/shell tools would fail at runtime. Reject the creation
-  # immediately instead.
-  defp ensure_root_workspace(attrs, root_vocation_id) do
-    case Vocations.get_vocation(root_vocation_id) do
-      nil -> :ok
-      vocation -> ensure_workspace_for(vocation, attrs)
+  # A space's workspace is a space property its agents inherit, and a space now
+  # *requires* one — `Nest.Spaces.Space.create_changeset/2` is where that
+  # invariant lives, so this is not the gate for it. What this adds, before the
+  # row is built, is a refusal a user can act on:
+  #
+  #   * a missing path, which the changeset would also refuse but only as a
+  #     generic `failed_to_create` — an `Ecto.Changeset` is not fit to show
+  #     anyone, so the named reason `:workspace_required` is worth keeping here;
+  #   * a path the sandbox cannot bind, which `Nest.Sandbox.workspace_error/1`
+  #     names precisely (`:workspace_missing`, `:workspace_under_tmp`) and which
+  #     `Nest.Sandbox.build/4` would refuse anyway — but only later, once the
+  #     space existed and every command in it had already failed.
+  #
+  # No vocation lookup any more: every space has a workspace, so there is nothing
+  # left to derive the requirement from.
+  defp ensure_root_workspace(attrs) do
+    case attrs[:workspace_path] do
+      workspace when is_binary(workspace) and workspace != "" ->
+        Nest.Sandbox.workspace_error(workspace)
+
+      _absent ->
+        {:error, :workspace_required}
     end
   end
-
-  defp ensure_workspace_for(%Nest.Vocations.Vocation{} = vocation, attrs) do
-    workspace = attrs[:workspace_path]
-
-    if Vocations.requires_workspace?(vocation) and is_nil(workspace) do
-      {:error, :workspace_required}
-    else
-      Nest.Sandbox.workspace_error(workspace)
-    end
-  end
-
-  defp ensure_workspace_for(_vocation, _attrs), do: :ok
 
   # Vocation resolution order:
   #

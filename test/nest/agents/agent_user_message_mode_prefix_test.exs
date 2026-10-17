@@ -63,14 +63,15 @@ defmodule Nest.Agents.AgentUserMessageModePrefixTest do
   test "user message content is prefixed with the effective mode (intentional design choice)" do
     {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-    # No mode argument -> defaults to "chat" (vocation-less agent).
+    # No mode argument -> the agent's own mode, which for an agent nothing has
+    # said anything about is `Nest.Modes.default/0` (`act`).
     :ok = Agent.chat(pid, "Hello world")
 
     assert_receive {:chat_message,
                     {:user,
                      %{
-                       parts: [%Nest.Messages.Part.Text{text: "[mode: chat]\nHello world"}],
-                       metadata: %{"mode" => "chat"}
+                       parts: [%Nest.Messages.Part.Text{text: "[mode: act]\nHello world"}],
+                       metadata: %{"mode" => "act"}
                      }}},
                    500
 

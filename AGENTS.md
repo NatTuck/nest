@@ -44,10 +44,11 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   (boolean, editable) is the only source of `caps["net"]`: it is resolved once at
   agent start and carried on `Nest.Sandbox.Mounts`, and
   `Nest.Sandbox.with_network_access/2` injects it at caps-resolution time (called
-  from `Nest.ProjectConfig.apply_or_default/2`, the one funnel both resolution
-  paths share). A vocation mode's own `net` key is **dead data** — never read,
-  never rendered into the prompt — and a value naming no space keeps
-  `default_caps/0`'s `net: false`. Do not add a second place that reads either.
+  from `Nest.ProjectConfig.resolve_caps/2`, the one funnel both resolution paths
+  share). There is no per-mode `net` key left to read: `vocations.modes` is gone,
+  and `Nest.Modes`' caps maps carry `net` only as a placeholder nothing reads.
+  A value naming no space keeps `default_caps/0`'s `net: false`. Do not add a
+  second place that reads either.
 - `bwrap` (the default) enforces the mode's caps with binds and namespaces.
   `docker` runs **bwrap inside a container the space shares**, and the two bind
   the *same* list (`Nest.Sandbox.Binds`) — over the host there, over the derived
@@ -123,11 +124,60 @@ doesn't restrict codebase changes during development.
 - Specifically, that means our main system message is fixed once set and does
 not change except potentially on compaction.
 - The main system message explains things that will always be true for the
-current session. This includes a fixed vocation (and thus mode list) and a
-project root (and thus an AGENTS.md if present).
-- User messages are tagged with a `[mode: $MODE]\n` prefix.
-- Agent messages are tagged with a `[Message from agent "$NAME"]\n` prefix.
+current session. This includes a fixed vocation, a fixed mode *catalog* (the two
+modes are code constants — `Nest.Modes` — so the catalog's bytes are the same for
+every agent in a space) and a project root (and thus an AGENTS.md if present).
+The agent's own *mode* is deliberately not in it: it is a per-agent runtime
+property that can change while the agent works, so it travels on the messages
+instead (see "Modes" below).
+- User messages are tagged with a `[mode: $MODE]\n` prefix, and a message from
+another agent carries the recipient's mode in its header
+(`[Message from agent "$NAME" | mode: $MODE]\n`). Both state the **recipient's**
+mode — the mode the turn will run in — which is the only mechanism by which an
+agent whose inbox is all peer traffic learns its own mode.
 - System notices should be tagged with a `[Nest notice]\n` prefix.
+
+### Modes
+
+- There are exactly two modes, and they are code constants (`Nest.Modes`), not
+per-vocation data: `plan` may write only the space's scratch directory, `act` may
+also write the workspace, and nothing else varies per call (the network is the
+space's). A mode's caps are `Nest.Modes.caps/1`'s map; `plan` mode is about
+*effects*, not only writes — an HTTP request that creates something is a change
+no sandbox can see, and the prompt says so.
+- **A mode is a per-agent runtime property.** It is persisted (`agents.mode`,
+seeded from the blueprint's `default_mode`), so a restart cannot silently widen a
+child that was spawned read-only. It is inherited at spawn (the spawner may
+override it), changeable by the human on any agent (immediately — it does not
+have to ride a message) and by an ancestor on a descendant, and it applies from
+the agent's **next turn**, never mid-turn, with a `[Nest notice]` announcement
+naming who changed it.
+- **The monotone rule lives in exactly one place** —
+`Nest.Agents.Agent.ModeAuthority`, which every mode-setting path goes through. An
+agent may move a *descendant* to a mode it is in itself, or to `plan`; only the
+human may raise a mode; **an agent may never set its own mode** (including by
+sending itself a `set_mode`). The rule applies to the spawn too: a `plan` parent
+must not spawn an `act` child, nor spawn one and then raise it. A refused change
+reaches the sender as a tool error naming why.
+- **A mode change never propagates** to existing descendants: the user flipping
+the root to `plan` for a planning discussion must not jam background workers that
+are mid-task in `act`.
+- `set_mode` rides the send tools (`agents-query`, `agents-send`,
+`agents-batch` — an enum of `"mine" | "plan" | "act"`) rather than being its own
+tool, so the change and the instruction that depends on it arrive together.
+- **The modes are not in the database.** `vocations.modes` no longer exists: a
+vocation is its prompt and its tools, and the modes every agent may be in are
+`Nest.Modes.names/0`. A blueprint is where the per-space defaults live —
+`default_mode` (the mode a new agent starts in), `default_net` (the space's
+`network_access`, used only when the caller names none) and
+`default_spawnable_vocation` (what `agents-spawn`/`agents-batch` use when the
+caller names no `vocation`; with none set the spawn is **refused**, naming the
+missing argument, rather than silently getting the caller's own vocation).
+- **A space requires a workspace on create** (`Space.create_changeset/2`): the
+workspace is a space property its agents inherit, and `act` mode writes it. The
+update path stays permissive, so `rename_space/1` still works on a row a previous
+build left without one.
+
 
 ### UI Transparency
 

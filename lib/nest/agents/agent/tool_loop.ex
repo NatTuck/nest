@@ -30,6 +30,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.History
   alias Nest.Agents.Agent.LastMessage
+  alias Nest.Agents.Agent.ModeAuthority
   alias Nest.Agents.Agent.Status
   alias Nest.Agents.Agent.SubAgentResults
   alias Nest.Agents.Agent.ToolLoop.ModelEntry
@@ -223,7 +224,11 @@ defmodule Nest.Agents.Agent.ToolLoop do
       clone_context: extract_bool_arg(tc, "clone_context", false),
       model: extract_string_arg(tc, "model"),
       query: extract_string_arg(tc, "query"),
-      archive: extract_bool_arg(tc, "archive", false)
+      archive: extract_bool_arg(tc, "archive", false),
+      # The child's mode. `PreSpawn` holds it to the monotone rule (a `plan`
+      # parent cannot spawn an `act` child), so this only has to carry what the
+      # caller asked for.
+      mode: extract_string_arg(tc, "mode")
     }
   end
 
@@ -240,6 +245,29 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp spawn_error_message({:vocation_not_found, slug}) do
     "Could not spawn agent: no vocation with slug #{inspect(slug)} exists. " <>
       "Retry with a valid `vocation` slug."
+  end
+
+  # The space's blueprint names no default, so an omitted `vocation` has no
+  # answer — see `Nest.Agents.Supervisor.resolve_spawn_vocation/2`. The allowed
+  # list is included because it is the one thing that makes the retry easy: the
+  # model has to pass a slug, and a restricted space will refuse most guesses.
+  defp spawn_error_message({:vocation_required, allowed}) do
+    allowed_hint =
+      case allowed do
+        [] ->
+          # An *empty* list here means the space has no whitelist, i.e. it is
+          # unrestricted — not that nothing is allowed. Saying "you must name one
+          # and any will do" is a complete instruction; listing nothing is not.
+          "this space has no whitelist, so any vocation is allowed"
+
+        labels ->
+          "allowed: " <>
+            Enum.map_join(labels, ", ", fn {name, slug} -> "#{name} (#{slug})" end)
+      end
+
+    "Could not spawn agent: `vocation` is required — this space has no default " <>
+      "spawn vocation, so it cannot be omitted; #{allowed_hint}. Retry passing " <>
+      "one as `vocation`."
   end
 
   # An unsafe `name` is the likeliest way an LLM trips validation
@@ -401,12 +429,15 @@ defmodule Nest.Agents.Agent.ToolLoop do
         build_tool_result(tc, "agents-query", "Missing required argument: prompt.", true)
 
       true ->
-        deliver_query(ctx, tc, target, prompt)
+        case requested_mode(ctx, tc, target) do
+          {:ok, mode} -> deliver_query(ctx, tc, target, prompt, mode)
+          {:error, reason} -> build_tool_result(tc, "agents-query", reason, true)
+        end
     end
   end
 
-  defp deliver_query(ctx, tc, target, prompt) do
-    case Nest.Agents.send_message(ctx.space_id, ctx.agent_name, target, prompt, :query) do
+  defp deliver_query(ctx, tc, target, prompt, mode) do
+    case Nest.Agents.send_message(ctx.space_id, ctx.agent_name, target, prompt, :query, mode) do
       {:ok, disposition} ->
         build_tool_result(tc, "agents-query", query_confirmation(target, disposition))
 
@@ -451,12 +482,15 @@ defmodule Nest.Agents.Agent.ToolLoop do
         build_tool_result(tc, "agents-send", "Missing required argument: message.", true)
 
       true ->
-        deliver_to_target(ctx, tc, target, message)
+        case requested_mode(ctx, tc, target) do
+          {:ok, mode} -> deliver_to_target(ctx, tc, target, message, mode)
+          {:error, reason} -> build_tool_result(tc, "agents-send", reason, true)
+        end
     end
   end
 
-  defp deliver_to_target(ctx, tc, target, message) do
-    case Nest.Agents.send_message(ctx.space_id, ctx.agent_name, target, message) do
+  defp deliver_to_target(ctx, tc, target, message, mode) do
+    case Nest.Agents.send_message(ctx.space_id, ctx.agent_name, target, message, :agent, mode) do
       {:ok, :delivered} ->
         notify_reply_sent(ctx, target)
         build_tool_result(tc, "agents-send", "Message delivered to #{target}.")
@@ -596,6 +630,41 @@ defmodule Nest.Agents.Agent.ToolLoop do
     case BatchCoordinator.run(ctx, tc) do
       {:ok, content} -> build_tool_result(tc, "agents-batch", content)
       {:error, reason} -> build_tool_result(tc, "agents-batch", reason, true)
+    end
+  end
+
+  # The mode a send tool asks the **recipient** to move to, or `nil` when the
+  # call asks for no change.
+  #
+  # `"mine"` is the sender's own current mode, which is what makes the common
+  # case — hand this off to someone who may do what I may — one word. The
+  # monotone rule is checked here, where the sender's mode is known (`ctx.mode`),
+  # and a refusal is returned as this call's error so the sender reads why
+  # rather than watching a change quietly not happen.
+  #
+  # The rule itself is `Nest.Agents.Agent.ModeAuthority`; nothing here decides
+  # what is allowed, only which actor is asking.
+  defp requested_mode(ctx, tc, target) do
+    case extract_string_arg(tc, "set_mode") do
+      "" ->
+        {:ok, nil}
+
+      "mine" ->
+        {:ok, ctx.mode}
+
+      requested ->
+        actor = %{
+          kind: :agent,
+          space_id: ctx.space_id,
+          name: ctx.agent_name,
+          mode: ctx.mode,
+          target: target
+        }
+
+        case ModeAuthority.authorize(actor, requested) do
+          :ok -> {:ok, requested}
+          {:error, reason} -> {:error, reason}
+        end
     end
   end
 

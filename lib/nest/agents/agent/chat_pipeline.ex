@@ -13,10 +13,10 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   alias Nest.Agents.Agent.Turn
   alias Nest.Messages.Part
   alias Nest.Messages.User
+  alias Nest.Modes
   alias Nest.Sandbox.Mounts
   alias Nest.Tokens.PreFlight
   alias Nest.Tokens.Reserve
-  alias Nest.Vocations
 
   @doc """
   Handle an incoming chat turn. Returns the GenServer reply tuple.
@@ -32,11 +32,19 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     {effective_mode, _caps} =
       resolve_mode_and_caps(mode, state.vocation, Mounts.from_agent(state))
 
+    # The mode is applied *before* the settle, because the user message is built
+    # with it (the `[mode: X]` prefix and the UI badge) and the turn runs under
+    # it. That is also why the write has to happen here: the settle's own `run/6`
+    # reads `pre_mode` from the already-applied state, so it cannot see the
+    # change. A mode this message kept is the agent's mode from here on — the row
+    # is what a restart and a later spawn read — so it is written down, and
+    # nothing is announced: the message's own prefix is what states it.
+    pre_mode = state.live.mode
     state = %{state | live: %{state.live | mode: effective_mode, cancelled: false}}
     user = build_user_message(content, effective_mode, human?)
 
     {:ok, state} = Turn.settle(state, {:chat_request, {:user_message, user}})
-    {:noreply, state}
+    {:noreply, Turn.keep_mode(state, pre_mode, :human)}
   end
 
   # Build the persisted user message. The mode is encoded both on
@@ -74,26 +82,21 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   @doc """
   Resolve the effective mode and capability map for a chat message.
 
-  If `mode` is in the vocation's `modes` map, use it as-is; otherwise fall
-  back to the vocation's default mode (or "chat" if the vocation has no
-  modes). This matches the LLM-visible `[mode: X]` prefix.
+  The modes are universal (`Nest.Modes`), so a name this build implements is used
+  as-is and anything else — the old `"chat"`, a stale row, a client that made one
+  up — falls back to `Nest.Modes.default/0`. This matches the LLM-visible
+  `[mode: X]` prefix, and it is the one funnel every caller shares: the idle-turn
+  request, the mode a delivered batch carries, and the bookkeeping reads that
+  need the caps the tools run under.
+
+  The vocation argument is kept because every caller already has one to hand and
+  the modes no longer depend on it: they are universal constants (`Nest.Modes`),
+  and the column that used to hold them is gone.
   """
-  @spec resolve_mode_and_caps(String.t(), term(), Mounts.t()) :: {String.t(), map()}
-  def resolve_mode_and_caps(mode, %Nest.Vocations.Vocation{} = vocation, mounts) do
-    modes = Vocations.list_modes(vocation)
+  @spec resolve_mode_and_caps(String.t() | nil, term(), Mounts.t()) :: {String.t(), map()}
+  def resolve_mode_and_caps(mode, _vocation_or_nil, mounts) do
+    resolved = if Modes.valid?(mode), do: mode, else: Modes.default()
 
-    {resolved, caps} =
-      if mode in modes do
-        {mode, elem(Vocations.get_caps(vocation, mode), 1)}
-      else
-        default = Vocations.default_mode(vocation)
-        {default, elem(Vocations.get_caps(vocation, default), 1)}
-      end
-
-    {resolved, Nest.ProjectConfig.apply_or_default(caps, mounts)}
-  end
-
-  def resolve_mode_and_caps(_mode, _no_vocation_or_id, mounts) do
-    {"chat", Nest.ProjectConfig.apply_or_default(Nest.Sandbox.default_caps(), mounts)}
+    {resolved, Nest.ProjectConfig.resolve_caps(Modes.caps(resolved), mounts)}
   end
 end

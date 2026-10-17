@@ -34,7 +34,9 @@ defmodule Nest.Tools.QueryAgent do
           "this to delegate a question to a specialist you have already " <>
           "spawned (see `agents-spawn` and `agents-list`). Use `agents-wait` " <>
           "to wait for the peer to finish, and `agents-send` to reply to a " <>
-          "peer that queried you.",
+          "peer that queried you. `set_mode` moves the target's mode as part of " <>
+          "the same delivery: the change and the instruction that depends on it " <>
+          "arrive together.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
@@ -45,7 +47,8 @@ defmodule Nest.Tools.QueryAgent do
           "prompt" => %{
             "type" => "string",
             "description" => "The message to send to that agent."
-          }
+          },
+          "set_mode" => Nest.Tools.set_mode_property()
         },
         "required" => ["name", "prompt"]
       },

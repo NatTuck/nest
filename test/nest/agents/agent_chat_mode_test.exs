@@ -1,33 +1,39 @@
 defmodule Nest.Agents.AgentChatModeTest do
   @moduledoc """
-  Tests for `Agent.chat/3` with explicit mode resolution.
-  Extracted from `Nest.Agents.AgentChatTest` when that file
-  crossed the 500-line credo limit. See that file for the
-  chat-streaming coverage.
+  Tests for `Agent.chat/3`'s mode resolution: the mode a chat turn runs in, the
+  `[mode: X]` prefix and `metadata.mode` the user message carries, and the
+  stickiness of `state.live.mode` between turns.
+
+  The modes are the two code constants in `Nest.Modes` (`plan` and `act`), so
+  they are **not** per-vocation data any more: a name this build implements is
+  used as-is, and anything else — the old `"chat"`, a stale row, a client that
+  made one up — falls back to `Nest.Modes.default/0`. Every fixture here
+  therefore names a real mode, and none of them builds a `vocations.modes` map.
+
+  See `agent_chat_test.exs` for the chat-streaming coverage.
   """
   use Nest.DataCase, async: true
 
   import Mimic
 
   # `Agent.chat/2` is a `GenServer.cast`, so a fence placed after it covers the
-  # *whole* turn: here a mocked LLM call, a real tool execution and a second
-  # mocked LLM call. 500 ms is not a bound for that under load — a whole mocked
-  # turn measured p50 18.7 ms / max 34.3 ms across 40 samples in the full
-  # suite, but p50 926 ms / max 1534 ms (39 of 40 over 500 ms) under 48 CPU
-  # burners. Re-measured in the full suite at `max_cases: 16`, the turn's *first*
-  # frame (the user message) took 992 ms — the suite's documented scheduling-race
-  # cost (`notes/sketchy-slow-tests.md` §2/§10: every `start_agent/1` serializes
-  # on the global `Mimic.Coordinator`, and the single `Nest.Agents.Supervisor`
-  # callback performs each whole agent start). 2000 ms is the `#21` cap on every
-  # test-side timeout, clears that measured spread with headroom, and still fails
-  # a genuinely stuck turn — as a stuck turn, not as a flake.
+  # *whole* turn: here a mocked LLM call. 500 ms is not a bound for that under
+  # load — a whole mocked turn measured p50 18.7 ms / max 34.3 ms across 40
+  # samples in the full suite, but p50 926 ms / max 1534 ms (39 of 40 over
+  # 500 ms) under 48 CPU burners. Re-measured in the full suite at
+  # `max_cases: 16`, the turn's *first* frame (the user message) took 992 ms —
+  # the suite's documented scheduling-race cost (`notes/sketchy-slow-tests.md`
+  # §2/§10: every `start_agent/1` serializes on the global `Mimic.Coordinator`,
+  # and the single `Nest.Agents.Supervisor` callback performs each whole agent
+  # start). 2000 ms is the `#21` cap on every test-side timeout, clears that
+  # measured spread with headroom, and still fails a genuinely stuck turn — as a
+  # stuck turn, not as a flake.
   @turn_fence_ms 2_000
 
   alias Nest.Agents.Agent
-
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
-  alias Nest.Vocations
+  alias Nest.Modes
 
   setup :verify_on_exit!
 
@@ -44,40 +50,16 @@ defmodule Nest.Agents.AgentChatModeTest do
   import Nest.Agents.AgentTestHelpers
 
   describe "chat/3 with mode" do
-    test "user message includes the resolved mode in metadata (vocation-less agent defaults to chat)" do
+    test "an agent nothing has said anything about is in the permissive default" do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      :ok = Agent.chat(pid, "Read foo", "build")
-
-      # Vocation-less agent has no "build" mode, falls back to "chat"
-      assert_receive {:chat_message,
-                      {:user,
-                       %{
-                         parts: [%Part.Text{text: "[mode: chat]\nRead foo"}],
-                         metadata: %{"mode" => "chat"}
-                       }}},
-                     @turn_fence_ms
-
-      await_idle(pid)
+      # The mode is a per-agent runtime property seeded from the space's
+      # blueprint; with no blueprint it is `Nest.Modes.default/0`.
+      assert Agent.get_public_info(pid, 1_000).current_mode == Modes.default()
+      assert Modes.default() == "act"
     end
 
-    test "falls back to default mode when requested mode is unknown" do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-
-      :ok = Agent.chat(pid, "Hello", "nonexistent-mode")
-
-      assert_receive {:chat_message,
-                      {:user,
-                       %{
-                         parts: [%Part.Text{text: "[mode: chat]\nHello"}],
-                         metadata: %{"mode" => "chat"}
-                       }}},
-                     @turn_fence_ms
-
-      await_idle(pid)
-    end
-
-    test "uses agent's current mode when no mode is passed" do
+    test "a user message carries the resolved mode in its prefix and metadata" do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       :ok = Agent.chat(pid, "Hello")
@@ -85,115 +67,49 @@ defmodule Nest.Agents.AgentChatModeTest do
       assert_receive {:chat_message,
                       {:user,
                        %{
-                         parts: [%Part.Text{text: "[mode: chat]\nHello"}],
-                         metadata: %{"mode" => "chat"}
+                         parts: [%Part.Text{text: "[mode: act]\nHello"}],
+                         metadata: %{"mode" => "act"}
                        }}},
                      @turn_fence_ms
 
       await_idle(pid)
     end
 
-    test "vocation with modes: requested mode is preserved when valid" do
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
-      }
+    test "an explicit mode this build implements is preserved" do
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      {:ok, vocation} =
-        Vocations.create_vocation(%{
-          name: "TestVocation-#{System.unique_integer([:positive])}",
-          description: "Test",
-          system_prompt: "Test",
-          tools: [],
-          modes: %{
-            "build" => %{"caps" => valid_caps},
-            "plan" => %{"caps" => valid_caps}
-          }
-        })
-
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: vocation.id
-        })
-
-      :ok = Agent.chat(pid, "Run", "build")
+      :ok = Agent.chat(pid, "Plan this", "plan")
 
       assert_receive {:chat_message,
                       {:user,
                        %{
-                         parts: [%Part.Text{text: "[mode: build]\nRun"}],
-                         metadata: %{"mode" => "build"}
+                         parts: [%Part.Text{text: "[mode: plan]\nPlan this"}],
+                         metadata: %{"mode" => "plan"}
                        }}},
                      @turn_fence_ms
 
       await_idle(pid)
     end
 
-    test "vocation with modes: unknown mode falls back to the vocation's default" do
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
+    test "an unknown mode falls back to the default" do
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      {:ok, vocation} =
-        Vocations.create_vocation(%{
-          name: "TestVocation-#{System.unique_integer([:positive])}",
-          description: "Test",
-          system_prompt: "Test",
-          tools: [],
-          modes: %{
-            "build" => %{"caps" => valid_caps},
-            "plan" => %{"caps" => valid_caps}
-          }
-        })
-
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: vocation.id
-        })
-
-      :ok = Agent.chat(pid, "Hello", "nonexistent")
+      :ok = Agent.chat(pid, "Hello", "nonexistent-mode")
 
       assert_receive {:chat_message,
                       {:user,
                        %{
-                         parts: [%Part.Text{text: "[mode: build]\nHello"}],
-                         metadata: %{"mode" => "build"}
+                         parts: [%Part.Text{text: "[mode: act]\nHello"}],
+                         metadata: %{"mode" => "act"}
                        }}},
                      @turn_fence_ms
 
       await_idle(pid)
     end
 
-    test "user messages carry the resolved mode in metadata" do
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
-      }
+    test "the status broadcast carries the mode the turn ran in" do
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      {:ok, vocation} =
-        Vocations.create_vocation(%{
-          name: "StickyMode-#{System.unique_integer([:positive])}",
-          description: "Test",
-          system_prompt: "Test",
-          tools: [],
-          modes: %{
-            "build" => %{"caps" => valid_caps},
-            "plan" => %{"caps" => valid_caps}
-          }
-        })
-
-      {pid, _agent_id} =
-        start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
-
-      # The externally visible signals of the mode are the user
-      # message's `metadata.mode` field AND the `currentMode` on
-      # each `chat:status` payload. The agent now persists
-      # `state.live.mode` between chats ("sticky mode"), and broadcasts
-      # it on every status push so the client can keep the
-      # dropdown in sync.
       :ok = Agent.chat(pid, "Plan this", "plan")
 
       assert_receive {:chat_status, %{status: "idle", currentMode: "plan"}}, 1_000
@@ -206,108 +122,36 @@ defmodule Nest.Agents.AgentChatModeTest do
                         }}}
     end
 
+    test "the broadcast carries the default an unknown mode resolved to" do
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      :ok = Agent.chat(pid, "Hello", "nonexistent")
+
+      # The fallback is written to `state.live.mode` and so reaches the status
+      # frame's `currentMode`, rather than leaving a mode nothing can honour.
+      assert Agent.get_public_info(pid, 1_000).current_mode == "act"
+      assert_receive {:chat_status, %{status: "idle", currentMode: "act"}}, 1_000
+    end
+
     test "state.live.mode is updated to the resolved mode after a chat (sticky mode)" do
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      {:ok, vocation} =
-        Vocations.create_vocation(%{
-          name: "StickyState-#{System.unique_integer([:positive])}",
-          description: "Test",
-          system_prompt: "Test",
-          tools: [],
-          modes: %{
-            "build" => %{"caps" => valid_caps},
-            "plan" => %{"caps" => valid_caps}
-          }
-        })
+      # Initial state: the mode the row carries. The modes are code constants
+      # (`Nest.Modes`) and what is per-agent is *which* one, seeded from the
+      # space's blueprint — so an agent nothing has said anything about is in
+      # the permissive one.
+      assert Agent.get_public_info(pid, 1_000).current_mode == "act"
 
-      {pid, _agent_id} =
-        start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
-
-      # Initial state: vocation default (lex-first: "build").
-      assert Agent.get_public_info(pid, 1_000).current_mode == "build"
-
-      # Send a chat with mode "plan". The agent's state.live.mode
-      # should update to "plan".
       :ok = Agent.chat(pid, "Plan this", "plan")
       await_idle(pid)
       assert Agent.get_public_info(pid, 1_000).current_mode == "plan"
 
-      # The next chat without an explicit mode arg uses the
-      # updated state.live.mode — confirms sticky mode is wired
-      # through handle_chat's `mode = requested_mode || state.live.mode`
+      # The next chat without an explicit mode uses the updated
+      # `state.live.mode` — `handle_chat/4`'s `requested_mode || state.live.mode`
       # fallback.
       :ok = Agent.chat(pid, "And another")
       await_idle(pid)
       assert Agent.get_public_info(pid, 1_000).current_mode == "plan"
-    end
-
-    test "state.live.mode falls back to vocation default when the requested mode is unknown" do
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
-      {:ok, vocation} =
-        Vocations.create_vocation(%{
-          name: "StickyFallback-#{System.unique_integer([:positive])}",
-          description: "Test",
-          system_prompt: "Test",
-          tools: [],
-          modes: %{
-            "build" => %{"caps" => valid_caps},
-            "plan" => %{"caps" => valid_caps}
-          }
-        })
-
-      {pid, _agent_id} =
-        start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
-
-      :ok = Agent.chat(pid, "Hello", "nonexistent")
-
-      # The fallback (vocation default, lex-first: "build") is
-      # written to state.live.mode.
-      assert Agent.get_public_info(pid, 1_000).current_mode == "build"
-
-      # And reflected in the chat:status broadcast.
-      assert_receive {:chat_status, %{status: "idle", currentMode: "build"}}, 1_000
-    end
-
-    test "user message metadata falls back to vocation's default mode" do
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
-      {:ok, vocation} =
-        Vocations.create_vocation(%{
-          name: "InvalidMode-#{System.unique_integer([:positive])}",
-          description: "Test",
-          system_prompt: "Test",
-          tools: [],
-          modes: %{
-            "build" => %{"caps" => valid_caps},
-            "plan" => %{"caps" => valid_caps}
-          }
-        })
-
-      {pid, _agent_id} =
-        start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
-
-      :ok = Agent.chat(pid, "Hi", "nonexistent")
-
-      assert_receive {:chat_message,
-                      {:user,
-                       %{
-                         parts: [%Part.Text{text: "[mode: build]\nHi"}],
-                         metadata: %{"mode" => "build"}
-                       }}},
-                     @turn_fence_ms
-
-      await_idle(pid)
     end
   end
 
@@ -322,7 +166,7 @@ defmodule Nest.Agents.AgentChatModeTest do
       :ok = Agent.chat(pid, "typed by a human", nil, "alice", true)
 
       assert_receive {:chat_message,
-                      {:user, %{metadata: %{"mode" => "chat", "origin" => "human"}}}},
+                      {:user, %{metadata: %{"mode" => "act", "origin" => "human"}}}},
                      @turn_fence_ms
 
       await_idle(pid)

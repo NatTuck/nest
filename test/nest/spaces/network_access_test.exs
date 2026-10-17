@@ -4,8 +4,15 @@ defmodule Nest.Spaces.NetworkAccessTest do
   and the setter that makes it editable.
   """
 
-  use Nest.DataCase, async: true
+  # `async: false` on purpose: the derivation tests below re-create the
+  # `vocations.modes` column that stage 4a drops, and `ALTER TABLE` takes ACCESS
+  # EXCLUSIVE on `vocations`. Under `async: true` that would block every
+  # concurrently running test that touches a vocation while this one waits on
+  # `agents`/`spaces` — a lock-ordering deadlock, not a theoretical one. ExUnit
+  # runs `async: false` modules serially, so nothing else is in flight here.
+  use Nest.DataCase, async: false
 
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.Persistence
   alias Nest.Repo
   alias Nest.Spaces
@@ -27,7 +34,12 @@ defmodule Nest.Spaces.NetworkAccessTest do
   # deliberately set to the *opposite* of what the derivation should produce, so
   # the statement's effect is observable.
   defp space_with_root_agent(modes) do
-    {:ok, space} = Spaces.create_space(nil, %{name: unique("net")})
+    {:ok, space} =
+      Spaces.create_space(nil, %{
+        workspace_path: AgentTestHelpers.default_test_workspace(),
+        name: unique("net")
+      })
+
     {:ok, _} = Repo.update(Ecto.Changeset.change(space, network_access: false))
 
     {:ok, vocation} =
@@ -35,9 +47,18 @@ defmodule Nest.Spaces.NetworkAccessTest do
         name: unique("net-vocation"),
         description: "network access fixture",
         system_prompt: "fixture",
-        tools: [],
-        modes: modes
+        tools: []
       })
+
+    # `Nest.Vocations.Vocation` does not declare `:modes` any more — stage 4a
+    # dropped the column — so the value this fixture is *about* is written
+    # directly. The column itself is put back by the `setup` in the describe
+    # below: this is the schema the stage-1 migration ran against.
+    # The map goes in as-is. `Jason.encode!` plus `$1::jsonb` would be a *jsonb
+    # string* rather than an object — Postgrex infers `jsonb` from the cast and
+    # encodes the binary as a JSON string — and `jsonb_each` on that raises the
+    # very error this fixture exists to exercise.
+    Repo.query!("UPDATE vocations SET modes = $1 WHERE id = $2", [modes, vocation.id])
 
     {:ok, _row} =
       Persistence.insert_agent(%{
@@ -70,6 +91,29 @@ defmodule Nest.Spaces.NetworkAccessTest do
   end
 
   describe "the migration's derivation" do
+    # The stage-1 migration's SQL does `jsonb_each(v.modes)`, and `vocations.modes`
+    # is dropped by stage 4a, so the tests below put it back for the length of one
+    # test. Postgres has transactional DDL and the sandbox wraps each test in a
+    # transaction, so the rollback removes it again: no `on_exit`, no cleanup — and
+    # the migration's own `up/0` keeps the schema it always had, because it runs in
+    # migration order, *before* the drop, on every database that has not seen it.
+    setup do
+      # `IF NOT EXISTS`: until stage 4a's drop has been applied to the database the
+      # test runs against, the column is still there and this is a no-op. Once it
+      # has been applied, this adds it and the transaction's rollback removes it
+      # again.
+      Repo.query!("ALTER TABLE vocations ADD COLUMN IF NOT EXISTS modes jsonb")
+
+      # The migration's SQL is `CROSS JOIN LATERAL jsonb_each(v.modes)`, and a
+      # LATERAL join is evaluated *before* the `WHERE` that keeps only the space's
+      # own root agent — so it walks every agent×vocation pair in the table, not
+      # just the one under test, and `jsonb_each(NULL)` is an error. Every vocation
+      # had a `modes` map when the migration ran; a vocation created since has
+      # none, so the NULLs are given an empty object for the length of the test.
+      Repo.query!("UPDATE vocations SET modes = '{}'::jsonb WHERE modes IS NULL")
+      :ok
+    end
+
     test "true when any mode of the root agent's vocation enables the network" do
       space_id =
         space_with_root_agent(%{"plan" => mode_with_net(false), "act" => mode_with_net(true)})
@@ -86,7 +130,12 @@ defmodule Nest.Spaces.NetworkAccessTest do
     end
 
     test "false for a space with no root agent" do
-      {:ok, space} = Spaces.create_space(nil, %{name: unique("net-orphan")})
+      {:ok, space} =
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("net-orphan")
+        })
+
       {:ok, _} = Repo.update(Ecto.Changeset.change(space, network_access: true))
 
       derive!()
@@ -115,13 +164,22 @@ defmodule Nest.Spaces.NetworkAccessTest do
 
   describe "network_access/1" do
     test "resolves the space's value" do
-      {:ok, space} = Spaces.create_space(nil, %{name: unique("net-read"), network_access: false})
+      {:ok, space} =
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("net-read"),
+          network_access: false
+        })
 
       assert Spaces.network_access(space.id) == false
     end
 
     test "defaults to true for a new space, and for a missing row" do
-      {:ok, space} = Spaces.create_space(nil, %{name: unique("net-default")})
+      {:ok, space} =
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("net-default")
+        })
 
       assert space.network_access == true
       assert Spaces.network_access(space.id) == true
@@ -131,7 +189,11 @@ defmodule Nest.Spaces.NetworkAccessTest do
 
   describe "set_network_access/2" do
     test "turns it off and back on" do
-      {:ok, space} = Spaces.create_space(nil, %{name: unique("net-set")})
+      {:ok, space} =
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("net-set")
+        })
 
       assert {:ok, %Space{network_access: false}} = Spaces.set_network_access(space.id, false)
       assert Spaces.network_access(space.id) == false
@@ -146,7 +208,11 @@ defmodule Nest.Spaces.NetworkAccessTest do
 
     test "leaves the space's other properties alone" do
       {:ok, space} =
-        Spaces.create_space(nil, %{name: unique("net-keep"), sandbox_backend: "none"})
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("net-keep"),
+          sandbox_backend: "none"
+        })
 
       assert {:ok, updated} = Spaces.set_network_access(space.id, false)
 
@@ -164,12 +230,21 @@ defmodule Nest.Spaces.NetworkAccessTest do
       # is asserted here is that the hook is on the path and does not interfere,
       # and that a space whose backend keeps nothing is unaffected.
       {:ok, docker} =
-        Spaces.create_space(nil, %{name: unique("net-release"), sandbox_backend: "docker"})
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("net-release"),
+          sandbox_backend: "docker"
+        })
 
       assert {:ok, %Space{network_access: false}} = Spaces.set_network_access(docker.id, false)
       assert {:ok, %Space{network_access: true}} = Spaces.set_network_access(docker.id, true)
 
-      {:ok, plain} = Spaces.create_space(nil, %{name: unique("net-release-plain")})
+      {:ok, plain} =
+        Spaces.create_space(nil, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: unique("net-release-plain")
+        })
+
       assert {:ok, %Space{network_access: false}} = Spaces.set_network_access(plain.id, false)
     end
   end

@@ -43,11 +43,22 @@ config :nest, hpu_device_paths: []
 # This covers the *setup* calls only — `inspect`, `start`, `image`, `build`,
 # `run`, `ps`, `rm`. It does **not** cover the command an agent runs: that is the
 # literal `docker exec -i …` string `Docker.command/3` builds and
-# `Nest.Tools.ShellCmd` hands to erlexec, which never goes through the runner. So
-# a test that runs a command through the docker backend would shell out to the
+# `Nest.Tools.ShellCmd` hands to erlexec, which never goes through the runner.
+# So a test that runs a command through the docker backend would shell out to the
 # real `docker` — and print an `[error]` from the failed exec — rather than being
-# silently inert. No test does that today; this comment exists so the next one
-# knows.
+# silently inert.
+#
+# No test does that today, and the reason is worth knowing because it is one line
+# from false. Composing a prompt reads `AGENTS.md` only when the *agent's* mounts
+# name a workspace: `Nest.Agents.Agent.SystemPrompt.agents_md_section/2`'s first
+# clause returns `""` for `%Mounts{workspace: nil}` without calling
+# `Sandbox.read/3` at all. An agent takes its workspace from
+# `Nest.Agents.create_agent/3`'s `:workspace_path` option and from nowhere else —
+# a space's own path reaches the root agent only through
+# `Nest.Spaces.create_space_with_root_agent/2` — and the one docker-space agent
+# the suite starts names no workspace, so it never makes the read. A docker agent
+# *with* a workspace would: it would fail against a container that is not there
+# and print `sandbox_setup_failed`, at `:warning`.
 config :nest, docker_runner: fn _argv -> {"", 0} end
 
 # `Nest.Hostname.get/0` titles every page (and feeds

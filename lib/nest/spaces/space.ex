@@ -106,7 +106,8 @@ defmodule Nest.Spaces.Space do
 
   Required: `:name`, `:created_by_user_id`. `:slug` is derived
   from `:name` if not provided. `:blueprint_id` and
-  `:workspace_path` are optional.
+  `:workspace_path` are optional — on this path only; a *new* space
+  requires a workspace (`create_changeset/2`).
 
   `:sandbox_backend` is deliberately absent from the cast list: it is a
   creation-only choice (see `create_changeset/2`), so no update can move
@@ -145,6 +146,14 @@ defmodule Nest.Spaces.Space do
   An absent or blank backend takes `Nest.Sandbox.Backend.default/0`; anything
   outside `Nest.Sandbox.Backend.backends/0` is refused with an error on the
   field, so a client cannot introduce a backend this build does not implement.
+
+  `:workspace_path` is required **here and not in `changeset/2`**. Every space has
+  a workspace — its agents inherit it, and the `act` mode writes it — so a space
+  row without one is not a space this build can run, and no new row may be one.
+  The update path stays permissive on purpose: `rename_space/1` must keep working
+  on a row a previous build left without one, and a rename is not the place to
+  refuse it. (Rows already in that state are backfilled with a deliberately fake
+  path — see `Nest.Repo.Migrations.BackfillSpaceWorkspacePath`.)
   """
   def create_changeset(source, params) do
     params =
@@ -154,6 +163,7 @@ defmodule Nest.Spaces.Space do
 
     source
     |> changeset(params)
+    |> validate_required([:workspace_path])
     |> cast(params, [:sandbox_backend])
     |> validate_required([:sandbox_backend])
     |> validate_inclusion(:sandbox_backend, @sandbox_backends,

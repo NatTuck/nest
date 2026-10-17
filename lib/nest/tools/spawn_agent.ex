@@ -39,16 +39,19 @@ defmodule Nest.Tools.SpawnAgent do
       "in your inbox — or, for a child that fails, is stopped or produces " <>
       "nothing, a runtime notice naming the reason instead. Nothing waits: " <>
       "the spawn is confirmed right away (a bad spawn still comes back as an " <>
-      "error you can fix). `vocation` (a slug like \"programmer\") defaults " <>
-      "to your own vocation (or the space's sole allowed vocation when your " <>
-      "own isn't allowed) — set it to spawn a specialist with a different " <>
-      "role. Set `clone_context` to true to spawn the agent with a copy of " <>
+      "error you can fix). `vocation` (a slug like \"programmer\") names the " <>
+      "specialist's role and tools; when omitted, the space's blueprint " <>
+      "default is used, and a space whose blueprint names no default refuses " <>
+      "the spawn — set it to spawn a specialist with a different role. " <>
+      "Set `clone_context` to true to spawn the agent with a copy of " <>
       "this conversation instead of a fresh context. Set `archive` to true " <>
       "(with `query`) to stop and archive the agent after it responds " <>
       "(one-shot). Use `agents-wait` to wait for the new agent to finish. " <>
       "Spawned vocations may be restricted by this space's blueprint. " <>
       "Sub-agents can be spawned down to a maximum depth of " <>
-      "#{Config.configured_max_depth()}. Set `model` to a " <>
+      "#{Config.configured_max_depth()}. `mode` sets the mode the new agent " <>
+      "starts in (it inherits your own when omitted, and may not exceed it). " <>
+      "Set `model` to a " <>
       "\"provider/model-name\" string (e.g. as returned by `models-list`) " <>
       "to spawn the child on a specific model; it inherits your own model " <>
       "when omitted."
@@ -66,9 +69,9 @@ defmodule Nest.Tools.SpawnAgent do
           "type" => "string",
           "description" =>
             "The vocation slug defining the specialist's role and tools " <>
-              "(for example \"programmer\"). Defaults to your own " <>
-              "vocation when omitted (or the space's sole allowed vocation if " <>
-              "your own isn't allowed)."
+              "(for example \"programmer\"). When omitted, the space's blueprint " <>
+              "default is used; a space whose blueprint names no default refuses " <>
+              "the spawn, so pass one."
         },
         "clone_context" => %{
           "type" => "boolean",
@@ -90,6 +93,14 @@ defmodule Nest.Tools.SpawnAgent do
           "description" =>
             "When true (with `query`), stop and archive the agent after it " <>
               "responds. Makes the spawn one-shot."
+        },
+        "mode" => %{
+          "type" => "string",
+          "enum" => ["mine", "plan", "act"],
+          "description" =>
+            "Optional: the mode the new agent starts in. `\"mine\"` — the " <>
+              "default — means your own. You may not spawn an agent with more " <>
+              "permission than you have: only the user can raise a mode."
         },
         "model" => %{
           "type" => "string",

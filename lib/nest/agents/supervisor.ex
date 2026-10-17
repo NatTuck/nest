@@ -246,16 +246,19 @@ defmodule Nest.Agents.Supervisor do
   otherwise the effective vocation slug must be whitelisted.
 
   `vocation` may be `nil` (the `agents-spawn` default when
-  the model omits it). Resolution rules:
+  the model omits it), and a blank string counts as omitted.
+  Resolution rules:
     * an explicit vocation slug is used as-is (refused if not
       whitelisted),
-    * otherwise the parent's vocation is used when the space is
-      unrestricted or the parent's vocation is whitelisted,
-    * otherwise, when the whitelist has exactly one entry, that
-      sole allowed vocation is used (a "Head TA may only spawn
-      Graders" space works without the model knowing the slug),
-    * otherwise (multiple allowed vocations, parent's not among
-      them) the spawn is refused as ambiguous.
+    * otherwise the space's blueprint `default_spawnable_vocation`
+      is used, and is itself held to the whitelist,
+    * otherwise — the blueprint names no default — the spawn is
+      refused as `{:vocation_required, allowed}`, naming the
+      argument the caller has to supply. There is deliberately
+      **no** fallback to the caller's own vocation: a
+      `programmer` coordinator spawning an unnamed reviewer used
+      to get another `programmer`, which is the glitch this
+      replaces.
 
   `name` must be unique within the space (enforced by the
   `(space_id, name)` composite unique index; a collision
@@ -281,7 +284,8 @@ defmodule Nest.Agents.Supervisor do
   # the resolution rules. Refusals carry the whitelisted vocations
   # (as `{name, slug}` labels) so the caller can tell the model what it
   # may actually spawn.
-  defp resolve_spawn_vocation(parent_state, requested) when is_binary(requested) do
+  defp resolve_spawn_vocation(parent_state, requested)
+       when is_binary(requested) and requested != "" do
     case Vocations.get_by_slug(requested) do
       nil ->
         {:error, {:vocation_not_found, requested}}
@@ -297,23 +301,28 @@ defmodule Nest.Agents.Supervisor do
     end
   end
 
-  defp resolve_spawn_vocation(parent_state, nil) do
-    allowed = Spaces.spawnable_vocations_for_space(parent_state.space_id)
-    parent_slug = parent_state.vocation.slug
-
-    cond do
-      slug_allowed?(allowed, parent_slug) ->
-        {:ok, parent_state.vocation_id}
-
-      allowed == nil or allowed == [] ->
-        {:ok, parent_state.vocation_id}
-
-      length(allowed) == 1 ->
-        resolve_sole_vocation(hd(allowed))
-
-      true ->
-        {:error, vocation_error(allowed)}
+  # No `vocation` was named — or a blank one was, which is the same request, and
+  # which is why this clause catches `""` rather than sending it to
+  # `Vocations.get_by_slug/1` as a slug that cannot exist.
+  #
+  # The space's blueprint says which vocation an unnamed spawn gets. When the
+  # blueprint says nothing there is no answer to invent, and the caller's own
+  # vocation is exactly the wrong one to invent: a `programmer` coordinator
+  # spawning a reviewer would get another `programmer`, which is the glitch this
+  # replaces. Refuse, naming the argument the model has to supply — and the
+  # vocations it may pick from, when the space is restricted.
+  defp resolve_spawn_vocation(parent_state, _omitted) do
+    case Spaces.default_spawnable_vocation_for_space(parent_state.space_id) do
+      nil -> {:error, {:vocation_required, default_refusal_labels(parent_state)}}
+      slug -> resolve_spawn_vocation(parent_state, slug)
     end
+  end
+
+  defp default_refusal_labels(parent_state) do
+    parent_state.space_id
+    |> Spaces.spawnable_vocations_for_space()
+    |> Kernel.||([])
+    |> vocation_labels()
   end
 
   # `nil`/`[]` from `spawnable_vocations_for_space/1` mean the
@@ -321,13 +330,6 @@ defmodule Nest.Agents.Supervisor do
   defp slug_allowed?(nil, _slug), do: true
   defp slug_allowed?([], _slug), do: true
   defp slug_allowed?(allowed, slug), do: slug in allowed
-
-  defp resolve_sole_vocation(slug) do
-    case Vocations.get_by_slug(slug) do
-      nil -> {:error, {:vocation_not_found, slug}}
-      %Vocation{id: id} -> {:ok, id}
-    end
-  end
 
   defp vocation_error(allowed) do
     {:vocation_not_spawnable, vocation_labels(allowed)}
@@ -381,9 +383,11 @@ defmodule Nest.Agents.Supervisor do
       nil ->
         :ok
 
-      vocation ->
-        if Vocations.requires_workspace?(vocation) and
-             is_nil(Mounts.workspace(parent_state.mounts)) do
+      _vocation ->
+        # Every vocation requires a workspace now
+        # (`Vocations.requires_workspace?/1` is a constant), so the child's
+        # inheritance is all that is left to check.
+        if is_nil(Mounts.workspace(parent_state.mounts)) do
           {:error, :workspace_required}
         else
           Nest.Sandbox.workspace_error(Mounts.workspace(parent_state.mounts))

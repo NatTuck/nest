@@ -81,8 +81,9 @@ defmodule Nest.Sandbox do
   ## Caps shape
 
   Caps describe what the *mode* allows; which of it a backend can enforce is the
-  backend's business (see `Nest.Sandbox.Backend`). Caps are a raw map matching
-  the JSONB shape stored on `Vocation.modes`:
+  backend's business (see `Nest.Sandbox.Backend`). Caps are a raw map in the
+  shape `Nest.Modes.caps/1` returns (they were stored on the `vocations.modes`
+  column until stage 4 dropped it):
 
       %{
         "net" => boolean(),
@@ -226,7 +227,7 @@ defmodule Nest.Sandbox do
   The network is a *space* property (`spaces.network_access`), not a vocation
   mode's, so this is where the mode's own `"net"` is overridden — and it is the
   one place, because every caps resolution ends in
-  `Nest.ProjectConfig.apply_or_default/2`, which calls this. Nothing downstream
+  `Nest.ProjectConfig.resolve_caps/2`, which calls this. Nothing downstream
   changes: `Nest.Sandbox.build/2` and both backends keep reading `caps["net"]`.
 
   The value travels on the `Mounts` value (resolved once at agent start, like the
@@ -521,7 +522,7 @@ defmodule Nest.Sandbox do
   directory), or `{:error, :workspace_under_tmp}` (the path is at or under
   `#{Paths.sandbox_root()}`, which the scratch bind shadows). `nil` means "no
   workspace" and is always `:ok`; whether a workspace is *required* is the
-  caller's policy (see `Nest.Vocations.requires_workspace?/1`).
+  caller's policy, and a caller that requires one refuses the `nil` itself.
   """
   @spec workspace_error(String.t() | nil) ::
           :ok | {:error, :workspace_missing | :workspace_under_tmp}

@@ -110,27 +110,42 @@ defmodule Nest.Agents.Agent.Init do
 
   # The prompt is composed through `mounts` because composing it *runs* the
   # sandbox: the `AGENTS.md` section reads the file through it (see
-  # `Nest.Agents.Agent.TmpSpace.prompt_mounts/4`).
+  # `Nest.Agents.Agent.TmpSpace.prompt_mounts/5`).
   defp build_vocation_pipeline(attrs, mounts) do
     model = Map.fetch!(attrs, :model)
     # Internal/test-only cache-tier override; see `initial_context_limit/2`.
     cache_lookup = Map.get(attrs, :context_limit_lookup, &Nest.Models.context_limit/2)
     {context_limit, context_limit_source} = initial_context_limit(model, cache_lookup)
 
-    {system_prompt, mode, tool_names, cached_vocation} =
+    # The agent's own mode, which seeds `live.mode`: the persisted row's, which
+    # `PreSpawn` derived (the parent's mode, or the space's blueprint's default).
+    # The composer needs it only for the caps the `AGENTS.md` read is authorized
+    # with, so the prompt carries no mode of its own.
+    mode = initial_mode(attrs)
+
+    {system_prompt, tool_names, cached_vocation} =
       SystemPrompt.compose_vocation_config(
         Map.get(attrs, :vocation),
         mounts,
         {context_limit, context_limit_source},
         Map.get(attrs, :name, ""),
-        Map.get(attrs, :depth, 0)
+        Map.get(attrs, :depth, 0),
+        mode
       )
 
     tool_names = maybe_exclude_spawn(tool_names, attrs)
 
+    # The mode is the *row's*, not the prompt's: `PreSpawn` decided it and put it
+    # in the attrs, so a restart restores what the agent was created with instead
+    # of widening a child that was spawned read-only.
     {system_prompt, mode, tool_names, cached_vocation,
      build_llm_metrics(context_limit, context_limit_source)}
   end
+
+  # The mode the row carries. `PreSpawn` derived it; the fallback is for a caller
+  # that built attrs without one, and it is the permissive default — what an
+  # agent had before a mode was a per-agent property at all.
+  defp initial_mode(attrs), do: Map.get(attrs, :mode) || Nest.Modes.default()
 
   # Non-clone agents spawned at max depth must not be able to
   # spawn children, so `agents-spawn` and `agents-batch` are

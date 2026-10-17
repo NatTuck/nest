@@ -45,7 +45,6 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   alias Nest.Messages.Streaming
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
-  alias Nest.Vocations
 
   @doc """
   Dispatch an introspection `handle_call/3` message. Returns
@@ -291,8 +290,11 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
         # a raw `%AssistantAccumulator{}` struct trips
         # `Protocol.UndefinedError` at `Jason.encode/1` time.
         partial: Streaming.to_json_safe(state.live.streaming_acc),
-        modes: Vocations.list_modes(state.vocation),
-        default_mode: Vocations.default_mode(state.vocation),
+        # The modes are code constants (`Nest.Modes`), not per-vocation data, so
+        # this is the same pair for every agent — which is the server being the
+        # authority on which modes exist. `current_mode` is the agent's own.
+        modes: Nest.Modes.names(),
+        default_mode: Nest.Modes.default(),
         current_mode: state.live.mode,
         context_limit: state.llm_metrics.context_limit,
         context_limit_source: state.llm_metrics.context_limit_source,

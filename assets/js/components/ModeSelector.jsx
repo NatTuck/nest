@@ -1,10 +1,19 @@
 /**
  * Mode selector — small dropdown shown next to the chat input when
  * an agent has more than one mode. Renders nothing for agents with
- * exactly one mode (e.g. legacy "chat"-only vocations).
+ * exactly one mode.
+ *
+ * Both the list and the value come from the server (`Nest.Modes` is the
+ * authority on which modes exist, and the agent's `init` payload names the one
+ * it is in): this component never holds a mode list of its own, so a mode the
+ * server does not have cannot be picked here.
  */
 export function ModeSelector({ modes, value, onChange, disabled }) {
   if (!modes || modes.length <= 1) return null;
+  // Nothing to show until the server has said which mode the agent is in.
+  // Without this the `<select>` would display its first option while the value
+  // it was handed is absent — i.e. it would show a mode the agent is not in.
+  if (!value || !modes.includes(value)) return null;
 
   return (
     <select

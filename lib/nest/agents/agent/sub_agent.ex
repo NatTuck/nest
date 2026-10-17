@@ -193,9 +193,10 @@ defmodule Nest.Agents.Agent.SubAgent do
           Supervisor.start_agent_with_parent(state, Map.get(opts, :query, ""), model_override)
         else
           # The supervisor resolves `vocation` (a slug) against the
-          # space's blueprint whitelist: omitted defaults to the
-          # parent's vocation (or the space's sole allowed vocation when
-          # the parent's isn't allowed).
+          # space's blueprint: an omitted one takes the blueprint's
+          # `default_spawnable_vocation`, which is held to the whitelist
+          # like an explicit slug, and is refused when the blueprint
+          # names no default.
           Supervisor.spawn_agent_in_space(
             state,
             Map.get(opts, :name, ""),

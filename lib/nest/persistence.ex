@@ -535,6 +535,7 @@ defmodule Nest.Persistence do
       network_access: Nest.Spaces.network_access(row.space_id),
       next_message_index: row.next_message_index,
       last_compaction_index: boundary,
+      mode: row.mode,
       parent_id: row.parent_id,
       parent_name: parent_name,
       depth: row.depth || 0,
@@ -631,6 +632,19 @@ defmodule Nest.Persistence do
   defdelegate update_agent_workspace(space_id, name, workspace_path),
     to: Nest.Persistence.AgentAttrs,
     as: :update_agent_workspace
+
+  @doc """
+  Persist an agent's mode (`Nest.Modes`).
+
+  The mode is a per-agent runtime property that has to survive a restart — a
+  child spawned read-only must not be widened by one — so it is written down
+  rather than kept in memory. Who may change it is
+  `Nest.Agents.Agent.ModeAuthority`'s business.
+  """
+  @spec update_agent_mode(integer(), String.t(), String.t()) :: :ok | {:error, term()}
+  defdelegate update_agent_mode(space_id, name, mode),
+    to: Nest.Persistence.AgentAttrs,
+    as: :update_agent_mode
 
   @doc """
   List every persisted agent row in `space_id`, ordered by name.

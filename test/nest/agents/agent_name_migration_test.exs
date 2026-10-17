@@ -18,6 +18,7 @@ defmodule Nest.Agents.AgentNameMigrationTest do
   import Ecto.Query
 
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.Sandbox.Mounts
 
   @migration_file "priv/repo/migrations/20261011000000_sanitize_agent_names.exs"
@@ -256,6 +257,7 @@ defmodule Nest.Agents.AgentNameMigrationTest do
   defp space do
     {:ok, space} =
       Nest.Spaces.create_space(nil, %{
+        workspace_path: AgentTestHelpers.default_test_workspace(),
         name: "sanitize-names-#{System.unique_integer([:positive])}",
         slug: "sanitize-names-#{System.unique_integer([:positive])}"
       })
@@ -300,13 +302,7 @@ defmodule Nest.Agents.AgentNameMigrationTest do
         name: "Sanitize Names Test",
         description: "Default for the agent-name migration test",
         system_prompt: "You are a helpful test assistant.",
-        tools: ["context"],
-        modes: %{
-          "chat" => %{
-            "description" => "General conversation.",
-            "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp"]}}
-          }
-        }
+        tools: ["context"]
       })
 
     vocation
@@ -320,8 +316,15 @@ defmodule Nest.Agents.AgentNameMigrationTest do
   # migration rewrites. `opts[:extra]` appends text that is NOT one of those
   # renderings.
   defp insert_system_message(agent_id, name, opts \\ []) do
-    {prompt, _mode, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(vocation(), Mounts.new(nil, nil), {nil, nil}, name, 0)
+    {prompt, _tools, _vocation} =
+      SystemPrompt.compose_vocation_config(
+        vocation(),
+        Mounts.new(nil, nil),
+        {nil, nil},
+        name,
+        0,
+        Nest.Modes.act()
+      )
 
     insert_message(agent_id, 0, "system", prompt <> Keyword.get(opts, :extra, ""))
   end

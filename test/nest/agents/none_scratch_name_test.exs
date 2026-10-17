@@ -253,11 +253,19 @@ defmodule Nest.Agents.NoneScratchNameTest do
     test "carry the agent's real scratch, so a command can be staged" do
       {:ok, space_id} = AgentTestHelpers.create_test_space(%{sandbox_backend: "docker"})
 
-      # No workspace: composing the prompt then reads no `AGENTS.md`, so this
-      # never runs the container. What it does assert is the thing that made a
-      # docker space with a workspace silently lose that section — the mounts the
-      # prompt is composed through must name the agent's scratch, or the staged
-      # transcript lands where the container cannot reach it.
+      # The space has a workspace — every space does now
+      # (`Space.create_changeset/2`) — but this agent's *mounts* do not: a
+      # workspace reaches an agent through `Agents.create_agent/3`'s
+      # `:workspace_path` option and from nowhere else, and `start_named/3` names
+      # none. So composing the prompt takes
+      # `SystemPrompt.agents_md_section/2`'s first clause, which returns `""` for
+      # `%Mounts{workspace: nil}` without reading — no `docker exec`, nothing
+      # printed. (A docker agent *with* a workspace would make that read; it is the
+      # one docker call the inert `docker_runner` in `config/test.exs` does not
+      # cover.) What this asserts is the thing that made a docker space silently
+      # lose its `AGENTS.md` section — the mounts the prompt is composed through
+      # must name the agent's scratch, or the staged transcript lands where the
+      # container cannot reach it.
       name = start_named(space_id, unique("docker-mounts"))
       {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
 

@@ -20,6 +20,7 @@ export function ChatComposer({
   modes,
   mode,
   onModeChange,
+  onModeRestore,
   history,
   commands,
   hasNewContent,
@@ -66,6 +67,7 @@ export function ChatComposer({
         modes={modes}
         mode={mode}
         onModeChange={onModeChange}
+        onModeRestore={onModeRestore}
         history={history}
         commands={commands}
       />

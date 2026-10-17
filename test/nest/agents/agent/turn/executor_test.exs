@@ -329,12 +329,12 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       # proceed (a compaction, a block) therefore leaves the message queued and
       # visible instead of in no payload at all.
       peer = entry(:agent, "peer", "peer note")
-      state = inbox_state([peer], "chat")
+      state = inbox_state([peer], "act")
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
 
       {state, {:inbox_drain, [^peer], content}} = run({:drain_inbox}, state)
 
-      assert content == "[Message from agent \"peer\"]\npeer note"
+      assert content == "[Message from agent \"peer\" | mode: act]\npeer note"
       assert state.live.inbox == [peer]
       refute_received {:chat_inbox, _}
     end
@@ -347,7 +347,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       # went (issue #27) — never the queue that is left.
       peer = entry(:agent, "peer", "peer note")
       alice = entry(:user, "alice", "human note", "plan")
-      state = inbox_state([peer, alice], "chat")
+      state = inbox_state([peer, alice], "act")
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
 
       {state, nil} = run({:consume_inbox, [peer]}, state)
@@ -373,7 +373,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       # `start_chat/3`, so the ack cannot re-enter the compaction decision it
       # just gave up on — then consumes exactly the batch it appended.
       peer = entry(:agent, "peer", "peer note")
-      state = inbox_state([peer], "chat")
+      state = inbox_state([peer], "act")
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
 
       # The append goes through `MessageAppender`, so its row lands in the DB —
@@ -392,7 +392,9 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
                {:user,
                 %User{
                   parts: [
-                    %Part.Text{text: "[mode: chat]\n[Message from agent \"peer\"]\npeer note"}
+                    %Part.Text{
+                      text: "[mode: act]\n[Message from agent \"peer\" | mode: act]\npeer note"
+                    }
                   ]
                 }}
              ] = state.chat_state.messages
@@ -409,11 +411,11 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
     end
 
     test "drain_inbox applies the batch's human mode and otherwise leaves the mode alone" do
-      # intentional: one mode per delivered batch, chosen by `Inbox.drain_mode/1`
-      # and applied at the peek (never at enqueue time, where it would
-      # re-resolve the ongoing turn's caps). The batch is the queue's head — an
-      # agent run, or a lone human message — so a human entry behind an agent
-      # run is not part of this delivery at all.
+      # intentional: one mode per delivered batch, chosen by
+      # `Inbox.Mode.drain_mode/1` and applied at the peek (never at enqueue time,
+      # where it would re-resolve the ongoing turn's caps). The batch is the
+      # queue's head — an agent run, or a lone human message — so a human entry
+      # behind an agent run is not part of this delivery at all.
       peer = entry(:agent, "peer", "peer note")
       human = entry(:user, "alice", "human note", "plan")
 
@@ -421,31 +423,31 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       # consumes nothing, so the queue is untouched (including the human entry
       # behind the batch).
       {state, {:inbox_drain, [^peer], content}} =
-        run({:drain_inbox}, inbox_state([peer, human], "chat"))
+        run({:drain_inbox}, inbox_state([peer, human], "act"))
 
       assert state.live.inbox == [peer, human]
-      assert state.live.mode == "chat"
-      assert content == "[Message from agent \"peer\"]\npeer note"
+      assert state.live.mode == "act"
+      assert content == "[Message from agent \"peer\" | mode: act]\npeer note"
 
       # A lone human message runs in its own mode, and its text is bare: a
       # queued human message must read like one typed while the agent was idle
       # (issue #31 decision 8).
       {state, {:inbox_drain, [^human], content}} =
-        run({:drain_inbox}, inbox_state([human], "chat"))
+        run({:drain_inbox}, inbox_state([human], "act"))
 
       assert state.live.inbox == [human]
       assert state.live.mode == "plan"
       assert content == "human note"
 
-      # A mode the vocation does not define resolves to its default, exactly
-      # as an idle chat's request would, so `currentMode` never holds a mode
-      # the vocation does not define.
+      # A mode this build does not know resolves to `Nest.Modes.default/0`,
+      # exactly as an idle chat's request would, so `currentMode` never holds a
+      # mode nothing can honour.
       bogus = %{human | mode: "bogus"}
 
       {state, {:inbox_drain, [^bogus], _content}} =
-        run({:drain_inbox}, inbox_state([bogus], "chat"))
+        run({:drain_inbox}, inbox_state([bogus], "act"))
 
-      assert state.live.mode == "chat"
+      assert state.live.mode == "act"
     end
 
     test "Turn.drain_inbox/1 reports :queued when the delivery parks for a compaction" do
@@ -458,7 +460,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       base = state()
 
       content = "[Message from agent \"peer\"]\npeer note"
-      projected = messages ++ [Dispatch.build_user_message(content, "chat")]
+      projected = messages ++ [Dispatch.build_user_message(content, "act")]
       limit = ConversationSize.size(projected) + 8_191
 
       state = %{
@@ -471,7 +473,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
              "the fixture must force the :needs_compaction branch"
 
       peer = entry(:agent, "peer", "peer note")
-      state = inbox_state([peer], "chat", state)
+      state = inbox_state([peer], "act", state)
 
       {state, :queued} = Turn.drain_inbox(state)
 
@@ -560,7 +562,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       base = state()
       peer = entry(:agent, "peer", "peer note")
 
-      state = inbox_state([peer], "chat", base)
+      state = inbox_state([peer], "act", base)
       state = %{state | llm_metrics: %{base.llm_metrics | context_limit: 1}}
 
       machine = %{state.live.machine | phase: :compaction_loop_detected, loop_count: 3}
@@ -606,7 +608,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
         base.live.machine
         | phase: :idle,
           pending_user_message:
-            {:user_message, Dispatch.build_user_message("held message", "chat")}
+            {:user_message, Dispatch.build_user_message("held message", "act")}
       }
 
       state = %{base | live: %{base.live | machine: machine}}
@@ -645,7 +647,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
              ] = settled.chat_state.messages
 
       assert notice =~ "Compaction did not start"
-      assert text == "[mode: chat]\nheld message"
+      assert text == "[mode: act]\nheld message"
     end
   end
 

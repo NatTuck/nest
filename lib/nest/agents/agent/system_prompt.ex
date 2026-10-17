@@ -2,8 +2,9 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   @moduledoc """
   Composes the agent's initial system prompt from the
   vocation's base prompt and several contextual sections
-  (mode catalog, `[mode: compact]` compaction guidance,
-  workspace, tool-call budget, context limit, AGENTS.md).
+  (the universal modes, the `[mode: compact]` compaction
+  contract, workspace, network access, tool-call budget,
+  context limit, AGENTS.md).
 
   Extracted from `Nest.Agents.Agent` so the GenServer
   module stays under the 500-line credo limit. The
@@ -25,6 +26,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
   alias Nest.Agents.Agent.Config
   alias Nest.Messages.Sanitize
+  alias Nest.Modes
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Reserve
@@ -118,31 +120,63 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   system message from its parent, so the reported name/depth
   may be stale once cloned — the clone's own "You are the
   clone" notice supersedes it.
+  `mode` is the agent's own — the persisted one, from its row — and it is
+  passed *in* rather than derived here: the modes are universal (`Nest.Modes`)
+  and an agent's mode is a runtime property, so the prompt composer neither
+  knows nor decides it. It is used for one thing: the caps the `AGENTS.md` read
+  is authorized with.
   """
   @spec compose_vocation_config(
           Nest.Vocations.Vocation.t() | nil,
           Mounts.t(),
           {integer() | nil, atom() | nil},
           String.t(),
-          non_neg_integer()
+          non_neg_integer(),
+          String.t()
         ) ::
-          {String.t() | nil, String.t(), [String.t()], Nest.Vocations.Vocation.t() | nil}
-  def compose_vocation_config(nil, _mounts, _context_limit_info, _name, _depth),
-    do: {nil, "chat", [], nil}
+          {String.t() | nil, [String.t()], Nest.Vocations.Vocation.t() | nil}
+  def compose_vocation_config(nil, _mounts, _context_limit_info, _name, _depth, _mode),
+    do: {nil, [], nil}
 
-  def compose_vocation_config(vocation, mounts, context_limit_info, name, depth) do
-    initial_mode = get_initial_mode(vocation.modes)
+  def compose_vocation_config(vocation, mounts, context_limit_info, name, depth, mode) do
     tools = Groups.expand(vocation.tools || [])
 
     system_prompt =
       (vocation.system_prompt || "") <>
-        Vocations.mode_catalog(vocation, tools, Mounts.network_access(mounts)) <>
+        modes_section(tools, mounts) <>
         build_suffix(mounts, context_limit_info, name, depth, tools) <>
-        agents_md_section(mounts, initial_caps(vocation, initial_mode)) <>
+        agents_md_section(mounts, mode) <>
         Nest.ProjectConfig.section(Mounts.workspace(mounts))
 
-    {system_prompt, initial_mode, tools, vocation}
+    {system_prompt, tools, vocation}
   end
+
+  # The universal modes, plus the compaction contract.
+  #
+  # The modes themselves are a constant (`Nest.Modes.catalog/2`), and the section
+  # is *empty* for an agent with no tools: with nothing to call there is nothing
+  # for a mode to restrict, so it would describe a distinction the agent cannot
+  # act on. The `compact` contract is not about modes and a tool-less agent still
+  # compacts, so it is rendered either way — inside the same `[Available modes]`
+  # marker it has always been in, which is what the runtime's `[mode: compact]`
+  # suffix refers to.
+  #
+  # `enforced?` is the space's, not the agent's: a `"none"` space has no sandbox
+  # to enforce the restriction with, so the text has to say so rather than claim
+  # a write will fail.
+  defp modes_section(tools, mounts) do
+    tool_capable? = tools != []
+    enforced? = Mounts.backend(mounts) != "none"
+
+    Modes.catalog(tool_capable?, enforced?) <>
+      modes_marker(tool_capable?) <>
+      "- compact: #{Vocations.compact_description()}\n"
+  end
+
+  # With modes to list, `Nest.Modes.catalog/2` already opened the section.
+  defp modes_marker(true), do: ""
+
+  defp modes_marker(false), do: "\n\n[Available modes]\n\n"
 
   defp build_suffix(mounts, context_limit_info, name, depth, tools) do
     identity_section(name, depth) <>
@@ -152,19 +186,21 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
   # Every prompt section that only makes sense when the agent can call
   # tools: the agent's own scratch directory (reached with `file-*` /
-  # `shell-cmd`), the workspace/tool working directory and the tool-call
-  # budget. Gathered here so a tool-less vocation (e.g. Chat) gets a
-  # prompt with no dangling tool references — it cannot reach a scratch
-  # directory, so telling it about one would be a dangling reference too.
+  # `shell-cmd`), the workspace/tool working directory, the space's network
+  # access and the tool-call budget. Gathered here so a tool-less vocation
+  # (e.g. Chat) gets a prompt with no dangling tool references — it cannot
+  # reach a scratch directory or the network, so telling it about either
+  # would be a dangling reference too.
   #
   # Ordering is load-bearing for the prompt's bytes: the scratch sentence
-  # follows the identity line, then the working directory.
+  # follows the identity line, then the working directory, then the network.
   defp tool_sections([], _mounts, _name), do: ""
 
   defp tool_sections(_tools, mounts, name),
     do:
       scratch_section(name) <>
         workspace_section(Mounts.workspace(mounts)) <>
+        network_section(mounts) <>
         tool_call_limit_section()
 
   # Tell the agent its name and spawn depth. Non-clones and
@@ -210,6 +246,42 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   defp workspace_section(path),
     do: "\n\nWorkspace and tool working directory: #{path}\n"
 
+  # Whether the agent can reach the network is a *space* property, not a mode's:
+  # it is resolved once at agent start and carried on the mounts
+  # (`Nest.Spaces.network_access`), and `Nest.Sandbox` injects it as the call's
+  # `"net"` cap. It is stated here, next to the other tool-gated lines, rather
+  # than in the modes section, so it is said once and only to an agent that can
+  # act on it — a tool-less agent has no command that could reach the network.
+  #
+  # It is a property of the agent and its space, so the bytes are the same on
+  # every composition for a given agent, which is what keeps the system message
+  # cache-safe.
+  #
+  # A `"none"` space has no sandbox, so the setting cannot be enforced there:
+  # the sentence has to say so rather than claim a restriction that does not
+  # exist (`Nest.Sandbox.Backend.None`'s caps are unenforceable by
+  # construction — see `notes/sandbox-backends.md`).
+  defp network_section(mounts) do
+    "\n\n" <> network_sentence(Mounts.backend(mounts), Mounts.network_access(mounts))
+  end
+
+  defp network_sentence("none", network_access) do
+    "Network access is #{network_word(network_access)} for this space, but this space " <>
+      "has no sandbox to enforce it: your commands can reach the network either way.\n"
+  end
+
+  defp network_sentence(_backend, true) do
+    "Network access is enabled for this space: your commands can reach the network.\n"
+  end
+
+  defp network_sentence(_backend, false) do
+    "Network access is disabled for this space: the sandbox blocks your commands " <>
+      "from reaching the network.\n"
+  end
+
+  defp network_word(true), do: "enabled"
+  defp network_word(false), do: "disabled"
+
   defp tool_call_limit_section do
     max = Config.configured_max_tool_iterations()
 
@@ -236,13 +308,15 @@ defmodule Nest.Agents.Agent.SystemPrompt do
       "giving a working token budget of ~#{effective} tokens.\n"
   end
 
-  defp agents_md_section(%Mounts{workspace: nil}, _caps), do: ""
+  defp agents_md_section(%Mounts{workspace: nil}, _mode), do: ""
 
-  defp agents_md_section(mounts, caps) do
+  defp agents_md_section(mounts, mode) do
     # `AGENTS.md` lives at the workspace root. The read runs through the
-    # sandbox like every other read, so `Nest.Sandbox` decides what is visible.
+    # sandbox like every other read, so `Nest.Sandbox` decides what is visible —
+    # and it is authorized with the caps of the mode the agent is *in*, so a mode
+    # that could not read the workspace could not read this either.
     with {:ok, path} <- Mounts.resolve("AGENTS.md", mounts),
-         {:ok, content} <- Sandbox.read(path, caps, mounts) do
+         {:ok, content} <- Sandbox.read(path, Modes.caps(mode), mounts) do
       # The file is arbitrary user bytes: NUL / invalid UTF-8 cannot be
       # stored in the system message's jsonb row. Replace them rather
       # than crash the Agent.
@@ -251,21 +325,4 @@ defmodule Nest.Agents.Agent.SystemPrompt do
       _ -> ""
     end
   end
-
-  # The AGENTS.md read is authorized with the vocation's initial-mode
-  # caps (the mode the agent boots in). With the default read=`/`
-  # profile this allows the read; a read-restricted mode would gate it.
-  defp initial_caps(vocation, mode) do
-    case Vocations.get_caps(vocation, mode) do
-      {:ok, caps} -> caps
-      _ -> Nest.Sandbox.default_caps()
-    end
-  end
-
-  defp get_initial_mode(nil), do: "chat"
-
-  defp get_initial_mode(%{} = modes) when map_size(modes) > 0,
-    do: modes |> Map.keys() |> List.first()
-
-  defp get_initial_mode(_), do: "chat"
 end

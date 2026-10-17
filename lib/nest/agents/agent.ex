@@ -195,11 +195,16 @@ defmodule Nest.Agents.Agent do
   runtime speaking for itself, which no agent said.
   Returns `{:ok, :delivered}` for an idle target, `{:ok, :queued}` for a busy
   one, `{:error, reason}` for a broken target or a full inbox.
+  `mode` is the mode the *recipient* is asked to move to, or `nil` for a message
+  that asks for no change. It rides the message because the change and the
+  instruction that depends on it belong together: the recipient applies it when
+  the message is delivered (never mid-turn), and the send tools have already
+  checked that the sender may ask (`Nest.Agents.Agent.ModeAuthority`).
   """
-  @spec deliver_message(pid(), String.t(), String.t(), Inbox.kind()) ::
+  @spec deliver_message(pid(), String.t(), String.t(), Inbox.kind(), String.t() | nil) ::
           {:ok, :delivered | :queued} | {:error, term()}
-  def deliver_message(pid, sender, content, kind \\ :agent) do
-    GenServer.call(pid, {:deliver_async, sender, content, kind}, 5_000)
+  def deliver_message(pid, sender, content, kind \\ :agent, mode \\ nil) do
+    GenServer.call(pid, {:deliver_async, sender, content, kind, mode}, 5_000)
   end
 
   @doc """
@@ -274,8 +279,46 @@ defmodule Nest.Agents.Agent do
 
   # Change the agent's resolved LLM client + persisted `model` map.
   # Handler: `IntrospectionHandler` → `ModelHandler`.
+  @doc """
+  Point this agent at the space's current network access.
+
+  A space's network access is editable, and it rides the agent's `Mounts` — which
+  are built once, at start. So a change has to *reach* the agent, or a live agent
+  keeps the value it started with and the space's own claim that the change takes
+  effect for its agents' subsequent commands is false.
+
+  A **cast**, unlike `set_mode/3`: the edit must not wait on an agent's turn, and
+  there is nothing to refuse — the value is the space's, not the agent's. The
+  mounts are updated and the tool closures are rebuilt (they capture the mounts);
+  a turn already in flight picks the new value up at its next settle, which is
+  when `Turn.build_ctx/2` re-reads them. The caller is
+  `Nest.Spaces.set_network_access/2`.
+  """
+  @spec set_network_access(pid(), boolean()) :: :ok
+  def set_network_access(pid, value) when is_boolean(value) do
+    GenServer.cast(pid, {:set_network_access, value})
+  end
+
   @spec set_model(pid(), map()) :: :ok | {:error, term()}
   def set_model(pid, new_model), do: GenServer.call(pid, {:set_model, new_model}, :infinity)
+
+  @doc """
+  Set this agent's mode (`Nest.Modes`), on behalf of `actor`.
+
+  This is the human's path — the one the UI channel calls — and the mode is
+  *persisted*, so a human's change applies immediately rather than having to ride
+  the next message. An agent's own request goes the other way, on a message
+  (`Nest.Tools.QueryAgent`'s `set_mode`), and both are held to
+  `Nest.Agents.Agent.ModeAuthority`: only the human may raise a mode, and no
+  agent may set its own.
+
+  `actor` is `:human` or `{:agent, name}` (the acting agent's name). Returns
+  `:ok`, or `{:error, reason}` where `reason` is a sentence to show whoever
+  asked — the channel hands it to the client, a tool hands it to the model.
+  """
+  @spec set_mode(pid(), String.t(), :human | {:agent, String.t()}) :: :ok | {:error, String.t()}
+  def set_mode(pid, mode, actor \\ :human),
+    do: GenServer.call(pid, {:set_mode, mode, actor}, :infinity)
 
   # Change the agent's working directory. Handler: `WorkspaceHandler`.
   @spec set_workspace(pid(), String.t() | nil) :: :ok | {:error, term()}
@@ -291,25 +334,28 @@ defmodule Nest.Agents.Agent do
   @doc """
   Resolve the agent's current effective sandbox caps from its state.
 
-  Uses the same `Vocations.get_caps/2` lookup as the chat pipeline so
-  bookkeeping file access (AGENTS.md reads, policy stats) is
-  authorized by the same caps the tools run under. Falls back to the
-  `Nest.Sandbox` default profile when there is no vocation or the
-  mode is unknown.
+  The caps are the mode's — `Nest.Modes.caps/1` — resolved through
+  `Nest.ProjectConfig.resolve_caps/2`, so bookkeeping file access (AGENTS.md
+  reads, policy stats) is authorized by the same caps the tools run under. The
+  mode is read from `live.mode`, which is the row's mode and can change while the
+  agent works.
+
+  `Nest.Modes.caps/1` is total: a mode name this build does not implement — a row
+  written by another build, a client that made one up — resolves to the default
+  mode's caps rather than to nothing. Falling back to
+  `Nest.Sandbox.default_caps/0` instead would be *stricter* than the agent's own
+  tools, which is the one thing this must not be: the same mode has to authorize
+  both.
   """
   @spec resolve_caps(t()) :: map()
-  def resolve_caps(%__MODULE__{vocation: %Nest.Vocations.Vocation{} = vocation} = state) do
-    caps =
-      case Nest.Vocations.get_caps(vocation, state.live.mode) do
-        {:ok, caps} -> caps
-        _ -> Nest.Sandbox.default_caps()
-      end
-
-    Nest.ProjectConfig.apply_or_default(caps, Mounts.from_agent(state))
+  def resolve_caps(%__MODULE__{vocation: %Nest.Vocations.Vocation{}} = state) do
+    state.live.mode
+    |> Nest.Modes.caps()
+    |> Nest.ProjectConfig.resolve_caps(Mounts.from_agent(state))
   end
 
   def resolve_caps(%__MODULE__{} = state) do
-    Nest.ProjectConfig.apply_or_default(Nest.Sandbox.default_caps(), Mounts.from_agent(state))
+    Nest.ProjectConfig.resolve_caps(Nest.Sandbox.default_caps(), Mounts.from_agent(state))
   end
 
   def resolve_caps(_), do: Nest.Sandbox.default_caps()

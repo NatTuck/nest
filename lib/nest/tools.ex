@@ -353,7 +353,9 @@ defmodule Nest.Tools do
           "Use this to hand off work or share information with a peer or " <>
           "sub-agent, and to reply to a peer that queried you with " <>
           "`agents-query`: a successful send discharges the reply you owe " <>
-          "that peer.",
+          "that peer. `set_mode` moves the target's mode as part of the same " <>
+          "delivery: the change and the instruction that depends on it arrive " <>
+          "together.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
@@ -364,7 +366,8 @@ defmodule Nest.Tools do
           "message" => %{
             "type" => "string",
             "description" => "The message to deliver to that agent."
-          }
+          },
+          "set_mode" => set_mode_property()
         },
         "required" => ["name", "message"]
       },
@@ -372,6 +375,20 @@ defmodule Nest.Tools do
         {:ok, "Send message request received."}
       end
     }
+  end
+
+  # The `set_mode` property the send tools share, and the rule the sender is
+  # held to (`Nest.Agents.Agent.ModeAuthority`): a mode may be held or lowered,
+  # never raised, and only the user can raise one. One definition, so the tools
+  # cannot describe the same argument differently — and the default description
+  # is the message-shaped one, which is what two of the three want.
+  @spec set_mode_property(String.t()) :: map()
+  def set_mode_property(
+        description \\ "Optional: also move the target's mode. `\"mine\"` means your own " <>
+          "current mode. You may only hold a mode or lower it, and only the " <>
+          "user can raise one; a refused change is this call's error."
+      ) do
+    %{"type" => "string", "enum" => ["mine", "plan", "act"], "description" => description}
   end
 
   # The `agents-wait` tool: register interest in the named agents
@@ -469,6 +486,24 @@ defmodule Nest.Tools do
     }
   end
 
+  # The `agents-batch` description, extracted so the tool builder stays
+  # inside credo's ABC bound: the concatenation is the bulk of what it says.
+  defp batch_description do
+    "Fan ONE instruction out over a set of items to concurrent sub-agents " <>
+      "and receive the aggregate later as a message in your inbox: a JSON " <>
+      "array of each child's final response string, in item order. " <>
+      "Nothing waits — this call returns as soon as the batch is " <>
+      "launched. Use this instead of many " <>
+      "separate agents-spawn calls when every item gets the same task. " <>
+      "Provide `items` (a non-empty list) OR `glob` (a pattern expanded " <>
+      "to readable files — preferred for large sets, so you never list " <>
+      "files by hand). If `template` is given it is rendered per item " <>
+      "with {item} and {index}; if omitted, each item is the " <>
+      "instruction. `archive` defaults to true. Sub-agents can be " <>
+      "spawned down to a maximum depth of " <>
+      "#{Config.configured_max_depth()}."
+  end
+
   # The `agents-batch` tool: the fork-join sub-agent API. The model
   # makes ONE call that fans a single templated instruction out over a
   # set of items to concurrent sub-agents; the aggregate — a JSON array
@@ -492,20 +527,7 @@ defmodule Nest.Tools do
   defp batch_agent_function do
     %Tool{
       name: "agents-batch",
-      description:
-        "Fan ONE instruction out over a set of items to concurrent sub-agents " <>
-          "and receive the aggregate later as a message in your inbox: a JSON " <>
-          "array of each child's final response string, in item order. " <>
-          "Nothing waits — this call returns as soon as the batch is " <>
-          "launched. Use this instead of many " <>
-          "separate agents-spawn calls when every item gets the same task. " <>
-          "Provide `items` (a non-empty list) OR `glob` (a pattern expanded " <>
-          "to readable files — preferred for large sets, so you never list " <>
-          "files by hand). If `template` is given it is rendered per item " <>
-          "with {item} and {index}; if omitted, each item is the " <>
-          "instruction. `archive` defaults to true. Sub-agents can be " <>
-          "spawned down to a maximum depth of " <>
-          "#{Config.configured_max_depth()}.",
+      description: batch_description(),
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
@@ -523,6 +545,13 @@ defmodule Nest.Tools do
               "The items to fan out over (each becomes one sub-agent). " <>
                 "Provide this OR `glob`, not both."
           },
+          "set_mode" =>
+            set_mode_property(
+              "Optional: the mode every child of this batch runs in. " <>
+                "`\"mine\"` means your own current mode, which is also what " <>
+                "omitting it gives. You may only hold a mode or lower it; a " <>
+                "refused change is this call's error."
+            ),
           "glob" => %{
             "type" => "string",
             "description" =>
@@ -533,8 +562,9 @@ defmodule Nest.Tools do
           "vocation" => %{
             "type" => "string",
             "description" =>
-              "Vocation slug for every child (e.g. \"programmer\"). Defaults to " <>
-                "your own vocation (or the space's sole allowed vocation)."
+              "Vocation slug for every child (e.g. \"programmer\"). When omitted, " <>
+                "the space's blueprint default is used; a space whose blueprint " <>
+                "names no default refuses the call, so pass one."
           },
           "model" => %{
             "type" => "string",

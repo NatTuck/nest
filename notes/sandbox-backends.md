@@ -27,9 +27,10 @@ already travels with every call. Adding a backend means adding a module under
 | HPU devices | host `/dev` `--dev-bind` + writable Habana log dir | `--device` per path | already visible |
 | Process/net namespace | unshared | the container's | the host's |
 
-`caps["net"]` is the **space's** `network_access`, not a vocation mode's: it is
-resolved once at agent start, carried on the `Mounts` value, and injected by
-`Nest.Sandbox.with_network_access/2`. A mode's own `net` key is dead data.
+`caps["net"]` is the **space's** `network_access`, not a mode's: it is resolved
+once at agent start, carried on the `Mounts` value, and injected by
+`Nest.Sandbox.with_network_access/2`. The mode's own `net` key is a placeholder —
+`Nest.Modes.caps/1` sets it to `false` and nothing reads it.
 
 **`none` enforces nothing.** It is the escape hatch for a space that must reach
 the real machine, and its caps are unenforceable by construction — including the
@@ -70,17 +71,17 @@ project that needs a host path readable declares it as a `.nest` mount.
 
 The container binds the **superset** a space can need, because a container's
 mounts are fixed when it is created and one container serves every mode its
-space can run. Its binds are the ones a mode that writes the workspace gets —
-which is exactly the set `.nest` project mounts are granted to
-(`Nest.ProjectConfig.effective_caps/2` gives them only to modes that write
-`":workspace"`) — plus the workspace and the staging directory. The sandbox
+space can run. Its binds are the ones `act` gets — which is exactly the set
+`.nest` project mounts are granted to (`Nest.ProjectConfig.effective_caps/2`
+gives them only to caps that write `":workspace"`) — plus the workspace and the
+staging directory. The sandbox
 inside tightens per call: `--ro-bind / /` makes the whole image read-only, and
 each bind the call's caps ask for is re-applied as a *self-bind* of the path the
-container already put there, which is what sets that path's mode. So a read-only
-mode cannot write the workspace, a project mount, or `/tmp`, and it cannot write
+container already put there, which is what sets that path's mode. So `plan`
+cannot write the workspace, a project mount, or `/tmp`, and it cannot write
 `/usr` either. Two consequences worth stating:
 
-* A read-only mode *sees* the project mounts, read-only. Under bwrap it sees the
+* `plan` *sees* the project mounts, read-only. Under bwrap it sees the
   host paths themselves, read-only, through bwrap's own root bind — so the
   capability is the same on both, and only what a `mode = "tmp"` mount resolves
   to differs.
@@ -180,6 +181,14 @@ any running background job. The UI says so before the toggle is flipped. For a
 `none` space nothing is released — its caps were never enforceable, and the
 toggle has always been advisory there.
 
+The space's live agents are told the new value as part of the same change
+(`Nest.Agents.Agent.set_network_access/2`, a cast), because the value is carried
+on an agent's `Nest.Sandbox.Mounts` and that is what its caps are resolved from.
+Without that push an agent that started before the change would keep the old
+value until it was restarted, which is what the toggle used to do. A command
+already in flight keeps the caps it started with — the mounts are re-read at the
+turn's next settle.
+
 ## One container per space
 
 The container is named `nest-space-<space_id>-<installation>`, where the
@@ -256,7 +265,7 @@ A scratch directory has exactly two creators, and both mark what they make:
 `"none"` scratch it made carried no marker, and a start that never happened left a
 directory no later agent could remove. An *existing* directory is never touched,
 so something that is not Nest's is never marked by accident.
-`TmpSpace.prompt_mounts/4` only *names* the directory; it does not make it, so a
+`TmpSpace.prompt_mounts/5` only *names* the directory; it does not make it, so a
 scratch path that cannot be made fails where the agent starts rather than as a
 raise out of a caller that is merely composing a prompt.
 
@@ -318,12 +327,16 @@ the agent as `Execution failed: …`; it is never a half-built sandbox.
 
 ## Testing
 
-* A docker space with a *workspace* cannot be created in the suite at all: the
-  system prompt reads `AGENTS.md` through the backend, and that exec is a real
-  `docker exec` (the `docker_runner` stub covers the setup calls, not the command
-  the agent runs — see `config/test.exs`). The call sites that build the prompt's
-  mounts are therefore covered through `TmpSpace.prompt_mounts/4` and through a
-  docker space *without* a workspace.
+* A docker space's *start* reaches the daemon now. Every space has a workspace
+  (`Space.create_changeset/2`), so composing the prompt attempts the `AGENTS.md`
+  read — the literal `docker exec -i …` `Docker.command/3` builds, which is the
+  one call the inert `docker_runner` in `config/test.exs` does **not** cover. It
+  fails against a container that is not there, and
+  `SystemPrompt.agents_md_section/2`'s `else` clause swallows that (a project
+  with no `AGENTS.md` is the ordinary case), so nothing is printed and no
+  container is left behind. The call sites that build the prompt's mounts are
+  covered through `TmpSpace.prompt_mounts/5` and through that start path
+  (`none_scratch_name_test.exs`), which reads the mounts it built.
 * Everything that decides *what* to run is pure and asserted exactly:
   `Docker.container_name/1`, `layout/3`, `image_tag/1`, `dockerfile/1`,
   `container_binds/1`, `run_args/4`, and the command line (including the payload

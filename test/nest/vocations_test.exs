@@ -4,10 +4,11 @@ defmodule Nest.VocationsTest do
   alias Nest.Vocations
   alias Nest.Vocations.Vocation
 
+  import Nest.Test.TmpCleanup
   import Nest.VocationsFixtures
 
   describe "vocations" do
-    @invalid_attrs %{name: nil, description: nil, modes: nil, tools: nil, system_prompt: nil}
+    @invalid_attrs %{name: nil, description: nil, tools: nil, system_prompt: nil}
 
     test "list_vocations/0 includes the created vocation" do
       vocation = vocation_fixture()
@@ -27,7 +28,6 @@ defmodule Nest.VocationsTest do
       valid_attrs = %{
         name: "some name",
         description: "some description",
-        modes: %{},
         tools: [],
         system_prompt: "some system_prompt"
       }
@@ -36,7 +36,6 @@ defmodule Nest.VocationsTest do
       assert vocation.name == "some name"
       assert vocation.slug == "some-name"
       assert vocation.description == "some description"
-      assert vocation.modes == %{}
       assert vocation.tools == []
       assert vocation.system_prompt == "some system_prompt"
     end
@@ -46,8 +45,7 @@ defmodule Nest.VocationsTest do
         name: "Slug Dup #{System.unique_integer([:positive])}",
         description: "d",
         system_prompt: "s",
-        tools: [],
-        modes: %{}
+        tools: []
       }
 
       assert {:ok, %Vocation{} = first} = Vocations.create_vocation(attrs)
@@ -83,7 +81,6 @@ defmodule Nest.VocationsTest do
       update_attrs = %{
         name: "some updated name",
         description: "some updated description",
-        modes: %{},
         tools: [],
         system_prompt: "some updated system_prompt"
       }
@@ -91,7 +88,6 @@ defmodule Nest.VocationsTest do
       assert {:ok, %Vocation{} = vocation} = Vocations.update_vocation(vocation, update_attrs)
       assert vocation.name == "some updated name"
       assert vocation.description == "some updated description"
-      assert vocation.modes == %{}
       assert vocation.tools == []
       assert vocation.system_prompt == "some updated system_prompt"
     end
@@ -118,7 +114,8 @@ defmodule Nest.VocationsTest do
       {:ok, space} =
         Nest.Spaces.create_space(nil, %{
           name: "voc-test-#{System.unique_integer([:positive])}",
-          slug: "voc-test-#{System.unique_integer([:positive])}"
+          slug: "voc-test-#{System.unique_integer([:positive])}",
+          workspace_path: new_ws()
         })
 
       {:ok, _} =
@@ -145,8 +142,7 @@ defmodule Nest.VocationsTest do
         name: "upsert-new-#{System.unique_integer([:positive])}",
         description: "first version",
         system_prompt: "original prompt",
-        tools: [],
-        modes: %{}
+        tools: []
       }
 
       assert {:ok, %Vocation{id: id}} = Vocations.upsert_vocation(attrs)
@@ -167,8 +163,7 @@ defmodule Nest.VocationsTest do
         name: original.name,
         description: "updated version",
         system_prompt: "updated prompt",
-        tools: original.tools,
-        modes: original.modes
+        tools: original.tools
       }
 
       assert {:ok, %Vocation{} = updated} = Vocations.upsert_vocation(updated_attrs)
@@ -186,9 +181,25 @@ defmodule Nest.VocationsTest do
                  name: nil,
                  description: nil,
                  system_prompt: nil,
-                 tools: nil,
-                 modes: nil
+                 tools: nil
                })
     end
+  end
+
+  # A real workspace directory outside /tmp: the scratch dir is bound at /tmp, so
+  # a /tmp-rooted workspace is rejected, and a non-existent one too. Every space
+  # requires one now.
+  defp new_ws do
+    dir =
+      Path.join([
+        File.cwd!(),
+        "_build",
+        "tmp",
+        "vocations_test_ws_#{System.unique_integer([:positive])}"
+      ])
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> rm_tmp!(dir, "vocations_test_ws_") end)
+    dir
   end
 end
