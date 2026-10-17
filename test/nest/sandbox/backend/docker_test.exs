@@ -383,6 +383,9 @@ defmodule Nest.Sandbox.Backend.DockerTest do
       # `mode = "rw"` binds a path the container already has, so it survives.
       dests = Enum.map(binds, fn {_source, dest, _mode} -> dest end)
       assert FSPath.canonical(Path.join(ws, "data")) in dests
+      # And the tmp one is gone outright, not re-sourced from some other host
+      # path — the refutation above only says no bind names the scratch.
+      refute FSPath.canonical(Path.join(ws, "build")) in dests
     end
 
     test "a background job gets the same refusals, instead of failing inside the container" do

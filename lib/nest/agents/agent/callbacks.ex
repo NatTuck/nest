@@ -172,29 +172,38 @@ defmodule Nest.Agents.Agent.Callbacks do
   # `[mode: notice]` prefix and `NoticeTag` are the shape `ModeAuthority.notice/2`
   # and `WorkspaceHandler.notice_pair/1` already use, so every runtime notice is
   # built alike.
-  defp network_notice(false, "none") do
+  # The confident sentence is enumerated over the backends that actually
+  # enforce, and the catch-all is the honest one: a backend added later inherits
+  # "cannot enforce" rather than a claim it cannot keep, which is the failure mode
+  # this pair exists to prevent. `none` runs the bare command on the host, so
+  # nothing restricts its network in either direction.
+  defp network_notice(value, backend) when backend in ["bwrap", "docker"] do
+    if value do
+      "[mode: notice]\n" <>
+        NoticeTag.tag(
+          "Network access for this space is now enabled: your commands can reach the " <>
+            "network."
+        )
+    else
+      "[mode: notice]\n" <>
+        NoticeTag.tag(
+          "Network access for this space is now disabled: the sandbox blocks your " <>
+            "commands from reaching the network."
+        )
+    end
+  end
+
+  defp network_notice(value, _backend) do
     "[mode: notice]\n" <>
       NoticeTag.tag(
-        "Network access for this space is now disabled, but this space has no " <>
-          "sandbox to enforce it: your commands can reach the network either way."
+        "Network access for this space is now #{enabled_or_disabled(value)}, but this " <>
+          "space has no sandbox to enforce it: your commands can reach the network " <>
+          "either way."
       )
   end
 
-  defp network_notice(true, _backend) do
-    "[mode: notice]\n" <>
-      NoticeTag.tag(
-        "Network access for this space is now enabled: your commands can reach the " <>
-          "network."
-      )
-  end
-
-  defp network_notice(false, _backend) do
-    "[mode: notice]\n" <>
-      NoticeTag.tag(
-        "Network access for this space is now disabled: the sandbox blocks your " <>
-          "commands from reaching the network."
-      )
-  end
+  defp enabled_or_disabled(true), do: "enabled"
+  defp enabled_or_disabled(false), do: "disabled"
 
   # The tool *names* an agent was built with, so the closures can be rebuilt
   # without re-reading the vocation. `state.tools` holds the closures themselves.

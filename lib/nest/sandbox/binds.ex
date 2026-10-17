@@ -137,8 +137,12 @@ defmodule Nest.Sandbox.Binds do
   creation and serve the whole space. `mode = "rw"` binds a path the container
   already has, so it is unaffected.
 
-  Returns the dests, for the backend to refuse by name. Empty on a backend whose
-  scratch is a host directory, where the derived source is exactly right.
+  Returns the dests, for the backend to refuse by name and for
+  `container_specs/1` to drop at the container — the drop is the half that
+  actually prevents the host bind, because a container's binds are fixed when it
+  is created and the per-call refusal only sees the calling mode's caps. Empty on
+  a backend whose scratch is a host directory, where the derived source is
+  exactly right.
   """
   @spec non_host_project_mounts(map(), Mounts.t()) :: [String.t()]
   def non_host_project_mounts(caps, mounts) do
