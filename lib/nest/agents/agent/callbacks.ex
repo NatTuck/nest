@@ -26,17 +26,32 @@ defmodule Nest.Agents.Agent.Callbacks do
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Watch
-  alias Nest.Messages.{Assistant, Part, User}
+  alias Nest.Messages.{Assistant, NoticeTag, Part, User}
 
   # A tool worker's "my `agents-send` reached its target": a turn event for this
   # agent, translated by `Turn.handle/2` like the other worker results. The
   # worker casts it *before* its `{:tool_results, …}`, so the debt is discharged
   # before the response that settles the turn (issue #31 §1.4).
   # The space's network access changed (`Nest.Spaces.set_network_access/2`).
-  # Nothing is refused and nothing waits: the value is the space's, and a turn in
-  # flight re-reads the mounts at its next settle.
+  #
+  # Two things move together and must not drift: the mounts (and the tool closures
+  # built from them) and the agent's *knowledge* of the change. The system prompt's
+  # network sentence was composed from the value the agent started with and is
+  # deliberately never rebuilt — changing it would break the prefix cache — so a
+  # `[Nest notice]` in the transcript is the only thing that makes the change
+  # visible to the model. It is a message, not a system-message edit.
+  #
+  # Nothing is refused and nothing waits: the value is the space's. The notice is
+  # *queued*, not appended, and this is the one judgement call in the change:
+  # `Turn.drain_inbox/1` would append it immediately, but draining starts a turn,
+  # and a turn is an LLM call — a space-wide toggle would cost one per live agent,
+  # which is not a cost a checkbox should have. Queued is also what a peer's mode
+  # notice does (`Turn.keep_mode/3` → `Inbox.enqueue_internal/4`), so the agent
+  # learns it at the start of its next turn, which is when it can act on it.
+  # A turn in flight re-reads the mounts at its next settle.
   def handle_cast({:set_network_access, value}, state) do
-    {:noreply, apply_network_access(state, value)}
+    state = apply_network_access(state, value)
+    {:noreply, Inbox.enqueue_internal(state, nil, network_notice(value), :notice)}
   end
 
   def handle_cast({:reply_sent, sender}, state) do
@@ -137,6 +152,29 @@ defmodule Nest.Agents.Agent.Callbacks do
     mounts = %{state.mounts | network_access: value}
 
     %{state | mounts: mounts, tools: Nest.Tools.get_functions(tool_names(state), mounts)}
+  end
+
+  # What the agent is told when the space's network access changes. One sentence,
+  # in one place: the prompt's own sentence is the value the agent started with
+  # (`SystemPrompt.network_sentence/2`, never rebuilt while a conversation is
+  # live), so this is the only thing that makes a change visible. The
+  # `[mode: notice]` prefix and `NoticeTag` are the shape `ModeAuthority.notice/2`
+  # and `WorkspaceHandler.notice_pair/1` already use, so every runtime notice is
+  # built alike.
+  defp network_notice(true) do
+    "[mode: notice]\n" <>
+      NoticeTag.tag(
+        "Network access for this space is now enabled: your commands can reach the " <>
+          "network."
+      )
+  end
+
+  defp network_notice(false) do
+    "[mode: notice]\n" <>
+      NoticeTag.tag(
+        "Network access for this space is now disabled: the sandbox blocks your " <>
+          "commands from reaching the network."
+      )
   end
 
   # The tool *names* an agent was built with, so the closures can be rebuilt
