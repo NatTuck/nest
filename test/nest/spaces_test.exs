@@ -533,4 +533,29 @@ defmodule Nest.SpacesTest do
                )
     end
   end
+
+  describe "create_space/2 workspace requirement" do
+    test "refuses an insert with no workspace, and leaves the update path permissive" do
+      # The invariant belongs to the *insert* changeset: a space row with no
+      # workspace is not a space this build can run, so no new one may be one.
+      # `rename_space/1` goes through `changeset/2` instead, which must keep
+      # accepting a row a previous build left without a workspace — that is why
+      # the requirement is not there.
+      name = "no-ws-#{System.unique_integer([:positive])}"
+
+      assert {:error, changeset} = Spaces.create_space(nil, %{name: name})
+      assert {"can't be blank", _meta} = changeset.errors[:workspace_path]
+      assert Spaces.get_by_name(name) == nil
+
+      legacy =
+        Repo.insert!(%Space{
+          name: "legacy-#{System.unique_integer([:positive])}",
+          slug: "legacy-#{System.unique_integer([:positive])}",
+          workspace_path: nil
+        })
+
+      assert {:ok, renamed} = Spaces.rename_space(legacy.id, %{name: "renamed-legacy"})
+      assert renamed.workspace_path == nil
+    end
+  end
 end
