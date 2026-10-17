@@ -163,8 +163,15 @@ defmodule Nest.Agents.Supervisor do
   # The clone's attrs: its forked message prefix, tree position, and inherited
   # config. Kept as a function so `start_agent_with_parent/3` stays under the
   # ABC cap.
-  defp clone_attrs(parent_state, instruction, child_name, parent_id, model_override) do
-    Agent.build_child_attrs(parent_state, instruction, child_name, parent_id, model_override)
+  defp clone_attrs(parent_state, instruction, child_name, parent_id, model_override, mode) do
+    Agent.build_child_attrs(
+      parent_state,
+      instruction,
+      child_name,
+      parent_id,
+      model_override,
+      mode
+    )
   end
 
   # `start_pre_spawned/3` bound to this module's own start call. Kept as a
@@ -214,16 +221,24 @@ defmodule Nest.Agents.Supervisor do
   child inherits `parent_state.space_id` so cascade-termination
   scoped to that space will find it.
   """
-  @spec start_agent_with_parent(Nest.Agents.Agent.t(), String.t(), map() | nil) ::
+  @spec start_agent_with_parent(Nest.Agents.Agent.t(), String.t(), map() | nil, keyword()) ::
           {:ok, String.t()} | {:error, term()}
-  def start_agent_with_parent(parent_state, instruction, model_override \\ nil)
+  def start_agent_with_parent(parent_state, instruction, model_override \\ nil, opts \\ [])
       when is_map(parent_state) and is_binary(instruction) do
     parent_name = parent_state.name
     space_id = parent_state.space_id
 
     with {:ok, %PersistedAgent{id: parent_id}} <- Persistence.fetch_agent(space_id, parent_name),
          child_name <- generate_unique_name_for_space(space_id),
-         attrs = clone_attrs(parent_state, instruction, child_name, parent_id, model_override),
+         attrs =
+           clone_attrs(
+             parent_state,
+             instruction,
+             child_name,
+             parent_id,
+             model_override,
+             Keyword.get(opts, :mode)
+           ),
          {:ok, agent_id} <- Agent.pre_spawn(attrs),
          {:ok, _pid} <- start_pre_spawned_child(attrs, agent_id, child_name),
          :ok <- ChildRegistry.register(space_id, parent_name, child_name) do
@@ -266,15 +281,34 @@ defmodule Nest.Agents.Supervisor do
 
   Returns `{:ok, name}` on success.
   """
-  @spec spawn_agent_in_space(Nest.Agents.Agent.t(), String.t(), String.t() | nil, map() | nil) ::
-          {:ok, String.t()} | {:error, term()}
-  def spawn_agent_in_space(parent_state, name, vocation \\ nil, model_override \\ nil)
+  @spec spawn_agent_in_space(
+          Nest.Agents.Agent.t(),
+          String.t(),
+          String.t() | nil,
+          map() | nil,
+          keyword()
+        ) :: {:ok, String.t()} | {:error, term()}
+  def spawn_agent_in_space(
+        parent_state,
+        name,
+        vocation \\ nil,
+        model_override \\ nil,
+        opts \\ []
+      )
       when is_map(parent_state) and is_binary(name) do
     with {:ok, resolved} <- resolve_spawn_vocation(parent_state, vocation),
          :ok <- ensure_spawn_workspace(parent_state, resolved),
          {:ok, %PersistedAgent{id: parent_id}} <-
            Persistence.fetch_agent(parent_state.space_id, parent_state.name),
-         :ok <- start_fresh_child(parent_state, name, resolved, parent_id, model_override) do
+         :ok <-
+           start_fresh_child(
+             parent_state,
+             name,
+             resolved,
+             parent_id,
+             model_override,
+             Keyword.get(opts, :mode)
+           ) do
       {:ok, name}
     end
   end
@@ -347,7 +381,7 @@ defmodule Nest.Agents.Supervisor do
   # excluded when the child is at max depth), pre-spawn, start
   # it, and register it in `ChildRegistry`. Kept separate so
   # `spawn_agent_in_space/3` stays under the credo ABC cap.
-  defp start_fresh_child(parent_state, name, vocation_id, parent_id, model_override) do
+  defp start_fresh_child(parent_state, name, vocation_id, parent_id, model_override, mode) do
     exclude_spawn = max_depth_reached?(parent_state.depth + 1)
 
     attrs =
@@ -357,7 +391,8 @@ defmodule Nest.Agents.Supervisor do
         parent_id,
         vocation_id,
         exclude_spawn,
-        model_override
+        model_override,
+        mode
       )
       |> Persistence.build_agent_attrs()
 

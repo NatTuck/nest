@@ -79,10 +79,26 @@ defmodule Nest.Agents.Agent.PreSpawn do
       # a spawn that is exactly the inherited one: `agents-batch` takes `set_mode`
       # with that enum, and every child of a batch is a spawn.
       "mine" -> {:ok, Map.put(attrs, :mode, inherited_mode(attrs))}
-      mode when is_binary(mode) -> authorize_mode(attrs, mode)
+      # A blank counts as unnamed: a client that sends `""` gets the inherited
+      # mode rather than a refusal for a mode called "".
+      mode when is_binary(mode) and mode != "" -> authorize_mode(attrs, mode)
       _other -> {:ok, Map.put(attrs, :mode, inherited_mode(attrs))}
     end
   end
+
+  @doc false
+  # The mode a spawner named, if it named one. A blank counts as unnamed, and so
+  # does anything that is not a binary, so `put_mode/1` derives the mode exactly
+  # as it does when a spawn names none.
+  #
+  # Public because the two attrs builders that feed `pre_spawn/1` live in
+  # different modules (`SubAgent.build_fresh_child_attrs/7` for a fresh child and
+  # `build_child_attrs/6` for a clone) and must agree about what "named" means.
+  @spec put_named_mode(map(), term()) :: map()
+  def put_named_mode(attrs, mode) when is_binary(mode) and mode != "",
+    do: Map.put(attrs, :mode, mode)
+
+  def put_named_mode(attrs, _mode), do: attrs
 
   defp authorize_mode(attrs, mode) do
     case ModeAuthority.authorize(actor(attrs), mode) do
@@ -406,11 +422,29 @@ defmodule Nest.Agents.Agent.PreSpawn do
 
   Returns the attrs map ready to pass to `start_link/1`.
   """
-  @spec build_child_attrs(map(), String.t(), String.t(), integer(), map() | nil) :: map()
-  def build_child_attrs(parent_state, instruction, child_name, parent_id, model_override \\ nil)
+  @spec build_child_attrs(map(), String.t(), String.t(), integer(), map() | nil, String.t() | nil) ::
+          map()
+  def build_child_attrs(
+        parent_state,
+        instruction,
+        child_name,
+        parent_id,
+        model_override \\ nil,
+        mode \\ nil
+      )
       when is_map(parent_state) and is_binary(instruction) and is_binary(child_name) do
-    {fork_index, preloaded, next_index} = clone_fork(parent_state, child_name)
+    Map.merge(
+      inherited_attrs(parent_state, child_name, parent_id, model_override),
+      fork_attrs(parent_state, child_name)
+    )
+    |> put_named_mode(mode)
+  end
 
+  # Everything a clone takes from its parent: identity, space, model, vocation,
+  # the space-level properties it shares (sandbox backend, network access), and
+  # the parent's user identity and visibility — a private agent always spawns
+  # private children, and a shared parent may spawn shared children.
+  defp inherited_attrs(parent_state, child_name, parent_id, model_override) do
     %{
       name: child_name,
       space_id: parent_state.space_id,
@@ -418,28 +452,27 @@ defmodule Nest.Agents.Agent.PreSpawn do
       vocation_id: parent_state.vocation_id,
       vocation: parent_state.vocation,
       workspace_path: Mounts.workspace(parent_state.mounts),
-      # The child shares its parent's space, so it shares its sandbox backend
-      # and its network access.
       sandbox_backend: Mounts.backend(parent_state.mounts),
       network_access: Mounts.network_access(parent_state.mounts),
       parent_id: parent_id,
       parent_name: parent_state.name,
-      # Children inherit the parent's user identity and
-      # visibility — a private agent always spawns private
-      # children, and a shared parent may spawn shared
-      # children. The child can be flipped later via an
-      # edit flow (currently the new-agent form is the only
-      # place to set `shared`).
       created_by_user_id: parent_state.created_by_user_id,
       shared: parent_state.shared,
-      depth: parent_state.depth + 1,
-      # `nil` for a fresh child (owns from 0); the first owned
-      # index for a clone (shares everything below it).
+      depth: parent_state.depth + 1
+    }
+  end
+
+  # The fork's sequence boundary: `nil` for a fresh child (owns from 0), the
+  # first owned index for a clone (shares everything below it). The child also
+  # inherits the shared boundary — below `F` belong to ancestors, and the
+  # partition must file the ancestor marker (and everything it archived) as
+  # archived here too.
+  defp fork_attrs(parent_state, child_name) do
+    {fork_index, preloaded, next_index} = clone_fork(parent_state, child_name)
+
+    %{
       fork_message_index: fork_index,
       preloaded_messages: preloaded,
-      # The child inherits the shared sequence boundary: below `F`
-      # belong to ancestors, and the partition must file the ancestor
-      # marker (and everything it archived) as archived here too.
       last_compaction_index: Map.get(parent_state.chat_state, :last_compaction_index, -1),
       compaction_count: Map.get(parent_state.chat_state, :compaction_count, 0),
       next_message_index: next_index

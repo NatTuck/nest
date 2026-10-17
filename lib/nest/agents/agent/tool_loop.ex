@@ -31,6 +31,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   alias Nest.Agents.Agent.History
   alias Nest.Agents.Agent.LastMessage
   alias Nest.Agents.Agent.ModeAuthority
+  alias Nest.Agents.Agent.SpawnErrors
   alias Nest.Agents.Agent.Status
   alias Nest.Agents.Agent.SubAgentResults
   alias Nest.Agents.Agent.ToolLoop.ModelEntry
@@ -195,7 +196,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
         build_tool_result(tc, "agents-spawn", spawn_confirmation(spawned_name, opts.query))
 
       {:error, reason} ->
-        build_tool_result(tc, "agents-spawn", spawn_error_message(reason), true)
+        build_tool_result(tc, "agents-spawn", SpawnErrors.message(reason), true)
     end
   end
 
@@ -231,64 +232,6 @@ defmodule Nest.Agents.Agent.ToolLoop do
       mode: extract_string_arg(tc, "mode")
     }
   end
-
-  # Format a spawn failure for the model. `:vocation_not_spawnable`
-  # carries the whitelisted `{name, slug}` vocations so the model can
-  # retry with a valid `vocation` slug.
-  defp spawn_error_message({:vocation_not_spawnable, allowed}) do
-    labels = Enum.map_join(allowed, ", ", fn {name, slug} -> "#{name} (#{slug})" end)
-
-    "Could not spawn agent: that vocation is not spawnable in this space. " <>
-      "Allowed vocations: #{labels}. Retry passing one as `vocation`."
-  end
-
-  defp spawn_error_message({:vocation_not_found, slug}) do
-    "Could not spawn agent: no vocation with slug #{inspect(slug)} exists. " <>
-      "Retry with a valid `vocation` slug."
-  end
-
-  # The space's blueprint names no default, so an omitted `vocation` has no
-  # answer — see `Nest.Agents.Supervisor.resolve_spawn_vocation/2`. The allowed
-  # list is included because it is the one thing that makes the retry easy: the
-  # model has to pass a slug, and a restricted space will refuse most guesses.
-  defp spawn_error_message({:vocation_required, allowed}) do
-    allowed_hint =
-      case allowed do
-        [] ->
-          # An *empty* list here means the space has no whitelist, i.e. it is
-          # unrestricted — not that nothing is allowed. Saying "you must name one
-          # and any will do" is a complete instruction; listing nothing is not.
-          "this space has no whitelist, so any vocation is allowed"
-
-        labels ->
-          "allowed: " <>
-            Enum.map_join(labels, ", ", fn {name, slug} -> "#{name} (#{slug})" end)
-      end
-
-    "Could not spawn agent: `vocation` is required — this space has no default " <>
-      "spawn vocation, so it cannot be omitted; #{allowed_hint}. Retry passing " <>
-      "one as `vocation`."
-  end
-
-  # An unsafe `name` is the likeliest way an LLM trips validation
-  # (`"code reviewer"`, `"Reviewer 2"`): `Agents.create_agent/3` returns the
-  # changeset from `PersistedAgent.changeset/2`, whose name rule is
-  # `[A-Za-z0-9_-]+`. Render that rule plainly — the catch-all below would
-  # dump a whole `#Ecto.Changeset<…>` struct into the model's context, which
-  # is both noisy and useless to it. (A duplicate name never arrives here:
-  # `Persistence.do_insert/1` translates the unique violation to
-  # `{:error, :duplicate_name}`.)
-  defp spawn_error_message(%Ecto.Changeset{errors: errors}) do
-    if Keyword.has_key?(errors, :name) do
-      "Could not spawn agent: the name must be non-empty and contain only " <>
-        "letters, digits, `_` and `-` (no spaces or slashes). " <>
-        "Retry with a different `name`."
-    else
-      "Could not spawn agent: the request was rejected (#{inspect(errors)})."
-    end
-  end
-
-  defp spawn_error_message(reason), do: "Could not spawn agent: #{inspect(reason)}"
 
   # `agents-list`: read the space's non-archived agents —
   # running or persisted-only — and serialize their name,
