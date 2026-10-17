@@ -366,6 +366,32 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       assert message =~ allowed_a.slug
     end
 
+    test "an omitted vocation is refused in a space with no blueprint at all", %{
+      space_id: space_id
+    } do
+      # The setup's space has no blueprint (`create_test_space/0`), so there is
+      # nothing to take a default from and the spawn is refused rather than
+      # guessing the caller's own vocation. This is the shape that broke
+      # `AgentsBatchTest`: its space is blueprint-less and its batch names no
+      # vocation, so no child was ever spawned and the test died on the
+      # `agent_created` broadcast that stopped arriving.
+      state = coordinator_state(space_id)
+      name = "noblueprint-#{System.unique_integer([:positive])}"
+
+      assert {:error, {:vocation_required, []}} =
+               Supervisor.spawn_agent_in_space(state, name)
+
+      refute Enum.member?(Agents.list_agents_for_space(space_id), name)
+
+      # An empty allowed list means the space is *unrestricted* — no whitelist,
+      # so anything goes — not that nothing is allowed. The text the model reads
+      # has to say which, or the retry is a guess.
+      message = BatchPlan.spawn_error_message({:vocation_required, []})
+      assert message =~ "`vocation` is required"
+      assert message =~ "any vocation is allowed"
+      refute message =~ "allowed: "
+    end
+
     test "an empty spawnable_vocations list is unrestricted" do
       vocation = fresh_vocation()
 

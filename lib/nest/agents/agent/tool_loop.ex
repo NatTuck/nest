@@ -255,16 +255,19 @@ defmodule Nest.Agents.Agent.ToolLoop do
     allowed_hint =
       case allowed do
         [] ->
-          "This space allows any vocation"
+          # An *empty* list here means the space has no whitelist, i.e. it is
+          # unrestricted — not that nothing is allowed. Saying "you must name one
+          # and any will do" is a complete instruction; listing nothing is not.
+          "this space has no whitelist, so any vocation is allowed"
 
         labels ->
-          "Allowed vocations: " <>
+          "allowed: " <>
             Enum.map_join(labels, ", ", fn {name, slug} -> "#{name} (#{slug})" end)
       end
 
-    "Could not spawn agent: `vocation` is required — this space's blueprint names " <>
-      "no default vocation, so it cannot be omitted. #{allowed_hint}; retry " <>
-      "passing one as `vocation`."
+    "Could not spawn agent: `vocation` is required — this space has no default " <>
+      "spawn vocation, so it cannot be omitted; #{allowed_hint}. Retry passing " <>
+      "one as `vocation`."
   end
 
   # An unsafe `name` is the likeliest way an LLM trips validation
