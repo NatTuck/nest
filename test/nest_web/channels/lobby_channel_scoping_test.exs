@@ -14,6 +14,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
 
   import ExUnit.CaptureLog
 
+  import NestWeb.LobbyChannelTestHelpers
+
   alias Nest.Accounts
   alias Nest.Accounts.AuthToken
   alias Nest.Accounts.Invite, as: InviteSchema
@@ -148,10 +150,14 @@ defmodule NestWeb.LobbyChannelScopingTest do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_space", %{
-          "name" => "later-space-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-        })
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "later-space-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
 
       assert_reply ref, :ok, %{"space_id" => new_space_id, "name" => new_name}, 500
       AgentTestHelpers.ensure_cleanup(new_name)
@@ -269,10 +275,14 @@ defmodule NestWeb.LobbyChannelScopingTest do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_space", %{
-          "name" => "per-user-space-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-        })
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "per-user-space-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
 
       assert_reply ref, :ok, %{"name" => new_name}, 500
       AgentTestHelpers.ensure_cleanup(new_name)
@@ -395,10 +405,14 @@ defmodule NestWeb.LobbyChannelScopingTest do
       second = join_as(alice)
 
       ref =
-        push(second, "create_space", %{
-          "name" => "second-session-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-        })
+        push(
+          second,
+          "create_space",
+          create_space_payload(%{
+            "name" => "second-session-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
 
       assert_reply ref, :ok, %{"space_id" => new_space_id, "name" => new_name}, 500
       AgentTestHelpers.ensure_cleanup(new_name)
@@ -518,10 +532,14 @@ defmodule NestWeb.LobbyChannelScopingTest do
       bob_socket = join_as(bob)
 
       ref =
-        push(alice_socket, "create_space", %{
-          "name" => "alice-later-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-        })
+        push(
+          alice_socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "alice-later-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
 
       assert_reply ref, :ok, %{"name" => new_name}, 500
       AgentTestHelpers.ensure_cleanup(new_name)

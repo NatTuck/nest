@@ -176,13 +176,16 @@ defmodule Nest.Agents.Agent.HistoryTest do
     } do
       seed_conversation(pid)
 
-      {result, _log} = run(space_id, name, %{"search" => "report"})
+      # The query is a phrase from the seeded assistant message, not just
+      # "report": the system prompt now says "…so you stop writing and report
+      # where things stand", so the single word would match index 0 too.
+      {result, _log} = run(space_id, name, %{"search" => "report is ready"})
 
       assert %ToolResult{name: "agents-history", is_error: false, content: content} = result
 
       assert %{
                "agent" => ^name,
-               "query" => "report",
+               "query" => "report is ready",
                "matches" => [match]
              } = Jason.decode!(content)
 

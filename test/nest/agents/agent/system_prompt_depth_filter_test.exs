@@ -7,7 +7,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
 
   * The `[Delegation]` section is gone from the system prompt —
     tool descriptions in the tool list are the only guidance.
-  * `compose_vocation_config/5` always returns the full
+  * `compose_vocation_config/6` always returns the full
     vocation tool list regardless of depth (clones must keep
     the parent's exact tool list).
   * The identity line reports the agent's name and depth.
@@ -16,6 +16,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
 
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Modes
   alias Nest.Sandbox.Mounts
   alias Nest.Vocations
 
@@ -42,9 +43,24 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
     {:ok, vocation: vocation}
   end
 
+  # Compose the way the application does, with this suite's own mounts: no
+  # workspace and no scratch, so none of the sections here reads a file and the
+  # mode only decides the caps such a read would be authorized with. The
+  # composer's argument order is
+  # `(vocation, mounts, context_limit_info, name, depth, mode)`.
+  defp compose(vocation, name, depth) do
+    SystemPrompt.compose_vocation_config(
+      vocation,
+      Mounts.new(nil, nil),
+      {nil, nil},
+      name,
+      depth,
+      Modes.default()
+    )
+  end
+
   test "the system prompt has no [Delegation] section", %{vocation: vocation} do
-    {prompt, _mode, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(vocation, Mounts.new(nil, nil), {nil, nil}, "root", 0)
+    {prompt, _tools, _vocation} = compose(vocation, "root", 0)
 
     refute prompt =~ "[Delegation]"
   end
@@ -54,14 +70,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
     max = Config.configured_max_depth()
 
     for depth <- [0, max - 1, max, max + 1] do
-      {_prompt, _mode, tools, _vocation} =
-        SystemPrompt.compose_vocation_config(
-          vocation,
-          Mounts.new(nil, nil),
-          {nil, nil},
-          "agent",
-          depth
-        )
+      {_prompt, tools, _vocation} = compose(vocation, "agent", depth)
 
       assert "agents-spawn" in tools
       assert "context-check" in tools
@@ -72,14 +81,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
   test "the identity line reports the agent's name and depth", %{vocation: vocation} do
     max = Config.configured_max_depth()
 
-    {prompt, _mode, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(
-        vocation,
-        Mounts.new(nil, nil),
-        {nil, nil},
-        "clever-raven",
-        2
-      )
+    {prompt, _tools, _vocation} = compose(vocation, "clever-raven", 2)
 
     assert prompt =~ ~s(Your name is "clever-raven")
     assert prompt =~ "at spawn depth 2 of #{max}"
@@ -87,22 +89,14 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
 
   test "the identity line carries a caveat that it may change when cloned",
        %{vocation: vocation} do
-    {prompt, _mode, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(vocation, Mounts.new(nil, nil), {nil, nil}, "bob", 1)
+    {prompt, _tools, _vocation} = compose(vocation, "bob", 1)
 
     assert prompt =~ "may change when cloned"
   end
 
   test "states the agent's own scratch directory in the sandbox spelling",
        %{vocation: vocation} do
-    {prompt, _mode, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(
-        vocation,
-        Mounts.new(nil, nil),
-        {nil, nil},
-        "clever-raven",
-        0
-      )
+    {prompt, _tools, _vocation} = compose(vocation, "clever-raven", 0)
 
     # The space dir is bound at /tmp, so the agent's own dir is
     # /tmp/<name>. Stated here, once, instead of in every path-taking
@@ -116,10 +110,11 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
   end
 
   test "omits the scratch section when there is no name", %{vocation: vocation} do
-    {prompt, _mode, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(vocation, Mounts.new(nil, nil), {nil, nil}, "", 0)
+    {prompt, _tools, _vocation} = compose(vocation, "", 0)
 
-    refute prompt =~ "scratch directory"
+    # The modes catalog mentions "your own scratch directory" too, so the
+    # assertion is the section's own sentence, not the phrase.
+    refute prompt =~ "Your own scratch directory is"
   end
 
   test "query/list/archive tools still appear in the tool list", %{vocation: vocation} do
@@ -128,14 +123,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
       | tools: ["agents"]
     }
 
-    {_prompt, _mode, tools, _vocation} =
-      SystemPrompt.compose_vocation_config(
-        tools_vocation,
-        Mounts.new(nil, nil),
-        {nil, nil},
-        "agent",
-        0
-      )
+    {_prompt, tools, _vocation} = compose(tools_vocation, "agent", 0)
 
     assert "agents-spawn" in tools
     assert "agents-query" in tools

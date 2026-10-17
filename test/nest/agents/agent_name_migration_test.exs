@@ -320,8 +320,15 @@ defmodule Nest.Agents.AgentNameMigrationTest do
   # migration rewrites. `opts[:extra]` appends text that is NOT one of those
   # renderings.
   defp insert_system_message(agent_id, name, opts \\ []) do
-    {prompt, _mode, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(vocation(), Mounts.new(nil, nil), {nil, nil}, name, 0)
+    {prompt, _tools, _vocation} =
+      SystemPrompt.compose_vocation_config(
+        vocation(),
+        Mounts.new(nil, nil),
+        {nil, nil},
+        name,
+        0,
+        Nest.Modes.act()
+      )
 
     insert_message(agent_id, 0, "system", prompt <> Keyword.get(opts, :extra, ""))
   end

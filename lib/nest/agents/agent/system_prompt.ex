@@ -3,8 +3,8 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   Composes the agent's initial system prompt from the
   vocation's base prompt and several contextual sections
   (the universal modes, the `[mode: compact]` compaction
-  contract, workspace, tool-call budget, context limit,
-  AGENTS.md).
+  contract, workspace, network access, tool-call budget,
+  context limit, AGENTS.md).
 
   Extracted from `Nest.Agents.Agent` so the GenServer
   module stays under the 500-line credo limit. The
@@ -186,19 +186,21 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
   # Every prompt section that only makes sense when the agent can call
   # tools: the agent's own scratch directory (reached with `file-*` /
-  # `shell-cmd`), the workspace/tool working directory and the tool-call
-  # budget. Gathered here so a tool-less vocation (e.g. Chat) gets a
-  # prompt with no dangling tool references — it cannot reach a scratch
-  # directory, so telling it about one would be a dangling reference too.
+  # `shell-cmd`), the workspace/tool working directory, the space's network
+  # access and the tool-call budget. Gathered here so a tool-less vocation
+  # (e.g. Chat) gets a prompt with no dangling tool references — it cannot
+  # reach a scratch directory or the network, so telling it about either
+  # would be a dangling reference too.
   #
   # Ordering is load-bearing for the prompt's bytes: the scratch sentence
-  # follows the identity line, then the working directory.
+  # follows the identity line, then the working directory, then the network.
   defp tool_sections([], _mounts, _name), do: ""
 
   defp tool_sections(_tools, mounts, name),
     do:
       scratch_section(name) <>
         workspace_section(Mounts.workspace(mounts)) <>
+        network_section(mounts) <>
         tool_call_limit_section()
 
   # Tell the agent its name and spawn depth. Non-clones and
@@ -243,6 +245,42 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
   defp workspace_section(path),
     do: "\n\nWorkspace and tool working directory: #{path}\n"
+
+  # Whether the agent can reach the network is a *space* property, not a mode's:
+  # it is resolved once at agent start and carried on the mounts
+  # (`Nest.Spaces.network_access`), and `Nest.Sandbox` injects it as the call's
+  # `"net"` cap. It is stated here, next to the other tool-gated lines, rather
+  # than in the modes section, so it is said once and only to an agent that can
+  # act on it — a tool-less agent has no command that could reach the network.
+  #
+  # It is a property of the agent and its space, so the bytes are the same on
+  # every composition for a given agent, which is what keeps the system message
+  # cache-safe.
+  #
+  # A `"none"` space has no sandbox, so the setting cannot be enforced there:
+  # the sentence has to say so rather than claim a restriction that does not
+  # exist (`Nest.Sandbox.Backend.None`'s caps are unenforceable by
+  # construction — see `notes/sandbox-backends.md`).
+  defp network_section(mounts) do
+    "\n\n" <> network_sentence(Mounts.backend(mounts), Mounts.network_access(mounts))
+  end
+
+  defp network_sentence("none", network_access) do
+    "Network access is #{network_word(network_access)} for this space, but this space " <>
+      "has no sandbox to enforce it: your commands can reach the network either way.\n"
+  end
+
+  defp network_sentence(_backend, true) do
+    "Network access is enabled for this space: your commands can reach the network.\n"
+  end
+
+  defp network_sentence(_backend, false) do
+    "Network access is disabled for this space: the sandbox blocks your commands " <>
+      "from reaching the network.\n"
+  end
+
+  defp network_word(true), do: "enabled"
+  defp network_word(false), do: "disabled"
 
   defp tool_call_limit_section do
     max = Config.configured_max_tool_iterations()

@@ -52,7 +52,11 @@ defmodule Nest.Agents.SupervisorSpawnTest do
     {:ok, ^name} =
       Agents.create_agent(space_id, test_model(),
         name: name,
-        vocation_id: AgentTestHelpers.vocation_id_for_test()
+        vocation_id: AgentTestHelpers.vocation_id_for_test(),
+        # Every vocation requires a workspace now
+        # (`Vocations.requires_workspace?/1` is a constant), and a spawned child
+        # inherits its parent's. Without one the coordinator could not spawn.
+        workspace_path: AgentTestHelpers.default_test_workspace()
       )
 
     AgentTestHelpers.ensure_cleanup(name)
@@ -363,27 +367,29 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       name = "spawn-rollback-#{System.unique_integer([:positive])}"
       space_dir = TmpSpace.space_dir(space_id, "bwrap")
 
-      # Make the child's `init/1` fail deterministically: `TmpSpace.create/3`
-      # does `File.mkdir_p!` on the child's own scratch dir, so a *file*
-      # where that directory belongs raises `File.Error` during the start.
+      # Make the spawn fail deterministically: a *file* where the child's own
+      # scratch directory belongs. A fresh child's prompt is composed in
+      # `PreSpawn` (so the index-0 system row can be written), and composing it
+      # stages its `AGENTS.md` read through that scratch, so `File.mkdir_p!`
+      # refuses the file. That happens *before* the row is written, so the
+      # spawn fails with nothing left behind. (A clone does not compose in
+      # `pre_spawn` — see `SupervisorSubagentTest`'s sibling test, which fails
+      # in `init/1` and rolls a written row back; a fresh spawn cannot reach
+      # `init/1` with a blocked scratch.)
       File.mkdir_p!(space_dir)
       blocker = Path.join(space_dir, name)
       File.write!(blocker, "not a directory")
 
       on_exit(fn -> File.rm(blocker) end)
 
-      log =
-        ExUnit.CaptureLog.capture_log(fn ->
-          assert {:error, _reason} = Supervisor.spawn_agent_in_space(state, name)
-        end)
+      assert_raise File.Error, fn -> Supervisor.spawn_agent_in_space(state, name) end
 
-      # The row the spawn pre-spawned is gone (and its system message with
-      # it), so the space holds only the coordinator — and the name is free
-      # again rather than blocked by an orphan.
+      # The row the spawn would have pre-spawned is absent (and its system
+      # message with it), so the space holds only the coordinator — and the
+      # name is free again rather than blocked by an orphan.
       assert Nest.Persistence.fetch_agent(space_id, name) == {:error, :not_found}
       assert agent_count(space_id) == 1
       assert message_count(space_id) == 1
-      assert log =~ "failed to start"
 
       File.rm!(blocker)
 

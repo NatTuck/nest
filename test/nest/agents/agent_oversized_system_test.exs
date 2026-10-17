@@ -234,7 +234,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # helper only loads the struct into the attrs when
       # `vocation_id` is a non-zero integer AND the helper
       # wants the struct. Here we override `vocation: nil`
-      # explicitly to exercise the `compose_vocation_config/5`
+      # explicitly to exercise the `compose_vocation_config/6`
       # nil-vocation clause. `Dispatch.compaction_plan/1`'s
       # `system_prompt/2` falls back to extracting the rendered text
       # from `messages[0]` so the compaction can still proceed

@@ -46,7 +46,10 @@ defmodule Nest.SpacesTest do
         name: "phase2-#{System.unique_integer([:positive])}",
         slug: "phase2-#{System.unique_integer([:positive])}",
         blueprint_id: blueprint.id,
-        model: %{name: "qwen3.5-plus", provider: "model-studio"}
+        model: %{name: "qwen3.5-plus", provider: "model-studio"},
+        # Every space needs a workspace now (`Vocations.requires_workspace?/1`
+        # is a constant).
+        workspace_path: AgentTestHelpers.default_test_workspace()
       }
 
       assert {:ok, %Space{} = space, agent_name} =
@@ -74,7 +77,8 @@ defmodule Nest.SpacesTest do
         slug: "phase2-override-#{System.unique_integer([:positive])}",
         blueprint_id: blueprint.id,
         vocation: explicit_vocation.slug,
-        model: %{name: "qwen3.5-plus", provider: "model-studio"}
+        model: %{name: "qwen3.5-plus", provider: "model-studio"},
+        workspace_path: AgentTestHelpers.default_test_workspace()
       }
 
       assert {:ok, %Space{} = space, agent_name} =
@@ -107,7 +111,8 @@ defmodule Nest.SpacesTest do
       attrs = %{
         name: "no-blueprint-#{System.unique_integer([:positive])}",
         vocation: vocation.slug,
-        model: %{name: "qwen3.5-plus", provider: "model-studio"}
+        model: %{name: "qwen3.5-plus", provider: "model-studio"},
+        workspace_path: AgentTestHelpers.default_test_workspace()
       }
 
       assert {:ok, %Space{blueprint_id: nil} = space, agent_name} =
@@ -147,7 +152,8 @@ defmodule Nest.SpacesTest do
         name: "My Space #{System.unique_integer([:positive])}",
         slug: "my space",
         vocation: vocation.slug,
-        model: %{name: "qwen3.5-plus", provider: "model-studio"}
+        model: %{name: "qwen3.5-plus", provider: "model-studio"},
+        workspace_path: AgentTestHelpers.default_test_workspace()
       }
 
       assert {:error, %Ecto.Changeset{data: %Space{}} = changeset} =
@@ -170,7 +176,8 @@ defmodule Nest.SpacesTest do
       attrs = %{
         name: "My Space #{System.unique_integer([:positive])}",
         vocation: vocation.slug,
-        model: %{name: "qwen3.5-plus", provider: "model-studio"}
+        model: %{name: "qwen3.5-plus", provider: "model-studio"},
+        workspace_path: AgentTestHelpers.default_test_workspace()
       }
 
       assert {:ok, %Space{} = space, agent_name} =
@@ -446,7 +453,8 @@ defmodule Nest.SpacesTest do
       name: "blueprint-attrs-#{System.unique_integer([:positive])}",
       slug: "blueprint-attrs-#{System.unique_integer([:positive])}",
       blueprint_id: blueprint_id,
-      model: %{name: "qwen3.5-plus", provider: "model-studio"}
+      model: %{name: "qwen3.5-plus", provider: "model-studio"},
+      workspace_path: AgentTestHelpers.default_test_workspace()
     }
   end
 

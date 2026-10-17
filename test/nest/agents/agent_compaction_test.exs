@@ -441,7 +441,7 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       # Use a real Programmer vocation so the compaction
       # re-renders the system prompt (proving the
-      # `compose_vocation_config/5` path runs). Tests
+      # `compose_vocation_config/6` path runs). Tests
       # without a real vocation also pass — the
       # re-rendered system is just absent — but this
       # exercises the full code path.

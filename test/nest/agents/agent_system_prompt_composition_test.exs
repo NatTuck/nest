@@ -12,7 +12,11 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
   import Nest.Test.TmpCleanup
 
+  alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.SystemPrompt
   alias Nest.LLM.MockClient
+  alias Nest.Modes
+  alias Nest.Sandbox.Mounts
   alias Nest.Vocations
 
   setup :verify_on_exit!
@@ -73,10 +77,9 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       assert system_prompt =~ "**`plan`**"
       assert system_prompt =~ "**`act`**"
       assert system_prompt =~ "shown on every message you receive"
-      # This space can reach the network and its sandbox enforces `plan`, so the
-      # one space-specific sentence says the restriction is real. (The *network*
-      # is no longer described here: it is the space's, not a mode's, so a mode
-      # section that mentioned it would be lying.)
+      # The space's sandbox enforces `plan`, so the one space-specific sentence
+      # in the modes section says the restriction is real. (The *network* is not
+      # a mode's — it is the space's, and the tool sections below state it.)
       assert system_prompt =~ "is enforced by the sandbox"
       refute system_prompt =~ "cannot enforce"
       # The vocation's own per-mode description is no longer rendered anywhere:
@@ -84,6 +87,16 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       refute system_prompt =~ "You're clear to edit the project in the workspace."
 
       assert system_prompt =~ "\n\nWorkspace and tool working directory: #{workspace}"
+
+      # The network is a space property, so the tool sections state it. This
+      # space is a bwrap space with the column's `true` default, so the setting
+      # is a real permission rather than one the sandbox cannot enforce.
+      assert system_prompt =~ "Network access is enabled for this space"
+
+      # The identity line is composed by `PreSpawn` from the attrs the start
+      # path built, so this pins that path's argument order: a transposed
+      # `depth`/`mode` renders the mode where the depth belongs.
+      assert system_prompt =~ "at spawn depth 0 of #{Config.configured_max_depth()}"
       # `compact` is rendered next to the modes, with
       # `Vocations.compact_description/0` as the body. The `[mode: compact]`
       # prefix lives only in the per-call suffix at runtime, not in the initial
@@ -178,7 +191,9 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       # `SystemPrompt.tool_sections/3`).
       refute system_prompt =~ "Your own scratch directory"
       refute system_prompt =~ "errors in tool calls"
-      refute system_prompt =~ "Network disabled"
+      # The network sentence is tool-gated too: a tool-less agent has no command
+      # that could reach the network.
+      refute system_prompt =~ "Network access"
       refute system_prompt =~ ~s(Read only "/")
     end
 
@@ -306,6 +321,55 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       assert system_prompt =~ "resolved from default"
       refute system_prompt =~ "may differ"
     end
+  end
+
+  describe "the space's network access" do
+    # The network is the *space's*, not a mode's, so it is stated in the
+    # tool-gated sections. Composed directly rather than through a started agent
+    # because the `"none"` case is what the sentence has to get right and no
+    # start path here builds a `"none"` space.
+    test "states the setting, and that a `none` space cannot enforce it" do
+      {:ok, vocation} =
+        Vocations.create_vocation(%{
+          name: "TestNetwork-#{System.unique_integer([:positive])}",
+          description: "Test",
+          system_prompt: "Base.",
+          tools: ["shell"],
+          modes: %{}
+        })
+
+      # An enforcing backend states the setting as a permission or a rule.
+      assert compose_for(vocation, "bwrap", true) =~ "Network access is enabled for this space"
+      assert compose_for(vocation, "bwrap", false) =~ "Network access is disabled for this space"
+      refute compose_for(vocation, "bwrap", true) =~ "cannot enforce"
+
+      # A `"none"` space has no sandbox, so it names the setting *and* says it
+      # cannot be enforced — it must not claim a restriction that is not there.
+      for {value, word} <- [{true, "enabled"}, {false, "disabled"}] do
+        prompt = compose_for(vocation, "none", value)
+
+        assert prompt =~ "Network access is #{word} for this space"
+        assert prompt =~ "no sandbox to enforce it"
+      end
+    end
+  end
+
+  # Compose the prompt for a tool-capable vocation on `backend`, with the
+  # space's network setting: no workspace and no scratch, so no section here
+  # reads a file and the mounts only decide the network and enforcement
+  # sentences.
+  defp compose_for(vocation, backend, network_access) do
+    {prompt, _tools, _vocation} =
+      SystemPrompt.compose_vocation_config(
+        vocation,
+        Mounts.new(nil, nil, backend, nil, network_access),
+        {nil, nil},
+        "agent",
+        0,
+        Modes.act()
+      )
+
+    prompt
   end
 
   # A real workspace directory outside /tmp: the scratch dir is bound at /tmp,

@@ -204,10 +204,11 @@ defmodule Nest.Agents.Agent.PreSpawn do
         prompt_mounts(attrs, name),
         {context_limit, context_limit_source},
         name,
-        # The mode the child will run in. `Nest.Modes.default/0` until the
-        # agent's own persisted mode is threaded through (part B of stage 3).
-        Map.get(attrs, :mode, Nest.Modes.default()),
-        depth
+        depth,
+        # The mode the child will run in. It only decides the caps the
+        # `AGENTS.md` read is authorized with; the agent's own mode is a runtime
+        # property, and `PreSpawn` is where it is derived.
+        Map.get(attrs, :mode, Nest.Modes.default())
       )
 
     case system_prompt do

@@ -4,6 +4,8 @@ defmodule NestWeb.LobbyChannelTest do
   """
   use NestWeb.ChannelCase, async: true
 
+  import NestWeb.LobbyChannelTestHelpers
+
   alias Nest.Accounts
   alias Nest.Accounts.AuthToken
   alias Nest.Accounts.Invite, as: InviteSchema
@@ -376,10 +378,14 @@ defmodule NestWeb.LobbyChannelTest do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_space", %{
-          "name" => "test-space-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-        })
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "test-space-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
 
       assert_reply ref, :ok, %{"space_id" => space_id, "name" => name, "slug" => slug}, 500
       # The 500ms timeouts on the create_space `assert_reply` calls in
@@ -422,10 +428,14 @@ defmodule NestWeb.LobbyChannelTest do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_space", %{
-          "name" => "test-space-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-        })
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "test-space-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
 
       assert_reply ref, :ok, %{"space_id" => space_id, "name" => name, "slug" => _slug}, 500
       AgentTestHelpers.ensure_cleanup(name)
@@ -470,11 +480,15 @@ defmodule NestWeb.LobbyChannelTest do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_space", %{
-          "name" => "blueprint-space-#{System.unique_integer([:positive])}",
-          "blueprint_id" => blueprint.id,
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-        })
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "blueprint-space-#{System.unique_integer([:positive])}",
+            "blueprint_id" => blueprint.id,
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
 
       assert_reply ref, :ok, %{"space_id" => space_id, "name" => name, "slug" => _slug}, 500
       AgentTestHelpers.ensure_cleanup(name)
@@ -487,11 +501,15 @@ defmodule NestWeb.LobbyChannelTest do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_space", %{
-          "name" => "none-space-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
-          "sandbox_backend" => "none"
-        })
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "none-space-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+            "sandbox_backend" => "none"
+          })
+        )
 
       assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}, 500
       AgentTestHelpers.ensure_cleanup(name)
@@ -503,11 +521,15 @@ defmodule NestWeb.LobbyChannelTest do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_space", %{
-          "name" => "net-space-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
-          "network_access" => false
-        })
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "net-space-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+            "network_access" => false
+          })
+        )
 
       assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}, 500
       AgentTestHelpers.ensure_cleanup(name)
@@ -519,11 +541,15 @@ defmodule NestWeb.LobbyChannelTest do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_space", %{
-          "name" => "bad-backend-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
-          "sandbox_backend" => "podman"
-        })
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "bad-backend-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+            "sandbox_backend" => "podman"
+          })
+        )
 
       assert_reply ref, :error, %{"reason" => "invalid_sandbox_backend"}, 500
     end
@@ -555,10 +581,14 @@ defmodule NestWeb.LobbyChannelTest do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_space", %{
-          "name" => "net-toggle-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-        })
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "net-toggle-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
 
       assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}, 500
       AgentTestHelpers.ensure_cleanup(name)
