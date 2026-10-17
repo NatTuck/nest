@@ -93,10 +93,11 @@ defmodule Nest.Agents.AgentTestHelpers do
   `_build/tmp`, outside `/tmp` (the scratch bind is mounted at `/tmp` and would
   shadow a `/tmp`-rooted workspace), removed when the test ends.
 
-  Every agent needs one now — `Vocations.requires_workspace?/1` is a constant, so
-  a space with a root agent, an agent's own start and a spawn all require a
-  workspace. A test that *means* "no workspace" passes `workspace_path: nil`
-  explicitly, which both `Map.get/3` call sites here honour.
+  Every space needs one now: a space's workspace is a property its agents
+  inherit, `Nest.Spaces.Space.create_changeset/2` requires it, and the `act`
+  mode — which every agent can be in — writes it. A test that *means* "no
+  workspace" passes `workspace_path: nil` explicitly, which both `Map.get/3`
+  call sites here honour.
   """
   @spec default_test_workspace() :: String.t()
   def default_test_workspace do
@@ -142,17 +143,19 @@ defmodule Nest.Agents.AgentTestHelpers do
   The row is rolled back by the sandbox on test exit.
   """
   def create_test_space(attrs \\ %{}) do
-    {:ok, space} =
-      Spaces.create_space(
-        nil,
-        Map.merge(
-          %{
-            name: "test-space-#{System.unique_integer([:positive])}",
-            slug: "test-space-#{System.unique_integer([:positive])}"
-          },
-          attrs
-        )
-      )
+    params =
+      %{
+        name: "test-space-#{System.unique_integer([:positive])}",
+        slug: "test-space-#{System.unique_integer([:positive])}"
+      }
+      |> Map.merge(attrs)
+      # A space requires a workspace (`Nest.Spaces.Space.create_changeset/2`).
+      # `put_new_lazy` so a test that *means* "no workspace" keeps its explicit
+      # `workspace_path: nil`, and so the directory is only made when one is
+      # actually wanted.
+      |> Map.put_new_lazy(:workspace_path, &default_test_workspace/0)
+
+    {:ok, space} = Spaces.create_space(nil, params)
 
     Process.put(@space_id_key, space.id)
     {:ok, space.id}

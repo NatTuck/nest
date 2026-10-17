@@ -18,6 +18,7 @@ defmodule Nest.Agents.AgentNameMigrationTest do
   import Ecto.Query
 
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.Sandbox.Mounts
 
   @migration_file "priv/repo/migrations/20261011000000_sanitize_agent_names.exs"
@@ -256,6 +257,7 @@ defmodule Nest.Agents.AgentNameMigrationTest do
   defp space do
     {:ok, space} =
       Nest.Spaces.create_space(nil, %{
+        workspace_path: AgentTestHelpers.default_test_workspace(),
         name: "sanitize-names-#{System.unique_integer([:positive])}",
         slug: "sanitize-names-#{System.unique_integer([:positive])}"
       })

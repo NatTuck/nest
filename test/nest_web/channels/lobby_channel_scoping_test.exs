@@ -62,6 +62,7 @@ defmodule NestWeb.LobbyChannelScopingTest do
   defp owned_space_id do
     {:ok, %Space{} = space} =
       Spaces.create_space(Process.get(:lobby_scoping_test_user_id), %{
+        workspace_path: AgentTestHelpers.default_test_workspace(),
         name: "owned-#{System.unique_integer([:positive])}",
         slug: "owned-#{System.unique_integer([:positive])}"
       })
@@ -582,6 +583,7 @@ defmodule NestWeb.LobbyChannelScopingTest do
   defp owned_space(user) do
     {:ok, %Space{} = space} =
       Spaces.create_space(user.id, %{
+        workspace_path: AgentTestHelpers.default_test_workspace(),
         name: "owned-#{System.unique_integer([:positive])}",
         slug: "owned-#{System.unique_integer([:positive])}"
       })

@@ -45,9 +45,10 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   agent start and carried on `Nest.Sandbox.Mounts`, and
   `Nest.Sandbox.with_network_access/2` injects it at caps-resolution time (called
   from `Nest.ProjectConfig.resolve_caps/2`, the one funnel both resolution paths
-  share). A mode's own `net` key is **dead data** — never read, never rendered
-  into the prompt — and a value naming no space keeps `default_caps/0`'s
-  `net: false`. Do not add a second place that reads either.
+  share). There is no per-mode `net` key left to read: `vocations.modes` is gone,
+  and `Nest.Modes`' caps maps carry `net` only as a placeholder nothing reads.
+  A value naming no space keeps `default_caps/0`'s `net: false`. Do not add a
+  second place that reads either.
 - `bwrap` (the default) enforces the mode's caps with binds and namespaces.
   `docker` runs **bwrap inside a container the space shares**, and the two bind
   the *same* list (`Nest.Sandbox.Binds`) — over the host there, over the derived
@@ -164,6 +165,18 @@ are mid-task in `act`.
 - `set_mode` rides the send tools (`agents-query`, `agents-send`,
 `agents-batch` — an enum of `"mine" | "plan" | "act"`) rather than being its own
 tool, so the change and the instruction that depends on it arrive together.
+- **The modes are not in the database.** `vocations.modes` no longer exists: a
+vocation is its prompt and its tools, and the modes every agent may be in are
+`Nest.Modes.names/0`. A blueprint is where the per-space defaults live —
+`default_mode` (the mode a new agent starts in), `default_net` (the space's
+`network_access`, used only when the caller names none) and
+`default_spawnable_vocation` (what `agents-spawn`/`agents-batch` use when the
+caller names no `vocation`; with none set the spawn is **refused**, naming the
+missing argument, rather than silently getting the caller's own vocation).
+- **A space requires a workspace on create** (`Space.create_changeset/2`): the
+workspace is a space property its agents inherit, and `act` mode writes it. The
+update path stays permissive, so `rename_space/1` still works on a row a previous
+build left without one.
 
 
 ### UI Transparency

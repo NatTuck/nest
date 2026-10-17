@@ -11,6 +11,7 @@ defmodule Nest.PersistenceTestHelpers do
   don't have to thread `space_id` through every fixture.
   """
 
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.PersistedAgent
   alias Nest.Spaces
   alias Nest.Vocations
@@ -44,6 +45,7 @@ defmodule Nest.PersistenceTestHelpers do
       nil ->
         {:ok, space} =
           Spaces.create_space(nil, %{
+            workspace_path: AgentTestHelpers.default_test_workspace(),
             name: "persistence-test-space-#{System.unique_integer([:positive])}",
             slug: "persistence-test-space-#{System.unique_integer([:positive])}"
           })

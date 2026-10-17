@@ -327,12 +327,16 @@ the agent as `Execution failed: …`; it is never a half-built sandbox.
 
 ## Testing
 
-* A docker space with a *workspace* cannot be created in the suite at all: the
-  system prompt reads `AGENTS.md` through the backend, and that exec is a real
-  `docker exec` (the `docker_runner` stub covers the setup calls, not the command
-  the agent runs — see `config/test.exs`). The call sites that build the prompt's
-  mounts are therefore covered through `TmpSpace.prompt_mounts/4` and through a
-  docker space *without* a workspace.
+* A docker space's *start* reaches the daemon now. Every space has a workspace
+  (`Space.create_changeset/2`), so composing the prompt attempts the `AGENTS.md`
+  read — the literal `docker exec -i …` `Docker.command/3` builds, which is the
+  one call the inert `docker_runner` in `config/test.exs` does **not** cover. It
+  fails against a container that is not there, and
+  `SystemPrompt.agents_md_section/2`'s `else` clause swallows that (a project
+  with no `AGENTS.md` is the ordinary case), so nothing is printed and no
+  container is left behind. The call sites that build the prompt's mounts are
+  covered through `TmpSpace.prompt_mounts/4` and through that start path
+  (`none_scratch_name_test.exs`), which reads the mounts it built.
 * Everything that decides *what* to run is pure and asserted exactly:
   `Docker.container_name/1`, `layout/3`, `image_tag/1`, `dockerfile/1`,
   `container_binds/1`, `run_args/4`, and the command line (including the payload
