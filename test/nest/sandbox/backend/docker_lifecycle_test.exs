@@ -263,6 +263,21 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
   end
 
   describe "remove_space/2" do
+    test "removes the space's host staging directory, so nothing is left behind" do
+      # The staging directory is the one thing this backend leaves on the host, and
+      # it is per space. `stage_script/2` recreates it lazily.
+      dir = stage_dir()
+      File.mkdir_p!(dir)
+      assert File.dir?(dir)
+      on_exit(fn -> File.rm_rf(Path.dirname(dir)) end)
+
+      runner = scripted_runner(%{["ps"] => {"", 0}, ["rm"] => {"", 0}})
+
+      assert :ok = Docker.remove_space(space_id(), runner: runner)
+
+      refute File.exists?(Path.dirname(dir))
+    end
+
     test "removes only this space's containers, by name" do
       mine = "nest-space-#{space_id()}-nest_dev"
       other_installation = "nest-space-#{space_id()}-nest_test"
