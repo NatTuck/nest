@@ -54,13 +54,7 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
         name: "WaitTurn #{System.unique_integer([:positive])}",
         description: "Wait tools for the turn-level tests",
         system_prompt: "Wait for peers in this space.",
-        tools: ["context", "agents", "shell"],
-        modes: %{
-          "chat" => %{
-            "description" => "Chat",
-            "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp"]}}
-          }
-        }
+        tools: ["context", "agents", "shell"]
       })
 
     {pid, name} =

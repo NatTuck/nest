@@ -61,8 +61,11 @@ defmodule Nest.TestSupport.ExecutorTestHelpers do
   end
 
   @doc """
-  A vocation. Its mode list is empty on purpose: the modes are code constants
-  (`Nest.Modes`), so nothing reads a vocation's modes and the struct carries none.
+  A placeholder vocation for the drain tests. It carries nothing: the modes are
+  universal code constants (`Nest.Modes`), so a vocation declares none, and
+  `ChatPipeline.resolve_mode_and_caps/3` ignores the vocation entirely — "plan"
+  resolves to "plan" and an unknown mode to the default because those are the
+  constants, not because this struct says so.
   """
   def vocation do
     %Nest.Vocations.Vocation{}

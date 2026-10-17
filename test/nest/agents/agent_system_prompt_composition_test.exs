@@ -35,23 +35,12 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
   describe "vocation system_prompt composition" do
     test "vocation system_prompt gets the universal modes section and a [Workspace] section" do
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
       {:ok, vocation} =
         Vocations.create_vocation(%{
           name: "TestSysPrompt-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "Base prompt.",
-          tools: ["shell"],
-          modes: %{
-            "build" => %{
-              "description" => "You're clear to edit the project in the workspace.",
-              "caps" => valid_caps
-            }
-          }
+          tools: ["shell"]
         })
 
       workspace = new_ws("test-workspace")
@@ -107,23 +96,12 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
     end
 
     test "no workspace line when workspace_path is nil" do
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
       {:ok, vocation} =
         Vocations.create_vocation(%{
           name: "TestNoWorkspace-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "Chat only.",
-          tools: ["shell"],
-          modes: %{
-            "chat" => %{
-              "description" => "General conversation.",
-              "caps" => valid_caps
-            }
-          }
+          tools: ["shell"]
         })
 
       # `workspace_path: nil` on purpose: the fixture otherwise supplies one, and
@@ -144,23 +122,12 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
     end
 
     test "a tool-less vocation gets no tool sections or caps, but keeps compact guidance" do
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
       {:ok, vocation} =
         Vocations.create_vocation(%{
           name: "TestNoTools-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "Tool-less.",
-          tools: [],
-          modes: %{
-            "chat" => %{
-              "description" => "General conversation.",
-              "caps" => valid_caps
-            }
-          }
+          tools: []
         })
 
       {pid, _agent_id} =
@@ -198,23 +165,12 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
     end
 
     test "compact-mode body lives once in the [Available modes] list" do
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
       {:ok, vocation} =
         Vocations.create_vocation(%{
           name: "TestCompactPar-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "Base.",
-          tools: [],
-          modes: %{
-            "chat" => %{
-              "description" => "Just chatting.",
-              "caps" => valid_caps
-            }
-          }
+          tools: []
         })
 
       {pid, _agent_id} =
@@ -247,18 +203,12 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       # priv/config.toml (512000). The system prompt should
       # render the "resolved from config" line, not the
       # "default" caveat.
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
       {:ok, vocation} =
         Vocations.create_vocation(%{
           name: "TestCtxCfg-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "x",
-          tools: [],
-          modes: %{"chat" => %{"description" => "Chat", "caps" => valid_caps}}
+          tools: []
         })
 
       {pid, _agent_id} =
@@ -295,18 +245,12 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       # without a hit there, the context-limit resolution falls
       # back to the 128k `:default` floor, and the prompt still
       # renders a context-limit section (sourced from `default`).
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
       {:ok, vocation} =
         Vocations.create_vocation(%{
           name: "TestCtxDef-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "x",
-          tools: [],
-          modes: %{"chat" => %{"description" => "Chat", "caps" => valid_caps}}
+          tools: []
         })
 
       {pid, _agent_id} =
@@ -334,8 +278,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
           name: "TestNetwork-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "Base.",
-          tools: ["shell"],
-          modes: %{}
+          tools: ["shell"]
         })
 
       # An enforcing backend states the setting as a permission or a rule.

@@ -60,16 +60,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
           name: "TestSystemRepeat-#{System.unique_integer([:positive])}",
           description: "Default for system-repeat tests",
           system_prompt: "Default system prompt #{System.unique_integer([:positive])}",
-          tools: ["context"],
-          modes: %{
-            "chat" => %{
-              "description" => "General conversation.",
-              "caps" => %{
-                "net" => false,
-                "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
-              }
-            }
-          }
+          tools: ["context"]
         },
         attrs
       )

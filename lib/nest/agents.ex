@@ -219,7 +219,7 @@ defmodule Nest.Agents do
   defp get_vocation_info(vocation_id) do
     case Vocations.get_vocation(vocation_id) do
       nil -> nil
-      v -> %{"id" => v.id, "name" => v.name, "slug" => v.slug, "modes" => v.modes}
+      v -> %{"id" => v.id, "name" => v.name, "slug" => v.slug}
     end
   end
 

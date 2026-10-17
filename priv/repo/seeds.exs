@@ -3,10 +3,10 @@
 #     mix run priv/repo/seeds.exs
 #
 # Idempotent: uses `Vocations.upsert_vocation/1` so re-running
-# this script updates existing rows (system prompts, modes,
-# tools) in place rather than failing on duplicate names or
-# creating a second row. Safe to re-run after editing any
-# vocation field below.
+# this script updates existing rows (system prompts, tools) in
+# place rather than failing on duplicate names or creating a
+# second row. Safe to re-run after editing any vocation field
+# below.
 #
 # Inside the script, you can read and write to any of your
 # repositories directly:
@@ -29,31 +29,21 @@ all_groups = ["file", "shell", "context", "agents"]
 
 # Default - minimal vocation for agents without a specific role.
 # Used as the fallback for any test or runtime path that needs a
-# vocation but doesn't care which one. Single "chat" mode with the
-# context tools only (no filesystem, no network).
+# vocation but doesn't care which one. The context tools only (no
+# filesystem, no network).
 {:ok, _default_vocation} =
   Vocations.upsert_vocation(%{
     name: "Default",
     description: "A minimal default vocation for agents without a specific role",
     system_prompt: "You are a helpful assistant.",
-    tools: ["context", "agents"],
-    modes: %{
-      "chat" => %{
-        "description" => "General conversation.",
-        "caps" => %{
-          "net" => false,
-          "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
-        }
-      }
-    }
+    tools: ["context", "agents"]
   })
 
 # Programmer - code-focused agent with tools and workspace.
-# Two modes:
-#   - "build": can read/write the workspace, run shell commands,
-#              and access the network (for fetching docs, packages, etc.)
-#   - "plan":  read-only; explore the workspace without making changes
-# Network is enabled in both modes.
+# The modes are universal (`Nest.Modes`): `plan` writes only the
+# agent's scratch, `act` also writes the workspace, and whether the
+# network is reachable is the *space's* `network_access`, not the
+# vocation's.
 {:ok, _} =
   Vocations.upsert_vocation(%{
     name: "Programmer",
@@ -76,29 +66,7 @@ all_groups = ["file", "shell", "context", "agents"]
     useful outputs with head, tail, grep, or similar. Never throw away output for commands 
     that cost significant time or access remote APIs.
     """,
-    tools: all_groups,
-    modes: %{
-      "build" => %{
-        "description" => """
-        You have write access to the workspace. You can make modifications as appropriate. 
-        Don't make extra changes the user didn't request.
-        """,
-        "caps" => %{
-          "net" => true,
-          "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
-        }
-      },
-      "plan" => %{
-        "description" => """
-        You have read-only access to the workspace. You are free to make tool calls, but workspace 
-        writes will fail because you're supposed to be inspecting the workspace but not changing it right now.
-        """,
-        "caps" => %{
-          "net" => true,
-          "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
-        }
-      }
-    }
+    tools: all_groups
   })
 
 # ---- Role vocations ----
@@ -112,16 +80,7 @@ all_groups = ["file", "shell", "context", "agents"]
     name: "Chat",
     description: "A general-purpose conversational agent.",
     system_prompt: "You are a helpful assistant.",
-    tools: [],
-    modes: %{
-      "chat" => %{
-        "description" => "General conversation.",
-        "caps" => %{
-          "net" => false,
-          "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
-        }
-      }
-    }
+    tools: []
   })
 
 # Game Master — runs a tabletop RPG campaign.
@@ -133,16 +92,7 @@ all_groups = ["file", "shell", "context", "agents"]
     You are a tabletop RPG game master. Narrate the world, run NPCs, and 
     arbitrate the rules.
     """,
-    tools: all_groups,
-    modes: %{
-      "chat" => %{
-        "description" => "General conversation.",
-        "caps" => %{
-          "net" => true,
-          "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
-        }
-      }
-    }
+    tools: all_groups
   })
 
 # Head TA — coordinates assignment grading and manages Grader agents.
@@ -160,23 +110,7 @@ all_groups = ["file", "shell", "context", "agents"]
       Make sure procedures are followed and that the intent of the procedures
       are achieved.
     """,
-    tools: all_groups,
-    modes: %{
-      "plan" => %{
-        "description" => "Read-only access to workspace.",
-        "caps" => %{
-          "net" => true,
-          "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
-        }
-      },
-      "act" => %{
-        "description" => "Full workspace access.",
-        "caps" => %{
-          "net" => true,
-          "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
-        }
-      }
-    }
+    tools: all_groups
   })
 
 # Grader — evaluates individual submissions against rubrics.
@@ -191,23 +125,7 @@ all_groups = ["file", "shell", "context", "agents"]
       You may be assigned any of a variety of tasks. Complete them to the best of your
       ability.
     """,
-    tools: all_groups,
-    modes: %{
-      "plan" => %{
-        "description" => "Read-only access to workspace.",
-        "caps" => %{
-          "net" => true,
-          "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
-        }
-      },
-      "act" => %{
-        "description" => "Full access to workspace.",
-        "caps" => %{
-          "net" => true,
-          "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
-        }
-      }
-    }
+    tools: all_groups
   })
 
 # Team Lead — coordinates a small engineering team: plans the work,
@@ -271,23 +189,7 @@ all_groups = ["file", "shell", "context", "agents"]
     **Important**: If you are the clone after an agents-clone call, your role has changed.
     Complete your assigned task according to your new role as assigned by your parent.
     """,
-    tools: all_groups,
-    modes: %{
-      "build" => %{
-        "description" => "Full workspace access for reviewing and integrating changes.",
-        "caps" => %{
-          "net" => true,
-          "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
-        }
-      },
-      "plan" => %{
-        "description" => "Read-only workspace access for planning and inspection.",
-        "caps" => %{
-          "net" => true,
-          "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
-        }
-      }
-    }
+    tools: all_groups
   })
 
 # Code Reviewer — inspects work in the shared workspace and reports
@@ -314,23 +216,7 @@ all_groups = ["file", "shell", "context", "agents"]
     as long as there's not a concrete technical reason why the changes should be 
     merged seperately.
     """,
-    tools: all_groups,
-    modes: %{
-      "build" => %{
-        "description" => "Full workspace access so you can run tests and apply small fixes.",
-        "caps" => %{
-          "net" => true,
-          "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
-        }
-      },
-      "plan" => %{
-        "description" => "Read-only workspace access for inspection.",
-        "caps" => %{
-          "net" => true,
-          "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
-        }
-      }
-    }
+    tools: all_groups
   })
 
 # ---- Blueprints ----
@@ -339,7 +225,18 @@ all_groups = ["file", "shell", "context", "agents"]
 # space's agents are allowed to spawn. `spawnable_vocations: []`
 # means unrestricted. `workspace_template` and `main_view_config`
 # ship as empty maps for now.
-
+#
+# A blueprint also carries the three *defaults* a space takes from it:
+#   * `default_mode` — the mode a new agent starts in (`Nest.Modes`).
+#   * `default_net` — the space's `network_access`, used when the
+#     caller names none. `Chat` is `false`: it was the only seeded
+#     root vocation whose modes had no network.
+#   * `default_spawnable_vocation` — the vocation an `agents-spawn` /
+#     `agents-batch` call gets when it names none. It replaces the old
+#     silent "the caller's own vocation" fallback with something the
+#     space states, and a space whose blueprint has none refuses the
+#     spawn instead of guessing.
+#
 # The old "Agent" blueprint (rooted in `Default`) is obsolete —
 # the default set is now the role blueprints below. Delete it
 # so it no longer appears in the picker.
@@ -353,7 +250,10 @@ end
     name: "Chat",
     description: "A single-agent conversational space.",
     root_vocation: "chat",
-    spawnable_vocations: []
+    spawnable_vocations: [],
+    default_mode: "act",
+    default_net: false,
+    default_spawnable_vocation: "chat"
   })
 
 {:ok, _} =
@@ -361,7 +261,10 @@ end
     name: "Coding",
     description: "A coding agent that reads and writes a workspace.",
     root_vocation: "programmer",
-    spawnable_vocations: []
+    spawnable_vocations: [],
+    default_mode: "act",
+    default_net: true,
+    default_spawnable_vocation: "programmer"
   })
 
 {:ok, _} =
@@ -369,7 +272,10 @@ end
     name: "Tabletop RPG",
     description: "A game master that runs a tabletop RPG campaign.",
     root_vocation: "game-master",
-    spawnable_vocations: []
+    spawnable_vocations: [],
+    default_mode: "act",
+    default_net: true,
+    default_spawnable_vocation: "game-master"
   })
 
 {:ok, _} =
@@ -378,6 +284,9 @@ end
     description: "Automatic assignment feedback and grading with Head TA coordination.",
     root_vocation: "head-ta",
     spawnable_vocations: ["grader"],
+    default_mode: "act",
+    default_net: true,
+    default_spawnable_vocation: "grader",
     workspace_template: %{
       "README.md" =>
         "# Assignment Grading Workspace\n\nPlace submissions in `submissions/` and feedback will be written to `feedback/`.",
@@ -395,7 +304,10 @@ end
     description:
       "A team lead that coordinates programmer and code-reviewer minions in a shared coding workspace.",
     root_vocation: "team-lead",
-    spawnable_vocations: ["programmer", "code-reviewer"]
+    spawnable_vocations: ["programmer", "code-reviewer"],
+    default_mode: "act",
+    default_net: true,
+    default_spawnable_vocation: "programmer"
   })
 
 # ---- Default dev user ----

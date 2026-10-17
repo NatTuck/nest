@@ -52,16 +52,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
         name: "WS Test (#{System.unique_integer([:positive])})",
         description: "writes to workspace",
         system_prompt: "workspace prompt",
-        tools: ["file", "shell", "context"],
-        modes: %{
-          "build" => %{
-            "description" => "writes workspace",
-            "caps" => %{
-              "net" => false,
-              "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
-            }
-          }
-        }
+        tools: ["file", "shell", "context"]
       })
 
     old_ws = new_ws("old")
@@ -251,16 +242,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
           name: "WS Spawn (#{System.unique_integer([:positive])})",
           description: "spawn tools",
           system_prompt: "spawn prompt",
-          tools: ["agents", "file"],
-          modes: %{
-            "build" => %{
-              "description" => "writes workspace",
-              "caps" => %{
-                "net" => false,
-                "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
-              }
-            }
-          }
+          tools: ["agents", "file"]
         })
 
       first = new_ws("spawn-old")

@@ -46,16 +46,7 @@ defmodule Nest.Agents.SupervisorPersistenceTest do
         name: "Supervisor Persistence Test Default",
         description: "Default for supervisor persistence tests",
         system_prompt: "You are a helpful test assistant.",
-        tools: ["context"],
-        modes: %{
-          "chat" => %{
-            "description" => "General conversation.",
-            "caps" => %{
-              "net" => false,
-              "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
-            }
-          }
-        }
+        tools: ["context"]
       })
 
     id
