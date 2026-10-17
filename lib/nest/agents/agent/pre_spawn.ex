@@ -282,6 +282,12 @@ defmodule Nest.Agents.Agent.PreSpawn do
     # `"none"` space must not read it under bwrap, and a `"docker"` space can
     # only reach the staged transcript through the scratch bind (see
     # `Nest.Agents.Agent.TmpSpace.prompt_mounts/4`).
+    #
+    # The call's last two arguments are `depth` and `mode`: both short, adjacent
+    # and easy to transpose, and a swap renders "You are at spawn depth act of 3"
+    # into every prompt this composes while authorizing the `AGENTS.md` read with
+    # the wrong mode's caps. `Nest.Agents.AgentSpawnDepthPromptTest` goes through
+    # this path — not the composer — for exactly that reason.
     {system_prompt, _tools, _cached_vocation} =
       SystemPrompt.compose_vocation_config(
         vocation,
@@ -289,11 +295,9 @@ defmodule Nest.Agents.Agent.PreSpawn do
         {context_limit, context_limit_source},
         name,
         depth,
-        # The mode the child will run in — the one this function just decided and
-        # put in the attrs, so the `AGENTS.md` read below is authorized with the
-        # caps the agent actually starts under. `depth` and `mode` are adjacent
-        # and both short: the order is the signature's, and a swap here once
-        # rendered "You are at spawn depth act of 3".
+        # The mode the child will run in. It only decides the caps the
+        # `AGENTS.md` read is authorized with; the agent's own mode is a runtime
+        # property, and `PreSpawn` is where it is derived.
         Map.get(attrs, :mode, Nest.Modes.default())
       )
 
