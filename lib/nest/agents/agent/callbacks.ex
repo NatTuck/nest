@@ -22,9 +22,11 @@ defmodule Nest.Agents.Agent.Callbacks do
   alias Nest.Agents.Agent.IntrospectionHandler
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.MessageAppender
+  alias Nest.Agents.Agent.ModeAuthority
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Watch
+  alias Nest.Messages.{Assistant, Part, User}
 
   # A tool worker's "my `agents-send` reached its target": a turn event for this
   # agent, translated by `Turn.handle/2` like the other worker results. The
@@ -306,6 +308,58 @@ defmodule Nest.Agents.Agent.Callbacks do
   end
 
   # Catch-all dispatcher for introspection calls.
+  # A mode change on the human's behalf (the UI selector). A *busy* agent is
+  # refused rather than changed: `Turn.build_ctx/2` reads `state.live.mode` on
+  # every settle, so applying it now would re-resolve the caps of the *ongoing*
+  # turn's remaining tool calls, and a change that lands mid-turn is exactly what
+  # the rule forbids. An idle agent takes it now — the mode is persisted, so a
+  # human's change does not have to ride a message — and a busy one the user can
+  # retry, which is what the channel's error says.
+  #
+  # Validate → persist → mutate → announce, the shape a workspace change has
+  # (`WorkspaceHandler.perform_workspace_change/2`) and for the same reasons. The
+  # announcement is a user/assistant notice pair, like a workspace change's: the
+  # user row is the runtime speaking and carries the notice marker, the assistant
+  # row is the acknowledgement, and neither is an LLM request.
+  def handle_call({:set_mode, mode, actor}, _from, state) do
+    if Machine.status_for(state.live.machine) in [:idle, :model_missing] do
+      actor_map =
+        if actor == :human,
+          do: %{kind: :human},
+          else: ModeAuthority.actor_for(state.space_id, elem(actor, 1), state.name)
+
+      with :ok <- ModeAuthority.authorize(actor_map, mode),
+           :ok <- Nest.Persistence.update_agent_mode(state.space_id, state.name, mode) do
+        state = %{state | live: %{state.live | mode: mode}}
+
+        {state, _reply} =
+          MessageAppender.handle_batch(state, [
+            {:user,
+             %User{
+               index: nil,
+               timestamp: DateTime.utc_now(),
+               parts: [%Part.Text{text: ModeAuthority.notice(mode, actor)}],
+               metadata: %{"mode" => "notice"},
+               api_logs: []
+             }},
+            {:assistant,
+             %Assistant{
+               index: nil,
+               timestamp: DateTime.utc_now(),
+               parts: [%Part.Text{text: "Mode change confirmed."}],
+               api_logs: []
+             }}
+          ])
+
+        {:reply, :ok, state}
+      else
+        {:error, reason} -> {:reply, {:error, reason}, state}
+      end
+    else
+      {:reply, {:error, :agent_busy}, state}
+    end
+  end
+
   def handle_call(msg, from, state) do
     IntrospectionHandler.handle(msg, from, state)
   end

@@ -277,6 +277,24 @@ defmodule Nest.Agents.Agent do
   @spec set_model(pid(), map()) :: :ok | {:error, term()}
   def set_model(pid, new_model), do: GenServer.call(pid, {:set_model, new_model}, :infinity)
 
+  @doc """
+  Set this agent's mode (`Nest.Modes`), on behalf of `actor`.
+
+  This is the human's path — the one the UI channel calls — and the mode is
+  *persisted*, so a human's change applies immediately rather than having to ride
+  the next message. An agent's own request goes the other way, on a message
+  (`Nest.Tools.QueryAgent`'s `set_mode`), and both are held to
+  `Nest.Agents.Agent.ModeAuthority`: only the human may raise a mode, and no
+  agent may set its own.
+
+  `actor` is `:human` or `{:agent, name}` (the acting agent's name). Returns
+  `:ok`, or `{:error, reason}` where `reason` is a sentence to show whoever
+  asked — the channel hands it to the client, a tool hands it to the model.
+  """
+  @spec set_mode(pid(), String.t(), :human | {:agent, String.t()}) :: :ok | {:error, String.t()}
+  def set_mode(pid, mode, actor \\ :human),
+    do: GenServer.call(pid, {:set_mode, mode, actor}, :infinity)
+
   # Change the agent's working directory. Handler: `WorkspaceHandler`.
   @spec set_workspace(pid(), String.t() | nil) :: :ok | {:error, term()}
   def set_workspace(pid, workspace_path),

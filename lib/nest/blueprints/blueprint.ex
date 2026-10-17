@@ -58,6 +58,12 @@ defmodule Nest.Blueprints.Blueprint do
     field :description, :string
     field :root_vocation, :string
     field :spawnable_vocations, {:array, :string}, default: []
+
+    # The mode a new agent in a space using this blueprint starts in
+    # (`Nest.Modes`). A blueprint is where the *defaults* live: the mode is a
+    # per-agent property, but something has to say what an agent gets before
+    # anything has said otherwise, and that is the blueprint the space names.
+    field :default_mode, :string, default: "act"
     field :workspace_template, :map, default: %{}
     field :main_view_config, :map, default: %{}
 
@@ -71,6 +77,7 @@ defmodule Nest.Blueprints.Blueprint do
           description: String.t() | nil,
           root_vocation: String.t() | nil,
           spawnable_vocations: [String.t()],
+          default_mode: String.t() | nil,
           workspace_template: map(),
           main_view_config: map(),
           inserted_at: DateTime.t() | nil,
@@ -86,15 +93,29 @@ defmodule Nest.Blueprints.Blueprint do
       :description,
       :root_vocation,
       :spawnable_vocations,
+      :default_mode,
       :workspace_template,
       :main_view_config
     ])
     |> validate_required([:name, :root_vocation])
+    |> validate_change(:default_mode, &validate_default_mode/2)
     |> maybe_generate_slug()
     |> validate_required([:slug])
     |> unique_constraint(:name)
     |> unique_constraint(:slug)
     |> validate_spawnable_vocations()
+  end
+
+  # A mode this build does not implement is refused here rather than stored and
+  # resolved to something else when a space using this blueprint creates an
+  # agent: `Nest.Modes.caps/1` falls back so a stale row still runs, but a row
+  # should never *hold* a name nothing can honour.
+  defp validate_default_mode(:default_mode, mode) do
+    if Nest.Modes.valid?(mode) do
+      []
+    else
+      [default_mode: "must be one of #{Enum.join(Nest.Modes.names(), ", ")}"]
+    end
   end
 
   # Same slug auto-gen rule as `Space`: only generate when

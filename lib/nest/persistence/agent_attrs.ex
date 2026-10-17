@@ -53,6 +53,25 @@ defmodule Nest.Persistence.AgentAttrs do
     end
   end
 
+  @spec update_agent_mode(integer(), String.t(), String.t()) :: :ok | {:error, term()}
+  def update_agent_mode(space_id, name, mode) do
+    case Persistence.fetch_agent(space_id, name) do
+      {:ok, %PersistedAgent{id: agent_id}} ->
+        from(a in PersistedAgent, where: a.id == ^agent_id)
+        |> Repo.update_all(
+          set: [
+            mode: mode,
+            updated_at: Persistence.now()
+          ]
+        )
+
+        :ok
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
+
   @spec fetch_all_agents_for_space(integer()) :: [PersistedAgent.t()]
   def fetch_all_agents_for_space(space_id) when is_integer(space_id) do
     from(a in PersistedAgent, where: a.space_id == ^space_id, order_by: a.name)

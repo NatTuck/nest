@@ -20,6 +20,7 @@ defmodule Nest.Agents.Agent.PreSpawn do
 
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Init
+  alias Nest.Agents.Agent.ModeAuthority
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.PersistedAgent
@@ -27,6 +28,7 @@ defmodule Nest.Agents.Agent.PreSpawn do
   alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Persistence
+  alias Nest.Repo
   alias Nest.Sandbox.Mounts
 
   @doc """
@@ -48,11 +50,89 @@ defmodule Nest.Agents.Agent.PreSpawn do
   """
   @spec pre_spawn(map()) :: {:ok, integer()} | {:error, term()}
   def pre_spawn(attrs) do
-    with :ok <- ensure_scratch_name(attrs) do
+    with :ok <- ensure_scratch_name(attrs),
+         {:ok, attrs} <- put_mode(attrs) do
       case Map.get(attrs, :fork_message_index) do
         nil -> pre_spawn_with_system(attrs)
         fork_index -> pre_spawn_clone(attrs, fork_index)
       end
+    end
+  end
+
+  # The mode a new agent starts in, decided once, here, because this is the one
+  # gate every creation path goes through (`pre_spawn/1`'s moduledoc): a
+  # caller-created agent, a clone and a fresh sub-agent all arrive here.
+  #
+  #   * a caller that named a mode keeps it, but only if the authority allows it
+  #     — a `plan` parent may not spawn an `act` child, and may not spawn one and
+  #     then raise it (`Nest.Agents.Agent.ModeAuthority`);
+  #   * otherwise a child **inherits its parent's current mode**, so the child of
+  #     a read-only agent is read-only;
+  #   * otherwise — a root agent — it gets the mode the space's blueprint names.
+  #
+  # The derived value goes back into the attrs, which is what makes it the row's:
+  # `Persistence.insert_agent/1` writes it, and a restart reads it back, so the
+  # mode survives a restart instead of being re-derived from a default.
+  defp put_mode(attrs) do
+    case Map.get(attrs, :mode) do
+      mode when is_binary(mode) -> authorize_mode(attrs, mode)
+      _other -> {:ok, Map.put(attrs, :mode, inherited_mode(attrs))}
+    end
+  end
+
+  defp authorize_mode(attrs, mode) do
+    case ModeAuthority.authorize(actor(attrs), mode) do
+      :ok -> {:ok, Map.put(attrs, :mode, mode)}
+      {:error, reason} -> {:error, {:mode_refused, reason}}
+    end
+  end
+
+  # The actor is the parent when there is one — a spawn *is* the parent acting —
+  # and the human otherwise, because a root agent is created by a person (from
+  # the UI, or from a test), and the human is above the rule.
+  defp actor(attrs) do
+    case parent_row(attrs) do
+      %PersistedAgent{name: name, mode: mode} ->
+        %{kind: :agent, space_id: attrs.space_id, name: name, mode: mode, target: :child}
+
+      _no_parent ->
+        %{kind: :human}
+    end
+  end
+
+  defp inherited_mode(attrs) do
+    case parent_row(attrs) do
+      %PersistedAgent{mode: mode} when is_binary(mode) -> mode
+      _no_parent -> blueprint_default_mode(attrs.space_id)
+    end
+  end
+
+  # The parent's *row*, from whichever identifier the attrs carry: a spawn passes
+  # `parent_id` (the `agents.id`), and the restart path passes `parent_name` too.
+  # The row is the truth about the parent's mode — it is what the parent's own
+  # next turn runs under — so it is read here rather than taken from anything the
+  # caller remembered.
+  defp parent_row(%{parent_name: name, space_id: space_id})
+       when is_binary(name) and is_integer(space_id) do
+    case Persistence.fetch_agent(space_id, name) do
+      {:ok, row} -> row
+      _other -> nil
+    end
+  end
+
+  defp parent_row(%{parent_id: id}) when is_integer(id), do: Repo.get(PersistedAgent, id)
+  defp parent_row(_attrs), do: nil
+
+  # A root agent's mode is the one the space's blueprint names. A space with no
+  # blueprint (or one from before blueprints had a default) falls back to the
+  # permissive default, which is what every agent had before a mode was a
+  # per-agent property.
+  defp blueprint_default_mode(space_id) do
+    with %{blueprint_id: id} when is_integer(id) <- Nest.Spaces.get_space(space_id),
+         %{default_mode: mode} when is_binary(mode) <- Nest.Blueprints.get_blueprint(id) do
+      mode
+    else
+      _other -> Nest.Modes.default()
     end
   end
 
