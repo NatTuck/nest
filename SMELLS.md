@@ -85,6 +85,7 @@ match, and common sense domain correctness.
   - `capture_io` *is* process-scoped (it swaps the calling process's group
     leader), so `capture_io` is fine for both presence and absence assertions.
 - Sleeps in tests are strictly disallowed.
+- Message drain loops in tests are strictly prohibited.
 - Timeouts in tests should be as low as possible. Typically 50ms, absolutely
 no more than 500ms unless there are comments describing the concrete timings
 (with real, measured numbers) and a clear justification.
@@ -104,6 +105,9 @@ situation.
 test must 1.) happen in sandbox for that test, 2.) complete before the test
 finishes. We can't just trigger background test processes that might do DB work 
 and not wait for them.
+- Any use of `:sys.get_state` is sketchy. We should be testing external
+behavior, not probing internal state. Further, this is frequently a sketchy
+hack to avoid the ban on message drain loops.
 
 Temp files:
 

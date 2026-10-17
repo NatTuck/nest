@@ -89,19 +89,32 @@ defmodule Nest.Sandbox.ShellJobsTest do
       rm_tmp!(root, "nest_jobs_script_")
     end)
 
+    # Subscribe to the topic *before* the job exists. `true` exits in about a
+    # millisecond and PubSub has no replay, so a subscription that lands after
+    # `finish_job/3`'s broadcast never sees that frame. It is not a visible
+    # failure either: `ShellJobs.subscribe/3` has a late-subscribe clause that
+    # still sends `{:shell_job_exit, …}` for an already-exited job, so the exit
+    # frame arrives and only the frame below it hangs. The broadcast test further
+    # down subscribes first for the same reason.
+    {space_id, name} = key
+    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
+
     {:ok, _message} = start_background("true", tmp, key)
     assert [%{id: id}] = ShellJobs.list(key)
 
-    # `finish_job/3` removes the host script and *then* broadcasts the job list,
-    # so the broadcast is the happens-after event for "the script is gone".
-    # Subscribe after the start (whose broadcast would be a different frame), so
-    # the only frame this can match is the finish's; the payload names the job
-    # and its exit, which is what pins the fence to that event.
-    {space_id, name} = key
-    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, 0}, 1_000
-    assert_receive {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}, 1_000
+    assert_receive {:shell_job_exit, ^id, 0}, 500
+
+    # `finish_job/3` removes the host script and *then* broadcasts the job list,
+    # so the broadcast is the happens-after event for "the script is gone". It
+    # runs in one callback, so a call to the manager returns only after the
+    # broadcast has been sent and — `Phoenix.PubSub.broadcast/3` being a
+    # synchronous send to local subscribers — the frame is already in our
+    # mailbox. That is the barrier; no clock is needed. (The start's own frame,
+    # where the job is still `:running`, is left in the mailbox by
+    # `assert_received` and cannot satisfy this pattern.)
+    assert [%{id: ^id, status: :exited}] = ShellJobs.list(key)
+    assert_received {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}
 
     assert Path.wildcard(Path.join(tmp, ".nest-cmd-*.sh"), match_dot: true) == []
   end
@@ -217,15 +230,22 @@ defmodule Nest.Sandbox.ShellJobsTest do
     Process.exit(agent, :kill)
     assert_receive {:DOWN, ^ref, :process, ^agent, :killed}, 1_000
 
+    # `drop_agent/3` does all of a dropped agent's work in a single callback —
+    # stop the jobs, tell the waiters why, remove the scratch, then broadcast —
+    # so a call to the manager returns only after both frames below have been
+    # sent, and `Phoenix.PubSub.broadcast/3` delivers to local subscribers
+    # synchronously. Reading the manager (the idiom `waiters/1` above uses) is
+    # therefore the barrier, and neither assertion needs a clock of its own.
+    assert ShellJobs.list(key) == []
+
     # The job is gone, and both notifications are the evidence: the frame is
     # broadcast after the drop, and the waiter is told why rather than left to
     # wait out its timeout. `{:shell_job_exit, …}` would be a lie — there is no
     # exit code.
-    assert_receive {:shell_jobs, %{jobs: []}}, 500
-    assert_receive {:shell_job_gone, ^id}, 500
+    assert_received {:shell_jobs, %{jobs: []}}
+    assert_received {:shell_job_gone, ^id}
     refute_received {:shell_job_exit, ^id, _code}
 
-    assert ShellJobs.list(key) == []
     assert waiters(id) == []
   end
 
