@@ -176,19 +176,68 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
       assert_received {:sent, "bob", "hi", :agent, "plan"}
     end
 
-    test "`mine` is the sender's own mode" do
-      # The one-word spelling for "hand this off to someone who may do what I
-      # may": no authority check is needed, because the mode is the sender's.
+    test "`mine` on a descendant rides the delivery as the sender's own mode" do
+      space_id = System.unique_integer([:positive])
+      ChildRegistry.register(space_id, "sender", "bob")
+      capture_send({:ok, :queued})
+
+      assert [%ToolResult{name: "agents-send", is_error: false}] =
+               run(%{"name" => "bob", "message" => "hi", "set_mode" => "mine"}, %{
+                 space_id: space_id,
+                 mode: "act"
+               })
+
+      assert_received {:sent, "bob", "hi", :agent, "act"}
+    end
+
+    test "`mine` aimed at a stranger is refused: it is a mode request like any other" do
+      # `"mine"` is sugar for the sender's mode, not a permission of its own. The
+      # authority decides whether putting a given target into that mode is
+      # allowed, and an agent it did not spawn is not its to command — so taking
+      # the shortcut here let an `act` agent raise a stranger.
+      space_id = System.unique_integer([:positive])
       capture_send({:ok, :queued})
 
       results =
-        run(
+        run_errors(
           %{"name" => "bob", "message" => "hi", "set_mode" => "mine"},
-          %{mode: "plan"}
+          %{space_id: space_id, mode: "act"}
         )
 
-      assert [%ToolResult{name: "agents-send", is_error: false}] = results
-      assert_received {:sent, "bob", "hi", :agent, "plan"}
+      assert [%ToolResult{name: "agents-send", is_error: true, content: content}] = results
+      assert content =~ "not one"
+      refute_received {:sent, _, _, _, _, _}
+    end
+
+    test "`mine` aimed at the sender's own parent is refused: an agent may not raise an ancestor" do
+      space_id = System.unique_integer([:positive])
+      ChildRegistry.register(space_id, "parent", "sender")
+      capture_send({:ok, :queued})
+
+      results =
+        run_errors(
+          %{"name" => "parent", "message" => "hi", "set_mode" => "mine"},
+          %{space_id: space_id, mode: "act"}
+        )
+
+      assert [%ToolResult{name: "agents-send", is_error: true, content: content}] = results
+      assert content =~ "not one"
+      refute_received {:sent, _, _, _, _, _}
+    end
+
+    test "`mine` aimed at the sender itself is refused: that is self-escalation" do
+      space_id = System.unique_integer([:positive])
+      capture_send({:ok, :queued})
+
+      results =
+        run_errors(
+          %{"name" => "sender", "message" => "hi", "set_mode" => "mine"},
+          %{space_id: space_id, mode: "act"}
+        )
+
+      assert [%ToolResult{name: "agents-send", is_error: true, content: content}] = results
+      assert content =~ "your own mode"
+      refute_received {:sent, _, _, _, _, _}
     end
   end
 end
