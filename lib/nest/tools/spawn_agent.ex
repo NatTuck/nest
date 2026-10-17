@@ -39,10 +39,11 @@ defmodule Nest.Tools.SpawnAgent do
       "in your inbox — or, for a child that fails, is stopped or produces " <>
       "nothing, a runtime notice naming the reason instead. Nothing waits: " <>
       "the spawn is confirmed right away (a bad spawn still comes back as an " <>
-      "error you can fix). `vocation` (a slug like \"programmer\") defaults " <>
-      "to your own vocation (or the space's sole allowed vocation when your " <>
-      "own isn't allowed) — set it to spawn a specialist with a different " <>
-      "role. Set `clone_context` to true to spawn the agent with a copy of " <>
+      "error you can fix). `vocation` (a slug like \"programmer\") names the " <>
+      "specialist's role and tools; when omitted, the space's blueprint " <>
+      "default is used, and a space whose blueprint names no default refuses " <>
+      "the spawn — set it to spawn a specialist with a different role. " <>
+      "Set `clone_context` to true to spawn the agent with a copy of " <>
       "this conversation instead of a fresh context. Set `archive` to true " <>
       "(with `query`) to stop and archive the agent after it responds " <>
       "(one-shot). Use `agents-wait` to wait for the new agent to finish. " <>
