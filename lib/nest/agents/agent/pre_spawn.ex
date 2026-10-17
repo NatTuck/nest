@@ -75,6 +75,10 @@ defmodule Nest.Agents.Agent.PreSpawn do
   # mode survives a restart instead of being re-derived from a default.
   defp put_mode(attrs) do
     case Map.get(attrs, :mode) do
+      # `"mine"` is the send tools' spelling for "the sender's own mode", and for
+      # a spawn that is exactly the inherited one: `agents-batch` takes `set_mode`
+      # with that enum, and every child of a batch is a spawn.
+      "mine" -> {:ok, Map.put(attrs, :mode, inherited_mode(attrs))}
       mode when is_binary(mode) -> authorize_mode(attrs, mode)
       _other -> {:ok, Map.put(attrs, :mode, inherited_mode(attrs))}
     end
@@ -284,10 +288,13 @@ defmodule Nest.Agents.Agent.PreSpawn do
         prompt_mounts(attrs, name),
         {context_limit, context_limit_source},
         name,
-        # The mode the child will run in. `Nest.Modes.default/0` until the
-        # agent's own persisted mode is threaded through (part B of stage 3).
-        Map.get(attrs, :mode, Nest.Modes.default()),
-        depth
+        depth,
+        # The mode the child will run in — the one this function just decided and
+        # put in the attrs, so the `AGENTS.md` read below is authorized with the
+        # caps the agent actually starts under. `depth` and `mode` are adjacent
+        # and both short: the order is the signature's, and a swap here once
+        # rendered "You are at spawn depth act of 3".
+        Map.get(attrs, :mode, Nest.Modes.default())
       )
 
     case system_prompt do

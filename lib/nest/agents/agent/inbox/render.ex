@@ -70,7 +70,11 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   """
   @spec combine_and_offload([map()], Agent.t()) :: String.t()
   def combine_and_offload(entries, state) do
-    offload(combine(entries), entries, state)
+    # `state.live.mode` is the mode the turn will run in — the drain applies the
+    # batch's own request before it renders (see `Turn.Executor.peek_inbox/1`) —
+    # so a peer delivery's header states the mode the *recipient* is about to
+    # work under, which is what every message an agent receives has to say.
+    offload(combine(entries, state.live.mode), entries, state)
   end
 
   @doc """
@@ -107,29 +111,40 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   # `[Message from agent "X"]` label, which is what disambiguates a batch of
   # peer messages (from each other and from a human's) — including a `:query`,
   # whose requester really is that agent (decision 7).
-  defp combine(entries) do
-    Enum.map_join(entries, "\n\n", &render_entry/1)
+  defp combine(entries, mode) do
+    Enum.map_join(entries, "\n\n", &render_entry(&1, mode))
   end
 
   # A retrieved entry is normally suppressed by `Inbox.batch/1` before it can
   # reach here, so this is the safety net issue #62 requirement 5 asks for: if
   # both channels ever carry the body, the second copy is explicitly a
   # re-delivery and can never read as a fresh human turn.
-  defp render_entry(%{kind: :notice, content: content} = entry),
+  defp render_entry(%{kind: :notice, content: content} = entry, _mode),
     do: tag_redelivery(entry, NoticeTag.tag(content))
 
-  defp render_entry(%{kind: :user, content: content} = entry),
+  defp render_entry(%{kind: :user, content: content} = entry, _mode),
     do: tag_redelivery(entry, content)
 
-  defp render_entry(%{content: content} = entry),
-    do: tag_redelivery(entry, "#{agent_label(entry)}\n#{content}")
+  defp render_entry(%{content: content} = entry, mode),
+    do: tag_redelivery(entry, "#{agent_label(entry, mode)}\n#{content}")
 
   defp tag_redelivery(%{retrieved: true}, body), do: "#{@redelivery_tag}\n#{body}"
   defp tag_redelivery(_entry, body), do: body
 
-  # The LLM-facing label for one `:agent` entry. A missing or blank sender
-  # drops the quoted name rather than putting `nil`/`""` in the prompt.
-  defp agent_label(%{from: from}), do: "[Message from agent#{quoted(from)}]"
+  # The LLM-facing label for one `:agent` entry: who sent it, and the mode the
+  # *recipient* will run the delivered turn in. The mode is the recipient's
+  # because that is what the agent needs to know about itself — a peer's message
+  # is the only place an agent whose inbox is all peer traffic ever sees its own
+  # mode — and it is not a request to change anything (a request rides
+  # `set_mode`, and arrives as an entry of its own).
+  #
+  # A missing or blank sender drops the quoted name rather than putting
+  # `nil`/`""` in the prompt, and a mode-less render (an entry that predates the
+  # clause, or a caller with no mode to state) keeps the older bare label.
+  defp agent_label(%{from: from}, mode) when is_binary(mode),
+    do: "[Message from agent#{quoted(from)} | mode: #{mode}]"
+
+  defp agent_label(%{from: from}, _mode), do: "[Message from agent#{quoted(from)}]"
 
   defp quoted(from) when is_binary(from) and from != "", do: " \"#{from}\""
   defp quoted(_from), do: ""

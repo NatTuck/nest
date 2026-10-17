@@ -32,6 +32,13 @@ defmodule Nest.Agents.Agent.Callbacks do
   # agent, translated by `Turn.handle/2` like the other worker results. The
   # worker casts it *before* its `{:tool_results, …}`, so the debt is discharged
   # before the response that settles the turn (issue #31 §1.4).
+  # The space's network access changed (`Nest.Spaces.set_network_access/2`).
+  # Nothing is refused and nothing waits: the value is the space's, and a turn in
+  # flight re-reads the mounts at its next settle.
+  def handle_cast({:set_network_access, value}, state) do
+    {:noreply, apply_network_access(state, value)}
+  end
+
   def handle_cast({:reply_sent, sender}, state) do
     Turn.handle({:reply_sent, sender}, state)
   end
@@ -121,6 +128,21 @@ defmodule Nest.Agents.Agent.Callbacks do
     end
   end
 
+  # Move the agent onto the space's new network access. The mounts are what carry
+  # it (`Nest.Sandbox.Mounts.network_access/1`), and the tool closures capture
+  # them — `Nest.Agents.Agent.Tools.get_functions/2` is the one builder — so both
+  # have to move together. Nothing else in the mounts changed, which is why this
+  # is a two-field update rather than a re-resolve.
+  defp apply_network_access(state, value) do
+    mounts = %{state.mounts | network_access: value}
+
+    %{state | mounts: mounts, tools: Nest.Tools.get_functions(tool_names(state), mounts)}
+  end
+
+  # The tool *names* an agent was built with, so the closures can be rebuilt
+  # without re-reading the vocation. `state.tools` holds the closures themselves.
+  defp tool_names(%{tools: tools}), do: Enum.map(tools, & &1.name)
+
   # Construct the `:model_missing` recovery state. The
   # implementation lives in `Init.Recovery` so this module
   # stays focused on the dispatch surface.
@@ -185,8 +207,8 @@ defmodule Nest.Agents.Agent.Callbacks do
   # refuse (broken state). `kind` is the entry's provenance and only decides
   # how it renders (a `:query` additionally owes a reply). See
   # `Nest.Agents.Agent.Inbox`.
-  def handle_call({:deliver_async, sender, content, kind}, _from, state) do
-    Inbox.handle_delivery(state, sender, content, kind)
+  def handle_call({:deliver_async, sender, content, kind, mode}, _from, state) do
+    Inbox.handle_delivery(state, sender, content, kind, mode)
   end
 
   # The runtime's own result for this agent, handed over by the process that

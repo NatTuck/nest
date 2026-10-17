@@ -416,10 +416,13 @@ defmodule Nest.Agents.Agent.Turn.Executor do
         :empty
 
       batch ->
-        content = Inbox.combine_and_offload(batch, state)
+        # The mode comes first: the delivered message is *rendered* with the mode
+        # the turn will run in (a peer delivery's header states it), and
+        # `applied_mode/2` is what decides it — the batch's own request, resolved.
         mode = applied_mode(state, batch)
         mode_changed? = mode != state.live.mode
         state = %{state | live: %{state.live | mode: mode}}
+        content = Inbox.combine_and_offload(batch, state)
 
         # `Broadcasts.status/1` is the only carrier of `currentMode`, and the
         # settle loop broadcasts only on a status *change* — which this drain
@@ -445,12 +448,14 @@ defmodule Nest.Agents.Agent.Turn.Executor do
     {state, :continue}
   end
 
-  # One mode per delivered batch: the most recent human-sourced entry that
-  # carries a mode wins (`Inbox.drain_mode/1`), and the agent's current mode
-  # stands when no entry does. The winner is resolved against the vocation
-  # exactly as `ChatPipeline.handle_chat/3` resolves an idle turn's request, so
-  # `state.live.mode` — and with it the UI's `currentMode` — never holds a mode
-  # the vocation does not define. Applied here, never when the entry was queued:
+  # One mode per delivered batch: the most recent entry that carries a mode wins
+  # (`Inbox.drain_mode/1`) — the human's own request, or a peer's `set_mode`,
+  # which rides the message it belongs to — and the agent's current mode stands
+  # when no entry does. The winner is resolved against the modes this build has
+  # (`Nest.Modes`) exactly as `ChatPipeline.handle_chat/3` resolves an idle
+  # turn's request, so `state.live.mode` — and with it the UI's `currentMode` —
+  # never holds a mode nothing can honour. Applied here, never when the entry was
+  # queued:
   # `state.live.mode` feeds `ctx.mode`/`ctx.caps`, which `Turn.prepare/1`
   # rebuilds on every settle, so setting it on arrival would re-resolve the caps
   # of the *ongoing* turn's remaining tool calls. A drain that consumes nothing
@@ -458,7 +463,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   # (`Turn.restore_undelivered_mode/3`) for that same reason: the entry is still
   # queued, so the mode must not stick.
   defp applied_mode(state, entries) do
-    case Inbox.drain_mode(entries) do
+    case Inbox.Mode.drain_mode(entries) do
       nil ->
         state.live.mode
 

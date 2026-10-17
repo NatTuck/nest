@@ -195,11 +195,16 @@ defmodule Nest.Agents.Agent do
   runtime speaking for itself, which no agent said.
   Returns `{:ok, :delivered}` for an idle target, `{:ok, :queued}` for a busy
   one, `{:error, reason}` for a broken target or a full inbox.
+  `mode` is the mode the *recipient* is asked to move to, or `nil` for a message
+  that asks for no change. It rides the message because the change and the
+  instruction that depends on it belong together: the recipient applies it when
+  the message is delivered (never mid-turn), and the send tools have already
+  checked that the sender may ask (`Nest.Agents.Agent.ModeAuthority`).
   """
-  @spec deliver_message(pid(), String.t(), String.t(), Inbox.kind()) ::
+  @spec deliver_message(pid(), String.t(), String.t(), Inbox.kind(), String.t() | nil) ::
           {:ok, :delivered | :queued} | {:error, term()}
-  def deliver_message(pid, sender, content, kind \\ :agent) do
-    GenServer.call(pid, {:deliver_async, sender, content, kind}, 5_000)
+  def deliver_message(pid, sender, content, kind \\ :agent, mode \\ nil) do
+    GenServer.call(pid, {:deliver_async, sender, content, kind, mode}, 5_000)
   end
 
   @doc """
@@ -274,6 +279,26 @@ defmodule Nest.Agents.Agent do
 
   # Change the agent's resolved LLM client + persisted `model` map.
   # Handler: `IntrospectionHandler` → `ModelHandler`.
+  @doc """
+  Point this agent at the space's current network access.
+
+  A space's network access is editable, and it rides the agent's `Mounts` — which
+  are built once, at start. So a change has to *reach* the agent, or a live agent
+  keeps the value it started with and the space's own claim that the change takes
+  effect for its agents' subsequent commands is false.
+
+  A **cast**, unlike `set_mode/3`: the edit must not wait on an agent's turn, and
+  there is nothing to refuse — the value is the space's, not the agent's. The
+  mounts are updated and the tool closures are rebuilt (they capture the mounts);
+  a turn already in flight picks the new value up at its next settle, which is
+  when `Turn.build_ctx/2` re-reads them. The caller is
+  `Nest.Spaces.set_network_access/2`.
+  """
+  @spec set_network_access(pid(), boolean()) :: :ok
+  def set_network_access(pid, value) when is_boolean(value) do
+    GenServer.cast(pid, {:set_network_access, value})
+  end
+
   @spec set_model(pid(), map()) :: :ok | {:error, term()}
   def set_model(pid, new_model), do: GenServer.call(pid, {:set_model, new_model}, :infinity)
 

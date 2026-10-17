@@ -22,6 +22,7 @@ defmodule Nest.Agents.Agent.Turn do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Children
   alias Nest.Agents.Agent.Machine.Phase
+  alias Nest.Agents.Agent.ModeAuthority
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.Timeline
   alias Nest.Agents.Agent.Turn.Executor
@@ -92,13 +93,51 @@ defmodule Nest.Agents.Agent.Turn do
 
     if Machine.status_for(state.live.machine) != old_status, do: Broadcasts.status(state)
 
-    case follow do
-      nil ->
-        {:ok, restore_undelivered_mode(state, pre_mode, pre_inbox)}
+    state =
+      case follow do
+        nil ->
+          restore_undelivered_mode(state, pre_mode, pre_inbox)
 
-      event ->
-        {:ok, settled} = settle(state, event, depth + 1)
-        {:ok, restore_undelivered_mode(settled, pre_mode, pre_inbox)}
+        event ->
+          {:ok, settled} = settle(state, event, depth + 1)
+          restore_undelivered_mode(settled, pre_mode, pre_inbox)
+      end
+
+    {:ok, commit_mode_change(state, pre_mode, pre_inbox)}
+  end
+
+  # A mode a drain applied and *kept* is a real change, so it is written down and
+  # announced. `restore_undelivered_mode/3` has already undone one whose drain
+  # consumed nothing, so reaching here with a different mode means the message
+  # that asked for it was delivered.
+  #
+  # The row is written here, not where the mode is applied, and that is what
+  # keeps an undone change out of it: the row is the truth a restart and a later
+  # spawn read (`Nest.Agents.Agent.PreSpawn`), so it must hold exactly what the
+  # agent is actually working under.
+  #
+  # The announcement is for a **peer's** change. The human's own selection is
+  # already stated by the delivered message's `[mode: X]` prefix, while a peer's
+  # `set_mode` is a change nothing else would mention — and the agent has to be
+  # told, or it keeps working under a rule it never heard about.
+  defp commit_mode_change(state, pre_mode, _pre_inbox) when state.live.mode == pre_mode,
+    do: state
+
+  defp commit_mode_change(state, _pre_mode, pre_inbox) do
+    case Inbox.Mode.drain_mode_change(Inbox.batch(pre_inbox)) do
+      %{mode: mode, actor: actor} ->
+        Nest.Persistence.update_agent_mode(state.space_id, state.name, mode)
+
+        case actor do
+          :human ->
+            state
+
+          {:agent, _name} ->
+            Inbox.enqueue_internal(state, nil, ModeAuthority.notice(mode, actor), :notice)
+        end
+
+      nil ->
+        state
     end
   end
 
@@ -146,9 +185,10 @@ defmodule Nest.Agents.Agent.Turn do
   # so the short-circuit above already returned.
   #
   # What would break it: a new action that enqueued a *mode-carrying* entry
-  # before a drain in the same list (`Inbox.enqueue_internal/5` passes
-  # `mode: nil`, so only a `:user` enqueue carries one today), or one that
-  # inserted at the head instead of appending. Either would make the peek's
+  # before a drain in the same list (every action's enqueue goes through
+  # `Inbox.enqueue_internal/5`, which passes `mode: nil`, so a mode arrives only
+  # from a *delivery* — the human's chat, or a peer's `set_mode` — and never from
+  # inside the list), or one that inserted at the head instead of appending. Either would make the peek's
   # batch differ from `Inbox.batch(pre_inbox)` — and the restore would then be
   # skipped with `pre_inbox == []`, or tested against entries the peek never
   # saw, leaking the applied mode. Making the check robust instead would mean
