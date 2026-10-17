@@ -247,6 +247,26 @@ defmodule Nest.Agents.Agent.ToolLoop do
       "Retry with a valid `vocation` slug."
   end
 
+  # The space's blueprint names no default, so an omitted `vocation` has no
+  # answer — see `Nest.Agents.Supervisor.resolve_spawn_vocation/2`. The allowed
+  # list is included because it is the one thing that makes the retry easy: the
+  # model has to pass a slug, and a restricted space will refuse most guesses.
+  defp spawn_error_message({:vocation_required, allowed}) do
+    allowed_hint =
+      case allowed do
+        [] ->
+          "This space allows any vocation"
+
+        labels ->
+          "Allowed vocations: " <>
+            Enum.map_join(labels, ", ", fn {name, slug} -> "#{name} (#{slug})" end)
+      end
+
+    "Could not spawn agent: `vocation` is required — this space's blueprint names " <>
+      "no default vocation, so it cannot be omitted. #{allowed_hint}; retry " <>
+      "passing one as `vocation`."
+  end
+
   # An unsafe `name` is the likeliest way an LLM trips validation
   # (`"code reviewer"`, `"Reviewer 2"`): `Agents.create_agent/3` returns the
   # changeset from `PersistedAgent.changeset/2`, whose name rule is

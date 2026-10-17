@@ -375,6 +375,25 @@ defmodule Nest.Agents.Agent.BatchPlan do
   def spawn_error_message({:vocation_not_found, slug}),
     do: "Could not spawn batch children: no vocation with slug #{inspect(slug)} exists."
 
+  # The space's blueprint names no default vocation, so an omitted `vocation` has
+  # no answer (see `Nest.Agents.Supervisor.resolve_spawn_vocation/2`). Worded for
+  # a batch, like every other clause here.
+  def spawn_error_message({:vocation_required, allowed}) do
+    allowed_hint =
+      case allowed do
+        [] ->
+          "this space allows any vocation"
+
+        labels ->
+          "allowed: " <>
+            Enum.map_join(labels, ", ", fn {name, slug} -> "#{name} (#{slug})" end)
+      end
+
+    "Could not spawn batch children: `vocation` is required — this space's " <>
+      "blueprint names no default vocation, so it cannot be omitted; " <>
+      "#{allowed_hint}."
+  end
+
   def spawn_error_message(:max_depth_reached),
     do: "Could not spawn batch children: max delegation depth reached."
 

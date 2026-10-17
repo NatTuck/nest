@@ -562,8 +562,9 @@ defmodule Nest.Tools do
           "vocation" => %{
             "type" => "string",
             "description" =>
-              "Vocation slug for every child (e.g. \"programmer\"). Defaults to " <>
-                "your own vocation (or the space's sole allowed vocation)."
+              "Vocation slug for every child (e.g. \"programmer\"). When omitted, " <>
+                "the space's blueprint default is used; a space whose blueprint " <>
+                "names no default refuses the call, so pass one."
           },
           "model" => %{
             "type" => "string",
