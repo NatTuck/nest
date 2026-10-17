@@ -38,16 +38,21 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
     %ToolCall{id: "send-1", name: "agents-send", arguments: args}
   end
 
-  defp run(args, overrides \\ %{}) do
-    {results, _log} = run_with_log(args, overrides)
+  # A dispatch whose result is not an error: nothing logs, so nothing is
+  # captured — a capture here could only hide a print (SMELLS.md).
+  defp run(args, overrides \\ %{}), do: execute(args, overrides)
+
+  # A dispatch that expects `is_error` results: BatchSizer logs a line for each,
+  # so the capture asserts on it. A capture nobody asserts on could only hide
+  # prints, which is why the assertion is the point of it.
+  defp run_errors(args, overrides \\ %{}) do
+    {results, log} = with_log(fn -> execute(args, overrides) end)
+    assert log =~ "BatchSizer produced is_error=true tool result"
     results
   end
 
-  # The BatchSizer logs an `is_error=true` line for every error result; capture
-  # it so the expected diagnostic doesn't reach the console (and so a test that
-  # wants to assert on it can).
-  defp run_with_log(args, overrides) do
-    with_log(fn -> ToolLoop.execute(Map.merge(ctx(), overrides), nil, [send_call(args)]) end)
+  defp execute(args, overrides) do
+    ToolLoop.execute(Map.merge(ctx(), overrides), nil, [send_call(args)])
   end
 
   defp stub_send(fun) do
@@ -93,10 +98,10 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
   end
 
   test "requires both name and message" do
-    assert [%ToolResult{content: content, is_error: true}] = run(%{"message" => "hi"})
+    assert [%ToolResult{content: content, is_error: true}] = run_errors(%{"message" => "hi"})
     assert content =~ "Missing required argument: name"
 
-    assert [%ToolResult{content: content, is_error: true}] = run(%{"name" => "bob"})
+    assert [%ToolResult{content: content, is_error: true}] = run_errors(%{"name" => "bob"})
     assert content =~ "Missing required argument: message"
   end
 
@@ -104,7 +109,7 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
     stub_send(fn -> {:error, :not_found} end)
 
     assert [%ToolResult{content: content, is_error: true}] =
-             run(%{"name" => "ghost", "message" => "hi"})
+             run_errors(%{"name" => "ghost", "message" => "hi"})
 
     assert content == "Agent ghost not found in this space."
 
@@ -116,14 +121,14 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
     stub_send(fn -> {:error, :inbox_full} end)
 
     assert [%ToolResult{content: full, is_error: true}] =
-             run(%{"name" => "bob", "message" => "hi"})
+             run_errors(%{"name" => "bob", "message" => "hi"})
 
     assert full =~ "inbox is full"
 
     stub_send(fn -> {:error, {:status, :needs_repair}} end)
 
     assert [%ToolResult{content: broken, is_error: true}] =
-             run(%{"name" => "bob", "message" => "hi"})
+             run_errors(%{"name" => "bob", "message" => "hi"})
 
     assert broken =~ "needs_repair"
 
@@ -142,8 +147,8 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
       ChildRegistry.register(space_id, "sender", "bob")
       capture_send({:ok, :delivered})
 
-      {results, log} =
-        run_with_log(
+      results =
+        run_errors(
           %{"name" => "bob", "message" => "hi", "set_mode" => "act"},
           %{space_id: space_id, mode: "plan"}
         )
@@ -156,9 +161,6 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
       # Nothing was delivered: the change and the message are one delivery, so a
       # refused change refuses the message with it.
       refute_received {:sent, _, _, _, _, _}
-
-      # BatchSizer logs every `is_error` result: expected, so assert on it.
-      assert log =~ "BatchSizer produced is_error=true tool result"
     end
 
     test "an act sender may lower the target's mode, and it rides the delivery" do
@@ -179,8 +181,8 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
       # may": no authority check is needed, because the mode is the sender's.
       capture_send({:ok, :queued})
 
-      {results, _log} =
-        run_with_log(
+      results =
+        run(
           %{"name" => "bob", "message" => "hi", "set_mode" => "mine"},
           %{mode: "plan"}
         )

@@ -160,7 +160,9 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
           reply_failure: changeset
         )
 
-      {results, _log} =
+      # BatchSizer logs every `is_error` result: expected, so assert on it — a
+      # capture nobody asserts on could only hide a print (SMELLS.md).
+      {results, log} =
         with_log(fn -> spawn_from("parent-bad-name", %{"name" => "Code Reviewer"}) end)
 
       assert [%ToolResult{name: "agents-spawn", is_error: true, content: content}] = results
@@ -168,6 +170,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
       assert content =~ "letters, digits"
       assert content =~ "no spaces or slashes"
       refute content =~ "Ecto.Changeset"
+      assert log =~ "is_error=true tool result"
     end
   end
 
