@@ -23,7 +23,9 @@ const MAX_HEIGHT_PX = 240;
  *   diverges from the historical entry on screen), the cursor resets
  *   to "draft" mode so subsequent Up/Down starts from the new text.
  * - Loading a historical entry also restores its `mode` via
- *   `onModeChange` if a mode is recorded for it.
+ *   `onModeRestore` if a mode is recorded for it (a *selection* for the next
+ *   message, not a switch: switching is `onModeChange`, which the selector and
+ *   Ctrl+M call).
  * - Ctrl+M / Meta+M cycles to the next mode when multiple modes are
  *   available. Wraps around to the first mode when at the last.
  * - Skips the keydown handler while an IME composition is in progress.
@@ -76,6 +78,7 @@ export function ChatInput({
   modes,
   mode,
   onModeChange,
+  onModeRestore,
   history = [],
   // Registered slash commands (`{ name, description }`). When the user
   // types `/<partial>` a click-only menu of buttons appears above the
@@ -188,7 +191,7 @@ export function ChatInput({
       if (cursor === -1) setDraft(value); // snapshot current typing
       const entry = history[nextCursor];
       onChange(entry.content);
-      if (entry.mode && onModeChange) onModeChange(entry.mode);
+      if (entry.mode && onModeRestore) onModeRestore(entry.mode);
       setCursor(nextCursor);
       return;
     }
@@ -203,7 +206,7 @@ export function ChatInput({
     const nextCursor = cursor - 1;
     const entry = history[nextCursor];
     onChange(entry.content);
-    if (entry.mode && onModeChange) onModeChange(entry.mode);
+    if (entry.mode && onModeRestore) onModeRestore(entry.mode);
     setCursor(nextCursor);
   };
 

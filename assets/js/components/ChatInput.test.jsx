@@ -151,20 +151,20 @@ describe("ChatInput", () => {
       const onModeChange = vi.fn();
       const { textarea } = setup({
         value: "hello",
-        modes: ["chat", "build", "plan"],
-        mode: "chat",
+        modes: ["plan", "act"],
+        mode: "plan",
         onModeChange,
       });
       fireEvent.keyDown(textarea, { key: "m", ctrlKey: true });
-      expect(onModeChange).toHaveBeenCalledWith("build");
+      expect(onModeChange).toHaveBeenCalledWith("act");
     });
 
     it("cycles to next mode on Meta+M (Cmd on macOS)", () => {
       const onModeChange = vi.fn();
       const { textarea } = setup({
         value: "hello",
-        modes: ["chat", "build", "plan"],
-        mode: "build",
+        modes: ["plan", "act"],
+        mode: "act",
         onModeChange,
       });
       fireEvent.keyDown(textarea, { key: "m", metaKey: true });
@@ -175,20 +175,20 @@ describe("ChatInput", () => {
       const onModeChange = vi.fn();
       const { textarea } = setup({
         value: "hello",
-        modes: ["chat", "build", "plan"],
-        mode: "plan",
+        modes: ["plan", "act"],
+        mode: "act",
         onModeChange,
       });
       fireEvent.keyDown(textarea, { key: "m", ctrlKey: true });
-      expect(onModeChange).toHaveBeenCalledWith("chat");
+      expect(onModeChange).toHaveBeenCalledWith("plan");
     });
 
     it("does not cycle on Ctrl+M when only one mode", () => {
       const onModeChange = vi.fn();
       const { textarea } = setup({
         value: "hello",
-        modes: ["chat"],
-        mode: "chat",
+        modes: ["plan"],
+        mode: "plan",
         onModeChange,
       });
       fireEvent.keyDown(textarea, { key: "m", ctrlKey: true });
@@ -199,8 +199,8 @@ describe("ChatInput", () => {
       const onModeChange = vi.fn();
       const { textarea } = setup({
         value: "hello",
-        modes: ["chat", "build"],
-        mode: "chat",
+        modes: ["plan", "act"],
+        mode: "plan",
         onModeChange,
         disabled: true,
       });
@@ -212,13 +212,13 @@ describe("ChatInput", () => {
       const onModeChange = vi.fn();
       const { textarea } = setup({
         value: "hello",
-        modes: ["chat", "build"],
-        mode: "chat",
+        modes: ["plan", "act"],
+        mode: "plan",
         onModeChange,
         isBusy: true,
       });
       fireEvent.keyDown(textarea, { key: "m", ctrlKey: true });
-      expect(onModeChange).toHaveBeenCalledWith("build");
+      expect(onModeChange).toHaveBeenCalledWith("act");
     });
 
     it("does not cycle on plain m without modifier", () => {
@@ -342,8 +342,8 @@ describe("ChatInput", () => {
           value=""
           onChange={() => {}}
           onSend={() => {}}
-          modes={["chat"]}
-          mode="chat"
+          modes={["plan"]}
+          mode="plan"
         />,
       );
       expect(screen.queryByLabelText("Mode")).toBeNull();
@@ -355,8 +355,8 @@ describe("ChatInput", () => {
           value=""
           onChange={() => {}}
           onSend={() => {}}
-          modes={["chat", "build", "plan"]}
-          mode="chat"
+          modes={["plan", "act"]}
+          mode="plan"
           onModeChange={() => {}}
         />,
       );
@@ -370,15 +370,15 @@ describe("ChatInput", () => {
           value=""
           onChange={() => {}}
           onSend={() => {}}
-          modes={["chat", "build"]}
-          mode="chat"
+          modes={["plan", "act"]}
+          mode="plan"
           onModeChange={onModeChange}
         />,
       );
       fireEvent.change(screen.getByLabelText("Mode"), {
-        target: { value: "build" },
+        target: { value: "act" },
       });
-      expect(onModeChange).toHaveBeenCalledWith("build");
+      expect(onModeChange).toHaveBeenCalledWith("act");
     });
 
     it("disables the mode selector when the input is disabled", () => {
@@ -489,13 +489,14 @@ describe("ChatInput", () => {
     // each tagged with a different mode so we can verify mode restoration.
     const sampleHistory = [
       { content: "third sent", mode: "plan" },
-      { content: "second sent", mode: "build" },
-      { content: "first sent", mode: "chat" },
+      { content: "second sent", mode: "act" },
+      { content: "first sent", mode: "plan" },
     ];
 
     function setupWithHistory(props = {}) {
       const onChange = vi.fn();
       const onModeChange = vi.fn();
+      const onModeRestore = vi.fn();
       const utils = render(
         <ChatInput
           value={props.value ?? ""}
@@ -507,9 +508,10 @@ describe("ChatInput", () => {
           disabled={props.disabled ?? false}
           placeholder="Type a message..."
           history={props.history ?? sampleHistory}
-          modes={["chat", "build", "plan"]}
-          mode={props.mode ?? "chat"}
+          modes={["plan", "act"]}
+          mode={props.mode ?? "plan"}
           onModeChange={props.onModeChange ?? onModeChange}
+          onModeRestore={props.onModeRestore ?? onModeRestore}
         />,
       );
       const textarea = screen.getByLabelText("Message");
@@ -518,23 +520,32 @@ describe("ChatInput", () => {
         textarea,
         onChange: props.onChange ?? onChange,
         onModeChange: props.onModeChange ?? onModeChange,
+        onModeRestore: props.onModeRestore ?? onModeRestore,
       };
     }
 
     it("Ctrl+Up loads the most recent entry, then walks to older entries, and restores mode", () => {
-      const { textarea, onChange, onModeChange } = setupWithHistory();
+      const { textarea, onChange, onModeChange, onModeRestore } =
+        setupWithHistory();
 
       fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
       expect(onChange).toHaveBeenLastCalledWith("third sent");
-      expect(onModeChange).toHaveBeenLastCalledWith("plan");
+      expect(onModeRestore).toHaveBeenLastCalledWith("plan");
 
       fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
       expect(onChange).toHaveBeenLastCalledWith("second sent");
-      expect(onModeChange).toHaveBeenLastCalledWith("build");
+      expect(onModeRestore).toHaveBeenLastCalledWith("act");
 
       fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
       expect(onChange).toHaveBeenLastCalledWith("first sent");
-      expect(onModeChange).toHaveBeenLastCalledWith("chat");
+      expect(onModeRestore).toHaveBeenLastCalledWith("plan");
+      expect(onModeRestore).toHaveBeenCalledTimes(3);
+
+      // Walking the history *selects* a mode for the next message; it does not
+      // switch the agent's mode. Switching is `onModeChange`, which only the
+      // selector and Ctrl+M call — otherwise a walk would push a mode change
+      // (and a notice) for every keystroke.
+      expect(onModeChange).not.toHaveBeenCalled();
 
       // Pressing Up again at the oldest entry is a no-op — onChange
       // should not have been called a fourth time.
@@ -606,8 +617,8 @@ describe("ChatInput", () => {
 
     it("swapping in a new history array resets the cursor", () => {
       const firstHistory = [
-        { content: "old A", mode: "chat" },
-        { content: "old B", mode: "chat" },
+        { content: "old A", mode: "plan" },
+        { content: "old B", mode: "plan" },
       ];
       const secondHistory = [{ content: "new A", mode: "plan" }];
 

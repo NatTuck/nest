@@ -52,6 +52,7 @@ import {
   toolCallsFromParts,
   mediaFromParts,
 } from "../utils/messageParts.js";
+import { stripAgentHeaderMode } from "../utils/agentHeader.js";
 import { stripModePrefix } from "../utils/stripModePrefix.js";
 import { stripNoticePrefix } from "../utils/stripNoticePrefix.js";
 
@@ -143,8 +144,11 @@ function Message({ message, agentName }) {
                 ? [
                     {
                       kind: "text",
-                      text: stripNoticePrefix(
-                        stripModePrefix(messageText(message), message.mode),
+                      text: stripAgentHeaderMode(
+                        stripNoticePrefix(
+                          stripModePrefix(messageText(message), message.mode),
+                        ),
+                        message.mode,
                       ),
                     },
                     // Media parts are appended, not replaced. This branch

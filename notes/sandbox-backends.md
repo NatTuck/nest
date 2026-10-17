@@ -27,9 +27,10 @@ already travels with every call. Adding a backend means adding a module under
 | HPU devices | host `/dev` `--dev-bind` + writable Habana log dir | `--device` per path | already visible |
 | Process/net namespace | unshared | the container's | the host's |
 
-`caps["net"]` is the **space's** `network_access`, not a vocation mode's: it is
-resolved once at agent start, carried on the `Mounts` value, and injected by
-`Nest.Sandbox.with_network_access/2`. A mode's own `net` key is dead data.
+`caps["net"]` is the **space's** `network_access`, not a mode's: it is resolved
+once at agent start, carried on the `Mounts` value, and injected by
+`Nest.Sandbox.with_network_access/2`. The mode's own `net` key is a placeholder —
+`Nest.Modes.caps/1` sets it to `false` and nothing reads it.
 
 **`none` enforces nothing.** It is the escape hatch for a space that must reach
 the real machine, and its caps are unenforceable by construction — including the
@@ -70,17 +71,17 @@ project that needs a host path readable declares it as a `.nest` mount.
 
 The container binds the **superset** a space can need, because a container's
 mounts are fixed when it is created and one container serves every mode its
-space can run. Its binds are the ones a mode that writes the workspace gets —
-which is exactly the set `.nest` project mounts are granted to
-(`Nest.ProjectConfig.effective_caps/2` gives them only to modes that write
-`":workspace"`) — plus the workspace and the staging directory. The sandbox
+space can run. Its binds are the ones `act` gets — which is exactly the set
+`.nest` project mounts are granted to (`Nest.ProjectConfig.effective_caps/2`
+gives them only to caps that write `":workspace"`) — plus the workspace and the
+staging directory. The sandbox
 inside tightens per call: `--ro-bind / /` makes the whole image read-only, and
 each bind the call's caps ask for is re-applied as a *self-bind* of the path the
-container already put there, which is what sets that path's mode. So a read-only
-mode cannot write the workspace, a project mount, or `/tmp`, and it cannot write
+container already put there, which is what sets that path's mode. So `plan`
+cannot write the workspace, a project mount, or `/tmp`, and it cannot write
 `/usr` either. Two consequences worth stating:
 
-* A read-only mode *sees* the project mounts, read-only. Under bwrap it sees the
+* `plan` *sees* the project mounts, read-only. Under bwrap it sees the
   host paths themselves, read-only, through bwrap's own root bind — so the
   capability is the same on both, and only what a `mode = "tmp"` mount resolves
   to differs.

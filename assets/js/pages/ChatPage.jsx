@@ -25,6 +25,7 @@ import {
   fetchShellLog,
   refreshShellJobs,
   requestInbox,
+  setAgentMode,
 } from "../channels";
 import { StatusBanner } from "../components/StatusBanner";
 import { NotificationBanner } from "../components/NotificationBanner";
@@ -52,7 +53,6 @@ import { parseSlashCommand, SLASH_COMMANDS } from "../utils/slashCommands.js";
 // literal each call and trip zustand's `Object.is` check.
 const EMPTY_MESSAGES = [];
 const EMPTY_HISTORY = [];
-const EMPTY_MODES = ["chat"];
 const EMPTY_JOBS = [];
 
 // Slash-command dispatch: a command's name (from `SLASH_COMMANDS`) maps
@@ -157,8 +157,11 @@ export function ChatPage() {
         // has reported one, which is not the same as zero.
         messageCount: cache?.messageCount ?? null,
         agentState: cache?.agentState ?? "idle",
-        availableModes: cache?.modes ?? EMPTY_MODES,
-        defaultMode: cache?.defaultMode ?? "chat",
+        // Both from the server (`Nest.Modes`): the UI does not decide which
+        // modes exist, and a fallback of its own would show a mode the agent
+        // cannot be in.
+        availableModes: cache?.modes ?? [],
+        defaultMode: cache?.defaultMode ?? null,
         contextLimit: cache?.contextLimit ?? null,
         usage: cache?.usage ?? null,
         descendantUsage: cache?.descendantUsage ?? null,
@@ -354,6 +357,19 @@ export function ChatPage() {
       leaveAgent(name);
     };
   }, [name, spaceId]);
+
+  // The mode selector's change: a control-plane push, not a field on the next
+  // message. The mode is persisted, so it applies immediately and from the
+  // agent's next turn, and the server announces it in the transcript. The
+  // optimistic update lives in the channel function; a refusal lands here.
+  const handleModeChange = (mode) => {
+    setSendError(null);
+    setAgentMode(name, mode, (err) => {
+      setSendError(
+        err?.reason || err?.message || "Failed to change the agent's mode",
+      );
+    });
+  };
 
   const handleSendMessage = () => {
     if (!inputValue.trim()) {
@@ -651,7 +667,8 @@ export function ChatPage() {
             }
             modes={availableModes}
             mode={currentMode ?? defaultMode}
-            onModeChange={setCurrentMode}
+            onModeChange={handleModeChange}
+            onModeRestore={setCurrentMode}
             history={history}
             commands={SLASH_COMMANDS}
             hasNewContent={hasNewContent}

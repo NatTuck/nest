@@ -269,15 +269,45 @@ describe("store", () => {
     it("stores modes, defaultMode, and currentMode from the init payload", () => {
       useStore.getState().setAgentConnected("agent-1", {
         messageCount: 0,
-        modes: ["chat", "build", "plan"],
-        defaultMode: "build",
-        currentMode: "build",
+        modes: ["plan", "act"],
+        defaultMode: "act",
+        currentMode: "act",
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
-      expect(cache.modes).toEqual(["chat", "build", "plan"]);
-      expect(cache.defaultMode).toBe("build");
-      expect(cache.currentMode).toBe("build");
+      expect(cache.modes).toEqual(["plan", "act"]);
+      expect(cache.defaultMode).toBe("act");
+      expect(cache.currentMode).toBe("act");
+    });
+
+    it("setAgentMode sets the cached currentMode (the selector's optimistic update)", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        modes: ["plan", "act"],
+        defaultMode: "act",
+        currentMode: "act",
+      });
+
+      useStore.getState().setAgentMode("agent-1", "plan");
+      expect(useStore.getState().agentsCache["agent-1"].currentMode).toBe(
+        "plan",
+      );
+
+      // The same call takes an optimistic value back, which is exactly what
+      // `channels/agent.js` does when the server refuses the change.
+      useStore.getState().setAgentMode("agent-1", "act");
+      expect(useStore.getState().agentsCache["agent-1"].currentMode).toBe(
+        "act",
+      );
+    });
+
+    it("setAgentMode is a no-op for an agent with no cache", () => {
+      // The channel can be asked for an agent this client has never joined.
+      expect(() =>
+        useStore.getState().setAgentMode("no-such-agent", "plan"),
+      ).not.toThrow();
+
+      expect(useStore.getState().agentsCache["no-such-agent"]).toBeUndefined();
     });
 
     it("initializes mode fields to null when payload omits them and no existing cache", () => {
@@ -295,9 +325,9 @@ describe("store", () => {
       // Initial connection with full mode info
       useStore.getState().setAgentConnected("agent-1", {
         messageCount: 0,
-        modes: ["chat", "build"],
-        defaultMode: "build",
-        currentMode: "build",
+        modes: ["plan", "act"],
+        defaultMode: "act",
+        currentMode: "act",
       });
 
       // Mid-stream rejoin (e.g. via chat:status) — payload has no modes
@@ -306,29 +336,29 @@ describe("store", () => {
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
-      expect(cache.modes).toEqual(["chat", "build"]);
-      expect(cache.defaultMode).toBe("build");
-      expect(cache.currentMode).toBe("build");
+      expect(cache.modes).toEqual(["plan", "act"]);
+      expect(cache.defaultMode).toBe("act");
+      expect(cache.currentMode).toBe("act");
     });
 
     it("overrides existing mode values when a new payload provides them", () => {
       useStore.getState().setAgentConnected("agent-1", {
         messageCount: 0,
-        modes: ["chat", "build"],
-        defaultMode: "build",
-        currentMode: "build",
+        modes: ["plan", "act"],
+        defaultMode: "act",
+        currentMode: "act",
       });
 
-      // A later init (e.g. after mode switch) replaces the values
+      // A later init (e.g. after a mode switch) replaces the values
       useStore.getState().setAgentConnected("agent-1", {
         messageCount: 4,
-        modes: ["chat", "build", "plan"],
+        modes: ["plan", "act"],
         defaultMode: "plan",
         currentMode: "plan",
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
-      expect(cache.modes).toEqual(["chat", "build", "plan"]);
+      expect(cache.modes).toEqual(["plan", "act"]);
       expect(cache.defaultMode).toBe("plan");
       expect(cache.currentMode).toBe("plan");
     });
