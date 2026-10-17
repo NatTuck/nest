@@ -81,16 +81,9 @@ const sampleBlueprints = [
 
 const sampleVocations = [
   { id: 10, name: "Chat", slug: "chat" },
-  {
-    id: 20,
-    name: "Grading Coordinator",
-    slug: "grading-coordinator",
-    modes: {
-      chat: {
-        caps: { net: true, fs: { read: ["/"], write: ["/tmp", ":workspace"] } },
-      },
-    },
-  },
+  // No `modes`: the modes are universal code constants now, so a vocation no
+  // longer carries any — nothing in the form reads one.
+  { id: 20, name: "Grading Coordinator", slug: "grading-coordinator" },
 ];
 
 const sampleModels = [
@@ -137,6 +130,8 @@ describe("validateNewSpaceForm", () => {
           selectedBlueprint: "1",
           selectedModel: "gpt-4o",
           sandboxBackend,
+          requiresWorkspace: true,
+          workspacePath: "/home/nat/proj",
         }),
       ).toBeNull();
     }
@@ -163,7 +158,7 @@ describe("validateNewSpaceForm", () => {
         selectedModel: "gpt-4o",
         sandboxBackend: "bwrap",
         requiresWorkspace: true,
-        workspacePath: "/tmp/proj",
+        workspacePath: "/home/nat/proj",
       }),
     ).toBeNull();
   });
@@ -306,24 +301,20 @@ describe("NewSpacePage", () => {
     expect(screen.getByRole("option", { name: "gpt-4o" })).toBeInTheDocument();
   });
 
-  it("shows the workspace path input when the blueprint's vocation needs one", () => {
+  it("always shows the workspace path input, whichever blueprint is selected", () => {
+    // Every space has a workspace now: `vocationRequiresWorkspace` is a constant
+    // (`true`), because the modes are universal code constants — `act` writes the
+    // workspace, and every agent can be in `act`. There is no vocation left for
+    // the form to hide the input for.
     renderPage();
 
-    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
-      target: { value: "2" },
-    });
+    for (const blueprint of ["1", "2"]) {
+      fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+        target: { value: blueprint },
+      });
 
-    expect(screen.getByLabelText("Workspace Path")).toBeInTheDocument();
-  });
-
-  it("hides the workspace path input when the blueprint's vocation does not need one", () => {
-    renderPage();
-
-    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
-      target: { value: "1" },
-    });
-
-    expect(screen.queryByLabelText("Workspace Path")).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Workspace Path")).toBeInTheDocument();
+    }
   });
 
   it("blocks submission when a required workspace path is missing", () => {
@@ -381,7 +372,7 @@ describe("NewSpacePage", () => {
       target: { value: "gpt-4o" },
     });
     fireEvent.change(screen.getByLabelText("Workspace Path"), {
-      target: { value: "/tmp/proj" },
+      target: { value: "/home/nat/proj" },
     });
     fireEvent.change(screen.getByLabelText("Sandbox"), {
       target: { value: "docker" },
@@ -403,7 +394,7 @@ describe("NewSpacePage", () => {
     expect(opts).toEqual({
       name: "My Project",
       blueprint_id: 2,
-      workspace_path: "/tmp/proj",
+      workspace_path: "/home/nat/proj",
       sandbox_backend: "docker",
       // Network access is a space property, chosen here and editable later; the
       // toggle defaults to on.
@@ -424,7 +415,7 @@ describe("NewSpacePage", () => {
       target: { value: "gpt-4o" },
     });
     fireEvent.change(screen.getByLabelText("Workspace Path"), {
-      target: { value: "/tmp/proj" },
+      target: { value: "/home/nat/proj" },
     });
 
     fireEvent.click(screen.getByLabelText("Network access"));
@@ -445,6 +436,9 @@ describe("NewSpacePage", () => {
     });
     fireEvent.change(screen.getByLabelText("Select Model"), {
       target: { value: "gpt-4o" },
+    });
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/home/nat/proj" },
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
@@ -474,6 +468,9 @@ describe("NewSpacePage", () => {
     fireEvent.change(screen.getByLabelText("Select Model"), {
       target: { value: "gpt-4" },
     });
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/home/nat/proj" },
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
 
@@ -492,6 +489,9 @@ describe("NewSpacePage", () => {
     });
     fireEvent.change(screen.getByLabelText("Select Model"), {
       target: { value: "gpt-4o" },
+    });
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/home/nat/proj" },
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
@@ -519,6 +519,9 @@ describe("NewSpacePage", () => {
     fireEvent.change(screen.getByLabelText("Select Model"), {
       target: { value: "gpt-4o" },
     });
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/home/nat/proj" },
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
 
@@ -542,6 +545,9 @@ describe("NewSpacePage", () => {
     });
     fireEvent.change(screen.getByLabelText("Select Model"), {
       target: { value: "gpt-4o" },
+    });
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/home/nat/proj" },
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
