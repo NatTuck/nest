@@ -411,8 +411,9 @@ defmodule Nest.AccountsTest do
       {:ok, alice, _} = Accounts.create_user(registration_attrs("alice"), "first-user")
 
       # Pin `inserted_at` explicitly so the ordering assertion
-      # doesn't depend on the wall clock — `create_invite/1`
-      # defaults to NOW(), which clusters on the same millisecond.
+      # doesn't depend on the wall clock — three `create_invite/1`
+      # calls land microseconds apart, which is an accident, not a
+      # contract.
       t1 = ~U[2026-01-01 00:00:00Z]
       t2 = ~U[2026-01-01 00:00:01Z]
       t3 = ~U[2026-01-01 00:00:02Z]

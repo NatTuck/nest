@@ -61,6 +61,11 @@ The pipeline `Enum.filter(&match?(%Part.Text{}, &1)) |> Enum.map_join("", & &1.t
 
 **Fix:** Add `Nest.Persistence.now/0` (or `Nest.Persistence.utc_now_truncated/0`) and use it everywhere.
 
+> **Superseded.** `Nest.Persistence.now/0` exists, but it no longer truncates:
+> the columns are `timestamp(6)` and the truncation was removed as a mistake —
+> see `notes/timestamp-precision.md`. Do not reintroduce
+> `DateTime.truncate(:second)` here or anywhere else in a persistence path.
+
 ### 7. JS: Extract duplicated `ChevronDown` component
 
 - `assets/js/components/TruncatedResult.jsx:36`

@@ -385,4 +385,53 @@ defmodule Nest.PersistenceTest do
                )
     end
   end
+
+  describe "timestamp precision" do
+    test "a timestamp keeps microseconds through the round trip" do
+      # The columns are `timestamp(6)` and the schemas declare
+      # `:utc_datetime_usec`. Before `notes/timestamp-precision.md`'s change
+      # both halves were second-precision: `now/0` truncated the struct so it
+      # would equal a `timestamp(0)` row, and Ecto truncated again on the way
+      # in and out. `to_iso8601/1` renders six fractional digits for a
+      # microsecond-precision value and none for a truncated one, so this pins
+      # `now/0` without depending on the clock.
+      assert Persistence.now() |> DateTime.to_iso8601() =~ ~r/\.\d{6}Z$/
+
+      attrs = agent_attrs("usec-#{Elixir.System.unique_integer([:positive])}")
+      {:ok, %PersistedAgent{id: agent_id}} = Persistence.insert_agent(attrs)
+
+      # An arbitrary microsecond, written straight to the column: the point is
+      # that storage keeps it, which is what the migration bought. A
+      # `timestamp(0)` column would load this back as `{0, 0}`.
+      stamped = %{DateTime.utc_now() | microsecond: {123_456, 6}}
+
+      from(a in PersistedAgent, where: a.id == ^agent_id)
+      |> Nest.Repo.update_all(set: [updated_at: stamped])
+
+      assert %PersistedAgent{updated_at: %DateTime{microsecond: {123_456, 6}}} =
+               Nest.Repo.get!(PersistedAgent, agent_id)
+    end
+
+    test "every application timestamp column is timestamp(6)" do
+      # The one assertion a `timestamp(0)` column cannot pass, and the round-trip
+      # above cannot make: Ecto's `:utc_datetime_usec` loader pads *any* loaded
+      # value to precision 6, so a schema declaring `:utc_datetime_usec` over a
+      # second-precision column would still load `{0, 6}`. The column type is
+      # what the migration changed, so read the column type.
+      %{rows: rows} =
+        Nest.Repo.query!("""
+        SELECT table_name, column_name, datetime_precision
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND data_type LIKE 'timestamp%'
+          AND table_name NOT IN ('schema_migrations', 'agent_name_migrations')
+        """)
+
+      refute rows == []
+
+      assert Enum.all?(rows, fn [_table, _column, precision] -> precision == 6 end),
+             "expected every application timestamp column at precision 6, got: " <>
+               inspect(rows)
+    end
+  end
 end

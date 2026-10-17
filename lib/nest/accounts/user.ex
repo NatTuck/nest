@@ -26,7 +26,7 @@ defmodule Nest.Accounts.User do
     field :password_hash, :binary
     field :is_admin, :boolean, default: false
 
-    timestamps(type: :utc_datetime)
+    timestamps(type: :utc_datetime_usec)
   end
 
   @type t :: %__MODULE__{

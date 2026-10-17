@@ -95,7 +95,7 @@ defmodule Nest.Blueprints.Blueprint do
     field :workspace_template, :map, default: %{}
     field :main_view_config, :map, default: %{}
 
-    timestamps(type: :utc_datetime)
+    timestamps(type: :utc_datetime_usec)
   end
 
   @type t :: %__MODULE__{

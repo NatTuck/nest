@@ -145,7 +145,7 @@ defmodule Nest.Agents.PersistedAgent do
     # from persisted message-history / parent-child joins.
     field :archived, :boolean, default: false
 
-    timestamps(type: :utc_datetime)
+    timestamps(type: :utc_datetime_usec)
   end
 
   @doc """

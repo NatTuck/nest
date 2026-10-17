@@ -24,12 +24,12 @@ defmodule Nest.Accounts.Invite do
   schema "invites" do
     field :token, :string
     field :created_by_user_id, :integer
-    field :expires_at, :utc_datetime
+    field :expires_at, :utc_datetime_usec
     field :used_by_user_id, :integer
-    field :used_at, :utc_datetime
-    field :revoked_at, :utc_datetime
+    field :used_at, :utc_datetime_usec
+    field :revoked_at, :utc_datetime_usec
 
-    timestamps(type: :utc_datetime)
+    timestamps(type: :utc_datetime_usec)
   end
 
   @type t :: %__MODULE__{

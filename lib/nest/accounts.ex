@@ -247,10 +247,7 @@ defmodule Nest.Accounts do
     else
       token = generate_token()
 
-      expires_at =
-        DateTime.utc_now()
-        |> DateTime.add(@invite_ttl_seconds, :second)
-        |> DateTime.truncate(:second)
+      expires_at = DateTime.add(DateTime.utc_now(), @invite_ttl_seconds, :second)
 
       %InviteSchema{}
       |> InviteSchema.new_changeset(%{
@@ -320,10 +317,7 @@ defmodule Nest.Accounts do
       with {:ok, user, _role} <- do_create_user(params, false),
            {:ok, _invite} <-
              invite
-             |> InviteSchema.redeem_changeset(
-               user.id,
-               DateTime.utc_now() |> DateTime.truncate(:second)
-             )
+             |> InviteSchema.redeem_changeset(user.id, DateTime.utc_now())
              |> Repo.update() do
         user
       else
@@ -370,7 +364,7 @@ defmodule Nest.Accounts do
             :ok
 
           true ->
-            now = DateTime.utc_now() |> DateTime.truncate(:second)
+            now = DateTime.utc_now()
             {:ok, _} = invite |> InviteSchema.revoke_changeset(now) |> Repo.update()
             :ok
         end

@@ -98,7 +98,7 @@ defmodule Nest.Spaces.Space do
     # inspect and unarchive it via the archived-spaces view.
     field :archived, :boolean, default: false
 
-    timestamps(type: :utc_datetime)
+    timestamps(type: :utc_datetime_usec)
   end
 
   @doc """
