@@ -120,9 +120,9 @@ defmodule Nest.Agents.Supervisor do
   # (`Sandbox.read` -> `Mounts.ensure_scratch!/1`, whose `File.mkdir_p!` raises
   # `File.Error`). Inside `init/1` that raise came back as `{:error, reason}`
   # from `DynamicSupervisor.start_child/2`; out here it would escape
-  # `fetch_or_start_agent/2` and `get_agent/2`, which are specced
-  # `{:error, term()}`, are called from channels, and log nothing themselves —
-  # so it is mapped back to that shape and logged here. (Deliberately not in
+  # `fetch_or_start_agent/2` and `get_agent/2`, both of which return error
+  # tuples, are called from channels, and log nothing themselves — so it is
+  # mapped back to that shape and logged here. (Deliberately not in
   # `Agent.pre_spawn/1`: `start_pre_spawned/3` re-raises after rolling the row
   # back, and that path already behaved this way.)
   defp prepare_for_start(attrs) do
@@ -197,24 +197,24 @@ defmodule Nest.Agents.Supervisor do
   # The row id and the row's mode are attached here rather than returned from
   # `pre_spawn/1`: a spawned child starts straight from these attrs (a
   # caller-created agent's come from `Persistence.build_attrs_for_start/2`), so
-  # its session must know which row it owns before its first append (see
-  # `Persistence.insert_message/4`), and its mode must be the *row's* —
-  # `PreSpawn.put_mode/1` derived it into its own copy of the attrs, so a spawn
-  # that named none would otherwise fall back to `Nest.Modes.default()`: a
-  # `plan` parent's child running `act`, writing a workspace its parent may not
-  # touch, while its row, the UI and every restart say `plan`.
-  # `fetch_or_start_agent/2` reads the same field from
-  # `build_attrs_for_start/2`.
+  # its session must know which row it owns before its first append, and its mode
+  # must be the *row's* — `PreSpawn.put_mode/1` derived it into its own copy, so
+  # a spawn that named none fell back to `Nest.Modes.default()`: a `plan`
+  # parent's child running `act`, writing a workspace its parent may not touch.
   defp start_pre_spawned_child(attrs, agent_id, name) do
     attrs = Map.put(attrs, :agent_row_id, agent_id)
     # Inside the closure, so a missing row is rolled back (see `start_pre_spawned/3`).
     start_pre_spawned(attrs, agent_id, fn ->
-      start_under_supervisor(Map.put(attrs, :mode, persisted_mode(attrs)), name)
+      start_under_supervisor(Map.put(attrs, :mode, persisted_mode(attrs, agent_id)), name)
     end)
   end
 
-  defp persisted_mode(attrs) do
-    {:ok, %PersistedAgent{mode: mode}} = Persistence.fetch_agent(attrs.space_id, attrs.name)
+  # By `id`, not by name: a name outlives its row, so a teardown or a concurrent
+  # create could hand the child its successor's mode — the widening direction.
+  defp persisted_mode(attrs, agent_id) do
+    {:ok, %PersistedAgent{id: ^agent_id, mode: mode}} =
+      Persistence.fetch_agent(attrs.space_id, attrs.name)
+
     mode
   end
 
