@@ -26,7 +26,6 @@ defmodule Nest.Agents.Agent.ModeSelectorTest do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.MessageAppender
-  alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
 
   setup :verify_on_exit!
