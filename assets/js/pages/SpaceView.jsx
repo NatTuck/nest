@@ -1,19 +1,26 @@
 /**
- * SpaceView (Main View) — shows a space's overview: its name,
- * blueprint, and the agents running in it, with links to each
- * agent's chat page.
+ * SpaceView (Main View) — what clicking a space gets you.
  *
- * Phase 4 plans a blueprint-driven layout via `main_view_config`;
- * until a blueprint ships a custom config, this renders the
- * default "space overview" (active agents + status).
+ * The layout is the blueprint's choice, via `main_view_config`:
+ *
+ *   * no config, or `{"view": "chat"}` — the default: **the root agent's chat**,
+ *     reached with a `replace` redirect so the back button does not bounce
+ *     through here (#96);
+ *   * `{"view": "rpg"}` — the campaign's own page (a placeholder for now).
+ *
+ * The space overview — name, blueprint, network toggle, agent list — is still
+ * what renders when there is no root agent to redirect to, which is the one
+ * moment it is the only thing to show (a space whose root agent is still
+ * starting). It is not a page you have to visit to get to the chat.
  */
 
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, Navigate, useParams } from "react-router-dom";
 import { useStore } from "../store";
 import { setSpaceNetwork } from "../channels";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { StatusDot } from "../components/StatusDot";
+import { RpgPlayInterface } from "../components/RpgPlayInterface";
 
 /**
  * Space View component
@@ -50,6 +57,31 @@ export function SpaceView() {
           Back to spaces
         </Link>
       </div>
+    );
+  }
+
+  // The Main View dispatch. `main_view_config` is the blueprint's hook for
+  // exactly this, and it has been on the schema since Phase 2 with nothing
+  // reading it.
+  const mainView = blueprint?.main_view_config?.view ?? "chat";
+
+  if (mainView === "rpg") {
+    return <RpgPlayInterface space={space} />;
+  }
+
+  // The default Main View is the root agent's chat. `parentId == null` is the
+  // root: every other agent in the space was spawned by someone.
+  const rootAgent = spaceAgents.find(
+    (a) => (a.parentId ?? a.parent_id) == null,
+  );
+
+  if (rootAgent) {
+    const base = `/space/${encodeURIComponent(space.slug)}`;
+    return (
+      <Navigate
+        to={`${base}/agent/${encodeURIComponent(rootAgent.name)}`}
+        replace
+      />
     );
   }
 

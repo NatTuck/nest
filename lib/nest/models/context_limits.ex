@@ -4,14 +4,12 @@ defmodule Nest.Models.ContextLimits do
   whole `context_limits` map.
 
   Published to a public ETS table so readers never touch the
-  `Nest.Models` process: `Agent.init/1` resolves a context limit on
-  every start, and `DynamicSupervisor.start_child/2` runs that `init/1`
-  inside the supervisor's own `handle_call`, so a `GenServer.call` here
-  put a second single process in the path of every concurrent start.
-  One row — the whole `context_limits` map, rewritten whenever it
-  changes (`Nest.Models.init/1`, `Nest.Models.finalize_scan/1`) — so
-  reads are lock-free and see the old or the new map, never a partial
-  one.
+  `Nest.Models` process: a context limit is resolved on every agent
+  start, and a `GenServer.call` here would put a second single
+  process in the path of every concurrent start. One row — the whole
+  `context_limits` map, rewritten whenever it changes
+  (`Nest.Models.init/1`, `Nest.Models.finalize_scan/1`) — so reads
+  are lock-free and see the old or the new map, never a partial one.
 
   The table is created lazily by the first `publish/1`, so it is owned
   by whichever process publishes first — in this tree the `Nest.Models`

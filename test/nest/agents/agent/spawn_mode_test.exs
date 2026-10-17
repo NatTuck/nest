@@ -21,6 +21,14 @@ defmodule Nest.Agents.Agent.SpawnModeTest do
   (`Agent.set_mode/2`), because that is the only way to put a live agent in
   `plan` without a blueprint — and it persists the row, which is what the child's
   inherited mode is read from.
+
+  It also pins that the **live** mode is the row's on both spawn paths, which is
+  a separate failure from the dropped argument: a spawn starts from the
+  *spawner's* attrs and `PreSpawn.put_mode/1` derives the mode into its own copy,
+  so a child whose row says `plan` could still run `act` — writing a workspace
+  its parent may not touch. The `"mine"` spelling made that worse than a
+  cosmetic mismatch: it left `state.live.mode` as the literal `"mine"`, which
+  `ChatPipeline.resolve_mode_and_caps/3` resolves to the **`act`** caps.
   """
   use Nest.DataCase, async: true
 
@@ -59,7 +67,9 @@ defmodule Nest.Agents.Agent.SpawnModeTest do
       assert %{current_mode: "plan"} = Agent.get_public_info(child_pid(space_id, name), 1_000)
     end
 
-    test "an omitted mode inherits the parent's, and the row agrees", %{space_id: space_id} do
+    test "an omitted mode inherits the parent's, on the row and in the live state", %{
+      space_id: space_id
+    } do
       state = plan_coordinator(space_id)
       name = unique("inherit-child")
 
@@ -68,6 +78,35 @@ defmodule Nest.Agents.Agent.SpawnModeTest do
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
 
       assert %{mode: "plan"} = row_for(space_id, name)
+
+      # The row alone is not enough: the live mode is what `ctx.mode`/`ctx.caps`
+      # are built from, so a child whose row says `plan` while its process runs
+      # `act` writes the workspace the parent may not touch. The spawned child is
+      # started from the *spawner's* attrs, which never carry the mode
+      # `PreSpawn.put_mode/1` derived, so this is the assertion that catches it.
+      assert %{current_mode: "plan"} = Agent.get_public_info(child_pid(space_id, name), 1_000)
+    end
+
+    test "the `mine` spelling reaches the child as the parent's mode, on the row and live", %{
+      space_id: space_id
+    } do
+      # `"mine"` is the spelling both tools actually send by default
+      # (`SpawnAgent`'s enum and `BatchPlan.base_opts/1`), so this is the common
+      # path, not an edge case. Pre-fix the child's attrs kept the literal
+      # `"mine"`: its row said `plan`, `state.live.mode` said `"mine"`, and
+      # `ChatPipeline` resolved that to the `act` caps.
+      state = plan_coordinator(space_id)
+      name = unique("mine-child")
+
+      assert {:ok, ^name} =
+               Supervisor.spawn_agent_in_space(state, name, fresh_vocation().slug, nil,
+                 mode: "mine"
+               )
+
+      on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
+
+      assert %{mode: "plan"} = row_for(space_id, name)
+      assert %{current_mode: "plan"} = Agent.get_public_info(child_pid(space_id, name), 1_000)
     end
 
     test "a `plan` parent may spawn a `plan` child", %{space_id: space_id} do
@@ -117,6 +156,19 @@ defmodule Nest.Agents.Agent.SpawnModeTest do
       # happens before the child has one.
       assert {:error, {:mode_refused, _reason}} =
                Supervisor.start_agent_with_parent(state, "carry on", nil, mode: "act")
+    end
+
+    test "an omitted mode inherits the parent's, on the row and in the live state", %{
+      space_id: space_id
+    } do
+      state = plan_coordinator(space_id)
+
+      assert {:ok, child} = Supervisor.start_agent_with_parent(state, "carry on")
+
+      on_exit(fn -> _ = Supervisor.stop_agent(space_id, child) end)
+
+      assert %{mode: "plan"} = row_for(space_id, child)
+      assert %{current_mode: "plan"} = Agent.get_public_info(child_pid(space_id, child), 1_000)
     end
   end
 

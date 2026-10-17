@@ -277,7 +277,11 @@ end
     spawnable_vocations: [],
     default_mode: "act",
     default_net: true,
-    default_spawnable_vocation: "game-master"
+    default_spawnable_vocation: "game-master",
+    # The Main View hook (#96): clicking this space opens the campaign page
+    # rather than the game master's chat, because a transcript is not the
+    # interface a campaign is played through.
+    main_view_config: %{"view" => "rpg"}
   })
 
 {:ok, _} =

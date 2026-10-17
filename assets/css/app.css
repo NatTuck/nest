@@ -11,6 +11,23 @@
 /* LlamaIndex Chat UI markdown styling (code, LaTeX, custom markdown) */
 @import "@llamaindex/chat-ui/styles/markdown.css";
 
+/* KaTeX renders every formula twice: a visually hidden MathML copy for screen
+   readers (`.katex-mathml`, `position: absolute` with a 1px clip) and the visual
+   HTML. `.katex` itself is `position: static`, so that absolute span's
+   containing block is the *initial containing block* rather than the message —
+   it escapes the conversation pane's clipping and inflates the document to
+   wherever the formula sits in the conversation. A long conversation containing
+   math therefore makes the whole page thousands of pixels tall, with blank
+   space below the fold and a page scrollbar that no amount of scrolling fills
+   (#77). Giving `.katex` a positioned box puts the hidden copy back inside the
+   message, where the pane clips it.
+
+   Measured on a saved copy of a real page (2560x1300, Chromium): document
+   `scrollHeight` 87,062 -> 1,157 with this rule, against a 1,157px viewport. */
+.katex {
+  position: relative;
+}
+
 /* Add variants based on LiveView classes */
 @custom-variant phx-click-loading (.phx-click-loading&, .phx-click-loading &);
 @custom-variant phx-submit-loading (.phx-submit-loading&, .phx-submit-loading &);

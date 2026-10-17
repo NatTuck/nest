@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter, Routes, Route } from "react-router-dom";
+import { MemoryRouter, Routes, Route, useParams } from "react-router-dom";
 
 let mockState = { spaces: [], agents: [], blueprints: [] };
 
@@ -27,11 +27,21 @@ vi.mock("../store", () => ({
 
 import { SpaceView } from "./SpaceView";
 
+// The redirect target, so the test can see *which* agent it landed on.
+function AgentChatStub() {
+  const { name } = useParams();
+  return <p>agent chat: {name}</p>;
+}
+
 function renderView(spaceSlug = "my-space") {
   return render(
     <MemoryRouter initialEntries={[`/space/${spaceSlug}`]}>
       <Routes>
         <Route path="/space/:spaceSlug" element={<SpaceView />} />
+        <Route
+          path="/space/:spaceSlug/agent/:name"
+          element={<AgentChatStub />}
+        />
       </Routes>
     </MemoryRouter>,
   );
@@ -55,13 +65,17 @@ beforeEach(() => {
       },
       { id: 2, name: "Other Space", slug: "other-space", blueprint_id: null },
     ],
+    // No root agent in the default fixture. `/space/:slug` now redirects to the
+    // root agent's chat (#96), so the overview below is what renders in the one
+    // state where there is nothing to redirect to: a space whose root agent has
+    // not appeared yet. `dm` is a child of that not-yet-listed root.
     agents: [
       {
         name: "dm",
         space_id: 1,
         status: "idle",
         depth: 0,
-        parent_id: null,
+        parent_id: 1,
       },
       {
         name: "npc",
@@ -113,7 +127,13 @@ describe("SpaceView", () => {
     mockState = {
       ...mockState,
       agents: [
-        { name: "dm", space_id: 1, status: "executing_tools", depth: 0 },
+        {
+          name: "dm",
+          space_id: 1,
+          status: "executing_tools",
+          depth: 0,
+          parent_id: 1,
+        },
       ],
     };
 
@@ -171,6 +191,57 @@ describe("SpaceView", () => {
     const warning = screen.getByText(/restarts this space's container/i);
     expect(warning).toBeInTheDocument();
     expect(warning.textContent).toMatch(/background-job logs/i);
+  });
+
+  it("redirects to the root agent's chat, replacing the entry", () => {
+    // The default Main View (#96): clicking a space is clicking its root
+    // agent's chat, not an overview you then have to click through.
+    mockState = {
+      ...mockState,
+      agents: [
+        {
+          name: "boss",
+          space_id: 1,
+          status: "idle",
+          depth: 0,
+          parent_id: null,
+        },
+        {
+          name: "minion",
+          space_id: 1,
+          status: "idle",
+          depth: 1,
+          parent_id: 1,
+        },
+      ],
+    };
+
+    renderView();
+
+    // The root, not the sub-agent.
+    expect(screen.getByText("agent chat: boss")).toBeInTheDocument();
+  });
+
+  it("renders the blueprint's own Main View when it names one", () => {
+    // `main_view_config` is the blueprint's hook for the main screen. A
+    // campaign space gets its own page instead of the game master's transcript.
+    mockState = {
+      ...mockState,
+      agents: [
+        { name: "gm", space_id: 1, status: "idle", depth: 0, parent_id: null },
+      ],
+      blueprints: [
+        { id: 10, name: "Tabletop RPG", main_view_config: { view: "rpg" } },
+      ],
+    };
+
+    renderView();
+
+    expect(
+      screen.getByRole("heading", { name: "RPG Play Interface" }),
+    ).toBeInTheDocument();
+    // ...and it did not redirect to the game master's chat.
+    expect(screen.queryByText(/^agent chat:/)).not.toBeInTheDocument();
   });
 
   it("renders the not-found state for an unknown slug", () => {

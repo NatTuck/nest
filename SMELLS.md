@@ -95,8 +95,9 @@ we need to find and fix the bug *and* refactor the test with the long timeout.
 - If we're doing something that's going to block in a test (like a receive), it's because
 we know for sure the block will end in a fixed time - optimally we should only
 be doing a receive if the message is *already* in the mailbox.
-- We don't do "drain loops" in tests to drain mailboxes. Ever. Any PR that has
-any of these fails review, even if it was somehow already there.
+- We don't do "drain loops" in tests to drain mailboxes — message drain loops
+are strictly prohibited. Ever. Any PR that has any of these fails review, even
+if it was somehow already there.
 - We don't do "async: false" just because a test hits the DB. Any "async: false"
 must have a clear and concrete justification that explains some atypical
 situation.
@@ -104,6 +105,9 @@ situation.
 test must 1.) happen in sandbox for that test, 2.) complete before the test
 finishes. We can't just trigger background test processes that might do DB work 
 and not wait for them.
+- Any use of `:sys.get_state` is sketchy. We should be testing external
+behavior, not probing internal state. Further, this is frequently a sketchy
+hack to avoid the ban on message drain loops.
 
 Temp files:
 

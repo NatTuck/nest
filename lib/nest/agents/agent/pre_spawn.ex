@@ -21,7 +21,6 @@ defmodule Nest.Agents.Agent.PreSpawn do
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.ModeAuthority
-  alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.PersistedAgent
   alias Nest.Messages.MessageList
@@ -247,6 +246,14 @@ defmodule Nest.Agents.Agent.PreSpawn do
 
   # Root and fresh-child path: own the system row at index 0.
   defp pre_spawn_with_system(attrs) do
+    # Compose the system prompt here, in the caller, and carry it on the attrs so
+    # `init/1` reuses it. Composing it runs the sandbox (`AGENTS.md` is read
+    # through it, which spawns a `bwrap`), and `init/1` runs with the supervisor
+    # blocked until it returns — so composing it there was serial across every
+    # agent start. Only this path needs it: the clone path writes no system row.
+    # See `Init.prepare/1`.
+    attrs = Init.prepare(attrs)
+
     # Refuse an agent without a non-empty system message (validate first).
     case build_initial_system_message(attrs) do
       {:ok, system_message} ->
@@ -285,41 +292,11 @@ defmodule Nest.Agents.Agent.PreSpawn do
     end)
   end
 
-  # Render the system prompt in the calling process (so the DB write
-  # runs in a pid with DB access); `nil` only when the vocation is missing.
+  # Wrap the prompt `Init.prepare/1` composed — in this same process, so the DB
+  # write runs in a pid with DB access — in the index-0 system message. An empty
+  # or missing prompt is `{:error, :missing_system_prompt}`.
   defp build_initial_system_message(attrs) do
-    name = Map.fetch!(attrs, :name)
-    model = Map.fetch!(attrs, :model)
-    vocation = Map.get(attrs, :vocation)
-    depth = Map.get(attrs, :depth, 0)
-
-    {context_limit, context_limit_source} = Init.initial_context_limit(model)
-
-    # The prompt is composed through the agent's *real* mounts, scratch
-    # included: composing it reads `AGENTS.md` through the sandbox, so a
-    # `"none"` space must not read it under bwrap, and a `"docker"` space can
-    # only reach the staged transcript through the scratch bind (see
-    # `Nest.Agents.Agent.TmpSpace.prompt_mounts/5`).
-    #
-    # The call's last two arguments are `depth` and `mode`: both short, adjacent
-    # and easy to transpose, and a swap renders "You are at spawn depth act of 3"
-    # into every prompt this composes while authorizing the `AGENTS.md` read with
-    # the wrong mode's caps. `Nest.Agents.AgentSpawnDepthPromptTest` goes through
-    # this path — not the composer — for exactly that reason.
-    {system_prompt, _tools, _cached_vocation} =
-      SystemPrompt.compose_vocation_config(
-        vocation,
-        prompt_mounts(attrs, name),
-        {context_limit, context_limit_source},
-        name,
-        depth,
-        # The mode the child will run in. It only decides the caps the
-        # `AGENTS.md` read is authorized with; the agent's own mode is a runtime
-        # property, and `PreSpawn` is where it is derived.
-        Map.get(attrs, :mode, Nest.Modes.default())
-      )
-
-    case system_prompt do
+    case initial_system_prompt(attrs) do
       text when is_binary(text) and text != "" ->
         {:ok,
          {:system,
@@ -332,6 +309,25 @@ defmodule Nest.Agents.Agent.PreSpawn do
 
       _ ->
         {:error, :missing_system_prompt}
+    end
+  end
+
+  # The prompt this agent will run with, composed by `Init.prepare/1` in this
+  # same process before the row is written. There is deliberately no fallback
+  # composer here: every path into `pre_spawn_with_system/1` has been through
+  # `Init.prepare/1` (see `pre_spawn/1`), and a second copy of the
+  # `(vocation, mounts, context_limit_info, name, depth, mode)` argument list is
+  # exactly the transposition hazard the composer's call site documents.
+  defp initial_system_prompt(attrs) do
+    case Map.get(attrs, :prepared) do
+      {system_prompt, _mode, _tools, _vocation, _metrics} ->
+        system_prompt
+
+      nil ->
+        raise ArgumentError,
+              "PreSpawn.pre_spawn/1 requires attrs that Init.prepare/1 could prepare " <>
+                "(name, space_id, sandbox_backend, network_access, model); " <>
+                "got #{inspect(Map.keys(attrs))}"
     end
   end
 
@@ -501,18 +497,5 @@ defmodule Nest.Agents.Agent.PreSpawn do
       )
 
     {fork_index, preloaded, next_index}
-  end
-
-  # The prompt is composed through the agent's own mounts (see
-  # `Nest.Agents.Agent.TmpSpace.prompt_mounts/5`), gathered here so the call site
-  # stays a plain argument list.
-  defp prompt_mounts(attrs, name) do
-    TmpSpace.prompt_mounts(
-      Map.get(attrs, :workspace_path),
-      Map.fetch!(attrs, :space_id),
-      name,
-      Map.fetch!(attrs, :sandbox_backend),
-      Map.fetch!(attrs, :network_access)
-    )
   end
 end
