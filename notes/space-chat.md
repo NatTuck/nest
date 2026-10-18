@@ -55,10 +55,21 @@ answer one question — *from whom*: `:agent | :user | :query | :runtime`.
 Today three answer that and the fourth names a *speaker*, so a runtime note
 and an agent note cannot be told apart by kind alone.
 
-Mechanical and wide: `send_message`, `deliver_message` and the `:notice` kind
-appear **85 times across 31 files** in `lib` and `test` (18 of them in `lib`'s
-10 files). Treat that as a survey, not a promise — a rename that misses a
-pattern match fails to compile, which is the right failure mode.
+Mechanical and wide: the three names appear **145 times across 44 files** in
+`lib`, `test` and `assets` — the `:notice` kind is 74 of those, across 25
+files, plus the string `"notice"` it becomes on the wire. Treat that as a
+survey, not a promise. Most of a rename that misses a pattern match fails to
+compile, which is the right failure mode; the two that do not are named here
+rather than left to be found:
+
+* `Inbox.enqueue_internal/5`'s `when kind in [...]` guard — every runtime
+  producer funnels through it, so a miss refuses entries at runtime while
+  assertions that only look at messages still pass;
+* the string `Inbox.serialize/1` puts on the wire, which no atom grep finds.
+
+After the rename exactly two `:notice` atoms remain in `lib`, both the pair
+spec's `required(:notice)` text field. That is a useful landmark: a later
+`grep :notice` in `lib` returns the marker's, not the kind's.
 
 `:notice` → `:runtime` is the only one that carries meaning. The kind is read
 by the inbox's renderer, by the watch and timeline bookkeeping and by
