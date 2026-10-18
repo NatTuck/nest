@@ -150,6 +150,16 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       assert Inbox.batch([notice, bob]) == [notice, bob]
       assert Inbox.batch([peer, notice, alice]) == [peer, notice]
 
+      # The rule is about *human words*, not about the kind: a human's query is a
+      # `:query` entry whose sender is an address (`Nest.Address`), and merging
+      # it into a batch of peer traffic would lose the one thing the rule exists
+      # to preserve — its own turn boundary and its own mode.
+      from_human = %{entry(:query, "@nat", "a human's question") | kind: :query}
+
+      assert Inbox.batch([from_human, peer, bob]) == [from_human]
+      assert Inbox.batch([peer, from_human, alice]) == [peer]
+      assert Inbox.batch([peer, bob, from_human]) == [peer, bob]
+
       # The invariant the removed `prune_retrieved/1` used to mop up after: a
       # non-empty queue always selects a non-empty batch, so the drain can never
       # peek `:empty` while entries are still queued. A new `select_batch/1`

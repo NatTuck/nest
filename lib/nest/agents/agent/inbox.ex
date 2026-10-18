@@ -67,15 +67,19 @@ defmodule Nest.Agents.Agent.Inbox do
 
   ## Delivery
 
-  `batch/1` selects what a drain delivers: a human message at the FIFO head is
+  `batch/1` selects what a drain delivers: a human's words at the FIFO head are
   delivered **alone**, a run of leading non-human entries is delivered as one
-  batch. `Nest.Agents.Agent.Inbox.Render` then renders the batch: a human entry
-  is its content behind `[From user | mode: X]` (so a queued human message reads
-  exactly like one that arrived while the agent was idle), a `:runtime` entry
-  says `nest runtime` because the runtime — not an agent — said it, and each
-  `:agent`/`:query` entry names its sender — which is what disambiguates a batch
-  of peer messages. An unknown sender (`nil`) still says `agent` rather than
-  putting `nil` in the prompt.
+  batch. A human's words are a `:user` entry *or* a note whose sender is a human
+  address (`"@nat"`, `Nest.Address`) whatever its kind — a human's query is a
+  `:query` entry, and it keeps its own turn boundary like any other human
+  message. `Nest.Agents.Agent.Inbox.Render` then renders the batch: a human entry
+  is its content behind `[From user | mode: X]` — or `[From user @nat | mode: X]`
+  when the sender is an address, so a queued human message reads exactly like one
+  that arrived while the agent was idle and names the address the agent answers
+  to — a `:runtime` entry says `nest runtime` because
+  the runtime — not an agent — said it, and each `:agent`/`:query` entry names
+  its sender — which is what disambiguates a batch of peer messages. An unknown
+  sender (`nil`) still says `agent` rather than putting `nil` in the prompt.
   A batch over `Nest.Agents.Agent.Config.configured_async_message_max_tokens/0`
   is written to the agent's scratch dir and replaced by a short pointer telling
   the agent how many messages there were and where to read them.
@@ -516,16 +520,30 @@ defmodule Nest.Agents.Agent.Inbox do
   still batches: a run of leading non-human entries is delivered as one
   message. The selection never reorders anything; it only takes a prefix.
 
+  **The rule is about human words, not about the kind.** A `kind: :user` entry
+  is a human's own prompt — and also an `agents-spawn` `query` kickoff, which is
+  why the kind alone is not the whole rule. A note whose *sender* is a human
+  (`"@nat"`, `Nest.Address`) is a human's words whatever its kind: a human's
+  query to an agent is a `:query` entry, and merging it into a batch of peer
+  traffic would lose the one thing the rule exists to preserve — its own turn
+  boundary and its own mode.
+
   Total over any entry *kind* on purpose: a future kind must not be able to
-  crash the drain inside the Agent process, so anything that is not a human
-  message batches exactly like a peer message does today — `:agent`, `:query`
-  and `:runtime` entries all take the second clause. An entry map with no
-  `:kind` key raises rather than batching: that is the entry contract
-  (`put_entry/7` always sets it), not a shape the drain has to tolerate.
+  crash the drain inside the Agent process, so anything that is not a human's
+  batches exactly like a peer message does today — `:agent`, `:query` and
+  `:runtime` entries all take the run clause. An entry map with no `:kind` key
+  raises rather than batching: that is the entry contract (`put_entry/7` always
+  sets it), not a shape the drain has to tolerate.
   """
   @spec batch([entry()]) :: [entry()]
-  def batch([%{kind: :user} = head | _rest]), do: [head]
-  def batch(entries), do: Enum.take_while(entries, &(&1.kind != :user))
+  def batch([]), do: []
+
+  def batch([head | _rest] = entries) do
+    if human_note?(head), do: [head], else: Enum.take_while(entries, &(not human_note?(&1)))
+  end
+
+  defp human_note?(%{kind: :user}), do: true
+  defp human_note?(%{kind: _kind} = entry), do: Nest.Address.user?(Map.get(entry, :from))
 
   # The delivery-id and consume API lives in `Delivery` (issue #62); these
   # delegates keep `Inbox` the one public surface for a queued entry.

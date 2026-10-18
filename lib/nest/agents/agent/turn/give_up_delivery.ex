@@ -25,6 +25,15 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDelivery do
   that cannot reach its requester is never swallowed: the runtime is dropping an
   obligation, and the requester would otherwise wait on an answer that is not
   coming.
+
+  ## A human requester takes neither path
+
+  A requester may be a human address (`@nat`): a human has no process to find and
+  no inbox to call, so `deliver/3` writes the notice into `user_notes` instead —
+  `from_kind: :runtime` with the agent that did not answer as `from_name`, which
+  is the row the feed reads and the one that lets it group a give-up by the agent
+  it is about. That write is synchronous, in the giving-up agent's own process:
+  it is one row, and a refusal must be reported before the settle continues.
   """
 
   require Logger
@@ -34,6 +43,7 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDelivery do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.GiveUp
   alias Nest.Agents.Agent.Timeline
+  alias Nest.Notes
 
   # How long the stop path will wait for a child to answer a state read or write.
   # The synchronous stop (a user Stop, an archive, a parent stopping its
@@ -117,14 +127,47 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDelivery do
   @doc """
   Tell every requester in `senders` that no answer is coming. Never raises: a
   give-up must not take the giving-up agent's settle down with it.
+
+  A requester may be a **human** (`@nat`, `Nest.Address`): a human has no
+  process and no inbox, so its notice is a row in `user_notes` — the same
+  `:runtime` kind, with the agent that did not answer as its `from_name` — which
+  is what the feed shows as "agent X did not reply to your query". The header
+  still reads `[From nest runtime]`, because the kind says the runtime spoke and
+  the name says which agent it is about.
   """
   @spec deliver(Agent.t(), [String.t()], atom()) :: :ok
   def deliver(state, senders, reason) do
     text = GiveUp.notice_text(state.name)
-    targets = Enum.flat_map(senders, &resolve(state, &1, reason))
+    {humans, agents} = Enum.split_with(senders, &Nest.Address.user?/1)
+
+    note_humans(state, humans, text, reason)
+
+    targets = Enum.flat_map(agents, &resolve(state, &1, reason))
 
     if targets != [], do: start_delivery(state, targets, text, reason)
     :ok
+  end
+
+  # The human half: one row each, no process to find and nothing to wait for. A
+  # refused write is a refusal like any other — logged and broadcast — because
+  # the requester would otherwise wait on an answer that is not coming.
+  defp note_humans(_state, [], _text, _reason), do: :ok
+
+  defp note_humans(state, humans, text, reason) do
+    Enum.each(humans, fn sender ->
+      {:user, username} = Nest.Address.parse(sender)
+
+      case Notes.deliver(
+             state.space_id,
+             {:runtime, state.name},
+             {:user, username},
+             text,
+             :runtime
+           ) do
+        {:ok, _note} -> :ok
+        {:error, why} -> refuse(state, sender, reason, why)
+      end
+    end)
   end
 
   # A requester that cannot be resolved is a refusal, not a silent drop.
