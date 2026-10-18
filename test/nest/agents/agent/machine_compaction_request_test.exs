@@ -22,7 +22,7 @@ defmodule MachineCompactionRequestTest do
 
       assert :iterate in actions
       assert next.kind == :compaction and next.phase == :generating
-      assert {:compaction, nil} = next.entry
+      assert {:compaction, nil, nil} = next.entry
 
       # The request is appended before the compactor runs.
       assert Enum.any?(actions, &match?({:append, {:user, _}}, &1))
@@ -38,7 +38,7 @@ defmodule MachineCompactionRequestTest do
         Machine.step(state_at(:idle), {:compact_request, "keep the API decisions"})
 
       assert next.work.focus == "keep the API decisions"
-      assert {:compaction, nil} = next.entry
+      assert {:compaction, nil, nil} = next.entry
 
       # The focus rides in the request message's own text, which is why
       # `/compact <focus>` needs no row of its own in the transcript.
@@ -112,7 +112,7 @@ defmodule MachineCompactionRequestTest do
                {:append, {:user, _}} | _
              ] = Enum.filter(actions, &match?({:append, _}, &1))
 
-      assert {:compaction, {:compact_resume, 0, 10}} = next.entry
+      assert {:compaction, {:compact_resume, 0, 10}, nil} = next.entry
       assert next.work.preserve == "PRESERVED: the task and the state"
 
       # The result is a plain success that says what is true when it is
@@ -137,7 +137,7 @@ defmodule MachineCompactionRequestTest do
       {:ok, _actions, next} =
         Response.dispatch(state_at(:generating), response(tool_calls: [tool_call(%{})]))
 
-      assert {:compaction, {:compact_resume, 0, 10}} = next.entry
+      assert {:compaction, {:compact_resume, 0, 10}, nil} = next.entry
       assert next.work.preserve == nil
 
       # The tool path's guidance is the constant clause, so it does not depend
@@ -241,7 +241,7 @@ defmodule MachineCompactionRequestTest do
             response(tool_calls: [tool_call(%{"preserve" => blank})])
           )
 
-        assert {:compaction, {:compact_resume, 0, 10}} = next.entry
+        assert {:compaction, {:compact_resume, 0, 10}, nil} = next.entry
         assert next.work.preserve == nil, "expected #{inspect(blank)} to normalize to nil"
       end
     end
@@ -380,7 +380,7 @@ defmodule MachineCompactionRequestTest do
       # re-plan, so it appends nothing and `work.focus` survives.
       assert retried.kind == :compaction and retried.phase == :generating
       assert retried.work.focus == "keep the API decisions"
-      assert {:compaction, nil} = retried.entry
+      assert {:compaction, nil, nil} = retried.entry
       refute Enum.any?(actions, &match?({:append, _}, &1))
       assert :iterate in actions
     end

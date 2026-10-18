@@ -109,12 +109,12 @@ defmodule Nest.Spaces.Space do
   `:workspace_path` are optional — on this path only; a *new* space
   requires a workspace (`create_changeset/2`).
 
-  `:sandbox_backend` is deliberately absent from the cast list: it is a
-  creation-only choice (see `create_changeset/2`), so no update can move
-  a space between backends. `:network_access` *is* cast here, because it is
-  editable — but the edit path is `environment_changeset/2`, which owns all three
-  environment properties together; this changeset is the rename path, and its
-  cast of the column only keeps a rename from tripping over it.
+  `:sandbox_backend` is deliberately absent from *this* cast list: it moves only
+  through `environment_changeset/2`, which owns the three environment properties
+  together because an edit to any of them releases the space's sandbox
+  environment. `:network_access` *is* cast here — but the edit path is that same
+  changeset; this one is the rename path, and its cast of the column only keeps a
+  rename from tripping over it.
 
   `:slug` must be usable as the root agent's name (`<slug>-root`), so it
   is held to `PersistedAgent`'s filename-safe rule. A client-supplied
@@ -181,7 +181,8 @@ defmodule Nest.Spaces.Space do
 
   @doc """
   Build the changeset for **inserting** a space row: `changeset/2` plus the
-  creation-only `:sandbox_backend`.
+  `:sandbox_backend` cast (the environment edit moves it afterwards, through
+  `environment_changeset/2`).
 
   An absent or blank backend takes `Nest.Sandbox.Backend.default/0`; anything
   outside `Nest.Sandbox.Backend.backends/0` is refused with an error on the

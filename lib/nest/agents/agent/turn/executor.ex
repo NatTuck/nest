@@ -41,6 +41,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   alias Nest.Agents.Agent.Turn.Terminal
   alias Nest.Messages.Streaming
   alias Nest.Messages.ThinkTags
+  alias Nest.Persistence
   alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Compactor, as: TokensCompactor
   alias Nest.Vocations
@@ -112,6 +113,15 @@ defmodule Nest.Agents.Agent.Turn.Executor do
 
   defp execute({:set_api_log_sequences, sequences}, state) do
     {%{state | live: %{state.live | api_log_sequences: sequences}}, :continue}
+  end
+
+  # The space's own record of "this agent has not been told". The machine emits
+  # it *after* appending a deferred space-environment notice, so the flag is
+  # cleared only once the transcript has the pair — a stop, archive, crash or
+  # deploy before that point leaves it set, and the next start announces it.
+  defp execute({:set_space_notice_pending, pending}, state) when is_boolean(pending) do
+    :ok = Persistence.set_space_notice_pending(state.space_id, state.name, pending)
+    {state, :continue}
   end
 
   defp execute({:set_cancelled, value}, state) do

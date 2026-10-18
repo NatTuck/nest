@@ -95,6 +95,22 @@ defmodule Nest.Agents.Agent.ModelHandler do
       Broadcasts.status(state)
     end
 
+    announce_pending_space_notice(state)
+  end
+
+  # A `:model_missing` agent was blocked *at start*, so the start path's notice
+  # never ran and nothing else consumes `space_notice_pending`: the flag is only
+  # read when an agent starts. Its mounts have moved (a space edit cast them), so
+  # the transcript still owes the agent the pair — send it the same self-message
+  # the start path uses, and the existing handler appends it and clears the flag.
+  #
+  # One read on the recovery path, which is a user action, not a hot path.
+  defp announce_pending_space_notice(state) do
+    case Persistence.fetch_agent(state.space_id, state.name) do
+      {:ok, %{space_notice_pending: true}} -> send(self(), :space_notice_pending)
+      _no_pending_notice -> :ok
+    end
+
     state
   end
 

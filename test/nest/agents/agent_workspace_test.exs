@@ -24,6 +24,8 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
 
   alias Nest.Agents
   alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.Inbox
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.Agents.AgentStateHelpers
   alias Nest.Agents.AgentTestHelpers
@@ -32,6 +34,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
   alias Nest.Sandbox.Mounts
   alias Nest.Spaces
   alias Nest.Tokens.ConversationSize
+  alias Nest.Tokens.Reserve
 
   setup do
     {:ok, _space_id} = AgentTestHelpers.create_test_space()
@@ -266,6 +269,101 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       assert log =~ "Cannot compact"
     end
 
+    test "a pair that lands before the settle leaves idle is still a delivery" do
+      # `appended_notice?/3` exists because the machine's status after the settle
+      # is not a statement about the *notice*: the `:fits` arm appends the pair and
+      # then runs `{:drain_inbox}`, and the turn that drain starts can stage a
+      # compaction — so the settle ends `:compacting`, with no notice on that
+      # compaction's entry (it is the drain's, not the notice's). Deciding from
+      # the status would report a failure for a notice the agent has, keep the
+      # flag, and announce the same pair again at the next start.
+      #
+      # A limit one token above what the pair needs, plus one queued message: the
+      # pair fits (and is appended), and the delivered message does not.
+      {pid, name} = AgentTestHelpers.start_agent()
+      space_id = AgentTestHelpers.current_space_id()
+      workspace = new_ws("env-then-compact")
+
+      AgentStateHelpers.replace_state(pid, fn state ->
+        pair_size =
+          ConversationSize.size(
+            state.chat_state.messages ++ WorkspaceHandler.notice_pair(notice_values(workspace))
+          )
+
+        %{
+          state
+          | llm_metrics: %{
+              state.llm_metrics
+              | context_limit: pair_size + Reserve.compaction_reserve(pair_size) + 1
+            },
+            live: %{state.live | inbox: [queued_entry("a message that does not fit")]}
+        }
+      end)
+
+      assert {:ok, _space} = Spaces.update_environment(space_id, %{workspace_path: workspace})
+
+      # allowlist: barrier — the cast is the only writer here.
+      state = :sys.get_state(pid, 1_000)
+
+      # The settle ended in a compaction turn, not idle...
+      assert Machine.status_for(state.live.machine) == :compacting
+
+      # ...and the notice is in the transcript, once, with the flag cleared.
+      assert [_pair] = Enum.filter(notices(state), &(&1 =~ "This space's environment changed"))
+      assert pending?(space_id, name) == false
+
+      # Nothing staged the notice: that compaction is the drain's.
+      assert {:compaction, _carried, nil} = state.live.machine.entry
+
+      # Clean up the compaction this test started, so the leak check sees a
+      # stopped agent rather than one mid-compaction.
+      Process.unlink(pid)
+      :ok = Supervisor.stop_agent(space_id, name)
+    end
+
+    test "a model-missing agent is told the change when its model is repaired" do
+      # A `:model_missing` agent was blocked *at start*, so the start path's
+      # notice never ran. The edit's cast is refused (the machine is blocked) and
+      # the flag stays set; repairing the model is the one transition that
+      # unblocks it, so that is where the notice has to be delivered — otherwise
+      # the agent runs on mounts it has never been told about until it restarts.
+      # Starting with an unknown model is the expected path here, and it logs;
+      # capture it and assert on the line.
+      log =
+        capture_log(fn ->
+          {pid, name} =
+            AgentTestHelpers.start_agent(%{model: %{name: "ghost-model", provider: nil}})
+
+          send(self(), {:agent, pid, name})
+        end)
+
+      assert_received {:agent, pid, name}
+      assert log =~ "could not resolve model"
+
+      space_id = AgentTestHelpers.current_space_id()
+      # allowlist: snapshot — the status the fixture started in.
+      assert Machine.status_for(:sys.get_state(pid, 1_000).live.machine) == :model_missing
+
+      workspace = new_ws("env-model-missing")
+      assert {:ok, _space} = Spaces.update_environment(space_id, %{workspace_path: workspace})
+      assert pending?(space_id, name) == true
+
+      :ok =
+        Nest.Agents.change_model(space_id, name, %{
+          name: "qwen3.5-plus",
+          provider: "model-studio"
+        })
+
+      # allowlist: barrier — the unblock self-sends the notice; no frame
+      # announces the append.
+      state = :sys.get_state(pid, 1_000)
+
+      assert Machine.status_for(state.live.machine) == :idle
+      assert [notice] = Enum.filter(notices(state), &(&1 =~ "This space's environment changed"))
+      assert notice =~ "Workspace: #{workspace}"
+      assert pending?(space_id, name) == false
+    end
+
     test "a conversation that cannot hold the pair reports the block, and keeps the flag" do
       {pid, name} = AgentTestHelpers.start_agent()
       space_id = AgentTestHelpers.current_space_id()
@@ -319,6 +417,26 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       {:ok, tmp_space} = AgentTestHelpers.create_test_space(%{workspace_path: "/tmp/ws"})
       assert {:error, :workspace_under_tmp} = Agents.create_agent(tmp_space, model)
     end
+  end
+
+  # The values an edit casts, as `apply_space_environment/2` wants them.
+  defp notice_values(workspace) do
+    %{workspace: workspace, network_access: true, backend: "bwrap"}
+  end
+
+  # One queued inbox entry, in the shape `Inbox.serialize/1` reads (the drain
+  # builds its delivered message from it).
+  defp queued_entry(content) do
+    %{
+      id: Inbox.new_id(),
+      from: "peer",
+      content: content,
+      timestamp: DateTime.utc_now(),
+      kind: :agent,
+      mode: nil,
+      human?: false,
+      fulfilled_ids: []
+    }
   end
 
   # A conversation big enough that the limit the caller derives from it leaves no

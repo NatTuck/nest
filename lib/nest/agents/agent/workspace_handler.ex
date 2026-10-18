@@ -58,9 +58,11 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
 
     * `:appended` — the pair is in the transcript now;
     * `:deferred` — preflight decided the conversation needs compaction and a
-      compaction is *in flight*: the values are staged in
-      `state.live.machine.work.pending_notice` and `Machine.Compaction.resume/1`
-      appends the pair when the commit lands;
+      compaction is *in flight*: the values are on that compaction's entry
+      (`{:compaction, carried, values}`), and `Machine.Compaction.resume/1`
+      appends the pair when the commit lands. A failed staging, a failed commit
+      or any route out of the turn drops the entry and the notice with it, so the
+      caller must leave the flag set until the executor clears it at the append;
     * `{:ignored, phase}` — the machine is mid-turn, so the `:workspace_notice`
       transition has nowhere to land (it is `:idle`-only) and nothing is staged
       or appended. The caller must leave `space_notice_pending` set: the agent
@@ -72,7 +74,8 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
       at all, so the turn rested). The caller must leave the flag set.
 
   Only `:deferred` means "a compaction will append it"; everything else that is
-  not `:appended` means the transcript does not have it.
+  not `:appended` means the transcript does not have it, and the space's
+  `space_notice_pending` flag must stay set.
   """
   @type outcome :: :appended | :deferred | {:ignored, Machine.phase()} | {:error, atom()}
 
@@ -131,49 +134,41 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   # conversation fits, stages a compaction when it does not, and blocks when it
   # cannot be compacted. Three different things can be true afterwards, and none
   # of them is readable from the machine's status alone — so the transcript says
-  # whether the pair landed, and the slot only says whether a compaction has it.
+  # whether the pair landed, and the machine's *entry* says whether a compaction
+  # has it.
+  #
+  # The values ride the event: a notice's lifetime is this settle, or the
+  # compaction this settle stages (`Compaction.stage/3` puts it on that turn's
+  # entry, where `Phase.enter/4` drops it with the turn). There is no slot for it
+  # to outlive anything in.
   defp settle_notice(state, values) do
-    state = %{
-      state
-      | live: %{
-          state.live
-          | machine: %{
-              state.live.machine
-              | work: %{state.live.machine.work | pending_notice: values}
-            }
-        }
-    }
-
-    {:ok, settled} = Turn.settle(state, :workspace_notice)
-
-    status = Machine.status_for(settled.live.machine)
-    staged = settled.live.machine.work.pending_notice
+    {:ok, settled} = Turn.settle(state, {:workspace_notice, values})
 
     cond do
       # The transcript is the record of what happened to the *pair*, and the
       # status is not: the `:fits` arm appends it and then runs
-      # `{:drain_inbox}`, and a drain that delivers a message the conversation
-      # cannot hold blocks *after* the pair is in. Asking the status alone would
-      # report a failure for a notice the agent has, and the caller would keep
-      # the flag and announce the same pair again at the next start.
+      # `{:drain_inbox}`, and a drain can block *after* the pair is in. Asking
+      # the status alone would report a failure for a notice the agent has, and
+      # the caller would keep the flag and announce the same pair again at the
+      # next start.
       appended_notice?(state, settled, values) ->
-        {clear_pending_notice(settled), :appended}
+        {settled, :appended}
 
-      # Only a compaction that is actually in flight will append the pair later.
-      status == :compacting and is_map(staged) ->
+      # A compaction is carrying it and will append it on commit. Nothing else
+      # can be holding the notice: `Compaction.stage/3` is the only writer, and
+      # it only ever writes a compaction that started.
+      staged_notice?(settled.live.machine) ->
         {settled, :deferred}
 
-      # Everything else left in the slot is a leftover, and a dangerous one:
-      # `Compaction.stage/2` *rests* in `:idle` when the reserve cannot hold the
-      # request, and blocks with the map still there when the system prompt is
-      # too large or the loop breaker trips. Nothing will append it, so it is
-      # cleared here — otherwise it would sit in the slot until some later,
-      # unrelated compaction consumed it, appending a stale notice and dropping
-      # whatever that compaction carried.
       true ->
-        {clear_pending_notice(settled), {:error, status}}
+        {settled, {:error, Machine.status_for(settled.live.machine)}}
     end
   end
+
+  # The values a compaction staged for itself: on its entry, which is the only
+  # place a notice can be in flight from.
+  defp staged_notice?(%Machine{entry: {:compaction, _carried, notice}}), do: is_map(notice)
+  defp staged_notice?(%Machine{}), do: false
 
   # Did *this* settle append the pair? Only the rows it added are considered, so
   # a pair from an earlier edit cannot be mistaken for this one.
@@ -186,23 +181,6 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
       {:user, %{parts: parts}} -> Enum.any?(parts, &match?(%Part.Text{text: ^text}, &1))
       _other -> false
     end)
-  end
-
-  # The slot is one map shared with the iteration-budget reminder and read by the
-  # compactor, so an outcome that leaves it filled for nobody is worse than a
-  # no-op: it would disable the budget reminder (`||` treats a map as truthy) and
-  # be appended by an unrelated later compaction.
-  defp clear_pending_notice(state) do
-    %{
-      state
-      | live: %{
-          state.live
-          | machine: %{
-              state.live.machine
-              | work: %{state.live.machine.work | pending_notice: nil}
-            }
-        }
-    }
   end
 
   @doc """

@@ -33,7 +33,7 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
   compactor always sends `tools: nil, tool_choice: :none`.
   """
   @spec tool_config_for_iteration(Machine.t()) :: {list() | nil, :auto | :none}
-  def tool_config_for_iteration(%Machine{entry: {:compaction, _}}), do: {nil, :none}
+  def tool_config_for_iteration(%Machine{entry: {:compaction, _, _}}), do: {nil, :none}
 
   def tool_config_for_iteration(%Machine{work: work}) do
     if work.iteration > work.max_iterations,
@@ -59,7 +59,7 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
   resolved `max_tokens`.
   """
   @spec spawn_ctx(Machine.t(), [term()]) :: map()
-  def spawn_ctx(%Machine{entry: {:compaction, _}} = machine, messages) do
+  def spawn_ctx(%Machine{entry: {:compaction, _, _}} = machine, messages) do
     put_spawn(machine, messages, compactor_max_tokens(machine, messages))
   end
 

@@ -251,7 +251,7 @@ defmodule Nest.Agents.AgentCompactionTest do
             machine
             | kind: :compaction,
               phase: :generating,
-              entry: {:compaction, carried_entry},
+              entry: {:compaction, carried_entry, nil},
               work: %{
                 machine.work
                 | worker_kind: :http,

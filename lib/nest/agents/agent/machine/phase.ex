@@ -74,9 +74,9 @@ defmodule Nest.Agents.Agent.Machine.Phase do
   # compaction (`m.kind` stays `:compaction`), and any non-`:compaction` kind
   # covers the rest. A non-compaction `entry` (the carried user message
   # `Compaction.resume_with_pending/1` rides into a chat turn) is left alone.
-  defp turn_entry(_kind, :idle, {:compaction, _}), do: nil
+  defp turn_entry(_kind, :idle, {:compaction, _, _}), do: nil
   defp turn_entry(:compaction, _phase, entry), do: entry
-  defp turn_entry(_kind, _phase, {:compaction, _}), do: nil
+  defp turn_entry(_kind, _phase, {:compaction, _, _}), do: nil
   defp turn_entry(_kind, _phase, entry), do: entry
 
   # `focus` and `preserve` are turn-scoped: they exist only for the compaction

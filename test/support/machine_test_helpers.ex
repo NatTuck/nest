@@ -164,7 +164,7 @@ defmodule Nest.TestSupport.MachineTestHelpers do
   @doc """
   Deliver a compaction result to an agent by driving the production
   compaction entry: put the machine into the compactor's `:generating`
-  phase with `entry = {:compaction, carried_entry}`, then send the
+  phase with `entry = {:compaction, carried_entry, nil}`, then send the
   `{:http_response, ref, %RunResponse{}}` the executor's commit path
   consumes (via `Compaction.commit_compaction/2`).
   """
@@ -185,7 +185,7 @@ defmodule Nest.TestSupport.MachineTestHelpers do
           machine
           | kind: :compaction,
             phase: :generating,
-            entry: {:compaction, carried_entry},
+            entry: {:compaction, carried_entry, nil},
             work: %{
               machine.work
               | worker_kind: :http,

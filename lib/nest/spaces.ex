@@ -265,7 +265,8 @@ defmodule Nest.Spaces do
           | {:error,
              Ecto.Changeset.t()
              | :not_found
-             | atom()
+             | :workspace_missing
+             | :workspace_under_tmp
              | {:config_file_not_regular, String.t(), atom()}}
   def update_environment(id, params) when is_integer(id) and is_map(params) do
     case get_space(id) do
@@ -338,12 +339,28 @@ defmodule Nest.Spaces do
   #
   # Marking every agent rather than only the ones with no process is what makes
   # the mid-turn case recoverable at all: an agent that is *cast* cannot be
-  # excluded from the mark, because the cast is a request it may refuse. The cost
-  # is the other direction — an agent that starts inside this window announces at
-  # start and then finds the cast in its mailbox, so it appends the pair twice.
-  # The pair reconciles the values now in force, so the duplicate is harmless, and
-  # it is the safe side of the trade: the other side is a notice no agent ever
-  # hears.
+  # excluded from the mark, because the cast is a request it may refuse.
+  #
+  # ## The one window this does not close
+  #
+  # The mark and the clear are both plain writes to one boolean, so an edit that
+  # lands *inside* an agent's start can still be erased: the start path reads the
+  # flag from its attrs snapshot, appends its notice and then writes `false`
+  # unconditionally. If edit 1 marked the agent before that snapshot (so the start
+  # has a notice to append) and edit 2 marks it after the snapshot but before the
+  # clear, edit 2's mark is overwritten — and if edit 2's cast is then refused
+  # because the agent is busy, edit 2's notice is lost until a later edit.
+  #
+  # Closing it needs a compare-and-set, which needs a mark stamp on the row (a
+  # migration) — more machinery than a window this narrow justifies: it takes two
+  # edits and a start interleaved to the message, and the agent still announces
+  # the *first* edit's values. It is recorded here rather than implied away: the
+  # duplicate pair below is the harmless half of the trade, this is the half that
+  # is a loss.
+  #
+  # The harmless half: an agent that starts inside the window announces at start
+  # and then finds the cast in its mailbox, so it appends the pair twice. The pair
+  # reconciles the values now in force, so a duplicate is not misleading.
   defp announce_environment(%Space{id: id} = space) do
     mark_notice_pending(id)
     tell_agents(space)

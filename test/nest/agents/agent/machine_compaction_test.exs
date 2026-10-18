@@ -42,18 +42,20 @@ defmodule MachineCompactionTest do
   end
 
   defp notice_step(messages, limit) do
-    values = %{workspace: "/tmp/x", network_access: true, backend: "bwrap"}
     machine = state_at(:idle, ctx: %{ctx() | messages: messages, context_limit: limit})
 
-    {:ok, _actions, next} =
-      Machine.step(%{machine | work: %{machine.work | pending_notice: values}}, :workspace_notice)
+    {:ok, _actions, next} = Machine.step(machine, {:workspace_notice, notice_values()})
 
     next
   end
 
+  defp notice_values do
+    %{workspace: "/tmp/x", network_access: true, backend: "bwrap"}
+  end
+
   describe "compaction decisions" do
     test "the loop-breaker blocks after the consecutive cap" do
-      m = %{state_at(:idle) | loop_count: 3, entry: {:compaction, nil}}
+      m = %{state_at(:idle) | loop_count: 3, entry: {:compaction, nil, nil}}
       {:ok, actions, next} = Machine.Compaction.stage(m, nil)
 
       assert next.phase == :compaction_loop_detected
@@ -96,70 +98,76 @@ defmodule MachineCompactionTest do
     test "resume emits the deferred space-environment notice pair" do
       base = state_at(:idle)
 
-      values = %{workspace: "/tmp/x", network_access: true, backend: "bwrap"}
-      m = %{base | entry: {:compaction, nil}, work: %{base.work | pending_notice: values}}
+      m = %{base | entry: {:compaction, nil, notice_values()}}
       {:ok, actions, next} = Machine.Compaction.resume(m)
 
       assert next.phase == :idle
       assert Enum.any?(actions, &match?({:append_many, _}, &1))
+
+      # The space's flag is cleared by the executor, *after* the append: until
+      # this ran, the row was the only record that the agent still owed the
+      # notice (a stop, archive, crash or deploy before the commit loses the
+      # entry, and the next start must announce it).
+      assert {:set_space_notice_pending, false} in actions
+
+      assert Enum.find_index(actions, &match?({:append_many, _}, &1)) <
+               Enum.find_index(actions, &match?({:set_space_notice_pending, _}, &1))
     end
 
-    # The notice slot holds one map, and the `:workspace_notice` transition has
-    # three arms that leave it there: the staged compaction (`:generating`, kind
-    # `:compaction`), the `:reserve_exhausted` rest (still `:idle` — nothing is in
-    # flight), and the blocks (system oversized, loop breaker). Only the first is
-    # a delivery in waiting, so
-    # `WorkspaceHandler.apply_space_environment/2` may only call that one
-    # `:deferred`; the rest have to clear the slot and keep the space's flag.
+    # A space-environment notice lives on the compaction entry that will append
+    # it — `{:compaction, carried, values}` — and nowhere else. So the only shape
+    # that carries it forward is a compaction that actually started; the
+    # `:reserve_exhausted` rest and the two blocks drop it with the turn, which is
+    # why the caller keeps the space's flag on those outcomes.
     #
     # Pure: no agent, no DB, no daemon. The transcript is built from the
     # estimator's own size so the test does not encode a chars-per-token constant.
-    test "a staged compaction keeps the values, and a reserve that cannot hold one rests with them" do
+    test "a staged compaction carries the values on its entry, and a reserve that cannot hold one stages nothing" do
       messages = near_limit_conversation()
       size = ConversationSize.size(messages)
 
       # `:needs_compaction` (the transcript plus the reserve does not fit) *and*
-      # `compute_summary_budget/4` can still plan: a compaction is in flight, so
-      # the values must stay for `Compaction.resume/1`.
+      # `compute_summary_budget/4` can still plan: the compaction is in flight and
+      # carries the values for `Compaction.resume/1`.
       staged = notice_step(messages, size + 4_000)
 
       assert staged.phase == :generating
       assert staged.kind == :compaction
-      assert is_map(staged.work.pending_notice)
+      assert {:compaction, nil, values} = staged.entry
+      assert is_map(values)
+
+      # The budget reminder's slot is untouched: it is not the notice's.
+      assert staged.work.pending_notice == nil
 
       # The same transcript with no headroom left at all: the request cannot be
-      # fitted into the reserve, so `Compaction.stage/2` *rests* — and leaves the
-      # map in the slot. Nothing will append it, which is why the caller has to
-      # clear it and report that the notice was not delivered.
+      # fitted into the reserve, so `Compaction.stage/2` *rests* — and there is no
+      # entry, so there is nothing anywhere for a later compaction to consume.
       rested = notice_step(messages, size + 1)
 
       assert rested.phase == :idle
       assert Machine.status_for(rested) == :idle
-      assert is_map(rested.work.pending_notice)
+      assert rested.entry == nil
+      assert rested.work.pending_notice == nil
     end
 
-    test "a resume with nothing staged carries the reply instead of a stale notice" do
-      # `pending_notice` holds one of two things, and `resume/1` is only the
-      # compactor's for the second: a staged space notice (a map, written by
-      # `WorkspaceHandler.apply_space_environment/2` for an *idle* machine, which
-      # consumes it in the same settle). So a compaction that is not that one
-      # finds the slot empty and resumes what it actually carried. The contrast
-      # below is what a stale map would do — append a notice pair and rest with
-      # `entry: nil`, dropping the reply.
+    test "the compaction that carries the notice appends it, and one that does not resumes its reply" do
+      # The notice is the compaction *entry's*, so the branch is decided by the
+      # entry and not by a slot some other turn could have filled. Both halves
+      # below are the same carried reply; only the entry's notice differs.
       carried = {:assistant_response, %Nest.Messages.Assistant{parts: []}, 0, 5}
       base = state_at(:idle)
-      staged = %{base | entry: {:compaction, carried}}
 
-      values = %{workspace: "/tmp/x", network_access: true, backend: "bwrap"}
-      stale = %{staged | work: %{staged.work | pending_notice: values}}
+      noticing = %{base | entry: {:compaction, carried, notice_values()}}
+      {:ok, notice_actions, notice_next} = Machine.Compaction.resume(noticing)
 
-      {:ok, stale_actions, _next} = Machine.Compaction.resume(stale)
-      assert Enum.any?(stale_actions, &match?({:append_many, _}, &1))
+      assert Enum.any?(notice_actions, &match?({:append_many, _}, &1))
+      assert notice_next.phase == :idle
 
-      {:ok, actions, next} = Machine.Compaction.resume(staged)
+      plain = %{base | entry: {:compaction, carried, nil}}
+      {:ok, actions, next} = Machine.Compaction.resume(plain)
 
       refute Enum.any?(actions, &match?({:append_many, _}, &1)),
-             "an empty slot must not append a notice pair"
+             "a compaction with no notice must not append one"
 
       # The carried reply's own resume ran — it settles the turn it was carried
       # across (`:compaction_carry`), rather than resting on a notice.
@@ -221,13 +229,13 @@ defmodule MachineCompactionTest do
 
     # BLOCKER, found by the same review. `entry` is turn-scoped for a
     # compaction, and leaving one behind is not cosmetic:
-    # `Response.dispatch/2` sets `compactor? = match?({:compaction, _}, m.entry)`
+    # `Response.dispatch/2` sets `compactor? = match?({:compaction, _, _}, m.entry)`
     # and `Machine.Turn.classify_response/1` checks that FIRST and
     # unconditionally — so the next chat turn's reply would be classified
     # `:compaction`, and `commit_compaction/2` would archive the whole active
     # segment and persist that reply as the summary.
     test "a compaction entry does not survive into the next chat turn" do
-      failed = %{state_at(:compaction_failed, kind: :compaction) | entry: {:compaction, nil}}
+      failed = %{state_at(:compaction_failed, kind: :compaction) | entry: {:compaction, nil, nil}}
       {:ok, _actions, looped} = Machine.step(%{failed | loop_count: 3}, :retry_compaction)
 
       assert looped.phase == :compaction_loop_detected
@@ -237,7 +245,7 @@ defmodule MachineCompactionTest do
       # still find it. (Note `Compaction.retry/1` itself reads
       # `mid_turn_entry`, not `entry`; the entry is kept here for the retry
       # path's own reasons, not because retry reads this field.)
-      assert looped.entry == {:compaction, nil}
+      assert looped.entry == {:compaction, nil, nil}
 
       {:ok, _actions, acked} = Machine.step(looped, :loop_ack)
 
@@ -252,8 +260,44 @@ defmodule MachineCompactionTest do
       refute classify(acked.entry) == :compaction
     end
 
+    # BLOCKER, found by the third review of PR #137. The space notice used to
+    # live in `work.pending_notice`, and `Phase.block/4` never clears that slot —
+    # so a compaction that failed left the map behind, `{:unblocked}` left it
+    # behind, and the next compaction carrying a reply hit `resume/1`'s notice
+    # clause: it appended a *stale* environment pair, skipped
+    # `resume_carried_reply/2`, and rested — giving up any peer reply the machine
+    # still owed. The notice is on the entry now, so the sequence cannot reach a
+    # resume at all.
+    test "a failed compaction cannot hand its notice to a later one" do
+      values = notice_values()
+      staged = %{state_at(:committing) | entry: {:compaction, nil, values}}
+
+      # A failure with nothing carried blocks, and the entry stays: a retry
+      # re-sends the same request for the same compaction turn.
+      {:ok, _actions, failed} = Machine.Compaction.compaction_failed(staged, :boom, nil)
+      assert failed.phase == :compaction_failed
+      assert {:compaction, nil, ^values} = failed.entry
+
+      # Leaving that phase drops the entry — and the notice with it, because the
+      # notice is not anywhere else.
+      {:ok, _actions, unblocked} = Machine.step(failed, {:unblocked})
+      assert unblocked.phase == :idle
+      assert unblocked.entry == nil
+      assert unblocked.work.pending_notice == nil
+
+      # The next compaction is a different turn with its own carried reply, and
+      # it resumes the reply rather than appending anything stale.
+      carried = {:assistant_response, %Nest.Messages.Assistant{parts: []}, 0, 5}
+      later = %{unblocked | entry: {:compaction, carried, nil}}
+      {:ok, actions, next} = Machine.Compaction.resume(later)
+
+      refute Enum.any?(actions, &match?({:append_many, _}, &1))
+      assert {:finalize, :clean} in actions
+      assert next.phase == :idle
+    end
+
     test "a compaction entry does not survive an unblock either" do
-      m = %{state_at(:needs_repair, kind: :compaction) | entry: {:compaction, nil}}
+      m = %{state_at(:needs_repair, kind: :compaction) | entry: {:compaction, nil, nil}}
 
       {:ok, _actions, unblocked} = Machine.step(m, {:unblocked})
 
@@ -267,7 +311,7 @@ defmodule MachineCompactionTest do
   # `compactor?` varying — so the assertion isolates the entry's effect.
   defp classify(entry) do
     Turn.classify_response(%{
-      compactor?: match?({:compaction, _}, entry),
+      compactor?: match?({:compaction, _, _}, entry),
       force_finalize: false,
       has_tool_calls: false,
       iteration: 0,
@@ -306,7 +350,7 @@ defmodule MachineCompactionTest do
       assert :iterate in actions
       assert next.kind == :compaction and next.phase == :generating
 
-      assert {:compaction, {:assistant_response, {:assistant, _}, 0, 10}} = next.entry
+      assert {:compaction, {:assistant_response, {:assistant, _}, 0, 10}, nil} = next.entry
     end
   end
 
@@ -323,7 +367,7 @@ defmodule MachineCompactionTest do
         Machine.new(
           phase: :committing,
           kind: :compaction,
-          entry: {:compaction, carried}
+          entry: {:compaction, carried, nil}
         )
 
       {:ok, actions, next} = Machine.step(machine, {:commit_done})

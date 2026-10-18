@@ -24,7 +24,7 @@
  *                 `network_access` and `sandbox_backend` initialize the form.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { editSpace } from "../channels";
 import { describeSpaceEditError } from "../utils/chatErrors.js";
 import {
@@ -47,18 +47,39 @@ export function EditSpaceDialog({ open, onClose, space }) {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
 
-  // Initialize the form from the space's current values whenever the modal
-  // opens (and again if the space's own values change under it, which a
-  // `space:updated` frame from another session can do).
+  // The latest row, so the seed below can read its values without *depending* on
+  // them: the store replaces a space's whole object on every `space:updated`
+  // frame (another session's edit, or a rejoin's `init`), and re-seeding on that
+  // would throw away whatever the user had typed. Declared before the seed
+  // effect so it has run by the time that one reads it.
+  const latest = useRef(space);
   useEffect(() => {
-    if (open) {
-      setWorkspacePath(space?.workspace_path ?? "");
-      setNetworkAccess(space?.network_access === true);
-      setSandboxBackend(space?.sandbox_backend ?? DEFAULT_SANDBOX_BACKEND);
-      setSaving(false);
-      setSaveError(null);
-    }
-  }, [open, space]);
+    latest.current = space;
+  });
+
+  const spaceId = space?.id ?? null;
+
+  // Initialize the form when the modal opens, and again only when it is opened
+  // for a *different* space.
+  useEffect(() => {
+    if (!open || spaceId === null) return;
+
+    const row = latest.current;
+    setWorkspacePath(row?.workspace_path ?? "");
+    setNetworkAccess(row?.network_access === true);
+    setSandboxBackend(row?.sandbox_backend ?? DEFAULT_SANDBOX_BACKEND);
+    setSaving(false);
+    setSaveError(null);
+  }, [open, spaceId]);
+
+  // The dialog is a modal, so the keyboard (Escape included) has to reach it
+  // without a click first. `autoFocus` is the obvious way and the linter is
+  // right to refuse it; focusing the first field here is the same effect without
+  // stealing focus from a page that never opened the dialog.
+  const workspaceRef = useRef(null);
+  useEffect(() => {
+    if (open) workspaceRef.current?.focus();
+  }, [open]);
 
   if (!open) {
     return null;
@@ -165,6 +186,7 @@ export function EditSpaceDialog({ open, onClose, space }) {
             <input
               id="edit-space-workspace-path"
               type="text"
+              ref={workspaceRef}
               value={workspacePath}
               onChange={(e) => setWorkspacePath(e.target.value)}
               placeholder="/path/to/project"

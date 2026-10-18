@@ -59,8 +59,6 @@ defmodule Nest.Agents.Agent.Machine.Work do
             focus: nil,
             preserve: nil
 
-  alias Nest.Agents.Agent.WorkspaceHandler
-
   @type t :: %__MODULE__{
           ctx: map() | nil,
           iteration: non_neg_integer(),
@@ -71,7 +69,7 @@ defmodule Nest.Agents.Agent.Machine.Work do
           worker_ref: reference() | nil,
           worker_kind: :http | :tools | nil,
           active_message_index: non_neg_integer(),
-          pending_notice: String.t() | WorkspaceHandler.values() | nil,
+          pending_notice: String.t() | nil,
           preflight: map() | nil,
           backgrounded: %{reference() => %{pid: pid(), ids: [String.t()]}},
           focus: String.t() | nil,

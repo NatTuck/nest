@@ -53,7 +53,6 @@ defmodule Nest.Agents.Agent.Callbacks do
     {:noreply, maybe_clear_space_notice(state, outcome)}
   end
 
-  # A tool worker's "my `agents-send` reached its target"
   # A tool worker's "my `agents-send` reached its target": a turn event for this
   # agent, translated by `Turn.handle/2` like the other worker results. The
   # worker casts it *before* its `{:tool_results, …}`, so the debt is discharged
@@ -371,18 +370,27 @@ defmodule Nest.Agents.Agent.Callbacks do
 
   # The flag means "this agent has not been told". The space edit sets it on every
   # agent before it casts (`Nest.Spaces.announce_environment/1`), and it is cleared
-  # here only when the notice actually reached the transcript or is staged behind
-  # the compaction this turn is already running.
+  # only when the notice is in the transcript.
+  #
+  # `:deferred` does **not** clear it here. The values are on the compaction's
+  # entry at that point, and nothing in the transcript has them yet: a stop,
+  # archive, crash or deploy before the commit loses the entry, and a cleared row
+  # would then claim the agent had been told. The executor clears the flag when
+  # `Machine.Compaction.resume/1` actually appends the pair
+  # (`{:set_space_notice_pending, false}`), which is the same rule the start path
+  # follows.
   #
   # Neither path may clear it on an outcome that appended nothing: the flag is
   # what makes the change survive to a start, and a mid-turn cast is exactly the
   # case where nothing could be appended. Clearing it there is how the notice was
   # lost before — the edit had excluded the agents it cast from the mark, so a
   # busy agent ended up with no transcript entry *and* no flag.
-  defp maybe_clear_space_notice(state, outcome) when outcome in [:appended, :deferred] do
+  defp maybe_clear_space_notice(state, :appended) do
     :ok = Persistence.set_space_notice_pending(state.space_id, state.name, false)
     state
   end
+
+  defp maybe_clear_space_notice(state, :deferred), do: state
 
   defp maybe_clear_space_notice(state, outcome) do
     Logger.info(

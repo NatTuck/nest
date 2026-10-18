@@ -126,14 +126,55 @@ describe("EditSpaceDialog", () => {
     );
   });
 
-  it("closes via the Escape key", () => {
+  it("takes focus on open, so Escape reaches it without a click", () => {
     const { onClose } = setup();
 
-    fireEvent.keyDown(screen.getByRole("dialog", { name: "Edit space" }), {
-      key: "Escape",
-    });
+    // The dialog is a modal; without this the keyboard only reaches it after a
+    // click lands inside, which is what the Escape test below would otherwise
+    // hide.
+    expect(screen.getByLabelText("Workspace Path")).toHaveFocus();
+
+    fireEvent.keyDown(document.activeElement, { key: "Escape" });
 
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("keeps what the user typed when the store replaces the space's row", () => {
+    // The store swaps the whole object on every `space:updated` frame (another
+    // session's edit, or a rejoin's `init`). The seed is keyed on the space's
+    // *identity*, so a frame must not discard a form in progress.
+    const { rerender } = render(
+      <EditSpaceDialog open onClose={vi.fn()} space={space} />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/home/nat/typed" },
+    });
+
+    rerender(
+      <EditSpaceDialog
+        open
+        onClose={vi.fn()}
+        space={{ ...space, workspace_path: "/home/nat/elsewhere" }}
+      />,
+    );
+
+    expect(screen.getByLabelText("Workspace Path").value).toBe(
+      "/home/nat/typed",
+    );
+
+    // ...and a *different* space does re-seed.
+    rerender(
+      <EditSpaceDialog
+        open
+        onClose={vi.fn()}
+        space={{ ...space, id: 8, workspace_path: "/home/nat/other-space" }}
+      />,
+    );
+
+    expect(screen.getByLabelText("Workspace Path").value).toBe(
+      "/home/nat/other-space",
+    );
   });
 
   it("closes via a click on the backdrop, but not inside the panel", () => {

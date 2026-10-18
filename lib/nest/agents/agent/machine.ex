@@ -113,6 +113,7 @@ defmodule Nest.Agents.Agent.Machine do
     :set_context_projection,
     :set_api_log_sequences,
     :set_cancelled,
+    :set_space_notice_pending,
     :set_streaming,
     :llm_error,
     :fail_turn,
@@ -163,7 +164,7 @@ defmodule Nest.Agents.Agent.Machine do
           | {:tool_call, Nest.Messages.Assistant.t(), non_neg_integer(), pos_integer()}
           | {:compact_resume, non_neg_integer(), pos_integer()}
           | {:assistant_response, Nest.Messages.Assistant.t(), non_neg_integer(), pos_integer()}
-          | {:compaction, entry() | nil}
+          | {:compaction, entry() | nil, map() | nil}
 
   defstruct kind: :chat,
             phase: :idle,

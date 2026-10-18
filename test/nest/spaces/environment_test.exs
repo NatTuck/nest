@@ -22,6 +22,7 @@ defmodule Nest.Spaces.EnvironmentTest do
 
   use Nest.DataCase, async: true
 
+  import ExUnit.CaptureLog
   import Nest.Test.TmpCleanup
 
   alias Ecto.Adapters.SQL.Sandbox
@@ -114,6 +115,29 @@ defmodule Nest.Spaces.EnvironmentTest do
       # ...and nobody was told: the flag stays clear, so no agent announces a
       # change that did not happen.
       assert pending?(space.id, agent_name) == false
+    end
+
+    test "refuses a workspace whose config file Nest cannot protect" do
+      # A `.nest` or `AGENTS.md` that is not a regular file cannot be masked into
+      # the sandbox, so the workspace is refused — and the reason is *tagged*, with
+      # the path, because the user has to know which file to replace. The same
+      # code the create path produces for the same workspace.
+      {:ok, space} = space(%{workspace_path: AgentTestHelpers.default_test_workspace()})
+      moved = tmp_workspace("env-config-file")
+      path = Path.join(moved, ".nest")
+      File.write!(Path.join(moved, "real.nest"), "")
+      File.ln_s!(Path.join(moved, "real.nest"), path)
+
+      # The refusal is logged (it names the file); capture it and assert on it.
+      log =
+        capture_log(fn ->
+          assert {:error, {:config_file_not_regular, ^path, :symlink}} =
+                   Spaces.update_environment(space.id, %{workspace_path: moved})
+        end)
+
+      assert log =~ "cannot protect it from being rewritten"
+
+      assert Spaces.get_space(space.id).workspace_path == space.workspace_path
     end
 
     test "refuses a workspace the sandbox cannot run" do

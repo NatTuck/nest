@@ -646,8 +646,8 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     # compaction entry at all.
     carried =
       for entry <- [
-            {:compaction, {:assistant_response, "text", []}},
-            {:compaction, nil},
+            {:compaction, {:assistant_response, "text", []}, nil},
+            {:compaction, nil, nil},
             nil
           ] do
         :sys.replace_state(

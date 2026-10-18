@@ -262,7 +262,7 @@ defmodule MachineBoundaryDeliveryTest do
       assert request |> inspect() =~ "[mode: compact]"
 
       assert next.kind == :compaction
-      assert {:compaction, nil} = next.entry
+      assert {:compaction, nil, nil} = next.entry
       assert next.pending_user_message == nil
 
       # The query was never delivered, so it owes nothing yet (§1.3): a query
@@ -479,7 +479,7 @@ defmodule MachineBoundaryDeliveryTest do
       # (which resolves an idle-based wait with the pre-delivery answer) and
       # `{:finalize, :clean}` a turn that is really continuing — the #15
       # property this path preserves.
-      queued = %{reserve_state(inbox_count: 1) | entry: {:compaction, nil}}
+      queued = %{reserve_state(inbox_count: 1) | entry: {:compaction, nil, nil}}
       {:ok, actions, next} = Compaction.resume(queued)
 
       assert actions == [{:drain_inbox}]
@@ -489,7 +489,7 @@ defmodule MachineBoundaryDeliveryTest do
       Machine.validate!(next)
 
       # Nothing queued: the resume settles to idle and finalizes as before.
-      empty = %{reserve_state() | entry: {:compaction, nil}}
+      empty = %{reserve_state() | entry: {:compaction, nil, nil}}
       {:ok, actions, next} = Compaction.resume(empty)
 
       assert actions == [{:finalize, :clean}, {:drain_inbox}]

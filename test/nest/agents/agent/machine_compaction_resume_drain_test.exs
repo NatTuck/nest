@@ -49,7 +49,7 @@ defmodule MachineCompactionResumeDrainTest do
       # the queued message is the real work, and the failed compaction is
       # already broadcast (`:context_overflow` / `:compaction_failed`) and
       # visible in the transcript.
-      staged = %{resume_segment() | entry: {:compaction, {:compact_resume, 0, 10}}}
+      staged = %{resume_segment() | entry: {:compaction, {:compact_resume, 0, 10}, nil}}
 
       {:ok, _actions, failed} =
         Compaction.compaction_failed(staged, :boom, {:compact_resume, 0, 10})

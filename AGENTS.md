@@ -37,12 +37,15 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   host-side emulation** of `read`, `stat`, or `glob`: all three execute inside
   the sandbox, so their results come from exactly what the backend exposes and
   can never disagree with what a shell inside it sees.
-- Which backend that is, is a **per-space, creation-only** choice
-  (`spaces.sandbox_backend`: `bwrap`, `docker` or `none`). It is picked when the
-  space is created and cannot be changed afterwards, because changing it would
-  mean replacing the environment the space's agents run in. It travels to every
-  command on the `Nest.Sandbox.Mounts` value, and `Nest.Sandbox.Backend` is the
-  one dispatch point (`Nest.Tools.ShellCmd` is the only caller that matters).
+- Which backend that is, is a **per-space** choice (`spaces.sandbox_backend`:
+  `bwrap`, `docker` or `none`), made when the space is created and edited through
+  the one environment edit (`Nest.Spaces.update_environment/2` — the same action
+  that moves the workspace and the network). An edit to any of the three releases
+  the space's sandbox environment, because all three are part of a container's
+  identity: its image, its `--network` value and its workspace binds are fixed
+  when the container is created. It travels to every command on the
+  `Nest.Sandbox.Mounts` value, and `Nest.Sandbox.Backend` is the one dispatch
+  point (`Nest.Tools.ShellCmd` is the only caller that matters).
 - **Network access is the space's, not a mode's.** `spaces.network_access`
   (boolean, editable) is the only source of `caps["net"]`: it is resolved once at
   agent start and carried on `Nest.Sandbox.Mounts`, and

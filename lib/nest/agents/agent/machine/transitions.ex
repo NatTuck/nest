@@ -276,8 +276,11 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # --- workspace notice ---
 
-  def do_step(%{phase: :idle, work: %{pending_notice: values}} = m, :workspace_notice)
-      when is_map(values) do
+  # The values ride the *event*, not the machine: a notice's lifetime is one
+  # settle (or the compaction that settle stages — see `Compaction.stage/3`), so
+  # there is no slot for it to outlive. `pending_notice` is the iteration-budget
+  # reminder's alone.
+  def do_step(%{phase: :idle} = m, {:workspace_notice, values}) when is_map(values) do
     pair = WorkspaceHandler.notice_pair(values)
     projected = messages(m) ++ pair
     limit = m.work.ctx.context_limit
@@ -294,21 +297,16 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
         )
 
       :needs_compaction ->
-        Compaction.stage(m, nil)
+        # The notice rides the compaction's entry, so only the compaction that
+        # staged it can append it, and a failure drops it with the entry.
+        Compaction.stage(m, nil, values)
 
       :cannot_compact ->
         actions = [{:broadcast, {:overflow, :reserve_exhausted, "start a conversation"}, nil}]
 
-        Phase.block(
-          %{m | work: %{m.work | pending_notice: nil}},
-          :context_overflow,
-          :workspace_notice,
-          actions
-        )
+        Phase.block(m, :context_overflow, :workspace_notice, actions)
     end
   end
-
-  def do_step(%{phase: :idle} = m, :workspace_notice), do: {:ignore, :no_pending_notice, m}
 
   # --- generating (chat) ---
 
@@ -429,7 +427,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # --- committing ---
 
-  def do_step(%{phase: :committing, entry: {:compaction, _}} = m, {:commit_done}),
+  def do_step(%{phase: :committing, entry: {:compaction, _, _}} = m, {:commit_done}),
     do: Compaction.resume(m)
 
   def do_step(%{phase: :committing} = m, {:commit_done}), do: {:ignore, :no_compaction, m}
