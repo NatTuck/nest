@@ -5,6 +5,7 @@
  * Every user-role row states who is speaking and the recipient's mode:
  *
  *     [From user | mode: act]
+ *     [From user @nat | mode: act]
  *     [From agent crazy-dolphin | mode: plan]
  *     [From nest runtime | mode: act]
  *

@@ -430,7 +430,11 @@ defmodule Nest.Agents.Agent.InboxTest do
       assert state.live.inbox == []
       assert state.live.mode == "plan"
       assert Enum.any?(user_texts(state.chat_state.messages), &(&1 =~ "hello now"))
-      assert Enum.any?(user_texts(state.chat_state.messages), &(&1 =~ "[From user | mode: plan]"))
+
+      assert Enum.any?(
+               user_texts(state.chat_state.messages),
+               &(&1 =~ "[From user @alice | mode: plan]")
+             )
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end

@@ -15,11 +15,15 @@ defmodule Nest.Messages.Header do
       [From nest runtime | mode: act]
       [From nest runtime | mode: compact]
 
-  * The human arm is `user`, and it carries the human's **address** (`@nat`)
-    when the sender is written as one (`Nest.Address`): a note delivered from an
-    address is the one a recipient has to be able to answer, and the address is
-    what it answers to. A sender with no sigil is an agent's name, so a row that
-    says just `user` is a human whose name the producer did not have.
+  * The human arm is `user`, and it **names the human** whenever the producer
+    has the name: `human?` is the fact, `from` is the name, and the row states
+    it as the address a reply goes to — `[From user @nat …]`, the same string
+    whether the producer passed `"nat"` or `"@nat"`. A row that says just
+    `user` is a human whose name the producer did not have.
+  * The sigil is how you *address* somebody in a tool argument
+    (`Nest.Address`); it is not how a row that already knows its speaker is a
+    human gets labelled. So the address clause below is for a sender written as
+    one, which is a different fact from `human?` being true.
   * `, agents-send reply required` maps to exactly one predicate: the note's
     kind is `:query` (`Nest.Agents.Agent.Inbox.t:kind/0`). Nothing else sets it,
     and the compaction request never does — the response it wants is the model's
@@ -101,33 +105,38 @@ defmodule Nest.Messages.Header do
   @doc """
   Who a row is from, from the three facts every producer already has.
 
-  `human?` wins over `from`, and the inbox kind decides the runtime arm, so a
-  drain entry and an idle chat turn state the same sender for the same facts:
-  a human's own words are `user` whatever name the channel passes; a note the
-  runtime produced is `nest runtime` whatever agent it is *about*; and anything
-  else is the agent whose name it carries — including a spawn kickoff, which is
-  a `kind: :user` entry that nobody typed.
+  The facts answer it in this order, and the order is the rule:
 
-  **An address is a human, and carries the name.** A sender written with the
-  sigil (`"@nat"`) is a human's, so the row reads `[From user @nat …]` — the
-  name matters there because it is the address the recipient answers to: the
-  obligation is keyed on it (`Machine.owed_replies`) and a reply is an
-  `agents-send` back to it. A bare name is an agent's, and is not folded
-  (`Nest.Address`), so `"Nat"` reads as that agent.
+    * **`human?`** — the producer saying that what it is passing is a human's
+      words. The row is `user`, and it names them from `from` (folded the way a
+      username is stored, `Nest.Name`), because a row has to state *who* is
+      speaking and a human's name is the address a reply is sent to. A producer
+      with no name gets the bare `user`.
+    * **the inbox kind `:runtime`** — the runtime speaking, whatever name it
+      carries: a notice about an agent must never be framed as that agent's
+      words, nor as a human's.
+    * **otherwise the name it carries** — an *address* (`Nest.Address`) is a
+      human's, which is how a note to a human is delivered and what a reply is
+      sent to; a bare name is an agent's and is not folded, because it is an
+      identifier rather than a written address, so `"Nat"` reads as that agent.
+      A spawn kickoff lands here: a `kind: :user` entry that nobody typed, from
+      the spawning agent.
 
-  The order of the clauses is the rule: `human?` first, then the runtime's own
-  kind, then the address. So a runtime entry reads as the runtime's whatever
-  name it carries — its words can never be framed as a human's — and a human's
-  address only names a human on a row that is not the runtime's.
+  The sigil is how you *address* somebody in a tool argument; it is not how a
+  row that already knows its speaker is a human gets labelled. Both roads end at
+  the same string — `human?: true` with `"nat"` and a note from `"@nat"` both
+  read `[From user @nat …]` — which is what stops a queued human message and an
+  idle one, or a chat and a note, from having two spellings.
 
-  A missing or blank name still says `agent`: the row must not read as a
-  human's, and putting `nil` in the prompt is worse than leaving the name out.
+  A missing or blank name says `agent`, except on a human's row, which says
+  `user`: the row must not read as the other class, and printing `nil` would be
+  worse than leaving the name out.
   """
   @spec sender(String.t() | nil, boolean(), atom() | nil) :: sender()
   def sender(from, human?, kind \\ nil)
 
-  def sender(_from, true, _kind), do: :user
   def sender(_from, _human?, :runtime), do: :runtime
+  def sender(from, true, _kind), do: named_user(from)
 
   def sender(from, _human?, _kind) when is_binary(from) do
     case Nest.Address.parse(from) do
@@ -137,6 +146,19 @@ defmodule Nest.Messages.Header do
   end
 
   def sender(from, _human?, _kind), do: {:agent, from}
+
+  # A human's row names them, from the name the producer has — folded the way a
+  # username is stored (`Nest.Name`), so the row and the address an agent would
+  # write for that person are one string. No name is `:user`: the row must not
+  # read as an agent's, and the name is genuinely unknown.
+  defp named_user(from) when is_binary(from) do
+    case Nest.Name.sanitize(from) do
+      "" -> :user
+      username -> {:user, username}
+    end
+  end
+
+  defp named_user(_from), do: :user
 
   defp who(:user), do: "user"
   defp who(:runtime), do: "nest runtime"

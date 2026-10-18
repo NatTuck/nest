@@ -303,11 +303,11 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
                [:system, :user, :assistant, :tool, :assistant, :user]
 
       assert text_of(Enum.at(state.chat_state.messages, 5)) ==
-               "[From user | mode: plan]\nhuman note"
+               "[From user @alice | mode: plan]\nhuman note"
 
       # It rides in on the next request, bare: no sender framing, so a queued
       # human message reads exactly like one typed while the agent was idle.
-      assert Enum.any?(user_texts(second), &(&1 == "[From user | mode: plan]\nhuman note"))
+      assert Enum.any?(user_texts(second), &(&1 == "[From user @alice | mode: plan]\nhuman note"))
       refute Enum.any?(user_texts(second), &(&1 =~ "peer note"))
 
       # Releasing the batch runs its `agents-send` while this agent is
@@ -371,7 +371,8 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       assert [tool_index, ack_index, human_index, done_index, peer_index] ==
                Enum.to_list(tool_index..(final_index - 1))
 
-      assert text_of(Enum.at(messages, human_index)) == "[From user | mode: plan]\nhuman note"
+      assert text_of(Enum.at(messages, human_index)) ==
+               "[From user @alice | mode: plan]\nhuman note"
 
       # The peer's entry arrives with the batch's late result, in one batch: its
       # label names the mode the drain applies (the human's `plan` — no entry here

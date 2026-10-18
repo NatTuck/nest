@@ -123,10 +123,14 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       # The human's own selection is stated by the delivered message's own
       # `[mode: X]` prefix, never by a notice. It is written down whether it
       # rides a chat message — applied at once — ...
+      #
+      # The row also names her (`@alice`), because a direct chat and a note from
+      # the same speaker must be the same framing: `Header.sender/3`'s drift
+      # guard is in `HeaderTest`, and this is the producer end of it.
       :ok = Agent.chat(pid, "do the thing", "plan", "alice", true)
       wait_idle(pid)
 
-      assert delivered(pid, "do the thing") == ["[From user | mode: plan]\ndo the thing"]
+      assert delivered(pid, "do the thing") == ["[From user @alice | mode: plan]\ndo the thing"]
       assert {:ok, %{mode: "plan"}} = row_mode(name)
 
       # ...or a queued delivery, applied when the drain delivers it.
@@ -136,7 +140,7 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       Agent.stop_chat(pid, self())
       wait_idle(pid)
 
-      assert delivered(pid, "and another") == ["[From user | mode: act]\nand another"]
+      assert delivered(pid, "and another") == ["[From user @alice | mode: act]\nand another"]
       assert delivered(pid, "[From nest runtime") == []
       assert Agent.get_public_info(pid, 1_000).current_mode == "act"
       assert {:ok, %{mode: "act"}} = row_mode(name)

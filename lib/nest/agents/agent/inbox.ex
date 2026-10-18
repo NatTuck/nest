@@ -73,13 +73,14 @@ defmodule Nest.Agents.Agent.Inbox do
   address (`"@nat"`, `Nest.Address`) whatever its kind — a human's query is a
   `:query` entry, and it keeps its own turn boundary like any other human
   message. `Nest.Agents.Agent.Inbox.Render` then renders the batch: a human entry
-  is its content behind `[From user | mode: X]` — or `[From user @nat | mode: X]`
-  when the sender is an address, so a queued human message reads exactly like one
-  that arrived while the agent was idle and names the address the agent answers
-  to — a `:runtime` entry says `nest runtime` because
-  the runtime — not an agent — said it, and each `:agent`/`:query` entry names
-  its sender — which is what disambiguates a batch of peer messages. An unknown
-  sender (`nil`) still says `agent` rather than putting `nil` in the prompt.
+  is its content behind `[From user @nat | mode: X]` — the human's own words, and
+  the address a reply goes to, so a queued human message reads exactly like one
+  that arrived while the agent was idle (or a note delivered from `@nat`) — a
+  `:runtime` entry says `nest runtime` because the runtime — not an agent — said
+  it, and each `:agent`/`:query` entry names its sender — which is what
+  disambiguates a batch of peer messages. An unknown sender (`nil`) still says
+  `agent` rather than putting `nil` in the prompt, and a human whose name the
+  producer did not have says `user`.
   A batch over `Nest.Agents.Agent.Config.configured_async_message_max_tokens/0`
   is written to the agent's scratch dir and replaced by a short pointer telling
   the agent how many messages there were and where to read them.
