@@ -192,6 +192,12 @@ defmodule Nest.LLM.Tools do
     }
   end
 
+  # A call the space edit cancelled: the model must see it as a failed call (it did
+  # not run) whose content is the reason, so it can decide whether to re-issue it.
+  defp to_result(id, name, args, {:cancelled, reason}) do
+    to_result(id, name, args, {:error, reason})
+  end
+
   defp to_result(id, name, args, {:error, reason}) do
     %ToolResult{
       tool_call_id: id,

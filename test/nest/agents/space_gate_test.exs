@@ -76,6 +76,19 @@ defmodule Nest.Agents.SpaceGateTest do
     assert :ok = Task.await(waiter, 500)
   end
 
+  test "a waiter past its ceiling proceeds without the latch, and says so" do
+    id = watch(space_id())
+    assert :ok = SpaceGate.hold(id)
+
+    log = capture_log(fn -> assert :ok = SpaceGate.await(id, 20) end)
+
+    # It gave up rather than hanging the tool worker, and said so without
+    # diagnosing a cause it cannot know.
+    assert log =~ "stayed held past the wait ceiling"
+    assert SpaceGate.held?(id)
+    assert :ok = SpaceGate.release(id)
+  end
+
   test "a waiter on an unheld space does not block" do
     assert :ok = SpaceGate.await(space_id(), 0)
   end

@@ -402,10 +402,13 @@ defmodule Nest.Sandbox do
   @doc """
   Run `command` inside the sandbox. Authorizes nothing further
   itself — the mounts enforce filesystem rules. Delegates to
-  `ShellCmd.execute/4`.
+  `ShellCmd.execute/4`, including its `{:cancelled, reason}`: a caller that
+  runs a long command (the `shell-cmd` tool) has to tell a cancellation from a
+  failure, and a caller that runs a short helper (`file --`) can treat both as
+  an error.
   """
   @spec run(String.t(), Mounts.t(), map() | nil, keyword()) ::
-          {:ok, String.t()} | {:error, String.t()}
+          {:ok, String.t()} | {:error, String.t()} | {:cancelled, String.t()}
   def run(command, mounts, caps, opts \\ []) do
     ShellCmd.execute(command, mounts, caps, opts)
   end
@@ -420,12 +423,17 @@ defmodule Nest.Sandbox do
   @spec write(String.t(), binary(), map(), Mounts.t()) ::
           {:ok, String.t()} | {:error, String.t()}
   def write(path, content, caps, mounts) do
-    ShellCmd.execute(
-      "cat > #{ShellEscape.escape(path)}",
-      mounts,
-      caps,
-      stdin: content
-    )
+    case ShellCmd.execute(
+           "cat > #{ShellEscape.escape(path)}",
+           mounts,
+           caps,
+           stdin: content
+         ) do
+      # A cancelled write has no verdict of its own to report: the file either got
+      # written or it did not, and every caller treats the second as an error.
+      {:cancelled, reason} -> {:error, reason}
+      result -> result
+    end
   end
 
   @doc """

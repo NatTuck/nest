@@ -126,8 +126,13 @@ defmodule Nest.Tools.InspectFile do
   # the error and we propagate.
   defp run_file_type(full_path, mounts, caps) do
     case Sandbox.run("file -- #{shell_escape(full_path)}", mounts, caps) do
-      {:ok, output} -> {:ok, parse_file_type(output)}
-      {:error, reason} -> {:error, "Failed to detect file type: #{reason}"}
+      {:ok, output} ->
+        {:ok, parse_file_type(output)}
+
+      # `{:cancelled, _}` too: this command is short, and a caller that cancels it
+      # has nothing else to be told.
+      {tag, reason} when tag in [:error, :cancelled] ->
+        {:error, "Failed to detect file type: #{reason}"}
     end
   end
 

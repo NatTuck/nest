@@ -28,6 +28,7 @@ defmodule Nest.Spaces.EnvironmentTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Agents.SpaceGate
   alias Nest.Persistence
   alias Nest.Sandbox.Paths
   alias Nest.Spaces
@@ -60,13 +61,27 @@ defmodule Nest.Spaces.EnvironmentTest do
     end
 
     test "refuses a backend this build does not implement" do
+      # A row can name a backend this build does not have — `sandbox/backend.ex`
+      # says so: it is what a rollback leaves behind. The refusal has to come
+      # *before* the latch and the quiesce, or every save on such a space cancels
+      # the whole space's work and then refuses; `SpaceGate.held?` is the
+      # observable that tells the two apart.
       {:ok, space} = space(%{workspace_path: AgentTestHelpers.default_test_workspace()})
+
+      id = space.id
+      Phoenix.PubSub.subscribe(Nest.PubSub, SpaceGate.topic(id))
 
       assert {:error, %Ecto.Changeset{errors: errors}} =
                Spaces.update_environment(space.id, %{sandbox_backend: "firecracker"})
 
       assert Keyword.has_key?(errors, :sandbox_backend)
       assert Spaces.sandbox_backend(space.id) == "bwrap"
+
+      # The latch was never taken, so nothing was cancelled and nothing was
+      # stopped. The frame is broadcast inside `hold`, before it returns, and a
+      # local broadcast is a synchronous `send` — so its absence is a fact rather
+      # than a window that has not elapsed.
+      refute_receive {:space_locked, ^id}, 0
     end
 
     test "releases the sandbox of the backend the row had, not the one it names" do

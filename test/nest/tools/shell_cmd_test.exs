@@ -105,7 +105,7 @@ defmodule Nest.Tools.ShellCmdTest do
     # new values — and it is not logged, because nothing failed. (`Task.yield`
     # plus `shutdown` rather than `await`: a cancel that failed to land must fail
     # the test rather than leave a `sleep 30` running.)
-    assert {:ok, {:error, ^reason}} =
+    assert {:ok, {:cancelled, ^reason}} =
              Task.yield(task, 2_000) || Task.shutdown(task, :brutal_kill)
   end
 

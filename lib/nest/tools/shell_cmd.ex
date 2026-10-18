@@ -100,6 +100,11 @@ defmodule Nest.Tools.ShellCmd do
     * `{:ok, output}` - Command completed successfully
     * `{:error, output}` - Command failed or was terminated (a backend
       returning "Permission denied" surfaces as `{:error, "Exit code N: ..."}`)
+    * `{:cancelled, reason}` - The space's environment changed under the
+      command and the space edit called it off
+      (`Nest.Agents.Agent.cancel_tools/2`). Not a failure: nothing went wrong,
+      the call may be re-issued. Its own shape so a caller can tell it from an
+      error — the tool path must not report a routine edit as one.
 
   Both success and failure return the command output, which should be
   displayed as a message in the chat UI.
@@ -109,7 +114,7 @@ defmodule Nest.Tools.ShellCmd do
   back-compat with callers that haven't been migrated.
   """
   @spec execute(String.t(), Mounts.t(), map() | nil, keyword()) ::
-          {:ok, String.t()} | {:error, String.t()}
+          {:ok, String.t()} | {:error, String.t()} | {:cancelled, String.t()}
   def execute(command, mounts, caps \\ nil, opts \\ []) do
     with {:ok, mounts} <- validate_workspace(mounts),
          {:ok, spec, script, script_sandbox} <- build_command(command, mounts, caps) do
@@ -214,10 +219,10 @@ defmodule Nest.Tools.ShellCmd do
       # The space's environment changed under the command and the space edit
       # called it off (`cancel_tools/2`). Not a failure to start and not a
       # failure to run: nothing is logged, because a deliberate cancellation is
-      # not a defect to diagnose, and the agent gets the reason as its tool
-      # error so it can re-issue the call against the new values.
+      # not a defect to diagnose, and the caller gets the reason as a
+      # cancellation so its own error diagnostics can stay off too.
       {:cancelled, reason} ->
-        {:error, reason}
+        {:cancelled, reason}
 
       {:error, reason} ->
         handle_startup_failure(command, reason, mounts)

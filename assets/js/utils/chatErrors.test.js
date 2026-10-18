@@ -197,7 +197,7 @@ describe("describeSpaceEditError", () => {
     // `:space_changing` is another session's edit holding the latch — a real
     // state the user can act on (wait), not a failure to report raw.
     expect(describeSpaceEditError({ reason: "space_changing" })).toBe(
-      "Someone else is editing this space right now. Try again once their edit finishes.",
+      "Another session is editing this space — possibly this one, if the page reconnected. Try again once that edit finishes.",
     );
   });
 

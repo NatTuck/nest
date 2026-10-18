@@ -94,12 +94,12 @@ defmodule Nest.Agents.SpaceGate do
   # suite tests flake while passing alone.
   @ttl_ms 120_000
 
-  # The ceiling on a wait. It is a bound on how long a waiter blocks, not proof
-  # that the claim was lost: a space re-held across its own TTLs outlasts it (two
-  # consecutive claims are longer than this), and so does a space held again
-  # immediately after a release. Reaching it therefore means "this waiter has
-  # waited long enough" — it proceeds rather than hanging a tool worker, and the
-  # log says that much without diagnosing a cause it cannot know.
+  # The ceiling on **one** wait — measured from the moment `await/2` starts, across
+  # any number of re-holds (see the deadline there). It is not proof that the claim
+  # was lost: a space re-held across its own TTLs outlasts it, and so does a space
+  # held again immediately after a release. Reaching it therefore means "this
+  # waiter has waited long enough" — it proceeds rather than hanging a tool worker,
+  # and the log says that much without diagnosing a cause it cannot know.
   @await_ms @ttl_ms + 60_000
 
   @type reason :: :space_edit
@@ -133,7 +133,11 @@ defmodule Nest.Agents.SpaceGate do
   and then a confirmation) keeps one claim across both — and **re-arms** its TTL,
   so the claim covers the confirmation's own quiesce and write rather than
   expiring in the middle of them. A *different* caller is refused: two sessions
-  editing one space at once is what the latch is for.
+  editing one space at once is what the latch is for. Note that a socket that
+  reconnects between the preview and the confirmation *is* a different caller (a
+  new channel process), so it is refused too — self-healing, because the dead
+  channel's `:DOWN` releases the claim, and the UI's message says so rather than
+  naming a second person who does not exist.
 
   The `ttl_ms` argument exists for tests, which need a claim to expire without
   waiting two minutes. It is per-hold rather than an application setting on
@@ -171,9 +175,13 @@ defmodule Nest.Agents.SpaceGate do
     if held?(space_id) do
       topic = topic(space_id)
       Phoenix.PubSub.subscribe(Nest.PubSub, topic)
+      # One deadline for the whole wait: a space released and re-held while this
+      # waiter sleeps must not hand it a second full `timeout` — the bound is what
+      # the caller was promised, not one bound per claim.
+      deadline = System.monotonic_time(:millisecond) + timeout
 
       try do
-        if held?(space_id), do: wait_until_open(space_id, timeout), else: :ok
+        if held?(space_id), do: wait_until_open(space_id, deadline, timeout), else: :ok
       after
         Phoenix.PubSub.unsubscribe(Nest.PubSub, topic)
       end
@@ -187,14 +195,15 @@ defmodule Nest.Agents.SpaceGate do
   # held in the first place — the table is keyed by integer.
   def await(_space_id, _timeout), do: :ok
 
-  defp wait_until_open(space_id, timeout) do
+  defp wait_until_open(space_id, deadline, timeout) do
     receive do
       {:space_unlocked, ^space_id} ->
         # Re-held before this process ran: wait for the next release. A latch is
-        # a pause, not a one-shot event.
-        if held?(space_id), do: wait_until_open(space_id, timeout), else: :ok
+        # a pause, not a one-shot event — and the deadline above is what keeps
+        # "a pause" from becoming an unbounded number of pauses.
+        if held?(space_id), do: wait_until_open(space_id, deadline, timeout), else: :ok
     after
-      timeout ->
+      remaining(deadline) ->
         Logger.warning(
           "space #{space_id} stayed held past the wait ceiling (#{timeout}ms); " <>
             "proceeding without the latch"
@@ -203,6 +212,10 @@ defmodule Nest.Agents.SpaceGate do
         :ok
     end
   end
+
+  # Time left before the deadline, floored at 0: an expired deadline must fire the
+  # `after` immediately rather than raise.
+  defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
 
   # --- server ---
 

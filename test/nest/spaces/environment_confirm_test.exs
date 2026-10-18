@@ -124,8 +124,11 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
     #
     # The barrier is the task's own first message: once it has been received the
     # task is running and inside the call, so "it has not finished" is evidence of
-    # blocking rather than of never having been scheduled. Without it, the window
-    # below would pass on a loaded machine even with the gate removed.
+    # blocking rather than of never having been scheduled. It is not *proof* that
+    # the task is parked in `await/1` — the 50ms below is a grace for the single
+    # DB read the un-gated path would need — but the window is now measured from a
+    # running task rather than from `Task.async`'s return, which is what made the
+    # earlier version pass with the gate removed.
     starter =
       Task.async(fn ->
         send(test_pid, {:started, self()})
@@ -153,9 +156,9 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
 
     assert :ok = SpaceGate.hold(space_id)
 
-    # Same barrier as the start test: the task's first message proves it is
-    # running, so the missing row below is the gate's doing rather than the
-    # scheduler's.
+    # Same barrier, and the same limit, as the start test: the task's first
+    # message proves it is running, so the missing row below is the gate's doing
+    # rather than the scheduler's; the 50ms is a grace for one DB read.
     spawner =
       Task.async(fn ->
         send(test_pid, {:started, self()})
@@ -242,15 +245,21 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
     scratch = Mounts.scratch(mounts)
     dir = Paths.stage_dir(scratch)
     File.mkdir_p!(dir)
-    File.write!(Path.join(dir, "run.sh"), "sleep 30\n")
+    script = Path.join(dir, "run.sh")
+    File.write!(script, "sleep 30\n")
 
     {:ok, _id, _log} =
       ShellJobs.start_job(%{
         agent_key: key,
         agent_pid: pid,
         command: "sleep 30",
-        script_sandbox: Paths.stage_dir_sandbox(scratch),
-        script_path: nil,
+        # The staged *file's* two spellings: the sandbox one is what the backend's
+        # command line runs, the host one is what gets cleaned up. Handing over the
+        # stage *directory* (as this did) launched `bash <dir>`, which exits 126 at
+        # once — invisible to a test that only counted the job, fatal to one that
+        # looks at its status later.
+        script_sandbox: Path.join(Paths.stage_dir_sandbox(scratch), "run.sh"),
+        script_path: script,
         mounts: mounts,
         max_jobs: 100
       })
@@ -281,6 +290,43 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
     assert [%{status: :running}] = ShellJobs.list({space_id, name})
     assert Spaces.get_space(space_id).workspace_path == workspace
     # The refusal came before the latch, so the space was never even paused.
+    refute SpaceGate.held?(space_id)
+  end
+
+  # A changeset can be *invalid* and still change nothing (`cast/4` records no
+  # change for a value it rejects), so "nothing changed" is not the same as "nothing
+  # to do". The refusal has to win, before the latch and the quiesce: this shape
+  # used to be reported to the client as a successful save of the *old* values.
+  test "a save the changeset refuses stops nothing and is not reported as a save" do
+    {pid, name} = AgentTestHelpers.start_agent()
+    space_id = AgentTestHelpers.current_space_id()
+    # allowlist: snapshot — the agent's own mounts, which the job needs.
+    state = :sys.get_state(pid, 1_000)
+    start_job(space_id, name, pid, state.mounts)
+
+    Phoenix.PubSub.subscribe(Nest.PubSub, SpaceGate.topic(space_id))
+
+    # Invalid *and* changed: the backend is not one this build has, which is a row
+    # a rollback can leave behind — so on such a space every save used to cancel
+    # the whole space's work and then refuse.
+    assert {:error, %Ecto.Changeset{errors: errors}} =
+             Spaces.update_environment(space_id, %{sandbox_backend: "firecracker"})
+
+    assert Keyword.has_key?(errors, :sandbox_backend)
+    assert [%{status: :running}] = ShellJobs.list({space_id, name})
+    refute_receive {:space_locked, ^space_id}, 0
+  end
+
+  test "a blank workspace is refused rather than saved as a no-op" do
+    {_pid, _name} = AgentTestHelpers.start_agent()
+    space_id = AgentTestHelpers.current_space_id()
+
+    # `""` casts to no change *and* fails `validate_required`, so this is the shape
+    # that has no changes at all: it must be an error, never `{:ok, old_row}`.
+    assert {:error, %Ecto.Changeset{errors: errors}} =
+             Spaces.update_environment(space_id, %{workspace_path: ""})
+
+    assert Keyword.has_key?(errors, :workspace_path)
     refute SpaceGate.held?(space_id)
   end
 

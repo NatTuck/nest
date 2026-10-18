@@ -101,10 +101,14 @@ defmodule Nest.Agents.Agent.BatchSizer do
   # stays `String.t()` and every `is_binary` branch below keeps working.
   #
   # The second element is the result's *kind*: `:error` for a refusal, and
+  # `:cancelled` for a call the space edit called off, which the model must see as
+  # `is_error: true` but which is not a failure to diagnose (see `do_execute/2`).
   # `:waiting` for a result that is not a verdict at all — a wait tool's, whose
   # real result arrives later as a message (issue #54). `:waiting` sizes
   # exactly like `:ok` and differs only in the `state` the part is stamped with.
-  @type entry :: {ToolCall.t(), :ok | :error | :waiting, String.t() | {:media, Part.Media.t()}}
+  @type entry ::
+          {ToolCall.t(), :ok | :error | :cancelled | :waiting,
+           String.t() | {:media, Part.Media.t()}}
 
   @doc """
   Run a batch of tool calls through preflight → execute →
@@ -282,6 +286,15 @@ defmodule Nest.Agents.Agent.BatchSizer do
       {:waiting, content} ->
         {tc, :waiting, ensure_non_empty(content)}
 
+      # The space's environment changed and the edit called this call off
+      # (`Nest.Agents.SpaceGate`, `Nest.Agents.Agent.cancel_tools/2`). It is not a
+      # failure: the agent is told why and may re-issue the call. Its own kind so
+      # that neither this function's `[error]` line nor `finalize/2`'s fires for a
+      # routine space edit — the result still reaches the model as
+      # `is_error: true`, because the call did not run.
+      {:cancelled, reason} ->
+        {tc, :cancelled, ensure_non_empty(reason)}
+
       {:error, reason} ->
         # Permanent diagnostic. The tool returned an error tuple
         # rather than crashing. The LLM is going to see this as
@@ -378,7 +391,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   end
 
   defp entry_parts(tc, kind, content) do
-    [tool_result_part(tc, content, kind == :error)]
+    [tool_result_part(tc, content, kind in [:error, :cancelled])]
   end
 
   defp tool_result_part(tc, content, is_error?, state \\ nil) do
@@ -450,9 +463,12 @@ defmodule Nest.Agents.Agent.BatchSizer do
     end
   end
 
-  defp apply_one_with_acc({tc, :error, reason}, _ctx, acc) do
+  # `:cancelled` is cooked exactly like `:error` — an error result whose content is
+  # the reason — because the only difference is the log line `finalize/2` skips for
+  # it, and the kind it keeps so that line can tell them apart.
+  defp apply_one_with_acc({tc, kind, reason}, _ctx, acc) when kind in [:error, :cancelled] do
     error_size = Estimator.estimate(reason) + per_message_overhead()
-    {{tc, :error, reason}, advance(acc, error_size)}
+    {{tc, kind, reason}, advance(acc, error_size)}
   end
 
   # A wait tool's result is sized exactly like an ordinary text result — it is a

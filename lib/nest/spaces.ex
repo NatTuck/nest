@@ -229,15 +229,11 @@ defmodule Nest.Spaces do
   space inherits them, and an agent's `Nest.Sandbox.Mounts` is built from them
   once at start — so the row is the truth, and the agents have to be told.
 
-  ## Two phases
-
   The edit **stops work**, so it asks first: with anything running it answers
-  `{:error, {:confirmation_required, plan}}` (the working agents, their running
-  job counts, and the total) **without writing**, and the same params with
-  `confirm: true` does the edit. A save that is refused, or that names what the
-  row already says, stops nothing. `Nest.Spaces.Environment` owns that protocol —
-  the `Nest.Agents.SpaceGate` latch, the plan, and the cancellation — and its
-  moduledoc is the description to read.
+  `{:error, {:confirmation_required, plan}}` **without writing**, and the same
+  params with `confirm: true` does the edit. A save that is refused, or that names
+  what the row already says, stops nothing. `Nest.Spaces.Environment` owns that
+  protocol and its moduledoc is the description to read.
 
   Nothing is restarted. A live agent is cast the new values
   (`Nest.Agents.Agent.space_changed/2`): its mounts move, its tool closures are
@@ -285,20 +281,24 @@ defmodule Nest.Spaces do
              | {:confirmation_required, Environment.edit_plan()}}
   defdelegate update_environment(id, params, opts \\ []), to: Environment
 
-  # The validate half, for `Nest.Spaces.Environment`: the split exists so a save
-  # that would be refused never stops anything. The workspace gate runs here,
-  # before the caller quiesces, so a typo'd path does not cancel every in-flight
-  # tool call on its way to `{:error, :workspace_missing}`;
-  # `changeset.changes == %{}` is the other answer that stops nothing.
+  # The validate half, for `Nest.Spaces.Environment`: the gates run here, before
+  # the caller quiesces, so a save that would be refused stops nothing. Both, and
+  # in this order — `cast/4` records no change for a value it rejects, so an
+  # invalid changeset can have `changes == %{}` and would read as a successful save.
   @doc false
   @spec prepare_environment(Space.t(), map()) :: {:ok, Ecto.Changeset.t()} | {:error, term()}
   def prepare_environment(%Space{} = space, params) do
     changeset = Space.environment_changeset(space, params)
 
-    with :ok <- workspace_gate(changeset), do: {:ok, changeset}
+    with :ok <- validity_gate(changeset),
+         :ok <- workspace_gate(changeset),
+         do: {:ok, changeset}
   end
 
-  # The write half: the row, the container release and the announcement.
+  defp validity_gate(%Ecto.Changeset{valid?: true}), do: :ok
+  defp validity_gate(%Ecto.Changeset{} = changeset), do: {:error, changeset}
+
+  # The write half: the row, the container release, the announcement.
   @doc false
   @spec commit_environment(Ecto.Changeset.t(), String.t()) :: {:ok, Space.t()} | {:error, term()}
   def commit_environment(%Ecto.Changeset{} = changeset, old_backend) do
