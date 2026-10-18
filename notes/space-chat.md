@@ -331,13 +331,14 @@ and the `[mode: $MODE]` / `[Message from agent …]` section) and
 human-authored and read-only to agents, so that edit is the user's; leaving it
 stale would leave the next agent following a rule the code no longer has.
 
-**One shape does not fit, and it is not to be glossed:**
-`NoticePairInjector`'s `:user_agent` form fuses `[assistant(notice + ack)]`
-when the trailing row is a user or tool row, because emitting a user row there
-would give `user → user` and break alternation. That assistant row carries a
-runtime notice where a `From …` header does not apply — which is exactly the
-impersonation problem the marker existed to solve. Either keep a minimal
-in-text marker for that one shape, or change the shape. See residuals.
+**The one shape that did not fit is fixed by changing the shape.** The
+`NoticePairInjector`'s `:user_agent` form used to fuse `[assistant(notice +
+ack)]` when the trailing row was user or tool, because emitting a user row there
+would give `user → user`. That assistant row carried a runtime notice where a
+`From …` header does not apply — the impersonation problem the marker existed to
+solve. It now emits an explicit bridge instead, so every runtime notice is a
+user row and the header always applies. See residuals for the shape and what it
+costs.
 
 ## The feed
 
@@ -432,20 +433,6 @@ mistake for it:
 
 **Open, and needing the user's word:**
 
-* **The fused assistant row.** `NoticePairInjector`'s `:user_agent` shape emits
-  `[assistant(notice + ack)]` when the transcript tail is user or tool, to keep
-  alternation. A header cannot go on an assistant row without impersonating a
-  speaker, so step 2 has a hole in exactly that shape — and it is the *last*
-  row the model reads before it next acts, so a wrong attribution is maximally
-  influential. The same injection already emits a user row when the tail is
-  assistant (`[user(notice), assistant(ack)]`), so the runtime's notice is a
-  user-role act in one case and an assistant-role act in the other, decided by
-  what preceded it. **Recommended: bridge the alternation**, so the notice is
-  always a user row (`user → assistant(bridge) → user(notice) →
-  assistant(ack)`), using `MessageList.pairing_bridge/2`, which already inserts
-  such a row elsewhere. The alternative — a minimal in-text marker for that one
-  shape — is cheaper, but it leaves the two-identities problem in place and
-  writes an exception into the scheme.
 * **The name migration and the scratch directory.** An agent's name is its
   scratch directory's segment, so lowercasing it is not a label change. The
   migration must either move `/tmp/<old>` to `/tmp/<new>` or refuse that agent;
@@ -455,6 +442,27 @@ mistake for it:
 
 **Decided, and recorded because each is easy to undo by accident:**
 
+* **The fused assistant row is replaced by an explicit alternation bridge.**
+  `NoticePairInjector`'s `:user_agent` shape used to emit one
+  `[assistant(notice + ack)]` row when the transcript tail was user or tool.
+  That put the runtime's words in an assistant row — impersonating the agent in
+  the *last* row the model reads before it acts — and gave the runtime's notice
+  two identities, since the same injection already emits a user row when the
+  tail is assistant. It now always emits
+  `assistant(bridge) → user(notice) → assistant(ack)`.
+  `MessageList.pairing_bridge/2`'s `{:user, _} | {:tool, _}` clause already
+  returns exactly the bridge row and `bridge_ack_kind/1` falls through to
+  `:live`, so neither needs changing. **Two sites, not one**: `build_pair/3`'s
+  `:user_agent` clause and `notice_record/3`, which falls back to
+  `build_single_assistant(NoticeTag.tag(...))` when `build_pair` defers (the
+  `:stop_cancellation` path). The trailing ack is structural rather than
+  decorative: the shape ends a turn, so the row after the notice must be
+  `assistant` or the next turn's user message gives `user → user`. The cost is
+  two synthetic rows and one extra fabricated ack on a rare path — context
+  thresholds, budget, stop cancellation, backgrounded completion — paid for one
+  identity for the runtime's voice. Rejected: routing `:user_agent` through
+  `:agent_user` and iterating, which is the most semantically clean shape but
+  costs a full LLM call per notice, exactly what `:user_agent` exists to avoid.
 * **`/space/:slug/overview` is retired**, and `/space/:slug` is the feed. Two
   routes remain: the feed and the agent page.
 * **No `read_at`.** Per-item read tracking has no UI behind it; `answered_at`
