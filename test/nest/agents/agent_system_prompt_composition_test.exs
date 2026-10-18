@@ -15,7 +15,6 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.LLM.MockClient
-  alias Nest.Modes
   alias Nest.Sandbox.Mounts
   alias Nest.Vocations
 
@@ -301,8 +300,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
         Mounts.new(nil, nil, backend, nil, network_access),
         {nil, nil},
         "agent",
-        0,
-        Modes.act()
+        0
       )
 
     prompt

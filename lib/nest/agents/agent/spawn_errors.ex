@@ -77,5 +77,10 @@ defmodule Nest.Agents.Agent.SpawnErrors do
   def message({:mode_refused, reason}),
     do: "Could not spawn agent: #{reason}"
 
+  # A workspace the config-file gate refuses: `Nest.ConfigFile.error_message/1`
+  # already words it for a human, and `inspect` would hand the model a tuple.
+  def message({:config_file_not_regular, _path, _type} = reason),
+    do: "Could not spawn agent: #{Nest.ConfigFile.error_message(reason)}"
+
   def message(reason), do: "Could not spawn agent: #{inspect(reason)}"
 end

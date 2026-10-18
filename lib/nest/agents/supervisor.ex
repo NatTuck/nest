@@ -102,7 +102,8 @@ defmodule Nest.Agents.Supervisor do
   end
 
   defp start_under_supervisor(attrs, name) do
-    with {:ok, prepared} <- prepare_for_start(attrs),
+    with :ok <- workspace_gate(attrs),
+         {:ok, prepared} <- prepare_for_start(attrs),
          {:ok, _pid} <- DynamicSupervisor.start_child(@supervisor_name, {Agent, prepared}) do
       {:ok, name}
     else
@@ -111,20 +112,22 @@ defmodule Nest.Agents.Supervisor do
     end
   end
 
+  # The config-file gate on the one route that never reaches `Sandbox.build/4`.
+  # `Nest.ConfigFile.error/1` explains why it is needed and why it is direct.
+  defp workspace_gate(%{workspace_path: path}) when is_binary(path),
+    do: Nest.ConfigFile.error(path)
+
+  defp workspace_gate(_attrs), do: :ok
+
   # Compose the expensive part of the initial state here, in the caller, rather
   # than inside `init/1` — `init/1` runs with this supervisor blocked until it
-  # returns, so the sandbox read it does for `AGENTS.md` was paid *serially* by
-  # every agent start. See `Nest.Agents.Agent.Init.prepare/1`.
+  # returns, so the composition it does was paid *serially* by every agent
+  # start. See `Nest.Agents.Agent.Init.prepare/1`.
   #
-  # Composing the prompt creates the agent's scratch directory on the way
-  # (`Sandbox.read` -> `Mounts.ensure_scratch!/1`, whose `File.mkdir_p!` raises
-  # `File.Error`). Inside `init/1` that raise came back as `{:error, reason}`
-  # from `DynamicSupervisor.start_child/2`; out here it would escape
-  # `fetch_or_start_agent/2` and `get_agent/2`, both of which return error
-  # tuples, are called from channels, and log nothing themselves — so it is
-  # mapped back to that shape and logged here. (Deliberately not in
-  # `Agent.pre_spawn/1`: `start_pre_spawned/3` re-raises after rolling the row
-  # back, and that path already behaved this way.)
+  # The rescue is a **boundary guard with no known reachable cause** (composition
+  # touches no sandbox, creates no scratch directory, and renders a malformed
+  # `.nest` as an error section). It stays because `fetch_or_start_agent/2` and
+  # `get_agent/2` are channel-called and log nothing, so a raise would escape.
   defp prepare_for_start(attrs) do
     {:ok, Init.prepare(attrs)}
   rescue
@@ -230,16 +233,15 @@ defmodule Nest.Agents.Supervisor do
   @doc """
   Test-only: start a single agent under the supervisor.
 
-  Applies `Agent.pre_load_heal/1` in the caller's DB context (matching
-  `fetch_or_start_agent/2`) so an interrupted sequence is healed before
-  the child spawns. The heal is idempotent, so an already-healed tail is
-  left alone.
+  Heals in the caller's DB context first (matching `fetch_or_start_agent/2`) and
+  runs the config-file gate, because it is a start route like any other.
   """
   @spec start_under_test(map()) :: {:ok, pid()} | {:error, term()}
   def start_under_test(attrs) do
     _name = Map.fetch!(attrs, :name)
 
-    with {:ok, prepared} <- prepare_for_start(Agent.pre_load_heal(attrs)),
+    with :ok <- workspace_gate(attrs),
+         {:ok, prepared} <- prepare_for_start(Agent.pre_load_heal(attrs)),
          {:ok, pid} <- DynamicSupervisor.start_child(@supervisor_name, {Agent, prepared}) do
       {:ok, pid}
     else

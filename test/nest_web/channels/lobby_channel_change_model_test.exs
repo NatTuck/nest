@@ -178,6 +178,46 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
       assert log =~ "could not resolve model"
     end
 
+    test "replies with a config-file refusal rather than crashing the channel", %{
+      socket: socket
+    } do
+      {:ok, space_id, name} = create_test_agent(socket, "qwen3.5-plus")
+
+      # The workspace is the *space's* now, and `Agents.edit_agent/4` reaches
+      # `Supervisor.get_agent/2`, which refuses a workspace the config gate will
+      # not let an agent start in. Without a clause in `edit_payload/2` the tagged
+      # reason falls through to `to_string/1`, which raises and kills the channel
+      # process — the client gets *no* reply at all.
+      ws = Repo.get!(Nest.Spaces.Space, space_id).workspace_path
+      path = Path.join(ws, ".nest")
+      File.write!(Path.join(ws, "real.nest"), "")
+      File.ln_s!(Path.join(ws, "real.nest"), path)
+
+      {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
+      Process.unlink(pid)
+      :ok = Nest.Agents.Supervisor.stop_agent(space_id, name)
+
+      log =
+        capture_log(fn ->
+          ref =
+            push(socket, "edit_agent", %{
+              "name" => name,
+              "space_id" => space_id,
+              "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+            })
+
+          assert_reply ref,
+                       :error,
+                       %{
+                         "reason" => "config_file_not_regular",
+                         "path" => path,
+                         "type" => "symlink"
+                       }
+        end)
+
+      assert log =~ "Nest cannot protect it from being rewritten"
+    end
+
     test "returns :invalid_model for an unknown model", %{socket: socket} do
       {:ok, space_id, name} = create_test_agent(socket, "qwen3.5-plus")
 
@@ -235,6 +275,55 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
     test "returns :invalid_payload for a malformed message", %{socket: socket} do
       ref = push(socket, "edit_agent", %{"name" => "no-model-field"})
       assert_reply ref, :error, %{"reason" => "invalid_payload"}
+    end
+  end
+
+  describe "change_model on a workspace the gate refuses" do
+    test "replies with the refusal rather than killing the channel", %{
+      socket: socket,
+      user: user
+    } do
+      # `Agents.change_model/3` reaches `Supervisor.get_agent/2`, so a workspace
+      # `Nest.ConfigFile.error/1` refuses comes back as the tagged reason — and
+      # the lobby's `change_model_payload/2` has to answer it rather than hand a
+      # tuple to `to_string/1`, which raises and leaves the client with no reply.
+      ws = AgentTestHelpers.default_test_workspace()
+
+      {pid, name} =
+        AgentTestHelpers.start_agent(%{
+          workspace_path: ws,
+          created_by_user_id: user.id,
+          model: %{name: "qwen3.5-plus", provider: "model-studio"},
+          vocation_id: AgentTestHelpers.programmer_vocation_id_for_test()
+        })
+
+      space_id = AgentTestHelpers.current_space_id()
+      path = Path.join(ws, ".nest")
+      File.write!(Path.join(ws, "real.nest"), "")
+      File.ln_s!(Path.join(ws, "real.nest"), path)
+      # `start_agent/1` links the agent to the test process, so stopping it in the
+      # body would take the test down with it; unlink first, as an `on_exit`
+      # caller gets for free by running in another process.
+      Process.unlink(pid)
+      :ok = Nest.Agents.Supervisor.stop_agent(space_id, name)
+
+      log =
+        capture_log(fn ->
+          ref =
+            push(socket, "change_model", %{
+              "name" => name,
+              "space_id" => space_id,
+              "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+            })
+
+          assert_reply ref, :error, %{
+            "reason" => "config_file_not_regular",
+            "path" => ^path,
+            "type" => "symlink"
+          }
+        end)
+
+      assert log =~ "Nest cannot protect it from being rewritten"
     end
   end
 end

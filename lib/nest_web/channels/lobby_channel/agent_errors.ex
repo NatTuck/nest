@@ -9,6 +9,7 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
 
   alias Nest.Agents.PersistedAgent
   alias Nest.Spaces.Space
+  alias NestWeb.ErrorPayload
 
   # The `Nest.Sandbox.workspace_error/1` refusals a create can carry.
   @workspace_reasons [:workspace_required, :workspace_missing, :workspace_under_tmp]
@@ -16,6 +17,12 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
   # The refusals whose reply code is simply the reason's own name, so one arm
   # covers them (see `create_payload/1`).
   @simple_reasons @workspace_reasons ++ [:blueprint_missing, :missing_vocation]
+
+  # A reason that carries its detail beside the tag: `{:scratch_path_taken, path}`,
+  # `{:config_file_not_regular, path, type}`. One guard rather than a `{tag, _}`
+  # pattern, which would send the wider ones to the `other` arm.
+  defguardp is_tagged(reason)
+            when is_tuple(reason) and tuple_size(reason) > 0 and is_atom(elem(reason, 0))
 
   @doc false
   def change_model_payload(name, reason) do
@@ -31,28 +38,43 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
 
       other ->
         Logger.error("Failed to change model on agent #{inspect(name)}: #{inspect(other)}")
-        {:error, %{"reason" => to_string(other)}}
+        {:error, ErrorPayload.from_reason(other)}
     end
   end
+
+  # The edit path's refusals whose reply code is the reason's own name. One arm
+  # rather than four, because each is the same rule and credo counts arms.
+  @edit_simple [:agent_busy, :workspace_required, :workspace_missing, :workspace_under_tmp]
 
   @doc false
   def edit_payload(name, reason) do
     case reason do
-      :agent_busy ->
-        {:error, %{"reason" => "agent_busy"}}
-
-      :context_overflow ->
-        {:error, %{"reason" => "context_overflow"}}
+      simple when simple in @edit_simple ->
+        {:error, %{"reason" => to_string(simple)}}
 
       {:invalid_model, _} ->
         {:error, %{"reason" => "invalid_model"}}
 
+      :context_overflow ->
+        {:error, %{"reason" => "context_overflow"}}
+
       :not_found ->
         {:error, %{"reason" => "not_found"}}
 
+      # A tagged reason carries a detail term, and `to_string/1` on a tuple
+      # raises — which kills the channel process and leaves the client with no
+      # reply at all. `create_payload/1` has the same arm; the log line and the
+      # fallback code differ because this is an edit.
+      # Any tuple whose head is a tag: the detail term may be one field
+      # (`{:scratch_path_taken, path}`) or two (`{:config_file_not_regular, path,
+      # type}`), and a narrow `{tag, _detail}` pattern would send the wider ones to
+      # the `other` arm below, where `inspect` is all that is left.
+      tagged when is_tagged(tagged) ->
+        tagged_payload(tagged, {"Failed to edit agent #{inspect(name)}", "failed_to_edit"})
+
       other ->
         Logger.error("Failed to edit agent #{inspect(name)}: #{inspect(other)}")
-        {:error, %{"reason" => to_string(other)}}
+        {:error, %{"reason" => "failed_to_edit"}}
     end
   end
 
@@ -72,8 +94,8 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
         {:error, %{"reason" => to_string(simple)}}
 
       # The tagged refusals, which all carry a detail term beside the code.
-      {tag, _detail} = tagged when is_atom(tag) ->
-        tagged_payload(tagged)
+      tagged when is_tagged(tagged) ->
+        tagged_payload(tagged, {"Failed to create space", "failed_to_create"})
 
       # The root agent's name (`create_space`'s `agent_name`) is not a
       # filename-safe component. Matching `data:` on the *agent* schema is what
@@ -112,29 +134,42 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
     end
   end
 
+  # A workspace whose `.nest` or `AGENTS.md` is not a regular file: Nest cannot
+  # mask a symlink, and a mask that is merely omitted lets an agent replace the
+  # file with one that grants host access. The client needs the path to tell the
+  # user which file to replace.
+  #
+  # Each takes a `{log_prefix, fallback_code}` context; only the last arm uses it.
+  defp tagged_payload({:config_file_not_regular, _path, _type} = tagged, _context) do
+    {:error, ErrorPayload.from_reason(tagged)}
+  end
+
   # The refusals whose reason carries a detail term. The two `"none"`-space
   # scratch ones come from the same place — such a space's agents live at
   # `/tmp/<name>` in the host's one `/tmp` — and each names what it refused: the
   # other space whose live agent holds the name, or the path that is already
   # something Nest does not own.
-  defp tagged_payload({:scratch_name_in_use, other_space_name}) do
+  defp tagged_payload({:scratch_name_in_use, other_space_name}, _context) do
     {:error, %{"reason" => "scratch_name_in_use", "space_name" => other_space_name}}
   end
 
-  defp tagged_payload({:scratch_path_taken, path}) do
+  defp tagged_payload({:scratch_path_taken, path}, _context) do
     {:error, %{"reason" => "scratch_path_taken", "path" => path}}
   end
 
   # A blueprint whose root vocation no longer exists: stale blueprint data rather
   # than a user mistake, so name the code and log the detail.
-  defp tagged_payload({:vocation_not_found, slug}) do
+  defp tagged_payload({:vocation_not_found, slug}, _context) do
     Logger.warning("Blueprint root vocation #{inspect(slug)} no longer exists")
     {:error, %{"reason" => "vocation_not_found"}}
   end
 
-  defp tagged_payload(other) do
-    Logger.error("Failed to create space: #{inspect(other)}")
-    {:error, %{"reason" => "failed_to_create"}}
+  # A tagged reason no arm above knows: log the detail and answer with the
+  # caller's own code. "failed to create" and "failed to edit" are not
+  # interchangeable — the client shows the user what it was trying to do.
+  defp tagged_payload(other, {log, code}) do
+    Logger.error("#{log}: #{inspect(other)}")
+    {:error, %{"reason" => code}}
   end
 
   # Same shape for the space changeset's one client-facing field.

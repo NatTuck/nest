@@ -320,10 +320,10 @@ defmodule Nest.Agents.Agent do
   Resolve the agent's current effective sandbox caps from its state.
 
   The caps are the mode's — `Nest.Modes.caps/1` — resolved through
-  `Nest.ProjectConfig.resolve_caps/2`, so bookkeeping file access (AGENTS.md
-  reads, policy stats) is authorized by the same caps the tools run under. The
-  mode is read from `live.mode`, which is the row's mode and can change while the
-  agent works.
+  `Nest.ProjectConfig.resolve_caps/2`, so bookkeeping file access (policy stats,
+  the `.nest` read) is authorized by the same caps the tools run under. The mode
+  is read from `live.mode`, which is the row's mode and can change while the agent
+  works. (`AGENTS.md` is not in that set: it is a host read, not a sandboxed one.)
 
   `Nest.Modes.caps/1` is total: a mode name this build does not implement — a row
   written by another build, a client that made one up — resolves to the default

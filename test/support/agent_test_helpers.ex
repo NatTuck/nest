@@ -469,8 +469,12 @@ defmodule Nest.Agents.AgentTestHelpers do
       vocation_id: vocation_id_for_test(),
       vocation: nil,
       # No `:workspace_path` here: a workspace is the *space's*
-      # (`spaces.workspace_path`), and `start_agent/1` pops it out of `attrs`
-      # and gives it to the space instead.
+      # (`spaces.workspace_path`), and `start_agent/1` pops it out of `attrs` and
+      # gives it to the space instead. Most tests need none: a workspace changes
+      # what the prompt *says* (the working-directory, `.nest` and `AGENTS.md`
+      # sections — the last read from the **host**, so it costs a `File.read`,
+      # not the 7.8-10.2 ms `bwrap` fork it used to), and the tests that exercise
+      # any of those pass one.
       # Multi-user identity. Defaults to `nil` so tests that
       # pre-date the multi-user migration keep working
       # without changes. Tests that exercise ownership /

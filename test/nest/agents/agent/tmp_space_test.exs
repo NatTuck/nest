@@ -154,10 +154,10 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
     test "names the agent's real scratch, space and backend", %{space_id: space_id} do
       mounts = TmpSpace.prompt_mounts("/ws", space_id, unique("agent-a"), "docker", true)
 
-      # The scratch directory is named even though nothing created it: the
-      # docker backend can only stage a script the container reaches through the
-      # scratch bind, and composing the prompt runs the sandbox (see
-      # `Nest.Sandbox.Backend.Docker.command/3`).
+      # The scratch directory is named even though nothing created it: composing
+      # a prompt runs no sandbox, but the mounts it states must be the agent's
+      # real ones, so that what the prompt says about its environment is what its
+      # tools will do.
       assert Mounts.scratch(mounts) ==
                TmpSpace.agent_dir(space_id, Mounts.scratch(mounts) |> Path.basename(), "docker")
 

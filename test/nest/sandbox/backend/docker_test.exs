@@ -145,11 +145,14 @@ defmodule Nest.Sandbox.Backend.DockerTest do
   # ---- what the container binds ----
 
   describe "container_binds/1" do
-    test "binds the workspace read-write and the .nest mask read-only" do
-      assert Docker.container_binds(mounts("/ws")) == [
-               {"/ws", "/ws", :rw},
-               {"/dev/null", "/ws/.nest", :ro}
-             ]
+    test "binds the workspace read-write, and neither config file" do
+      # `.nest` and `AGENTS.md` are one class — human-authored project config the
+      # agent must not rewrite — and the container binds **neither**: the bwrap
+      # inside masks them per call, so a container-level copy would shadow the file
+      # a human adds later (it is a `/dev/null` bind whenever the file is absent)
+      # and would make `nest.layout` depend on whether the two files exist yet.
+      # `Nest.Sandbox.Backend.Docker.CommandLine` renders both masks.
+      assert Docker.container_binds(mounts("/ws")) == [{"/ws", "/ws", :rw}]
     end
 
     test "never binds a host path over the container's own /tmp" do
@@ -182,7 +185,16 @@ defmodule Nest.Sandbox.Backend.DockerTest do
       binds = Docker.container_binds(mounts(workspace))
 
       assert {Path.join(workspace, "data"), Path.join(workspace, "data"), :rw} in binds
-      assert {Path.join(workspace, ".nest"), Path.join(workspace, ".nest"), :ro} in binds
+
+      # The two protected files are the one thing dropped from the superset even
+      # though it names them: the sandbox inside masks them, so the container must
+      # not. See `Binds.dropped_at_container?/3`.
+      refute Enum.any?(binds, fn {_source, dest, _mode} ->
+               Path.basename(dest) in [
+                 Nest.ConfigFile.nest_name(),
+                 Nest.ConfigFile.agents_md_name()
+               ]
+             end)
     end
 
     test "binds nothing but the mask when the call has no workspace" do
@@ -208,8 +220,6 @@ defmodule Nest.Sandbox.Backend.DockerTest do
                "nest.layout=#{layout}",
                "-v",
                "/ws:/ws:rw",
-               "-v",
-               "/dev/null:/ws/.nest:ro",
                "-v",
                "#{stage_dir()}:/tmp/.cmds:ro",
                "-w",
@@ -522,9 +532,16 @@ defmodule Nest.Sandbox.Backend.DockerTest do
 
       assert {:ok, %{command: command}} = Docker.command(mounts, caps, "/tmp/.cmds/x.sh")
 
-      for {_source, dest, mode} <- Binds.specs(caps, mounts) do
-        flag = if mode == :rw, do: "--bind", else: "--ro-bind"
-        assert payload(command) =~ "#{flag} '#{dest}' '#{dest}'"
+      for {source, dest, mode} <- Binds.specs(caps, mounts) do
+        # One exception: a protected file that is *absent* is bound from
+        # `/dev/null`, because the container does not bind it and there is nothing
+        # at the dest to self-bind. That is the same mask the bwrap backend makes.
+        expected =
+          if source == "/dev/null",
+            do: "--ro-bind /dev/null '#{dest}'",
+            else: "#{if mode == :rw, do: "--bind", else: "--ro-bind"} '#{dest}' '#{dest}'"
+
+        assert payload(command) =~ expected
       end
     end
   end

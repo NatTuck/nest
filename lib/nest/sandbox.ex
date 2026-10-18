@@ -144,6 +144,13 @@ defmodule Nest.Sandbox do
   than written a second time (`Nest.Modes.caps(Nest.Modes.default())` - full host
   read, workspace + /tmp writable, no network). Used by callers that have not
   been migrated to pass real caps (and as the fallback in `ShellCmd.execute/4`).
+
+  It carries **no `fs.protected`**, because that comes from the workspace
+  (`Nest.ProjectConfig.effective_caps/2`) and this function has no mounts. So a
+  caller that falls back to it runs with no config-file mask at all — a *regular*
+  `.nest` stays writable, which is the one way the mask can be absent for a file
+  the gate would otherwise protect. No production path does: a workspace goes
+  through `resolve_caps/2`, and a command without one has nothing to mask.
   """
   @spec default_caps() :: map()
   def default_caps, do: Nest.Modes.caps(Nest.Modes.default())
@@ -512,13 +519,22 @@ defmodule Nest.Sandbox do
   Validate an agent workspace path.
 
   Returns `:ok`, `{:error, :workspace_missing}` (the path is not an existing
-  directory), or `{:error, :workspace_under_tmp}` (the path is at or under
-  `#{Paths.sandbox_root()}`, which the scratch bind shadows). `nil` means "no
-  workspace" and is always `:ok`; whether a workspace is *required* is the
-  caller's policy, and a caller that requires one refuses the `nil` itself.
+  directory), `{:error, :workspace_under_tmp}` (the path is at or under
+  `#{Paths.sandbox_root()}`, which the scratch bind shadows), or
+  `{:error, {:config_file_not_regular, path, type}}` (the workspace's `.nest` or
+  `AGENTS.md` is a symlink or otherwise not a regular file, so Nest cannot mask
+  it). `nil` means "no workspace" and is always `:ok`; whether a workspace is
+  *required* is the caller's policy, and a caller that requires one refuses the
+  `nil` itself.
+
+  This is the one funnel both workspace gates go through — the choose-time path
+  (space create and edit) and `Sandbox.build/4`'s final `validate_workspace/1` —
+  which is the same pattern the `/tmp` refusal uses.
   """
   @spec workspace_error(String.t() | nil) ::
-          :ok | {:error, :workspace_missing | :workspace_under_tmp}
+          :ok
+          | {:error, :workspace_missing | :workspace_under_tmp}
+          | {:error, {:config_file_not_regular, String.t(), atom()}}
   def workspace_error(nil), do: :ok
 
   def workspace_error(workspace) when is_binary(workspace) do
@@ -530,14 +546,15 @@ defmodule Nest.Sandbox do
         {:error, :workspace_missing}
 
       true ->
-        :ok
+        Nest.ConfigFile.error(workspace)
     end
   end
 
   # The final gate for anything that reaches the sandbox. A workspace at or
-  # under the scratch bind's mount point (`/tmp`) would be shadowed, and a
-  # non-existent workspace cannot be bound, so both are rejected here
-  # unconditionally.
+  # under the scratch bind's mount point (`/tmp`) would be shadowed, a
+  # non-existent workspace cannot be bound, and a config file Nest cannot mask
+  # would be unprotected (and could be replaced with one that grants host
+  # access), so all three are rejected here unconditionally.
   defp validate_workspace(workspace) do
     case workspace_error(workspace) do
       :ok ->
@@ -550,6 +567,9 @@ defmodule Nest.Sandbox do
 
       {:error, :workspace_missing} ->
         {:error, "Workspace directory does not exist: #{workspace}"}
+
+      {:error, {:config_file_not_regular, _path, _type} = reason} ->
+        {:error, Nest.ConfigFile.error_message(reason)}
     end
   end
 

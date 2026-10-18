@@ -138,7 +138,7 @@ defmodule Nest.AgentsTest do
       space_id = AgentTestHelpers.current_space_id()
       name = fresh_name()
 
-      # `:vocation_id` is omitted → no vocation struct → `compose_vocation_config/6`
+      # `:vocation_id` is omitted → no vocation struct → `compose_vocation_config/5`
       # returns `nil` → creation is refused.
       assert {:error, :missing_system_prompt} =
                Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
@@ -147,54 +147,6 @@ defmodule Nest.AgentsTest do
 
       # No agent row was created (pre_spawn validated before inserting).
       assert Nest.Persistence.fetch_agent(space_id, name) == {:error, :not_found}
-    end
-
-    test "a start that cannot compose the prompt leaves no row behind" do
-      # Composing the prompt creates the agent's scratch directory
-      # (`Mounts.ensure_scratch!/1`, reached by the `AGENTS.md` read), and that
-      # happens in `pre_spawn` *before* the row is inserted. So a scratch
-      # directory that cannot be made now fails here — earlier than it used to —
-      # and the stronger property holds: there is no row to roll back, rather
-      # than a row that is rolled back.
-      #
-      # `TmpSpace.create/3` does `File.mkdir_p!` on the same path, so a *file*
-      # sitting where that directory belongs raises `File.Error`.
-      space_id = AgentTestHelpers.current_space_id()
-      name = fresh_name()
-      space_dir = TmpSpace.space_dir(space_id, "bwrap")
-      blocker = Path.join(space_dir, name)
-
-      File.mkdir_p!(space_dir)
-      File.write!(blocker, "not a directory")
-
-      on_exit(fn ->
-        File.rm(blocker)
-      end)
-
-      assert_raise File.Error, fn ->
-        Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
-          name: name,
-          vocation_id: AgentTestHelpers.vocation_id_for_test()
-        )
-      end
-
-      # No row, and so no system message either — which is what frees the
-      # `(space_id, name)` unique index for a retry.
-      assert Nest.Persistence.fetch_agent(space_id, name) == {:error, :not_found}
-      assert message_count(space_id) == 0
-
-      # The name is free again: the retry succeeds.
-      File.rm!(blocker)
-
-      assert {:ok, ^name} =
-               Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
-                 name: name,
-                 vocation_id: AgentTestHelpers.vocation_id_for_test()
-               )
-
-      AgentTestHelpers.ensure_cleanup(name)
-      assert {:ok, _row} = Nest.Persistence.fetch_agent(space_id, name)
-      assert message_count(space_id) == 1
     end
 
     test "rolls back the pre-spawned row when the start raises" do
@@ -582,4 +534,7 @@ defmodule Nest.AgentsTest do
   # without coupling to the source shape.
   defp model_name(model), do: model[:name] || model["name"]
   defp model_provider(model), do: model[:provider] || model["provider"]
+
+  describe "set_mode/3" do
+  end
 end

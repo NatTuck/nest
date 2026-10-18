@@ -13,9 +13,10 @@ defmodule Nest.Agents.Agent.Init do
   `Agent.pre_spawn/1` and `Agent.pre_load_heal/1`.
 
   `prepare/1` is the one exception to the purity above: composing the system
-  prompt runs the sandbox (`AGENTS.md` is read through it, which forks a
-  `bwrap`) and creates the agent's scratch directory. It is never called from
-  `init/1` — it runs in the caller, which is the whole point (see its docs).
+  prompt touches the filesystem (it reads the workspace's `AGENTS.md` and
+  `.nest` on the host). It creates no directory and runs no sandbox. It is never
+  called from `init/1` — it runs in the caller, which is the whole point (see
+  its docs).
   """
 
   require Logger
@@ -61,10 +62,11 @@ defmodule Nest.Agents.Agent.Init do
     # The agent's whole sandbox, built once: the backend its space runs, the
     # workspace it binds, and the scratch directory just created for it. The
     # tools capture it (a tool closure runs the command it is handed through
-    # this value), and composing the prompt runs the sandbox too, so both must
-    # carry the real backend and the real scratch — a `"none"` space's reads
-    # must not run under bwrap, and a `"docker"` one can only stage through the
-    # scratch bind (see `Nest.Sandbox.Backend.Docker.command/3`).
+    # this value), and the prompt *states* it — the workspace path, the network
+    # sentence and the backend's enforcement sentence — so both must carry the
+    # real values: a `"none"` space must not claim an enforcement it lacks, and
+    # a `"docker"` one can only stage through the scratch bind (see
+    # `Nest.Sandbox.Backend.Docker.command/3`).
     mounts = agent_mounts(attrs, name, space_id, workspace, backend, network_access)
 
     {system_prompt, mode, tool_names, cached_vocation, llm_metrics} =
@@ -100,9 +102,8 @@ defmodule Nest.Agents.Agent.Init do
   @doc """
   Compose the expensive part of the initial state in the *caller*.
 
-  `build_state/2` composes the system prompt, and composing it runs the
-  sandbox: the `AGENTS.md` section reads the file through it, which spawns a
-  `bwrap` (measured at 7.8-10.2 ms). That work used to happen only inside
+  `build_state/2` composes the system prompt, which reads the workspace's
+  `AGENTS.md` and `.nest` from disk. That work used to happen only inside
   `init/1`, which runs in the pid `DynamicSupervisor.start_child/2` spawned —
   with the supervisor blocked until it returns — so every agent start paid it
   *serially*. Measured on this suite: 3.1 s of a 5.5 s run.
@@ -133,26 +134,23 @@ defmodule Nest.Agents.Agent.Init do
 
   ## Only on attrs `PreSpawn.put_mode/1` has already seen
 
-  The composed prompt depends on the mode for one thing — the caps the
-  `AGENTS.md` read is authorized with — and `build_vocation_pipeline/2` reads it
-  from `:mode`. So this must only be called on attrs that have been through
-  `PreSpawn.put_mode/1`; calling it on attrs that do not yet carry their mode
-  composes under `Nest.Modes.default()` and authorizes the read with the wrong
-  mode's caps.
+  The *prepared* tuple carries the agent's mode — `build_vocation_pipeline/2`
+  reads it from `:mode` and returns it, and `build_state/2` puts it in
+  `live.mode`. So this must only be called on attrs that have been through
+  `PreSpawn.put_mode/1`: calling it on attrs that do not yet carry their mode
+  prepares an agent that starts in `Nest.Modes.default()` whatever its row says.
+  (The prompt's own bytes no longer depend on the mode at all.)
 
   ## The mounts are the prompt's ones
 
   They come from `TmpSpace.prompt_mounts/5`, the one builder of a prompt's
   mounts, and it *names* the scratch directory without creating it: the two
   creators are `TmpSpace.create/3` (the start path) and
-  `Mounts.ensure_scratch!/1` (staging), so naming the mounts is not itself a
-  side effect that makes a directory. Composing still creates it on demand,
-  though — the `AGENTS.md` read stages a command, and
-  `Mounts.ensure_scratch!/1`'s `File.mkdir_p!` raises `File.Error` out of
-  *this* caller when it cannot make the directory (which is what
-  `Nest.Agents.Supervisor` maps back to `{:error, {:prepare_failed, _}}`). The
-  paths are the same as the creating mounts', so the prompt's bytes are
-  unchanged.
+  `Mounts.ensure_scratch!/1` (staging a command), so naming the mounts is not
+  itself a side effect that makes a directory. Composition does not create it
+  either — the `AGENTS.md` read is a host read, so nothing is staged — and a
+  scratch path that cannot be made therefore fails in `init/1`, at
+  `TmpSpace.create/3`, rather than as a raise out of this caller.
   """
   @spec prepare(map()) :: map()
   def prepare(%{prepared: _} = attrs), do: attrs
@@ -213,9 +211,9 @@ defmodule Nest.Agents.Agent.Init do
     )
   end
 
-  # The prompt is composed through `mounts` because composing it *runs* the
-  # sandbox: the `AGENTS.md` section reads the file through it (see
-  # `Nest.Agents.Agent.TmpSpace.prompt_mounts/5`).
+  # The prompt is composed through `mounts` because it *states* them: the
+  # workspace path, the network sentence and the backend's enforcement sentence
+  # all come from this value (see `Nest.Agents.Agent.TmpSpace.prompt_mounts/5`).
   defp build_vocation_pipeline(attrs, mounts) do
     model = Map.fetch!(attrs, :model)
     # Internal/test-only cache-tier override; see `initial_context_limit/2`.
@@ -224,8 +222,8 @@ defmodule Nest.Agents.Agent.Init do
 
     # The agent's own mode, which seeds `live.mode`: the persisted row's, which
     # `PreSpawn` derived (the parent's mode, or the space's blueprint's default).
-    # The composer needs it only for the caps the `AGENTS.md` read is authorized
-    # with, so the prompt carries no mode of its own.
+    # It is carried in the prepared tuple for `build_state/2`; the prompt itself
+    # says nothing about it, because every message already states it.
     mode = initial_mode(attrs)
 
     {system_prompt, tool_names, cached_vocation} =
@@ -234,8 +232,7 @@ defmodule Nest.Agents.Agent.Init do
         mounts,
         {context_limit, context_limit_source},
         Map.get(attrs, :name, ""),
-        Map.get(attrs, :depth, 0),
-        mode
+        Map.get(attrs, :depth, 0)
       )
 
     tool_names = maybe_exclude_spawn(tool_names, attrs)

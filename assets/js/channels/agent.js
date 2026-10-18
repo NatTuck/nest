@@ -5,6 +5,7 @@
  */
 
 import { agentChannels, getStore, joinFailedAgents, socket } from "./state";
+import { errorText } from "../utils/errorText";
 
 /**
  * Extract the optional fields a `chat:status` / `init` payload carries
@@ -436,7 +437,13 @@ export function joinAgent(agentId, spaceId) {
       joinFailedAgents.add(agentId);
       channel.leave();
       agentChannels.delete(agentId);
-      store.setAgentError(agentId, err.reason || "Failed to connect");
+      // The server can refuse the join with the same
+      // `{reason: "config_file_not_regular", path, type}` payload a push
+      // gets — opening a chat for an agent whose workspace cannot be
+      // protected is the most common way a user meets that refusal — so the
+      // shared helper names the offending file instead of leaving the bare
+      // reason (or the generic fallback) on the banner.
+      store.setAgentError(agentId, errorText(err, "Failed to connect"));
     })
     .receive("timeout", () => {
       console.error(`Agent ${agentId} channel join timeout`);

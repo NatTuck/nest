@@ -59,14 +59,38 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   not visible in it and `caps.fs.read` is not what docker binds: **the image is
   the read set**, which makes it *stricter* than bwrap, not looser. `none` runs
   the bare command on the host, so **caps cannot be enforced** for that space
-  (nor the `.nest` read-only mask). Say all of that plainly wherever a backend is
-  offered or documented; never imply otherwise. `notes/sandbox-backends.md` has
-  the full table, the container flags bwrap needs and what they cost.
+  (nor the read-only mask over `.nest` and `AGENTS.md`). Say all of that
+  plainly wherever a backend is offered or documented; never imply otherwise.
+  `notes/sandbox-backends.md` has the full table, the container flags bwrap
+  needs and what they cost.
+- **Two files are masked read-only in a writable workspace, not one**: `.nest`
+  and `AGENTS.md`. Both are human-authored project config — one grants host
+  access, the other is the project's policy — and an agent that can rewrite
+  either drifts its own constraints. When a file is absent, `/dev/null` is
+  masked over the path so it cannot be created either. Both are therefore read
+  on the **host** by the runtime and *handed* to the sandbox as binds, so **a
+  regular file at either path** is the host's file by construction — which is
+  why a path that is *not* a regular file (a symlink, a directory) is **refused**
+  rather than tolerated: it cannot be masked, and a mask that is merely omitted
+  leaves it replaceable. The refusal is on three funnels —
+  `Nest.Sandbox.workspace_error/1` (the choose-time path and `Sandbox.build/4`'s
+  final gate), `Supervisor.start_under_supervisor/2` (restart and on-demand load)
+  and `Nest.Tools.ShellCmd` (the one place all three backends pass through for a
+  command) — so a new path needs the gate if it starts an agent or runs a
+  command. **The mask** does not hold on a `none` space, like every other cap;
+  **the refusal** does, on every backend, because it is a property of the
+  workspace rather than of the backend.
 - A `docker` space's container is keyed on **the space and the installation**,
   never on a caps signature or on the BEAM: it binds the superset a space can
   need (what a mode that writes the workspace gets) and the bwrap *inside* it
   tightens per call, so a read-only mode keeps its teeth without needing a
-  container of its own. The name is therefore stable across restarts — nothing
+  container of its own. The two protected config files are the one thing the
+  container does **not** bind: the bwrap inside masks them per call — at the
+  canonical path *and* at the workspace's own spelling when the two differ, which
+  is the only place a symlinked workspace could otherwise get a second, unmasked
+  view — and a container-level copy would shadow the file a human adds later
+  while making the layout depend on whether the files exist yet. The name is therefore stable
+  across restarts — nothing
   per-BEAM is bound any more, since the scratch is the container's own `/tmp` and
   the staging directory is keyed on the space — and the layout travels as a
   `nest.layout` **label** instead, which `ensure_container/3` compares so that a
@@ -106,7 +130,7 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   adopted. A removal that would take a live same-named agent's scratch in
   another space is refused too.
 - Anything that composes a prompt or runs a command must be given the agent's
-  *real* mounts (`TmpSpace.prompt_mounts/4` builds the prompt's mounts): the
+  *real* mounts (`TmpSpace.prompt_mounts/5` builds the prompt's mounts): the
   backend is resolved from them, and under `"docker"` the agent's scratch names a
   path *inside the container* — so a call that leaves the scratch out loses the
   agent's own scratch (its job logs, its offloads) rather than failing loudly.

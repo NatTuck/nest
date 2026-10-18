@@ -3,30 +3,25 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
   `Init.prepare/1`: the caller-side composition of the expensive part of an
   agent's initial state.
 
-  Composing the system prompt runs the sandbox (`AGENTS.md` is read through it),
-  and that used to happen only inside `init/1`, with the agent supervisor
-  blocked for the whole of it. `prepare/1` moves the work into the caller and
-  carries the result on the attrs as `:prepared`, which `build_state/2` and
-  `PreSpawn` both reuse.
+  Composing the system prompt is not free, and it used to happen only inside
+  `init/1`, with the agent supervisor blocked for the whole of it. `prepare/1`
+  moves the work into the caller and carries the result on the attrs as
+  `:prepared`, which `build_state/2` and `PreSpawn` both reuse.
 
-  The prompt depends on the agent's mode for exactly one thing — the caps the
-  `AGENTS.md` read is authorized with — so the composition test below compares a
-  prepared composition against an unprepared one on both counts: the same bytes,
-  and the same caps on the read.
+  Composition takes no mode and touches no sandbox: `AGENTS.md` is read on the
+  host (issue #132), so the bytes no longer depend on the agent's mode at all.
+  The composition test below therefore compares a prepared composition against
+  an unprepared one on the one thing that is still at stake — the bytes, with
+  the workspace's `AGENTS.md` present in both.
 
-  What this file does *not* pin is the ordering at the call sites: it prepares
-  attrs that already carry their mode, so it cannot see a caller that prepared
-  before the row's mode was derived (the bytes match either way, because both
-  modes currently grant `fs.read: ["/"]`). That needs a test that goes through
-  `PreSpawn.pre_spawn/1` with a blueprint whose `default_mode` is `"plan"` and
-  asserts the caps of the read. Until it exists the ordering is held only by
-  `Init.prepare/1`'s docs.
-
-  What it does pin, in "the supervisor's rescue", is the *other* half of the
-  caller-side move: a composition that raises (composing creates the scratch
-  directory, so a path that cannot be made raises `File.Error` out of the
-  caller) reaches a channel caller as `{:error, {:prepare_failed, exception}}`
-  and is logged, rather than escaping `Supervisor.fetch_or_start_agent/2`.
+  Composition also no longer *creates* the agent's scratch directory. It used to,
+  incidentally: `TmpSpace.prompt_mounts/5` only names the directory, but the
+  `AGENTS.md` read went through `ShellCmd`, which calls
+  `Mounts.ensure_scratch!/1`. A scratch path that could not be made therefore
+  raised `File.Error` out of whichever caller was composing — the supervisor,
+  which mapped it to `{:error, {:prepare_failed, exception}}`. With a host read
+  the directory is made where `TmpSpace`'s own doc says it should be: by
+  `create/3`, in `init/1`. The last test here pins that move.
   """
 
   use Nest.DataCase, async: true
@@ -39,10 +34,7 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
-  alias Nest.Modes
   alias Nest.Persistence
-  alias Nest.Sandbox
-  alias Nest.Spaces
   alias Nest.Vocations
 
   setup :verify_on_exit!
@@ -70,7 +62,7 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
       attrs = Map.put(agent_attrs(space_id, vocation), :prepared, prepared)
 
       # The exact term survives: a second composition would replace it with a
-      # freshly composed one and would also run the sandbox again.
+      # freshly composed one and would also read the config files again.
       assert Init.prepare(attrs) == attrs
 
       # And attrs missing what `build_vocation_pipeline/2` needs are left alone
@@ -86,83 +78,132 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
   end
 
   describe "prompt composition" do
-    test "a prepared composition matches an unprepared one, bytes and caps", %{
+    test "a prepared composition matches an unprepared one, bytes for bytes", %{
       space_id: space_id,
       vocation: vocation
     } do
       workspace = AgentTestHelpers.default_test_workspace()
       File.write!(Path.join(workspace, "AGENTS.md"), "# Project rules\n\nAlways use pnpm.\n")
 
-      # `plan`, so the caps the read is authorized with are distinguishable from
-      # `Modes.default()`'s: `plan` may not write the workspace.
       attrs = agent_attrs(space_id, vocation, %{workspace_path: workspace, mode: "plan"})
       on_exit(fn -> TmpSpace.cleanup(space_id, attrs.name, attrs.sandbox_backend) end)
 
-      test_pid = self()
-
-      # The one sandbox read a composition does is the `AGENTS.md` read, so
-      # stubbing it records the caps it was authorized with while still serving
-      # the real file's bytes: the workspace is bound at its own path, so the
-      # sandbox-domain path is the host path.
-      stub(Sandbox, :read, fn path, caps, _mounts ->
-        send(test_pid, {:agents_md_read, path, caps})
-        File.read(path)
-      end)
-
       unprepared_text = attrs |> Init.build_active_state(client_config()) |> system_text()
 
-      prepared_text =
-        attrs |> Init.prepare() |> Init.build_active_state(client_config()) |> system_text()
+      prepared_attrs = Init.prepare(attrs)
+      prepared_text = prepared_attrs |> Init.build_active_state(client_config()) |> system_text()
 
+      # Both compositions really composed — the workspace's `AGENTS.md` is in
+      # each — and the prepared result is what the unprepared one would have
+      # produced.
       assert unprepared_text =~ "Always use pnpm."
+      assert prepared_text =~ "Always use pnpm."
       assert prepared_text == unprepared_text
 
-      # Both compositions read `AGENTS.md`, each with the caps of the mode the
-      # attrs carry — and the prepared one reads it once, not twice.
-      plan_caps = Modes.caps("plan")
-
-      assert_received {:agents_md_read, path, ^plan_caps}
-      assert Path.basename(path) == "AGENTS.md"
-      assert_received {:agents_md_read, _path, ^plan_caps}
-      refute_received {:agents_md_read, _path, _other_caps}
+      # And `prepare/1` is idempotent: a caller that prepares twice pays once,
+      # which is what lets both start paths call it without coordinating.
+      assert Init.prepare(prepared_attrs) == prepared_attrs
     end
   end
 
-  # Composing creates the scratch directory on demand (the `AGENTS.md` read
-  # stages a command, and `Mounts.ensure_scratch!/1` makes the directory it
-  # stages into), so a scratch path that cannot be made raises `File.Error` out
-  # of the *composing caller*. That caller is the supervisor, which maps it back
-  # to the `{:error, term()}` its callers are specced for and logs it.
-  describe "the supervisor's rescue" do
-    test "a composition that cannot make the scratch is {:error, {:prepare_failed, _}}, logged",
-         %{space_id: space_id, vocation: vocation} do
-      name = "prepare-fail-#{System.unique_integer([:positive])}"
-
-      {:ok, _row} =
-        Persistence.insert_agent(%{
-          space_id: space_id,
-          name: name,
-          model: %{name: "qwen3.5-plus", provider: "model-studio"},
-          vocation_id: vocation.id,
-          # A workspace, so the composition does read `AGENTS.md` through the
-          # sandbox — without one `agents_md_section/2` is empty and no command
-          # (so no scratch directory) is ever needed.
+  # Composing no longer creates the scratch directory — that was an accident of
+  # the `AGENTS.md` read going through `ShellCmd` — so a scratch path that cannot
+  # be made now fails where `TmpSpace`'s own doc says it should: in `init/1`, as
+  # the start's own error, rather than as a raise out of a caller that is merely
+  # composing a prompt.
+  describe "a scratch directory that cannot be made" do
+    test "surfaces from the child's init, not out of the composing caller", %{
+      space_id: space_id,
+      vocation: vocation
+    } do
+      attrs =
+        agent_attrs(space_id, vocation, %{
+          name: "prepare-fail-#{System.unique_integer([:positive])}",
           workspace_path: AgentTestHelpers.default_test_workspace()
         })
 
+      {:ok, _row} = Persistence.insert_agent(attrs)
+
       # A *file* where the scratch directory goes: `File.dir?` is false and
       # `File.mkdir_p!` raises `File.Error{reason: :eexist}`.
-      scratch = TmpSpace.agent_dir(space_id, name, Spaces.sandbox_backend(space_id))
+      scratch = TmpSpace.agent_dir(space_id, attrs.name, attrs.sandbox_backend)
       File.mkdir_p!(Path.dirname(scratch))
       File.write!(scratch, "")
       on_exit(fn -> File.rm(scratch) end)
 
-      # Asserted inside the capture: `Logger.error` is synchronous, so the
-      # line is guaranteed to have been emitted by the time the call returns.
+      # Composition does not need the directory, so it succeeds...
+      assert %{prepared: prepared} = Init.prepare(attrs)
+      assert is_tuple(prepared)
+
+      # ...and the failure lands in `init/1`, which `DynamicSupervisor.start_child/2`
+      # turns into `{:error, {exception, stacktrace}}` — the shape the supervisor
+      # already forwards to its callers. Nothing rescues it and nothing logs it.
+      assert {:error, {%File.Error{}, _stacktrace}} =
+               Supervisor.fetch_or_start_agent(space_id, %{name: attrs.name})
+    end
+  end
+
+  describe "the supervisor's config-file gate" do
+    test "refuses a restart whose workspace config path is now a symlink", %{
+      space_id: space_id,
+      vocation: vocation
+    } do
+      # The one route that never reaches `Sandbox.build/4`: an ordinary restart or
+      # an on-demand load. The human replaces `.nest` with a symlink while the
+      # agent is stopped; the next start has to refuse rather than come up and
+      # fail on every command.
+      # The workspace is the *space's* now, and the gate reads it from there when
+      # the supervisor builds the start attrs.
+      ws = AgentTestHelpers.default_test_workspace()
+      {:ok, space_id} = AgentTestHelpers.create_test_space(%{workspace_path: ws})
+
+      attrs =
+        agent_attrs(space_id, vocation, %{name: "gate-#{System.unique_integer([:positive])}"})
+
+      {:ok, _row} = Persistence.insert_agent(attrs)
+
+      real = Path.join(ws, "real.nest")
+      File.write!(real, "")
+      File.ln_s!(real, Path.join(ws, ".nest"))
+
       log =
         capture_log(fn ->
-          assert {:error, {:prepare_failed, %File.Error{}}} =
-                   Supervisor.fetch_or_start_agent(space_id, %{name: name})
+          assert {:error, {:config_file_not_regular, path, _type}} =
+                   Supervisor.fetch_or_start_agent(space_id, %{name: attrs.name})
+
+          assert path == Path.join(ws, ".nest")
+
+          # And the same through the other entry point, so this is the gate rather
+          # than `prepare_for_start/1`'s rescue (which would be `:prepare_failed`).
+          assert {:error, {:config_file_not_regular, _, _}} =
+                   Supervisor.get_agent(space_id, attrs.name)
+        end)
+
+      assert log =~ "Nest cannot protect it from being rewritten"
+    end
+  end
+
+  describe "the supervisor's boundary guard" do
+    test "a raise out of composition reaches a channel caller as {:error, {:prepare_failed, _}}",
+         %{space_id: space_id, vocation: vocation} do
+      attrs =
+        agent_attrs(space_id, vocation, %{
+          name: "prepare-raise-#{System.unique_integer([:positive])}",
+          workspace_path: AgentTestHelpers.default_test_workspace()
+        })
+
+      {:ok, _row} = Persistence.insert_agent(attrs)
+
+      # No cause is reachable today — see `Supervisor.prepare_for_start/1`'s
+      # comment — so the guard is exercised by making composition raise
+      # directly. What it must not do is escape: `fetch_or_start_agent/2` is
+      # called from channels and logs nothing itself.
+      stub(Init, :prepare, fn _attrs -> raise "boom" end)
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:prepare_failed, %RuntimeError{message: "boom"}}} =
+                   Supervisor.fetch_or_start_agent(space_id, %{name: attrs.name})
         end)
 
       assert log =~ "Could not prepare"

@@ -30,6 +30,7 @@ defmodule NestWeb.LobbyChannel do
   alias Nest.Models
   alias Nest.Spaces
   alias Nest.Vocations
+  alias NestWeb.ErrorPayload
   alias NestWeb.InviteJSON
   alias NestWeb.LobbyChannel.AgentErrors
   alias NestWeb.LobbyChannel.Authz
@@ -266,7 +267,7 @@ defmodule NestWeb.LobbyChannel do
     case Authz.authorize_owner_or_shared(space_id, name, socket.assigns.current_user) do
       {:ok, :owner} -> do_change_model(space_id, name, model_params, socket)
       {:ok, :shared} -> {:reply, {:error, %{"reason" => "shared_read_only"}}, socket}
-      {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+      {:error, reason} -> {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
     end
   end
 
@@ -279,7 +280,7 @@ defmodule NestWeb.LobbyChannel do
     case Authz.authorize_owner_or_shared(sid, name, s.assigns.current_user) do
       {:ok, :owner} -> do_edit_agent(sid, s, name, mp)
       {:ok, :shared} -> {:reply, {:error, %{"reason" => "shared_read_only"}}, s}
-      {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, s}
+      {:error, reason} -> {:reply, {:error, ErrorPayload.from_reason(reason)}, s}
     end
   end
 
@@ -319,7 +320,7 @@ defmodule NestWeb.LobbyChannel do
         {:reply, {:ok, %{}}, socket}
 
       {:error, reason} ->
-        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+        {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
     end
   end
 
@@ -350,7 +351,7 @@ defmodule NestWeb.LobbyChannel do
         end
 
       {:error, reason} ->
-        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+        {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
     end
   end
 
@@ -371,7 +372,7 @@ defmodule NestWeb.LobbyChannel do
         {:reply, {:ok, %{}}, socket}
 
       {:error, reason} ->
-        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+        {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
     end
   end
 
@@ -395,14 +396,14 @@ defmodule NestWeb.LobbyChannel do
             {:reply, {:error, %{"reason" => "parent_archived", "parent" => parent}}, socket}
 
           {:error, reason} ->
-            {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+            {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
         end
 
       {:ok, :shared} ->
         {:reply, {:error, %{"reason" => "shared_read_only"}}, socket}
 
       {:error, reason} ->
-        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+        {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
     end
   end
 

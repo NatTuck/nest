@@ -112,7 +112,9 @@ defmodule Nest.Agents do
   @doc """
   Gets the public info of an agent by its `{space_id, name}`.
   """
-  @spec get_info(integer(), String.t()) :: {:ok, map()} | {:error, :not_found}
+  @spec get_info(integer(), String.t()) ::
+          {:ok, map()}
+          | {:error, :not_found | {:config_file_not_regular, String.t(), atom()}}
   def get_info(space_id, name) do
     case Supervisor.get_agent(space_id, name) do
       {:ok, pid} ->
