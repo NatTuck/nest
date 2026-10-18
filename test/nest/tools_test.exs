@@ -118,16 +118,20 @@ defmodule Nest.ToolsTest do
                function.function.(%{"path" => "test.txt"}, nil)
     end
 
-    test "refuses an image when the conversation already holds too many", %{workspace: workspace} do
-      # A single image cannot trip the ceiling on its own: `file-read` caps a
-      # read at 10 MB, which is 13.3 MB once base64-encoded, under the 16 MB
-      # limit. So the gate fires where it is meant to — a conversation that
-      # already carries media — and this fixture puts 16.1 MB of it in the
-      # message list. Its token price is 4,096, which is why no other budget in
-      # the system would have noticed.
+    test "the modality gate answers before the byte gate", %{workspace: workspace} do
+      # Two cases, one setup. In both, no model is declared, so the modality
+      # gate is the one that should answer — including in the conversation that
+      # is already over the byte ceiling, because "run context-compact" is
+      # advice that does not work for a model that cannot accept images at all.
+      # Images can outlive a model swap: `Agents.change_model/3` does not touch
+      # the transcript.
+      #
+      # The small-conversation case is also the guard against a gate that
+      # refuses everything: it must reach the modality check, not stop at the
+      # byte one.
       File.write!(Path.join(workspace, "small.png"), :binary.copy(<<0>>, 1_000))
 
-      existing =
+      over_ceiling =
         {:user,
          %{
            parts: [
@@ -144,31 +148,13 @@ defmodule Nest.ToolsTest do
 
       function = Tools.get_function("file-read", Mounts.new(workspace, nil))
 
-      assert {:error, message} =
-               function.function.(%{"path" => "small.png"}, %{messages: [existing]})
+      for messages <- [[], [over_ceiling]] do
+        assert {:error, message} =
+                 function.function.(%{"path" => "small.png"}, %{messages: messages})
 
-      assert message =~ "too many images"
-      # The remedy, named. Compaction is a real one: it replaces the
-      # conversation with a summary and drops the images.
-      assert message =~ "context-compact"
-      # And the thing the model would otherwise assume: text still works.
-      assert message =~ "Text files can still be read"
-    end
-
-    test "does not refuse an image in a small conversation, so the gate is not refusing everything",
-         %{workspace: workspace} do
-      File.write!(Path.join(workspace, "small.png"), :binary.copy(<<0>>, 1_000))
-
-      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
-
-      # No `client_config`, so the modality gate refuses. That is the proof it
-      # got past the byte gate and reached the next check rather than stopping
-      # at the first gate it found.
-      assert {:error, message} =
-               function.function.(%{"path" => "small.png"}, %{messages: []})
-
-      refute message =~ "too many images"
-      assert message =~ "is not known"
+        assert message =~ "is not known"
+        refute message =~ "over the"
+      end
     end
 
     test "returns a non-text error for NUL and invalid UTF-8", %{workspace: workspace} do

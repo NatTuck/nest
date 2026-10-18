@@ -180,26 +180,27 @@ defmodule Nest.Tools.FileTools do
         read_file_content(full_path, caps, mounts)
 
       {:ok, modality} ->
-        # The byte gate runs before the modality gate, and the order is
-        # deliberate: a model that cannot accept images never has any in its
-        # conversation (`file-read` refused them), so a conversation this large
-        # is one whose images the model can see. It is also the order that makes
-        # the gate reachable in a test without a multi-modal model fixture.
-        with :ok <- check_request_bytes(size, context) do
-          read_media_file(full_path, original_path, caps, mounts, modality, context)
-        end
+        read_media_file(full_path, original_path, caps, mounts, modality, context, size)
     end
   end
 
   # The media path.
   #
-  # The gate runs FIRST — before the `file` check, before the read, and
-  # before any part is built. A media part is re-sent on every subsequent
-  # request, so attaching one the caller's model cannot accept would break
-  # every later turn until the conversation is compacted. Refusing here, with
+  # Both gates run FIRST — before the `file` check, before the read, and before
+  # any part is built. A media part is re-sent on every subsequent request, so
+  # attaching one the caller's model cannot accept, or one that puts the request
+  # over the provider's body limit, breaks every later turn. Refusing here, with
   # a message the model can act on, is the only fail-fast point there is.
-  defp read_media_file(full_path, original_path, caps, mounts, modality, context) do
+  #
+  # The modality gate is first because it is both the cheaper check (a catalog
+  # lookup against a walk over every message) and the more fundamental one: a
+  # model that cannot accept images will still refuse them after a compaction,
+  # so telling the model to compact first would be advice that does not work.
+  # Images can outlive a model swap — `Agents.change_model/3` does not touch the
+  # transcript — so that case is reachable.
+  defp read_media_file(full_path, original_path, caps, mounts, modality, context, size) do
     with :ok <- check_media_input(modality, context),
+         :ok <- check_request_bytes(size, context),
          {:ok, modality, mime} <- MediaKind.detect(full_path, caps, mounts),
          {:ok, bytes} <- read_media_bytes(full_path, caps, mounts),
          {:ok, part} <- build_media_part(original_path, modality, mime, bytes, context) do
@@ -232,12 +233,16 @@ defmodule Nest.Tools.FileTools do
     end
   end
 
+  # States the arithmetic rather than a diagnosis: a text-full conversation can
+  # reach the ceiling with no images in it at all, so "too many images are
+  # already in context" would sometimes be false.
   defp request_bytes_error(already, wire, projected) do
-    "file-read refused: too many images are already in context. This conversation " <>
-      "carries ~#{mb(already)}, and this image would add ~#{mb(wire)} — " <>
-      "~#{mb(projected)} against a #{mb(RequestSize.max_bytes())} request limit. " <>
-      "No more images until you run context-compact, which replaces the conversation " <>
-      "with a summary and drops them. Text files can still be read."
+    "file-read refused: attaching this image would put the request at " <>
+      "~#{mb(projected)} — this conversation already carries ~#{mb(already)} and " <>
+      "the image adds ~#{mb(wire)} — over the #{mb(RequestSize.max_bytes())} limit. " <>
+      "No more images until you run context-compact, which replaces the " <>
+      "conversation with a summary and drops any images in it. Text files can " <>
+      "still be read."
   end
 
   defp mb(bytes), do: "#{Float.round(bytes / 1_000_000, 1)} MB"

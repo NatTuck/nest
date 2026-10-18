@@ -502,5 +502,32 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
 
       assert {:fits, _} = BatchSizer.preflight(calls, c)
     end
+
+    test "does not refuse a batch that adds no media, even over the ceiling", %{tmp_dir: dir} do
+      # The ceiling is self-imposed and sits well under the provider's 48 MiB, so
+      # refusing ordinary work at 16 MB would be a false refusal: text is bounded
+      # by the token window and no window holds 16 MB of text, so a media-free
+      # batch cannot push the request past what the provider accepts. Without
+      # this, a media-heavy conversation could not run `shell-cmd ls`.
+      over_ceiling =
+        {:user,
+         %{
+           parts: [
+             %Nest.Messages.Part.Media{
+               tool_call_id: "c0",
+               modality: :image,
+               media_type: "image/png",
+               data: String.duplicate("A", 16_100_000),
+               bytes: 16_100_000,
+               path: "old.png"
+             }
+           ]
+         }}
+
+      c =
+        ctx([], context_limit: 1_048_576, messages: [over_ceiling], workspace_path: dir)
+
+      assert {:fits, _} = BatchSizer.preflight([call("c1", "shell-cmd", %{"command" => "ls"})], c)
+    end
   end
 end

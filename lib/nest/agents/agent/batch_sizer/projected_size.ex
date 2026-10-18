@@ -207,9 +207,13 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   end
 
   # The wire bytes one call contributes, or `[]` when it is not a `file-read`
-  # of a media path whose size could be read. A path that could not be statted
-  # contributes nothing, which is the safe direction for a gate: the read
-  # itself will fail and say why.
+  # of a media path whose size could be read.
+  #
+  # A path that could not be statted contributes **nothing**, which for a size
+  # gate is the direction that lets a request *through* — so this is not a
+  # conservative default, it is a known hole. It is covered by `file-read`'s own
+  # gate, which runs when the batch is executed and refuses the read that the
+  # preflight could not price.
   defp media_wire_bytes_for(
          %ToolCall{name: "file-read", arguments: %{"path" => path}} = tc,
          ctx,

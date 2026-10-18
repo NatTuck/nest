@@ -182,12 +182,14 @@ defmodule Nest.Agents.Agent.BatchSizer do
            "limit ~#{limit}. Reformulate (e.g., call context-compact first " <>
            "or use smaller tools)."}
 
-      # The byte ceiling. Media is priced at a flat token ceiling, so this is
-      # the only budget that can see it — and a refusal here is fixable by
-      # compaction, which replaces the conversation with a summary and drops the
-      # images. That is why the caller may route it into one: a refusal
-      # compaction cannot fix is the shape that loops, and this is not it.
-      not RequestSize.within?(messages, media) ->
+      # The byte ceiling, and only for a batch that **adds** media: a media-free
+      # batch cannot push the request past the provider's limit (text is bounded
+      # by the token window, and no window holds 16 MB of it), so refusing one
+      # would be a false refusal of ordinary work in a media-heavy conversation.
+      #
+      # Compaction fixes a refusal here, so the caller may route it into one; a
+      # refusal compaction cannot fix is the shape that loops, and this is not.
+      media > 0 and not RequestSize.within?(messages, media) ->
         {:refuse, request_bytes_refusal(RequestSize.bytes(messages) + media)}
 
       true ->
@@ -196,8 +198,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   end
 
   # One stat pass for both numbers (issue #48): the token projection and the
-  # media bytes come from the same memoized sizes, so a batch is statted once
-  # per response however many of these numbers a caller wants.
+  # media bytes come from the same memoized sizes.
   defp projected_content_size_and_media(tool_calls, ctx) do
     {projected, media} = ProjectedSize.project_batch_with_media(tool_calls, ctx)
     {Budget.size(ctx.messages || []) + ceil(projected), media}

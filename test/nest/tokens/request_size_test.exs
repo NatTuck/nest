@@ -89,5 +89,19 @@ defmodule Nest.Tokens.RequestSizeTest do
       assert RequestSize.within?([text(just_under)], 1_000)
       refute RequestSize.within?([text(just_under)], 1_001)
     end
+
+    test "the largest image file-read can attach still fits on its own" do
+      # `file-read` refuses a read larger than its own 10 MB cap before this gate
+      # is ever reached, so 13.3 MB is the most one image can add. If that
+      # stopped fitting — the cap raised, or the ceiling lowered — a single image
+      # would trip the ceiling on any conversation and the refusal would blame
+      # images already in context.
+      #
+      # The 10 MB is `FileTools`'s `@max_read_file_bytes`, spelled here because
+      # the two constants live in different modules and this is the only thing
+      # tying them together. Raise that attribute and this test must move with
+      # it; that is the point.
+      assert RequestSize.within?([], RequestSize.media_wire_bytes(10_000_000))
+    end
   end
 end
