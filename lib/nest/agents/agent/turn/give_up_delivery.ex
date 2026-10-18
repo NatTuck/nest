@@ -164,7 +164,7 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDelivery do
   end
 
   defp deliver_one(space_id, name, {sender, pid}, text, reason) do
-    case Agent.deliver_message(pid, name, text, :notice) do
+    case Agent.deliver_note(pid, name, text, :runtime) do
       {:ok, _disposition} -> :ok
       {:error, why} -> log_failure(space_id, name, sender, reason, why)
     end

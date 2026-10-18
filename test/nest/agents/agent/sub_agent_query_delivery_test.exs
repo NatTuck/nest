@@ -68,7 +68,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
   test "an answer arriving after the batch leaves the inline confirmation", %{vid: vid} do
     {coordinator_pid, coordinator_name, specialist_pid, specialist_name} = start_pair(vid)
 
-    # The peer's answer is parked inside `Nest.Agents.send_message/6` before it
+    # The peer's answer is parked inside `Nest.Agents.send_note/6` before it
     # reaches the coordinator, so it cannot land while the batch below is
     # executing. That gate is the whole difference between the two outcomes, and
     # the test owns it.

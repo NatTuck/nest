@@ -56,7 +56,7 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
   end
 
   defp stub_send(fun) do
-    Mimic.stub(Nest.Agents, :send_message, fn _space_id, _from, _name, _msg, _kind, _mode ->
+    Mimic.stub(Nest.Agents, :send_note, fn _space_id, _from, _name, _msg, _kind, _mode ->
       fun.()
     end)
   end
@@ -66,7 +66,7 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
   defp capture_send(reply) do
     test_pid = self()
 
-    Mimic.stub(Nest.Agents, :send_message, fn _space, _from, target, content, kind, mode ->
+    Mimic.stub(Nest.Agents, :send_note, fn _space, _from, target, content, kind, mode ->
       send(test_pid, {:sent, target, content, kind, mode})
       reply
     end)

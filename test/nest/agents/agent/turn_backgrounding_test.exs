@@ -530,7 +530,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # The aggregate is the disposition the coordinator relies on: `:delivered`
       # means it reached the transcript.
       assert {:ok, :delivered} =
-               Agent.deliver_internal(pid, "agents-batch", "the aggregate", :notice)
+               Agent.deliver_internal(pid, "agents-batch", "the aggregate", :runtime)
 
       # The turn that started is the notice's: its own request carries it.
       {notice_request, notice_llm} = next_request()

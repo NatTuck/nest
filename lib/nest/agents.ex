@@ -338,8 +338,7 @@ defmodule Nest.Agents do
 
   @doc """
   Asynchronously deliver `content` from `from_name` to the agent
-  `{space_id, name}` (`agents-send`, `agents-query`, and the runtime's
-  own `:notice`).
+  `{space_id, name}` (`agents-send` and `agents-query`).
 
   `kind` is the entry's provenance (`Nest.Agents.Agent.Inbox.t:kind/0`)
   and decides only how the target renders the entry — a `:query` also
@@ -350,11 +349,11 @@ defmodule Nest.Agents do
   started, `{:ok, :queued}` when it was busy, or `{:error, reason}` when
   the target is missing or in a broken state.
   """
-  @spec send_message(integer(), String.t(), String.t(), String.t(), Agent.Inbox.kind()) ::
+  @spec send_note(integer(), String.t(), String.t(), String.t(), Agent.Inbox.kind()) ::
           {:ok, :delivered | :queued} | {:error, term()}
-  def send_message(space_id, from_name, name, content, kind \\ :agent, mode \\ nil) do
+  def send_note(space_id, from_name, name, content, kind \\ :agent, mode \\ nil) do
     case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> Agent.deliver_message(pid, from_name, content, kind, mode)
+      {:ok, pid} -> Agent.deliver_note(pid, from_name, content, kind, mode)
       {:error, _} = err -> err
     end
   end

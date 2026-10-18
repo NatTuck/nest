@@ -7,8 +7,8 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   `Machine.Work.backgrounded`, its calls are answered with the synthetic
   `MessageList.backgrounded_tool_result/1` plus `MessageList.backgrounded_ack/0`,
   and the turn continues with the delivered message. The batch keeps running;
-  its real result — or its worker's death — then arrives as an inbox `:notice`
-  (`Nest.Agents.Agent.Turn.Backgrounded`), routed by the entry recorded here.
+  its real result — or its worker's death — then arrives as an inbox `:runtime`
+  entry (`Nest.Agents.Agent.Turn.Backgrounded`), routed by the entry recorded here.
 
   The delivery itself is *not* this module's own: the synthetic result and its
   acknowledgement are this path's `pre` batch, and everything else the delivery
@@ -192,7 +192,7 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   The tool-call ids a backgrounded batch's *result* answers.
 
   The delivery's notice carries them onto the message the drain appends
-  (`Inbox.deliver_notice/3` → `Inbox.build_drained_message/3`), so a later load
+  (`Inbox.enqueue_runtime/3` → `Inbox.build_drained_message/3`), so a later load
   can tell a promise that was kept from one the process died with
   (`MessageList.backgrounded_results/1`).
 

@@ -171,7 +171,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # so a failing test cannot leave a worker parked.
       park_llm_requests(agent_pid)
 
-      Mimic.stub(Nest.Agents, :send_message, fn space, from, target, content, kind, mode ->
+      Mimic.stub(Nest.Agents, :send_note, fn space, from, target, content, kind, mode ->
         send(test_pid, {:tool_batch_blocked, self()})
 
         receive do
@@ -180,7 +180,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
           1_000 -> :ok
         end
 
-        Mimic.call_original(Nest.Agents, :send_message, [
+        Mimic.call_original(Nest.Agents, :send_note, [
           space,
           from,
           target,

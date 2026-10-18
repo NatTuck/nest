@@ -7,8 +7,8 @@ defmodule Nest.Agents.Agent.BatchCoordinator do
   a supervised task, not the worker — spawns them (paced to
   `max_concurrency`), watches each outcome arrive, abandons a child past its
   per-item deadline, and finally enqueues the aggregate: a JSON array of the
-  slots in item order, delivered into the parent's own inbox as a runtime
-  `:notice`.
+  slots in item order, delivered into the parent's own inbox as a
+  `:runtime` entry.
 
   ## Reading the children's outcomes
 
@@ -333,7 +333,7 @@ defmodule Nest.Agents.Agent.BatchCoordinator do
   # The final act: the aggregate goes into the parent's own inbox, as the
   # runtime's notice (no agent said it).
   #
-  # Through the cap-bypassing internal path, not `deliver_message/4`: the
+  # Through the cap-bypassing internal path, not `deliver_note/4`: the
   # aggregate is the parent's *own* result, and the peer-inbox cap would refuse
   # it with `:inbox_full`, after which this coordinator would log a warning, exit
   # `:normal`, and the batch's whole output would vanish — a `:normal` exit is
@@ -341,8 +341,8 @@ defmodule Nest.Agents.Agent.BatchCoordinator do
   defp deliver(content, plan) do
     # The sender is `nil`, not a name: the aggregate is the runtime's own
     # result, so no agent row resolves it and no agent label frames it. Every
-    # other runtime note is enqueued the same way (`Inbox.deliver_notice/3`).
-    Agent.deliver_internal(plan.parent_pid, nil, content, :notice)
+    # other runtime note is enqueued the same way (`Inbox.enqueue_runtime/3`).
+    Agent.deliver_internal(plan.parent_pid, nil, content, :runtime)
   catch
     # `:noproc` is the only case where the aggregate is certainly gone: there is
     # no parent process left to hold it. A *timeout* is not that — the

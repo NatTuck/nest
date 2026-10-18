@@ -9,7 +9,7 @@
  *   - `kind: "user"` — a chat message a human sent mid-turn.
  *   - `kind: "query"` — an `agents-query` from a peer, which obliges
  *     this agent to answer (see the debt row below).
- *   - `kind: "notice"` — the runtime speaking for itself: a give-up on an
+ *   - `kind: "runtime"` — the runtime speaking for itself: a give-up on an
  *     unanswered query, or a child that failed, was stopped or produced
  *     nothing. The runtime generated it, so it must never be framed as a
  *     peer's words.
@@ -42,9 +42,9 @@ const EMPTY_INBOX = [];
  * debt is set at delivery, so a still-queued query has none yet and the
  * two must not disagree.
  *
- * A `notice` entry comes from the runtime, not from a peer, so it is
- * never rendered as `From agent X`; when the entry names the agent it
- * concerns, it says so.
+ * A `runtime` entry is the runtime speaking, not a peer, so it is never
+ * rendered as `From agent X`; when the entry names the agent it concerns,
+ * it says so.
  */
 function senderLabel(message, currentUsername) {
   const from = typeof message.from === "string" ? message.from.trim() : "";
@@ -62,7 +62,7 @@ function senderLabel(message, currentUsername) {
       ? `Query from agent ${from}`
       : "Query from an unidentified agent";
   }
-  if (message.kind === "notice") {
+  if (message.kind === "runtime") {
     return from ? `Runtime notice (about agent ${from})` : "Runtime notice";
   }
   return from

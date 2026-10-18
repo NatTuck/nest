@@ -365,9 +365,9 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   defp execute({:consume_inbox, entries}, state), do: consume_inbox(state, entries)
 
   # A backgrounded batch's outcome (issue #36): the batch has no live worker
-  # to settle it, so it arrives as a runtime `:notice` (no agent said it).
+  # to settle it, so it arrives as a `:runtime` entry (no agent said it).
   defp execute({:deliver_backgrounded, _ref, outcome, ids}, state),
-    do: {Inbox.deliver_notice(state, outcome, ids), :continue}
+    do: {Inbox.enqueue_runtime(state, outcome, ids), :continue}
 
   # The reply give-up (issue #31 §1.6): the agent is settling or blocking while it
   # still owes a reply, so each requester is told no answer is coming and the debt

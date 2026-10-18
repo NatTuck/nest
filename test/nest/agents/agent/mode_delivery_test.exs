@@ -63,7 +63,7 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       # Busy, so the delivery queues: the mode applies when the drain delivers
       # it, never when it is queued.
       set_status(pid, :streaming)
-      assert {:ok, :queued} = Agent.deliver_message(pid, "peer", "peer note", :agent, "plan")
+      assert {:ok, :queued} = Agent.deliver_note(pid, "peer", "peer note", :agent, "plan")
 
       Agent.stop_chat(pid, self())
       wait_idle(pid)
@@ -87,7 +87,7 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       {pid, name} = start()
       MockClient.set_response("ok")
 
-      assert {:ok, :delivered} = Agent.deliver_message(pid, "peer", "peer note", :agent, "plan")
+      assert {:ok, :delivered} = Agent.deliver_note(pid, "peer", "peer note", :agent, "plan")
       wait_idle(pid)
 
       assert delivered(pid, "peer note") ==
@@ -104,7 +104,7 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       MockClient.set_response("ok")
 
       set_status(pid, :streaming)
-      assert {:ok, :queued} = Agent.deliver_message(pid, "peer", "peer note", :agent, "plan")
+      assert {:ok, :queued} = Agent.deliver_note(pid, "peer", "peer note", :agent, "plan")
 
       Agent.stop_chat(pid, self())
       wait_idle(pid)
@@ -150,7 +150,7 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       MockClient.set_response("ok")
 
       set_status(pid, :streaming)
-      assert {:ok, :queued} = Agent.deliver_message(pid, "peer", "peer note", :agent, "plan")
+      assert {:ok, :queued} = Agent.deliver_note(pid, "peer", "peer note", :agent, "plan")
 
       Agent.stop_chat(pid, self())
       wait_idle(pid)

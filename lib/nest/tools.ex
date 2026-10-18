@@ -334,7 +334,7 @@ defmodule Nest.Tools do
   # The `function` here is a stub. Real execution lives in
   # `Nest.Agents.Agent.ToolLoop.run_send_agent/2`, which looks up the
   # target agent and hands the message to its GenServer via
-  # `Agent.deliver_message/3`.
+  # `Agent.deliver_note/3`.
   defp send_agent_function do
     %Tool{
       name: "agents-send",

@@ -34,7 +34,7 @@ defmodule Nest.Agents.Agent.InboxTest do
   end
 
   test "delivery to an idle agent starts a turn with the message as a user message", %{pid: pid} do
-    assert {:ok, :delivered} = Agent.deliver_message(pid, "peer", "do the thing")
+    assert {:ok, :delivered} = Agent.deliver_note(pid, "peer", "do the thing")
     # allowlist: snapshot — inbox + messages
     state = :sys.get_state(pid, 1_000)
 
@@ -62,10 +62,10 @@ defmodule Nest.Agents.Agent.InboxTest do
   } do
     set_status(pid, :streaming)
 
-    assert {:ok, :queued} = Agent.deliver_message(pid, "alice", "first message")
+    assert {:ok, :queued} = Agent.deliver_note(pid, "alice", "first message")
     assert_receive {:chat_inbox, %{count: 1}}, 1_000
 
-    assert {:ok, :queued} = Agent.deliver_message(pid, "bob", "second message")
+    assert {:ok, :queued} = Agent.deliver_note(pid, "bob", "second message")
     assert_receive {:chat_inbox, %{count: 2}}, 1_000
 
     assert Enum.map(Agent.get_public_info(pid, 1_000).pending_messages, & &1["from"]) == [
@@ -102,7 +102,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     # The runtime's own result (a batch aggregate): bare — no agent said it, so
     # no `[Message from agent …]` label — and drained through the turn executor
     # when the target is idle, exactly like a peer delivery.
-    assert {:ok, :delivered} = Agent.deliver_internal(pid, "agents-batch", ~s(["done"]), :notice)
+    assert {:ok, :delivered} = Agent.deliver_internal(pid, "agents-batch", ~s(["done"]), :runtime)
     # allowlist: snapshot — inbox + messages
     state = :sys.get_state(pid, 1_000)
     assert [text] = Enum.filter(user_texts(state.chat_state.messages), &(&1 =~ ~s(["done"])))
@@ -120,14 +120,14 @@ defmodule Nest.Agents.Agent.InboxTest do
 
     # Fill the queue to the peer cap: the next peer delivery is refused...
     Enum.each(1..100, fn n ->
-      assert {:ok, :queued} = Agent.deliver_message(pid, "peer-#{n}", "queued #{n}")
+      assert {:ok, :queued} = Agent.deliver_note(pid, "peer-#{n}", "queued #{n}")
     end)
 
-    assert {:error, :inbox_full} = Agent.deliver_message(pid, "peer", "one too many")
+    assert {:error, :inbox_full} = Agent.deliver_note(pid, "peer", "one too many")
 
     # ...while the runtime's own result queues anyway. Refusing it would lose
     # the batch's whole output (the coordinator has nowhere else to put it).
-    assert {:ok, :queued} = Agent.deliver_internal(pid, "agents-batch", ~s(["done"]), :notice)
+    assert {:ok, :queued} = Agent.deliver_internal(pid, "agents-batch", ~s(["done"]), :runtime)
 
     assert List.last(Agent.get_public_info(pid, 1_000).pending_messages)["content"] ==
              ~s(["done"])
@@ -156,7 +156,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     assert_receive {:DOWN, ^ref, :process, ^gone, :killed}, 1_000
 
     assert {:noproc, _reason} =
-             catch_exit(Agent.deliver_internal(gone, "agents-batch", "x", :notice))
+             catch_exit(Agent.deliver_internal(gone, "agents-batch", "x", :runtime))
   end
 
   test "delivery to a broken agent returns an error and queues nothing", %{pid: pid} do
@@ -164,9 +164,9 @@ defmodule Nest.Agents.Agent.InboxTest do
     # kind — every kind is refused alike, and nothing is queued.
     set_status(pid, :needs_repair)
 
-    for kind <- [:agent, :query, :notice] do
+    for kind <- [:agent, :query, :runtime] do
       assert {:error, {:status, :needs_repair}} =
-               Agent.deliver_message(pid, "peer", "hello", kind)
+               Agent.deliver_note(pid, "peer", "hello", kind)
 
       assert Agent.get_public_info(pid, 1_000).pending_messages == []
     end
@@ -187,7 +187,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     # suite's console stays clean and assert it actually happened.
     log =
       capture_log(fn ->
-        assert {:ok, :queued} = Agent.deliver_message(pid, "peer", "does not fit")
+        assert {:ok, :queued} = Agent.deliver_note(pid, "peer", "does not fit")
       end)
 
     assert log =~ "cannot fit the system prompt"
@@ -211,25 +211,25 @@ defmodule Nest.Agents.Agent.InboxTest do
 
     :sys.replace_state(pid, fn state -> %{state | live: %{state.live | inbox: full}} end, 1_000)
 
-    for kind <- [:agent, :query, :notice] do
-      assert {:error, :inbox_full} = Agent.deliver_message(pid, "peer", "one too many", kind)
+    for kind <- [:agent, :query, :runtime] do
+      assert {:error, :inbox_full} = Agent.deliver_note(pid, "peer", "one too many", kind)
     end
 
     assert Agent.get_public_info(pid, 1_000).pending_message_count == 100
   end
 
   test "self-delivery is allowed", %{pid: pid, name: name} do
-    assert {:ok, :delivered} = Agent.deliver_message(pid, name, "note to self")
+    assert {:ok, :delivered} = Agent.deliver_note(pid, name, "note to self")
 
     assert Enum.any?(user_texts(Agent.get_messages(pid, 1_000)), &(&1 =~ "note to self"))
     wait_idle(pid)
   end
 
-  test "send_message/4 surfaces a missing target" do
+  test "send_note/4 surfaces a missing target" do
     space_id = AgentTestHelpers.current_space_id()
 
     assert {:error, :not_found} =
-             Agents.send_message(space_id, "alice", "does-not-exist", "hello")
+             Agents.send_note(space_id, "alice", "does-not-exist", "hello")
   end
 
   describe "query entries and the reply obligation" do
@@ -247,7 +247,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       # test's capture.)
       log =
         capture_log(fn ->
-          assert {:ok, :delivered} = Agent.deliver_message(pid, "peer", "summarize this", :query)
+          assert {:ok, :delivered} = Agent.deliver_note(pid, "peer", "summarize this", :query)
           # allowlist: snapshot — messages + owed_replies
           state = :sys.get_state(pid, 1_000)
 
@@ -281,10 +281,10 @@ defmodule Nest.Agents.Agent.InboxTest do
       # renders. Only a delivered query owes a reply, so a query queued behind a
       # busy agent that never drains creates no debt.
       set_status(pid, :streaming)
-      kinds = [:agent, :query, :notice]
+      kinds = [:agent, :query, :runtime]
 
       for {kind, n} <- Enum.with_index(kinds, 1) do
-        assert {:ok, :queued} = Agent.deliver_message(pid, "peer", "msg #{n}", kind)
+        assert {:ok, :queued} = Agent.deliver_note(pid, "peer", "msg #{n}", kind)
 
         # The frame is the delta for this delivery alone (issue #27): the entry
         # it appended, tagged with its kind, and the queue length it left
@@ -317,7 +317,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       # contrast, was delivered: the two losses are reported on their own lines
       # because they are not the same loss.
       set_status(pid, :streaming)
-      assert {:ok, :queued} = Agent.deliver_message(pid, "bob", "queued question", :query)
+      assert {:ok, :queued} = Agent.deliver_note(pid, "bob", "queued question", :query)
       # allowlist: harness — Inbox.log_lost_replies/1's argument
       state = :sys.get_state(pid, 1_000)
       assert Machine.owed_senders(state.live.machine) == []

@@ -68,7 +68,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           from: nil,
           content: "a notice",
           timestamp: at,
-          kind: :notice,
+          kind: :runtime,
           mode: nil,
           human?: false
         }
@@ -116,7 +116,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
                  "from" => nil,
                  "content" => "a notice",
                  "timestamp" => "2026-01-02T03:04:05Z",
-                 "kind" => "notice",
+                 "kind" => "runtime",
                  "mode" => nil,
                  "human" => false
                }
@@ -143,7 +143,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       # selection is total on purpose, so a new entry kind cannot crash the
       # drain inside the Agent process.
       query = %{entry(:agent, "peer", "query note") | kind: :query}
-      notice = %{entry(:agent, nil, "runtime note") | kind: :notice}
+      notice = %{entry(:agent, nil, "runtime note") | kind: :runtime}
 
       assert Inbox.batch([query, bob]) == [query, bob]
       assert Inbox.batch([peer, query, alice]) == [peer, query]
@@ -188,7 +188,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       state = %{state | live: %{state.live | inbox: full}}
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
 
-      Enum.reduce(Enum.with_index([:agent, :query, :notice], 101), state, fn {kind, n}, state ->
+      Enum.reduce(Enum.with_index([:agent, :query, :runtime], 101), state, fn {kind, n}, state ->
         content = "runtime says #{n}"
         state = Inbox.enqueue_internal(state, "runtime", content, kind)
 
@@ -216,7 +216,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
         entry(:query, "alice", "ask alice"),
         entry(:query, nil, "no sender"),
         entry(:query, "", "blank sender"),
-        entry(:notice, "peer", "runtime notice")
+        entry(:runtime, "peer", "runtime notice")
       ]
 
       assert Inbox.query_senders(entries) == ["alice"]
