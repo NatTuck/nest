@@ -182,6 +182,10 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
         pair
 
       :deferred ->
+        # Hand-built rather than `MessageList.pairing_bridge/2`: on this tail that
+        # call takes its `{:assistant, …}` clause and returns `[tool,
+        # repair_ack()]`, which would pre-empt the appender's own repair *and*
+        # add the second acknowledgement this record must not have.
         notice_row = ContextReminder.build_user_notice(NoticeTag.tag(notice), nil, nil)
         [MessageList.idle_bridge_ack(:live), notice_row, build_single_assistant(ack)]
     end

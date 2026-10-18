@@ -43,8 +43,8 @@ defmodule Nest.Agents.Agent.Machine.Delivery do
 
   ## Where the notice pair lands
 
-  A notice pair is assistant-shaped, so it can never follow the delivered user
-  message: the request would end on an assistant and
+  A notice pair ends on an assistant row, so it can never follow the delivered
+  user message: the request would end on an assistant and
   `Preflight.validate_request/1` would fail it (`:no_trailing_assistant`). It
   therefore lands *between* the caller's own append (`pre`, empty at the turn
   boundary) and the delivered message. `pre` is also the transcript the pair is
