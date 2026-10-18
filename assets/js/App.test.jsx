@@ -177,8 +177,7 @@ describe("App routes", () => {
   // The production route table, rendered through the real `<App />` (which
   // carries its own `<BrowserRouter>`). The page-level tests in
   // `pages/SpaceView.test.jsx` mount their own routes, so they cannot see a
-  // route the app forgot to register — and a missing route is exactly what the
-  // space overview had.
+  // route the app forgot to register.
   beforeEach(() => {
     window.NEST_CONFIG = { host: "vampire" };
     act(() => {
@@ -188,8 +187,8 @@ describe("App routes", () => {
         spaces: [
           { id: 1, name: "My Space", slug: "my-space", blueprint_id: null },
         ],
-        // A root agent, which is every real space: it is what makes
-        // `/space/:slug` redirect to a chat.
+        // A root agent, which is every real space: it is the recipient the
+        // feed's composer picks by default.
         agents: [
           {
             name: "boss",
@@ -207,8 +206,12 @@ describe("App routes", () => {
     window.history.pushState({}, "", "/");
   });
 
-  it("serves the space overview at its own path", async () => {
-    window.history.pushState({}, "", "/space/my-space/overview");
+  it("serves the space's note feed at the space's own path", async () => {
+    // The route the space's name links to, through the real route table: the
+    // feed, not a redirect to the root agent's chat (#96) and not the retired
+    // `/overview` page. The feed carries the environment and the composer's
+    // recipient, so both are on the space's own page.
+    window.history.pushState({}, "", "/space/my-space");
 
     const { default: App } = await import("./App");
     render(<App />);
@@ -219,6 +222,8 @@ describe("App routes", () => {
     expect(
       screen.getByRole("button", { name: "Edit space" }),
     ).toBeInTheDocument();
+    // The picker is the feed's, defaulted to the space's root agent.
+    expect(screen.getByLabelText("Send to")).toHaveValue("boss");
   });
 });
 

@@ -1,7 +1,7 @@
 /**
  * A single space row in the sidebar: a collapsible header (name + agent
- * count) that expands to that space's agent tree, with links to the space's
- * own pages and its archive control. Extracted from `Sidebar` to keep that
+ * count) that expands to that space's agent tree, with a link to the space's
+ * own page and its archive control. Extracted from `Sidebar` to keep that
  * file under the source-line cap; the rows it expands to live in
  * `SidebarAgentTree`.
  */
@@ -21,7 +21,7 @@ import {
 import { AgentTreeRow, ArchivedGroup } from "./SidebarAgentTree";
 
 /**
- * True when the current route is this space's overview or one
+ * True when the current route is this space's own page or one
  * of its agent chat pages. Mirrors how agent rows and archived
  * rows derive their "current" styling from the URL: the space's
  * name links to `/space/:slug`, so the pathname carries the
@@ -40,18 +40,15 @@ function isSpaceActive(location, spaceBase) {
 
 /**
  * A collapsible space row: header (name + agent count) that expands to
- * the space's agent tree, plus overview and archive. Clicking the name
- * navigates to `/space/:slug` (the space's Main View); the overview icon
- * opens `/space/:slug/overview` (the space's own page: its environment and
- * its agents); the chevron toggles the agent list.
+ * the space's agent tree, plus archive. Clicking the name navigates to
+ * `/space/:slug` — the space's Main View, which is its note feed (or the page
+ * its blueprint names, e.g. a campaign's) and carries the space's environment.
+ * The chevron toggles the agent list.
  *
- * The overview icon is here rather than in the agent header because it is the
- * *space's* page, and this is the space's own row — the same reason archive is
- * here. It is also the only entry point that exists on every page: a space whose
- * blueprint names an `rpg` Main View has no agent header at all, so a header
- * link would leave that space's environment with no way in from its main
- * screen. Unlike archive (destructive, and hidden until hover) it is always
- * visible, because it is the one route to the space's settings.
+ * There is no second link to the space's own page: `/space/:slug/overview` is
+ * retired, and the feed it was folded into *is* what the name links to. The
+ * environment it used to carry is on the feed, and below a campaign space's play
+ * interface, so no page of a space is without a way to its settings.
  *
  * Root-level default: the space row for the space in the current route
  * starts expanded, so opening a space shows its agent list without a click
@@ -65,7 +62,7 @@ function isSpaceActive(location, spaceBase) {
  * A space row holding the current agent is pinned open, like that agent's
  * ancestor rows: collapsing it would hide the agent the route is on, which is
  * the one thing the expansion policy promises not to do. With no agent
- * selected (the space's own overview page) the row toggles freely — there is
+ * selected (the space's own page, the feed) the row toggles freely — there is
  * nothing to lose sight of.
  *
  * This one row keeps its disclosure in component state on purpose: it is
@@ -84,9 +81,11 @@ export function SpaceRow({
   // browser had to escape (`my space`) would match nothing otherwise.
   const spaceSlug = encodeURIComponent(space.slug);
   const spaceBase = `/space/${spaceSlug}`;
-  const overviewPath = `${spaceBase}/overview`;
   const selected = isSpaceActive(location, spaceBase);
-  const onOverview = location.pathname === overviewPath;
+  // The space's own page is the feed, and the row says so when the route is
+  // exactly that — an agent's chat is a different page, and its own row carries
+  // the marker there.
+  const onSpacePage = location.pathname === spaceBase;
   const [rowExpanded, setRowExpanded] = useState(selected);
 
   // `selected` is derived from the route, so it changes when the user
@@ -132,36 +131,12 @@ export function SpaceRow({
         <Link
           to={spaceBase}
           className="flex items-center gap-2 min-w-0 flex-1 px-3 py-2"
+          aria-current={onSpacePage ? "page" : undefined}
         >
           <span className="truncate text-sm font-medium">{space.name}</span>
           <span className="text-xs text-gray-400 ml-1">
             ({spaceAgents.length})
           </span>
-        </Link>
-        <Link
-          to={overviewPath}
-          aria-label={`Overview of ${space.name}`}
-          aria-current={onOverview ? "page" : undefined}
-          title="Space overview — environment and agents"
-          className={`
-            p-1 rounded transition-colors
-            ${
-              onOverview
-                ? "text-blue-600"
-                : "text-gray-400 hover:bg-gray-100 hover:text-gray-700"
-            }
-          `}
-        >
-          <svg
-            className="w-4 h-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <rect x="3" y="4" width="18" height="16" rx="2" strokeWidth={2} />
-            <path strokeLinecap="round" strokeWidth={2} d="M3 10h18" />
-          </svg>
         </Link>
         <button
           type="button"

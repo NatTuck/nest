@@ -465,7 +465,7 @@ describe("Sidebar tree", () => {
 
     // The same holds one level up: the space row is the top of the chain, so
     // collapsing it cannot hide the agent the route is on either. (It toggles
-    // freely when the route is the space's own overview — nothing to lose.)
+    // freely when the route is the space's own page — nothing to lose.)
     const spaceToggle = screen.getByRole("button", { name: "Toggle My Space" });
     expect(spaceToggle).toHaveAttribute(
       "title",
@@ -1223,8 +1223,8 @@ describe("Sidebar tree", () => {
   });
 });
 
-describe("Sidebar space overview", () => {
-  it("links the space's own row to its overview, and marks it current there", () => {
+describe("Sidebar space row", () => {
+  it("has exactly one link to the space's own page, and marks it current there", () => {
     act(() => {
       withStore([{ name: "root", parentId: null, parentName: null, depth: 0 }]);
     });
@@ -1235,39 +1235,34 @@ describe("Sidebar space overview", () => {
       </MemoryRouter>,
     );
 
-    // The overview is the space's page, so it hangs off the space's own row
-    // rather than an agent's header: a space whose blueprint names an `rpg`
-    // Main View has no agent header at all, so a header link would leave that
-    // space's environment unreachable from its main screen.
-    const overview = screen.getByRole("link", {
-      name: "Overview of My Space",
-    });
-    expect(overview).toHaveAttribute("href", "/space/my-space/overview");
-    // The space's name still goes to its Main View.
-    expect(screen.getByRole("link", { name: /^My Space/ })).toHaveAttribute(
-      "href",
-      "/space/my-space",
-    );
-    // An agent's chat is open, so the overview is not the current page.
-    expect(overview).not.toHaveAttribute("aria-current");
+    // One link to the space's own page, which is its note feed: the overview
+    // that used to hang beside the name is retired, and its content is the
+    // feed's. Two links to one page would be two spellings of one destination.
+    const links = screen.getAllByRole("link", { name: /My Space/ });
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute("href", "/space/my-space");
+    // An agent's chat is open, so the space's own page is not the current one.
+    expect(links[0]).not.toHaveAttribute("aria-current");
 
     act(() => {
-      fireEvent.click(overview);
+      fireEvent.click(links[0]);
     });
 
-    // On the overview it says so, which is also how the row stays selected
-    // through a route that has no agent in it.
-    expect(
-      screen.getByRole("link", { name: "Overview of My Space" }),
-    ).toHaveAttribute("aria-current", "page");
+    // On the space's own page it says so, which is also how the row stays
+    // selected through a route that has no agent in it.
+    expect(screen.getByRole("link", { name: /My Space/ })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
   });
 });
 
-describe("Sidebar space overview on a campaign space", () => {
-  it("links the overview from a campaign space's row too", () => {
+describe("Sidebar space row on a campaign space", () => {
+  it("links the space's Main View, whatever the blueprint names", () => {
     // The row never reads `blueprints`, so the link is blueprint-independent by
-    // construction — and that is the point: a campaign's Main View has no agent
-    // header, so this row is the only way into its environment.
+    // construction — and that is the point: a campaign space's main screen is
+    // its play interface, and the row is the way back to it from an agent's
+    // chat.
     act(() => {
       useStore.setState({
         agents: [],
@@ -1287,9 +1282,10 @@ describe("Sidebar space overview on a campaign space", () => {
       </MemoryRouter>,
     );
 
-    expect(
-      screen.getByRole("link", { name: "Overview of Campaign" }),
-    ).toHaveAttribute("href", "/space/campaign/overview");
+    expect(screen.getByRole("link", { name: /Campaign/ })).toHaveAttribute(
+      "href",
+      "/space/campaign",
+    );
   });
 });
 
@@ -1431,8 +1427,8 @@ describe("Sidebar space archiving", () => {
   it("links an archived row with the encoded slug and highlights it on its pages", () => {
     // The slug goes into the link and into every comparison, so it is encoded
     // once: a slug the browser had to escape would match nothing otherwise. The
-    // space's two pages both render the archived notice, so both count as
-    // "this space".
+    // space's own page renders the archived notice, so it counts as "this
+    // space".
     act(() => {
       useStore.setState({
         spaces: [],
@@ -1445,7 +1441,7 @@ describe("Sidebar space archiving", () => {
     });
 
     render(
-      <MemoryRouter initialEntries={["/space/my%20space/overview"]}>
+      <MemoryRouter initialEntries={["/space/my%20space"]}>
         <Sidebar />
       </MemoryRouter>,
     );

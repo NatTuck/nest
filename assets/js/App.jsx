@@ -11,11 +11,9 @@
  *         /login depending on outcome)
  * - /spaces → SpacesIndex (the user's spaces)
  * - /spaces/new → NewSpacePage (create new space)
- * - /space/:spaceSlug → SpaceView (the space's Main View: the blueprint's
- *                       choice, which by default redirects to the root
- *                       agent's chat)
- * - /space/:spaceSlug/overview → SpaceView (the space's own page: its
- *                       environment and its agents)
+ * - /space/:spaceSlug → SpaceView (the space's Main View: by default its
+ *                       note feed, or the blueprint's own page if it names
+ *                       one — a campaign space gets `RpgPlayInterface`)
  * - /space/:spaceSlug/agent/:name → ChatPage (chat with agent)
  * - /about → AboutPage (about with mascot)
  * - /login, /register → standalone auth pages (no sidebar)
@@ -135,7 +133,7 @@ function RootGate() {
 /**
  * Layout component with sidebar and main content.
  *
- * Mounts only for authenticated routes (`/spaces`,
+ * Mounts only for authenticated routes (`/spaces`, `/space/:slug`,
  * `/space/:slug/agent/:name`, `/about`, `/invites`). The WS
  * connection is established via `initChannels` and the lobby is joined
  * once `isConnected` flips true.
@@ -192,10 +190,6 @@ export function App() {
           <Route path="spaces" element={<SpacesIndex />} />
           <Route path="spaces/new" element={<NewSpacePage />} />
           <Route path="space/:spaceSlug" element={<SpaceView />} />
-          <Route
-            path="space/:spaceSlug/overview"
-            element={<SpaceView overview />}
-          />
           <Route path="space/:spaceSlug/agent/:name" element={<ChatPage />} />
           <Route path="about" element={<AboutPage />} />
           <Route path="invites" element={<InvitesPage />} />

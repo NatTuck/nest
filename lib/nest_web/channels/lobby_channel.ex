@@ -7,6 +7,7 @@ defmodule NestWeb.LobbyChannel do
   - Creating a new space (with its root agent)
   - Deleting agents
   - Changing an agent's model
+  - The space feed's read and its composer's send (`SpaceFeed`)
 
   The `:after_join` loads the user's spaces and the agents
   across all of them (so the sidebar can render every space's
@@ -17,6 +18,9 @@ defmodule NestWeb.LobbyChannel do
   event includes the user's full spaces list and the agents
   across all spaces, so the sidebar can render the selection
   without an extra round-trip.
+
+  The subscription set is also the feed's read scope: every space topic the
+  user can see is subscribed, which is where `{:user_note, _}` frames arrive.
   """
 
   use NestWeb, :channel
@@ -38,6 +42,7 @@ defmodule NestWeb.LobbyChannel do
   alias NestWeb.LobbyChannel.Invites
   alias NestWeb.LobbyChannel.ProbeCache
   alias NestWeb.LobbyChannel.Providers
+  alias NestWeb.LobbyChannel.SpaceFeed
   alias NestWeb.LobbyChannel.SpaceForms
 
   @impl true
@@ -179,6 +184,13 @@ defmodule NestWeb.LobbyChannel do
     push(socket, "space:resumed", %{"space_id" => space_id})
     {:noreply, socket}
   end
+
+  # A note with a human at one end (`Nest.Notes`), broadcast on the space's
+  # topic by every insert. The space is already scoped by the subscription the
+  # frame arrived on; `SpaceFeed.note_created/2` applies the other half of the
+  # rule (the human at one end) and pushes the feed's frame.
+  @impl true
+  def handle_info({:user_note, note}, socket), do: SpaceFeed.note_created(note, socket)
 
   # Anything else on a topic we subscribed to is a frame we do not know.
   # Without this clause a single unrecognised PubSub message would raise a
@@ -403,6 +415,13 @@ defmodule NestWeb.LobbyChannel do
 
   def handle_in("unarchive_agent", _payload, socket),
     do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
+
+  # The space feed (`/space/:slug`): its initial read, and the composer's send.
+  @impl true
+  def handle_in("space_feed", payload, socket), do: SpaceFeed.read(payload, socket)
+
+  @impl true
+  def handle_in("send_note", payload, socket), do: SpaceFeed.send_note(payload, socket)
 
   @impl true
   def handle_in("create_invite", payload, socket), do: Invites.create_invite(payload, socket)
