@@ -12,7 +12,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
     * `default_cap = floor(usable * 0.80)`
     * `effective_cap = min(LLM_override, default_cap)` (LLM may only lower)
     * When exceeded: `shell_cmd` → path-and-head summary,
-      `read_file` → structured error, others → log + keep full.
+      `read_file` → structured error, others → path-and-head substitute.
   """
 
   use ExUnit.Case, async: true
@@ -23,6 +23,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
 
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.BatchSizer.ProjectedSize
+  alias Nest.Agents.Agent.CapCalculator
   alias Nest.LLM.Tool
   alias Nest.Messages.Assistant
   alias Nest.Messages.ToolCall
@@ -298,6 +299,27 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       assert Enum.any?(results, &(&1.content =~ "saved to"))
       assert Enum.map(results, & &1.name) == ["shell-cmd", "agents-query"]
     end
+
+    test "a spent window substitutes rather than raising", %{tmp_dir: dir} do
+      # `cook/2` is reachable without the preflight that would have refused this
+      # batch — it runs once over a merged regular + sub-agent batch — and a
+      # spent window leaves `usable` at 0, which `effective_max_result_tokens/2`
+      # will not take. The result must be substituted, not raised on: before
+      # `cap_for/2` existed this crashed the turn with a FunctionClauseError.
+      big = TextFixtures.big_text(40_000)
+      entries = [{call("c1", "agents-query", %{"name" => "peer"}), :ok, big}]
+
+      # 100 tokens cannot hold the 8_192-token reserve, so the window is spent.
+      c = ctx([], context_limit: 100, tmp_path: dir)
+
+      assert [%ToolResult{is_error: false, content: content}] = BatchSizer.cook(entries, c)
+
+      # Substituted, not kept full: with no budget left `Overflow.substitute/5`
+      # returns its pointer form. The claim is that it did not raise and did not
+      # keep the 40 000-byte body.
+      assert content =~ "content elided"
+      assert byte_size(content) < 1_000
+    end
   end
 
   describe "the file-read projection is bounded by the inline cap" do
@@ -395,6 +417,38 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       calls = [call("c1", "file-read", %{"path" => "big.txt"})]
 
       assert ProjectedSize.project(hd(calls), c) == Estimator.estimate_bytes(400_000)
+      assert {:refuse, _} = BatchSizer.preflight(calls, c)
+    end
+
+    test "two over-cap reads still refuse, and compaction cannot clear it", %{tmp_dir: dir} do
+      # The known gap this branch does NOT close, pinned so it is a recorded
+      # limitation rather than a surprise. Two clamped `file-read`s cost
+      # `2 * cap = 1.6 * usable`, and `size + reserve = limit - usable` by
+      # definition, so the total is `limit + 0.6 * usable` — above the limit for
+      # every `usable > 0`. Measured here: 2 * 671_088 + 209_715 = 1_551_891
+      # against a 1_048_576 limit.
+      #
+      # The refusal is a property of the files, not of the transcript, so the
+      # compaction it routes into re-refuses the same carried calls — the loop
+      # the clamp was written for. Closing it needs the routing to refuse to
+      # the model instead of compacting (P2), and the loop breaker un-disarmed
+      # (P3); neither belongs here.
+      File.write!(Path.join(dir, "big.txt"), TextFixtures.big_text(3_000_000))
+
+      limit = 1_048_576
+      c = ctx([], context_limit: limit, workspace_path: dir)
+
+      # The same file twice: the refusal depends on the file, not the
+      # conversation, which is exactly why compaction cannot clear it.
+      calls = [
+        call("c1", "file-read", %{"path" => "big.txt"}),
+        call("c2", "file-read", %{"path" => "big.txt"})
+      ]
+
+      cap = floor(CapCalculator.usable_remaining(c) * 0.8)
+
+      assert ProjectedSize.project_batch(calls, c) == 2 * cap
+      assert 2 * cap + Reserve.compaction_reserve(limit) > limit
       assert {:refuse, _} = BatchSizer.preflight(calls, c)
     end
   end

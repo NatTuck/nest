@@ -40,18 +40,19 @@ defmodule Nest.Agents.Agent.CapCalculator do
   @spec usable_remaining(map()) :: non_neg_integer()
   def usable_remaining(%{context_limit: limit} = ctx)
       when is_integer(limit) and limit > 0 do
-    Budget.remaining(ctx.messages || [], limit)
+    Budget.remaining(Map.get(ctx, :messages) || [], limit)
   end
 
   @doc """
   The remaining usable content budget as `{:ok, usable}`, or `:none` when
   `ctx` carries no positive `context_limit` or that window is already spent.
 
-  `usable_remaining/1` raises in both cases. That is right where the limit is
-  guaranteed — the send path — but a caller that only needs to know whether a
-  cap applies at all (a tool invoked directly, a context whose window is gone)
-  wants this answer instead. It is here rather than duplicated at each such
-  call site so there is one spelling of "is there a window".
+  `usable_remaining/1` raises only when there is no positive `context_limit`,
+  which is right where the limit is guaranteed — the send path. A spent window
+  is not an error: it returns `0`. A caller that only needs to know whether a
+  cap applies at all wants both cases as `:none`, rather than a raise and a
+  legal zero it has to special-case. It is here rather than duplicated at each
+  such call site so there is one spelling of "is there a window".
   """
   @spec usable_window(map()) :: {:ok, pos_integer()} | :none
   def usable_window(%{context_limit: limit} = ctx) when is_integer(limit) and limit > 0 do

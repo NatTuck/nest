@@ -247,7 +247,10 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   #
   # The gate is what keeps the frozen-oracle parity tests in
   # `batch_sizer_preflight_stat_test.exs` byte-identical: every `.txt` fixture
-  # takes `text_read_projection/2` below, unchanged. Do not widen it.
+  # takes `text_read_projection/2` below. Do not widen it. Parity survives the
+  # cap clamp in `read_file_projection/2` for a different reason — every fixture
+  # there projects under its cap, so the clamp is a no-op for them — and that is
+  # the property to keep if a fixture is ever enlarged.
   def read_file_projection(%ToolCall{arguments: %{"path" => path}} = tc, ctx)
       when is_binary(path) do
     projection =
@@ -279,9 +282,11 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   # cannot drift apart.
   #
   # A context with no usable window left (already at or past its content limit)
-  # leaves the projection alone: the batch cannot fit whatever this returns,
-  # `cook/2` handles that case without a cap, and
-  # `CapCalculator.effective_max_result_tokens/2` requires a positive window.
+  # leaves the projection alone. The batch cannot fit whatever this returns —
+  # the reserve alone already meets the limit — and
+  # `CapCalculator.effective_max_result_tokens/2` requires a positive window, so
+  # there is no cap to clamp to. `cook/2` reports the same window as no cap
+  # (`cap_for/2`) and substitutes the result rather than raising.
   defp clamp_to_cap(projection, tc, ctx) do
     case CapCalculator.usable_window(ctx) do
       {:ok, usable} -> min(projection, CapCalculator.effective_max_result_tokens(tc, usable))
