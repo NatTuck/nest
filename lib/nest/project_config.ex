@@ -138,8 +138,11 @@ defmodule Nest.ProjectConfig do
       # business. A `.nest` we cannot protect must not degrade silently — the same
       # rule a malformed one follows — so this is an error, which `section/1`
       # renders as a visible block.
-      {:not_regular, _type} ->
-        {:error, "#{path} is not a regular file, so Nest cannot protect it"}
+      # `error_message/1` rather than a sentence of its own: a hardlink **is** a
+      # regular file, so the type has to reach the wording, and this is the
+      # mid-session re-render path the model reads.
+      {:not_regular, type} ->
+        {:error, Nest.ConfigFile.error_message({:config_file_not_regular, path, type})}
 
       {:error, reason} ->
         read_failure(path, reason)

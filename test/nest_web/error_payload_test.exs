@@ -35,31 +35,25 @@ defmodule NestWeb.ErrorPayloadTest do
     assert ErrorPayload.from_reason(:agent_busy) == %{"reason" => "agent_busy"}
   end
 
-  test "answers a tagged reason of any arity with the tag, never unknown_error" do
-    # A reason that grows a field must not fall silently to the catch-all: that is
-    # how `{:config_file_not_regular, path, type}` would have become
-    # `"unknown_error"` if the tuple clause had stayed at arity two.
-    log =
-      capture_log(fn ->
-        assert ErrorPayload.from_reason({:a_new_reason, "one", :two}) ==
-                 %{"reason" => "a_new_reason"}
-      end)
-
-    assert log =~ "Unmapped error reason :a_new_reason"
-    assert log =~ ~s(["one", :two])
-  end
-
-  test "answers a tagged reason it has no clause for with the tag, and logs the detail" do
+  test "answers a tagged reason of any arity with the tag, and logs the detail" do
     # Losing the detail is worse than a crash; keeping it in a key nothing reads
-    # is worse than losing it. So it goes to the log, where the operator is.
+    # is worse than losing it, so it goes to the log. Any arity, not just two: a
+    # reason that grows a field (`{:config_file_not_regular, path, type}` did) must
+    # not fall silently to the catch-all's `"unknown_error"`.
     log =
       capture_log(fn ->
-        assert ErrorPayload.from_reason({:some_new_refusal, "detail"}) ==
-                 %{"reason" => "some_new_refusal"}
+        for {reason, tag} <- [
+              {{:some_new_refusal, "detail"}, "some_new_refusal"},
+              {{:a_new_reason, "one", :two}, "a_new_reason"}
+            ] do
+          assert ErrorPayload.from_reason(reason) == %{"reason" => tag}
+        end
       end)
 
     assert log =~ "Unmapped error reason :some_new_refusal"
     assert log =~ "detail"
+    assert log =~ "Unmapped error reason :a_new_reason"
+    assert log =~ ~s(["one", :two])
   end
 
   test "answers a reason of no known shape with a code rather than raising" do

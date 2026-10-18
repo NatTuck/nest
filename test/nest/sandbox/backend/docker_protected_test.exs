@@ -40,10 +40,11 @@ defmodule Nest.Sandbox.Backend.DockerProtectedTest do
       # binds — nothing resolves a symlink for it. Two binds of one directory are
       # two writable views of it, so a mask at the canonical path alone leaves
       # `<spelling>/.nest` an ordinary writable file, at the very path `--chdir`,
-      # the prompt and every tool path use. Measured at the kernel level with the
-      # same two-bind shape: without the spelling mask the write succeeds and the
-      # host's canonical `.nest` becomes the written bytes; with it the write is
-      # `EACCES` and the host file is untouched.
+      # the prompt and every tool path use. Measured by hand at the kernel level
+      # with the same two-bind shape (`notes/sandbox-backends.md` records it):
+      # without the spelling mask the write succeeds and the host's canonical
+      # `.nest` becomes the written bytes; with it the write is `EACCES` and the
+      # host file is untouched. This test asserts the rendered command line.
       real = workspace("nest_docker_spelling")
       spelling = real <> "-alias"
       File.ln_s!(real, spelling)

@@ -29,10 +29,11 @@ defmodule NestWeb.AgentChannel.Replies do
   # authority (it queues the message while it is busy).
   def reply_chat(socket, :ok), do: {:reply, {:ok, %{}}, socket}
 
-  def reply_chat(socket, {:error, :not_found}), do: reply_err("agent_not_found", socket)
-
+  # One spelling for every refusal, `chat_message_reason/1` included: `:not_found`
+  # is `agent_not_found` and `:archived` is `agent_archived` whichever of
+  # `get_info/2` or `chat/6` produced them, rather than depending on the caller.
   def reply_chat(socket, {:error, reason}),
-    do: {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
+    do: reply_err(chat_message_reason(reason), socket)
 
   # The control-plane calls (`compact`, `retry-compaction`, `stop`, …). A
   # non-idle agent is the one refusal with its own spelling.

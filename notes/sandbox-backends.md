@@ -351,6 +351,13 @@ either file. Same statement as "caps cannot be enforced for a `none` space".
   cannot *create* such a link either way: `ln` across the workspace bind is
   `Invalid cross-device link`, and `mv` over the mount point is `EBUSY`. The
   remedy is the symlink's: copy the file in rather than linking it.
+
+  The refusal is deliberately **over-broad**. A hardlink whose other name lives
+  outside every writable bind would be safe to mask, and `ln ../AGENTS.md
+  AGENTS.md` across two worktrees is now refused even though neither agent could
+  reach the other's copy. `state/1` is a pure host check — `lstat` and nothing
+  else — so it cannot see the writable set, and refusing all of them is the only
+  answer it can give that is not sometimes wrong.
 * **A `/dev/null` mask materialises an empty `0444` file in the workspace.** When
   `.nest` or `AGENTS.md` is absent, the mask is a bind of `/dev/null` over its
   path, and after one sandbox run the path exists on the host as a `-r--r--r--`

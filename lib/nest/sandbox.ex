@@ -144,6 +144,13 @@ defmodule Nest.Sandbox do
   than written a second time (`Nest.Modes.caps(Nest.Modes.default())` - full host
   read, workspace + /tmp writable, no network). Used by callers that have not
   been migrated to pass real caps (and as the fallback in `ShellCmd.execute/4`).
+
+  It carries **no `fs.protected`**, because that comes from the workspace
+  (`Nest.ProjectConfig.effective_caps/2`) and this function has no mounts. So a
+  caller that falls back to it runs with no config-file mask at all — a *regular*
+  `.nest` stays writable, which is the one way the mask can be absent for a file
+  the gate would otherwise protect. No production path does: a workspace goes
+  through `resolve_caps/2`, and a command without one has nothing to mask.
   """
   @spec default_caps() :: map()
   def default_caps, do: Nest.Modes.caps(Nest.Modes.default())

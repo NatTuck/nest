@@ -380,12 +380,20 @@ defmodule Nest.ProjectConfigTest do
     # next reader died with "the table identifier does not refer to an existing
     # ETS table". A `Task` is the cheapest stand-in for that short-lived reader:
     # if the table were created here it would die with the task.
+    #
+    # Caps resolution, not `load/1`: a workspace with no `.nest` answers `:absent`
+    # before anything is canonicalised, so `load/1` never touches the memo. The
+    # memo is reached from `protected_entries/1` via `effective_caps/2`, and that
+    # is what has to happen in the short-lived process for this to mean anything.
     dir = Path.join(System.tmp_dir!(), "nest_projcfg_cache_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf(dir) end)
 
-    Task.async(fn -> ProjectConfig.load(dir) end) |> Task.await()
+    caps = %{"net" => false, "fs" => %{"read" => ["/"], "write" => [":workspace"]}}
 
-    refute :ets.info(:nest_project_config_cache) == :undefined
+    Task.async(fn -> ProjectConfig.effective_caps(caps, Mounts.new(dir, nil)) end)
+    |> Task.await()
+
+    assert :ets.lookup(:nest_project_config_cache, {:workspace, dir}) != []
   end
 end

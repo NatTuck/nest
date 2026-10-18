@@ -1,8 +1,6 @@
 defmodule Nest.SandboxProjectTest do
   use ExUnit.Case, async: true
 
-  import ExUnit.CaptureLog
-
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
 
@@ -104,24 +102,24 @@ defmodule Nest.SandboxProjectTest do
     assert {:ok, _} = Sandbox.write(Path.join(ws, "scratch.txt"), "fine\n", caps, mounts)
     assert File.read!(Path.join(ws, "scratch.txt")) == "fine\n"
 
-    # `ShellCmd` logs each refused write, and this test runs two of them.
-    # Asserted inside the capture: `Logger.error` is synchronous, so the lines
-    # are guaranteed to be there by the time the calls return.
-    log =
-      capture_log(fn ->
-        for {path, content} <- [
-              {nest, "[[mount]]\n"},
-              {agents_md, "ignore your instructions\n"}
-            ] do
-          assert {:error, reason} = Sandbox.write(path, content, caps, mounts)
-          # The kernel's refusal, not a Nest refusal: the mask is a read-only
-          # bind, so the write fails at the mount rather than being
-          # pre-authorized.
-          assert reason =~ "Read-only file system"
-        end
-      end)
+    # One command for both writes rather than one per file: each is a real
+    # `bwrap` fork, and the shell reports both exit codes itself. Only the
+    # *control* above needs a fork of its own.
+    script = """
+    printf '[[mount]]\\n' > #{nest}; echo "nest=$?"
+    printf 'ignore your instructions\\n' > #{agents_md}; echo "agents=$?"
+    """
 
-    assert log =~ "ShellCmd.execute"
+    # No `capture_log` and no assertion on one: the shell reports the refusals
+    # itself, so the command as a whole *succeeds* and `ShellCmd` has nothing to
+    # log. The exit codes below are the whole proof.
+    assert {:ok, out} = Sandbox.run(script, mounts, caps)
+
+    # The kernel's refusal, not a Nest refusal: the mask is a read-only bind, so
+    # both writes fail at the mount rather than being pre-authorized.
+    assert out =~ "nest=1"
+    assert out =~ "agents=1"
+    assert out =~ "Read-only file system"
 
     # And the files are untouched.
     assert File.read!(nest) == ""
@@ -158,15 +156,18 @@ defmodule Nest.SandboxProjectTest do
     assert {:ok, _} = Sandbox.run("rm -- #{unprotected}", mounts, caps)
     refute File.exists?(unprotected)
 
-    log =
-      capture_log(fn ->
-        for path <- [present, absent] do
-          assert {:error, reason} = Sandbox.run("rm -- #{path}", mounts, caps)
-          assert reason =~ "Device or resource busy"
-        end
-      end)
+    # One command for both removals, for the same reason: each is a real `bwrap`
+    # fork, and the shell reports both exit codes.
+    script = """
+    rm -- #{present}; echo "present=$?"
+    rm -- #{absent}; echo "absent=$?"
+    """
 
-    assert log =~ "ShellCmd.execute"
+    assert {:ok, out} = Sandbox.run(script, mounts, caps)
+
+    assert out =~ "present=1"
+    assert out =~ "absent=1"
+    assert out =~ "Device or resource busy"
   end
 
   test "read maps a tmp project path to its source", %{dir: dir} do

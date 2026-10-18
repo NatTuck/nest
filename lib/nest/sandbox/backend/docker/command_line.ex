@@ -119,7 +119,7 @@ defmodule Nest.Sandbox.Backend.Docker.CommandLine do
   # into the masked canonical mount — so this is docker's alone.)
   defp spelling_masks([], _caps), do: []
 
-  defp spelling_masks([{spelling, _dest, _mode}], caps) do
+  defp spelling_masks([{spelling, _dest, _mode} | _rest], caps) do
     Enum.flat_map(Binds.protected_specs(caps), fn {source, dest, _ro} ->
       [
         "--ro-bind",

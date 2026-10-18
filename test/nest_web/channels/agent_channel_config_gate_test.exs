@@ -107,5 +107,27 @@ defmodule NestWeb.AgentChannelConfigGateTest do
       ref = push(socket, "chat:message", %{"content" => "hi"})
       assert_reply ref, :error, %{"reason" => "agent_archived"}
     end
+
+    test "the join names the file, rather than answering agent_unavailable" do
+      # Opening a chat for an agent that is not running in a bad workspace is the
+      # most common way a user meets this refusal. Without the clause in
+      # `join_refusal/2` it lands in the catch-all as `agent_unavailable`, which
+      # names no file — and the existing catch-all test still passes, because it
+      # stubs a different error.
+      path = "/home/nat/proj/.nest"
+
+      stub(Agents, :get_agent, fn _space_id, _name ->
+        {:error, {:config_file_not_regular, path, :symlink}}
+      end)
+
+      {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
+
+      assert {:error,
+              %{
+                "reason" => "config_file_not_regular",
+                "path" => ^path,
+                "type" => "symlink"
+              }} = subscribe_and_join(connected, NestWeb.AgentChannel, "agent:1:any-missing")
+    end
   end
 end
