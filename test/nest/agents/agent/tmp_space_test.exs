@@ -23,7 +23,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
   # A `"none"` agent's scratch is the host's own `/tmp/<name>`, so these tests
   # build their stand-ins under the real temp dir with a unique name that passes
   # the name rule. They deliberately do *not* use the literal host names the
-  # guard exists for (`nest-<pid>`, `X11-unix`, `snap-private-tmp`): the guard
+  # guard exists for (`nest-<pid>`, `snap-private-tmp`): the guard
   # cannot tell them apart from a stand-in, and a test that used one would delete
   # the host's own directory if the guard ever regressed.
   defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
@@ -264,10 +264,10 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
     test "cleanup/3 refuses an unmarked directory, whatever it is called", %{space_id: space_id} do
       # The name rule alone cannot tell Nest's directory from the host's: a
       # `"none"` agent named `nest-<pid>` would take another BEAM's whole scratch
-      # root, and `X11-unix` / `snap-private-tmp` are real `/tmp` entries that
-      # pass the same rule.
+      # root, and `snap-private-tmp` is a real `/tmp` entry that passes the same
+      # rule.
       dirs =
-        for prefix <- ["nest-rmtest", "X11-unix-rmtest", "snap-private-tmp-rmtest"] do
+        for prefix <- ["nest-rmtest", "snap-private-tmp-rmtest"] do
           dir = host_tmp_dir(prefix)
           File.write!(Path.join(dir, "host-file"), "not Nest's")
           dir

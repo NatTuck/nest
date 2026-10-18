@@ -159,7 +159,7 @@ defmodule Nest.SpacesTest do
                Spaces.create_space_with_root_agent(user_id, attrs)
 
       assert [slug: {message, _opts}] = changeset.errors
-      assert message == "must be usable as an agent name (letters, digits, `_` and `-`)"
+      assert message == "must be usable as an agent name (lowercase letters, digits, `_` and `-`)"
 
       # The slug is refused before the insert, so the transaction left nothing
       # behind — no space row, and no agent row for it to hang off.

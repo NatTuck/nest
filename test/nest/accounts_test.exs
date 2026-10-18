@@ -80,6 +80,21 @@ defmodule Nest.AccountsTest do
       assert user.username == "alice"
     end
 
+    test "caps the username at the shared byte limit, not a character count" do
+      # `Nest.Name` says 255 bytes for an agent's name and a human's username
+      # alike; the changeset reads the cap from there rather than keeping a
+      # second, character-based limit that a migrated name could fall outside.
+      at_cap = String.duplicate("a", Nest.Name.max_bytes())
+      over = String.duplicate("a", Nest.Name.max_bytes() + 1)
+
+      assert UserSchema.registration_changeset(%UserSchema{}, %{username: at_cap}).valid?
+
+      changeset = UserSchema.registration_changeset(%UserSchema{}, %{username: over})
+
+      refute changeset.valid?
+      assert %{username: ["should be at most 255 byte(s)"]} = errors_on(changeset)
+    end
+
     test "rejects duplicate usernames (case-insensitive)" do
       {:ok, alice, _} =
         Accounts.create_user(
@@ -148,6 +163,28 @@ defmodule Nest.AccountsTest do
     test "matches case-insensitive usernames", %{user: user} do
       assert {:ok, %UserSchema{id: id}} = Accounts.authenticate("ALICE", "password123")
       assert id == user.id
+    end
+
+    test "matches the shared fold, not just case", %{user: alice} do
+      # `registration_changeset/2` stores `Nest.Name.sanitize/1`, which folds
+      # punctuation as well as case. Reading with a plain trim+downcase would
+      # look up `"jane doe"` for a stored `"jane-doe"` and lock this user out —
+      # and the migration would have rewritten a `"Jane Doe"` login that worked
+      # before it ran.
+      {:ok, _invite, token} = Accounts.create_invite(alice.id)
+
+      {:ok, %UserSchema{} = jane} =
+        Accounts.redeem_invite(
+          token,
+          Map.put(registration_attrs(""), :username, "Jane Doe")
+        )
+
+      assert jane.username == "jane-doe"
+
+      for username <- ["Jane Doe", "jane-doe", "Jane.Doe", "JANE-DOE"] do
+        assert {:ok, %UserSchema{id: id}} = Accounts.authenticate(username, "password123")
+        assert id == jane.id
+      end
     end
 
     test "returns :invalid_credentials on a wrong password", %{user: _user} do
