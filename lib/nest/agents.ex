@@ -338,8 +338,7 @@ defmodule Nest.Agents do
 
   @doc """
   Asynchronously deliver `content` from `from_name` to the agent
-  `{space_id, name}` (`agents-send`, `agents-query`, and the runtime's
-  own `:runtime` entries).
+  `{space_id, name}` (`agents-send` and `agents-query`).
 
   `kind` is the entry's provenance (`Nest.Agents.Agent.Inbox.t:kind/0`)
   and decides only how the target renders the entry — a `:query` also

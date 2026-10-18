@@ -381,6 +381,8 @@ defmodule Nest.Agents.Agent.Inbox do
   """
   @spec enqueue_internal(Agent.t(), String.t() | nil, String.t(), kind(), [String.t()]) ::
           Agent.t()
+  # Guards `enqueue_internal`'s producers only: `handle_delivery/5` and
+  # `deliver_internal/4` take a `kind()` and validate nothing.
   def enqueue_internal(state, from, content, kind, fulfilled_ids \\ [])
       when kind in [:agent, :user, :query, :runtime] do
     {state, entry} =
@@ -410,8 +412,8 @@ defmodule Nest.Agents.Agent.Inbox do
   `Backgrounding.ids_for/2` for a worker's death). It rides the entry onto the
   message the drain appends (`build_drained_message/3`).
   """
-  @spec deliver_notice(Agent.t(), term(), [String.t()]) :: Agent.t()
-  def deliver_notice(state, outcome, fulfilled_ids) do
+  @spec enqueue_runtime(Agent.t(), term(), [String.t()]) :: Agent.t()
+  def enqueue_runtime(state, outcome, fulfilled_ids) do
     enqueue_internal(state, nil, Backgrounded.notice(outcome), :runtime, fulfilled_ids)
   end
 

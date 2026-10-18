@@ -192,7 +192,7 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   The tool-call ids a backgrounded batch's *result* answers.
 
   The delivery's notice carries them onto the message the drain appends
-  (`Inbox.deliver_notice/3` → `Inbox.build_drained_message/3`), so a later load
+  (`Inbox.enqueue_runtime/3` → `Inbox.build_drained_message/3`), so a later load
   can tell a promise that was kept from one the process died with
   (`MessageList.backgrounded_results/1`).
 

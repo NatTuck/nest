@@ -8,7 +8,7 @@ defmodule Nest.Agents.Agent.Turn.Backgrounded do
   result — or its worker's death — has no live worker to settle, so the
   machine clears the entry and emits
   `{:deliver_backgrounded, ref, outcome, fulfilled_ids}` (the ref answers
-  exactly once), and the executor runs it: `Inbox.deliver_notice/3` renders
+  exactly once), and the executor runs it: `Inbox.enqueue_runtime/3` renders
   the outcome here as a `:runtime` entry, and the fulfilled ids ride the
   entry onto the message the drain appends, so a later load can tell a promise
   that was kept from one the process died with.

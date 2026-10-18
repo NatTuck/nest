@@ -79,7 +79,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
   end
 
   describe "a backgrounded worker's death" do
-    test "produces a notice and clears the entry" do
+    test "produces a :runtime entry and clears the entry" do
       ref = make_ref()
       pid = self()
       machine = backgrounded_machine(%{ref => %{pid: pid, ids: ["c1"]}})

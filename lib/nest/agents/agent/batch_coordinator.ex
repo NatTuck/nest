@@ -341,7 +341,7 @@ defmodule Nest.Agents.Agent.BatchCoordinator do
   defp deliver(content, plan) do
     # The sender is `nil`, not a name: the aggregate is the runtime's own
     # result, so no agent row resolves it and no agent label frames it. Every
-    # other runtime note is enqueued the same way (`Inbox.deliver_notice/3`).
+    # other runtime note is enqueued the same way (`Inbox.enqueue_runtime/3`).
     Agent.deliver_internal(plan.parent_pid, nil, content, :runtime)
   catch
     # `:noproc` is the only case where the aggregate is certainly gone: there is
