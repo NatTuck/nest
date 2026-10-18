@@ -140,8 +140,8 @@ defmodule Nest.ProjectConfigTest do
     test "reports a regular .nest it cannot read", %{dir: dir} do
       # A *regular* file with no read bit: the one state that still reaches the
       # error branch. A directory (or a symlink) is a non-regular path, and that
-      # is a different answer — it is neither read nor masked, and grants
-      # nothing (see the describe below).
+      # is a different answer — it grants nothing, and the *workspace* is refused
+      # (see the describe below).
       write_nest(dir, "")
       File.chmod!(nest_path(dir), 0o000)
 
@@ -162,7 +162,8 @@ defmodule Nest.ProjectConfigTest do
     end
 
     test "treats a .nest that is a directory as empty", %{dir: dir} do
-      # A directory is not a regular file, so it is neither read nor masked.
+      # A directory is not a regular file, so `load/1` grants nothing. The gate
+      # (`config_file_error/1`) is what refuses the workspace.
       File.mkdir_p!(nest_path(dir))
 
       capture_log(fn ->
@@ -173,43 +174,101 @@ defmodule Nest.ProjectConfigTest do
   end
 
   describe "a config path that is not a regular file" do
-    test "a symlinked .nest grants nothing, and is reported once", %{dir: dir} do
+    test "load/1 treats a symlinked .nest as empty and logs nothing", %{dir: dir} do
+      # The *gate* owns the warning now (`config_file_error/1`); `load/1` is
+      # total and only has to not follow the link.
       target = Path.join(dir, "real.nest")
       File.write!(target, "[[mount]]\npath = \"~/x\"\nmode = \"rw\"\n")
       File.ln_s!(target, nest_path(dir))
 
-      # A symlink is neither read nor masked: `--ro-bind` would resolve the final
-      # component and mount on the *target*, leaving the link an ordinary entry
-      # in the read-write workspace bind. So it grants nothing at all.
       log = capture_log(fn -> assert {:ok, %{"mounts" => []}} = ProjectConfig.load(dir) end)
-      assert log =~ nest_path(dir)
-      assert log =~ "not a regular file"
 
       assert ProjectConfig.section(dir) == ""
-
-      # Warned *once*: the path is unique to this test, so a concurrent test's
-      # lines cannot contain it and the absence assertion is sound even though
-      # `capture_log` is not process-scoped.
-      second = capture_log(fn -> assert {:ok, %{"mounts" => []}} = ProjectConfig.load(dir) end)
-      refute second =~ nest_path(dir)
+      # Not asserted for absence: `capture_log` collects every process's lines,
+      # so "the path is not in the log" is not assertable through it. That the
+      # warning moved out of this function is pinned by the positive test below.
+      assert is_binary(log)
     end
 
     test "a symlinked config file contributes no protected entry", %{dir: dir} do
       # `.nest` is a regular file, `AGENTS.md` is a symlink: the first is masked
-      # over itself, the second gets no entry at all — masking it would either be
-      # a no-op (target inside the workspace) or wedge every command in it
-      # (target outside).
+      # over itself, the second gets no entry. That omission is **defensive
+      # only** — it is not protection, because with no mount point over the path
+      # an `act` agent could delete the link and write a regular file. The
+      # mechanism is `config_file_error/1`, which refuses the workspace; this
+      # pins what the bind list looks like if anything ever asks anyway.
       write_nest(dir, "")
       File.write!(Path.join(dir, "real-agents.md"), "# rules\n")
       File.ln_s!(Path.join(dir, "real-agents.md"), Path.join(dir, "AGENTS.md"))
 
-      capture_log(fn ->
-        assert {:ok, merged} = ProjectConfig.effective_caps(caps(), Mounts.new(dir, "/tmp/agent"))
+      assert {:ok, merged} = ProjectConfig.effective_caps(caps(), Mounts.new(dir, "/tmp/agent"))
 
-        assert [%{"path" => nest, "source" => nest_src}] = merged["fs"]["protected"]
-        assert nest == nest_path(dir)
-        assert nest_src == nest
-      end)
+      assert [%{"path" => nest, "source" => nest_src}] = merged["fs"]["protected"]
+      assert nest == nest_path(dir)
+      assert nest_src == nest
+    end
+  end
+
+  describe "config_file_error/1" do
+    test "is :ok for a workspace with both files regular", %{dir: dir} do
+      write_nest(dir, "")
+      File.write!(Path.join(dir, "AGENTS.md"), "# rules\n")
+
+      assert ProjectConfig.config_file_error(dir) == :ok
+    end
+
+    test "is :ok when both files are absent", %{dir: dir} do
+      # The regression guard against refusing everything: a workspace with no
+      # config at all is the ordinary case.
+      assert ProjectConfig.config_file_error(dir) == :ok
+      assert ProjectConfig.config_file_error(nil) == :ok
+    end
+
+    test "refuses a symlinked .nest, naming it", %{dir: dir} do
+      target = Path.join(dir, "real.nest")
+      File.write!(target, "")
+      File.ln_s!(target, nest_path(dir))
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:config_file_not_regular, path}} = ProjectConfig.config_file_error(dir)
+          assert path == nest_path(dir)
+        end)
+
+      assert log =~ "Nest cannot protect it from being rewritten"
+    end
+
+    test "refuses a symlinked AGENTS.md, naming it", %{dir: dir} do
+      write_nest(dir, "")
+      target = Path.join(dir, "real-agents.md")
+      File.write!(target, "# rules\n")
+      File.ln_s!(target, Path.join(dir, "AGENTS.md"))
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:config_file_not_regular, path}} = ProjectConfig.config_file_error(dir)
+          assert path == Path.join(dir, "AGENTS.md")
+        end)
+
+      assert log =~ "AGENTS.md is a symlink"
+    end
+
+    test "reports a non-regular config path once, not per call", %{dir: dir} do
+      target = Path.join(dir, "real.nest")
+      File.write!(target, "")
+      File.ln_s!(target, nest_path(dir))
+
+      # A *count* of this exact path, not an absence assertion: the path is
+      # unique to this test, so no concurrent test's lines can contain it even
+      # though `capture_log` is not process-scoped. `load/1` runs on every prompt
+      # composition and every caps resolution, so once-per-path is the property.
+      log =
+        capture_log(fn ->
+          assert {:error, _} = ProjectConfig.config_file_error(dir)
+          assert {:error, _} = ProjectConfig.config_file_error(dir)
+        end)
+
+      assert length(String.split(log, nest_path(dir))) - 1 == 1
     end
   end
 

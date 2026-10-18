@@ -63,6 +63,14 @@ export function describeCreateError(err) {
       return "No agent vocation is configured on the server.";
     case "invalid_agent_name":
       return "Agent names can only contain letters, numbers, dashes and underscores.";
+    case "config_file_not_regular":
+      // A `.nest` or `AGENTS.md` that is a symlink cannot be masked, and a mask
+      // that is merely omitted lets an agent replace the file with one that
+      // grants host access (`.nest`) or changes another agent's prompt
+      // (`AGENTS.md`). So the workspace is refused until it is a regular file.
+      return err?.path
+        ? `${err.path} is a symlink. Nest can't protect a symlink from being rewritten, so it must be a regular file — copy the file into the workspace instead of linking it.`
+        : "A .nest or AGENTS.md in that workspace is a symlink. Nest can't protect a symlink from being rewritten, so it must be a regular file — copy the file into the workspace instead of linking it.";
     case "scratch_path_taken":
       // The name is free, but the host directory Nest would use for this
       // agent's scratch already exists and is not Nest's — so Nest will not

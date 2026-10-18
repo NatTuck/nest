@@ -1,6 +1,8 @@
 defmodule Nest.SandboxTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Nest.Hardware
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
@@ -288,6 +290,36 @@ defmodule Nest.SandboxTest do
       assert :ok = Sandbox.workspace_error(nil)
       assert {:error, :workspace_under_tmp} = Sandbox.workspace_error("/tmp/ws")
       assert {:error, :workspace_missing} = Sandbox.workspace_error("/nope/does/not/exist")
+    end
+
+    test "workspace_error/1 refuses a workspace whose config file is a symlink", %{tmp: dir} do
+      # A symlink cannot be masked, and a mask that is merely omitted leaves the
+      # path replaceable — an `act` agent could delete the link and write a
+      # regular `.nest` granting host access.
+      real = Path.join(dir, "real.nest")
+      File.write!(real, "")
+      File.ln_s!(real, Path.join(dir, ".nest"))
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:config_file_not_regular, path}} = Sandbox.workspace_error(dir)
+          assert path == Path.join(dir, ".nest")
+        end)
+
+      assert log =~ "Nest cannot protect it from being rewritten"
+    end
+
+    test "build/4 refuses a workspace whose config file is a symlink", %{tmp: dir} do
+      # The *final* gate: whatever reaches the sandbox is checked here, so a
+      # workspace that became symlinked after it was chosen cannot be used.
+      real = Path.join(dir, "real.nest")
+      File.write!(real, "")
+      File.ln_s!(real, Path.join(dir, ".nest"))
+
+      capture_log(fn ->
+        assert {:error, reason} = Sandbox.build(build_caps(), Mounts.new(dir, nil))
+        assert reason =~ "not a regular file"
+      end)
     end
   end
 

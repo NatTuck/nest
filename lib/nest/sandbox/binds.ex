@@ -21,7 +21,7 @@ defmodule Nest.Sandbox.Binds do
        scratch dir under bwrap, the container's own `/tmp` under docker — `rw`
        iff the mode writes `"/tmp"`;
     4. the `.nest` project mounts, `rw`;
-    5. the `.nest` read-only mask, `ro`.
+    5. the read-only mask over `.nest` and `AGENTS.md`, `ro`.
 
   Order is load-bearing: 5 has to come after 1 so the mask wins, and the
   readable roots bwrap binds (`caps.fs.read`) come before all of them.
@@ -71,7 +71,7 @@ defmodule Nest.Sandbox.Binds do
   caps ask for. They are the binds of a mode that writes the workspace — which
   is exactly the set `.nest` project mounts are granted to
   (`Nest.ProjectConfig.effective_caps/2` gives them only to modes that write
-  `":workspace"`, along with the `.nest` mask) — and the sandbox inside the
+  `":workspace"`, along with the `.nest`/`AGENTS.md` mask) — and the sandbox inside the
   container tightens per call. A read-only mode therefore still cannot write the
   workspace or a project mount; it merely sees them, read-only, which is what it
   would see under bwrap too (through bwrap's own read-only root bind).

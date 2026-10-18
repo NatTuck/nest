@@ -62,8 +62,11 @@ defmodule Nest.ProjectConfig do
   The two are one class and get one treatment. Both are read on the **host** by
   the runtime — `load/1` for `.nest`, `Nest.Agents.Agent.SystemPrompt` for
   `AGENTS.md` — and handed to the sandbox as read-only binds rather than
-  discovered by it, so an agent's view of either file is the host's file by
-  construction, on every backend.
+  discovered by it, so **a regular file at either path** is the host's file by
+  construction, on every backend. A path that is *not* a regular file (a symlink,
+  a directory) cannot be masked at all, so it is **refused** rather than
+  tolerated — `config_file_error/1`, reached from
+  `Nest.Sandbox.workspace_error/1`, is the gate.
 
   Both halves of that are **binds**, so they hold only on a backend that
   binds: a `"none"` space has no sandbox to protect, and an agent there can
@@ -89,6 +92,7 @@ defmodule Nest.ProjectConfig do
   # (issue #97): it is a human-authored policy document, and an agent that can
   # rewrite it drifts its own constraints.
   @agents_md_name "AGENTS.md"
+  @modes ~w(rw tmp)
 
   @doc """
   The protected instruction file's name. One spelling, here, so nothing else has
@@ -96,7 +100,6 @@ defmodule Nest.ProjectConfig do
   """
   @spec agents_md_name() :: String.t()
   def agents_md_name, do: @agents_md_name
-  @modes ~w(rw tmp)
 
   @typedoc "A project mount with its host path expanded."
   @type mount :: map()
@@ -129,6 +132,9 @@ defmodule Nest.ProjectConfig do
     case read_config_file(path) do
       {:ok, content} -> parse_cached(path, content, workspace)
       :absent -> {:ok, %{"mounts" => []}}
+      # Unreachable: `config_file_error/1` refuses such a workspace, so no agent
+      # and no sandbox ever resolves caps for one. `read_config_file/1` is total,
+      # so the arm exists; it is not a policy choice.
       {:not_regular, _type} -> {:ok, %{"mounts" => []}}
       {:error, reason} -> read_failure(path, reason)
     end
@@ -424,8 +430,9 @@ defmodule Nest.ProjectConfig do
   `:regular`, `:absent`, or `{:not_regular, type}`.
 
   `{:not_regular, type}` is a path that exists but is not a regular file — a
-  symlink, a directory, a device. Nest refuses both to read it and to mask it,
-  because neither is safe:
+  symlink, a directory, a device. Nest refuses to read it, refuses to mask it,
+  and **refuses the workspace** (`config_file_error/1`), because neither reading
+  nor masking is safe:
 
     * `--ro-bind SRC DEST` makes `DEST` a *mount point*, and the kernel resolves
       the final component, so for a **symlink** the mount lands on the *target*
@@ -439,11 +446,9 @@ defmodule Nest.ProjectConfig do
   path is already a mount point — so this is only ever a pre-existing human
   setup.
 
-  Warns **once per path per BEAM**, keyed in the same ETS table the
-  canonical-workspace memo uses: `load/1` runs on every prompt composition *and*
-  every caps resolution, so a per-call log would flood the server output. That is
-  the same reason `Nest.ParseCache` logs a malformed `.nest` once per revision
-  rather than once per load.
+  This function itself is pure. The warning lives in `config_file_error/1`,
+  which is the gate: a non-regular config path is a refusal, so it is reported
+  once there and nowhere else.
   """
   @spec config_file_state(String.t()) :: :regular | :absent | {:not_regular, atom()}
   def config_file_state(path) do
@@ -452,7 +457,6 @@ defmodule Nest.ProjectConfig do
         :regular
 
       {:ok, %File.Stat{type: type}} ->
-        warn_not_regular(path, type)
         {:not_regular, type}
 
       {:error, _reason} ->
@@ -482,21 +486,60 @@ defmodule Nest.ProjectConfig do
     end
   end
 
-  defp warn_not_regular(path, type) do
-    key = {:not_regular, path}
+  @doc """
+  Whether either protected config file in `workspace` is a path Nest cannot
+  protect: `:ok`, or `{:error, {:config_file_not_regular, path}}`.
 
-    case :ets.lookup(cache_table(), key) do
-      [_seen] ->
-        :ok
+  This is the **gate**. A non-regular config path cannot be masked — see
+  `config_file_state/1` — and *omitting* the mask entry is not protection
+  either: without a mount point over the path, an `act` agent can delete the
+  symlink and write a regular `.nest` declaring `[[mount]] path = "/home"`, which
+  the next caps resolution honours. The same shape on `AGENTS.md` is cross-agent
+  prompt injection. So the workspace is refused instead, and the message names
+  the file and the remedy.
 
-      [] ->
-        :ets.insert(cache_table(), {key, true})
+  Called from `Nest.Sandbox.workspace_error/1`, which is the one funnel both
+  gates go through: the choose-time path (space create and edit) and
+  `Sandbox.build/4`'s final gate.
 
-        Logger.warning(
-          "#{path} is a #{type}, not a regular file: Nest will neither read it nor mask it. " <>
-            "Project config must be a regular file."
-        )
+  Warns **once per path per BEAM**, in `:persistent_term`. `load/1` runs on every
+  prompt composition *and* every caps resolution (every turn step), so a per-call
+  log would flood the server output — the same reason `Nest.ParseCache` logs a
+  malformed `.nest` once per revision. `:persistent_term` rather than the ETS
+  table: that table is owned by whichever process first called `cache_table/0`
+  and is unsupervised, so "once per BEAM" was really "once per table lifetime",
+  which is not the same thing and made a test flake. A concurrent first call can
+  log twice; that is benign, and the alternative (lookup-then-insert in a table
+  with an owner) is not.
+  """
+  @spec config_file_error(String.t() | nil) ::
+          :ok | {:error, {:config_file_not_regular, String.t()}}
+  def config_file_error(workspace) when is_binary(workspace) do
+    Enum.find_value([@file_name, @agents_md_name], :ok, fn name ->
+      path = Path.join(workspace, name)
+
+      case config_file_state(path) do
+        {:not_regular, type} -> refuse_not_regular(path, type)
+        _regular_or_absent -> nil
+      end
+    end)
+  end
+
+  def config_file_error(_no_workspace), do: :ok
+
+  defp refuse_not_regular(path, type) do
+    key = {:nest_config_file_not_regular, path}
+
+    if :persistent_term.get(key, :unset) == :unset do
+      :persistent_term.put(key, true)
+
+      Logger.warning(
+        "#{path} is a #{type}, not a regular file: Nest cannot protect it from being " <>
+          "rewritten, so this workspace is refused. Replace it with a regular file."
+      )
     end
+
+    {:error, {:config_file_not_regular, path}}
   end
 
   # The `.nest` and `AGENTS.md` files are always protected (read-only) in a
@@ -521,9 +564,12 @@ defmodule Nest.ProjectConfig do
   end
 
   # A regular file is masked over itself; an absent one is masked with
-  # `/dev/null` so it cannot be created; a path that exists but is not a regular
-  # file gets **no entry at all**. Omitting it is what stops the wedge, and it is
-  # what makes `SystemPrompt`'s notice true — see `config_file_state/1`.
+  # `/dev/null` so it cannot be created. A path that exists but is not a regular
+  # file gets **no entry** — and that is defensive only, because omitting the
+  # entry is *not* protection: with no mount point over the path an `act` agent
+  # could delete the symlink and write a regular `.nest` that grants host access.
+  # The mechanism is the gate, `config_file_error/1`, which refuses the workspace
+  # before any of this runs.
   defp protected_entry(path) do
     case config_file_state(path) do
       :regular -> [%{"path" => path, "source" => path}]

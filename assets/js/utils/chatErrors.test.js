@@ -106,6 +106,28 @@ describe("describeCreateError", () => {
     expect(message).toMatch(/\/tmp/);
   });
 
+  it("names the symlinked config file and says how to fix it", () => {
+    // A `.nest` or `AGENTS.md` that is a symlink cannot be masked, so the
+    // workspace is refused until it is a regular file. The user needs the path
+    // and the remedy, not just the refusal.
+    const message = describeCreateError({
+      reason: "config_file_not_regular",
+      path: "/home/nat/proj/AGENTS.md",
+    });
+
+    expect(message).toContain("/home/nat/proj/AGENTS.md");
+    expect(message).toMatch(/symlink/i);
+    expect(message).toMatch(/regular file/i);
+    expect(message).toMatch(/copy the file into the workspace/i);
+  });
+
+  it('does not say "undefined" when the config-file path is missing', () => {
+    const message = describeCreateError({ reason: "config_file_not_regular" });
+
+    expect(message).toMatch(/symlink/i);
+    expect(message).not.toContain("undefined");
+  });
+
   it("names the path when the scratch path is already something else", () => {
     const message = describeCreateError({
       reason: "scratch_path_taken",

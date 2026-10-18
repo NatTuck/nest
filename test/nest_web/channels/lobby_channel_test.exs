@@ -4,6 +4,7 @@ defmodule NestWeb.LobbyChannelTest do
   """
   use NestWeb.ChannelCase, async: true
 
+  import ExUnit.CaptureLog
   import NestWeb.LobbyChannelTestHelpers
 
   alias Nest.Accounts
@@ -544,6 +545,31 @@ defmodule NestWeb.LobbyChannelTest do
 
         assert_reply ref, :error, %{"reason" => ^reason}, 500
       end
+    end
+
+    test "names a config file Nest cannot protect, with its path" do
+      {socket, _payload} = join_lobby()
+
+      # A symlinked `.nest` or `AGENTS.md` cannot be masked, and a mask that is
+      # merely omitted leaves the path replaceable — an `act` agent could delete
+      # the link and write a `.nest` granting itself host access. So the
+      # workspace is refused, and the client is told which file to replace.
+      ws = AgentTestHelpers.default_test_workspace()
+      File.write!(Path.join(ws, "real.nest"), "")
+      File.ln_s!(Path.join(ws, "real.nest"), Path.join(ws, ".nest"))
+
+      ref =
+        push(socket, "create_space", %{
+          "name" => "cfg-refused-#{System.unique_integer([:positive])}",
+          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+          "workspace_path" => ws
+        })
+
+      capture_log(fn ->
+        assert_reply ref, :error, %{"reason" => "config_file_not_regular", "path" => path}, 500
+
+        assert path == Path.join(ws, ".nest")
+      end)
     end
   end
 

@@ -62,7 +62,7 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
       attrs = Map.put(agent_attrs(space_id, vocation), :prepared, prepared)
 
       # The exact term survives: a second composition would replace it with a
-      # freshly composed one and would also run the sandbox again.
+      # freshly composed one and would also read the config files again.
       assert Init.prepare(attrs) == attrs
 
       # And attrs missing what `build_vocation_pipeline/2` needs are left alone

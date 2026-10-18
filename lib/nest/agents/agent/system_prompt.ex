@@ -323,12 +323,24 @@ defmodule Nest.Agents.Agent.SystemPrompt do
     path = Path.join(Mounts.workspace(mounts), Nest.ProjectConfig.agents_md_name())
 
     case Nest.ProjectConfig.read_config_file(path) do
-      {:ok, content} -> agents_md_block(content)
-      # A symlink is not masked (see `ProjectConfig.config_file_state/1`), so
-      # the sandbox's view of it is not the host's — the agent is told rather
-      # than handed policy it cannot trust.
-      {:not_regular, :symlink} -> symlinked_agents_md_notice()
-      _absent_or_unreadable -> ""
+      {:ok, content} ->
+        agents_md_block(content)
+
+      # Unreachable: `Nest.ProjectConfig.config_file_error/1` refuses a workspace
+      # whose `AGENTS.md` is not a regular file, so no agent starts in one. The
+      # clause is here because `read_config_file/1` is total.
+      {:not_regular, _type} ->
+        ""
+
+      # A regular file the OS will not let us read. Silent, unlike `.nest`'s
+      # visible error section: `.nest` *grants* things, so a `.nest` we cannot
+      # read must be loud, whereas `AGENTS.md` only states policy — an unreadable
+      # one leaves the prompt with less guidance, not with a wrong claim.
+      {:error, _reason} ->
+        ""
+
+      :absent ->
+        ""
     end
   end
 
@@ -337,14 +349,5 @@ defmodule Nest.Agents.Agent.SystemPrompt do
     # stored in the system message's jsonb row. Replace them rather
     # than crash the Agent.
     "\n\nHere are AGENTS.md guidelines for this project:\n\n#{Sanitize.text(content)}\n"
-  end
-
-  # Prompt prose, not a wire notice: no `[nest notice]` marker, because the model
-  # reads it as part of its instructions rather than as something the runtime
-  # said to it mid-conversation.
-  defp symlinked_agents_md_notice do
-    "\n\nAGENTS.md is a symlink so Nest refuses to put it in your system prompt. " <>
-      "Read it to see what it is, but keep in mind that it's not protected policy " <>
-      "this session\n"
   end
 end

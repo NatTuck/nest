@@ -307,19 +307,23 @@ either file. Same statement as "caps cannot be enforced for a `none` space".
 
 ### Residuals
 
-* **A pre-existing *symlink* at either path is neither read nor masked.**
+* **A pre-existing *symlink* at either path is refused, not tolerated.**
   `--ro-bind SRC DEST` makes `DEST` a mount point and the kernel resolves the
   final component, so for a symlink the mount lands on the *target* and the link
   stays an ordinary entry in the read-write workspace bind — the mask would be a
   no-op. A target *outside* the workspace is worse: `bwrap` cannot create the
-  mount point and every command in that workspace fails. So
-  `ProjectConfig.config_file_state/1` reports `{:not_regular, :symlink}` and all
-  three consumers treat it as "not config": `.nest` is treated as empty,
-  `AGENTS.md` is replaced in the prompt by a notice telling the agent it is a
-  symlink it may read but must not trust as policy, and **neither is bound**. An
-  agent cannot create a symlink there (when the file is masked the path is
-  already a mount point), so this is only ever a pre-existing human setup. It is
-  logged once per path per BEAM.
+  mount point and every command in that workspace fails.
+
+  Omitting the mask is not an option either, which is the part that is easy to
+  get wrong: with no mount point over the path an `act` agent can `rm` the link
+  and write a regular `.nest` declaring `[[mount]] path = "/home" mode = "rw"`,
+  which the next caps resolution honours; the same shape on `AGENTS.md` is
+  cross-agent prompt injection. So `ProjectConfig.config_file_error/1` — reached
+  from `Nest.Sandbox.workspace_error/1`, the funnel both workspace gates use —
+  **refuses the workspace**, naming the file and the remedy. That covers the
+  choose-time path (space create and edit) and `Sandbox.build/4`'s final gate,
+  so a workspace that becomes symlinked after it was chosen is refused too. It is
+  logged once per path per BEAM, in `:persistent_term`.
 * **Adding or removing `AGENTS.md` mid-session replaces the space's docker
   container.** The presence of either config file is part of `nest.layout`, so a
   change replaces the container — which takes every agent's `/tmp` with it:

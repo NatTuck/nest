@@ -121,6 +121,14 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
     end
   end
 
+  # A workspace whose `.nest` or `AGENTS.md` is not a regular file: Nest cannot
+  # mask a symlink, and a mask that is merely omitted lets an agent replace the
+  # file with one that grants host access. The client needs the path to tell the
+  # user which file to replace.
+  defp tagged_payload({:config_file_not_regular, path}) do
+    {:error, %{"reason" => "config_file_not_regular", "path" => path}}
+  end
+
   # The refusals whose reason carries a detail term. The two `"none"`-space
   # scratch ones come from the same place — such a space's agents live at
   # `/tmp/<name>` in the host's one `/tmp` — and each names what it refused: the

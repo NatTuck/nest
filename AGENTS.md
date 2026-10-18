@@ -68,9 +68,12 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   access, the other is the project's policy — and an agent that can rewrite
   either drifts its own constraints. When a file is absent, `/dev/null` is
   masked over the path so it cannot be created either. Both are therefore read
-  on the **host** by the runtime and *handed* to the sandbox as binds, so an
-  agent's view of either is the host's file by construction. On a `none` space
-  none of that holds, like every other cap.
+  on the **host** by the runtime and *handed* to the sandbox as binds, so **a
+  regular file at either path** is the host's file by construction — which is
+  why a path that is *not* a regular file (a symlink, a directory) is **refused**
+  at both workspace gates rather than tolerated: it cannot be masked, and a mask
+  that is merely omitted leaves it replaceable. On a `none` space none of that
+  holds, like every other cap.
 - A `docker` space's container is keyed on **the space and the installation**,
   never on a caps signature or on the BEAM: it binds the superset a space can
   need (what a mode that writes the workspace gets) and the bwrap *inside* it
