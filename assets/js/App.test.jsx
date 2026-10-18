@@ -173,6 +173,55 @@ describe("App default export", () => {
   });
 });
 
+describe("App routes", () => {
+  // The production route table, rendered through the real `<App />` (which
+  // carries its own `<BrowserRouter>`). The page-level tests in
+  // `pages/SpaceView.test.jsx` mount their own routes, so they cannot see a
+  // route the app forgot to register — and a missing route is exactly what the
+  // space overview had.
+  beforeEach(() => {
+    window.NEST_CONFIG = { host: "vampire" };
+    act(() => {
+      useStore.getState()._reset();
+      useStore.setState({
+        isConnected: true,
+        spaces: [
+          { id: 1, name: "My Space", slug: "my-space", blueprint_id: null },
+        ],
+        // A root agent, which is every real space: it is what makes
+        // `/space/:slug` redirect to a chat.
+        agents: [
+          {
+            name: "boss",
+            space_id: 1,
+            status: "idle",
+            depth: 0,
+            parentId: null,
+          },
+        ],
+      });
+    });
+  });
+
+  afterEach(() => {
+    window.history.pushState({}, "", "/");
+  });
+
+  it("serves the space overview at its own path", async () => {
+    window.history.pushState({}, "", "/space/my-space/overview");
+
+    const { default: App } = await import("./App");
+    render(<App />);
+
+    expect(
+      screen.getByRole("heading", { name: "My Space" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Edit space" }),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("Layout", () => {
   beforeEach(() => {
     act(() => {

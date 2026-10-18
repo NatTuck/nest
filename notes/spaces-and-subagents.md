@@ -70,7 +70,7 @@ Spaces are created from **Blueprints**, which define the "rules of engagement":
 - **Hierarchies**: Agents can be named using slashes (e.g., `guard_1`, `npc/bard`) to represent logical hierarchy. Since names are per-space, `guard_1` in one space is unrelated to `guard_1` in another.
 
 ### Space Selection
-There is no primary space. Spaces are never auto-created on connect; a user starts with zero spaces and creates one via `Spaces.create_space_with_root_agent/2`. The lobby's `:after_join` loads the user's spaces and the agents across all of them. The sidebar derives the "selected" space **from the current route**: a space row is highlighted (and its agent tree expanded) whenever the URL is that space's `/space/:slug` overview or one of its `/space/:slug/agent/:name` chat pages. On non-space routes (e.g. `/spaces`) no space is highlighted.
+There is no primary space. Spaces are never auto-created on connect; a user starts with zero spaces and creates one via `Spaces.create_space_with_root_agent/2`. The lobby's `:after_join` loads the user's spaces and the agents across all of them. The sidebar derives the "selected" space **from the current route**: a space row is highlighted (and its agent tree expanded) whenever the URL is one of that space's own pages (`/space/:slug`, its Main View, or `/space/:slug/overview`) or one of its `/space/:slug/agent/:name` chat pages. On non-space routes (e.g. `/spaces`) no space is highlighted.
 
 ---
 
@@ -392,6 +392,8 @@ A handful of small cleanups surfaced during the closeout review. **F1–F4 all l
    - `/spaces` → `SpacesIndex` (landing).
    - `/spaces/new` → `NewSpacePage`.
    - `/space/:spaceSlug` → `SpaceView` (Main View).
+   - `/space/:spaceSlug/overview` → `SpaceView` (the space's own page: its
+     environment and its agents).
    - `/space/:spaceSlug/agent/:name` → `ChatPage`.
    - `/` → RootGate → redirects to `/spaces`.
    - Removed `/new_agent` and `/agent/:name`; deleted `NewAgentPage`.
@@ -399,7 +401,17 @@ A handful of small cleanups surfaced during the closeout review. **F1–F4 all l
    - `NewSpacePage` with space-name input + **blueprint picker** (blueprints from the lobby `init` `blueprints` payload) + model select.
    - `createSpace` channel helper pushes the lobby's `create_space` (space + root agent in one transaction).
    - `space:created` broadcast handled (adds the space to the store).
-5. **[DONE] Main View (`SpaceView`)**: default "space overview" showing the space's agents + status with links to each Agent View. Blueprint-driven `main_view_config` layouts remain a future extension (all seeded blueprints have empty `main_view_config`).
+5. **[DONE] Main View (`SpaceView`)**: the blueprint's `main_view_config` picks
+   it. `{"view": "rpg"}` renders `RpgPlayInterface`; the default is a `replace`
+   redirect to the root agent's chat, because `create_space_with_root_agent/2`
+   is the only creation path and so every real space has a root agent. (The
+   seeded Tabletop RPG blueprint *does* set `main_view_config`, and a campaign
+   space has a game-master root like any other — the `rpg` dispatch simply wins
+   before the redirect.) The overview — environment + agents, and the only
+   entry point for `EditSpaceDialog` — therefore has its own path,
+   `/space/:spaceSlug/overview`, reached from the sidebar's space row; the same
+   page is what `/space/:spaceSlug` renders when there is no root agent to
+   redirect to.
 6. **[DONE] Agent View (`ChatPage`)**: reads `{spaceSlug, name}` from the route, resolves `space_id` from the store, and joins `agent:<space_id>:<name>` (fixing the pre-Phase-4 broken single-name topic). `changeAgentModel`/`deleteAgent` thread `space_id`; parent back-link is `/space/:slug/agent/:parent`.
 7. **[DONE] F4 — wire-field naming unified to snake_case `space_id`**: `agent:created`, `agent:init` (`space_id`), `chat:status` (`space_id`), and the lobby `init` key `current_space_id`. Removed the camelCase `spaceId` variants. (Later, when the primary space was removed, `current_space_id` was dropped from `init`; `currentSpaceId` was then client-side state seeded from the first space, and was removed entirely once sidebar selection became route-derived.)
 8. **[DONE] Backend**:

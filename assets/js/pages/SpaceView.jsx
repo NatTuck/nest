@@ -1,20 +1,28 @@
 /**
- * SpaceView (Main View) — what clicking a space gets you.
+ * SpaceView — the space's own pages, both spellings.
  *
- * The layout is the blueprint's choice, via `main_view_config`:
+ * `/space/:slug` is the space's **Main View**, and the blueprint chooses it
+ * (`main_view_config`):
  *
- *   * no config, or `{"view": "chat"}` — the default: **the root agent's chat**,
- *     reached with a `replace` redirect so the back button does not bounce
- *     through here (#96);
- *   * `{"view": "rpg"}` — the campaign's own page (a placeholder for now).
+ *   * `{"view": "rpg"}` — the campaign's own page (a placeholder for now);
+ *   * no config, or `{"view": "chat"}` — the default: **the root agent's
+ *     chat**, reached with a `replace` redirect so the back button does not
+ *     bounce through here (#96).
  *
- * The space overview — name, blueprint, environment, agent list — is still
- * what renders when there is no root agent to redirect to, which is the one
- * moment it is the only thing to show (a space whose root agent is still
- * starting). It is not a page you have to visit to get to the chat. It is also
- * where the environment is *edited*, through `EditSpaceDialog`: a workspace,
- * the network and the sandbox backend are the space's, so they are edited on
- * the space rather than on one of its agents.
+ * `/space/:slug/overview` is the overview: the space's name, blueprint and
+ * environment, plus its agents. It needs a path of its own because the default
+ * Main View always applies — `create_space_with_root_agent/2` is the only
+ * creation path, so a real space always has a root agent to redirect to, and
+ * the overview would otherwise be a page nothing can reach. It is also where
+ * the environment is *edited*, through `EditSpaceDialog`: a workspace, the
+ * network and the sandbox backend are the space's, so they are edited on the
+ * space rather than on one of its agents.
+ *
+ * The same page is what `/space/:slug` renders when there is nothing to
+ * redirect to (a space whose root agent has not appeared yet), so the overview
+ * has one definition and two ways in. It is reached from the sidebar's space
+ * row, which is the space's own row and the only entry point that exists on
+ * every page — a campaign's Main View has no agent header at all.
  */
 
 import { useState } from "react";
@@ -28,20 +36,22 @@ import { RpgPlayInterface } from "../components/RpgPlayInterface";
 import { SANDBOX_BACKENDS, sandboxBackendHelp } from "../utils/newSpaceForm";
 
 /**
- * Space View component
+ * Space View component. `overview` marks the explicit overview route: the Main
+ * View dispatch below is the *space's* main screen, and the overview is a page
+ * of its own rather than a fallback the main screen may or may not reach.
  */
-export function SpaceView() {
+export function SpaceView({ overview = false }) {
   const { spaceSlug } = useParams();
   const spaces = useStore((s) => s.spaces);
   const agents = useStore((s) => s.agents);
   const blueprints = useStore((s) => s.blueprints);
 
   const space = spaces.find((s) => s.slug === spaceSlug);
-  const [editing, setEditing] = useState(false);
   // The tab names the host and the space. The name falls back to the
   // slug when the store hasn't loaded the space yet (a hard load of a
   // deep URL) -- the slug is real information, so it beats a blank or
-  // a placeholder.
+  // a placeholder. Both of the space's pages are the same page for this
+  // purpose, so they share the title.
   useDocumentTitle([space?.name ?? spaceSlug]);
   const blueprint = space
     ? blueprints.find((b) => b.id === space.blueprint_id)
@@ -64,32 +74,63 @@ export function SpaceView() {
   }
 
   // The Main View dispatch. `main_view_config` is the blueprint's hook for
-  // exactly this, and it has been on the schema since Phase 2 with nothing
-  // reading it.
-  const mainView = blueprint?.main_view_config?.view ?? "chat";
+  // exactly this, and it has been on the schema since Phase 2.
+  //
+  // The overview route skips all of it: the overview is the space's own page
+  // whatever its Main View is, which is also what gives a campaign space a
+  // route to its environment.
+  if (!overview) {
+    const mainView = blueprint?.main_view_config?.view ?? "chat";
 
-  if (mainView === "rpg") {
-    return <RpgPlayInterface space={space} />;
-  }
+    if (mainView === "rpg") {
+      return <RpgPlayInterface space={space} />;
+    }
 
-  // The default Main View is the root agent's chat. `parentId == null` is the
-  // root: every other agent in the space was spawned by someone.
-  const rootAgent = spaceAgents.find(
-    (a) => (a.parentId ?? a.parent_id) == null,
-  );
-
-  if (rootAgent) {
-    const base = `/space/${encodeURIComponent(space.slug)}`;
-    return (
-      <Navigate
-        to={`${base}/agent/${encodeURIComponent(rootAgent.name)}`}
-        replace
-      />
+    // The default Main View is the root agent's chat. `parentId == null` is the
+    // root: every other agent in the space was spawned by someone.
+    const rootAgent = spaceAgents.find(
+      (a) => (a.parentId ?? a.parent_id) == null,
     );
+
+    if (rootAgent) {
+      const base = `/space/${encodeURIComponent(space.slug)}`;
+      return (
+        <Navigate
+          to={`${base}/agent/${encodeURIComponent(rootAgent.name)}`}
+          replace
+        />
+      );
+    }
   }
 
   return (
+    <SpaceOverview
+      space={space}
+      blueprint={blueprint}
+      spaceAgents={spaceAgents}
+    />
+  );
+}
+
+/**
+ * The space's overview page: its name and blueprint, its environment (read-only
+ * here, edited through the dialog), and its agents with links to their chats.
+ *
+ * The agent list is also the way back to the chat, so the page is not a dead
+ * end: the root agent is in it, and clicking it is what `/space/:slug` would
+ * have redirected to.
+ */
+function SpaceOverview({ space, blueprint, spaceAgents }) {
+  const [editing, setEditing] = useState(false);
+
+  return (
     <div className="max-w-4xl mx-auto py-10">
+      {/* The space's environment is being edited: work is held, and the user
+          has to see that rather than agents that look stuck. First on the page,
+          because a paused space is the one thing that explains everything
+          below it. */}
+      <SpacePausedBanner spaceId={space.id} spaceName={space.name} />
+
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-gray-900">{space.name}</h1>
         {blueprint && (
@@ -145,8 +186,6 @@ export function SpaceView() {
           </button>
         </div>
       </div>
-
-      <SpacePausedBanner spaceId={space.id} spaceName={space.name} />
 
       <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
         Agents
