@@ -22,12 +22,16 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
   import Nest.Test.TmpCleanup
 
   alias Nest.Agents.Agent.BatchSizer
+  alias Nest.Agents.Agent.BatchSizer.ProjectedSize
   alias Nest.LLM.Tool
+  alias Nest.Messages.Assistant
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
   alias Nest.Sandbox.Mounts
   alias Nest.TextFixtures
+  alias Nest.Tokens.Budget
   alias Nest.Tokens.Estimator
+  alias Nest.Tokens.Reserve
   alias Nest.Tools
 
   defp make_tool(name, fn_) do
@@ -293,6 +297,105 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       assert total < 20_000
       assert Enum.any?(results, &(&1.content =~ "saved to"))
       assert Enum.map(results, & &1.name) == ["shell-cmd", "agents-query"]
+    end
+  end
+
+  describe "the file-read projection is bounded by the inline cap" do
+    # The projection must never exceed the cap, because the tool never returns
+    # more than the cap inline: over it, `handle_over_cap/5` replaces a
+    # `file-read` result with a short error (text and media alike). A
+    # projection above the cap prices a result the tool cannot produce, and
+    # because that refusal does not depend on the conversation, compaction
+    # cannot clear it — the same call is carried across the commit and
+    # refused again.
+    setup do
+      tmp_dir =
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
+          "batchsizer-clamp-#{System.unique_integer([:positive])}"
+        ])
+
+      File.mkdir_p!(tmp_dir)
+      on_exit(fn -> rm_tmp!(tmp_dir, "batchsizer-clamp-") end)
+      {:ok, tmp_dir: tmp_dir}
+    end
+
+    test "clamps a projection above the cap down to the cap", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "big.txt"), TextFixtures.big_text(400_000))
+
+      # 400_000 bytes prices at `estimate_bytes/1` == 120_010 tokens. At
+      # `context_limit: 100_000` the content budget is 80_000, so the cap is
+      # floor(0.80 * 80_000) == 64_000.
+      unclamped = Estimator.estimate_bytes(400_000)
+      c = ctx([], context_limit: 100_000, workspace_path: dir)
+      tc = call("c1", "file-read", %{"path" => "big.txt"})
+
+      assert unclamped == 120_010
+      assert ProjectedSize.project(tc, c) == 64_000
+    end
+
+    test "leaves a projection under the cap alone", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "small.txt"), TextFixtures.big_text(4_000))
+
+      # 1_210 tokens is well under the 64_000 cap, so the clamp must not touch
+      # it: the projection is the estimator's number, unchanged.
+      c = ctx([], context_limit: 100_000, workspace_path: dir)
+
+      assert ProjectedSize.project(call("c1", "file-read", %{"path" => "small.txt"}), c) ==
+               Estimator.estimate_bytes(4_000)
+    end
+
+    test "clamps a media projection to the cap too", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "shot.png"), TextFixtures.big_text(10))
+
+      # The image ceiling is 4_096 tokens whatever the file size. At
+      # `context_limit: 10_000` the content budget is 1_808 (the 8_192-token
+      # reserve dominates), so the cap is floor(0.80 * 1_808) == 1_446 — below
+      # the ceiling, so the projection is the cap.
+      c = ctx([], context_limit: 10_000, workspace_path: dir)
+
+      assert ProjectedSize.project(call("c1", "file-read", %{"path" => "shot.png"}), c) == 1_446
+    end
+
+    test "the refused 3.3 MB PDF read fits once the projection is clamped", %{tmp_dir: dir} do
+      # The incident, with its real numbers: a 3.3 MB PDF (`.pdf` is not a media
+      # extension, so it prices as text) in a conversation whose provider-reported
+      # floor was 93_500 tokens, against a 1_048_576-token window.
+      size = 3_341_374
+      File.write!(Path.join(dir, "slides.pdf"), TextFixtures.big_text(size))
+
+      limit = 1_048_576
+      messages = [{:assistant, %Assistant{usage: %{input_tokens: 93_000, output_tokens: 500}}}]
+      c = ctx([], context_limit: limit, messages: messages, workspace_path: dir)
+      calls = [call("c1", "file-read", %{"path" => "slides.pdf"})]
+
+      # The premise: priced at the whole file the batch could never fit, and no
+      # compaction could change that, because the number is a property of the
+      # file rather than of the transcript.
+      unclamped = Budget.size(messages) + Estimator.estimate_bytes(size)
+      assert unclamped + Reserve.compaction_reserve(limit) > limit
+
+      # The reserve is 209_715 and the content budget 838_861, so 93_500 tokens
+      # of conversation leave 745_361 usable and a cap of 596_288.
+      assert ProjectedSize.project(hd(calls), c) == 596_288
+      assert {:fits, _} = BatchSizer.preflight(calls, c)
+    end
+
+    test "leaves the projection alone when the window has no usable room", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "big.txt"), TextFixtures.big_text(400_000))
+
+      # 100 tokens cannot hold the 8_192-token reserve, so `usable_remaining/1`
+      # is 0 and there is no cap to clamp to. Leaving the projection unclamped
+      # is safe rather than sloppy: the reserve alone already meets the limit,
+      # so the batch is refused whatever this returns — the clamp could only
+      # make that refusal more certain, never turn it into a fit.
+      c = ctx([], context_limit: 100, workspace_path: dir)
+      calls = [call("c1", "file-read", %{"path" => "big.txt"})]
+
+      assert ProjectedSize.project(hd(calls), c) == Estimator.estimate_bytes(400_000)
+      assert {:refuse, _} = BatchSizer.preflight(calls, c)
     end
   end
 end

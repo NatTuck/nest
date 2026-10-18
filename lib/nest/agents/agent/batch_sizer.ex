@@ -418,15 +418,23 @@ defmodule Nest.Agents.Agent.BatchSizer do
   # Decision tree:
   #   1. Compute `full_size` for the actual content.
   #   2. If the cap (`effective_max_result_tokens/2`) is set and
-  #      `full_size > cap`, route per-tool:
-  #        * `shell-cmd` → write-to-tmp + path-and-head summary.
-  #        * `file-read`  → return error result with size hint.
-  #        * other tools  → log warning, keep full.
+  #      `full_size > cap`, route per-tool (`handle_over_cap/5`):
+  #        * `file-read`  → return an error result with a size hint. The cap
+  #          is a bound here, not a heuristic: `ProjectedSize.read_file_projection/2`
+  #          clamps the preflight projection to this same cap, so both passes
+  #          price a `file-read` identically.
+  #        * every other tool → `offload/5`: write the full output to scratch
+  #          and keep a bounded pointer + head inline.
+  #      Note what does NOT bound that substitute: `offload/5` sizes it against
+  #      `acc.limit - acc.running`, and `acc.limit` is the *context limit*, not
+  #      the cap. So "nothing over the cap goes inline" holds for `file-read`
+  #      and media only — it is not a property of every tool, and code that
+  #      wants a cap bound must not assume it.
   #   3. Otherwise, decide keep-full vs. summarize against the
   #      running batch budget (`keep_full?/3`). The batch budget
   #      should always accommodate `full_size` post-preflight, but
-  #      we fall back to the existing summary path for
-  #      `shell-cmd` if it doesn't.
+  #      every tool falls back to the substitute path (`offload/5`)
+  #      when it does not.
   #
   # A tool result that isn't storable text (invalid UTF-8, or valid
   # UTF-8 containing NUL — e.g. `curl` dumping a download to stdout, or
