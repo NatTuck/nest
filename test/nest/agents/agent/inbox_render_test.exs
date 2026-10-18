@@ -4,8 +4,8 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
   `Nest.Agents.Agent.Inbox.Render`: what one inbox entry reads as when the
   drain delivers it to the model.
 
-  The pure rules are the module's own contract — a human entry and a runtime
-  `:notice` render bare, every other kind keeps its `[Message from agent "X" |
+  The pure rules are the module's own contract — a human entry and a `:runtime`
+  entry render bare, every other kind keeps its `[Message from agent "X" |
   mode: M]` label (M being the mode the recipient's turn will run in), an
   over-cap batch is replaced by a scratch-file pointer, and the delivered
   message carries the batch's metadata. The last group drives that same
@@ -73,8 +73,10 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       assert Render.combine_and_offload([entry(:query, "peer", "may I ask?")], state) ==
                "[Message from agent \"peer\" | mode: act]\nmay I ask?"
 
-      assert Render.combine_and_offload([entry(:notice, "peer", "peer never answered")], state) ==
-               "[nest notice]\npeer never answered"
+      assert Render.combine_and_offload(
+               [entry(:runtime, "peer", "peer never answered")],
+               state
+             ) == "[nest notice]\npeer never answered"
     end
 
     test "an over-cap batch is offloaded to a file named after its first entry's id" do
@@ -98,7 +100,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       # intentional: the delivered message carries the batch's metadata and
       # nothing else. The recall-list marker is fail-closed on the client, so
       # `origin` is written only for a batch whose head is `kind: :user` *and*
-      # `human?: true` — an ordinary delivery and a `:notice` that claimed
+      # `human?: true` — an ordinary delivery and a `:runtime` entry that claimed
       # `human?` stay untagged rather than being mistagged as the human's own
       # words — while the backgrounded-promise metadata that already rides this
       # message survives the merge.
@@ -109,7 +111,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
          "do it", "chat",
          Map.merge(%{"mode" => "chat"}, MessageList.fulfilled_metadata(["c1", "c2"]))},
         {"a non-user entry that claims human?",
-         [entry(:notice, nil, "runtime note", nil, nil, true)], "runtime note", "chat",
+         [entry(:runtime, nil, "runtime note", nil, nil, true)], "runtime note", "chat",
          %{"mode" => "chat"}}
       ]
 
@@ -143,7 +145,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       # is built, not when the batch is rendered.
       cases = [
         {"a peer's message", nil,
-         fn pid -> assert {:ok, :queued} = Agent.deliver_message(pid, "alice", @oversized) end},
+         fn pid -> assert {:ok, :queued} = Agent.deliver_note(pid, "alice", @oversized) end},
         {"a human's message", "plan",
          fn pid -> assert :ok = Agent.chat(pid, @oversized, "plan", "alice") end}
       ]
@@ -194,9 +196,9 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       before = Agent.get_public_info(pid, 1_000).message_count
       set_status(pid, :streaming)
 
-      assert {:ok, :queued} = Agent.deliver_message(pid, "alice", @oversized)
+      assert {:ok, :queued} = Agent.deliver_note(pid, "alice", @oversized)
       assert_receive {:chat_inbox, %{count: 1}}, 1_000
-      assert {:ok, :queued} = Agent.deliver_message(pid, "bob", @oversized)
+      assert {:ok, :queued} = Agent.deliver_note(pid, "bob", @oversized)
       assert_receive {:chat_inbox, %{count: 2}}, 1_000
 
       Agent.stop_chat(pid, self())

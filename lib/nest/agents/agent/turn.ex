@@ -355,7 +355,7 @@ defmodule Nest.Agents.Agent.Turn do
           "The batch coordinator stopped before reporting its aggregate " <>
             "(#{inspect(reason)}). The answers of any children still running will " <>
             "arrive as messages instead.",
-          :notice
+          :runtime
         )
 
       state =

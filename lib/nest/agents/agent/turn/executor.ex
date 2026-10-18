@@ -365,7 +365,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   defp execute({:consume_inbox, entries}, state), do: consume_inbox(state, entries)
 
   # A backgrounded batch's outcome (issue #36): the batch has no live worker
-  # to settle it, so it arrives as a runtime `:notice` (no agent said it).
+  # to settle it, so it arrives as a `:runtime` entry (no agent said it).
   defp execute({:deliver_backgrounded, _ref, outcome, ids}, state),
     do: {Inbox.deliver_notice(state, outcome, ids), :continue}
 

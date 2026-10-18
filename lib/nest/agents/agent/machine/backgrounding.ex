@@ -7,8 +7,8 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   `Machine.Work.backgrounded`, its calls are answered with the synthetic
   `MessageList.backgrounded_tool_result/1` plus `MessageList.backgrounded_ack/0`,
   and the turn continues with the delivered message. The batch keeps running;
-  its real result — or its worker's death — then arrives as an inbox `:notice`
-  (`Nest.Agents.Agent.Turn.Backgrounded`), routed by the entry recorded here.
+  its real result — or its worker's death — then arrives as an inbox `:runtime`
+  entry (`Nest.Agents.Agent.Turn.Backgrounded`), routed by the entry recorded here.
 
   The delivery itself is *not* this module's own: the synthetic result and its
   acknowledgement are this path's `pre` batch, and everything else the delivery

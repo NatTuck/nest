@@ -178,7 +178,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     assert [{_ref, %{satisfied: false}}] = Map.to_list(watchers(pid))
 
     MockClient.set_response("acknowledged")
-    assert {:ok, :delivered} = Agent.deliver_message(pid, "bob", "the report", :agent)
+    assert {:ok, :delivered} = Agent.deliver_note(pid, "bob", "the report", :agent)
 
     assert [{_ref, %{satisfied: true}}] = Map.to_list(watchers(pid))
     await_idle(pid)
@@ -325,7 +325,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     # serialized key itself is pinned by `inbox_serialization_test`'s patterns).
     refute Enum.any?(
              Agent.get_public_info(pid, 1_000).pending_messages,
-             &(&1["kind"] == "notice")
+             &(&1["kind"] == "runtime")
            )
   end
 

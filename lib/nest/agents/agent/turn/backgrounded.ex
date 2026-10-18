@@ -9,11 +9,11 @@ defmodule Nest.Agents.Agent.Turn.Backgrounded do
   machine clears the entry and emits
   `{:deliver_backgrounded, ref, outcome, fulfilled_ids}` (the ref answers
   exactly once), and the executor runs it: `Inbox.deliver_notice/3` renders
-  the outcome here as a runtime `:notice`, and the fulfilled ids ride the
+  the outcome here as a `:runtime` entry, and the fulfilled ids ride the
   entry onto the message the drain appends, so a later load can tell a promise
   that was kept from one the process died with.
 
-  `:notice` is the only honest kind (no agent said this), and it renders
+  `:runtime` is the only honest kind (no agent said this), and it renders
   bare — no `[Message from agent …]` label would be truthful (issue #31
   decision 9).
 

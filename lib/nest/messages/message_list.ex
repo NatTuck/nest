@@ -550,8 +550,8 @@ defmodule Nest.Messages.MessageList do
   # Both halves are required. They agree by construction today: only
   # `Inbox.deliver_user_message/5` sets `human?: true`, and it always sets
   # `kind: :user`, which `Inbox.batch/1` delivers alone. Requiring both anyway
-  # means a future entry that claimed `human?` on another kind — a `:notice`,
-  # say — batches with its peers and stays untagged, instead of being silently
+  # means a future entry that claimed `human?` on another kind — a `:runtime`
+  # entry, say — batches with its peers and stays untagged, instead of being silently
   # mistagged as the human's own words.
   defp origin_metadata([%{kind: :user, human?: true} | _]), do: User.human_metadata()
   defp origin_metadata(_entries), do: %{}

@@ -53,13 +53,13 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       # The isolation defect's shape. A turn's *tool* worker is a Task under the
       # application-wide `Nest.Agents.TaskSupervisor`, so nothing in
       # `Agent.terminate/2` used to reach it — and its DB work is not the
-      # agent's: `agents-send` reaches `Agents.send_message/6` →
+      # agent's: `agents-send` reaches `Agents.send_note/6` →
       # `Supervisor.get_agent/2`'s on-demand load → `Init.LoadHeal.heal/2`, which
       # *appends* in the worker's own DB context. A worker left running past the
       # test process appends on the test's checked-in sandbox connection
       # (`DBConnection.ConnectionError: owner … exited`), after the teardown has
       # stopped every agent it can see. `park_agent_sends/2` holds the worker
-      # exactly there: before its `send_message/6`, with the turn still
+      # exactly there: before its `send_note/6`, with the turn still
       # `:executing_tools`.
       {pid, name} =
         AgentTestHelpers.start_agent(%{

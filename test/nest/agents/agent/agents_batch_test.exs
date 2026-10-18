@@ -461,12 +461,12 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     set_status(parent_pid, :streaming)
 
     Enum.each(1..100, fn n ->
-      assert {:ok, :queued} = Agent.deliver_message(parent_pid, "peer-#{n}", "queued #{n}")
+      assert {:ok, :queued} = Agent.deliver_note(parent_pid, "peer-#{n}", "queued #{n}")
     end)
 
     # A peer's message is refused at the cap — which is what the aggregate's
-    # delivery would hit through `Agent.deliver_message/4`, losing the batch.
-    assert {:error, :inbox_full} = Agent.deliver_message(parent_pid, "peer", "one too many")
+    # delivery would hit through `Agent.deliver_note/4`, losing the batch.
+    assert {:error, :inbox_full} = Agent.deliver_note(parent_pid, "peer", "one too many")
 
     cast_child_completed(parent_pid, child0, "alpha-done")
     cast_child_completed(parent_pid, child1, "beta-done")

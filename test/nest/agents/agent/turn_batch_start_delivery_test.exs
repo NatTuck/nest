@@ -77,7 +77,7 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
     # The peer's message arrives while the model is still streaming the response
     # that asks for the batch: the batch does not exist yet, so the streaming arm
     # queues the message. That disposition is correct and must not change.
-    assert {:ok, :queued} = Agent.deliver_message(pid, "peer", "peer note")
+    assert {:ok, :queued} = Agent.deliver_note(pid, "peer", "peer note")
     assert_receive {:chat_inbox, %{count: 1}}, 500
 
     # The response asks for the tool batch. Its worker parks inside its call, so

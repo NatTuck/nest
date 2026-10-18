@@ -66,7 +66,7 @@ describe("messageToMarkdown — user messages", () => {
 
   it("strips the `[nest notice]` marker from a runtime notice row", () => {
     // A notice lands as a user row (the `:agent_user` shape, and the drain's
-    // `:notice` path) with the marker after the mode prefix, or fused into an
+    // `:runtime` path) with the marker after the mode prefix, or fused into an
     // assistant row with the ack (the `:user_agent` shape, where the marker is
     // at the head of the whole row). The clipboard shows what the bubble shows,
     // so the marker goes either way.

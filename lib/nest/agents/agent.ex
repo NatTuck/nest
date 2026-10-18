@@ -200,7 +200,7 @@ defmodule Nest.Agents.Agent do
   @doc """
   Deliver an async agent-to-agent message to this agent. `kind` is the entry's
   provenance (`Inbox.t:kind/0`): `:agent` for another agent's words, `:query`
-  for `agents-query` (which obliges this agent to answer), and `:notice` for the
+  for `agents-query` (which obliges this agent to answer), and `:runtime` for the
   runtime speaking for itself, which no agent said.
   Returns `{:ok, :delivered}` for an idle target, `{:ok, :queued}` for a busy
   one, `{:error, reason}` for a broken target or a full inbox.
@@ -210,19 +210,19 @@ defmodule Nest.Agents.Agent do
   the message is delivered (never mid-turn), and the send tools have already
   checked that the sender may ask (`Nest.Agents.Agent.ModeAuthority`).
   """
-  @spec deliver_message(pid(), String.t(), String.t(), Inbox.kind(), String.t() | nil) ::
+  @spec deliver_note(pid(), String.t(), String.t(), Inbox.kind(), String.t() | nil) ::
           {:ok, :delivered | :queued} | {:error, term()}
-  def deliver_message(pid, sender, content, kind \\ :agent, mode \\ nil) do
+  def deliver_note(pid, sender, content, kind \\ :agent, mode \\ nil) do
     GenServer.call(pid, {:deliver_async, sender, content, kind, mode}, 5_000)
   end
 
   @doc """
   Deliver the runtime's own result to this agent, from the process that produced
   it — a batch coordinator enqueueing its aggregate. `kind` is the entry's
-  provenance (`Inbox.t:kind/0`); the coordinator passes `:notice`, because the
+  provenance (`Inbox.t:kind/0`); the coordinator passes `:runtime`, because the
   runtime is speaking, not an agent.
 
-  Unlike `deliver_message/4` this is never refused by the peer-inbox cap: the cap
+  Unlike `deliver_note/4` this is never refused by the peer-inbox cap: the cap
   bounds a runaway *peer* producer, and this is the agent's own result (the same
   guarantee `Inbox.enqueue_internal/4` gives an in-process caller). Returns
   `{:ok, :delivered}` for an idle target, `{:ok, :queued}` otherwise.
@@ -537,7 +537,7 @@ defmodule Nest.Agents.Agent do
     # below stops children and watchers, and the shell-jobs cast stops jobs.
     # A worker left running past this process keeps doing the turn's work with
     # nothing left to consume it: it runs tool calls of its own, and one of them
-    # — `agents-send`/`agents-query` → `Agents.send_message/5` →
+    # — `agents-send`/`agents-query` → `Agents.send_note/5` →
     # `Supervisor.get_agent/2`'s on-demand load → `Init.LoadHeal.heal/2` —
     # *appends* a message for the agent it loads, in the worker's own DB
     # context. In a test that context is the test process's sandbox connection,

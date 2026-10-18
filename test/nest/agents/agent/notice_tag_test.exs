@@ -8,7 +8,7 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
     * the synthetic **request** — the attention line (`Context?`, `Tool
       limit?`) — is never tagged;
     * the **notice** is always tagged, at the head of its own text, in every
-      injection shape (`NoticePairInjector`) and on the drain's `:notice` path
+      injection shape (`NoticePairInjector`) and on the drain's `:runtime` path
       (`Inbox.Render`);
     * the synthetic **response** — the ack — is never tagged.
 
@@ -109,13 +109,13 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
     end
   end
 
-  describe "the drain's :notice entry" do
+  describe "the drain's :runtime entry" do
     test "renders the marker at the head of the notice body" do
-      # Every producer that queues a `:notice` entry reaches the same
+      # Every producer that queues a `:runtime` entry reaches the same
       # `render_entry/1` clause, so one content per producer is driven here: a
       # backgrounded outcome (its result and its worker's death), a give-up, a
       # sub-agent result and a watch event.
-      assert {sub_agent_result, :notice} = SubAgentResults.child_message("kid", {:ok, ""})
+      assert {sub_agent_result, :runtime} = SubAgentResults.child_message("kid", {:ok, ""})
 
       cases = [
         {"a backgrounded result",
@@ -127,7 +127,7 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
       ]
 
       for {label, content} <- cases do
-        assert Render.combine_and_offload([entry(:notice, content)], %Agent{}) ==
+        assert Render.combine_and_offload([entry(:runtime, content)], %Agent{}) ==
                  NoticeTag.tag(content),
                label
       end

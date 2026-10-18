@@ -23,7 +23,7 @@ defmodule Nest.Agents.Agent.SubAgentResults do
   (issue #31 §2.1). A completion is the child's own words — `kind: :agent`, so
   `Inbox.combine/1` labels it `[Message from agent "<name>"]` — while a child
   that produced nothing, failed, or was stopped is the *runtime* speaking
-  (`kind: :notice`, rendered bare), because the child did not say it (decision
+  (`kind: :runtime`, rendered bare), because the child did not say it (decision
   9's instinct). An answer is bounded by the inbox's own offload cap when it is
   delivered, so nothing is capped here.
   """
@@ -32,13 +32,13 @@ defmodule Nest.Agents.Agent.SubAgentResults do
     do: {response, :agent}
 
   def child_message(name, {:ok, _empty}),
-    do: {"Child agent #{name} finished its turn without producing any text.", :notice}
+    do: {"Child agent #{name} finished its turn without producing any text.", :runtime}
 
   def child_message(name, {:failed, reason}),
-    do: {"Child agent #{name} failed before it answered: #{inspect(reason)}", :notice}
+    do: {"Child agent #{name} failed before it answered: #{inspect(reason)}", :runtime}
 
   def child_message(name, {:terminated, reason}),
-    do: {"Child agent #{name} was stopped before it answered: #{inspect(reason)}", :notice}
+    do: {"Child agent #{name} was stopped before it answered: #{inspect(reason)}", :runtime}
 
   # -- bounding --
 

@@ -5,7 +5,8 @@ defmodule Nest.Agents.Agent.Watch do
   `agents-wait` and `shell-wait` never block: the tool worker registers a
   watch, reports that it did, and the machine **ends the caller's turn** so the
   agent goes idle (issue #54) and a human can message it. A supervised task
-  delivers a bare `:notice` when the event fires, which wakes the idle agent.
+  delivers a bare `:runtime` entry when the event fires, which wakes the idle
+  agent.
 
   Reporting the registration is what makes the turn-ending exact: the tool
   result of a call that registered a watch carries `state: "waiting"` (the
@@ -119,7 +120,10 @@ defmodule Nest.Agents.Agent.Watch do
 
       {:ok, _watch} ->
         state = unregister(state, ref)
-        {:reply, {:ok, disposition}, state} = Inbox.deliver_internal(state, nil, content, :notice)
+
+        {:reply, {:ok, disposition}, state} =
+          Inbox.deliver_internal(state, nil, content, :runtime)
+
         {state, disposition}
     end
   end

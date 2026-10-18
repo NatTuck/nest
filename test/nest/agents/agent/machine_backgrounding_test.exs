@@ -449,7 +449,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       from: nil,
       content: "Your backgrounded command (shell-cmd) finished.",
       timestamp: DateTime.utc_now(),
-      kind: :notice,
+      kind: :runtime,
       mode: nil,
       fulfilled_ids: fulfilled_ids
     }

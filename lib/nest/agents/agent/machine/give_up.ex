@@ -4,8 +4,8 @@ defmodule Nest.Agents.Agent.Machine.GiveUp do
 
   A turn that ends while the agent still owes a peer a reply cannot keep
   working, so the runtime gives up on that reply: it tells each requester that
-  no answer is coming — as a `:notice`, so the requester reads the runtime
-  speaking and never the owing agent's own words (decision 9) — and then
+  no answer is coming — as a `:runtime` note, so the requester reads the
+  runtime speaking and never the owing agent's own words (decision 9) — and then
   discharges the debt.
 
   That is one executor action, `{:give_up_replies, reason}`. It is computed by

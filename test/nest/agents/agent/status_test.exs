@@ -133,7 +133,7 @@ defmodule Nest.Agents.Agent.StatusTest do
     # A peer's query sets a reply obligation; a delivery behind it queues.
     # Both are live state, and both are reported.
     set_busy(pid)
-    assert {:ok, :queued} = Agent.deliver_message(pid, "carol", "a queued message", :agent)
+    assert {:ok, :queued} = Agent.deliver_note(pid, "carol", "a queued message", :agent)
 
     {result, _log} = run(space_id, name, %{})
 

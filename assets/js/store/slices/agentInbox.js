@@ -10,8 +10,9 @@
  * lives on the cache as `owedReplies`). The list holds all four entry kinds:
  * `"agent"` from an `agents-send` or a child agent's completed turn, `"user"`
  * from a human who wrote while the agent was busy, `"query"` from
- * `agents-query`, and `"notice"` from the runtime (a give-up on an unanswered
- * query, or a child that failed, was stopped or produced nothing). Split into
+ * `agents-query`, and `"runtime"` when the runtime speaks for itself (a
+ * give-up on an unanswered query, or a child that failed, was stopped or
+ * produced nothing). Split into
  * its own slice so `agentCache.js` stays under the file-size cap.
  */
 
@@ -35,7 +36,7 @@ const OPS = new Set(["append", "remove"]);
  * whose `chat:message` is still in flight — with each row consumed at
  * most once, in list order. Entries this client never sent retract
  * nothing: `agents-send` (`kind: "agent"`), `agents-query`
- * (`kind: "query"`) and runtime notices (`kind: "notice"`).
+ * (`kind: "query"`) and the runtime's own (`kind: "runtime"`).
  *
  * Returns the patch to apply, or `null` when nothing was retracted so
  * the caller can leave `messages`/`lastIndex`/`streaming`/`partial`

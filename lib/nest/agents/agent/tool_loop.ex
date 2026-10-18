@@ -374,7 +374,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   end
 
   defp deliver_query(ctx, tc, target, prompt, mode) do
-    case Nest.Agents.send_message(ctx.space_id, ctx.agent_name, target, prompt, :query, mode) do
+    case Nest.Agents.send_note(ctx.space_id, ctx.agent_name, target, prompt, :query, mode) do
       {:ok, disposition} ->
         build_tool_result(tc, "agents-query", query_confirmation(target, disposition))
 
@@ -426,7 +426,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   end
 
   defp deliver_to_target(ctx, tc, target, message, mode) do
-    case Nest.Agents.send_message(ctx.space_id, ctx.agent_name, target, message, :agent, mode) do
+    case Nest.Agents.send_note(ctx.space_id, ctx.agent_name, target, message, :agent, mode) do
       {:ok, :delivered} ->
         notify_reply_sent(ctx, target)
         build_tool_result(tc, "agents-send", "Message delivered to #{target}.")

@@ -279,7 +279,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
       {parent_pid, parent_name} = start_agent(vid)
       test_pid = self()
 
-      Mimic.stub(Nest.Agents, :send_message, fn _space_id, from, name, content, kind, _mode ->
+      Mimic.stub(Nest.Agents, :send_note, fn _space_id, from, name, content, kind, _mode ->
         send(test_pid, {:delivered_query, from, name, content, kind})
         {:ok, :delivered}
       end)
@@ -297,7 +297,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
     test "reports a queued delivery and every refusal", %{vid: vid} do
       {parent_pid, parent_name} = start_agent(vid)
 
-      Mimic.stub(Nest.Agents, :send_message, fn _space_id, _from, _name, _content, _kind, _mode ->
+      Mimic.stub(Nest.Agents, :send_note, fn _space_id, _from, _name, _content, _kind, _mode ->
         {:ok, :queued}
       end)
 
@@ -319,7 +319,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
           ]
 
           for {reply, expected} <- cases do
-            Mimic.stub(Nest.Agents, :send_message, fn _s, _f, _n, _c, _k, _m -> reply end)
+            Mimic.stub(Nest.Agents, :send_note, fn _s, _f, _n, _c, _k, _m -> reply end)
 
             [result] =
               run_query(parent_pid, parent_name, %{"name" => "peer", "prompt" => "hi"})
