@@ -48,9 +48,9 @@ defmodule Nest.Agents.Agent do
     # every caller passes to `Nest.Sandbox` and `Nest.Tools.ShellCmd`
     # (`Mounts.from_agent/1` is the one accessor), and because the
     # workspace and the scratch directory are only ever used together.
-    # Built once at init; the backend cannot change afterwards (a space's
-    # is fixed at creation), and `set_workspace`/`edit_agent` move only the
-    # workspace half.
+    # Built once at init from the space's environment. `WorkspaceHandler`
+    # moves all three when the space changes; there is no per-agent
+    # workspace to move on its own.
     mounts: %Nest.Sandbox.Mounts{workspace: nil, scratch: nil},
     # `depth` is the agent's distance from its tree root (0 =
     # root). Children inherit `parent.depth + 1`; `agents-spawn`
@@ -288,57 +288,26 @@ defmodule Nest.Agents.Agent do
   # Change the agent's resolved LLM client + persisted `model` map.
   # Handler: `IntrospectionHandler` → `ModelHandler`.
   @doc """
-  Point this agent at the space's current network access.
+  Tell a live agent that its space's environment changed.
 
-  A space's network access is editable, and it rides the agent's `Mounts` — which
-  are built once, at start. So a change has to *reach* the agent, or a live agent
-  keeps the value it started with and the space's own claim that the change takes
-  effect for its agents' subsequent commands is false.
-
-  A **cast**, unlike `set_mode/2`: the edit must not wait on an agent's turn, and
-  there is nothing to refuse — the value is the space's, not the agent's. The
-  mounts are updated and the tool closures are rebuilt (they capture the mounts);
-  a turn already in flight picks the new value up at its next settle, which is
-  when `Turn.build_ctx/2` re-reads them. The caller is
-  `Nest.Spaces.set_network_access/2`.
+  `values` is `Nest.Spaces.environment_values/1`: the workspace, the network
+  access and the backend now in force. The agent moves its mounts, rebuilds its
+  tool closures from them, and appends a notice pair — see
+  `Nest.Agents.Agent.WorkspaceHandler`.
   """
-  @spec set_network_access(pid(), boolean()) :: :ok
-  def set_network_access(pid, value) when is_boolean(value) do
-    GenServer.cast(pid, {:set_network_access, value})
+  @spec space_changed(pid(), map()) :: :ok
+  def space_changed(pid, values) when is_pid(pid) and is_map(values) do
+    GenServer.cast(pid, {:space_changed, values})
   end
 
   @spec set_model(pid(), map()) :: :ok | {:error, term()}
   def set_model(pid, new_model), do: GenServer.call(pid, {:set_model, new_model}, :infinity)
 
-  @doc """
-  Set this agent's mode (`Nest.Modes`) — the **human's** path, the one the UI
-  channel calls.
-
-  It is the human's alone. An agent's own request goes the other way, on a message
-  (`Nest.Tools.QueryAgent`'s `set_mode`), and that path is what
-  `Nest.Agents.Agent.ModeAuthority` bounds: only the human may raise a mode, and
-  no agent may set its own.
-
-  The mode is *persisted*, so a human's change applies immediately rather than
-  having to ride the next message — but only when the agent is not mid-turn: a
-  mode applies at a settle, and a turn already running is under the old one.
-
-  Returns `:ok`, or `{:error, reason}` where `reason` is a **sentence** to show
-  the user — the channel hands it straight to the client.
-  """
-  @spec set_mode(pid(), String.t()) :: :ok | {:error, String.t()}
-  def set_mode(pid, mode), do: GenServer.call(pid, {:set_mode, mode}, :infinity)
-
-  # Change the agent's working directory. Handler: `WorkspaceHandler`.
-  @spec set_workspace(pid(), String.t() | nil) :: :ok | {:error, term()}
-  def set_workspace(pid, workspace_path),
-    do: GenServer.call(pid, {:set_workspace, workspace_path}, :infinity)
-
-  # Combined edit: model (and thinking level) + working directory in one
-  # call. Handler: `ModelHandler`.
-  @spec edit_agent(pid(), map(), String.t() | nil) :: :ok | {:error, term()}
-  def edit_agent(pid, model, workspace_path),
-    do: GenServer.call(pid, {:edit_agent, model, workspace_path}, :infinity)
+  # Change the agent's model (and thinking level). Handler: `ModelHandler`.
+  # The working directory is not here: it is a space property, so it is edited
+  # on the space.
+  @spec edit_agent(pid(), map()) :: :ok | {:error, term()}
+  def edit_agent(pid, model), do: GenServer.call(pid, {:edit_agent, model}, :infinity)
 
   @doc """
   Resolve the agent's current effective sandbox caps from its state.
@@ -474,6 +443,7 @@ defmodule Nest.Agents.Agent do
     case Config.create_client_config(model) do
       {:ok, client_config} ->
         state = Init.build_active_state(attrs, client_config)
+        announce_pending_space_change(attrs)
 
         case Map.get(attrs, :sequence_violations, []) do
           [] ->
@@ -503,6 +473,16 @@ defmodule Nest.Agents.Agent do
 
         {:ok, Callbacks.build_recovery_state(attrs, model, reason)}
     end
+  end
+
+  # The space changed while this agent was stopped: `init/1` may not touch the DB,
+  # so it hands the announcement to a message it sends itself, and the notice is
+  # appended from the mounts it just started with — already the space's current
+  # values. `Nest.Spaces.update_environment/2` sets the flag on every agent in the
+  # space, live or not.
+  defp announce_pending_space_change(attrs) do
+    if attrs[:space_notice_pending], do: send(self(), :space_notice_pending)
+    :ok
   end
 
   defp log_active_start(state) do

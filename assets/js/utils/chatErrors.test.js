@@ -5,6 +5,7 @@ import { describe, it, expect } from "vitest";
 import {
   describeCreateError,
   describeEditError,
+  describeSpaceEditError,
   getStatusLabel,
 } from "./chatErrors.js";
 
@@ -150,6 +151,53 @@ describe("describeEditError", () => {
       "weird_reason",
     );
     expect(describeEditError(undefined)).toBe("Failed to edit agent.");
+  });
+});
+
+describe("describeSpaceEditError", () => {
+  it("words the shared refusals exactly as the other two paths do", () => {
+    // The workspace and config-file refusals are the same facts on every path,
+    // so the sentences come from the same helpers.
+    for (const reason of [
+      "workspace_required",
+      "workspace_missing",
+      "workspace_under_tmp",
+    ]) {
+      expect(describeSpaceEditError({ reason })).toBe(
+        describeCreateError({ reason }),
+      );
+    }
+
+    const configFile = {
+      reason: "config_file_not_regular",
+      path: "/home/nat/ws/.nest",
+      type: "symlink",
+    };
+    expect(describeSpaceEditError(configFile)).toBe(
+      describeCreateError(configFile),
+    );
+  });
+
+  it("names a backend this server does not implement", () => {
+    expect(
+      describeSpaceEditError({ reason: "invalid_sandbox_backend" }),
+    ).toMatch(/sandbox backend isn't one this server implements/);
+  });
+
+  it("says the space is gone rather than the agent", () => {
+    expect(describeSpaceEditError({ reason: "not_found" })).toMatch(
+      /Space not found/,
+    );
+    expect(describeSpaceEditError({ reason: "invalid_payload" })).toMatch(
+      /Couldn't read the edit/,
+    );
+  });
+
+  it("falls back to the raw reason, then to a generic message", () => {
+    expect(describeSpaceEditError({ reason: "failed_to_edit" })).toBe(
+      "Failed to save the space: failed_to_edit",
+    );
+    expect(describeSpaceEditError(undefined)).toBe("Failed to save the space.");
   });
 });
 

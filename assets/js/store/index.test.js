@@ -43,30 +43,39 @@ describe("store", () => {
       expect(useStore.getState().archivedSpaces).toEqual([]);
     });
 
-    it("setSpaceNetworkAccess updates a space in either list", () => {
-      const store = useStore.getState();
+    it("updateSpace replaces the space in either list with the row it is given", () => {
       const active = { id: 1, name: "a", network_access: true };
       const archived = { id: 2, name: "b", network_access: true };
       useStore.setState({ spaces: [active], archivedSpaces: [archived] });
 
-      useStore.getState().setSpaceNetworkAccess(1, false);
-      useStore.getState().setSpaceNetworkAccess(2, false);
+      // A space edit changes three fields at once, and the frame carries the
+      // whole row: the store takes it as given rather than patching one field.
+      const edited = {
+        id: 1,
+        name: "a",
+        network_access: false,
+        workspace_path: "/home/nat/ws",
+        sandbox_backend: "docker",
+      };
+      useStore.getState().updateSpace(edited);
+      useStore
+        .getState()
+        .updateSpace({ id: 2, name: "b", network_access: false });
 
-      expect(useStore.getState().spaces[0].network_access).toBe(false);
-      expect(useStore.getState().archivedSpaces[0].network_access).toBe(false);
-      // Everything else about the space is left alone.
-      expect(useStore.getState().spaces[0].name).toBe("a");
-      expect(store).toBeDefined();
+      expect(useStore.getState().spaces).toEqual([edited]);
+      expect(useStore.getState().archivedSpaces).toEqual([
+        { id: 2, name: "b", network_access: false },
+      ]);
     });
 
-    it("setSpaceNetworkAccess is a no-op for an unknown id", () => {
-      useStore.setState({
-        spaces: [{ id: 1, name: "a", network_access: true }],
-      });
+    it("updateSpace is a no-op for an unknown id", () => {
+      const space = { id: 1, name: "a", network_access: true };
+      useStore.setState({ spaces: [space] });
 
-      useStore.getState().setSpaceNetworkAccess(999, false);
+      useStore.getState().updateSpace({ id: 999, name: "ghost" });
 
-      expect(useStore.getState().spaces[0].network_access).toBe(true);
+      expect(useStore.getState().spaces).toEqual([space]);
+      expect(useStore.getState().archivedSpaces).toEqual([]);
     });
 
     it("unarchiveSpace moves a space back to the active list", () => {
@@ -278,36 +287,6 @@ describe("store", () => {
       expect(cache.modes).toEqual(["plan", "act"]);
       expect(cache.defaultMode).toBe("act");
       expect(cache.currentMode).toBe("act");
-    });
-
-    it("setAgentMode sets the cached currentMode (the selector's optimistic update)", () => {
-      useStore.getState().setAgentConnected("agent-1", {
-        messageCount: 0,
-        modes: ["plan", "act"],
-        defaultMode: "act",
-        currentMode: "act",
-      });
-
-      useStore.getState().setAgentMode("agent-1", "plan");
-      expect(useStore.getState().agentsCache["agent-1"].currentMode).toBe(
-        "plan",
-      );
-
-      // The same call takes an optimistic value back, which is exactly what
-      // `channels/agent.js` does when the server refuses the change.
-      useStore.getState().setAgentMode("agent-1", "act");
-      expect(useStore.getState().agentsCache["agent-1"].currentMode).toBe(
-        "act",
-      );
-    });
-
-    it("setAgentMode is a no-op for an agent with no cache", () => {
-      // The channel can be asked for an agent this client has never joined.
-      expect(() =>
-        useStore.getState().setAgentMode("no-such-agent", "plan"),
-      ).not.toThrow();
-
-      expect(useStore.getState().agentsCache["no-such-agent"]).toBeUndefined();
     });
 
     it("initializes mode fields to null when payload omits them and no existing cache", () => {
@@ -554,30 +533,6 @@ describe("store", () => {
       expect(cache.status).toBe("error");
       expect(cache.error).toBe("Model error");
       expect(cache.messages).toHaveLength(1);
-    });
-  });
-
-  describe("applyAgentWorkspaceUpdate", () => {
-    it("updates the cache and the agents list", () => {
-      useStore.setState({
-        agents: [{ name: "agent-1", space_id: 1, workspace_path: null }],
-        agentsCache: {
-          "agent-1": { status: "connected", workspace_path: null },
-        },
-      });
-
-      useStore.getState().applyAgentWorkspaceUpdate("agent-1", "/new/ws");
-
-      expect(useStore.getState().agents[0].workspace_path).toBe("/new/ws");
-      expect(useStore.getState().agentsCache["agent-1"].workspace_path).toBe(
-        "/new/ws",
-      );
-    });
-
-    it("is a no-op when the agent is not in the cache", () => {
-      useStore.setState({ agents: [], agentsCache: {} });
-      useStore.getState().applyAgentWorkspaceUpdate("missing", "/x");
-      expect(useStore.getState().agentsCache.missing).toBeUndefined();
     });
   });
 

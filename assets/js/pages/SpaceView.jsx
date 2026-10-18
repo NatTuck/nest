@@ -8,19 +8,23 @@
  *     through here (#96);
  *   * `{"view": "rpg"}` — the campaign's own page (a placeholder for now).
  *
- * The space overview — name, blueprint, network toggle, agent list — is still
+ * The space overview — name, blueprint, environment, agent list — is still
  * what renders when there is no root agent to redirect to, which is the one
  * moment it is the only thing to show (a space whose root agent is still
- * starting). It is not a page you have to visit to get to the chat.
+ * starting). It is not a page you have to visit to get to the chat. It is also
+ * where the environment is *edited*, through `EditSpaceDialog`: a workspace,
+ * the network and the sandbox backend are the space's, so they are edited on
+ * the space rather than on one of its agents.
  */
 
 import { useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { useStore } from "../store";
-import { setSpaceNetwork } from "../channels";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
+import { EditSpaceDialog } from "../components/EditSpaceDialog";
 import { StatusDot } from "../components/StatusDot";
 import { RpgPlayInterface } from "../components/RpgPlayInterface";
+import { SANDBOX_BACKENDS, sandboxBackendHelp } from "../utils/newSpaceForm";
 
 /**
  * Space View component
@@ -30,11 +34,9 @@ export function SpaceView() {
   const spaces = useStore((s) => s.spaces);
   const agents = useStore((s) => s.agents);
   const blueprints = useStore((s) => s.blueprints);
-  const setSpaceNetworkAccess = useStore((s) => s.setSpaceNetworkAccess);
 
   const space = spaces.find((s) => s.slug === spaceSlug);
-  const [networkPending, setNetworkPending] = useState(false);
-  const [networkError, setNetworkError] = useState(null);
+  const [editing, setEditing] = useState(false);
   // The tab names the host and the space. The name falls back to the
   // slug when the store hasn't loaded the space yet (a hard load of a
   // deep URL) -- the slug is real information, so it beats a blank or
@@ -95,55 +97,51 @@ export function SpaceView() {
           </p>
         )}
 
-        {/* Network access is the *space's*, not a mode's: it applies to every
-            agent here, and it takes effect for their next commands. */}
-        <div className="mt-4 flex items-start gap-3">
-          <input
-            id="space-network-access"
-            type="checkbox"
-            checked={space.network_access === true}
-            disabled={networkPending}
-            onChange={(e) => {
-              const next = e.target.checked;
-              setNetworkPending(true);
-              setNetworkError(null);
-              setSpaceNetwork(
-                space.id,
-                next,
-                () => {
-                  setSpaceNetworkAccess(space.id, next);
-                  setNetworkPending(false);
-                },
-                (err) => {
-                  setNetworkPending(false);
-                  setNetworkError(
-                    err?.reason || "Failed to change network access",
-                  );
-                },
-              );
-            }}
-            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-          />
-          <div>
-            <label
-              htmlFor="space-network-access"
-              className="text-sm font-medium text-gray-700"
-            >
-              Network access
-            </label>
-            <p className="text-sm text-gray-500">
+        {/* The space's environment, read-only here and edited through the
+            dialog: a workspace, the network and the sandbox backend are the
+            space's, so every agent in it inherits them. */}
+        <div className="mt-4 rounded-lg border border-gray-200 bg-white p-4">
+          <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+            <dt className="font-medium text-gray-700">Workspace</dt>
+            <dd className="text-gray-600 font-mono break-all">
+              {space.workspace_path || (
+                <span className="text-red-600 font-sans">
+                  no workspace recorded for this space
+                </span>
+              )}
+            </dd>
+            <dt className="font-medium text-gray-700">Network access</dt>
+            <dd className="text-gray-600">
               {space.network_access === true
                 ? "Agents in this space can reach the network."
                 : "Agents in this space cannot reach the network."}
               {space.sandbox_backend === "none" &&
                 " This space has no sandbox, so nothing enforces that."}
-              {space.sandbox_backend === "docker" &&
-                " Changing this restarts this space's container, which clears every agent's /tmp here (offloads and background-job logs) and stops any background job that is still running."}
+            </dd>
+            <dt className="font-medium text-gray-700">Sandbox</dt>
+            <dd className="text-gray-600">
+              {space.sandbox_backend || (
+                <span className="text-red-600">
+                  no sandbox backend recorded for this space
+                </span>
+              )}
+            </dd>
+          </dl>
+          {/* Only a backend this build knows gets its help line: the value
+              itself is above, and `sandboxBackendHelp/1`'s fallback is worded
+              for a *form* that offered a choice, which this is not. */}
+          {SANDBOX_BACKENDS.includes(space.sandbox_backend) && (
+            <p className="mt-3 text-sm text-gray-500">
+              {sandboxBackendHelp(space.sandbox_backend)}
             </p>
-            {networkError && (
-              <p className="text-sm text-red-600 mt-1">{networkError}</p>
-            )}
-          </div>
+          )}
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            className="mt-4 px-4 py-2 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors"
+          >
+            Edit space
+          </button>
         </div>
       </div>
 
@@ -181,6 +179,12 @@ export function SpaceView() {
           ))}
         </ul>
       )}
+
+      <EditSpaceDialog
+        open={editing}
+        space={space}
+        onClose={() => setEditing(false)}
+      />
     </div>
   );
 }

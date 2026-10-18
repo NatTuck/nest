@@ -17,7 +17,6 @@ defmodule Nest.Agents.Agent.Callbacks do
 
   require Logger
 
-  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Handlers
   alias Nest.Agents.Agent.Inbox
@@ -25,40 +24,33 @@ defmodule Nest.Agents.Agent.Callbacks do
   alias Nest.Agents.Agent.IntrospectionHandler
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.MessageAppender
-  alias Nest.Agents.Agent.ModeAuthority
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Watch
-  alias Nest.Messages.{Assistant, NoticeTag, Part, User}
-  alias Nest.Sandbox.Mounts
+  alias Nest.Agents.Agent.WorkspaceHandler
+  alias Nest.Persistence
 
-  # The space's network access changed (`Nest.Spaces.set_network_access/2`).
+  # The space's environment changed (`Nest.Spaces.update_environment/2`): the
+  # workspace, the network access and the backend, all three.
   #
-  # Two things move together and must not drift: the mounts (and the tool closures
-  # built from them) and the agent's *knowledge* of the change. The system prompt's
-  # network sentence was composed from the value the agent started with and is
-  # deliberately never rebuilt — changing it would break the prefix cache — so a
-  # `[Nest notice]` in the transcript is the only thing that makes the change
-  # visible to the model. It is a message, not a system-message edit.
+  # `WorkspaceHandler` moves the mounts, rebuilds the tool closures from them and
+  # appends the notice pair — after a preflight check, so a conversation that
+  # needs compaction defers the notice rather than dropping it. The system prompt
+  # is deliberately not rebuilt (prefix cache), which is why the notice exists.
   #
-  # Nothing is refused and nothing waits: the value is the space's. The notice is
-  # *queued*, not appended, and this is the one judgement call in the change:
-  # `Turn.drain_inbox/1` would append it immediately, but draining starts a turn,
-  # and a turn is an LLM call — a space-wide toggle would cost one per live agent,
-  # which is not a cost a checkbox should have. Queued is also what a peer's mode
-  # notice does (`Turn.keep_mode/3` → `Inbox.enqueue_internal/4`), so the agent
-  # learns it at the start of its next turn, which is when it can act on it.
-  # A turn in flight re-reads the mounts at its next settle.
-  def handle_cast({:set_network_access, value}, state) do
-    state = apply_network_access(state, value)
+  # Nothing is refused and nothing waits: the values are the *space's*. The notice
+  # is appended, not queued: appending costs no turn, while queueing would defer
+  # it to the agent's next one — and a space edit must not cost an LLM call per
+  # live agent.
+  #
+  # A machine that is mid-turn cannot take the notice (see
+  # `WorkspaceHandler.apply_space_environment/2`), and then the flag stays set so
+  # the change is announced at the agent's next start instead of being lost.
+  def handle_cast({:space_changed, values}, state) do
+    {state, outcome} =
+      WorkspaceHandler.apply_space_environment(state, to_mounts_values(values))
 
-    {:noreply,
-     Inbox.enqueue_internal(
-       state,
-       nil,
-       network_notice(value, Mounts.backend(state.mounts)),
-       :notice
-     )}
+    {:noreply, maybe_clear_space_notice(state, outcome)}
   end
 
   # A tool worker's "my `agents-send` reached its target": a turn event for this
@@ -154,61 +146,8 @@ defmodule Nest.Agents.Agent.Callbacks do
     end
   end
 
-  # Move the agent onto the space's new network access. The mounts are what carry
-  # it (`Nest.Sandbox.Mounts.network_access/1`), and the tool closures capture
-  # them — `Nest.Agents.Agent.Tools.get_functions/2` is the one builder — so both
-  # have to move together. Nothing else in the mounts changed, which is why this
-  # is a two-field update rather than a re-resolve.
-  defp apply_network_access(state, value) do
-    mounts = %{state.mounts | network_access: value}
-
-    %{state | mounts: mounts, tools: Nest.Tools.get_functions(tool_names(state), mounts)}
-  end
-
-  # What the agent is told when the space's network access changes. One sentence,
-  # in one place: the prompt's own sentence is the value the agent started with
-  # (`SystemPrompt.network_sentence/2`, never rebuilt while a conversation is
-  # live), so this is the only thing that makes a change visible. The
-  # `[mode: notice]` prefix and `NoticeTag` are the shape `ModeAuthority.notice/2`
-  # and `WorkspaceHandler.notice_pair/1` already use, so every runtime notice is
-  # built alike.
-  # The confident sentence is enumerated over the backends that actually
-  # enforce, and the catch-all is the honest one: a backend added later inherits
-  # "cannot enforce" rather than a claim it cannot keep, which is the failure mode
-  # this pair exists to prevent. `none` runs the bare command on the host, so
-  # nothing restricts its network in either direction.
-  defp network_notice(value, backend) when backend in ["bwrap", "docker"] do
-    if value do
-      "[mode: notice]\n" <>
-        NoticeTag.tag(
-          "Network access for this space is now enabled: your commands can reach the " <>
-            "network."
-        )
-    else
-      "[mode: notice]\n" <>
-        NoticeTag.tag(
-          "Network access for this space is now disabled: the sandbox blocks your " <>
-            "commands from reaching the network."
-        )
-    end
-  end
-
-  defp network_notice(value, _backend) do
-    "[mode: notice]\n" <>
-      NoticeTag.tag(
-        "Network access for this space is now #{enabled_or_disabled(value)}, but this " <>
-          "space has no sandbox to enforce it: your commands can reach the network " <>
-          "either way."
-      )
-  end
-
-  defp enabled_or_disabled(true), do: "enabled"
-  defp enabled_or_disabled(false), do: "disabled"
-
   # The tool *names* an agent was built with, so the closures can be rebuilt
   # without re-reading the vocation. `state.tools` holds the closures themselves.
-  defp tool_names(%{tools: tools}), do: Enum.map(tools, & &1.name)
-
   # Construct the `:model_missing` recovery state. The
   # implementation lives in `Init.Recovery` so this module
   # stays focused on the dispatch surface.
@@ -379,114 +318,9 @@ defmodule Nest.Agents.Agent.Callbacks do
     end
   end
 
-  # A mode change on the human's behalf (the UI selector). A *busy* agent is
-  # refused rather than changed: `Turn.build_ctx/2` reads `state.live.mode` on
-  # every settle, so applying it now would re-resolve the caps of the *ongoing*
-  # turn's remaining tool calls, and a change that lands mid-turn is exactly what
-  # the rule forbids. An idle agent takes it now — the mode is persisted, so a
-  # human's change does not have to ride a message — and a busy one the user can
-  # retry, which is what the channel's error says.
-  #
-  # Validate → persist → mutate → announce, the shape a workspace change has
-  # (`WorkspaceHandler.perform_workspace_change/2`) and for the same reasons. The
-  # announcement is a user/assistant notice pair, like a workspace change's: the
-  # user row is the runtime speaking and carries the notice marker, the assistant
-  # row is the acknowledgement, and neither is an LLM request.
-  def handle_call({:set_mode, mode}, _from, state) do
-    if Inbox.busy_status?(Machine.status_for(state.live.machine)) do
-      {:reply, {:error, busy_sentence()}, state}
-    else
-      change_mode(state, mode)
-    end
-  end
-
   # Catch-all dispatcher for introspection calls.
   def handle_call(msg, from, state) do
     IntrospectionHandler.handle(msg, from, state)
-  end
-
-  # The change itself, for an agent that can take one now: validate → persist →
-  # mutate → announce. Split out of the `handle_call` clause above because that
-  # clause's own `if` already spends one level of nesting on "can this agent take
-  # a change at all". It lives after the dispatcher clause so the `handle_call/3`
-  # clauses stay grouped.
-  defp change_mode(state, mode) do
-    with :ok <- ModeAuthority.authorize(%{kind: :human}, mode),
-         :ok <- Nest.Persistence.update_agent_mode(state.space_id, state.name, mode) do
-      state = %{state | live: %{state.live | mode: mode}}
-
-      # `currentMode` only rides `chat:status`, and the settle loop broadcasts
-      # only on a status *change* — which this is not — so a second client
-      # watching this agent would keep the old badge until the next frame. The
-      # selector path publishes it here or it is published by accident.
-      Broadcasts.status(state)
-
-      announce_mode_change(state, mode)
-    else
-      {:error, reason} -> {:reply, {:error, reason}, state}
-    end
-  end
-
-  # The notice pair is the runtime's own, appended in-process, so the tagged
-  # result is the shape every in-process append returns
-  # (`MessageAppender.append_in_process/2`).
-  #
-  # The row is already written and `live.mode` already moved by the time this
-  # runs, so **the change has happened whatever this returns**. Reporting an
-  # error here would tell the user the change failed when it took effect; a
-  # notice that could not be appended is a change with a missing announcement,
-  # and that is what it says.
-  defp announce_mode_change(state, mode) do
-    case MessageAppender.handle_batch(state, mode_notice_pair(mode, :human)) do
-      {:ok, _stamped, state} ->
-        {:reply, :ok, state}
-
-      {:stale, state} ->
-        Logger.warning(
-          "mode change to #{inspect(mode)} on #{state.space_id}/#{state.name} applied, " <>
-            "but its notice could not be appended: the tail moved under it"
-        )
-
-        {:reply, :ok, state}
-
-      {:invalid, reason, state} ->
-        Logger.warning(
-          "mode change to #{inspect(mode)} on #{state.space_id}/#{state.name} applied, " <>
-            "but its notice was rejected: #{inspect(reason)}"
-        )
-
-        {:reply, :ok, state}
-    end
-  end
-
-  # A sentence the client can show, not the atom `:agent_busy`: the channel hands
-  # this straight to the user.
-  defp busy_sentence do
-    "The agent is mid-turn. A mode applies at the start of a turn, so try again " <>
-      "when it is idle."
-  end
-
-  # The notice pair a mode change appends: the runtime speaking for itself (the
-  # user row carries the notice marker) and its acknowledgement. Neither is an
-  # LLM request.
-  defp mode_notice_pair(mode, actor) do
-    [
-      {:user,
-       %User{
-         index: nil,
-         timestamp: DateTime.utc_now(),
-         parts: [%Part.Text{text: ModeAuthority.notice(mode, actor)}],
-         metadata: %{"mode" => "notice"},
-         api_logs: []
-       }},
-      {:assistant,
-       %Assistant{
-         index: nil,
-         timestamp: DateTime.utc_now(),
-         parts: [%Part.Text{text: "Mode change confirmed."}],
-         api_logs: []
-       }}
-    ]
   end
 
   # The tagged append result maps to the legacy GenServer reply for
@@ -510,7 +344,60 @@ defmodule Nest.Agents.Agent.Callbacks do
 
   # Compaction completion is handled in-process by the `{:commit_done}`
   # transition (`Machine.Compaction.resume/1`), so it never arrives here.
+  # The space changed while this agent was **stopped**, so nobody could cast it.
+  # `init/1` sends this to itself — it may not touch the DB — and the notice is
+  # appended here, from the mounts the agent just started with, which are already
+  # the space's current values.
+  def handle_info(:space_notice_pending, state) do
+    {state, outcome} =
+      WorkspaceHandler.apply_space_environment(state, WorkspaceHandler.values_from_mounts(state))
+
+    {:noreply, maybe_clear_space_notice(state, outcome)}
+  end
+
   def handle_info(msg, state) do
     Handlers.handle(msg, state)
+  end
+
+  # The cast carries the space's own names; the handler works in mount names.
+  defp to_mounts_values(values) do
+    %{
+      workspace: values.workspace_path,
+      network_access: values.network_access,
+      backend: values.sandbox_backend
+    }
+  end
+
+  # The flag means "this agent has not been told". The space edit sets it on every
+  # agent before it casts (`Nest.Spaces.announce_environment/1`), and it is cleared
+  # only when the notice is in the transcript.
+  #
+  # `:deferred` does **not** clear it here. The values are on the compaction's
+  # entry at that point, and nothing in the transcript has them yet: a stop,
+  # archive, crash or deploy before the commit loses the entry, and a cleared row
+  # would then claim the agent had been told. The executor clears the flag when
+  # `Machine.Compaction.resume/1` actually appends the pair
+  # (`{:set_space_notice_pending, false}`), which is the same rule the start path
+  # follows.
+  #
+  # Neither path may clear it on an outcome that appended nothing: the flag is
+  # what makes the change survive to a start, and a mid-turn cast is exactly the
+  # case where nothing could be appended. Clearing it there is how the notice was
+  # lost before — the edit had excluded the agents it cast from the mark, so a
+  # busy agent ended up with no transcript entry *and* no flag.
+  defp maybe_clear_space_notice(state, :appended) do
+    :ok = Persistence.set_space_notice_pending(state.space_id, state.name, false)
+    state
+  end
+
+  defp maybe_clear_space_notice(state, :deferred), do: state
+
+  defp maybe_clear_space_notice(state, outcome) do
+    Logger.info(
+      "space environment change not announced on agent #{inspect(state.name)} " <>
+        "(#{inspect(outcome)}); it stays pending and is announced at the next start"
+    )
+
+    state
   end
 end

@@ -8,9 +8,9 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
     * the recipient's header states the mode its own turn will run in, built at
       delivery (`[Message from agent "NAME" | mode: MODE]`), and the mode it
       names is the one the drain applied;
-    * a peer's change is announced to the agent — a `[Nest notice]` naming the
-      sender and the new mode — while the human's own selection is not, because
-      the delivered message's `[mode: X]` prefix already states it;
+    * a peer's change is *not* announced: it arrived on a message whose own
+      header states the mode the turn runs in, so a notice would duplicate it —
+      and neither is the human's, whose message carries a `[mode: X]` prefix;
     * a mode a delivered message carries is *written down* (`agents.mode`), so a
       restart restores it.
 
@@ -98,9 +98,9 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
     end
   end
 
-  describe "the notice a peer's change produces" do
-    test "a peer's set_mode is announced, naming the sender and the new mode" do
-      {pid, _name} = start()
+  describe "a peer's change is written down and announces nothing" do
+    test "a peer's set_mode reaches the row, with no notice" do
+      {pid, name} = start()
       MockClient.set_response("ok")
 
       set_status(pid, :streaming)
@@ -109,20 +109,18 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       Agent.stop_chat(pid, self())
       wait_idle(pid)
 
-      assert [notice] = delivered(pid, "[nest notice]")
-
-      assert notice =~ "Your mode is now `plan`"
-      assert notice =~ ~s(set by agent "peer")
-      # The runtime is speaking, not the peer: no agent label frames it.
-      refute notice =~ "Message from agent"
+      # The change arrived on a message, and that message's header states the
+      # mode the turn runs in — so nothing announces it a second time.
+      assert {:ok, %{mode: "plan"}} = row_mode(name)
+      assert delivered(pid, "[nest notice]") == []
     end
 
-    test "the human's own mode produces no notice, and is written down on either path" do
+    test "the human's own mode is written down on either path, and announces nothing" do
       {pid, name} = start()
       MockClient.set_response("ok")
       MockClient.set_response("ok")
 
-      # The human's own selection is announced by the delivered message's own
+      # The human's own selection is stated by the delivered message's own
       # `[mode: X]` prefix, never by a notice. It is written down whether it
       # rides a chat message — applied at once — ...
       :ok = Agent.chat(pid, "do the thing", "plan", "alice", true)

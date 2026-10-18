@@ -1,7 +1,7 @@
 defmodule Nest.Agents.Agent.NetworkAccessRefreshTest do
   @moduledoc """
   The space's `network_access` is editable, and it rides the agent's `Mounts` —
-  which are built once, at start. `Agent.set_network_access/2` is the cast that
+  which are built once, at start. `Agent.space_changed/2` is the cast that
   tells a live agent, so the space's own claim that a change takes effect for its
   agents' subsequent commands is true.
 
@@ -50,7 +50,12 @@ defmodule Nest.Agents.Agent.NetworkAccessRefreshTest do
     assert Mounts.network_access(before.mounts) == true
     assert Turn.build_ctx(before).caps["net"] == true
 
-    :ok = Agent.set_network_access(pid, false)
+    :ok =
+      Agent.space_changed(pid, %{
+        workspace_path: Mounts.workspace(before.mounts),
+        network_access: false,
+        sandbox_backend: Mounts.backend(before.mounts)
+      })
 
     # allowlist: barrier — synchronize the cast before reading the fields it
     # moves (there is no event frame to wait on), and read them: the mounts and

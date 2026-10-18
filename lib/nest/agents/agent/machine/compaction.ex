@@ -50,9 +50,17 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   machine (`%{m | pending_user_message: entry}`) before calling this, and the
   drain path under peek-then-consume (#26) never parks one at all, so a
   parameter for it was always `nil` at every call site.
+
+  `notice` is the space-environment change this compaction was staged to
+  deliver (`WorkspaceHandler.values/0`), or `nil` for a compaction nobody asked
+  for. It is stored **on the entry**, not in a slot of its own, so that only the
+  compaction that staged it can append it: a failed staging, a failed commit or
+  any route out of the turn drops the entry and the notice with it, and no later
+  compaction can find a stale one.
   """
-  @spec stage(Machine.t(), Machine.entry() | nil) :: {:ok, [term()], Machine.t()}
-  def stage(m, carried_entry) do
+  @spec stage(Machine.t(), Machine.entry() | nil, WorkspaceHandler.values() | nil) ::
+          {:ok, [term()], Machine.t()}
+  def stage(m, carried_entry, notice \\ nil) do
     count = m.loop_count + 1
 
     case loop_breaker(m, count) do
@@ -60,7 +68,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
         result
 
       :ok ->
-        do_stage(%{m | loop_count: count}, carried_entry)
+        do_stage(%{m | loop_count: count}, carried_entry, notice)
     end
   end
 
@@ -96,9 +104,18 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
         entry -> entry.entry
       end
 
+    # A retry re-sends the same request for the same compaction turn, so it
+    # carries the same notice: `retry_compaction` from `:compaction_failed` is
+    # the one route back into the turn that does not go through `stage/3`.
+    notice =
+      case m.entry do
+        {:compaction, _carried, notice} -> notice
+        _no_entry -> nil
+      end
+
     machine =
       Phase.enter(
-        %{m | loop_count: count, mid_turn_entry: nil, entry: {:compaction, carried}},
+        %{m | loop_count: count, mid_turn_entry: nil, entry: {:compaction, carried, notice}},
         :compaction,
         :generating,
         :http
@@ -122,10 +139,10 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
     end
   end
 
-  defp do_stage(m, carried_entry) do
+  defp do_stage(m, carried_entry, notice) do
     case Dispatch.compaction_plan(m) do
       {:ok, request_message} ->
-        enter_compaction(m, request_message, carried_entry)
+        enter_compaction(m, request_message, carried_entry, notice)
 
       {:error, :system_oversized} ->
         Phase.block(m, :context_overflow, :system_oversized, [
@@ -167,10 +184,16 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   # (`Transitions`, `kind: :compaction`) from the refreshed context. The
   # append path also inserts and persists the pairing bridge if the tail
   # needs one, which is why no index arithmetic is done here at all.
-  defp enter_compaction(m, request_message, carried_entry) do
+  # The space-environment notice rides the compaction's own entry, so its
+  # lifetime is the compaction turn's: `Phase.enter/4` drops the entry on every
+  # route out of that turn (`turn_entry/3`), and a failed staging or a failed
+  # commit takes the notice with it. Nothing else can append it, and it can never
+  # outlive the compaction that was supposed to deliver it — which is what a
+  # shared slot could not promise.
+  defp enter_compaction(m, request_message, carried_entry, notice) do
     machine =
       Phase.enter(
-        %{m | entry: {:compaction, carried_entry}},
+        %{m | entry: {:compaction, carried_entry, notice}},
         :compaction,
         :generating,
         :http
@@ -246,7 +269,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   """
   @spec commit_data(Machine.t(), Nest.LLM.RunResponse.t()) :: {map(), map()}
   def commit_data(m, response) do
-    {:compaction, carried_entry} = m.entry
+    {:compaction, carried_entry, _notice} = m.entry
     {assistant_msg, sequences} = Response.assistant_with_log(m, response)
 
     data = %{
@@ -284,7 +307,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
 
   @doc "The carried entry of a compaction machine, or nil."
   @spec carried(Machine.t()) :: Machine.entry() | nil
-  def carried(%{entry: {:compaction, carried}}), do: carried
+  def carried(%{entry: {:compaction, carried, _notice}}), do: carried
   def carried(%{entry: _}), do: nil
 
   # --- the `(kind: :compaction, phase: :generating)` transition table ---
@@ -393,10 +416,13 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
 
   @doc "Resume after a successful compaction commit."
   @spec resume(Machine.t()) :: {:ok, [term()], Machine.t()}
-  def resume(%{entry: {:compaction, carried}} = m) do
+  def resume(%{entry: {:compaction, carried, notice}} = m) do
     cond do
-      not is_nil(m.work.pending_notice) ->
-        resume_notice(m)
+      # The space-environment change this compaction was staged for: it is on the
+      # entry, so this is the only compaction that can append it, and a failed
+      # commit or a dropped entry takes it with it (see `enter_compaction/4`).
+      is_map(notice) ->
+        resume_notice(m, notice)
 
       match?({:assistant_response, _, _, _}, carried) ->
         resume_carried_reply(m, carried)
@@ -466,21 +492,32 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
     end
   end
 
-  defp resume_notice(m) do
-    pair = WorkspaceHandler.notice_pair(m.work.pending_notice)
+  # The deferred notice lands here, after the commit. The space's
+  # `space_notice_pending` flag is cleared by the executor *after* the append —
+  # not when the notice was staged — because until this runs the transcript does
+  # not have it and a stop, archive, crash or deploy would lose it: the flag is
+  # what makes the next start announce it.
+  #
+  # The clear carries the values it is clearing *for*: the executor clears the row
+  # only if the space still holds them. An edit that landed while this compaction
+  # was in flight has already marked the row again, and erasing that mark would
+  # leave the agent with the new mounts and a transcript describing the old ones —
+  # the notice it is owed would be lost until some later edit.
+  defp resume_notice(m, notice) do
+    pair = WorkspaceHandler.notice_pair(notice)
 
     Phase.rest(
-      %{m | entry: nil, work: %{m.work | pending_notice: nil}},
+      %{m | entry: nil},
       :chat,
       :workspace_notice,
-      [{:append_many, pair}, {:drain_inbox}]
+      [{:append_many, pair}, {:clear_space_notice, notice}, {:drain_inbox}]
     )
   end
 
   defp resume_machine(m, entry) do
     machine =
       Phase.enter(
-        %{m | entry: entry, work: %{m.work | pending_notice: nil}},
+        %{m | entry: entry},
         :chat,
         :generating,
         :http

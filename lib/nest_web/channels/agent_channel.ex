@@ -398,28 +398,6 @@ defmodule NestWeb.AgentChannel do
     {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
   end
 
-  # Change this agent's mode. The human is above the rule that bounds an agent's
-  # own changes, so this is the one path that may raise a mode; it applies
-  # immediately, and a busy agent refuses (a mode applies at a settle).
-  def handle_in("set_agent_mode", %{"mode" => mode}, socket) when is_binary(mode) do
-    case Agents.set_mode(socket.assigns.space_id, socket.assigns.name, mode) do
-      :ok ->
-        {:reply, {:ok, %{}}, socket}
-
-      {:error, reason} ->
-        # `:agent_busy` (retry) and a refused mode (show why) reach the client.
-        Logger.warning(
-          "set_agent_mode failed on agent:#{socket.assigns.space_id}: #{inspect(reason)}"
-        )
-
-        {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
-    end
-  end
-
-  def handle_in("set_agent_mode", _payload, socket) do
-    {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
-  end
-
   # Restart the agent so it re-reads the DB after an offline
   # `mix nest.repair_messages` run. The next `init` push carries the
   # new status: `idle` when the repair worked, `needs_repair` otherwise.

@@ -94,7 +94,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       refute system_prompt =~ "[mode: compact]"
     end
 
-    test "no workspace line when workspace_path is nil" do
+    test "no workspace line when the mounts carry no workspace" do
       {:ok, vocation} =
         Vocations.create_vocation(%{
           name: "TestNoWorkspace-#{System.unique_integer([:positive])}",
@@ -103,18 +103,11 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
           tools: ["shell"]
         })
 
-      # `workspace_path: nil` on purpose: the fixture otherwise supplies one, and
-      # this test is about the composer's no-workspace case. (An agent with no
-      # workspace is refused where one is *required* — a space with a root agent,
-      # a spawn, an edit — but starting one directly still composes a prompt.)
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: vocation.id,
-          workspace_path: nil
-        })
-
-      system_prompt = get_system_prompt(pid)
+      # An agent always has its *space's* workspace now — every space has one,
+      # so there is no per-agent way to reach this state. It is the composer's
+      # own no-workspace clause, which a space row with no path would still
+      # produce, so the composer is driven directly.
+      system_prompt = compose_for(vocation, "bwrap", true)
 
       assert system_prompt =~ "Chat only."
       refute system_prompt =~ "Workspace and tool working directory"

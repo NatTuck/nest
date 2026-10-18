@@ -44,7 +44,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     user = build_user_message(content, effective_mode, human?)
 
     {:ok, state} = Turn.settle(state, {:chat_request, {:user_message, user}})
-    {:noreply, Turn.keep_mode(state, pre_mode, :human)}
+    {:noreply, Turn.keep_mode(state, pre_mode)}
   end
 
   # Build the persisted user message. The mode is encoded both on

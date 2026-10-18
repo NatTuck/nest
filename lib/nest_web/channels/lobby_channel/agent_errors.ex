@@ -42,9 +42,11 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
     end
   end
 
-  # The edit path's refusals whose reply code is the reason's own name. One arm
-  # rather than four, because each is the same rule and credo counts arms.
-  @edit_simple [:agent_busy, :workspace_required, :workspace_missing, :workspace_under_tmp]
+  # The edit path's refusals whose reply code is the reason's own name. One
+  # entry, and deliberately not the workspace trio `@simple_reasons` carries:
+  # `edit_agent` takes no workspace, so it cannot produce one — a workspace is a
+  # *space* property, edited through `edit_space` (`edit_space_payload/1`).
+  @edit_simple [:agent_busy]
 
   @doc false
   def edit_payload(name, reason) do
@@ -74,6 +76,27 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
 
       other ->
         Logger.error("Failed to edit agent #{inspect(name)}: #{inspect(other)}")
+        {:error, %{"reason" => "failed_to_edit"}}
+    end
+  end
+
+  # The space edit's reply codes: the same refusals a create can carry (a
+  # workspace the sandbox will not run, a tagged config-file reason), plus the
+  # one field a client sends by *value* — the backend.
+  @doc false
+  def edit_space_payload(reason) do
+    case reason do
+      simple when simple in @simple_reasons ->
+        {:error, %{"reason" => to_string(simple)}}
+
+      tagged when is_tagged(tagged) ->
+        tagged_payload(tagged, {"Failed to edit space", "failed_to_edit"})
+
+      %Ecto.Changeset{} = changeset ->
+        space_changeset_payload(changeset, "Failed to edit space", "failed_to_edit")
+
+      other ->
+        Logger.error("Failed to edit space: #{inspect(other)}")
         {:error, %{"reason" => "failed_to_edit"}}
     end
   end
@@ -113,8 +136,8 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
       # so name that rather than answering "failed to create" about a choice the
       # user just made; the rest (a blank name, a taken slug) stays generic,
       # like the other unshowable reasons here.
-      %Ecto.Changeset{data: %Space{}, errors: errors} ->
-        space_changeset_payload(errors)
+      %Ecto.Changeset{data: %Space{}} = changeset ->
+        space_changeset_payload(changeset, "Failed to create space", "failed_to_create")
 
       other ->
         Logger.error("Failed to create space: #{inspect(other)}")
@@ -172,13 +195,17 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
     {:error, %{"reason" => code}}
   end
 
-  # Same shape for the space changeset's one client-facing field.
-  defp space_changeset_payload(errors) do
+  # A space changeset's one client-facing field, on both paths: the backend is
+  # the only thing a client sends that the changeset validates by *value*, so
+  # name it rather than answering "failed" about a choice the user just made.
+  # The rest (a blank name, a taken slug, an unshowable error) stays generic and
+  # logged, under the prefix of the action that was attempted.
+  defp space_changeset_payload(%Ecto.Changeset{errors: errors}, log_prefix, fallback_code) do
     if Keyword.has_key?(errors, :sandbox_backend) do
       {:error, %{"reason" => "invalid_sandbox_backend"}}
     else
-      Logger.error("Failed to create space: #{inspect(errors)}")
-      {:error, %{"reason" => "failed_to_create"}}
+      Logger.error("#{log_prefix}: #{inspect(errors)}")
+      {:error, %{"reason" => fallback_code}}
     end
   end
 end

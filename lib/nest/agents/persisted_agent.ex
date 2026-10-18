@@ -6,7 +6,7 @@ defmodule Nest.Agents.PersistedAgent do
 
   The schema is the persistence-side mirror of the runtime
   `Nest.Agents.Agent` struct's identity fields (`name`, `vocation`,
-  `model`, `workspace_path`, `next_message_index`). The full
+  `model`, `next_message_index`). The full
   runtime state (tools, llm_metrics, chat_state, etc.) lives only
   in memory; the row is just enough to rehydrate the agent on
   restore.
@@ -63,7 +63,6 @@ defmodule Nest.Agents.PersistedAgent do
           space_id: integer() | nil,
           vocation_id: integer() | nil,
           model: map(),
-          workspace_path: String.t() | nil,
           next_message_index: non_neg_integer(),
           last_compaction_index: integer(),
           fork_message_index: integer() | nil,
@@ -82,7 +81,6 @@ defmodule Nest.Agents.PersistedAgent do
     field :space_id, :integer
     field :vocation_id, :integer
     field :model, :map
-    field :workspace_path, :string
     field :next_message_index, :integer, default: 0
 
     # The agent's mode (`Nest.Modes`): a per-agent runtime property, not a
@@ -145,14 +143,19 @@ defmodule Nest.Agents.PersistedAgent do
     # from persisted message-history / parent-child joins.
     field :archived, :boolean, default: false
 
+    # Set by `Nest.Spaces.update_environment/2` on every agent in the space. A
+    # live agent is told immediately and clears it; a stopped one announces the
+    # change when it next starts.
+    field :space_notice_pending, :boolean, default: false
+
     timestamps(type: :utc_datetime_usec)
   end
 
   @doc """
   Build a changeset for inserting an agent row.
 
-  Required: `:name` and `:model`. `:vocation_id`, `:workspace_path`,
-  `:parent_id`, and `:depth` are optional. `:next_message_index`
+  Required: `:name` and `:model`. `:vocation_id`, `:parent_id`, and
+  `:depth` are optional. `:next_message_index`
   defaults to 0 and is bumped on every persisted message via a
   separate UPDATE.
 
@@ -176,7 +179,6 @@ defmodule Nest.Agents.PersistedAgent do
       :vocation_id,
       :model,
       :mode,
-      :workspace_path,
       :next_message_index,
       :last_compaction_index,
       :fork_message_index,

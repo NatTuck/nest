@@ -96,7 +96,6 @@ defmodule Nest.Agents.Agent.SubAgent do
       space_id: parent_state.space_id,
       model: model_override || parent_state.model,
       vocation_id: vocation_id,
-      workspace_path: Mounts.workspace(parent_state.mounts),
       # The child lives in its parent's space, so it shares the space's
       # sandbox backend and its network access.
       sandbox_backend: Mounts.backend(parent_state.mounts),
@@ -434,15 +433,11 @@ defmodule Nest.Agents.Agent.SubAgent do
 
     # `Broadcasts` builds the payload (#72), so this frame and the lobby's
     # space-creation frame cannot drift. `status` is omitted because the
-    # builder's default is `"idle"`, which is what a freshly spawned child is;
-    # `vocation` and `workspace_path` are now sent rather than left out, because
-    # the builder emits every key and a child has both — saying `nil` for a
-    # field the agent really has would be worse than the silence it replaces.
+    # builder's default is `"idle"`, which is what a freshly spawned child is.
     Broadcasts.agent_created(state.space_id,
       name: child_name,
       model: state.model,
       vocation: state.vocation.slug,
-      workspace_path: Mounts.workspace(state.mounts),
       parent_id: parent_db_id,
       parent_name: state.name,
       depth: state.depth + 1

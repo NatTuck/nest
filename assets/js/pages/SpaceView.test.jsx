@@ -1,10 +1,12 @@
 /**
  * Tests for the SpaceView Main View page.
  *
- * Covers rendering the space + blueprint header, filtering agents by
- * `space_id`, agent links + depth badge + status, the empty and
- * not-found states, and the page title (host + space name, falling back
- * to the route slug when the store has no matching space).
+ * Covers rendering the space + blueprint header and its environment,
+ * filtering agents by `space_id`, agent links + depth badge + status, the
+ * empty and not-found states, the page title (host + space name, falling back
+ * to the route slug when the store has no matching space), and that the
+ * environment dialog is opened from here — the environment is the space's, so
+ * the space's page is where it is edited.
  *
  * The store is mocked with a selector-based `useStore`; `spaceSlug`
  * comes from the route params via a real MemoryRouter.
@@ -15,10 +17,11 @@ import { MemoryRouter, Routes, Route, useParams } from "react-router-dom";
 
 let mockState = { spaces: [], agents: [], blueprints: [] };
 
-const mocks = vi.hoisted(() => ({ setSpaceNetwork: vi.fn() }));
+const mocks = vi.hoisted(() => ({ editSpace: vi.fn() }));
 
+// `EditSpaceDialog` pushes the edit; the page only opens it.
 vi.mock("../channels", () => ({
-  setSpaceNetwork: mocks.setSpaceNetwork,
+  editSpace: mocks.editSpace,
 }));
 
 vi.mock("../store", () => ({
@@ -60,6 +63,7 @@ beforeEach(() => {
         name: "My Space",
         slug: "my-space",
         blueprint_id: 10,
+        workspace_path: "/home/nat/ws",
         network_access: true,
         sandbox_backend: "bwrap",
       },
@@ -155,20 +159,40 @@ describe("SpaceView", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows the space's network access and pushes a change to the channel", () => {
+  it("shows the space's environment", () => {
     renderView();
 
-    const toggle = screen.getByLabelText("Network access");
-    expect(toggle.checked).toBe(true);
+    expect(screen.getByText("/home/nat/ws")).toBeInTheDocument();
+    expect(
+      screen.getByText("Agents in this space can reach the network."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("bwrap")).toBeInTheDocument();
+  });
 
-    fireEvent.click(toggle);
+  it("says so when a space has no workspace recorded", () => {
+    // Not silence: a space without a workspace is a row no agent in it can
+    // start in, so the page has to say that rather than render an empty line.
+    mockState.spaces[0].workspace_path = null;
 
-    expect(mocks.setSpaceNetwork).toHaveBeenCalledWith(
-      1,
-      false,
-      expect.any(Function),
-      expect.any(Function),
-    );
+    renderView();
+
+    expect(
+      screen.getByText("no workspace recorded for this space"),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the environment dialog from the space's page", () => {
+    renderView();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit space" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Edit space" });
+    expect(dialog).toBeInTheDocument();
+    // Pre-filled from the space, not blank.
+    expect(screen.getByLabelText("Workspace Path").value).toBe("/home/nat/ws");
+    expect(screen.getByLabelText("Sandbox").value).toBe("bwrap");
+    // Opening it pushes nothing: the dialog's Save is the only writer.
+    expect(mocks.editSpace).not.toHaveBeenCalled();
   });
 
   it("says a space with no sandbox cannot enforce network access", () => {
@@ -177,20 +201,6 @@ describe("SpaceView", () => {
     renderView();
 
     expect(screen.getByText(/nothing enforces that/i)).toBeInTheDocument();
-  });
-
-  it("warns that a docker space's container restarts when the network changes", () => {
-    // `--network none` is fixed when a container is created, so the change
-    // releases it — and with it the agents' `/tmp` (offloads, job logs) and any
-    // running background job. The user is told before flipping the toggle, not
-    // after.
-    mockState.spaces[0].sandbox_backend = "docker";
-
-    renderView();
-
-    const warning = screen.getByText(/restarts this space's container/i);
-    expect(warning).toBeInTheDocument();
-    expect(warning.textContent).toMatch(/background-job logs/i);
   });
 
   it("redirects to the root agent's chat, replacing the entry", () => {

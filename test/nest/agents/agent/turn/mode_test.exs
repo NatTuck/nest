@@ -2,7 +2,7 @@ defmodule Nest.Agents.Agent.Turn.ModeTest do
   @moduledoc """
   The mode a drain *keeps* is written to the row, and one it declines is not.
 
-  `Turn.keep_mode/3` is called from every path that can apply a mode — `run/6`'s
+  `Turn.keep_mode/2` is called from every path that can apply a mode — `run/6`'s
   own commit, `Turn.drain_inbox/1`, and `ChatPipeline.handle_chat/4` — and
   `Turn.restore_undelivered_mode/3` runs first, so an undone change never reaches
   the row. `agents.mode` is the truth a restart and a `PreSpawn` inheritance read,

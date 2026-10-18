@@ -95,7 +95,6 @@ defmodule Nest.TestSupport.MachineTestHelpers do
       context_limit_source: :default,
       messages: [system_message()],
       tmp_path: nil,
-      workspace_path: nil,
       mode: "chat",
       next_message_index: 1,
       crossed_thresholds: %MapSet{},
@@ -153,7 +152,10 @@ defmodule Nest.TestSupport.MachineTestHelpers do
   def sample_event(:loop_ack), do: :loop_ack
   def sample_event(:blocked), do: {:blocked, :needs_repair, nil}
   def sample_event(:unblocked), do: {:unblocked}
-  def sample_event(:workspace_notice), do: :workspace_notice
+
+  def sample_event(:workspace_notice),
+    do: {:workspace_notice, %{workspace: nil, network_access: false, backend: "bwrap"}}
+
   def sample_event(:tool_results), do: {:tool_results, make_ref(), []}
   def sample_event(:reply_sent), do: {:reply_sent, "peer"}
   def sample_event(:child_spawned), do: {:child_spawned, "kid", false, nil}
@@ -165,7 +167,7 @@ defmodule Nest.TestSupport.MachineTestHelpers do
   @doc """
   Deliver a compaction result to an agent by driving the production
   compaction entry: put the machine into the compactor's `:generating`
-  phase with `entry = {:compaction, carried_entry}`, then send the
+  phase with `entry = {:compaction, carried_entry, nil}`, then send the
   `{:http_response, ref, %RunResponse{}}` the executor's commit path
   consumes (via `Compaction.commit_compaction/2`).
   """
@@ -186,7 +188,7 @@ defmodule Nest.TestSupport.MachineTestHelpers do
           machine
           | kind: :compaction,
             phase: :generating,
-            entry: {:compaction, carried_entry},
+            entry: {:compaction, carried_entry, nil},
             work: %{
               machine.work
               | worker_kind: :http,

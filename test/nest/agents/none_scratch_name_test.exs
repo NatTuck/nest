@@ -228,9 +228,11 @@ defmodule Nest.Agents.NoneScratchNameTest do
       # agreement is what makes "the prompt states the environment its tools will
       # use" true, and nothing else asserts it: the old `.cmds` guard observed it
       # indirectly, through the staging a sandboxed `AGENTS.md` read left behind.
-      {:ok, space_id} = AgentTestHelpers.create_test_space()
+      # The workspace is the *space's* (`spaces.workspace_path`); an agent has
+      # none of its own, so it is the space that is created with one.
       workspace = AgentTestHelpers.default_test_workspace()
-      name = start_named(space_id, unique("mounts-agree"), workspace_path: workspace)
+      {:ok, space_id} = AgentTestHelpers.create_test_space(%{workspace_path: workspace})
+      name = start_named(space_id, unique("mounts-agree"))
 
       {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
 

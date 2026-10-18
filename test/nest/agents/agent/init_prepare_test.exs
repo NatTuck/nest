@@ -145,20 +145,19 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
 
   describe "the supervisor's config-file gate" do
     test "refuses a restart whose workspace config path is now a symlink", %{
-      space_id: space_id,
       vocation: vocation
     } do
       # The one route that never reaches `Sandbox.build/4`: an ordinary restart or
       # an on-demand load. The human replaces `.nest` with a symlink while the
       # agent is stopped; the next start has to refuse rather than come up and
       # fail on every command.
+      # The workspace is the *space's* now, and the gate reads it from there when
+      # the supervisor builds the start attrs.
       ws = AgentTestHelpers.default_test_workspace()
+      {:ok, space_id} = AgentTestHelpers.create_test_space(%{workspace_path: ws})
 
       attrs =
-        agent_attrs(space_id, vocation, %{
-          name: "gate-#{System.unique_integer([:positive])}",
-          workspace_path: ws
-        })
+        agent_attrs(space_id, vocation, %{name: "gate-#{System.unique_integer([:positive])}"})
 
       {:ok, _row} = Persistence.insert_agent(attrs)
 

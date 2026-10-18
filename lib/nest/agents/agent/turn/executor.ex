@@ -41,7 +41,9 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   alias Nest.Agents.Agent.Turn.Terminal
   alias Nest.Messages.Streaming
   alias Nest.Messages.ThinkTags
+  alias Nest.Persistence
   alias Nest.Sandbox.Mounts
+  alias Nest.Spaces
   alias Nest.Tokens.Compactor, as: TokensCompactor
   alias Nest.Vocations
   alias Nest.Vocations.Vocation
@@ -112,6 +114,29 @@ defmodule Nest.Agents.Agent.Turn.Executor do
 
   defp execute({:set_api_log_sequences, sequences}, state) do
     {%{state | live: %{state.live | api_log_sequences: sequences}}, :continue}
+  end
+
+  # The space's own record of "this agent has not been told". The machine emits
+  # it *after* appending a deferred space-environment notice, so the flag is
+  # cleared only once the transcript has the pair — a stop, archive, crash or
+  # deploy before that point leaves it set, and the next start announces it.
+  #
+  # It is cleared only when the row still holds the values the notice names. An
+  # edit that landed while this compaction was in flight has marked the row
+  # again (and moved the agent's mounts), and erasing that mark would leave the
+  # agent with the new mounts and a transcript describing the old ones: the
+  # notice it is owed would be lost until some later edit. One read, on a path
+  # that runs once per deferred notice.
+  defp execute({:clear_space_notice, values}, state) do
+    environment = Spaces.environment(state.space_id)
+
+    if environment.workspace_path == values.workspace and
+         environment.network_access == values.network_access and
+         environment.sandbox_backend == values.backend do
+      :ok = Persistence.set_space_notice_pending(state.space_id, state.name, false)
+    end
+
+    {state, :continue}
   end
 
   defp execute({:set_cancelled, value}, state) do

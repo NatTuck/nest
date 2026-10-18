@@ -25,7 +25,8 @@ defmodule Nest.Agents do
   * `opts` — additional parameters:
     * `:name` — explicit agent name (default: auto-generated)
     * `:vocation_id` — id of the vocation to use
-  * `:workspace_path` — path to the workspace directory
+  * `:mode` — the mode the agent starts in (`Nest.Modes`); defaults to the
+    space's blueprint `default_mode` (`Agent.PreSpawn`)
   * `:created_by_user_id` — the owning user
   * `:shared` — visibility flag (default `false`)
   * `:parent_id` — integer `agents.id` of the spawning agent
@@ -44,18 +45,7 @@ defmodule Nest.Agents do
   """
   @spec create_agent(integer(), map(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def create_agent(space_id, model, opts \\ []) when is_integer(space_id) and is_map(model) do
-    attrs = %{
-      name: name_or_generate(space_id, opts),
-      space_id: space_id,
-      model: enrich_model(model),
-      vocation_id: Keyword.get(opts, :vocation_id),
-      workspace_path: Keyword.get(opts, :workspace_path),
-      created_by_user_id: Keyword.get(opts, :created_by_user_id),
-      shared: Keyword.get(opts, :shared, false),
-      parent_id: Keyword.get(opts, :parent_id),
-      parent_name: Keyword.get(opts, :parent_name),
-      depth: Keyword.get(opts, :depth, 0)
-    }
+    attrs = new_agent_attrs(space_id, model, opts)
 
     # `pre_spawn` renders the system prompt from the loaded `vocation`
     # struct (it needs the struct, not just the id) so the initial
@@ -68,6 +58,23 @@ defmodule Nest.Agents do
          {:ok, agent_id} <- Agent.pre_spawn(attrs) do
       start_pre_spawned_agent(attrs, agent_id, space_id)
     end
+  end
+
+  # The attrs `create_agent/3` starts from, one `opts` key per line so the
+  # caller stays a straight-line pipeline.
+  defp new_agent_attrs(space_id, model, opts) do
+    %{
+      name: name_or_generate(space_id, opts),
+      space_id: space_id,
+      model: enrich_model(model),
+      vocation_id: Keyword.get(opts, :vocation_id),
+      mode: Keyword.get(opts, :mode),
+      created_by_user_id: Keyword.get(opts, :created_by_user_id),
+      shared: Keyword.get(opts, :shared, false),
+      parent_id: Keyword.get(opts, :parent_id),
+      parent_name: Keyword.get(opts, :parent_name),
+      depth: Keyword.get(opts, :depth, 0)
+    }
   end
 
   # The row (and its index-0 system message) is in the DB before the process
@@ -353,40 +360,6 @@ defmodule Nest.Agents do
   end
 
   @doc """
-  Set the mode of the named agent in this space, on the **human's** behalf.
-
-  This is the one path that may raise a mode: the rule that bounds an agent's own
-  changes is `Nest.Agents.Agent.ModeAuthority`, and the human is above it. The
-  mode is persisted, so it does not have to ride a message — and it applies
-  immediately when the agent is idle. A mid-turn agent refuses: a mode applies at
-  a settle, and a turn already running is under the old one, so the caller
-  retries.
-
-  Every error is a **sentence** for the user. The channel hands it straight to
-  the client, so an atom here would be shown verbatim.
-  """
-  @spec set_mode(integer(), String.t(), String.t()) :: :ok | {:error, String.t()}
-  def set_mode(space_id, name, mode) do
-    case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} ->
-        Agent.set_mode(pid, mode)
-
-      {:error, :not_found} ->
-        {:error, "There is no agent named #{inspect(name)} in this space."}
-
-      # A workspace whose `.nest` or `AGENTS.md` is not a regular file is refused
-      # at every start, and this route is one of them. The contract above is that
-      # every error is a sentence, so this one is too — the alternative is a
-      # `CaseClauseError` out of a channel handler.
-      {:error, {:config_file_not_regular, _path, _type} = reason} ->
-        {:error, Nest.ConfigFile.error_message(reason)}
-
-      {:error, reason} ->
-        {:error, "The agent #{inspect(name)} could not be reached: #{inspect(reason)}"}
-    end
-  end
-
-  @doc """
   Signal the in-flight chat task on the named agent to stop.
   """
   @spec stop_chat(integer(), String.t(), pid()) :: :ok | {:error, :not_found}
@@ -473,25 +446,16 @@ defmodule Nest.Agents do
   end
 
   @doc """
-  Change an agent's working directory.
-  """
-  @spec change_workspace(integer(), String.t(), String.t() | nil) :: :ok | {:error, term()}
-  def change_workspace(space_id, name, workspace_path) do
-    case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> Agent.set_workspace(pid, workspace_path)
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  Change an agent's model (and thinking level).
 
-  @doc """
-  Combined edit: change an agent's model (and thinking level) and
-  working directory in one call.
+  The working directory is *not* here: a workspace is a space property
+  (`spaces.workspace_path`), so it is edited on the space, not on one of its
+  agents.
   """
-  @spec edit_agent(integer(), String.t(), map(), String.t() | nil) ::
-          :ok | {:error, term()}
-  def edit_agent(space_id, name, new_model, workspace_path) when is_map(new_model) do
+  @spec edit_agent(integer(), String.t(), map()) :: :ok | {:error, term()}
+  def edit_agent(space_id, name, new_model) when is_map(new_model) do
     case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> Agent.edit_agent(pid, new_model, workspace_path)
+      {:ok, pid} -> Agent.edit_agent(pid, new_model)
       {:error, reason} -> {:error, reason}
     end
   end

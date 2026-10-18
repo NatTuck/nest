@@ -26,7 +26,6 @@ defmodule NestWeb.AgentChannelConfigGateTest do
   import Mimic
 
   alias Nest.Agents
-  alias Nest.ConfigFile
 
   setup :verify_on_exit!
 
@@ -48,17 +47,11 @@ defmodule NestWeb.AgentChannelConfigGateTest do
       stub(Agents, :compact, fn _space, _name, _focus -> refused end)
       stub(Agents, :retry_compaction, fn _space, _name -> refused end)
 
-      # `set_mode/3` answers every error as a *sentence*, because the client shows
-      # it verbatim — so its reply is not the wire code.
-      stub(Agents, :set_mode, fn _space, _name, _mode ->
-        {:error, ConfigFile.error_message({:config_file_not_regular, path, :symlink})}
-      end)
-
       # The channel is a process of its own: a stub set here is invisible to it
       # until it is allowed.
       Mimic.allow(Agents, self(), socket.channel_pid)
 
-      # `change_model` and `set_agent_mode` log the refusal before answering it.
+      # `change_model` logs the refusal before answering it.
       log =
         capture_log(fn ->
           for {event, payload} <- [
@@ -81,15 +74,9 @@ defmodule NestWeb.AgentChannelConfigGateTest do
               "type" => "symlink"
             }
           end
-
-          ref = push(socket, "set_agent_mode", %{"mode" => "plan"})
-          assert_reply ref, :error, %{"reason" => reason}
-          assert reason =~ path
-          assert reason =~ "is not a regular file"
         end)
 
       assert log =~ "change_model failed on agent"
-      assert log =~ "set_agent_mode failed on agent"
     end
 
     test "chat:message keeps its own spelling for the two refusals it renames", %{

@@ -2,10 +2,12 @@
  * EditAgentDialog — modal form for editing an active agent.
  *
  * Replaces the old "Pick a model" picker. Lets the user change the
- * agent's model (with thinking level) and, for workspace-requiring
- * vocations, its working directory. A single Save emits one
- * `edit_agent` channel action; Reset reverts the form to the agent's
- * current values.
+ * agent's model (with thinking level). A single Save emits one `edit_agent`
+ * channel action; Reset reverts the form to the agent's current values.
+ *
+ * There is no working directory here: a workspace is a *space* property
+ * (`spaces.workspace_path`), so it is edited on the space, not on one of its
+ * agents.
  *
  * Used by:
  *   - ChatPage header chip (always available)
@@ -14,11 +16,9 @@
  * Props:
  *   - `open`      — show/hide the modal.
  *   - `onClose`   — close the modal (Escape / backdrop / X).
- *   - `current`   — `{ name, provider, thinking_level, workspace_path,
- *                    requires_workspace }` — the agent's saved values,
- *                    used to initialize the form and for Reset.
- *   - `onSave`    — `({ model, workspace_path }) => void`, called when
- *                    the user clicks Save.
+ *   - `current`   — `{ name, provider, thinking_level }` — the agent's saved
+ *                    values, used to initialize the form and for Reset.
+ *   - `onSave`    — `({ model }) => void`, called when the user clicks Save.
  */
 
 import { useEffect, useState } from "react";
@@ -31,7 +31,6 @@ export function EditAgentDialog({ open, onClose, current, onSave }) {
 
   const [selectedName, setSelectedName] = useState("");
   const [selectedThinking, setSelectedThinking] = useState("medium");
-  const [workspace, setWorkspace] = useState("");
   const [saveError, setSaveError] = useState(null);
 
   // Initialize the form from the agent's current values whenever the
@@ -40,7 +39,6 @@ export function EditAgentDialog({ open, onClose, current, onSave }) {
     if (open) {
       setSelectedName(current?.name ?? "");
       setSelectedThinking(current?.thinking_level ?? "medium");
-      setWorkspace(current?.workspace_path ?? "");
       setSaveError(null);
     }
   }, [open, current]);
@@ -48,13 +46,6 @@ export function EditAgentDialog({ open, onClose, current, onSave }) {
   if (!open) {
     return null;
   }
-
-  const requiresWorkspace = !!current?.requires_workspace;
-  const hasWorkspace = !!current?.workspace_path;
-  // Show the field whenever the vocation needs a workspace OR the agent
-  // already has one, so an agent that definitely has a working directory
-  // always exposes it (even if its vocation modes aren't available).
-  const showWorkspace = requiresWorkspace || hasWorkspace;
 
   const selectedModel = models.find((m) => m.name === selectedName);
   const thinkingOptions = selectedModel?.thinking_levels?.length
@@ -64,7 +55,6 @@ export function EditAgentDialog({ open, onClose, current, onSave }) {
   const handleReset = () => {
     setSelectedName(current?.name ?? "");
     setSelectedThinking(current?.thinking_level ?? "medium");
-    setWorkspace(current?.workspace_path ?? "");
     setSaveError(null);
   };
 
@@ -73,20 +63,12 @@ export function EditAgentDialog({ open, onClose, current, onSave }) {
       setSaveError("Please select a model.");
       return;
     }
-    if (requiresWorkspace && !workspace?.trim()) {
-      setSaveError("Please specify a working directory.");
-      return;
-    }
-
-    const nextWorkspace = showWorkspace ? workspace.trim() : null;
-
     onSave({
       model: {
         name: selectedName,
         provider: selectedModel?.provider ?? current?.provider ?? null,
         thinking_level: selectedThinking,
       },
-      workspace_path: nextWorkspace,
     });
   };
 
@@ -180,25 +162,6 @@ export function EditAgentDialog({ open, onClose, current, onSave }) {
               ))}
             </select>
           </div>
-
-          {showWorkspace && (
-            <div>
-              <label
-                htmlFor="edit-workspace-input"
-                className="block text-sm font-medium text-gray-700 mb-1"
-              >
-                Working Directory
-              </label>
-              <input
-                id="edit-workspace-input"
-                type="text"
-                value={workspace}
-                onChange={(e) => setWorkspace(e.target.value)}
-                placeholder="/path/to/workspace"
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm"
-              />
-            </div>
-          )}
 
           {saveError && (
             <p className="text-sm text-red-600" role="alert">

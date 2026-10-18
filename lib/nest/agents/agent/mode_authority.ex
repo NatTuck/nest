@@ -1,6 +1,6 @@
 defmodule Nest.Agents.Agent.ModeAuthority do
   @moduledoc """
-  Who may move whom between modes, and what a change looks like in the transcript.
+  Who may move whom between modes.
 
   One rule, in one place: **a mode may be held or lowered, never raised**, and
   only the human is above it. Concretely:
@@ -33,7 +33,6 @@ defmodule Nest.Agents.Agent.ModeAuthority do
   """
 
   alias Nest.Agents.ChildRegistry
-  alias Nest.Messages.NoticeTag
   alias Nest.Modes
 
   # The tree is shallow (`Nest.Agents.Agent.Config.configured_max_depth/0`), so
@@ -74,24 +73,6 @@ defmodule Nest.Agents.Agent.ModeAuthority do
       true -> {:error, not_a_descendant(actor)}
     end
   end
-
-  @doc """
-  The transcript notice for a mode change: a `[Nest notice]`-tagged message
-  naming the new mode and who set it.
-
-  It is built here so the two paths that announce a change — the human's, which
-  applies immediately, and a message's, which applies at the next turn's drain —
-  cannot word it differently. A mode change that nobody announced would leave an
-  agent working under a rule it was never told about.
-  """
-  @spec notice(String.t(), :human | {:agent, String.t()}) :: String.t()
-  def notice(mode, actor) do
-    "[mode: notice]\n" <>
-      NoticeTag.tag("Your mode is now `#{mode}` (#{set_by(actor)}).")
-  end
-
-  defp set_by(:human), do: "set by the user"
-  defp set_by({:agent, name}), do: "set by agent \"#{name}\""
 
   defp monotone(actor, requested) do
     if Modes.allows?(actor[:mode], requested) do

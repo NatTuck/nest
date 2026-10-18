@@ -140,31 +140,27 @@ defmodule Nest.Agents.AgentAgentsMdTest do
 
     # There was a test here asserting the notice a symlinked `AGENTS.md` used to
     # get in the prompt. A *start* no longer renders one: `Nest.ConfigFile.error/1`
-    # refuses the workspace on all three funnels, so no agent comes up in one.
-    #
-    # The arm still exists, because composition is re-run **mid-session** — on
-    # compaction, by `Turn.Dispatch`/`Turn.Executor`/`Persistence.AgentCompaction`
-    # — so a human who replaces the file while the agent runs does reach it, and
-    # it renders a visible one-line notice. That is what
-    # `Nest.ConfigFileTest`/`Nest.ProjectConfigTest` pin, together with the
-    # refusal itself (`Nest.SandboxTest`, `LobbyChannelTest`).
-    test "omits AGENTS.md section when workspace_path is nil" do
+    # refuses the workspace on all three funnels, so no agent comes up in one. The
+    # arm still exists because composition is re-run **mid-session** (on
+    # compaction), which is what the `:hardlink`/symlink tests at the end of this
+    # file drive directly.
+    test "omits the AGENTS.md section when the mounts carry no workspace" do
+      # An agent always has its *space's* workspace now, so this state is only
+      # reachable through the composer — which is where the clause lives. A
+      # `nil` workspace must not attempt a sandbox read at all.
       vocation = create_vocation()
 
-      MockClient.set_response("OK")
+      {system_prompt, _tools, _vocation} =
+        SystemPrompt.compose_vocation_config(
+          vocation,
+          Mounts.new(nil, nil),
+          {nil, nil},
+          "agent",
+          0
+        )
 
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          workspace_path: nil,
-          vocation_id: vocation.id
-        })
-
-      system_prompt = get_system_prompt(pid)
       assert is_binary(system_prompt)
       refute system_prompt =~ "Here are AGENTS.md guidelines for this project:"
-
-      MockClient.clear()
     end
 
     test "AGENTS.md changes between init and compaction are reflected in the regenerated system prompt" do

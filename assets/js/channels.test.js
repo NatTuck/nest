@@ -25,7 +25,6 @@ import {
   leaveAgent,
   requestHistory,
   sendMessage,
-  setAgentMode,
   stopMessage,
   retryCompaction,
   compactionLoopOk,
@@ -39,42 +38,83 @@ import {
   createInvite,
   revokeInvite,
   archiveSpace,
-  setSpaceNetwork,
+  editSpace,
   unarchiveSpace,
   unarchiveAgent,
   clearAgentChannels,
   agentChannels,
 } from "./channels";
 
-describe("setSpaceNetwork", () => {
-  it("pushes the space and the new value, and forwards ok", async () => {
+describe("editSpace", () => {
+  const environment = {
+    workspace_path: "/home/nat/ws",
+    network_access: false,
+    sandbox_backend: "docker",
+  };
+
+  it("pushes all three environment fields, and forwards the reply", async () => {
     setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
     joinLobby();
-    setNextPushResult("lobby", "set_space_network", {
-      ok: { network_access: false },
+    setNextPushResult("lobby", "edit_space", {
+      ok: { workspace_path: "/home/nat/ws", network_access: false },
     });
 
-    let captured = "not-called";
-    setSpaceNetwork(7, false, () => {
-      captured = "called";
+    const captured = captureNextPush("lobby", "edit_space");
+    let reply = null;
+    editSpace(7, environment, (resp) => {
+      reply = resp;
     });
+
+    assert.deepStrictEqual(await captured, { space_id: 7, ...environment });
 
     await vi.waitFor(() => {
-      assert.strictEqual(captured, "called");
+      assert.strictEqual(reply.network_access, false);
     });
   });
 
-  it("applies the server's space:updated frame to the store", async () => {
-    setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
-    joinLobby();
-    useStore.setState({ spaces: [{ id: 7, name: "s", network_access: true }] });
+  it("forwards a refusal to onError", async () => {
+    setNextPushResult("lobby", "edit_space", {
+      error: { reason: "workspace_missing" },
+    });
 
-    simulateServerEvent("lobby", "space:updated", {
-      space: { id: 7, network_access: false },
+    let refused = null;
+    editSpace(7, environment, null, (err) => {
+      refused = err;
     });
 
     await vi.waitFor(() => {
-      assert.strictEqual(useStore.getState().spaces[0].network_access, false);
+      assert.strictEqual(refused.reason, "workspace_missing");
+    });
+  });
+
+  it("applies the server's whole space:updated frame to the store", async () => {
+    useStore.setState({
+      spaces: [
+        {
+          id: 7,
+          name: "s",
+          workspace_path: "/old",
+          network_access: true,
+          sandbox_backend: "bwrap",
+        },
+      ],
+    });
+
+    simulateServerEvent("lobby", "space:updated", {
+      space: {
+        id: 7,
+        name: "s",
+        workspace_path: "/home/nat/ws",
+        network_access: false,
+        sandbox_backend: "docker",
+      },
+    });
+
+    await vi.waitFor(() => {
+      const [space] = useStore.getState().spaces;
+      assert.strictEqual(space.network_access, false);
+      assert.strictEqual(space.workspace_path, "/home/nat/ws");
+      assert.strictEqual(space.sandbox_backend, "docker");
     });
   });
 });
@@ -705,35 +745,6 @@ describe("channels", () => {
         const agents = useStore.getState().agents;
         assert.strictEqual(agents[0].model.name, "new-model");
         assert.strictEqual(agents[0].model.provider, "openai");
-      });
-    });
-
-    it("applies the workspace update when agent:updated carries a workspace_path", async () => {
-      setNextJoinResult("lobby", {
-        autoInit: {
-          agents: [
-            { name: "agent-1", model: { name: "m" }, workspace_path: null },
-          ],
-          models: [],
-          broken_agents: [],
-        },
-      });
-      joinLobby();
-
-      await vi.waitFor(() => {
-        assert.strictEqual(useStore.getState().agents.length, 1);
-      });
-
-      simulateServerEvent("lobby", "agent:updated", {
-        name: "agent-1",
-        workspace_path: "/new/ws",
-      });
-
-      await vi.waitFor(() => {
-        assert.strictEqual(
-          useStore.getState().agents[0].workspace_path,
-          "/new/ws",
-        );
       });
     });
 
@@ -1541,26 +1552,26 @@ describe("channels", () => {
   });
 
   describe("editAgent", () => {
-    it("pushes the model and workspace_path", async () => {
+    it("pushes the model", async () => {
       const { editAgent } = await import("./channels");
       setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
       joinLobby();
       await vi.waitFor(() => true);
 
       const pushPromise = captureNextPush("lobby", "edit_agent");
-      editAgent(
-        "ghost-agent",
-        1,
-        { name: "gpt-4", provider: "openai", thinking_level: "high" },
-        "/new/workspace",
-      );
+      editAgent("ghost-agent", 1, {
+        name: "gpt-4",
+        provider: "openai",
+        thinking_level: "high",
+      });
 
       const payload = await pushPromise;
+      // No `workspace_path`: a workspace is the *space's*, so the agent edit
+      // neither takes nor sends one.
       assert.deepStrictEqual(payload, {
         name: "ghost-agent",
         space_id: 1,
         model: { name: "gpt-4", provider: "openai", thinking_level: "high" },
-        workspace_path: "/new/workspace",
       });
     });
 
@@ -1571,7 +1582,6 @@ describe("channels", () => {
         "ghost-agent",
         1,
         { name: "gpt-4" },
-        null,
         () => {},
         (err) => {
           captured = err;
@@ -1595,7 +1605,6 @@ describe("channels", () => {
         "ghost-agent",
         1,
         { name: "gpt-4", provider: "openai" },
-        "/ws",
         () => {},
         (err) => {
           captured = err;
@@ -1616,7 +1625,7 @@ describe("channels", () => {
 
       setNextPushResult("lobby", "edit_agent", { ok: {} });
       let okCalled = false;
-      editAgent("ghost-agent", 1, { name: "gpt-4" }, "/ws", () => {
+      editAgent("ghost-agent", 1, { name: "gpt-4" }, () => {
         okCalled = true;
       });
 
@@ -3898,84 +3907,6 @@ describe("channels", () => {
       // Optimistic user message also has the mode
       const cache = useStore.getState().agentsCache["agent-1"];
       assert.strictEqual(cache.messages[0].mode, "build");
-    });
-
-    it("setAgentMode pushes the change and shows it optimistically", async () => {
-      setNextJoinResult("agent:1:agent-1", {
-        autoInit: {
-          id: "agent-1",
-          model: { name: "gpt-4", provider: "openai" },
-          messageCount: 0,
-          status: "idle",
-          modes: ["plan", "act"],
-          defaultMode: "act",
-          currentMode: "act",
-        },
-      });
-      joinAgent("agent-1", 1);
-
-      await vi.waitFor(() => {
-        assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.status,
-          "connected",
-        );
-      });
-
-      const pushCapture = captureNextPush("agent:1:agent-1", "set_agent_mode");
-
-      setAgentMode("agent-1", "plan");
-
-      // The change is a control-plane push, not a field on a chat message.
-      assert.deepStrictEqual(await pushCapture, { mode: "plan" });
-
-      // And the selector shows it at once, before the server answers.
-      assert.strictEqual(
-        useStore.getState().agentsCache["agent-1"].currentMode,
-        "plan",
-      );
-    });
-
-    it("setAgentMode takes the optimistic mode back when the server refuses it", async () => {
-      setNextJoinResult("agent:1:agent-1", {
-        autoInit: {
-          id: "agent-1",
-          model: { name: "gpt-4", provider: "openai" },
-          messageCount: 0,
-          status: "idle",
-          modes: ["plan", "act"],
-          defaultMode: "act",
-          currentMode: "act",
-        },
-      });
-      joinAgent("agent-1", 1);
-
-      await vi.waitFor(() => {
-        assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.status,
-          "connected",
-        );
-      });
-
-      // The monotone rule refuses a mode an agent may not grant; the reason has
-      // to reach the caller rather than being swallowed.
-      setNextPushResult("agent:1:agent-1", "set_agent_mode", {
-        error: { reason: "mode_escalation_refused" },
-      });
-
-      const onError = vi.fn();
-      setAgentMode("agent-1", "plan", onError);
-
-      await vi.waitFor(() => {
-        assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"].currentMode,
-          "act",
-        );
-      });
-
-      assert.strictEqual(
-        onError.mock.calls[0][0].reason,
-        "mode_escalation_refused",
-      );
     });
 
     it("omits the mode key from the payload when no mode is passed", async () => {

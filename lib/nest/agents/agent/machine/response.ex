@@ -92,7 +92,7 @@ defmodule Nest.Agents.Agent.Machine.Response do
   @doc "Dispatch an HTTP response in the chat `:generating` phase."
   @spec dispatch(Machine.t(), RunResponse.t()) :: {:ok, [term()], Machine.t()}
   def dispatch(m, response) do
-    compactor? = match?({:compaction, _}, m.entry)
+    compactor? = match?({:compaction, _, _}, m.entry)
     {assistant_msg, sequences} = assistant_with_log(m, response)
 
     {notice_actions, m} =
@@ -424,7 +424,7 @@ defmodule Nest.Agents.Agent.Machine.Response do
 
   defp classify(m, response, assistant_msg) do
     ResponseClassifier.classify_response(%{
-      compactor?: match?({:compaction, _}, m.entry),
+      compactor?: match?({:compaction, _, _}, m.entry),
       force_finalize: m.work.force_finalize,
       has_tool_calls: RunResponse.has_tool_calls?(response),
       iteration: m.work.iteration,
@@ -510,8 +510,13 @@ defmodule Nest.Agents.Agent.Machine.Response do
   end
 
   defp collect_specs(m, projected) do
+    # `pending_notice` is the budget reminder's slot (a binary, from
+    # `do_dispatch_http/1`). A space-environment change no longer uses it: it
+    # rides the `:workspace_notice` event and, when it needs a compaction, that
+    # compaction's entry (`Compaction.stage/3`).
     budget =
-      if m.work.pending_notice, do: BudgetReminder.spec_from_pending(m.work.pending_notice)
+      if is_binary(m.work.pending_notice),
+        do: BudgetReminder.spec_from_pending(m.work.pending_notice)
 
     context = compute_context_spec(m, projected)
 

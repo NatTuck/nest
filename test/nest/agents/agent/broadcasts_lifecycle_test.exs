@@ -18,19 +18,18 @@ defmodule Nest.Agents.Agent.BroadcastsLifecycleTest do
 
   # The keys `Broadcasts.created_payload/2` promises, as the client reads them
   # (`assets/js/store/slices/catalog.js`'s `normalizeAgent/1`).
-  @created_keys ~w(name space_id model status vocation workspace_path parentId parentName depth)
+  @created_keys ~w(name space_id model status vocation parentId parentName depth)
 
   describe "the agent:created payload (#72)" do
     test "carries the same keys whichever caller built it" do
       # The two callers' attrs as they are really passed: the lobby's
-      # space-creation path, which knows the vocation and the workspace, and
-      # `SubAgent`'s spawn path, which knows the tree position.
+      # space-creation path, which knows the vocation, and `SubAgent`'s spawn
+      # path, which knows the tree position.
       from_lobby =
         Broadcasts.created_payload(7,
           name: "root",
           model: %{name: "m", provider: "p"},
-          vocation: "programmer",
-          workspace_path: "/w"
+          vocation: "programmer"
         )
 
       from_spawn =

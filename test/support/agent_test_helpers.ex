@@ -114,10 +114,10 @@ defmodule Nest.Agents.AgentTestHelpers do
     dir
   end
 
-  # A spawn requires the child to inherit a workspace (`:workspace_required`).
-  def start_spawnable_agent(attrs \\ %{}) do
-    start_agent(Map.put_new(attrs, :workspace_path, default_test_workspace()))
-  end
+  # A spawn needs a space with a workspace, and `start_agent/1` already gives
+  # every test space one (`create_test_space/1` defaults it). So this is a name
+  # for "an agent that can spawn", kept because it says why a test asks.
+  def start_spawnable_agent(attrs \\ %{}), do: start_agent(attrs)
 
   @doc """
   Assert a shell_cmd tool result succeeded (`is_error == false`).
@@ -168,10 +168,17 @@ defmodule Nest.Agents.AgentTestHelpers do
     # `Agents.create_agent/3`.
     agent_name = "agent#{System.unique_integer([:positive])}"
 
+    # A workspace is the *space's*, so a test that names one is naming its
+    # space's. Popping it keeps every existing `workspace_path: dir` call site
+    # meaning what it always meant, now that `Agents.create_agent/3` has no such
+    # option.
+    {workspace, attrs} = Map.pop(attrs, :workspace_path)
+    space_attrs = if workspace, do: %{workspace_path: workspace}, else: %{}
+
     # Create a fresh space for this agent. The space_id is the
     # first positional arg to `Agents.create_agent/3`; everything
     # else stays in opts.
-    {:ok, space_id} = create_test_space()
+    {:ok, space_id} = create_test_space(space_attrs)
     merged = build_attrs(agent_name, space_id, attrs)
 
     # Use the standard caller interface so the agent is registered
@@ -182,8 +189,8 @@ defmodule Nest.Agents.AgentTestHelpers do
     #
     # `Agents.create_agent/3` takes `(space_id, model, opts)`: the
     # model map carries the LLM model name (used by `enrich_model/1`
-    # to look up the provider from DotConfig), and `vocation_id` /
-    # `workspace_path` are opts. The agent's registry key (`name:`)
+    # to look up the provider from DotConfig), and `vocation_id` is an
+    # opt. The agent's registry key (`name:`)
     # is also an opt — the model's `:name` is the LLM identifier
     # (e.g. "qwen3.5-plus"), NOT the agent name. Without `name:`
     # here the supervisor's `generate_unique_name_for_space/1`
@@ -461,18 +468,13 @@ defmodule Nest.Agents.AgentTestHelpers do
       # `:vocation_id` (and optionally `:vocation`) in `attrs`.
       vocation_id: vocation_id_for_test(),
       vocation: nil,
-      # `workspace_path` is optional in `agents.workspace_path`
-      # (nullable column) and `Init.build_state/2` reads it via
-      # `Map.get/2` so `nil` is fine. Tests that need a workspace
-      # can override `:workspace_path` in `attrs`.
-      #
-      # It stays `nil` by default because most tests do not need one. A
-      # workspace changes what the prompt *says* — the working-directory
-      # section, the `.nest` section, and the `AGENTS.md` section, which reads
-      # the file from the **host** (`SystemPrompt.agents_md_section/1`), so it
-      # costs a `File.read`, not the 7.8-10.2 ms `bwrap` fork it used to — and the
-      # tests that exercise any of those pass one.
-      workspace_path: nil,
+      # No `:workspace_path` here: a workspace is the *space's*
+      # (`spaces.workspace_path`), and `start_agent/1` pops it out of `attrs` and
+      # gives it to the space instead. Most tests need none: a workspace changes
+      # what the prompt *says* (the working-directory, `.nest` and `AGENTS.md`
+      # sections — the last read from the **host**, so it costs a `File.read`,
+      # not the 7.8-10.2 ms `bwrap` fork it used to), and the tests that exercise
+      # any of those pass one.
       # Multi-user identity. Defaults to `nil` so tests that
       # pre-date the multi-user migration keep working
       # without changes. Tests that exercise ownership /
@@ -691,7 +693,6 @@ defmodule Nest.Agents.AgentTestHelpers do
       Map.get(attrs, :model),
       name: Map.get(attrs, :name),
       vocation_id: Map.get(attrs, :vocation_id),
-      workspace_path: Map.get(attrs, :workspace_path),
       created_by_user_id: Map.get(attrs, :created_by_user_id),
       shared: Map.get(attrs, :shared, false)
     )

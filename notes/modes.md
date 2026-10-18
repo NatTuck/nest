@@ -48,9 +48,10 @@ rather than being silently resolved either way
 
 * **Inherited at spawn.** A child gets its parent's current mode unless the
   spawn names one.
-* **The human, on any agent.** The UI selector pushes `set_agent_mode`; the
-  change applies immediately (the mode is persisted, so it does not have to ride
-  the next message).
+* **The user, on any agent — by choosing the mode of the next message.** The
+  selector is a *draft*, not a push: it configures the `mode` the composer sends
+  with the next message, and the server learns it when that message arrives.
+  Nothing is sent to the server when the selection changes.
 * **An ancestor, on a descendant.** It rides the send tools as an optional
   `set_mode` (`"mine" | "plan" | "act"`, where `"mine"` is the sender's current
   mode), so the change and the instruction that depends on it arrive together.
@@ -60,11 +61,10 @@ rather than being silently resolved either way
   re-resolved underneath its remaining tool calls. A batch that is not consumed
   (a decline, a park, a block) does not keep the mode
   (`Turn.restore_undelivered_mode/3`).
-* **Announced.** A `[Nest notice]` message in the target's transcript names the
-  actor and the new mode — for the human's selector and for another agent's
-  `set_mode`. A mode carried on a message the agent itself received is stated by
-  that message's own `[mode: X]` prefix (or its header), so it gets no second
-  notice.
+* **Never announced.** Every mode change arrives *on a message*, and every
+  message already states the recipient's mode, so a notice would duplicate it.
+  The mode is written down (`agents.mode`, by `Turn.keep_mode/2`) and that is
+  all.
 * **Stated twice on the wire, once in the UI — deliberately.** A peer delivery
   carries the recipient's mode in *both* the user-role row's `[mode: X]` prefix
   and the `[Message from agent … | mode: M]` header. That is not redundancy to be
@@ -79,7 +79,7 @@ rather than being silently resolved either way
 ## The monotone rule
 
 One place: `Nest.Agents.Agent.ModeAuthority`, which every mode-setting path goes
-through — the human's selector, a message's `set_mode`, and the spawn. It decides
+through — a message's `set_mode`, and the spawn. It decides
 `:ok | {:error, reason}` from who is asking and who is being asked about:
 
 | actor | target | may set |
@@ -88,6 +88,10 @@ through — the human's selector, a message's `set_mode`, and the spawn. It deci
 | an agent | **itself** | nothing — self-escalation, even by sending itself a `set_mode` |
 | an agent | a **descendant** | a mode it is in itself, or a less permissive one (`Nest.Modes.allows?/2`) |
 | an agent | anyone else | nothing |
+
+The human's own chat message does not need the rule: a person is above it, so
+`ChatPipeline` resolves the requested mode and applies it. The `:human` actor is
+what `PreSpawn` uses for a root agent, which a person creates.
 
 The spawn is the same rule: a `plan` parent must not spawn an `act` child, nor
 spawn one and then raise it. A refusal reaches the sender as a tool error naming

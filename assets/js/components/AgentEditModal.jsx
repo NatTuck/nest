@@ -4,22 +4,12 @@
  */
 
 import { EditAgentDialog } from "./EditAgentDialog";
-import { vocationRequiresWorkspace } from "../utils/vocationWorkspace";
 
-export function AgentEditModal({
-  open,
-  onClose,
-  onSave,
-  model,
-  workspace_path,
-  vocation,
-}) {
+export function AgentEditModal({ open, onClose, onSave, model }) {
   const current = {
     name: model?.name ?? null,
     provider: model?.provider ?? null,
     thinking_level: model?.thinking_level ?? null,
-    workspace_path,
-    requires_workspace: vocationRequiresWorkspace(vocation),
   };
 
   return (

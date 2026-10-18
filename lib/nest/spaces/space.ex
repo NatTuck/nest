@@ -27,13 +27,14 @@ defmodule Nest.Spaces.Space do
   ## Sandbox backend
 
   * `sandbox_backend` — how this space's agents are sandboxed:
-    `#{inspect(@sandbox_backends)}` (see `Nest.Sandbox.Backend`). It is chosen
-    **once, at creation**:
-    `create_changeset/2` sets it and `changeset/2` (the update path)
-    deliberately cannot change it, because swapping a backend means
-    replacing the environment the space's agents run in — not a live
-    edit. `#{@default_sandbox_backend}` is the default, so every
-    pre-existing row is a bwrap space.
+    `#{inspect(@sandbox_backends)}` (see `Nest.Sandbox.Backend`).
+    `create_changeset/2` sets it and `environment_changeset/2` moves it, with
+    the workspace and the network, because the three are one decision: an edit to
+    any of them releases the space's sandbox environment (a container's image,
+    `--network` value and workspace binds are fixed when it is created).
+    `changeset/2` — the rename path — deliberately cannot move it.
+    `#{@default_sandbox_backend}` is the default, so every pre-existing row is a
+    bwrap space.
 
     `"bwrap"` runs commands under bubblewrap and enforces the mode's
     caps. `"docker"` runs them in a container the space shares, which sees
@@ -44,9 +45,9 @@ defmodule Nest.Spaces.Space do
   ## Network access
 
   * `network_access` — whether this space's agents may reach the network. It is
-    a **space** property (not a vocation mode's), and unlike `sandbox_backend`
-    it is **editable** (`Nest.Spaces.set_network_access/2`): a space can be
-    closed off, or opened up, without recreating it. The resolved caps carry it
+    a **space** property (not a vocation mode's), and it is **editable** with
+    the other two (`Nest.Spaces.update_environment/2`): a space can be closed
+    off, or opened up, without recreating it. The resolved caps carry it
     as `"net"`, injected at caps-resolution time
     (`Nest.Sandbox.with_network_access/2`), which is what
     `Nest.Sandbox.build/2` and both backends read. A `"none"` space cannot
@@ -109,10 +110,12 @@ defmodule Nest.Spaces.Space do
   `:workspace_path` are optional — on this path only; a *new* space
   requires a workspace (`create_changeset/2`).
 
-  `:sandbox_backend` is deliberately absent from the cast list: it is a
-  creation-only choice (see `create_changeset/2`), so no update can move
-  a space between backends. `:network_access` *is* cast here, because it is
-  editable — `Nest.Spaces.set_network_access/2` goes through this changeset.
+  `:sandbox_backend` is deliberately absent from *this* cast list: it moves only
+  through `environment_changeset/2`, which owns the three environment properties
+  together because an edit to any of them releases the space's sandbox
+  environment. `:network_access` *is* cast here — but the edit path is that same
+  changeset; this one is the rename path, and its cast of the column only keeps a
+  rename from tripping over it.
 
   `:slug` must be usable as the root agent's name (`<slug>-root`), so it
   is held to `PersistedAgent`'s filename-safe rule. A client-supplied
@@ -140,8 +143,47 @@ defmodule Nest.Spaces.Space do
   end
 
   @doc """
+  Build the changeset for editing a space's **environment**: the three properties
+  every agent in the space inherits.
+
+  One changeset for all three because they are one decision — an agent's mounts
+  are built from them together, and `Nest.Spaces.update_environment/2` tells the
+  space's agents about them together. `:sandbox_backend` is cast **only when the
+  caller names one**, so an edit that changes the network does not silently reset
+  the backend to the default.
+
+  `:workspace_path` is required here as well as on insert: an edit may move a
+  space's workspace, but it may not leave the space without one — every agent in
+  it would then fail to start. The insert-only requirement still lives in
+  `create_changeset/2`, so `rename_space/1` on a row a previous build left
+  workspace-less keeps working.
+  """
+  @spec environment_changeset(Ecto.Schema.t() | Ecto.Changeset.t(), map()) ::
+          Ecto.Changeset.t()
+  def environment_changeset(source, params) do
+    source
+    |> cast(params, [:workspace_path, :network_access])
+    |> cast_named_backend(params)
+    |> validate_required([:workspace_path])
+    |> validate_inclusion(:sandbox_backend, @sandbox_backends,
+      message: "must be one of #{Enum.join(@sandbox_backends, ", ")}"
+    )
+  end
+
+  defp cast_named_backend(changeset, params) do
+    [:sandbox_backend, "sandbox_backend"]
+    |> Enum.map(&Map.get(params, &1))
+    |> Enum.find(&present?/1)
+    |> case do
+      nil -> changeset
+      backend -> cast(changeset, %{sandbox_backend: backend}, [:sandbox_backend])
+    end
+  end
+
+  @doc """
   Build the changeset for **inserting** a space row: `changeset/2` plus the
-  creation-only `:sandbox_backend`.
+  `:sandbox_backend` cast (the environment edit moves it afterwards, through
+  `environment_changeset/2`).
 
   An absent or blank backend takes `Nest.Sandbox.Backend.default/0`; anything
   outside `Nest.Sandbox.Backend.backends/0` is refused with an error on the

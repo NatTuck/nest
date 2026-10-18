@@ -37,12 +37,15 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   host-side emulation** of `read`, `stat`, or `glob`: all three execute inside
   the sandbox, so their results come from exactly what the backend exposes and
   can never disagree with what a shell inside it sees.
-- Which backend that is, is a **per-space, creation-only** choice
-  (`spaces.sandbox_backend`: `bwrap`, `docker` or `none`). It is picked when the
-  space is created and cannot be changed afterwards, because changing it would
-  mean replacing the environment the space's agents run in. It travels to every
-  command on the `Nest.Sandbox.Mounts` value, and `Nest.Sandbox.Backend` is the
-  one dispatch point (`Nest.Tools.ShellCmd` is the only caller that matters).
+- Which backend that is, is a **per-space** choice (`spaces.sandbox_backend`:
+  `bwrap`, `docker` or `none`), made when the space is created and edited through
+  the one environment edit (`Nest.Spaces.update_environment/2` — the same action
+  that moves the workspace and the network). An edit to any of the three releases
+  the space's sandbox environment, because all three are part of a container's
+  identity: its image, its `--network` value and its workspace binds are fixed
+  when the container is created. It travels to every command on the
+  `Nest.Sandbox.Mounts` value, and `Nest.Sandbox.Backend` is the one dispatch
+  point (`Nest.Tools.ShellCmd` is the only caller that matters).
 - **Network access is the space's, not a mode's.** `spaces.network_access`
   (boolean, editable) is the only source of `caps["net"]`: it is resolved once at
   agent start and carried on `Nest.Sandbox.Mounts`, and
@@ -175,10 +178,10 @@ no sandbox can see, and the prompt says so.
 - **A mode is a per-agent runtime property.** It is persisted (`agents.mode`,
 seeded from the blueprint's `default_mode`), so a restart cannot silently widen a
 child that was spawned read-only. It is inherited at spawn (the spawner may
-override it), changeable by the human on any agent (immediately — it does not
-have to ride a message) and by an ancestor on a descendant, and it applies from
-the agent's **next turn**, never mid-turn, with a `[Nest notice]` announcement
-naming who changed it.
+override it), changeable by the user by choosing the mode of the next message
+they send (the selector is a draft, not a push) and by an ancestor on a
+descendant, and it applies from the agent's **next turn**, never mid-turn. No
+change is announced: every message already states the recipient's mode.
 - **The monotone rule lives in exactly one place** —
 `Nest.Agents.Agent.ModeAuthority`, which every mode-setting path goes through. An
 agent may move a *descendant* to a mode it is in itself, or to `plan`; only the

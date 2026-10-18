@@ -86,17 +86,19 @@ export function catalogSetters(set) {
     },
 
     /**
-     * Set a space's network access in the store. The space lives in exactly one
-     * of the two lists, so both are checked: the toggle is rendered from a space
-     * in either.
+     * Replace a space with the row the server just sent. `space:updated` carries
+     * the *whole* space — a space edit changes three fields at once — so this
+     * takes the row rather than one field, and nothing is merged in from the old
+     * copy: a value the server stopped sending would show as missing rather than
+     * as a stale one.
+     *
+     * The space lives in exactly one of the two lists, so both are checked.
      */
-    setSpaceNetworkAccess: (spaceId, networkAccess) => {
+    updateSpace: (space) => {
       set((state) => {
         const update = (spaces) =>
-          spaces.map((space) =>
-            space.id === spaceId
-              ? { ...space, network_access: networkAccess }
-              : space,
+          spaces.map((existing) =>
+            existing.id === space.id ? space : existing,
           );
 
         return {
@@ -265,21 +267,6 @@ export function catalogSetters(set) {
           agentsCache: newCache,
           brokenAgents: newBroken,
         };
-      });
-    },
-
-    applyAgentWorkspaceUpdate: (name, workspace_path) => {
-      set((state) => {
-        const newAgents = state.agents.map((a) =>
-          a.name === name ? { ...a, workspace_path } : a,
-        );
-        const newCache = state.agentsCache[name]
-          ? {
-              ...state.agentsCache,
-              [name]: { ...state.agentsCache[name], workspace_path },
-            }
-          : state.agentsCache;
-        return { agents: newAgents, agentsCache: newCache };
       });
     },
   };

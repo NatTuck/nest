@@ -1,11 +1,19 @@
 /**
- * The workspace refusals the edit-agent and create-space paths share, so the
- * two answer with one wording. Returns `null` for any other reason.
+ * The workspace refusals the *space* create and edit paths can carry. Returns
+ * `null` for any other reason.
+ *
+ * Only the space paths have them: a workspace is a space property, so an agent
+ * edit cannot produce one (`LobbyChannel`'s `edit_agent` neither takes nor
+ * validates a workspace). The wording therefore names the *space*, not the
+ * agent — "a working directory is required for this space".
  */
 function describeWorkspaceError(reason) {
   switch (reason) {
     case "workspace_required":
-      return "A working directory is required for this agent.";
+      // The space's, not the agent's: this reason comes from the space create
+      // and edit paths, where the workspace belongs to the space every agent in
+      // it inherits.
+      return "A working directory is required for this space.";
     case "workspace_missing":
       return "That working directory doesn't exist on the server.";
     case "workspace_under_tmp":
@@ -77,6 +85,40 @@ export function describeEditError(err) {
       return reason
         ? `Failed to edit agent: ${reason}`
         : "Failed to edit agent.";
+  }
+}
+
+/**
+ * Map an `edit_space` error reply to a user-friendly message. The reply is
+ * `{reason: <code>, path?: <path>, type?: <type>}` — the whole payload, because
+ * the config-file refusal needs the `path` (and its `type`) — mirroring the
+ * `:reply` payload from `LobbyChannel.handle_in("edit_space", …)`.
+ *
+ * The shared refusals (`workspace_*`, the config-file one) are worded by the
+ * same helpers the create and edit-agent paths use, so the three cannot drift.
+ */
+export function describeSpaceEditError(err) {
+  const reason = err?.reason;
+
+  const configFile = describeConfigFileError(err);
+  if (configFile) return configFile;
+
+  const workspace = describeWorkspaceError(reason);
+  if (workspace) return workspace;
+
+  switch (reason) {
+    case "invalid_sandbox_backend":
+      // The server validates the backend by *value*, so this is a choice the
+      // user just made, not a failed request.
+      return "That sandbox backend isn't one this server implements.";
+    case "not_found":
+      return "Space not found. Refresh the page and try again.";
+    case "invalid_payload":
+      return "Couldn't read the edit. Try again.";
+    default:
+      return reason
+        ? `Failed to save the space: ${reason}`
+        : "Failed to save the space.";
   }
 }
 

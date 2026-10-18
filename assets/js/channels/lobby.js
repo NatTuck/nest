@@ -104,10 +104,14 @@ export function joinLobby(onOk, onError) {
     }
   });
 
+  // A space's environment was edited. The frame carries the *whole* space (the
+  // server broadcasts the row), so the store replaces its copy rather than
+  // patching one field — another session of the same user then shows every
+  // edited value, not just the one it knows about.
   lobbyChannel.on("space:updated", (payload) => {
     const space = payload?.space;
-    if (space?.id != null && typeof space.network_access === "boolean") {
-      getStore().setSpaceNetworkAccess(space.id, space.network_access);
+    if (space?.id != null) {
+      getStore().updateSpace(space);
     }
   });
 
@@ -121,9 +125,6 @@ export function joinLobby(onOk, onError) {
     const store = getStore();
     if (payload?.name && payload?.model) {
       store.applyAgentModelUpdate(payload.name, payload.model);
-    }
-    if (payload?.name && payload?.workspace_path !== undefined) {
-      store.applyAgentWorkspaceUpdate(payload.name, payload.workspace_path);
     }
   });
 
@@ -190,7 +191,6 @@ export function createSpace(model, vocationSlug, onOk, onError, opts = {}) {
   if (opts.slug) payload.slug = opts.slug;
   if (opts.blueprint_id) payload.blueprint_id = opts.blueprint_id;
   if (opts.agent_name) payload.agent_name = opts.agent_name;
-  if (opts.workspace_path) payload.workspace_path = opts.workspace_path;
   if (typeof opts.network_access === "boolean") {
     payload.network_access = opts.network_access;
   }
@@ -223,16 +223,32 @@ export function archiveSpace(spaceId, onOk, onError) {
 }
 
 /**
- * Turn a space's network access on or off. It is a space property, editable
- * after creation, and it takes effect for the space's agents' subsequent
- * commands.
+ * Edit a space's **environment**: its workspace, its network access and its
+ * sandbox backend.
+ *
+ * One push for all three because they are one decision: every agent in the
+ * space inherits them, and the server tells the live ones about the change
+ * (`Agent.space_changed/2`). Nothing is restarted; a *backend* change releases
+ * this space's container, so its agents' `/tmp` (offloads, background-job logs)
+ * and any running background job go with it — the dialog says so before the
+ * save.
+ *
+ * The reply is the environment that is now in force, with string keys. The
+ * whole space arrives separately, as a `space:updated` frame, and that is what
+ * updates the store.
  */
-export function setSpaceNetwork(spaceId, networkAccess, onOk, onError) {
-  if (!lobbyChannel) return;
+export function editSpace(spaceId, values, onOk, onError) {
+  if (!lobbyChannel) {
+    if (onError) onError(new Error("Not connected to lobby"));
+    return;
+  }
+
   lobbyChannel
-    .push("set_space_network", {
+    .push("edit_space", {
       space_id: spaceId,
-      network_access: networkAccess,
+      workspace_path: values.workspace_path,
+      network_access: values.network_access,
+      sandbox_backend: values.sandbox_backend,
     })
     .receive("ok", (resp) => {
       if (onOk) onOk(resp);
@@ -411,10 +427,11 @@ export function changeAgentModel(name, spaceId, model, onOk, onError) {
 }
 
 /**
- * Edit an agent's model (and thinking level) and working directory
- * in a single lobby `edit_agent` action.
+ * Edit an agent's model (and thinking level) via the lobby's `edit_agent`
+ * action. The working directory is not here: a workspace is a *space*
+ * property, so it is edited on the space.
  */
-export function editAgent(name, spaceId, model, workspacePath, onOk, onError) {
+export function editAgent(name, spaceId, model, onOk, onError) {
   if (!lobbyChannel) {
     if (onError) onError(new Error("Not connected to lobby"));
     return;
@@ -428,7 +445,6 @@ export function editAgent(name, spaceId, model, workspacePath, onOk, onError) {
       provider: model.provider ?? null,
       thinking_level: model.thinking_level ?? null,
     },
-    workspace_path: workspacePath ?? null,
   };
 
   lobbyChannel

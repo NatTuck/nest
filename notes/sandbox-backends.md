@@ -1,8 +1,10 @@
 # Sandbox backends
 
-A space is created with a **sandbox backend**, chosen once and immutable
-afterwards: `spaces.sandbox_backend` is one of `bwrap` (the default), `docker`
-or `none`. `Nest.Sandbox.Backend` owns the list and dispatches on it; every
+A space is created with a **sandbox backend**: `spaces.sandbox_backend` is one
+of `bwrap` (the default), `docker` or `none`. It is editable, through the one
+environment edit (`Nest.Spaces.update_environment/2`), together with the
+workspace and the network — see "An environment edit replaces the container"
+below for what an edit costs. `Nest.Sandbox.Backend` owns the list and dispatches on it; every
 agent in a space runs its commands through the space's backend.
 
 `Nest.Tools.ShellCmd` is the single seam: a `shell-cmd`, a `read`, a `stat`, a
@@ -37,7 +39,8 @@ the real machine, and its caps are unenforceable by construction — including t
 read-only mask over `.nest` and `AGENTS.md`, so an agent in a `none` space can
 edit either.
 That is stated in `Nest.Sandbox.Backend.None`'s moduledoc, in `Nest.Spaces.Space`'s
-and in the New Space form's help text, rather than papered over.
+(see its `network_access` paragraph) and in the New Space form's help text,
+rather than papered over.
 
 Agent-visible paths are identical on every backend: `/tmp/<agent-name>/…` for
 scratch and the workspace's own path for the workspace.
@@ -174,23 +177,28 @@ nothing on the host may create or write it (`Nest.Sandbox.Mounts.host_scratch?/1
   reads and removes it through the container; the manager's `append` is a no-op
   there, because the bytes it receives on the exec's stream are that same output.
 
-### A network edit replaces the container
+### An environment edit replaces the container
 
-`--network none` is fixed when a container is created, so
-`Nest.Spaces.set_network_access/2` releases the space's containers as part of the
-change and the next command builds one with the new value. Everything that lived
-only in the container goes with it: the agents' `/tmp` (offloads, job logs) and
-any running background job. The UI says so before the toggle is flipped. For a
-`none` space nothing is released — its caps were never enforceable, and the
-toggle has always been advisory there.
+All three of a space's environment properties are part of a container's identity:
+the image and `--network` value are fixed at creation, and the workspace is one of
+its binds (the `nest.layout` label, which `ensure_container/3` compares). So an
+edit to any of them releases the space's containers as part of the change —
+`Nest.Spaces.update_environment/2` gives `Nest.Sandbox.Backend.remove_space/2` the
+backend the row had *before* the write — and the next command builds one with the
+new values. Everything that lived only in the container goes with it: the agents'
+`/tmp` (offloads, job logs) and any running background job. The edit dialog says
+so before it is saved. A save that names what the row already says is not an
+edit: it releases nothing and tells nobody. For a `none` space nothing is
+released — its caps were never enforceable, and the network choice has always
+been advisory there.
 
-The space's live agents are told the new value as part of the same change
-(`Nest.Agents.Agent.set_network_access/2`, a cast), because the value is carried
-on an agent's `Nest.Sandbox.Mounts` and that is what its caps are resolved from.
+The space's live agents are told the new values as part of the same change
+(`Nest.Agents.Agent.space_changed/2`, a cast), because they are carried on an
+agent's `Nest.Sandbox.Mounts` and that is what its caps are resolved from.
 Without that push an agent that started before the change would keep the old
-value until it was restarted, which is what the toggle used to do. A command
-already in flight keeps the caps it started with — the mounts are re-read at the
-turn's next settle.
+values until it was restarted, which is all a toggle that only moved the row
+could do. A command already in flight keeps the caps it started with — the mounts
+are re-read at the turn's next settle.
 
 ## One container per space
 

@@ -56,27 +56,34 @@ defmodule Nest.Agents.Agent.Machine.Phase do
   end
 
   # `entry` is turn-scoped for a compaction, for the same reason `focus` is: a
-  # `{:compaction, carried}` entry exists only for the compaction turn it was
-  # staged for. Leaving one behind is not cosmetic — `Response.dispatch/2` sets
-  # `compactor? = match?({:compaction, _}, m.entry)` and
+  # `{:compaction, carried, notice}` entry exists only for the compaction turn it
+  # was staged for. Leaving one behind is not cosmetic — `Response.dispatch/2`
+  # sets `compactor? = match?({:compaction, _, _}, m.entry)` and
   # `Machine.Turn.classify_response/1` checks that **first and unconditionally**,
   # so the very next chat turn's reply would be classified `:compaction` and
   # `commit_compaction/2` would archive the whole active segment and persist that
   # reply as the summary.
   #
-  # It is cleared here rather than at the sites because *every* route out of a
-  # compaction reaches `enter/4`: `Phase.rest/4` (`:loop_ack`, `{:unblocked}`,
-  # `:llm_error`, `:stopped`, the failure funnel) and `Phase.block/4` all go
-  # through it, and `enter_blocked/2` deliberately does not — which is what keeps
-  # a `:compaction_failed` retry's entry alive for `Compaction.retry/1`.
+  # It is cleared here rather than at the sites, and the two routes out differ on
+  # purpose:
+  #
+  #   * `Phase.rest/4` — `:loop_ack`, `{:unblocked}`, `:llm_error`, `:stopped`,
+  #     the failure funnel — reaches `enter/4`, so the entry (and the notice it
+  #     may carry) is dropped with the turn;
+  #   * `Phase.block/4` goes through `enter_blocked/2` instead, which
+  #     deliberately keeps the entry. That is what keeps a `:compaction_failed`
+  #     retry's entry — and the notice staged for that compaction — alive for
+  #     `Compaction.retry/1`. The exits *from* a blocked phase (`{:unblocked}`,
+  #     `:loop_ack`, a retry that commits) are `rest/4`/`enter/4` routes, so the
+  #     entry dies there.
   #
   # The two clauses mirror `turn_guidance/3`: `:idle` covers a stop during a
   # compaction (`m.kind` stays `:compaction`), and any non-`:compaction` kind
   # covers the rest. A non-compaction `entry` (the carried user message
   # `Compaction.resume_with_pending/1` rides into a chat turn) is left alone.
-  defp turn_entry(_kind, :idle, {:compaction, _}), do: nil
+  defp turn_entry(_kind, :idle, {:compaction, _, _}), do: nil
   defp turn_entry(:compaction, _phase, entry), do: entry
-  defp turn_entry(_kind, _phase, {:compaction, _}), do: nil
+  defp turn_entry(_kind, _phase, {:compaction, _, _}), do: nil
   defp turn_entry(_kind, _phase, entry), do: entry
 
   # `focus` and `preserve` are turn-scoped: they exist only for the compaction

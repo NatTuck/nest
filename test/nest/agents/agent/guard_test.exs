@@ -483,7 +483,10 @@ defmodule Nest.Agents.Agent.GuardTest do
   defp sample_event(:loop_ack), do: :loop_ack
   defp sample_event(:blocked), do: {:blocked, :needs_repair, nil}
   defp sample_event(:unblocked), do: {:unblocked}
-  defp sample_event(:workspace_notice), do: :workspace_notice
+
+  defp sample_event(:workspace_notice),
+    do: {:workspace_notice, %{workspace: nil, network_access: false, backend: "bwrap"}}
+
   defp sample_event(:tool_results), do: {:tool_results, make_ref(), []}
   defp sample_event(:reply_sent), do: {:reply_sent, "peer"}
   defp sample_event(:child_spawned), do: {:child_spawned, "kid", false, nil}

@@ -167,7 +167,9 @@ defmodule Nest.PersistenceAgentsTest do
       # returns in the future.
       assert (restored.model[:name] || restored.model["name"]) == attrs.model.name
       assert (restored.model[:provider] || restored.model["provider"]) == attrs.model.provider
-      assert restored.workspace_path == attrs.workspace_path
+      # The workspace is the *space's*, not the agent's: `start_attrs` reads it
+      # from the space row, the same way it reads the backend and network access.
+      assert restored.workspace_path == Nest.Spaces.workspace_path(attrs.space_id)
       assert restored.last_compaction_index == 2
       # The `agents.id` row this session's messages belong to, which the
       # append path checks before writing (see
@@ -286,38 +288,6 @@ defmodule Nest.PersistenceAgentsTest do
       assert "#{base}-a" in all
       assert "#{base}-b" in all
       assert "#{base}-c" in all
-    end
-  end
-
-  describe "update_agent_workspace/3" do
-    test "replaces the workspace_path column" do
-      attrs = agent_attrs("update-ws-#{Elixir.System.unique_integer([:positive])}")
-      {:ok, _} = Persistence.insert_agent(attrs)
-
-      assert :ok = Persistence.update_agent_workspace(test_space_id(), attrs.name, "/tmp/ws")
-
-      {:ok, %PersistedAgent{workspace_path: ws}} =
-        Persistence.fetch_agent(test_space_id(), attrs.name)
-
-      assert ws == "/tmp/ws"
-    end
-
-    test "clears the workspace_path with nil" do
-      attrs = agent_attrs("clear-ws-#{Elixir.System.unique_integer([:positive])}")
-      {:ok, _} = Persistence.insert_agent(attrs)
-      :ok = Persistence.update_agent_workspace(test_space_id(), attrs.name, "/tmp/ws")
-
-      assert :ok = Persistence.update_agent_workspace(test_space_id(), attrs.name, nil)
-
-      {:ok, %PersistedAgent{workspace_path: ws}} =
-        Persistence.fetch_agent(test_space_id(), attrs.name)
-
-      assert ws == nil
-    end
-
-    test "returns :not_found when the agent row is absent" do
-      assert {:error, :not_found} =
-               Persistence.update_agent_workspace(test_space_id(), "missing-ws", "/tmp/x")
     end
   end
 

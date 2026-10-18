@@ -436,7 +436,7 @@ defmodule MachineDebtTest do
   end
 
   defp workspace_notice(senders) do
-    Machine.step(owed(with_notice(state_at(:idle)), senders), :workspace_notice)
+    Machine.step(owed(state_at(:idle), senders), {:workspace_notice, notice_values()})
   end
 
   defp cannot_compact(senders) do
@@ -481,8 +481,10 @@ defmodule MachineDebtTest do
 
   defp resume_nothing(senders), do: Compaction.resume(owed(committing(nil), senders))
 
+  # The notice is on the compaction's entry: only that compaction appends it.
   defp resume_notice(senders) do
-    Compaction.resume(owed(with_notice(committing(nil)), senders))
+    staged = %{committing(nil) | entry: {:compaction, nil, notice_values()}}
+    Compaction.resume(owed(staged, senders))
   end
 
   defp settle_gate(senders) do
@@ -504,14 +506,19 @@ defmodule MachineDebtTest do
   defp with_limit(m, limit),
     do: %{m | work: %{m.work | ctx: %{m.work.ctx | context_limit: limit}}}
 
-  defp with_notice(m), do: %{m | work: %{m.work | pending_notice: "/tmp/AGENTS.md"}}
+  # A space-environment change rides the `:workspace_notice` event (and, when it
+  # needs a compaction, that compaction's entry) — never `work.pending_notice`,
+  # which is the budget reminder's slot.
+  defp notice_values do
+    %{workspace: "/tmp/AGENTS.md", network_access: true, backend: "bwrap"}
+  end
 
   defp worker_machine(senders, kind) do
     m = owed(state_at(if(kind == :tools, do: :executing_tools, else: :generating)), senders)
     %{m | work: %{m.work | active_worker: self(), active_worker_kind: kind}}
   end
 
-  defp committing(carried), do: %{state_at(:committing) | entry: {:compaction, carried}}
+  defp committing(carried), do: %{state_at(:committing) | entry: {:compaction, carried, nil}}
 
   defp carried, do: elem(Messages.assistant(response(text: "carried")), 1)
 
