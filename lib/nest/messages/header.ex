@@ -8,14 +8,18 @@ defmodule Nest.Messages.Header do
   model had to infer who was speaking from them.
 
       [From user | mode: act]
-      [From user, agents-send reply required | mode: act]
+      [From user @nat | mode: act]
+      [From user @nat, agents-send reply required | mode: act]
       [From agent crazy-dolphin | mode: plan]
       [From agent crazy-dolphin, agents-send reply required | mode: plan]
       [From nest runtime | mode: act]
       [From nest runtime | mode: compact]
 
-  * The human arm carries **no name yet**; `@nat` arrives with `Nest.Name`. The
-    human arm is therefore exactly `user`, and that is deliberate.
+  * The human arm is `user`, and it carries the human's **address** (`@nat`)
+    when the sender is written as one (`Nest.Address`): a note delivered from an
+    address is the one a recipient has to be able to answer, and the address is
+    what it answers to. A sender with no sigil is an agent's name, so a row that
+    says just `user` is a human whose name the producer did not have.
   * `, agents-send reply required` maps to exactly one predicate: the note's
     kind is `:query` (`Nest.Agents.Agent.Inbox.t:kind/0`). Nothing else sets it,
     and the compaction request never does — the response it wants is the model's
@@ -41,7 +45,7 @@ defmodule Nest.Messages.Header do
   badge, never the framing.
   """
 
-  @type sender :: :user | :runtime | {:agent, String.t() | nil}
+  @type sender :: :user | :runtime | {:user, String.t()} | {:agent, String.t() | nil}
 
   @doc """
   The header line for `sender` in `mode`, with the reply marker when
@@ -104,6 +108,18 @@ defmodule Nest.Messages.Header do
   else is the agent whose name it carries — including a spawn kickoff, which is
   a `kind: :user` entry that nobody typed.
 
+  **An address is a human, and carries the name.** A sender written with the
+  sigil (`"@nat"`) is a human's, so the row reads `[From user @nat …]` — the
+  name matters there because it is the address the recipient answers to: the
+  obligation is keyed on it (`Machine.owed_replies`) and a reply is an
+  `agents-send` back to it. A bare name is an agent's, and is not folded
+  (`Nest.Address`), so `"Nat"` reads as that agent.
+
+  The order of the clauses is the rule: `human?` first, then the runtime's own
+  kind, then the address. So a runtime entry reads as the runtime's whatever
+  name it carries — its words can never be framed as a human's — and a human's
+  address only names a human on a row that is not the runtime's.
+
   A missing or blank name still says `agent`: the row must not read as a
   human's, and putting `nil` in the prompt is worse than leaving the name out.
   """
@@ -112,10 +128,20 @@ defmodule Nest.Messages.Header do
 
   def sender(_from, true, _kind), do: :user
   def sender(_from, _human?, :runtime), do: :runtime
+
+  def sender(from, _human?, _kind) when is_binary(from) do
+    case Nest.Address.parse(from) do
+      {:user, username} -> {:user, username}
+      {:agent, _name} -> {:agent, from}
+    end
+  end
+
   def sender(from, _human?, _kind), do: {:agent, from}
 
   defp who(:user), do: "user"
   defp who(:runtime), do: "nest runtime"
+  defp who({:user, username}) when is_binary(username) and username != "", do: "user @#{username}"
+  defp who({:user, _username}), do: "user"
   defp who({:agent, name}) when is_binary(name) and name != "", do: "agent #{name}"
   defp who({:agent, _name}), do: "agent"
 end

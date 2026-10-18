@@ -231,6 +231,28 @@ defmodule Nest.AccountsTest do
     end
   end
 
+  describe "get_user_by_username/1" do
+    test "resolves a username the way an address writes it" do
+      # The resolution behind `Nest.Notes.deliver/5`'s `:user` addressee: an
+      # address names a user, and this is the one place that decides whether it
+      # names one. The fold is `Nest.Name`'s — the rule a username is *stored*
+      # by — so `@Nat` and `@nat` are one lookup and a caller never has to know.
+      {:ok, alice, :admin} = Accounts.create_user(registration_attrs("Jane Doe"), "first-user")
+
+      assert %UserSchema{id: id} = Accounts.get_user_by_username("jane-doe")
+      assert id == alice.id
+      assert %UserSchema{id: ^id} = Accounts.get_user_by_username("Jane Doe")
+      assert %UserSchema{id: ^id} = Accounts.get_user_by_username("JANE-DOE")
+
+      # Nothing, for a name nobody has — including the two shapes that fold to
+      # no name at all.
+      assert Accounts.get_user_by_username("bob") == nil
+      assert Accounts.get_user_by_username("") == nil
+      assert Accounts.get_user_by_username("...") == nil
+      assert Accounts.get_user_by_username(nil) == nil
+    end
+  end
+
   describe "get_user_by_token/1" do
     setup do
       {:ok, user, _} = Accounts.create_user(registration_attrs("alice"), "first-user")

@@ -91,6 +91,27 @@ defmodule Nest.Accounts do
   def get_user(_), do: nil
 
   @doc """
+  Look up a user by username. Returns `nil` when not found — including for a
+  name that folds to nothing, which is what `@` alone is.
+
+  The argument is folded through `Nest.Name.sanitize/1` first, so `@Nat` and
+  `@nat` are one lookup: a username is *stored* in that canonical form
+  (`User.registration_changeset/2`), so this is what makes an address
+  case-insensitive without every caller having to know the rule. It is the
+  resolution behind `Nest.Notes.deliver/5`'s `:user` addressee — an address
+  names a user, and this is the one place that decides whether it names one.
+  """
+  @spec get_user_by_username(String.t() | nil) :: UserSchema.t() | nil
+  def get_user_by_username(username) when is_binary(username) do
+    case Nest.Name.sanitize(username) do
+      "" -> nil
+      folded -> Repo.get_by(UserSchema, username: folded)
+    end
+  end
+
+  def get_user_by_username(_), do: nil
+
+  @doc """
   Verify a Phoenix.Token and return the corresponding user.
   Returns `nil` for any failure mode — bad token, expired,
   malformed, or the encoded user no longer exists. The token

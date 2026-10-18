@@ -252,6 +252,27 @@ defmodule Nest.Agents.Agent.HeaderTest do
     end
   end
 
+  describe "sender/3" do
+    test "names a human when the sender is an address, and only then" do
+      # The sigil is what says the words are a human's, and it carries the
+      # address the recipient answers to: a note from `@nat` is the one the
+      # agent must answer, and `@nat` is what it answers to.
+      assert Header.sender("@nat", false, :query) == {:user, "nat"}
+
+      assert Header.line(Header.sender("@nat", false, :query), "act", true) ==
+               "[From user @nat, agents-send reply required | mode: act]"
+
+      # A bare name is an agent's, whatever the `human?` flag says about who
+      # typed it: the chat channel passes the socket's username with no sigil,
+      # and that row is a human's with no address to state.
+      assert Header.sender("nat", true) == :user
+      assert Header.sender("nat", false) == {:agent, "nat"}
+
+      # The runtime's own words are the runtime's whatever agent they are about.
+      assert Header.sender("crazy-dolphin", false, :runtime) == :runtime
+    end
+  end
+
   # --- helpers ---
 
   # Every context kind, one entry per 75% variant, each carrying the ack
