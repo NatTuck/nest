@@ -533,6 +533,13 @@ mistake for it:
   silent at delivery — it surfaces only as a wrongly-labelled render. Precommit
   runs no dialyzer, so `@type kind` is documentation and the tests are the
   entire net.
+* **A bridged lost-promise record names its ids on two rows.**
+  `MessageList.tag_lost_promises/2` tags every assistant row, so a record that
+  now has both a bridge and an ack carries its promise ids on both. Harmless —
+  `promise_ids/2` reads them into a `MapSet`, so the set and the heal's
+  idempotency are unchanged — but it is a consequence of the bridge rather than
+  a decision, and a one-line change to the helper would put the marker on the
+  ack alone.
 
 ## What this does not do
 
