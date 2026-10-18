@@ -315,7 +315,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     Mimic.copy(Nest.Agents)
 
-    Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content ->
+    Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content, _mode, _sender ->
       send(test_pid, {:child_chat_blocked, self()})
 
       receive do

@@ -3,15 +3,14 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   Chat-handling entry point for an agent.
 
   The pipeline resolves the effective mode + capabilities, builds the
-  user message (persisted and LLM-facing, both carrying the same
-  `[mode: <name>]\\n` prefix so the mode round-trips through any store),
-  then hands the turn to the settle loop. Every transition/decision after
-  that point lives in `Machine.step/2`; the pipeline only prepares the
-  event.
+  user message through `Dispatch.build_user_message/3` — the one builder, so
+  an idle turn and a drained batch produce the same row — then hands the turn
+  to the settle loop. Every transition/decision after that point lives in
+  `Machine.step/2`; the pipeline only prepares the event.
   """
 
   alias Nest.Agents.Agent.Turn
-  alias Nest.Messages.Part
+  alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Messages.User
   alias Nest.Modes
   alias Nest.Sandbox.Mounts
@@ -21,12 +20,20 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   @doc """
   Handle an incoming chat turn. Returns the GenServer reply tuple.
 
-  `human?` says whether `content` is the human's own words; only then is the
-  built message tagged `origin: "human"` for the Ctrl/Cmd+Up recall list.
+  `sender` is who sent it — the human's username from the channel, or the
+  parent agent's name for an `agents-spawn` kickoff — and `human?` says whether
+  `content` is the human's own words. The pair is what the row's header states
+  (`Nest.Messages.Header`), and `human?` is also what tags the message
+  `origin: "human"` for the Ctrl/Cmd+Up recall list.
   """
-  @spec handle_chat(Nest.Agents.Agent.t(), String.t(), String.t() | nil, boolean()) ::
-          {:noreply, Nest.Agents.Agent.t()}
-  def handle_chat(state, content, requested_mode, human? \\ false) do
+  @spec handle_chat(
+          Nest.Agents.Agent.t(),
+          String.t(),
+          String.t() | nil,
+          String.t() | nil,
+          boolean()
+        ) :: {:noreply, Nest.Agents.Agent.t()}
+  def handle_chat(state, content, requested_mode, _sender, human? \\ false) do
     mode = requested_mode || state.live.mode
 
     {effective_mode, _caps} =
@@ -41,33 +48,23 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # nothing is announced: the message's own prefix is what states it.
     pre_mode = state.live.mode
     state = %{state | live: %{state.live | mode: effective_mode, cancelled: false}}
-    user = build_user_message(content, effective_mode, human?)
+
+    # The one builder (`Dispatch.build_user_message/3`), not a private copy:
+    # `chat_or_queue/5` sends an idle agent straight here and a busy one to the
+    # inbox, so a header owned by the drain would leave this — the common case,
+    # and the only path a spawn kickoff takes on an idle child — unheadered.
+    user = Dispatch.build_user_message(content, effective_mode, human_metadata(human?))
 
     {:ok, state} = Turn.settle(state, {:chat_request, {:user_message, user}})
     {:noreply, Turn.keep_mode(state, pre_mode)}
   end
 
-  # Build the persisted user message. The mode is encoded both on
-  # `metadata.mode` (UI badge) and as a `[mode: <name>]\n` prefix on the
-  # text part (source of truth for the LLM). `index: nil` — the appender
-  # stamps the actual index.
-  #
   # `origin: "human"` is added only when `human?` — it marks the message as
   # the human's own words, which is what the Ctrl/Cmd+Up recall list keys off
   # (see `Nest.Messages.User.human_metadata/0`). A kickoff nobody typed
   # (`agents-spawn`'s `query`) is left untagged, so it never reaches that list.
-  defp build_user_message(content, mode, human?) do
-    %User{
-      index: nil,
-      timestamp: DateTime.utc_now(),
-      parts: [%Part.Text{text: "[mode: #{mode}]\n#{content}"}],
-      metadata: maybe_put_human(%{"mode" => mode}, human?),
-      api_logs: []
-    }
-  end
-
-  defp maybe_put_human(metadata, true), do: Map.merge(metadata, User.human_metadata())
-  defp maybe_put_human(metadata, _human?), do: metadata
+  defp human_metadata(true), do: User.human_metadata()
+  defp human_metadata(_human?), do: %{}
 
   @doc """
   The user-turn preflight decision, used by callers that need the same

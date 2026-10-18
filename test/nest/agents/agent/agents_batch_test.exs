@@ -678,7 +678,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
 
   defp stub_child_chat do
     Mimic.copy(Agents)
-    Mimic.stub(Agents, :chat, fn _space_id, _name, _content -> :ok end)
+    Mimic.stub(Agents, :chat, fn _space_id, _name, _content, _mode, _sender -> :ok end)
   end
 
   # The coordinator's vocation exposes `agents-batch`. The children take the
