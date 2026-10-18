@@ -79,8 +79,9 @@ defmodule Nest.ProjectConfig do
   included. It is a property of the workspace rather than of the backend, so it
   answers the same question everywhere and cannot be sidestepped by changing the
   answer where enforcement is weaker. The cost is a `"none"` space being refused
-  for a protection that backend could not have offered anyway; the alternative is
-  a gate that means something different on each backend.
+  for a protection that backend could not have offered anyway, and the remedy is
+  the same everywhere: copy the file into the workspace instead of linking it.
+  The alternative is a gate that means something different on each backend.
 
   ## Failures
 
@@ -96,12 +97,6 @@ defmodule Nest.ProjectConfig do
   alias Nest.Sandbox.Mounts
 
   @modes ~w(rw tmp)
-
-  @doc """
-  The protected instruction file's name (`Nest.ConfigFile` owns the spelling).
-  """
-  @spec agents_md_name() :: String.t()
-  def agents_md_name, do: Nest.ConfigFile.agents_md_name()
 
   @typedoc "A project mount with its host path expanded."
   @type mount :: map()
@@ -132,13 +127,22 @@ defmodule Nest.ProjectConfig do
     path = Path.join(workspace, Nest.ConfigFile.nest_name())
 
     case Nest.ConfigFile.read(path) do
-      {:ok, content} -> parse_cached(path, content, workspace)
-      :absent -> {:ok, %{"mounts" => []}}
-      # Unreachable: `Nest.ConfigFile.error/1` refuses such a workspace, so no
-      # agent and no sandbox ever resolves caps for one. `ConfigFile.read/1` is total,
-      # so the arm exists; it is not a policy choice.
-      {:not_regular, _type} -> {:ok, %{"mounts" => []}}
-      {:error, reason} -> read_failure(path, reason)
+      {:ok, content} ->
+        parse_cached(path, content, workspace)
+
+      :absent ->
+        {:ok, %{"mounts" => []}}
+
+      # Reached when a config path is replaced *while an agent is running*:
+      # composition is re-run on compaction, so this is not the start gate's
+      # business. A `.nest` we cannot protect must not degrade silently — the same
+      # rule a malformed one follows — so this is an error, which `section/1`
+      # renders as a visible block.
+      {:not_regular, _type} ->
+        {:error, "#{path} is not a regular file, so Nest cannot protect it"}
+
+      {:error, reason} ->
+        read_failure(path, reason)
     end
   end
 

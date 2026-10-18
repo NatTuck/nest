@@ -50,7 +50,7 @@ config :nest, hpu_device_paths: []
 #
 # No test can do that, and not because of a fixture: `AGENTS.md` is a **host**
 # read (`Nest.Agents.Agent.SystemPrompt.agents_md_section/1` ->
-# `Nest.ProjectConfig.read_config_file/1`), so composing a prompt reaches no
+# `Nest.ConfigFile.read/1`), so composing a prompt reaches no
 # backend at all — on docker, bwrap or none. There is no agent whose workspace
 # would make it shell out, and no `sandbox_setup_failed` line to print.
 config :nest, docker_runner: fn _argv -> {"", 0} end

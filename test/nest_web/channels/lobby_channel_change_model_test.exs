@@ -180,6 +180,39 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
       assert log =~ "could not resolve model"
     end
 
+    test "replies with a config-file refusal rather than crashing the channel", %{
+      socket: socket
+    } do
+      {:ok, space_id, name} = create_test_agent(socket, "qwen3.5-plus")
+
+      # `edit_agent` reaches `ModelHandler.validate_workspace/2` ->
+      # `Sandbox.workspace_error/1`, so the tuple lands in `edit_payload/2`.
+      # Without a clause there it falls through to `to_string/1`, which raises
+      # and kills the channel process — the client gets *no* reply.
+      # The payload's workspace is what `validate_workspace/2` checks, so it does
+      # not have to be the agent's own.
+      ws = AgentTestHelpers.default_test_workspace()
+      File.write!(Path.join(ws, "real.nest"), "")
+      File.ln_s!(Path.join(ws, "real.nest"), Path.join(ws, ".nest"))
+
+      log =
+        capture_log(fn ->
+          ref =
+            push(socket, "edit_agent", %{
+              "name" => name,
+              "space_id" => space_id,
+              "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+              "workspace_path" => ws
+            })
+
+          assert_reply ref, :error, %{"reason" => "config_file_not_regular", "path" => path}, 750
+
+          assert path == Path.join(ws, ".nest")
+        end)
+
+      assert log =~ "Nest cannot protect it from being rewritten"
+    end
+
     test "returns :invalid_model for an unknown model", %{socket: socket} do
       {:ok, space_id, name} = create_test_agent(socket, "qwen3.5-plus")
 

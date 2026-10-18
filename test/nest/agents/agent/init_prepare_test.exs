@@ -143,6 +143,46 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
     end
   end
 
+  describe "the supervisor's config-file gate" do
+    test "refuses a restart whose workspace config path is now a symlink", %{
+      space_id: space_id,
+      vocation: vocation
+    } do
+      # The one route that never reaches `Sandbox.build/4`: an ordinary restart or
+      # an on-demand load. The human replaces `.nest` with a symlink while the
+      # agent is stopped; the next start has to refuse rather than come up and
+      # fail on every command.
+      ws = AgentTestHelpers.default_test_workspace()
+
+      attrs =
+        agent_attrs(space_id, vocation, %{
+          name: "gate-#{System.unique_integer([:positive])}",
+          workspace_path: ws
+        })
+
+      {:ok, _row} = Persistence.insert_agent(attrs)
+
+      real = Path.join(ws, "real.nest")
+      File.write!(real, "")
+      File.ln_s!(real, Path.join(ws, ".nest"))
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:config_file_not_regular, path}} =
+                   Supervisor.fetch_or_start_agent(space_id, %{name: attrs.name})
+
+          assert path == Path.join(ws, ".nest")
+
+          # And the same through the other entry point, so this is the gate rather
+          # than `prepare_for_start/1`'s rescue (which would be `:prepare_failed`).
+          assert {:error, {:config_file_not_regular, _}} =
+                   Supervisor.get_agent(space_id, attrs.name)
+        end)
+
+      assert log =~ "Nest cannot protect it from being rewritten"
+    end
+  end
+
   describe "the supervisor's boundary guard" do
     test "a raise out of composition reaches a channel caller as {:error, {:prepare_failed, _}}",
          %{space_id: space_id, vocation: vocation} do

@@ -316,10 +316,13 @@ defmodule Nest.SandboxTest do
       File.write!(real, "")
       File.ln_s!(real, Path.join(dir, ".nest"))
 
-      capture_log(fn ->
-        assert {:error, reason} = Sandbox.build(build_caps(), Mounts.new(dir, nil))
-        assert reason =~ "not a regular file"
-      end)
+      log =
+        capture_log(fn ->
+          assert {:error, reason} = Sandbox.build(build_caps(), Mounts.new(dir, nil))
+          assert reason =~ "not a regular file"
+        end)
+
+      assert log =~ "Nest cannot protect it from being rewritten"
     end
   end
 

@@ -522,4 +522,41 @@ defmodule Nest.Tools.ShellCmdTest do
     assert {:ok, _} = ShellCmd.execute("cat > big.bin", Mounts.new(ws, nil), nil, stdin: payload)
     assert File.stat!(Path.join(ws, "big.bin")).size == byte_size(payload)
   end
+
+  describe "the config-file gate" do
+    test "refuses a workspace whose config path is not a regular file, on every backend", %{
+      ws: ws
+    } do
+      # The only per-command gate `docker` and `none` have: `Docker.command/3` and
+      # `job_spec/4` build the inner bwrap from `Binds.specs/2` and never reach
+      # `Sandbox.build/4`, and `none` builds no sandbox at all. Removing this
+      # clause would reopen the escalation on two of the three backends with a
+      # green suite, which is why the loop is over the backends rather than one.
+      for {backend, filename} <-
+            Enum.flat_map(
+              ["bwrap", "docker", "none"],
+              &[{&1, ".nest"}, {&1, "AGENTS.md"}]
+            ) do
+        # A fresh workspace per case: `ConfigFile.error/1` reports the *first*
+        # offender, so both files cannot be symlinked in one directory and both
+        # be observed.
+        case_ws = Path.join(ws, "#{backend}-#{filename}")
+        File.mkdir_p!(case_ws)
+        real = Path.join(case_ws, "real")
+        File.write!(real, "")
+        File.ln_s!(real, Path.join(case_ws, filename))
+
+        log =
+          capture_log(fn ->
+            assert {:error, msg} =
+                     ShellCmd.execute("echo hi", Mounts.new(case_ws, nil, backend), nil)
+
+            assert msg =~ "not a regular file"
+            assert msg =~ filename
+          end)
+
+        assert log =~ "Nest cannot protect it from being rewritten"
+      end
+    end
+  end
 end

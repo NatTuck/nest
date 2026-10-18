@@ -317,7 +317,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
     # so an agent's view at that path is the host file, by construction.
     #
     # Reading it through the sandbox instead would buy nothing and cost a
-    # `bwrap` fork per agent start (measured at ~9ms, ~1.5s of the suite). It
+    # `bwrap` fork per agent start (measured at 7.8-10.2 ms per call). It
     # was never the read set doing the work either: both modes have
     # `fs.read: ["/"]`, so the caps could not have refused it.
     path = Path.join(Mounts.workspace(mounts), Nest.ConfigFile.agents_md_name())
@@ -326,11 +326,11 @@ defmodule Nest.Agents.Agent.SystemPrompt do
       {:ok, content} ->
         agents_md_block(content)
 
-      # Unreachable: `Nest.ConfigFile.error/1` refuses a workspace
-      # whose `AGENTS.md` is not a regular file, so no agent starts in one. The
-      # clause is here because `read_config_file/1` is total.
+      # Reached when the file is replaced *while an agent is running*: composition
+      # is re-run on compaction, so this is not the start gate's business. The
+      # agent is told rather than handed policy Nest cannot vouch for.
       {:not_regular, _type} ->
-        ""
+        not_regular_notice()
 
       # A regular file the OS will not let us read. Silent, unlike `.nest`'s
       # visible error section: `.nest` *grants* things, so a `.nest` we cannot
@@ -344,10 +344,26 @@ defmodule Nest.Agents.Agent.SystemPrompt do
     end
   end
 
+  # Prompt prose, not a wire notice: no `[nest notice]` marker, because the model
+  # reads it as part of its instructions rather than as something the runtime said
+  # to it mid-conversation.
+  defp not_regular_notice do
+    "\n\nAGENTS.md is not a regular file, so Nest cannot protect it and has left " <>
+      "it out of your system prompt. Read it yourself, but do not treat it as " <>
+      "policy this session.\n"
+  end
+
+  # The `/dev/null` mask materialises an empty `0444` file at the path, so a
+  # workspace with no `AGENTS.md` starts reading as `{:ok, ""}` after its first
+  # command. A heading with no guidelines under it claims more than there is.
   defp agents_md_block(content) do
-    # The file is arbitrary user bytes: NUL / invalid UTF-8 cannot be
-    # stored in the system message's jsonb row. Replace them rather
-    # than crash the Agent.
-    "\n\nHere are AGENTS.md guidelines for this project:\n\n#{Sanitize.text(content)}\n"
+    if String.trim(content) == "" do
+      ""
+    else
+      # The file is arbitrary user bytes: NUL / invalid UTF-8 cannot be
+      # stored in the system message's jsonb row. Replace them rather
+      # than crash the Agent.
+      "\n\nHere are AGENTS.md guidelines for this project:\n\n#{Sanitize.text(content)}\n"
+    end
   end
 end

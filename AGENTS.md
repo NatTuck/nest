@@ -71,9 +71,15 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   on the **host** by the runtime and *handed* to the sandbox as binds, so **a
   regular file at either path** is the host's file by construction — which is
   why a path that is *not* a regular file (a symlink, a directory) is **refused**
-  at both workspace gates rather than tolerated: it cannot be masked, and a mask
-  that is merely omitted leaves it replaceable. On a `none` space none of that
-  holds, like every other cap.
+  rather than tolerated: it cannot be masked, and a mask that is merely omitted
+  leaves it replaceable. The refusal is on three funnels —
+  `Nest.Sandbox.workspace_error/1` (the choose-time path and `Sandbox.build/4`'s
+  final gate), `Supervisor.start_under_supervisor/2` (restart and on-demand load)
+  and `Nest.Tools.ShellCmd` (the one place all three backends pass through for a
+  command) — so a new path needs the gate if it starts an agent or runs a
+  command. **The mask** does not hold on a `none` space, like every other cap;
+  **the refusal** does, on every backend, because it is a property of the
+  workspace rather than of the backend.
 - A `docker` space's container is keyed on **the space and the installation**,
   never on a caps signature or on the BEAM: it binds the superset a space can
   need (what a mode that writes the workspace gets) and the bwrap *inside* it

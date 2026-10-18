@@ -136,17 +136,16 @@ defmodule Nest.Agents.AgentAgentsMdTest do
       MockClient.clear()
     end
 
-    # There was a test here asserting that a symlinked `AGENTS.md` was replaced in
-    # the prompt by a notice telling the agent it could read the file but not
-    # trust it as policy. That policy is gone: a symlinked config path is
-    # **refused** at both workspace gates now
-    # (`Nest.ConfigFile.error/1`, reached from
-    # `Nest.Sandbox.workspace_error/1`), because omitting the mask left the file
-    # replaceable — an `act` agent could delete the link and write its own
-    # `AGENTS.md`, which is cross-agent prompt injection. So no agent starts in
-    # such a workspace and there is no prompt to render a notice into. The
-    # refusal is pinned in `Nest.ProjectConfigTest` and
-    # `Nest.SandboxTest`/`LobbyChannelTest`.
+    # There was a test here asserting the notice a symlinked `AGENTS.md` used to
+    # get in the prompt. A *start* no longer renders one: `Nest.ConfigFile.error/1`
+    # refuses the workspace on all three funnels, so no agent comes up in one.
+    #
+    # The arm still exists, because composition is re-run **mid-session** — on
+    # compaction, by `Turn.Dispatch`/`Turn.Executor`/`Persistence.AgentCompaction`
+    # — so a human who replaces the file while the agent runs does reach it, and
+    # it renders a visible one-line notice. That is what
+    # `Nest.ConfigFileTest`/`Nest.ProjectConfigTest` pin, together with the
+    # refusal itself (`Nest.SandboxTest`, `LobbyChannelTest`).
     test "omits AGENTS.md section when workspace_path is nil" do
       vocation = create_vocation()
 

@@ -161,33 +161,42 @@ defmodule Nest.ProjectConfigTest do
       assert log =~ "could not read .nest"
     end
 
-    test "treats a .nest that is a directory as empty", %{dir: dir} do
-      # A directory is not a regular file, so `load/1` grants nothing. The gate
-      # (`config_file_error/1`) is what refuses the workspace.
+    test "renders a visible error for a .nest that is not a regular file", %{dir: dir} do
+      # A `.nest` Nest cannot protect must not degrade silently — the same rule a
+      # malformed one follows. A directory is the cheapest non-regular path that
+      # is not a symlink. Nothing here logs: the *gate* owns the warning, and this
+      # is the re-render path (a running agent whose file was replaced).
       File.mkdir_p!(nest_path(dir))
 
-      capture_log(fn ->
-        assert ProjectConfig.load(dir) == {:ok, %{"mounts" => []}}
-        assert ProjectConfig.section(dir) == ""
-      end)
+      assert {:error, reason} = ProjectConfig.load(dir)
+      assert reason =~ "not a regular file"
+
+      section = ProjectConfig.section(dir)
+      assert section =~ "[Project sandbox config error]"
+      assert section =~ "not a regular file"
     end
   end
 
   describe "a config path that is not a regular file" do
-    test "load/1 treats a symlinked .nest as empty and logs nothing", %{dir: dir} do
-      # The *gate* owns the warning now (`config_file_error/1`); `load/1` is
-      # total and only has to not follow the link.
+    test "load/1 refuses a symlinked .nest and never follows the link", %{dir: dir} do
+      # The *gate* owns the warning (`Nest.ConfigFile.error/1`); `load/1` only has
+      # to not follow the link, and to say so where a reader sees it. This is the
+      # re-render path — a running agent whose file was replaced — so it is not
+      # the gate's business.
       target = Path.join(dir, "real.nest")
       File.write!(target, "[[mount]]\npath = \"~/x\"\nmode = \"rw\"\n")
       File.ln_s!(target, nest_path(dir))
 
-      # No capture: `load/1` is pure now and this test therefore also proves it
-      # prints nothing. The warning lives in `config_file_error/1`, which the
-      # tests below assert positively — and "the path is not in the log" is not
-      # assertable through `capture_log` at all, since it collects every
-      # process's lines.
-      assert {:ok, %{"mounts" => []}} = ProjectConfig.load(dir)
-      assert ProjectConfig.section(dir) == ""
+      # No capture: `load/1` logs nothing (the gate does), so this also proves it
+      # prints nothing. "The path is not in the log" is not assertable through
+      # `capture_log` at all, since it collects every process's lines.
+      assert {:error, reason} = ProjectConfig.load(dir)
+      assert reason =~ "not a regular file"
+
+      # And it grants nothing, visibly: the target's `[[mount]]` never applies.
+      section = ProjectConfig.section(dir)
+      assert section =~ "[Project sandbox config error]"
+      refute section =~ "~/x"
     end
 
     test "a symlinked config file contributes no protected entry", %{dir: dir} do

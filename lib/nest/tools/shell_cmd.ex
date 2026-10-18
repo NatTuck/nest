@@ -379,24 +379,21 @@ defmodule Nest.Tools.ShellCmd do
     # `realpath` — a fork per command on the hottest path in the system. The
     # other two arms of `workspace_error/1` are covered here already (`File.dir?`)
     # or cannot occur (a workspace at or under `/tmp` is refused at creation).
-    with {:ok, _ok} <- config_ok(path),
-         true <- File.dir?(path) do
-      {:ok, mounts}
+    # `File.dir?` first, matching `Sandbox.workspace_error/1`'s order: a workspace
+    # path that is a regular file should say the directory does not exist, not
+    # name a config file inside something that is not a directory.
+    if File.dir?(path) do
+      case Nest.ConfigFile.error(path) do
+        :ok ->
+          {:ok, mounts}
+
+        {:error, {:config_file_not_regular, bad}} ->
+          {:error,
+           "#{bad} is not a regular file, so the sandbox cannot protect it from " <>
+             "being rewritten. Replace it with a regular file."}
+      end
     else
-      {:error, reason} -> {:error, reason}
-      false -> {:error, "Workspace directory does not exist: #{path}"}
-    end
-  end
-
-  defp config_ok(path) do
-    case Nest.ConfigFile.error(path) do
-      :ok ->
-        {:ok, :ok}
-
-      {:error, {:config_file_not_regular, bad}} ->
-        {:error,
-         "#{bad} is not a regular file, so the sandbox cannot protect it from being " <>
-           "rewritten. Replace it with a regular file."}
+      {:error, "Workspace directory does not exist: #{path}"}
     end
   end
 

@@ -93,6 +93,25 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
     assert log =~ "Failed to create space"
   end
 
+  test "answers a tagged reason it has no clause for with the caller's own code" do
+    # A tagged reason carries a detail term, so neither path may pass it to
+    # `to_string/1` — that raises and kills the channel. The two paths do not
+    # share a fallback code either: the client shows the user whether it was
+    # creating or editing.
+    reason = {:some_new_refusal, "detail"}
+
+    log =
+      capture_log(fn ->
+        assert {:error, %{"reason" => "failed_to_create"}} = AgentErrors.create_payload(reason)
+
+        assert {:error, %{"reason" => "failed_to_edit"}} =
+                 AgentErrors.edit_payload("some-agent", reason)
+      end)
+
+    assert log =~ "Failed to create space: {:some_new_refusal, \"detail\"}"
+    assert log =~ "Failed to edit agent \"some-agent\": {:some_new_refusal, \"detail\"}"
+  end
+
   test "stays generic and logs a reason it cannot show a user" do
     # The changeset is the case that makes the generic arm load-bearing:
     # `to_string/1` raises on it, so a raw pass-through would crash the channel.

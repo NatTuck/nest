@@ -558,18 +558,24 @@ defmodule NestWeb.LobbyChannelTest do
       File.write!(Path.join(ws, "real.nest"), "")
       File.ln_s!(Path.join(ws, "real.nest"), Path.join(ws, ".nest"))
 
-      ref =
-        push(socket, "create_space", %{
-          "name" => "cfg-refused-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
-          "workspace_path" => ws
-        })
+      # `push/3` is a `send/2`, so the channel can process the frame — and log —
+      # before the capture installs. It only looked ordered because
+      # `workspace_error/1` forks `realpath` first.
+      log =
+        capture_log(fn ->
+          ref =
+            push(socket, "create_space", %{
+              "name" => "cfg-refused-#{System.unique_integer([:positive])}",
+              "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+              "workspace_path" => ws
+            })
 
-      capture_log(fn ->
-        assert_reply ref, :error, %{"reason" => "config_file_not_regular", "path" => path}, 500
+          assert_reply ref, :error, %{"reason" => "config_file_not_regular", "path" => path}, 500
 
-        assert path == Path.join(ws, ".nest")
-      end)
+          assert path == Path.join(ws, ".nest")
+        end)
+
+      assert log =~ "Nest cannot protect it from being rewritten"
     end
   end
 

@@ -470,8 +470,8 @@ defmodule Nest.Agents.AgentTestHelpers do
       # workspace changes what the prompt *says* — the working-directory
       # section, the `.nest` section, and the `AGENTS.md` section, which reads
       # the file from the **host** (`SystemPrompt.agents_md_section/1`), so it
-      # costs a `File.read`, not a `bwrap` fork — and the tests that exercise
-      # any of those pass one.
+      # costs a `File.read`, not the 7.8-10.2 ms `bwrap` fork it used to — and the
+      # tests that exercise any of those pass one.
       workspace_path: nil,
       # Multi-user identity. Defaults to `nil` so tests that
       # pre-date the multi-user migration keep working

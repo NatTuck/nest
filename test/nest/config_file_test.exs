@@ -88,4 +88,54 @@ defmodule Nest.ConfigFileTest do
       assert length(String.split(log, nest_path(dir))) - 1 == 1
     end
   end
+
+  describe "the type word in the refusal" do
+    test "names a directory", %{dir: dir} do
+      File.mkdir_p!(nest_path(dir))
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:config_file_not_regular, _}} = ConfigFile.error(dir)
+        end)
+
+      assert log =~ "is a directory"
+    end
+
+    test "names an unreadable path rather than treating it as absent", %{dir: dir} do
+      # An `lstat` that fails for any reason other than `:enoent` is a path we
+      # could not inspect. The safe default is the refusal, not the mask: masking
+      # `/dev/null` over a path we could not look at would bind over something we
+      # do not understand.
+      locked = Path.join(dir, "locked")
+      File.mkdir_p!(locked)
+      File.chmod!(locked, 0o000)
+      on_exit(fn -> File.chmod(locked, 0o755) end)
+
+      # The `.nest` is inside the unreadable directory, so `lstat` is `:eacces`.
+      assert ConfigFile.state(Path.join(locked, ".nest")) == {:not_regular, :unreadable}
+
+      assert ConfigFile.state(Path.join(locked, "AGENTS.md")) ==
+               {:not_regular, :unreadable}
+
+      # And a workspace whose config path cannot be inspected is refused, not
+      # masked. `error/1` on the *parent* is `:ok` (the parent is a directory but
+      # it is not a config path), so this asserts the state directly.
+      assert ConfigFile.error(dir) == :ok
+    end
+
+    test "does not name a type it was not told", %{dir: dir} do
+      # A fifo is neither a symlink, a directory nor unreadable: the catch-all
+      # word. `mkfifo` is the cheapest way to make one.
+      fifo = nest_path(dir)
+      {_, 0} = System.cmd("mkfifo", [fifo])
+      on_exit(fn -> File.rm(fifo) end)
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:config_file_not_regular, ^fifo}} = ConfigFile.error(dir)
+        end)
+
+      assert log =~ "is not a regular file"
+    end
+  end
 end

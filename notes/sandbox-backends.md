@@ -318,14 +318,24 @@ either file. Same statement as "caps cannot be enforced for a `none` space".
   get wrong: with no mount point over the path an `act` agent can `rm` the link
   and write a regular `.nest` declaring `[[mount]] path = "/home" mode = "rw"`,
   which the next caps resolution honours; the same shape on `AGENTS.md` is
-  cross-agent prompt injection. So `ProjectConfig.config_file_error/1` — reached
-  from `Nest.Sandbox.workspace_error/1`, the funnel both workspace gates use —
-  **refuses the workspace**, naming the file and the remedy. That covers the
-  choose-time path (space create and edit) and `Sandbox.build/4`'s final gate,
-  so a workspace that becomes symlinked after it was chosen is refused too. It is
-  logged once per path per BEAM, in `:persistent_term`. The refusal is
+  cross-agent prompt injection. So `Nest.ConfigFile.error/1` **refuses the
+  workspace**, naming the file and the remedy, and it is called from all three
+  funnels: `Nest.Sandbox.workspace_error/1` (the choose-time path and
+  `Sandbox.build/4`'s final gate), `Supervisor.start_under_supervisor/2` (a
+  restart or on-demand load, which never reaches `build/4`), and
+  `Nest.Tools.ShellCmd` (the one place all three backends pass through for a
+  command). A new path that starts an agent or runs a command needs the gate.
+  It is logged once per path per BEAM, in `:persistent_term`. The refusal is
   unconditional on every backend, `"none"` included — it is a property of the
   workspace, not of the backend.
+* **A hardlink is not a symlink, and the mask protects the path, not the inode.**
+  An agent cannot create one (`ln` across devices is `Invalid cross-device link`,
+  and `mv` over the mount point is `EBUSY`), but a *pre-existing* hardlink inside
+  the workspace is writable, and rewriting it rewrites the config bytes the host
+  read will pick up. Same class as the symlink residual, same conclusion — the
+  refusal is not warranted, because the path itself is masked and a hardlink is
+  not distinguishable from the file it names without an inode comparison the
+  sandbox cannot do.
 * **A `/dev/null` mask materialises an empty `0444` file in the workspace.** When
   `.nest` or `AGENTS.md` is absent, the mask is a bind of `/dev/null` over its
   path, and after one bwrap run the path exists on the host as a `-r--r--r--`
@@ -384,7 +394,7 @@ the agent as `Execution failed: …`; it is never a half-built sandbox.
 
 * **No test can reach the daemon from a prompt composition**, and that is now
   structural rather than a property of a fixture: `AGENTS.md` is a **host** read
-  (`SystemPrompt.agents_md_section/1` -> `ProjectConfig.read_config_file/1`), so
+  (`SystemPrompt.agents_md_section/1` -> `Nest.ConfigFile.read/1`), so
   composing a prompt reaches no backend on any of the three. There is no agent
   whose workspace would make it shell out, and no `sandbox_setup_failed` line to
   print. `config/test.exs`'s `docker_runner` note says the same thing.
