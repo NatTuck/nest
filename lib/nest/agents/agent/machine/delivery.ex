@@ -137,7 +137,14 @@ defmodule Nest.Agents.Agent.Machine.Delivery do
     notice = ContextReminder.notice_text(atom, compact?)
     ack = ContextReminder.ack_text()
 
-    spec = %{kind: :context, attention: "Context?", notice: notice, ack: ack, threshold: atom}
+    spec = %{
+      kind: :context,
+      attention: "Context?",
+      notice: notice,
+      ack: ack,
+      threshold: atom,
+      mode: m.work.ctx.mode
+    }
 
     case NoticePairInjector.build_pair(base, spec, :user_agent) do
       {:ok, pair} ->

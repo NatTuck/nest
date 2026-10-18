@@ -40,7 +40,10 @@ export function thinkingFor(message) {
 // text part is touched: a header or a marker always heads a body, never
 // mid-text.
 export function textPartsFor(message) {
-  return stripHeaderFromParts(splitThinkFromParts(message?.parts).textParts, message);
+  return stripHeaderFromParts(
+    splitThinkFromParts(message?.parts).textParts,
+    message,
+  );
 }
 
 function stripHeaderFromParts(parts, message) {

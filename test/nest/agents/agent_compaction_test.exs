@@ -470,7 +470,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # re-renders the system message per AGENTS.md exception).
       #
       # History:  [old_system, old_user, old_assistant, compact_assistant,
-      #             compact_tool_result, bridge_ack, [mode: compact] request,
+      #             compact_tool_result, bridge_ack, compaction request,
       #             compactor_assistant, marker]
       # Messages: [new_system_fresh, summary_user, post_chat_assistant]
       #
@@ -532,7 +532,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert ack =~ "Let me pause to summarize"
 
       assert {:user, request} = Enum.at(archive, call_at + 3)
-      assert request =~ "[mode: compact]"
+      assert request =~ "[From nest runtime | mode: compact]"
 
       # And none of it leaks into the new segment.
       refute Enum.any?(messages, fn
@@ -585,29 +585,29 @@ defmodule Nest.Agents.AgentCompactionTest do
                  String.starts_with?(t, "[mode: compact]")
 
                {:user, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
-                 String.starts_with?(t, "[mode: compact]")
+                 String.starts_with?(t, "[From nest runtime | mode: compact]")
 
                _ ->
                  false
              end),
-             "expected the [mode: compact] suffix in history"
+             "expected the compaction request's header in history"
 
       # Trigger user message archived during the swap.
       assert Enum.any?(history, &match?({:user, _}, &1)),
              "expected the trigger user message archived into history"
 
-      # Exactly once: the staged `[mode: compact]` suffix is committed once
+      # Exactly once: the staged compaction request is committed once
       # (it is not persisted before the compaction and never re-appended).
       suffix_count =
         Enum.count(history, fn
           {_, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
-            String.starts_with?(t, "[mode: compact]")
+            String.starts_with?(t, "[From nest runtime | mode: compact]")
 
           _ ->
             false
         end)
 
-      assert suffix_count == 1, "expected exactly one [mode: compact] suffix; got #{suffix_count}"
+      assert suffix_count == 1, "expected exactly one compaction request; got #{suffix_count}"
 
       Agent.terminate(pid)
     end
@@ -644,7 +644,7 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       requests =
         for {:user, %User{parts: [%Part.Text{text: text}]} = user} <- state.chat_state.messages,
-            String.contains?(text, "[mode: compact]"),
+            String.contains?(text, "[From nest runtime | mode: compact]"),
             do: {user, text}
 
       # Exactly one: the failed attempt did not append a second request, and
@@ -663,7 +663,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # own state.
       assert Enum.any?(Agent.get_messages(pid, 1_000), fn
                {:user, %User{parts: [%Part.Text{text: text}]}} ->
-                 String.contains?(text, "[mode: compact]")
+                 String.contains?(text, "[From nest runtime | mode: compact]")
 
                _ ->
                  false

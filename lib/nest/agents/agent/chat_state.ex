@@ -147,7 +147,7 @@ defmodule Nest.Agents.Agent.ChatState.Live do
   chat message (`kind: :user`, carrying the human's requested `mode`).
   Each entry is
   `%{from: name | nil, content: text, timestamp: DateTime.t(), kind: kind, mode: mode}`
-  in arrival order; `content` is stored verbatim and the `[mode: ...]`
+  in arrival order; `content` is stored verbatim and the header
   prefix is added when the entry is delivered. A drain delivers the FIFO
   head batch — a lone human message, or a run of peer messages combined
   into a single user message (offloaded to the agent tmp dir when over

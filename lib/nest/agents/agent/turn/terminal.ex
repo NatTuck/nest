@@ -38,19 +38,19 @@ defmodule Nest.Agents.Agent.Turn.Terminal do
 
     case partial_message(state.live.streaming_acc, metadata) do
       nil ->
-        heal_tail(messages, metadata)
+        heal_tail(messages, metadata, state.live.mode)
 
       partial ->
         case MessageList.last_wire_role(messages) do
-          :assistant -> heal_tail(messages, metadata)
+          :assistant -> heal_tail(messages, metadata, state.live.mode)
           _ -> [partial]
         end
     end
   end
 
-  defp heal_tail(messages, metadata) do
+  defp heal_tail(messages, metadata, mode) do
     {:repair, repair} =
-      Repair.decide(:terminal, messages, MessageList.continuation_prompt())
+      Repair.decide(:terminal, messages, MessageList.continuation_prompt(mode))
 
     Enum.map(repair, &tag_metadata(&1, metadata))
   end

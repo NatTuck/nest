@@ -270,7 +270,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
       # ...and the children's own answers still arrive: with the reporting
       # target gone, delivery falls back to the parent's inbox.
       assert [message] = await_message(parent_pid, "alpha-done")
-      assert message =~ ~s([Message from agent "#{child0}" | mode: act])
+      assert message =~ ~s([From agent #{child0} | mode: act])
     end)
   end
 

@@ -577,14 +577,16 @@ defmodule NestWeb.AgentChannelChatTest do
 
       # The held user message was appended after the compaction summary
       # (wire role `user`); the bridge inserted an assistant ack so the
-      # resumed list is wire-valid and the turn actually ran.
+      # resumed list is wire-valid and the turn actually ran. The held row is
+      # the legacy `{content, mode}` shape, which is built with no sender — so
+      # no header — and is a hand-built fixture's shape, not a production one.
       messages = Nest.Agents.Agent.get_messages(agent_pid, 1_000)
 
       assert :ok = Preflight.validate(messages)
 
       assert Enum.any?(messages, fn
                {:user, %{parts: parts}} ->
-                 Enum.any?(parts || [], &match?(%Part.Text{text: "[mode: chat]\nHello"}, &1))
+                 Enum.any?(parts || [], &match?(%Part.Text{text: "Hello"}, &1))
 
                _ ->
                  false

@@ -344,7 +344,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
     end
   end
 
-  # Prompt prose, not a wire notice: no `[nest notice]` marker, because the model
+  # Prompt prose, not a wire notice: no runtime header, because the model
   # reads it as part of its instructions rather than as something the runtime said
   # to it mid-conversation.
   defp not_regular_notice(:hardlink) do

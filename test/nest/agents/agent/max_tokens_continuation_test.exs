@@ -78,7 +78,7 @@ defmodule Nest.Agents.Agent.MaxTokensContinuationTest do
 
     assert_receive {:chat_message, {:user, %{index: 3, parts: [%Part.Text{text: nudge}]}}}, 1_000
     assert nudge =~ "Keep going"
-    assert nudge =~ "[nest notice]"
+    assert nudge =~ "[From nest runtime"
     refute nudge =~ "empty response"
 
     assert_receive {:chat_message, {:assistant, %{index: 4, parts: parts}}}, 1_000

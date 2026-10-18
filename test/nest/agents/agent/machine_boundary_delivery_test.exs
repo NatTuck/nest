@@ -151,7 +151,7 @@ defmodule MachineBoundaryDeliveryTest do
 
       assert Enum.any?(actions, fn
                {:append, {:user, %Nest.Messages.User{parts: [%Part.Text{text: text}]}}} ->
-                 text =~ "[mode: chat]" and text =~ "queued payload"
+                 text == "queued payload"
 
                _ ->
                  false
@@ -259,7 +259,7 @@ defmodule MachineBoundaryDeliveryTest do
       assert [{:append, {:user, _} = request}] =
                Enum.filter(actions, &match?({:append, _}, &1))
 
-      assert request |> inspect() =~ "[mode: compact]"
+      assert request |> inspect() =~ "[From nest runtime | mode: compact]"
 
       assert next.kind == :compaction
       assert {:compaction, nil, nil} = next.entry

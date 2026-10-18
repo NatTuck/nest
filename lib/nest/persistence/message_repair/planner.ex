@@ -465,7 +465,7 @@ defmodule Nest.Persistence.MessageRepair.Planner do
     if Enum.any?(own_items, &synthetic?/1) or map_size(corr.rewrites) > 0 or
          map_size(corr.deletes) > 0 do
       first_own = first_own_index(model, agent_id)
-      {entries, inserts} = build_entries(own_items, agent_id, first_own)
+      {entries, inserts} = corrected_entries(model, agent_id, own_items, first_own)
       model = put_corrected(model, agent_id, entries, first_own)
 
       model = %{
@@ -503,39 +503,45 @@ defmodule Nest.Persistence.MessageRepair.Planner do
     for {:synthetic, synth} <- own_items, do: synth.anchor
   end
 
-  defp build_entries(own_items, agent_id, first_own) do
+  # The agent's own rows, rebuilt for the corrected model. The mode rides along
+  # because a synthetic continuation row states it in its header.
+  defp corrected_entries(model, agent_id, own_items, first_own) do
+    build_entries(own_items, agent_id, first_own, model.by_id[agent_id].row.mode)
+  end
+
+  defp build_entries(own_items, agent_id, first_own, mode) do
     {entries, inserts} =
       own_items
       |> Enum.with_index()
       |> Enum.reduce({[], []}, fn {item, pos}, {entries, inserts} ->
-        {entry, insert} = entry_for(item, first_own + pos, agent_id)
+        {entry, insert} = entry_for(item, first_own + pos, agent_id, mode)
         {[entry | entries], if(insert, do: [insert | inserts], else: inserts)}
       end)
 
     {Enum.reverse(entries), Enum.reverse(inserts)}
   end
 
-  defp entry_for({:existing, runtime, _owner, row, _old}, index, _agent_id) do
+  defp entry_for({:existing, runtime, _owner, row, _old}, index, _agent_id, _mode) do
     {%{row: row, runtime: runtime, index: index}, nil}
   end
 
-  defp entry_for({:synthetic, synth}, index, agent_id) do
-    runtime = build_synthetic(synth, index)
+  defp entry_for({:synthetic, synth}, index, agent_id, mode) do
+    runtime = build_synthetic(synth, index, mode)
     entry = %{row: nil, runtime: runtime, index: index}
     {entry, %{agent_id: agent_id, index: index, runtime: runtime}}
   end
 
-  defp build_synthetic(%{type: :tool, results: results}, index) do
+  defp build_synthetic(%{type: :tool, results: results}, index, _mode) do
     {:tool, %Tool{index: index, parts: results, api_logs: []}}
   end
 
-  defp build_synthetic(%{type: :ack}, index) do
+  defp build_synthetic(%{type: :ack}, index, _mode) do
     {:assistant, assistant} = MessageList.repair_ack()
     {:assistant, %{assistant | index: index}}
   end
 
-  defp build_synthetic(%{type: :continuation}, index) do
-    {:user, user} = MessageList.continuation_prompt()
+  defp build_synthetic(%{type: :continuation}, index, mode) do
+    {:user, user} = MessageList.continuation_prompt(mode)
     {:user, %{user | index: index}}
   end
 

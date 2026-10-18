@@ -75,6 +75,7 @@ defmodule Nest.Tokens.Compactor do
 
   alias Nest.Agents.Agent.Compaction.Overflow
   alias Nest.LLM.RunResponse
+  alias Nest.Messages.Header
   alias Nest.Messages.Message
   alias Nest.Messages.Part
   alias Nest.Messages.ThinkTags
@@ -305,7 +306,7 @@ defmodule Nest.Tokens.Compactor do
     {:user,
      %Nest.Messages.User{
        index: nil,
-       parts: [%Part.Text{text: text}],
+       parts: [%Part.Text{text: Header.put(text, :runtime, User.compaction_mode())}],
        timestamp: DateTime.utc_now(),
        metadata: User.compaction_metadata(),
        api_logs: []

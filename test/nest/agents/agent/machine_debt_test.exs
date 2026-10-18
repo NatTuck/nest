@@ -84,8 +84,9 @@ defmodule MachineDebtTest do
       # The reminder is the runtime's own user message: it names the debtor, it
       # does not quote the outstanding message (decision 4 — the agent looks that
       # up), and it carries no sender label and no mode prefix.
-      assert %User{parts: [%Part.Text{text: text}], metadata: nil} = reminder
+      assert %User{parts: [%Part.Text{text: text}], metadata: %{"mode" => mode}} = reminder
       assert text =~ "alice"
+      assert text =~ "[From nest runtime | mode: #{mode}]"
       refute text =~ "queued query"
       refute text =~ "[mode:"
 

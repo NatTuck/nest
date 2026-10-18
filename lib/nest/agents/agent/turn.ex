@@ -162,7 +162,7 @@ defmodule Nest.Agents.Agent.Turn do
   riding a chat message.
 
   Nothing is announced. Every message states the recipient's mode — a human's
-  carries it as a `[mode: X]` prefix, a peer's in its header — so a change
+  carries it in its own header — so a change
   already arrives with the statement of itself.
   """
   @spec keep_mode(Agent.t(), String.t()) :: Agent.t()

@@ -206,7 +206,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
       # states the mode the parent's delivered turn runs in — the child
       # inherited the parent's `act`.
       assert [delivered] = await_delivery(parent_pid, "the answer")
-      assert delivered =~ ~s([Message from agent "#{child_name}" | mode: act])
+      assert delivered =~ ~s([From agent #{child_name} | mode: act])
       assert delivered =~ "the answer"
 
       # The child's usage merged into the parent's descendant totals.

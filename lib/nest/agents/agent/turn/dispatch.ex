@@ -20,6 +20,7 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.LLM.GenerationDefaults
+  alias Nest.Messages.Header
   alias Nest.Messages.Part
   alias Nest.Messages.User
   alias Nest.Tokens.Budget
@@ -122,24 +123,42 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
   end
 
   @doc """
-  Build the persisted user message for `content` in `mode`. The mode is
-  encoded both on `metadata.mode` and as a `[mode: <name>]\\n` prefix on
-  the text part, so it round-trips through the store and the wire.
+  Build the persisted user message for `content` in `mode` — the one builder.
 
-  `extra_metadata` is merged over the mode: the drain's `fulfilled_ids` ride
-  there (`Inbox.build_drained_message/3`), which is how a restored transcript
-  tells a backgrounded promise that was kept from one that was lost.
+  The mode is encoded both on `metadata.mode` (the UI badge, and the guard the
+  client's stripper checks the header against) and as the header's `mode:`
+  clause (`Nest.Messages.Header`), so it round-trips through the store and the
+  wire.
+
+  Options:
+
+    * `:sender` — who the row is from (`Nest.Messages.Header.sender/3`'s value).
+      **Omitted means no header**, which is the drained-batch case: a batch is
+      one row holding several bodies, each of which carries its own header.
+    * `:reply_required?` — the note obliges an answer (`kind: :query`).
+    * `:metadata` — merged over the mode. The drain's `fulfilled_ids` ride there
+      (`Inbox.build_drained_message/3`), which is how a restored transcript
+      tells a backgrounded promise that was kept from one that was lost.
   """
-  @spec build_user_message(String.t(), String.t(), map()) :: {:user, User.t()}
-  def build_user_message(content, mode, extra_metadata \\ %{}) do
+  @spec build_user_message(String.t(), String.t(), keyword()) :: {:user, User.t()}
+  def build_user_message(content, mode, opts \\ []) do
     {:user,
      %User{
        index: nil,
        timestamp: DateTime.utc_now(),
-       parts: [%Part.Text{text: "[mode: #{mode}]\n#{content}"}],
-       metadata: Map.merge(%{"mode" => mode}, extra_metadata),
+       parts: [%Part.Text{text: headered(content, mode, opts)}],
+       metadata: Map.merge(%{"mode" => mode}, Keyword.get(opts, :metadata, %{})),
        api_logs: []
      }}
+  end
+
+  # A header when the caller names a sender; the content alone when it does not
+  # (a batch, whose bodies carry their own).
+  defp headered(content, mode, opts) do
+    case Keyword.get(opts, :sender) do
+      nil -> content
+      sender -> Header.put(content, sender, mode, Keyword.get(opts, :reply_required?, false))
+    end
   end
 
   @doc """

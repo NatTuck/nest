@@ -65,12 +65,14 @@ defmodule Nest.Agents.AgentUserMessageModePrefixTest do
 
     # No mode argument -> the agent's own mode, which for an agent nothing has
     # said anything about is `Nest.Modes.default/0` (`act`).
-    :ok = Agent.chat(pid, "Hello world")
+    :ok = Agent.chat(pid, "Hello world", nil, nil, true)
 
     assert_receive {:chat_message,
                     {:user,
                      %{
-                       parts: [%Nest.Messages.Part.Text{text: "[mode: act]\nHello world"}],
+                       parts: [
+                         %Nest.Messages.Part.Text{text: "[From user | mode: act]\nHello world"}
+                       ],
                        metadata: %{"mode" => "act"}
                      }}},
                    500

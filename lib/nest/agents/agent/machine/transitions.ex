@@ -281,7 +281,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # there is no slot for it to outlive. `pending_notice` is the iteration-budget
   # reminder's alone.
   def do_step(%{phase: :idle} = m, {:workspace_notice, values}) when is_map(values) do
-    pair = WorkspaceHandler.notice_pair(values)
+    pair = WorkspaceHandler.notice_pair(values, m.work.ctx.mode)
     projected = messages(m) ++ pair
     limit = m.work.ctx.context_limit
 
@@ -589,7 +589,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   #
   #   * the synthetic assistant acknowledgement after the result. A `{:tool, _}`
   #     is a wire-`user` message, so resting on one would leave the idle agent
-  #     on a user role — the shape `Repair.classify_load/1` and the compaction
+  #     on a user role — the shape `Repair.classify_load/2` and the compaction
   #     commit both heal — and the wake's own message would need the live
   #     bridge. The ack restores alternation *before* the idle, and
   #     `{:record_file_access}` runs ahead of it so it still reads the batch's

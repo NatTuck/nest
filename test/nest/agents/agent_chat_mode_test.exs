@@ -62,12 +62,12 @@ defmodule Nest.Agents.AgentChatModeTest do
     test "a user message carries the resolved mode in its prefix and metadata" do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      :ok = Agent.chat(pid, "Hello")
+      :ok = Agent.chat(pid, "Hello", nil, nil, true)
 
       assert_receive {:chat_message,
                       {:user,
                        %{
-                         parts: [%Part.Text{text: "[mode: act]\nHello"}],
+                         parts: [%Part.Text{text: "[From user | mode: act]\nHello"}],
                          metadata: %{"mode" => "act"}
                        }}},
                      @turn_fence_ms
@@ -78,12 +78,12 @@ defmodule Nest.Agents.AgentChatModeTest do
     test "an explicit mode this build implements is preserved" do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      :ok = Agent.chat(pid, "Plan this", "plan")
+      :ok = Agent.chat(pid, "Plan this", "plan", nil, true)
 
       assert_receive {:chat_message,
                       {:user,
                        %{
-                         parts: [%Part.Text{text: "[mode: plan]\nPlan this"}],
+                         parts: [%Part.Text{text: "[From user | mode: plan]\nPlan this"}],
                          metadata: %{"mode" => "plan"}
                        }}},
                      @turn_fence_ms
@@ -94,12 +94,12 @@ defmodule Nest.Agents.AgentChatModeTest do
     test "an unknown mode falls back to the default" do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      :ok = Agent.chat(pid, "Hello", "nonexistent-mode")
+      :ok = Agent.chat(pid, "Hello", "nonexistent-mode", nil, true)
 
       assert_receive {:chat_message,
                       {:user,
                        %{
-                         parts: [%Part.Text{text: "[mode: act]\nHello"}],
+                         parts: [%Part.Text{text: "[From user | mode: act]\nHello"}],
                          metadata: %{"mode" => "act"}
                        }}},
                      @turn_fence_ms
@@ -110,14 +110,14 @@ defmodule Nest.Agents.AgentChatModeTest do
     test "the status broadcast carries the mode the turn ran in" do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      :ok = Agent.chat(pid, "Plan this", "plan")
+      :ok = Agent.chat(pid, "Plan this", "plan", nil, true)
 
       assert_receive {:chat_status, %{status: "idle", currentMode: "plan"}}, 1_000
 
       assert_received {:chat_message,
                        {:user,
                         %{
-                          parts: [%Part.Text{text: "[mode: plan]\nPlan this"}],
+                          parts: [%Part.Text{text: "[From user | mode: plan]\nPlan this"}],
                           metadata: %{"mode" => "plan"}
                         }}}
     end
@@ -125,7 +125,7 @@ defmodule Nest.Agents.AgentChatModeTest do
     test "the broadcast carries the default an unknown mode resolved to" do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      :ok = Agent.chat(pid, "Hello", "nonexistent")
+      :ok = Agent.chat(pid, "Hello", "nonexistent", nil, true)
 
       # The fallback is written to `state.live.mode` and so reaches the status
       # frame's `currentMode`, rather than leaving a mode nothing can honour.
@@ -142,14 +142,14 @@ defmodule Nest.Agents.AgentChatModeTest do
       # the permissive one.
       assert Agent.get_public_info(pid, 1_000).current_mode == "act"
 
-      :ok = Agent.chat(pid, "Plan this", "plan")
+      :ok = Agent.chat(pid, "Plan this", "plan", nil, true)
       await_idle(pid)
       assert Agent.get_public_info(pid, 1_000).current_mode == "plan"
 
       # The next chat without an explicit mode uses the updated
       # `state.live.mode` — `handle_chat/4`'s `requested_mode || state.live.mode`
       # fallback.
-      :ok = Agent.chat(pid, "And another")
+      :ok = Agent.chat(pid, "And another", nil, nil, true)
       await_idle(pid)
       assert Agent.get_public_info(pid, 1_000).current_mode == "plan"
     end

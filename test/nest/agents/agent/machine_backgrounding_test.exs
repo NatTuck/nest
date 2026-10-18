@@ -55,7 +55,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       assert ack_text =~ "running in the background"
 
       assert {:user, %User{parts: [%Part.Text{text: text}]}} = user
-      assert text == "[mode: chat]\npeer note"
+      assert text == "peer note"
 
       # The batch moved out of the worker fields — which `Phase.enter/4` nulls —
       # into the entry its late result is routed on, ids and all: the ids are
@@ -116,7 +116,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
 
       assert Enum.map(MessageList.backgrounded_results(loaded), & &1.tool_call_id) == ["call_2"]
 
-      assert {:lost_promises, record} = Repair.classify_load(loaded)
+      assert {:lost_promises, record} = Repair.classify_load(loaded, "act")
 
       assert Enum.any?(
                record,
@@ -178,7 +178,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       assert ack_text == "Okay, context noted."
 
       assert {:user, %User{parts: [%Part.Text{text: text}]}} = delivered
-      assert text == "[mode: chat]\nthe question"
+      assert text == "the question"
 
       # The threshold is recorded on the machine, so it does not fire again for
       # this segment, and the turn continues in `:generating`.

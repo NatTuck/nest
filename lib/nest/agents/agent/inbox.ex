@@ -14,8 +14,8 @@ defmodule Nest.Agents.Agent.Inbox do
       (`enqueue_internal/4`, W2's async spawn/batch completion).
 
   An entry is `%{id, from, content, timestamp, kind, mode, human?, fulfilled_ids}`.
-  `content` is stored **verbatim** (no `[mode: ...]` prefix — that
-  is added when the entry is delivered), `mode` is the mode the entry asks the
+  `content` is stored **verbatim** (no header — that is added when the entry
+  is delivered), `mode` is the mode the entry asks the
   recipient to run under — a human's own, or a peer's `set_mode` — and is `nil`
   for an entry that asks for no change, and the producer-supplied fields are
   `human?` (the human's own words) and `fulfilled_ids` (the tool-call ids a
@@ -33,8 +33,8 @@ defmodule Nest.Agents.Agent.Inbox do
     * `:runtime` — the runtime speaking for itself, not an agent's words
       (issue #31 decision 9). It is rendered **bare**, never under a
       `[Message from agent …]` label, because no agent said it.
-    * `:user` — a human's words, rendered bare (its `[mode: X]` prefix is
-      added when the message is built).
+    * `:user` — a human's words, rendered behind `[From user | mode: X]`
+      (its header is added when the message is built).
 
   ## Disposition
 
@@ -69,13 +69,12 @@ defmodule Nest.Agents.Agent.Inbox do
   `batch/1` selects what a drain delivers: a human message at the FIFO head is
   delivered **alone**, a run of leading non-human entries is delivered as one
   batch. `Nest.Agents.Agent.Inbox.Render` then renders the batch: a human entry
-  is its bare content (so a queued human message reads exactly like one that
-  arrived while the agent was idle, and its own `[mode: X]` prefix is added
-  when the message is built), a `:runtime` entry is bare because the
-  runtime — not an agent — said it, while each `:agent`/`:query` entry keeps
-  `[Message from agent "<from>"]` — that label is what disambiguates a batch of
-  peer messages — and an unknown sender (`nil`) drops the quoted name rather
-  than putting `nil` in the prompt.
+  is its content behind `[From user | mode: X]` (so a queued human message reads
+  exactly like one that arrived while the agent was idle), a `:runtime` entry
+  says `nest runtime` because the runtime — not an agent — said it, and each
+  `:agent`/`:query` entry names its sender — which is what disambiguates a batch
+  of peer messages. An unknown sender (`nil`) still says `agent` rather than
+  putting `nil` in the prompt.
   A batch over `Nest.Agents.Agent.Config.configured_async_message_max_tokens/0`
   is written to the agent's scratch dir and replaced by a short pointer telling
   the agent how many messages there were and where to read them.

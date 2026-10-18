@@ -28,8 +28,7 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
   use ExUnit.Case, async: true
 
   alias Nest.Agents.Agent.Turn.ContextReminder
-  alias Nest.LLM.ClientConfig
-  alias Nest.Messages.NoticeTag
+  alias Nest.Messages.Header
   alias Nest.Messages.User
 
   # A 200k-limit model with the standard 40k reserve has a
@@ -91,30 +90,34 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
     end
   end
 
-  describe "build_message/2" do
-    test "builds the decided notice row, carrying the marker, for every threshold" do
+  describe "build_message/3" do
+    test "builds the decided notice row, behind the runtime header, for every threshold" do
       # The row is the one the live paths announce: the decided text on a
-      # `{:user, _}` row carrying the `[nest notice]` marker. It used to be the
-      # legacy verbose counts form and carried no marker, which made this the
-      # one builder that could produce an untagged runtime notice row.
+      # `{:user, _}` row behind `[From nest runtime | mode: …]`. It used to be
+      # the legacy verbose counts form and carried no marker, which made this the
+      # one builder that could produce an unheadered runtime notice row.
       for {atom, compact?} <- [{:p25, true}, {:p50, true}, {:p75, true}, {:p75, false}] do
         assert {:user,
-                %User{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
-                 ContextReminder.build_message(atom, compact?)
+                %User{
+                  parts: [%Nest.Messages.Part.Text{text: content}],
+                  timestamp: %DateTime{},
+                  metadata: %{"mode" => "act"}
+                }} = ContextReminder.build_message(atom, "act", compact?)
 
-        assert content == NoticeTag.tag(ContextReminder.notice_text(atom, compact?))
+        assert content ==
+                 Header.put(ContextReminder.notice_text(atom, compact?), :runtime, "act")
       end
     end
 
-    test "agrees with the spec the response path injects, marker and all" do
-      # `spec/4` is what `Machine.Response` announces; `build_message/2` must
+    test "agrees with the spec the response path injects, header and all" do
+      # `spec/4` is what `Machine.Response` announces; `build_message/3` must
       # produce the same row text for the same threshold.
       spec = ContextReminder.spec(80_001, @limit, MapSet.new())
 
       assert {:user, %User{parts: [%Nest.Messages.Part.Text{text: content}]}} =
-               ContextReminder.build_message(spec.threshold)
+               ContextReminder.build_message(spec.threshold, "act")
 
-      assert content == NoticeTag.tag(spec.notice)
+      assert content == Header.put(spec.notice, :runtime, "act")
     end
   end
 
@@ -165,10 +168,20 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
     end
   end
 
-  describe "build_user_notice/2" do
-    test "returns a {:user, %User{}} with the given text" do
-      {:user, %User{parts: [%Nest.Messages.Part.Text{text: "hello"}]}} =
-        ContextReminder.build_user_notice("hello", %ClientConfig{})
+  describe "build_user_notice/3" do
+    test "returns a {:user, %User{}} with the given text behind the runtime header" do
+      assert {:user, %User{parts: [%Nest.Messages.Part.Text{text: text}], metadata: metadata}} =
+               ContextReminder.build_user_notice("hello", "act")
+
+      assert text == "[From nest runtime | mode: act]\nhello"
+      assert metadata == %{"mode" => "act"}
+    end
+
+    test "merges the notice's own metadata over the mode" do
+      assert {:user, %User{metadata: metadata}} =
+               ContextReminder.build_user_notice("hello", "act", %{"context_threshold" => "p50"})
+
+      assert metadata == %{"mode" => "act", "context_threshold" => "p50"}
     end
   end
 

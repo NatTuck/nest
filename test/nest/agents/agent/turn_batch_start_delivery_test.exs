@@ -113,13 +113,13 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
     assert ack =~ "running in the background"
 
     assert text_of(Enum.at(state.chat_state.messages, 5)) ==
-             "[mode: act]\n[Message from agent \"peer\" | mode: act]\npeer note"
+             "[From agent peer | mode: act]\npeer note"
 
     # The delivered message rides the turn the batch yielded, so the model sees
     # it in this request.
     assert Enum.any?(
              user_texts(delivered_request),
-             &(&1 =~ "[Message from agent \"peer\" | mode: act]\npeer note")
+             &(&1 =~ "[From agent peer | mode: act]\npeer note")
            )
 
     # Releasing the batch runs its `agents-send` while this agent is streaming,
@@ -161,7 +161,7 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
       |> Enum.find(&(&1 |> text_of() |> String.contains?("backgrounded command")))
       |> text_of()
 
-    assert late =~ "[Message from agent \"#{name}\" | mode: act]\nnote"
+    assert late =~ "[From agent #{name} | mode: act]\nnote"
     assert late =~ "Message queued for #{name} (busy)"
 
     AgentTestHelpers.assert_unique_message_indices(state.chat_state.messages)

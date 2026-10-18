@@ -79,18 +79,22 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
     end
 
     test ":load classifies clean, bridged, interrupted, and real violations" do
-      assert :ok = Repair.decide(:load, [system(0), user(1), assistant_text(2)], nil)
+      assert :ok = Repair.decide(:load, [system(0), user(1), assistant_text(2)], %{mode: "act"})
 
       assert {:bridge, [{:assistant, %Assistant{parts: [%Part.Text{text: text}]}}]} =
-               Repair.decide(:load, [system(0), user(1)], nil)
+               Repair.decide(:load, [system(0), user(1)], %{mode: "act"})
 
       assert text =~ "interrupted"
 
       assert {:interrupted, [%Part.ToolUse{id: "a"}]} =
-               Repair.decide(:load, [system(0), user(1), assistant_tool_use(2, "a")], nil)
+               Repair.decide(:load, [system(0), user(1), assistant_tool_use(2, "a")], %{
+                 mode: "act"
+               })
 
       assert {:violations, [_ | _]} =
-               Repair.decide(:load, [user(0), assistant_text(1), assistant_text(2)], nil)
+               Repair.decide(:load, [user(0), assistant_text(1), assistant_text(2)], %{
+                 mode: "act"
+               })
     end
 
     test ":live treats a malformed result as stale and a wire-ignored role as invalid" do
@@ -300,7 +304,11 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
         {:user,
          %User{
            index: nil,
-           parts: [%Part.Text{text: "[mode: compact] Summarize the conversation."}],
+           parts: [
+             %Part.Text{
+               text: "[From nest runtime | mode: compact]\nSummarize the conversation."
+             }
+           ],
            metadata: User.compaction_metadata(),
            api_logs: []
          }}
@@ -395,7 +403,7 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
           work: %Machine.Work{
             worker_kind: :tools,
             backgrounded: %{make_ref() => %{pid: self(), ids: ["call_1"]}},
-            ctx: %{messages: initial}
+            ctx: %{messages: initial, mode: "act"}
           }
         )
 

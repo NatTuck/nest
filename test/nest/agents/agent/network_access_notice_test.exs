@@ -130,7 +130,7 @@ defmodule Nest.Agents.Agent.NetworkAccessNoticeTest do
     |> Map.fetch!(:chat_state)
     |> Map.fetch!(:messages)
     |> Enum.map(fn {_role, message} -> text_of(message) end)
-    |> Enum.filter(&(&1 =~ "[nest notice]"))
+    |> Enum.filter(&(&1 =~ "[From nest runtime"))
   end
 
   defp text_of(%{parts: parts}) do

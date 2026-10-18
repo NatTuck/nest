@@ -32,7 +32,7 @@ defmodule Nest.Agents.Agent.Turn.Backgrounded do
   And the **loss** wording (`lost/1`): a promise the process died with. The
   batch's entry lives in the machine, so a restart or an archive drops it, and
   a restored transcript would keep promising a result that can never come. The
-  load heal (`Repair.classify_load/1`) appends the record instead.
+  load heal (`Repair.classify_load/2`) appends the record instead.
   """
 
   # `ShellCmd.handle_timeout/3` appends this to stderr, which the combined

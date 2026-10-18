@@ -20,7 +20,7 @@ defmodule Nest.Scripts.CompactionProbeSupportTest do
       suffix = CompactionProbeSupport.compaction_suffix(1500, nil)
 
       assert suffix ==
-               "[mode: compact]\nSummarize the conversation in your 1500 remaining tokens."
+               "Summarize the conversation in your 1500 remaining tokens."
     end
 
     test "appends optional guidance when provided" do
@@ -32,7 +32,7 @@ defmodule Nest.Scripts.CompactionProbeSupportTest do
 
       assert String.starts_with?(
                suffix,
-               "[mode: compact]\nSummarize the conversation in your 1500 remaining tokens."
+               "Summarize the conversation in your 1500 remaining tokens."
              )
 
       assert String.ends_with?(suffix, "focus on the test plan")
@@ -66,7 +66,7 @@ defmodule Nest.Scripts.CompactionProbeSupportTest do
 
       assert String.starts_with?(
                suffix,
-               "[mode: compact]\nSummarize the conversation in your 1500 remaining tokens."
+               "Summarize the conversation in your 1500 remaining tokens."
              )
 
       assert String.ends_with?(suffix, mention)
@@ -79,7 +79,7 @@ defmodule Nest.Scripts.CompactionProbeSupportTest do
 
       assert match?({:user, %Nest.Messages.User{}}, msg)
       {:user, %Nest.Messages.User{parts: [%Part.Text{text: text}]}} = msg
-      assert text =~ "[mode: compact]"
+      assert text =~ "Summarize the conversation"
       assert text =~ "2000 remaining tokens"
     end
 
@@ -143,7 +143,7 @@ defmodule Nest.Scripts.CompactionProbeSupportTest do
       # The agent's own system prompt is at position 0 (NOT
       # stripped — KV cache prefix lines up with the agent's
       # last LLM call). The trailing message is the rendered
-      # [mode: compact] suffix.
+      # compaction request row.
       assert match?({:system, %System{}}, Enum.at(request.messages, 0))
 
       last = List.last(request.messages)

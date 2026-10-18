@@ -11,6 +11,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Turn.Dispatch
+  alias Nest.Messages.Header
   alias Nest.Messages.User
   alias Nest.Modes
   alias Nest.Sandbox.Mounts
@@ -33,14 +34,14 @@ defmodule Nest.Agents.Agent.ChatPipeline do
           String.t() | nil,
           boolean()
         ) :: {:noreply, Nest.Agents.Agent.t()}
-  def handle_chat(state, content, requested_mode, _sender, human? \\ false) do
+  def handle_chat(state, content, requested_mode, sender, human? \\ false) do
     mode = requested_mode || state.live.mode
 
     {effective_mode, _caps} =
       resolve_mode_and_caps(mode, state.vocation, Mounts.from_agent(state))
 
     # The mode is applied *before* the settle, because the user message is built
-    # with it (the `[mode: X]` prefix and the UI badge) and the turn runs under
+    # with it (the header's mode clause and the UI badge) and the turn runs under
     # it. That is also why the write has to happen here: the settle's own `run/6`
     # reads `pre_mode` from the already-applied state, so it cannot see the
     # change. A mode this message kept is the agent's mode from here on — the row
@@ -53,7 +54,11 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # `chat_or_queue/5` sends an idle agent straight here and a busy one to the
     # inbox, so a header owned by the drain would leave this — the common case,
     # and the only path a spawn kickoff takes on an idle child — unheadered.
-    user = Dispatch.build_user_message(content, effective_mode, human_metadata(human?))
+    user =
+      Dispatch.build_user_message(content, effective_mode,
+        sender: Header.sender(sender, human?),
+        metadata: human_metadata(human?)
+      )
 
     {:ok, state} = Turn.settle(state, {:chat_request, {:user_message, user}})
     {:noreply, Turn.keep_mode(state, pre_mode)}
@@ -82,7 +87,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   The modes are universal (`Nest.Modes`), so a name this build implements is used
   as-is and anything else — the old `"chat"`, a stale row, a client that made one
   up — falls back to `Nest.Modes.default/0`. This matches the LLM-visible
-  `[mode: X]` prefix, and it is the one funnel every caller shares: the idle-turn
+  header's mode clause, and it is the one funnel every caller shares: the idle-turn
   request, the mode a delivered batch carries, and the bookkeeping reads that
   need the caps the tools run under.
 

@@ -5,9 +5,9 @@ describe("stripHeader", () => {
   it("strips the header when it heads the content", () => {
     expect(stripHeader("[From user | mode: act]\nHello", "act")).toBe("Hello");
 
-    expect(stripHeader("[From agent peer | mode: plan]\nhi there", "plan")).toBe(
-      "hi there",
-    );
+    expect(
+      stripHeader("[From agent peer | mode: plan]\nhi there", "plan"),
+    ).toBe("hi there");
 
     expect(
       stripHeader("[From nest runtime | mode: act]\nContext at 50%.", "act"),
@@ -35,9 +35,9 @@ describe("stripHeader", () => {
       stripHeader("[From user | mode: plan]\nLine 1\nLine 2", "plan"),
     ).toBe("Line 1\nLine 2");
 
-    expect(stripHeader("[From user | mode: act]\n\nblank line body", "act")).toBe(
-      "\nblank line body",
-    );
+    expect(
+      stripHeader("[From user | mode: act]\n\nblank line body", "act"),
+    ).toBe("\nblank line body");
   });
 
   it("strips each body's header, so a batch keeps every sender", () => {
@@ -99,9 +99,9 @@ describe("stripHeader", () => {
     expect(stripHeader("[From agent peer | mode: act] no newline", "act")).toBe(
       "[From agent peer | mode: act] no newline",
     );
-    expect(stripHeader("peer said [From agent x | mode: act]\nHello", "act")).toBe(
-      "peer said [From agent x | mode: act]\nHello",
-    );
+    expect(
+      stripHeader("peer said [From agent x | mode: act]\nHello", "act"),
+    ).toBe("peer said [From agent x | mode: act]\nHello");
     expect(stripHeader("A\nB\n[From agent x | mode: act]\nC", "act")).toBe(
       "A\nB\n[From agent x | mode: act]\nC",
     );
@@ -143,7 +143,9 @@ describe("stripHeader", () => {
       "[mode: chat]\nHello",
     );
     expect(stripHeader("[mode: chat]\nHello", "")).toBe("[mode: chat]\nHello");
-    expect(stripHeader("[mode: chat]\nHello", null)).toBe("[mode: chat]\nHello");
+    expect(stripHeader("[mode: chat]\nHello", null)).toBe(
+      "[mode: chat]\nHello",
+    );
     expect(stripHeader("[mode: chat]\nHello", undefined)).toBe(
       "[mode: chat]\nHello",
     );
