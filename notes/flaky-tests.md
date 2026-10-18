@@ -219,8 +219,8 @@ waits are unchanged.
 
 ## 2026-10-17 — `page_controller_test.exs` in `get_csrf_token/0` (UNRESOLVED)
 
-Observed **once**, in one `mix test` run during the timestamp-precision work
-(branch `timestamp-precision`, 2879 tests):
+Observed **twice**, in `mix test` and in `mix test --cover`, during the
+timestamp-precision and space-edit work:
 
 ```
 test/nest_web/controllers/page_controller_test.exs:81
@@ -230,19 +230,20 @@ test/nest_web/controllers/page_controller_test.exs:81
 with `:code_server.call/1` as the innermost frame, reached from
 `lib/nest_web/components/layouts/root.html.heex:6` (`get_csrf_token/0`).
 
-Not reproduced: the same branch passed 2878/0 twice in plain `mix test` and once
-under `mix test --cover`, and the file passes alone (9/9). No view, controller or
-template code is touched by that branch.
+The second observation rules out contention, which is what the first one left
+open: it happened at load average ~1.0, and the immediately following run passed
+at load ~6.1. So this is the cold-code-server class — one lazy module load
+paying the whole 3000 ms — not a slow host.
 
-This is the code-server contention class `test/test_helper.exs` documents (an
-idle host does not reproduce it), but the warm-up list **already** includes
-`Plug.CSRFProtection`, `Phoenix.Controller`, `Phoenix.HTML`, `Phoenix.Template`,
-`Plug.Conn` and `Plug.Session`, so the lazy load is something else in the
-template render path and has not been identified. Recorded rather than guessed
-at: a warm-up entry added from a guess would hide the next occurrence without
-removing the load.
+Still unidentified: the warm-up list in `test/test_helper.exs` **already**
+includes `Plug.CSRFProtection`, `Phoenix.Controller`, `Phoenix.HTML`,
+`Phoenix.Template`, `Plug.Conn` and `Plug.Session`, so the lazy load is something
+else in the template render path. Recorded rather than guessed at: a warm-up
+entry added from a guess would hide the next occurrence without removing the
+load.
 
 Next step for whoever hits it again: capture the full `:code_server.call/1`
 frame (not just the call site) and name the module, then add it to the list.
 Do not raise the 3000 ms.
+
 
