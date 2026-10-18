@@ -89,6 +89,16 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
       simple when simple in @simple_reasons ->
         {:error, %{"reason" => to_string(simple)}}
 
+      # Another session is editing this space: its latch is up, so nothing may
+      # start in it until that edit finishes or its claim expires.
+      :space_changing ->
+        {:error, %{"reason" => "space_changing"}}
+
+      # Not a refusal — the edit needs the user's word first, because it stops
+      # work. The plan rides the reply so the dialog can name what it costs.
+      {:confirmation_required, plan} ->
+        {:error, confirmation_payload(plan)}
+
       tagged when is_tagged(tagged) ->
         tagged_payload(tagged, {"Failed to edit space", "failed_to_edit"})
 
@@ -99,6 +109,24 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
         Logger.error("Failed to edit space: #{inspect(other)}")
         {:error, %{"reason" => "failed_to_edit"}}
     end
+  end
+
+  # The wire form of `Nest.Spaces.edit_plan/0`: the agents the edit would stop,
+  # each with its status and its running job count, and the space's total. String
+  # keys because it is the wire.
+  defp confirmation_payload(plan) do
+    %{
+      "reason" => "confirmation_required",
+      "jobs" => plan.jobs,
+      "agents" =>
+        Enum.map(plan.agents, fn agent ->
+          %{
+            "name" => agent.name,
+            "status" => Atom.to_string(agent.status),
+            "jobs" => agent.jobs
+          }
+        end)
+    }
   end
 
   # `Spaces.create_space_with_root_agent/2` returns a *heterogeneous* reason

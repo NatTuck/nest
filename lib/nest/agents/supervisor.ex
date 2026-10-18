@@ -15,7 +15,7 @@ defmodule Nest.Agents.Supervisor do
 
   require Logger
 
-  alias Nest.Agents.{Agent, ChildRegistry, NameGenerator, Registry}
+  alias Nest.Agents.{Agent, ChildRegistry, NameGenerator, Registry, SpaceGate}
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Init
@@ -52,9 +52,8 @@ defmodule Nest.Agents.Supervisor do
   @doc """
   Fetch or start the agent with the given `space_id` and attrs.
 
-  The DB is the source of truth for "does this agent exist in this space?": a
-  row starts a fresh process under the supervisor seeded with the active
-  messages, and no row is `{:error, :not_found}`.
+  The DB is the source of truth for "does this agent exist in this space?": a row
+  starts a fresh process under the supervisor, and no row is `{:error, :not_found}`.
 
   The load-time sequence heal (`Agent.pre_load_heal/1`) runs here, in the
   caller's DB context, before the child is spawned — never in the child's
@@ -65,6 +64,9 @@ defmodule Nest.Agents.Supervisor do
   """
   @spec fetch_or_start_agent(integer(), map()) :: {:ok, String.t()} | {:error, term()}
   def fetch_or_start_agent(space_id, attrs) do
+    # A start reads the row for the environment values, so it waits out an edit.
+    :ok = SpaceGate.await(space_id)
+
     case Map.get(attrs, :name) do
       nil ->
         {:error, :not_found}
@@ -88,10 +90,9 @@ defmodule Nest.Agents.Supervisor do
       {:ok, attrs} ->
         {:ok, attrs}
 
-      # `:not_found` and `:archived` are both ordinary refusals of the
-      # caller's request, not fetch failures: a missing row, and a row
-      # that is deliberately out of service. The caller surfaces them
-      # (the agent channel answers `agent not found` / `agent_archived`).
+      # `:not_found` and `:archived` are ordinary refusals of the caller's request,
+      # not fetch failures: a missing row, and one deliberately out of service. The
+      # caller surfaces them (the channel answers `agent not found`/`agent_archived`).
       {:error, reason} when reason in [:not_found, :archived] ->
         {:error, reason}
 

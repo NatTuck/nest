@@ -22,6 +22,7 @@ defmodule Nest.Spaces do
   alias Nest.Sandbox
   alias Nest.Sandbox.Backend
   alias Nest.Spaces.Creation
+  alias Nest.Spaces.Environment
   alias Nest.Spaces.Space
 
   # The per-user PubSub topic: "this user's space *set* changed" (a space
@@ -260,24 +261,30 @@ defmodule Nest.Spaces do
   — the same codes the create path produces, including the tagged
   `{:config_file_not_regular, path, type}`.
   """
-  @spec update_environment(integer(), map()) ::
+  @spec update_environment(integer(), map(), keyword()) ::
           {:ok, Space.t()}
           | {:error,
              Ecto.Changeset.t()
              | :not_found
+             | :space_changing
              | :workspace_missing
              | :workspace_under_tmp
-             | {:config_file_not_regular, String.t(), atom()}}
-  def update_environment(id, params) when is_integer(id) and is_map(params) do
-    case get_space(id) do
-      nil ->
-        {:error, :not_found}
+             | {:config_file_not_regular, String.t(), atom()}
+             | {:confirmation_required, Environment.edit_plan()}}
+  defdelegate update_environment(id, params, opts \\ []), to: Environment
 
-      %Space{sandbox_backend: old_backend} = space ->
-        space
-        |> Space.environment_changeset(params)
-        |> apply_environment(old_backend)
-    end
+  # The write half, for `Nest.Spaces.Environment`: it owns the latch, the plan and
+  # the cancellation, and this owns the row and the announcement.
+  #
+  # A save that names what the row already says is not an edit: releasing the
+  # container here would destroy a live environment for nothing, and telling the
+  # agents would announce a change that did not happen.
+  @doc false
+  @spec write_environment(Space.t(), map(), String.t()) :: {:ok, Space.t()} | {:error, term()}
+  def write_environment(%Space{} = space, params, old_backend) do
+    space
+    |> Space.environment_changeset(params)
+    |> apply_environment(old_backend)
   end
 
   # A save that names what the row already says is not an edit: releasing the

@@ -18,6 +18,7 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
   """
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.SpaceGate
   alias Nest.Spaces
   alias Nest.Vocations
   alias NestWeb.ErrorPayload
@@ -168,7 +169,11 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
 
     case Authz.authorize_space_owner(space_id, socket.assigns.current_user) do
       {:ok, :owner} ->
-        case Spaces.update_environment(space_id, environment_params(payload)) do
+        case Spaces.update_environment(
+               space_id,
+               environment_params(payload),
+               confirm: payload["confirm"] == true
+             ) do
           {:ok, space} ->
             # Announced on the per-user topic like every other space-set change,
             # so the owner's other sessions show the same values — and so the
@@ -189,6 +194,29 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
         {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
     end
   end
+
+  @doc """
+  Release the space this session was holding while the user decided, without
+  changing anything.
+
+  The latch the preview takes is what pauses the space; this is the client saying
+  no. It is owner-scoped in `Nest.Agents.SpaceGate`, so a session can only release
+  a space it holds, and it is a no-op when there is nothing to release (a
+  double-cancel, a dialog closed after the TTL already expired).
+  """
+  def cancel_edit_space(%{"space_id" => space_id}, socket) when is_integer(space_id) do
+    case Authz.authorize_space_owner(space_id, socket.assigns.current_user) do
+      {:ok, :owner} ->
+        :ok = SpaceGate.release(space_id)
+        {:reply, {:ok, %{}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
+    end
+  end
+
+  def cancel_edit_space(_payload, socket),
+    do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
 
   defp wire_values(values),
     do: Map.new(values, fn {key, value} -> {Atom.to_string(key), value} end)

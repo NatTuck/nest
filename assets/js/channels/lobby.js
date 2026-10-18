@@ -243,13 +243,45 @@ export function editSpace(spaceId, values, onOk, onError) {
     return;
   }
 
+  const payload = {
+    space_id: spaceId,
+    workspace_path: values.workspace_path,
+    network_access: values.network_access,
+    sandbox_backend: values.sandbox_backend,
+  };
+
+  // The second push of a two-phase edit: the user has seen what the first one
+  // would stop and said yes. Absent on the first push, which is what makes the
+  // server answer `confirmation_required` rather than saving.
+  if (values.confirm) payload.confirm = true;
+
   lobbyChannel
-    .push("edit_space", {
-      space_id: spaceId,
-      workspace_path: values.workspace_path,
-      network_access: values.network_access,
-      sandbox_backend: values.sandbox_backend,
+    .push("edit_space", payload)
+    .receive("ok", (resp) => {
+      if (onOk) onOk(resp);
     })
+    .receive("error", (err) => {
+      if (onError) onError(err);
+    });
+}
+
+/**
+ * Say no to a space edit, releasing the pause the preview took.
+ *
+ * The first `edit_space` push holds the space's latch (`Nest.Agents.SpaceGate`)
+ * so nothing can start in it while the user decides. Cancelling is therefore not
+ * just "close the dialog": it has to tell the server, or the space stays paused
+ * until the claim's TTL expires. The server releases only a claim this session
+ * owns, so a stray push cannot unpause another session's edit.
+ */
+export function cancelEditSpace(spaceId, onOk, onError) {
+  if (!lobbyChannel) {
+    if (onError) onError(new Error("Not connected to lobby"));
+    return;
+  }
+
+  lobbyChannel
+    .push("cancel_edit_space", { space_id: spaceId })
     .receive("ok", (resp) => {
       if (onOk) onOk(resp);
     })

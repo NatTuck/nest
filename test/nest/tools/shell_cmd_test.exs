@@ -71,6 +71,27 @@ defmodule Nest.Tools.ShellCmdTest do
     assert log =~ "exit_code=130"
   end
 
+  @tag :bwrap
+  test "collect_output/5's {:cancel_tool, _} clause stops the command and returns a tool error",
+       %{
+         ws: ws
+       } do
+    # The space's environment changed under the command: the space edit cancelled
+    # it. Pre-seed the mailbox so the clause matches on the first iteration, as
+    # the stop test does.
+    reason = "The space's environment changed; this call did not run."
+    send(self(), {:cancel_tool, reason})
+
+    # Not a Stop: a Stop is the human ending the turn and reports the command's
+    # own cancelled exit code. This is not a result at all — the agent gets a tool
+    # error, so it can re-issue the call against the space's new values.
+    _log =
+      capture_log(fn ->
+        assert {:error, message} = ShellCmd.execute("true", Mounts.new(ws, nil), nil, [])
+        assert message =~ reason
+      end)
+  end
+
   test "execute/5 returns the natural output for a successful command", %{ws: ws} do
     # Sanity check that the receive doesn't match the
     # pre-seeded stop when none is in the mailbox. A trivial

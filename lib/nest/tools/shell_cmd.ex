@@ -498,6 +498,9 @@ defmodule Nest.Tools.ShellCmd do
       {:stop_chat, _from} ->
         handle_stop_chat(os_pid, acc)
 
+      {:cancel_tool, reason} ->
+        handle_cancel_tool(os_pid, reason)
+
       {:DOWN, _ref, :process, ^erl_pid, reason} ->
         handle_down(acc, reason)
     after
@@ -554,6 +557,17 @@ defmodule Nest.Tools.ShellCmd do
     # 130 = 128 + SIGINT(2), the conventional shell cancellation
     # exit code (Ctrl-C).
     {:ok, 130, combine_output(acc), stdout_bin(acc), stderr_bin(acc)}
+  end
+
+  # The space's environment changed under this command, so the space edit
+  # cancelled it (`Nest.Agents.Agent.cancel_tools/2`). This is deliberately *not*
+  # the Stop path: a Stop is the human ending the turn, and its result is the
+  # command's own cancelled exit code. Here the command did not run to
+  # completion, so this is not a result at all — the agent gets a tool error and
+  # can re-issue the call against the space's new values.
+  defp handle_cancel_tool(os_pid, reason) do
+    :exec.stop(os_pid)
+    {:error, reason}
   end
 
   defp handle_down(acc, reason) do

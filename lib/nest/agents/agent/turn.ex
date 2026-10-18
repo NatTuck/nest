@@ -106,6 +106,30 @@ defmodule Nest.Agents.Agent.Turn do
   end
 
   @doc """
+  Tell every tool worker this turn is running to stop its command and report a
+  tool error, because the space's environment changed under it.
+
+  The pids are the machine's: the active worker and any batch it moved to the
+  background. A worker that is not running a command — the http worker, a batch
+  between calls — simply never matches the message; the ones that are act on it in
+  `Nest.Tools.ShellCmd.collect_output/5`.
+
+  The space's `Nest.Agents.SpaceGate` latch is up when this runs, so a batch that
+  was cancelled cannot start its next call against the old environment: it waits
+  at the gate and runs under the new values.
+  """
+  @spec cancel_tools(Agent.t(), String.t()) :: :ok
+  def cancel_tools(state, reason) do
+    work = state.live.machine.work
+
+    [work.active_worker | Enum.map(Map.values(work.backgrounded), & &1.pid)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.each(&send(&1, {:cancel_tool, reason}))
+
+    :ok
+  end
+
+  @doc """
   Write down a mode change the turn **kept**.
 
   The row is written here, not where the mode is applied, and that is what keeps

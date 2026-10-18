@@ -262,6 +262,14 @@ defmodule Nest.Agents.Agent.Callbacks do
     {:reply, :ok, state}
   end
 
+  # The space's environment changed under the tools this turn is running, so the
+  # space edit cancels them: each worker stops its command and reports a tool
+  # error. Not a Stop — nothing here ends the turn or gives up a reply.
+  def handle_call({:cancel_tools, reason}, _from, state) do
+    :ok = Turn.cancel_tools(state, reason)
+    {:reply, :ok, state}
+  end
+
   # Synchronous retry/loop-ack handlers. The Agent API exposes
   # `retry_compaction/1` and `compaction_loop_detected_ok/1` as
   # `GenServer.call/3`s (was `send/2`) so callers can wait for

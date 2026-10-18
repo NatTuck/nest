@@ -316,6 +316,13 @@ defmodule NestWeb.LobbyChannel do
     do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
 
   @impl true
+  def handle_in("cancel_edit_space", payload, socket) when is_map(payload),
+    do: SpaceForms.cancel_edit_space(payload, socket)
+
+  def handle_in("cancel_edit_space", _payload, socket),
+    do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
+
+  @impl true
   def handle_in("unarchive_space", %{"space_id" => space_id}, socket)
       when is_integer(space_id) do
     user = socket.assigns.current_user

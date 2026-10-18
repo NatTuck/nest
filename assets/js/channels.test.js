@@ -39,6 +39,7 @@ import {
   revokeInvite,
   archiveSpace,
   editSpace,
+  cancelEditSpace,
   unarchiveSpace,
   unarchiveAgent,
   clearAgentChannels,
@@ -69,6 +70,19 @@ describe("editSpace", () => {
 
     await vi.waitFor(() => {
       assert.strictEqual(reply.network_access, false);
+    });
+  });
+
+  it("adds the confirmation flag only on the second push", async () => {
+    // The first push is the one the server may answer with
+    // `confirmation_required`; the second says the user has seen the plan.
+    const captured = captureNextPush("lobby", "edit_space");
+    editSpace(7, { ...environment, confirm: true });
+
+    assert.deepStrictEqual(await captured, {
+      space_id: 7,
+      ...environment,
+      confirm: true,
     });
   });
 
@@ -5361,6 +5375,36 @@ describe("channels", () => {
         useStore.getState().agentsCache["missing-agent"],
         undefined,
       );
+    });
+  });
+});
+
+describe("cancelEditSpace", () => {
+  // The lobby is left by the suites above, so this one joins for itself.
+  beforeEach(() => {
+    setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+    joinLobby();
+  });
+
+  it("pushes the space id, so the server can release the pause", async () => {
+    const captured = captureNextPush("lobby", "cancel_edit_space");
+    cancelEditSpace(7);
+
+    assert.deepStrictEqual(await captured, { space_id: 7 });
+  });
+
+  it("forwards a refusal to onError", async () => {
+    setNextPushResult("lobby", "cancel_edit_space", {
+      error: { reason: "forbidden" },
+    });
+
+    let refused = null;
+    cancelEditSpace(7, null, (err) => {
+      refused = err;
+    });
+
+    await vi.waitFor(() => {
+      assert.strictEqual(refused.reason, "forbidden");
     });
   });
 });

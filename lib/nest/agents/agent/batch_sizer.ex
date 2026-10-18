@@ -74,6 +74,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Agents.Agent.BatchSizer.ProjectedSize
   alias Nest.Agents.Agent.CapCalculator
+  alias Nest.Agents.SpaceGate
   alias Nest.LLM.Tools, as: LLMTools
   alias Nest.Messages.Part
   alias Nest.Messages.Sanitize
@@ -233,6 +234,12 @@ defmodule Nest.Agents.Agent.BatchSizer do
   # translation live in `FilePolicy` (extracted to keep
   # this module under credo/line-count rules).
   defp execute_one(%ToolCall{} = tc, ctx) do
+    # The space's before-starts latch: while its environment is being edited,
+    # every tool use waits here and then runs under the space's new values.
+    # One ETS read when nothing is held. `Map.get/2`, not `ctx.space_id`: a
+    # `BatchSizer` caller may build a context with no space at all.
+    :ok = SpaceGate.await(Map.get(ctx, :space_id))
+
     case FilePolicy.check(tc, ctx) do
       :ok ->
         do_execute(tc, ctx)

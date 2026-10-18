@@ -26,6 +26,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Agents.Agent.BatchSizer.ProjectedSize
+  alias Nest.Agents.SpaceGate
   alias Nest.LLM.Tool
   alias Nest.Messages.{Part, ToolCall, ToolResult}
   alias Nest.Sandbox
@@ -70,7 +71,8 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       mounts:
         Mounts.new(Keyword.get(opts, :workspace_path, nil), Keyword.get(opts, :tmp_path, nil)),
       agent_pid: self(),
-      agent_name: "test"
+      agent_name: "test",
+      space_id: Keyword.get(opts, :space_id, nil)
     }
   end
 
@@ -136,6 +138,21 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   end
 
   describe "Phase 2: execute" do
+    test "a batch waits for the space's latch, then runs under it" do
+      # The space is being edited: no tool starts until the environment is written.
+      id = System.unique_integer([:positive])
+      c = ctx([small_tool("echo")], space_id: id)
+
+      :ok = SpaceGate.hold(id)
+      batch = Task.async(fn -> BatchSizer.execute([call("c1", "echo")], c) end)
+      assert Task.yield(batch, 30) == nil
+
+      :ok = SpaceGate.release(id)
+
+      assert [{_tc, :ok, content}] = Task.await(batch, 500)
+      assert content =~ "small output"
+    end
+
     test "runs each tool in batch order and returns raw results" do
       tools = [small_tool("alpha"), small_tool("beta")]
       c = ctx(tools)
