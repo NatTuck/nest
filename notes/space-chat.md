@@ -270,18 +270,24 @@ Every **user-role** row states who is speaking. A batch states each body's
 sender; a single-sender row states it once.
 
 ```
-[From user | mode: act]
-[From user, agents-send reply required | mode: act]
+[From user @nat | mode: act]
+[From user @nat, agents-send reply required | mode: act]
 [From agent crazy-dolphin | mode: plan]
 [From agent crazy-dolphin, agents-send reply required | mode: plan]
 [From nest runtime | mode: act]
 [From nest runtime | mode: compact]
 ```
 
-The human arm carries **no name yet**: `@nat` arrives with `Nest.Name` and the
-`user_notes` half of this PR. Until then the arm is exactly `user`, and that is
-deliberate rather than an oversight — the header states the *sender class* the
-model needs to tell a human's words from an agent's or the runtime's.
+The human arm **names the human** when the producer has a name. `@nat` is the
+address a reply is sent to, and `Machine.owed_replies` is keyed on it, so the
+name is not decoration: it is the thing an agent answers. A producer that has no
+name falls back to the bare `user` — that is the only case the arm is nameless,
+and it is the producer's lack rather than a rule.
+
+The sigil is how you *address* somebody; it is not how a row that already knows
+its speaker is a human gets labelled. `human?: true` with `"nat"` and a note
+from `"@nat"` therefore produce the same string, so a queued human message and
+an idle one — or a chat and a note — cannot have two spellings.
 
 `agents-send reply required` maps to exactly **one predicate**: `kind ==
 :query`. It is a statement that *this* note obliges an answer, which is what

@@ -22,7 +22,14 @@
  * else changes.
  */
 export function noteEnd(kind, name, me) {
-  if (kind === "user") return name === me ? "you" : `@${name}`;
+  if (kind === "user") {
+    // `from_name` is nullable in the schema even though every producer passes a
+    // string today, so an unnamed human is shown as one rather than rendered as
+    // `@null` — the project rule is that missing data gets a visible marker, not
+    // a silent gap or a plausible-looking wrong value.
+    if (!name) return "a human (unnamed)";
+    return name === me ? "you" : `@${name}`;
+  }
   if (kind === "runtime") {
     return name ? `nest runtime (about ${name})` : "nest runtime";
   }

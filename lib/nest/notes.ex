@@ -13,8 +13,11 @@ defmodule Nest.Notes do
   ## Addressed, not mailbox-owned
 
   A row names both ends: `from_kind`/`from_name`/`to_kind`/`to_name`. There is
-  no owning `user_id`, which is what makes a note between two humans **one row
-  both of them read** rather than two mirrors of it. The sigil never enters a
+  no owning `user_id`, which is what makes a note between two humans **one row**
+  rather than two mirrors of it: each end reads it through its own predicate
+  (`for_user?/2`), so the table never has to answer "whose copy is this". A
+  space has one human today (`notes/multiple-users.md`), so the second end is a
+  reader the schema allows before the UI can create one. The sigil never enters a
   column: `to_name` is the bare name and `to_kind` says whether it is a human or
   an agent, because a human `nat` and an agent `nat` are different addressees.
 

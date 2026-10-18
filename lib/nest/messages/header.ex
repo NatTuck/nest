@@ -107,14 +107,15 @@ defmodule Nest.Messages.Header do
 
   The facts answer it in this order, and the order is the rule:
 
+    * **the inbox kind `:runtime`** — the runtime speaking, whatever name it
+      carries: a notice about an agent must never be framed as that agent's
+      words, nor as a human's. It is checked first so that nothing else can
+      override it.
     * **`human?`** — the producer saying that what it is passing is a human's
       words. The row is `user`, and it names them from `from` (folded the way a
       username is stored, `Nest.Name`), because a row has to state *who* is
       speaking and a human's name is the address a reply is sent to. A producer
       with no name gets the bare `user`.
-    * **the inbox kind `:runtime`** — the runtime speaking, whatever name it
-      carries: a notice about an agent must never be framed as that agent's
-      words, nor as a human's.
     * **otherwise the name it carries** — an *address* (`Nest.Address`) is a
       human's, which is how a note to a human is delivered and what a reply is
       sent to; a bare name is an agent's and is not folded, because it is an

@@ -49,6 +49,14 @@ describe("noteEnd", () => {
   it("says an unnamed agent is unnamed rather than rendering a blank", () => {
     expect(noteEnd("agent", null, "alice")).toBe("agent (unnamed)");
   });
+
+  it("says an unnamed human is unnamed rather than rendering @null", () => {
+    // `from_name` is nullable in the schema although every producer passes a
+    // string today. `@null` would be a plausible-looking wrong address; the
+    // project rule is that missing data gets a visible marker.
+    expect(noteEnd("user", null, "alice")).toBe("a human (unnamed)");
+    expect(noteEnd("user", "", "alice")).toBe("a human (unnamed)");
+  });
 });
 
 describe("noteDirection", () => {
