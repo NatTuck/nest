@@ -37,6 +37,7 @@ defmodule NestWeb.LobbyChannel do
   alias NestWeb.LobbyChannel.Invites
   alias NestWeb.LobbyChannel.ProbeCache
   alias NestWeb.LobbyChannel.Providers
+  alias NestWeb.LobbyChannel.SpaceForms
 
   @impl true
   def join("lobby", _payload, socket) do
@@ -233,29 +234,8 @@ defmodule NestWeb.LobbyChannel do
   # All `handle_in` clauses grouped together so the compiler
   # is happy with the multi-head pattern matching.
   @impl true
-  def handle_in("create_space", payload, socket) when is_map(payload) do
-    user_id = socket.assigns.user_id
-    model = extract_model(Map.get(payload, "model") || %{})
-    opts = build_create_opts_from_payload(payload, user_id)
-    vocation = Keyword.fetch!(opts, :vocation)
-
-    attrs = build_create_space_attrs(payload, model, vocation, opts)
-
-    case Spaces.create_space_with_root_agent(user_id, attrs) do
-      {:ok, %Spaces.Space{} = space, agent_name} ->
-        # Subscribe to the new space's topic BEFORE announcing the agent:
-        # the announcement rides the space topic, and a channel does not
-        # see its own broadcast, so this session must be listening first.
-        socket = reconcile_space_subscriptions(socket)
-        broadcast_space_created(socket, space, agent_name, model, vocation)
-
-        {:reply, {:ok, %{"space_id" => space.id, "name" => agent_name, "slug" => space.slug}},
-         socket}
-
-      {:error, reason} ->
-        {:reply, AgentErrors.create_payload(reason), socket}
-    end
-  end
+  def handle_in("create_space", payload, socket) when is_map(payload),
+    do: SpaceForms.create_space(payload, socket)
 
   @impl true
   def handle_in(
@@ -329,13 +309,8 @@ defmodule NestWeb.LobbyChannel do
 
   @impl true
   def handle_in("edit_space", %{"space_id" => space_id} = payload, socket)
-      when is_integer(space_id) do
-    if valid_environment_payload?(payload) do
-      do_edit_space(space_id, payload, socket)
-    else
-      {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
-    end
-  end
+      when is_integer(space_id),
+      do: SpaceForms.edit_space(payload, socket)
 
   def handle_in("edit_space", _payload, socket),
     do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
@@ -434,7 +409,11 @@ defmodule NestWeb.LobbyChannel do
 
   # Bring the space subscriptions in line with the user's current visible
   # set. Idempotent, so it is safe to call from several paths.
-  defp reconcile_space_subscriptions(socket) do
+  #
+  # Public for `NestWeb.LobbyChannel.SpaceForms`'s create path, which must
+  # subscribe to the new space's topic before announcing its root agent.
+  @doc false
+  def reconcile_space_subscriptions(socket) do
     have = Map.get(socket.assigns, :space_subs, MapSet.new())
     wanted = visible_space_ids(socket.assigns.user_id)
 
@@ -509,56 +488,21 @@ defmodule NestWeb.LobbyChannel do
   defp broken_agent_shared?(%{shared: shared}), do: shared == true
   defp broken_agent_shared?(_), do: false
 
-  defp build_create_space_attrs(payload, model, vocation, opts) do
-    %{
-      name: payload["name"],
-      slug: payload["slug"],
-      blueprint_id: payload["blueprint_id"],
-      model: model,
-      # When the client picks a blueprint, the blueprint's
-      # `root_vocation` should drive the root agent's
-      # vocation, so we don't forward the lobby's default
-      # `vocation` fallback. Without a blueprint we keep
-      # the default-vocation behavior.
-      vocation: maybe_vocation(payload, vocation),
-      workspace_path: Keyword.get(opts, :workspace_path),
-      # Chosen once, at creation, and immutable afterwards. Absent or blank
-      # means the default; an unknown value is refused by
-      # `Space.create_changeset/2` rather than silently replaced.
-      sandbox_backend: payload["sandbox_backend"],
-      # A space property, editable later; absent means the column's default.
-      network_access: payload["network_access"],
-      agent_name: payload["agent_name"],
-      shared: payload["shared"] == true
-    }
-  end
-
-  defp maybe_vocation(%{"blueprint_id" => bid}, _vocation) when not is_nil(bid), do: nil
-  defp maybe_vocation(_payload, vocation), do: vocation
-
   defp broadcast_space_archived(socket, space_id),
     do: broadcast_to_user(socket, :space_archived, %{"space_id" => space_id})
 
-  defp broadcast_space_updated(socket, space),
-    do: broadcast_to_user(socket, :space_updated, %{"space" => space})
-
   defp broadcast_space_unarchived(socket, space_id),
     do: broadcast_to_user(socket, :space_unarchived, %{"space_id" => space_id})
-
-  defp broadcast_space_created(socket, space, agent_name, model, vocation) do
-    broadcast_to_user(socket, :space_created, %{
-      "space" => space,
-      "agentName" => agent_name
-    })
-
-    broadcast_agent_created(space.id, agent_name, model, vocation)
-  end
 
   # Announce a space-set change on the per-user topic (#41). Every lobby
   # channel of this user is subscribed, so all of their sessions hear it and
   # no other user does — the pre-#41 `broadcast(socket, …)` went to the shared
   # `"lobby"` topic, which every connected user is on.
-  defp broadcast_to_user(socket, tag, payload) do
+  #
+  # Public for `NestWeb.LobbyChannel.SpaceForms`, which announces a created or
+  # edited space through it.
+  @doc false
+  def broadcast_to_user(socket, tag, payload) do
     Phoenix.PubSub.broadcast(
       Nest.PubSub,
       Spaces.user_topic(socket.assigns.user_id),
@@ -598,47 +542,11 @@ defmodule NestWeb.LobbyChannel do
     end
   end
 
-  defp extract_model(model_params) do
-    %{
-      name: model_params["name"] || model_params[:name],
-      provider: model_params["provider"] || model_params[:provider],
-      thinking_level: model_params["thinking_level"] || model_params[:thinking_level]
-    }
-  end
-
-  # The *space* creation opts. `:workspace_path` belongs here — it is the
-  # space's — and not in the root agent's, which inherits it from the row.
-  defp build_create_opts_from_payload(payload, current_user_id) do
-    base_opts =
-      build_create_opts(
-        payload,
-        payload["vocation"] || default_vocation_slug(),
-        payload["workspace_path"]
-      )
-
-    base_opts
-    |> Keyword.put(:created_by_user_id, current_user_id)
-    |> Keyword.put(:shared, payload["shared"] == true)
-  end
-
-  defp build_create_opts(payload, vocation, workspace_path) do
-    []
-    |> maybe_add_opt(:name, payload["name"])
-    |> maybe_add_opt(:vocation, vocation)
-    |> maybe_add_opt(:workspace_path, workspace_path)
-  end
-
-  # The payload is `Broadcasts`'s to build (#72); this passes what the
-  # space-creation path knows. The model goes in whole rather than as a
-  # name/provider pair, because `Broadcasts.created_payload/2` runs it through
-  # the same `model_payload/1` the status broadcast uses — so a root agent's
-  # frame now carries the same model shape a subagent's does instead of a
-  # narrower one.
-  defp broadcast_agent_created(space_id, name, model, vocation) do
-    Broadcasts.agent_created(space_id, name: name, model: model, vocation: vocation)
-  end
-
-  defp build_model_map(model_params) do
+  # The model map a client's model params become. Public for
+  # `NestWeb.LobbyChannel.SpaceForms`: a create and an agent edit send the same
+  # shape, so there is one builder rather than two copies.
+  @doc false
+  def build_model_map(model_params) do
     %{
       name: model_params["name"] || model_params[:name],
       provider: model_params["provider"] || model_params[:provider],
@@ -653,64 +561,4 @@ defmodule NestWeb.LobbyChannel do
       is_admin: user.is_admin
     }
   end
-
-  defp maybe_add_opt(opts, _key, nil), do: opts
-  defp maybe_add_opt(opts, key, value), do: Keyword.put(opts, key, value)
-
-  defp default_vocation_slug do
-    case Vocations.list_vocations() do
-      [] -> nil
-      [first | _] -> first.slug
-    end
-  end
-
-  # The three environment properties, from either key shape. Only these three are
-  # taken: the edit is not a general space update, and `name`/`slug` have their
-  # own action.
-  @environment_keys ["workspace_path", "network_access", "sandbox_backend"]
-
-  defp environment_params(payload) do
-    payload
-    |> Map.take(@environment_keys)
-    |> Map.new(fn {key, value} -> {String.to_existing_atom(key), value} end)
-  end
-
-  # A `network_access` that is not a boolean is a client bug rather than a
-  # changeset refusal: the column is a boolean, and this is its only writer.
-  # Answering `not_found` (the row is there) or `failed_to_edit` would both be
-  # misleading about a payload the client got wrong.
-  defp valid_environment_payload?(payload) do
-    case Map.fetch(payload, "network_access") do
-      :error -> Enum.any?(@environment_keys, &Map.has_key?(payload, &1))
-      {:ok, value} -> is_boolean(value)
-    end
-  end
-
-  defp do_edit_space(space_id, payload, socket) do
-    case Authz.authorize_space_owner(space_id, socket.assigns.current_user) do
-      {:ok, :owner} ->
-        case Spaces.update_environment(space_id, environment_params(payload)) do
-          {:ok, space} ->
-            # Announced on the per-user topic like every other space-set change,
-            # so the owner's other sessions show the same values — and so the
-            # dialog is not the only place they exist.
-            broadcast_space_updated(socket, space)
-            # String keys: the reply is the wire, and the client reads
-            # `network_access`/`workspace_path`/`sandbox_backend`.
-            {:reply, {:ok, wire_values(Spaces.environment_values(space))}, socket}
-
-          {:error, :not_found} ->
-            {:reply, {:error, %{"reason" => "not_found"}}, socket}
-
-          {:error, reason} ->
-            {:reply, AgentErrors.edit_space_payload(reason), socket}
-        end
-
-      {:error, reason} ->
-        {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
-    end
-  end
-
-  defp wire_values(values),
-    do: Map.new(values, fn {key, value} -> {Atom.to_string(key), value} end)
 end

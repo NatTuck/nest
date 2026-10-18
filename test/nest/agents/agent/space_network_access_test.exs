@@ -8,7 +8,7 @@ defmodule Nest.Agents.Agent.SpaceNetworkAccessTest do
   live agent in the space. Without that push a live agent would keep the value
   it started with until it was restarted, which is the hole this closes.
 
-  The agent side is `Nest.Agents.Agent.Callbacks`' `:set_network_access` cast:
+  The agent side is `Nest.Agents.Agent.Callbacks`' `:space_changed` cast:
   the mounts move and the tool closures are rebuilt from them.
 
   The observation is the agent's own state, because neither half of what moves

@@ -1,11 +1,12 @@
 defmodule Nest.Persistence.Messages do
   @moduledoc """
-  Message-load and agent-counter helpers extracted from
-  `Nest.Persistence` so the parent module stays under the
-  credo 500-line cap.
+  Message-row reads, writes and agent-counter helpers extracted from
+  `Nest.Persistence` so the parent module stays under the credo
+  file-length cap.
 
   Owns the per-agent reads (`load_messages/2`,
-  `load_full_messages/2`, `last_compaction_index/2`) and the
+  `load_full_messages/2`, `last_compaction_index/2`), the write path
+  (`insert_message/4` and its `record_compaction/7` facade), and the
   `update_next_message_index_by_id/2` /
   `update_fork_message_index/3` counter bumps. All functions
   take `space_id` as the first argument since agent names are
@@ -21,9 +22,13 @@ defmodule Nest.Persistence.Messages do
 
   import Ecto.Query, warn: false
 
+  require Logger
+
   alias Nest.Agents.PersistedAgent
   alias Nest.Agents.PersistedMessage
+  alias Nest.Messages.Compaction
   alias Nest.Messages.Message
+  alias Nest.Persistence.CompactionMarker
   alias Nest.Repo
 
   @spec load_messages(integer(), String.t()) :: [Message.t()]
@@ -338,5 +343,99 @@ defmodule Nest.Persistence.Messages do
       {:error, :not_found} ->
         {:error, :agent_not_found}
     end
+  end
+
+  # Documented on `Nest.Persistence.insert_message/4`: the facade is the
+  # API, this is where the write lives.
+  @doc false
+  @spec insert_message(integer(), String.t(), Message.t(), keyword()) ::
+          {:ok, PersistedMessage.t()} | {:error, term()}
+  def insert_message(space_id, agent_name, message, opts \\ []) do
+    case Nest.Persistence.fetch_agent(space_id, agent_name) do
+      {:error, :not_found} ->
+        {:error, :agent_not_found}
+
+      {:ok, %PersistedAgent{id: agent_id} = row} ->
+        case check_expected_row(row, opts) do
+          :ok -> insert_message_with_agent_id(agent_id, agent_name, message)
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  # `Keyword.fetch/2`, not `Keyword.get/3`: an absent option means "the
+  # caller did not ask for the check" while an explicit `nil` means "this
+  # session has no row" and must never match. See `insert_message/4`.
+  defp check_expected_row(%PersistedAgent{id: id}, opts) do
+    case Keyword.fetch(opts, :expect_agent_row_id) do
+      :error -> :ok
+      {:ok, ^id} -> :ok
+      {:ok, _other} -> {:error, :agent_row_reused}
+    end
+  end
+
+  defp insert_message_with_agent_id(agent_id, agent_name, {:compaction, _} = message) do
+    case message do
+      {:compaction, %Compaction{} = marker} ->
+        CompactionMarker.record(
+          agent_id,
+          marker.index,
+          marker.archived_count,
+          marker.compaction_count,
+          marker.tokens_compacted,
+          marker.tokens_compacted_to
+        )
+
+      other ->
+        Logger.warning(
+          "Compaction tuple without %Compaction{} struct: #{inspect(other)}. " <>
+            "agent=#{agent_name}"
+        )
+    end
+  end
+
+  defp insert_message_with_agent_id(agent_id, _agent_name, message) do
+    attrs = PersistedMessage.from_runtime(agent_id, message)
+
+    %PersistedMessage{}
+    |> PersistedMessage.changeset(attrs)
+    |> Repo.insert(
+      on_conflict: :nothing,
+      conflict_target: [:agent_id, :message_index]
+    )
+  end
+
+  # Documented on `Nest.Persistence.record_compaction/7`.
+  @doc false
+  @spec record_compaction(
+          integer(),
+          String.t(),
+          non_neg_integer(),
+          non_neg_integer(),
+          non_neg_integer() | nil,
+          non_neg_integer() | nil,
+          keyword()
+        ) :: {:ok, PersistedMessage.t()} | {:error, term()}
+  def record_compaction(
+        space_id,
+        agent_name,
+        marker_index,
+        archived_count,
+        tokens_compacted \\ nil,
+        tokens_compacted_to \\ nil,
+        opts \\ []
+      ) do
+    insert_message(
+      space_id,
+      agent_name,
+      {:compaction,
+       %Compaction{
+         index: marker_index,
+         archived_count: archived_count,
+         tokens_compacted: tokens_compacted,
+         tokens_compacted_to: tokens_compacted_to
+       }},
+      opts
+    )
   end
 end

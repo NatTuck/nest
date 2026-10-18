@@ -85,6 +85,40 @@ export function describeEditError(err) {
 }
 
 /**
+ * Map an `edit_space` error reply to a user-friendly message. The reply is
+ * `{reason: <code>, path?: <path>, type?: <type>}` — the whole payload, because
+ * the config-file refusal needs the `path` (and its `type`) — mirroring the
+ * `:reply` payload from `LobbyChannel.handle_in("edit_space", …)`.
+ *
+ * The shared refusals (`workspace_*`, the config-file one) are worded by the
+ * same helpers the create and edit-agent paths use, so the three cannot drift.
+ */
+export function describeSpaceEditError(err) {
+  const reason = err?.reason;
+
+  const configFile = describeConfigFileError(err);
+  if (configFile) return configFile;
+
+  const workspace = describeWorkspaceError(reason);
+  if (workspace) return workspace;
+
+  switch (reason) {
+    case "invalid_sandbox_backend":
+      // The server validates the backend by *value*, so this is a choice the
+      // user just made, not a failed request.
+      return "That sandbox backend isn't one this server implements.";
+    case "not_found":
+      return "Space not found. Refresh the page and try again.";
+    case "invalid_payload":
+      return "Couldn't read the edit. Try again.";
+    default:
+      return reason
+        ? `Failed to save the space: ${reason}`
+        : "Failed to save the space.";
+  }
+}
+
+/**
  * Map a `create_space` error reply to a user-friendly message. The reply is
  * `{reason: <code>, path?: <path>, type?: <type>}` (mirroring the `:reply`
  * reasons from `LobbyChannel.handle_in("create_space", …)`); an `Error` object

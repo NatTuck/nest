@@ -32,8 +32,8 @@ defmodule Nest.Agents.Agent.NetworkAccessNoticeTest do
 
   import Mimic
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents
-  alias Nest.Agents.Agent
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
@@ -103,7 +103,7 @@ defmodule Nest.Agents.Agent.NetworkAccessNoticeTest do
     # The agent clears its own `space_notice_pending` flag as it appends, so its
     # pid needs the test's sandbox connection — `start_agent/1` does this for the
     # agents it starts, and this test starts one through `Agents.create_agent/3`.
-    Ecto.Adapters.SQL.Sandbox.allow(Nest.Repo, self(), pid)
+    Sandbox.allow(Nest.Repo, self(), pid)
 
     assert {:ok, _space} = Spaces.update_environment(space_id, %{network_access: false})
 
@@ -137,7 +137,7 @@ defmodule Nest.Agents.Agent.NetworkAccessNoticeTest do
 
   defp network_access(pid), do: Mounts.network_access(state(pid).mounts)
 
-  # The mounts are not in `get_public_info/1`, and the `:set_network_access` cast
+  # The mounts are not in `get_public_info/1`, and the `:space_changed` cast
   # emits no frame of its own, so the value the tools were rebuilt from is only in
   # the state. Reading it also drains the cast, which is what orders the
   # assertions above rather than racing them.

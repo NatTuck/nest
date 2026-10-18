@@ -38,42 +38,83 @@ import {
   createInvite,
   revokeInvite,
   archiveSpace,
-  setSpaceNetwork,
+  editSpace,
   unarchiveSpace,
   unarchiveAgent,
   clearAgentChannels,
   agentChannels,
 } from "./channels";
 
-describe("setSpaceNetwork", () => {
-  it("pushes the space and the new value, and forwards ok", async () => {
+describe("editSpace", () => {
+  const environment = {
+    workspace_path: "/home/nat/ws",
+    network_access: false,
+    sandbox_backend: "docker",
+  };
+
+  it("pushes all three environment fields, and forwards the reply", async () => {
     setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
     joinLobby();
-    setNextPushResult("lobby", "set_space_network", {
-      ok: { network_access: false },
+    setNextPushResult("lobby", "edit_space", {
+      ok: { workspace_path: "/home/nat/ws", network_access: false },
     });
 
-    let captured = "not-called";
-    setSpaceNetwork(7, false, () => {
-      captured = "called";
+    const captured = captureNextPush("lobby", "edit_space");
+    let reply = null;
+    editSpace(7, environment, (resp) => {
+      reply = resp;
     });
+
+    assert.deepStrictEqual(await captured, { space_id: 7, ...environment });
 
     await vi.waitFor(() => {
-      assert.strictEqual(captured, "called");
+      assert.strictEqual(reply.network_access, false);
     });
   });
 
-  it("applies the server's space:updated frame to the store", async () => {
-    setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
-    joinLobby();
-    useStore.setState({ spaces: [{ id: 7, name: "s", network_access: true }] });
+  it("forwards a refusal to onError", async () => {
+    setNextPushResult("lobby", "edit_space", {
+      error: { reason: "workspace_missing" },
+    });
 
-    simulateServerEvent("lobby", "space:updated", {
-      space: { id: 7, network_access: false },
+    let refused = null;
+    editSpace(7, environment, null, (err) => {
+      refused = err;
     });
 
     await vi.waitFor(() => {
-      assert.strictEqual(useStore.getState().spaces[0].network_access, false);
+      assert.strictEqual(refused.reason, "workspace_missing");
+    });
+  });
+
+  it("applies the server's whole space:updated frame to the store", async () => {
+    useStore.setState({
+      spaces: [
+        {
+          id: 7,
+          name: "s",
+          workspace_path: "/old",
+          network_access: true,
+          sandbox_backend: "bwrap",
+        },
+      ],
+    });
+
+    simulateServerEvent("lobby", "space:updated", {
+      space: {
+        id: 7,
+        name: "s",
+        workspace_path: "/home/nat/ws",
+        network_access: false,
+        sandbox_backend: "docker",
+      },
+    });
+
+    await vi.waitFor(() => {
+      const [space] = useStore.getState().spaces;
+      assert.strictEqual(space.network_access, false);
+      assert.strictEqual(space.workspace_path, "/home/nat/ws");
+      assert.strictEqual(space.sandbox_backend, "docker");
     });
   });
 });

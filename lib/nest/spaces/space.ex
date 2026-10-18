@@ -45,7 +45,7 @@ defmodule Nest.Spaces.Space do
 
   * `network_access` — whether this space's agents may reach the network. It is
     a **space** property (not a vocation mode's), and unlike `sandbox_backend`
-    it is **editable** (`Nest.Spaces.set_network_access/2`): a space can be
+    it is **editable** (`Nest.Spaces.update_environment/2`): a space can be
     closed off, or opened up, without recreating it. The resolved caps carry it
     as `"net"`, injected at caps-resolution time
     (`Nest.Sandbox.with_network_access/2`), which is what
@@ -112,7 +112,9 @@ defmodule Nest.Spaces.Space do
   `:sandbox_backend` is deliberately absent from the cast list: it is a
   creation-only choice (see `create_changeset/2`), so no update can move
   a space between backends. `:network_access` *is* cast here, because it is
-  editable — `Nest.Spaces.set_network_access/2` goes through this changeset.
+  editable — but the edit path is `environment_changeset/2`, which owns all three
+  environment properties together; this changeset is the rename path, and its
+  cast of the column only keeps a rename from tripping over it.
 
   `:slug` must be usable as the root agent's name (`<slug>-root`), so it
   is held to `PersistedAgent`'s filename-safe rule. A client-supplied

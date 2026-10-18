@@ -43,30 +43,39 @@ describe("store", () => {
       expect(useStore.getState().archivedSpaces).toEqual([]);
     });
 
-    it("setSpaceNetworkAccess updates a space in either list", () => {
-      const store = useStore.getState();
+    it("updateSpace replaces the space in either list with the row it is given", () => {
       const active = { id: 1, name: "a", network_access: true };
       const archived = { id: 2, name: "b", network_access: true };
       useStore.setState({ spaces: [active], archivedSpaces: [archived] });
 
-      useStore.getState().setSpaceNetworkAccess(1, false);
-      useStore.getState().setSpaceNetworkAccess(2, false);
+      // A space edit changes three fields at once, and the frame carries the
+      // whole row: the store takes it as given rather than patching one field.
+      const edited = {
+        id: 1,
+        name: "a",
+        network_access: false,
+        workspace_path: "/home/nat/ws",
+        sandbox_backend: "docker",
+      };
+      useStore.getState().updateSpace(edited);
+      useStore
+        .getState()
+        .updateSpace({ id: 2, name: "b", network_access: false });
 
-      expect(useStore.getState().spaces[0].network_access).toBe(false);
-      expect(useStore.getState().archivedSpaces[0].network_access).toBe(false);
-      // Everything else about the space is left alone.
-      expect(useStore.getState().spaces[0].name).toBe("a");
-      expect(store).toBeDefined();
+      expect(useStore.getState().spaces).toEqual([edited]);
+      expect(useStore.getState().archivedSpaces).toEqual([
+        { id: 2, name: "b", network_access: false },
+      ]);
     });
 
-    it("setSpaceNetworkAccess is a no-op for an unknown id", () => {
-      useStore.setState({
-        spaces: [{ id: 1, name: "a", network_access: true }],
-      });
+    it("updateSpace is a no-op for an unknown id", () => {
+      const space = { id: 1, name: "a", network_access: true };
+      useStore.setState({ spaces: [space] });
 
-      useStore.getState().setSpaceNetworkAccess(999, false);
+      useStore.getState().updateSpace({ id: 999, name: "ghost" });
 
-      expect(useStore.getState().spaces[0].network_access).toBe(true);
+      expect(useStore.getState().spaces).toEqual([space]);
+      expect(useStore.getState().archivedSpaces).toEqual([]);
     });
 
     it("unarchiveSpace moves a space back to the active list", () => {

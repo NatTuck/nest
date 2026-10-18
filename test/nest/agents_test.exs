@@ -17,7 +17,6 @@ defmodule Nest.AgentsTest do
 
   alias Nest.Agents
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient

@@ -145,7 +145,6 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
 
   describe "the supervisor's config-file gate" do
     test "refuses a restart whose workspace config path is now a symlink", %{
-      space_id: space_id,
       vocation: vocation
     } do
       # The one route that never reaches `Sandbox.build/4`: an ordinary restart or

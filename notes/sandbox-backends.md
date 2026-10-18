@@ -174,18 +174,19 @@ nothing on the host may create or write it (`Nest.Sandbox.Mounts.host_scratch?/1
   reads and removes it through the container; the manager's `append` is a no-op
   there, because the bytes it receives on the exec's stream are that same output.
 
-### A network edit replaces the container
+### A network or backend edit replaces the container
 
 `--network none` is fixed when a container is created, so
-`Nest.Spaces.set_network_access/2` releases the space's containers as part of the
-change and the next command builds one with the new value. Everything that lived
-only in the container goes with it: the agents' `/tmp` (offloads, job logs) and
-any running background job. The UI says so before the toggle is flipped. For a
-`none` space nothing is released — its caps were never enforceable, and the
-toggle has always been advisory there.
+`Nest.Spaces.update_environment/2` releases the space's containers as part of the
+change — giving `Nest.Sandbox.Backend.remove_space/2` the backend the row had
+*before* the write — and the next command builds one with the new values.
+Everything that lived only in the container goes with it: the agents' `/tmp`
+(offloads, job logs) and any running background job. The edit dialog says so
+before it is saved. For a `none` space nothing is released — its caps were never
+enforceable, and the network choice has always been advisory there.
 
 The space's live agents are told the new value as part of the same change
-(`Nest.Agents.Agent.set_network_access/2`, a cast), because the value is carried
+(`Nest.Agents.Agent.space_changed/2`, a cast), because the value is carried
 on an agent's `Nest.Sandbox.Mounts` and that is what its caps are resolved from.
 Without that push an agent that started before the change would keep the old
 value until it was restarted, which is what the toggle used to do. A command

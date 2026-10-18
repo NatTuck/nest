@@ -210,7 +210,7 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
                        :error,
                        %{
                          "reason" => "config_file_not_regular",
-                         "path" => path,
+                         "path" => ^path,
                          "type" => "symlink"
                        }
         end)

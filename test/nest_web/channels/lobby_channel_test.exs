@@ -7,6 +7,7 @@ defmodule NestWeb.LobbyChannelTest do
   import ExUnit.CaptureLog
   import NestWeb.LobbyChannelTestHelpers
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Accounts
   alias Nest.Accounts.AuthToken
   alias Nest.Accounts.Invite, as: InviteSchema
@@ -620,6 +621,14 @@ defmodule NestWeb.LobbyChannelTest do
       assert_push "space:updated",
                   %{"space" => %Nest.Spaces.Space{id: ^space_id, network_access: false}},
                   500
+
+      # The live root agent is cast the same environment: allow it the checkout
+      # its notice append writes through, then barrier on the cast finishing.
+      {:ok, agent_pid} = Agents.Registry.lookup(space_id, name)
+      Sandbox.allow(Nest.Repo, self(), agent_pid)
+
+      # allowlist: barrier — the cast's writes must finish before the checkout goes
+      _ = :sys.get_state(agent_pid)
     end
 
     test "refuses a payload that is not a boolean, or names no space" do

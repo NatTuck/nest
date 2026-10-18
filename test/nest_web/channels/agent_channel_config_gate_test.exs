@@ -26,7 +26,6 @@ defmodule NestWeb.AgentChannelConfigGateTest do
   import Mimic
 
   alias Nest.Agents
-  alias Nest.ConfigFile
 
   setup :verify_on_exit!
 

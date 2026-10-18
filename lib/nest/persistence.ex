@@ -60,9 +60,7 @@ defmodule Nest.Persistence do
   alias Nest.Agents.PersistedAgent
   alias Nest.Agents.PersistedMessage
   alias Nest.LLM.Preflight
-  alias Nest.Messages.Compaction
   alias Nest.Messages.Message
-  alias Nest.Persistence.CompactionMarker
   alias Nest.Persistence.Messages
   alias Nest.Repo
   alias Nest.Spaces.Space
@@ -311,60 +309,8 @@ defmodule Nest.Persistence do
   """
   @spec insert_message(integer(), String.t(), Message.t(), keyword()) ::
           {:ok, PersistedMessage.t()} | {:error, term()}
-  def insert_message(space_id, agent_name, message, opts \\ []) do
-    case fetch_agent(space_id, agent_name) do
-      {:error, :not_found} ->
-        {:error, :agent_not_found}
-
-      {:ok, %PersistedAgent{id: agent_id} = row} ->
-        case check_expected_row(row, opts) do
-          :ok -> insert_message_with_agent_id(agent_id, agent_name, message)
-          {:error, reason} -> {:error, reason}
-        end
-    end
-  end
-
-  # `Keyword.fetch/2`, not `Keyword.get/3`: an absent option means "the
-  # caller did not ask for the check" while an explicit `nil` means "this
-  # session has no row" and must never match. See `insert_message/4`.
-  defp check_expected_row(%PersistedAgent{id: id}, opts) do
-    case Keyword.fetch(opts, :expect_agent_row_id) do
-      :error -> :ok
-      {:ok, ^id} -> :ok
-      {:ok, _other} -> {:error, :agent_row_reused}
-    end
-  end
-
-  defp insert_message_with_agent_id(agent_id, agent_name, {:compaction, _} = message) do
-    case message do
-      {:compaction, %Compaction{} = marker} ->
-        CompactionMarker.record(
-          agent_id,
-          marker.index,
-          marker.archived_count,
-          marker.compaction_count,
-          marker.tokens_compacted,
-          marker.tokens_compacted_to
-        )
-
-      other ->
-        Logger.warning(
-          "Compaction tuple without %Compaction{} struct: #{inspect(other)}. " <>
-            "agent=#{agent_name}"
-        )
-    end
-  end
-
-  defp insert_message_with_agent_id(agent_id, _agent_name, message) do
-    attrs = PersistedMessage.from_runtime(agent_id, message)
-
-    %PersistedMessage{}
-    |> PersistedMessage.changeset(attrs)
-    |> Repo.insert(
-      on_conflict: :nothing,
-      conflict_target: [:agent_id, :message_index]
-    )
-  end
+  defdelegate insert_message(space_id, agent_name, message, opts \\ []),
+    to: Nest.Persistence.Messages
 
   @doc """
   Insert a `role: "compaction"` marker row at `marker_index`
@@ -390,28 +336,16 @@ defmodule Nest.Persistence do
           non_neg_integer() | nil,
           keyword()
         ) :: {:ok, PersistedMessage.t()} | {:error, term()}
-  def record_compaction(
-        space_id,
-        agent_name,
-        marker_index,
-        archived_count,
-        tokens_compacted \\ nil,
-        tokens_compacted_to \\ nil,
-        opts \\ []
-      ) do
-    insert_message(
-      space_id,
-      agent_name,
-      {:compaction,
-       %Compaction{
-         index: marker_index,
-         archived_count: archived_count,
-         tokens_compacted: tokens_compacted,
-         tokens_compacted_to: tokens_compacted_to
-       }},
-      opts
-    )
-  end
+  defdelegate record_compaction(
+                space_id,
+                agent_name,
+                marker_index,
+                archived_count,
+                tokens_compacted \\ nil,
+                tokens_compacted_to \\ nil,
+                opts \\ []
+              ),
+              to: Nest.Persistence.Messages
 
   @doc """
   Bump the `next_message_index` column on the agent row with this
