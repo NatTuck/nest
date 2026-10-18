@@ -42,8 +42,15 @@ defmodule Nest.Persistence.AgentCompactionTest do
     assert Enum.map(full, &index/1) == [0, 1, 2, 3, 4, 5, 6]
     assert {:compaction, %Compaction{archived_count: 4}} = Enum.at(full, 4)
     assert {:system, _} = Enum.at(full, 5)
-    assert {:user, %User{parts: [%Part.Text{text: text}]}} = Enum.at(full, 6)
-    assert text == "Summary of earlier conversation:\n\n" <> @summary
+
+    # The summary row states its sender and the agent's mode, like every other
+    # single-sender user row: this path replaces the whole transcript, so an
+    # unheadered row here would be the hardest to notice.
+    assert {:user, %User{parts: [%Part.Text{text: text}], metadata: %{"mode" => "act"}}} =
+             Enum.at(full, 6)
+
+    assert text ==
+             "[From nest runtime | mode: act]\nSummary of earlier conversation:\n\n" <> @summary
 
     active = Enum.filter(full, fn {_role, %{index: idx}} -> idx > 4 end)
     assert :ok = Preflight.validate(active)

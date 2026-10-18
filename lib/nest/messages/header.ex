@@ -64,9 +64,16 @@ defmodule Nest.Messages.Header do
 
   @doc """
   Whether `text`'s header says the runtime wrote it.
+
+  Matched on the sender alone, not on the whole `[From nest runtime | mode: …]`
+  shape: a runtime row that ever carried `, agents-send reply required` would
+  otherwise read as somebody else's. Nothing produces that shape today — the
+  reply marker is set from `kind == :query`, and a query's sender is an agent —
+  but that invariant lives in `Inbox.Render`, not here, and a reader that
+  under-counts is worse than one that is merely less specific.
   """
   @spec runtime?(String.t()) :: boolean()
-  def runtime?(text), do: String.starts_with?(text, "[From nest runtime | mode: ")
+  def runtime?(text), do: String.starts_with?(text, "[From nest runtime")
 
   @doc """
   The body behind `text`'s header, or `nil` when it has none.

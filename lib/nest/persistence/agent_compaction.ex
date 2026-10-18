@@ -129,7 +129,10 @@ defmodule Nest.Persistence.AgentCompaction do
            system_prompt: render_system(agent, vocation, agent_limit, agent_source),
            fallback_system_prompt: (vocation && vocation.system_prompt) || "",
            focus: opts[:focus],
-           max_calls: opts[:max_calls] || @default_max_calls
+           max_calls: opts[:max_calls] || @default_max_calls,
+           # The summary row states the mode it was committed under, so the
+           # agent's own mode travels to the writer.
+           agent_mode: agent.mode
          }}
     end
   end
@@ -205,7 +208,7 @@ defmodule Nest.Persistence.AgentCompaction do
   defp apply_plan(%Planner{} = plan, context, opts) do
     with {:ok, llm_call} <- resolve_llm_call(context, opts),
          {:ok, summary} <- Summarizer.summarize(plan, llm_call),
-         :ok <- Writer.apply(plan, summary) do
+         :ok <- Writer.apply(plan, summary, context.agent_mode) do
       {:ok, plan, summary}
     end
   end

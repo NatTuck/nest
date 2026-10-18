@@ -26,16 +26,19 @@ defmodule Nest.Persistence.AgentCompaction.Writer do
   @doc """
   Apply `plan` with `summary`. Returns `:ok`, or `{:error, reason}`
   after rolling back every write.
+
+  `mode` is the agent's own, and it rides the summary row's header — the one
+  user row this path writes.
   """
-  @spec apply(Planner.t(), String.t(), keyword()) :: :ok | {:error, term()}
-  def apply(%Planner{} = plan, summary, opts \\ []) when is_binary(summary) do
+  @spec apply(Planner.t(), String.t(), String.t(), keyword()) :: :ok | {:error, term()}
+  def apply(%Planner{} = plan, summary, mode, opts \\ []) when is_binary(summary) do
     now = Keyword.get(opts, :now, Persistence.now())
 
     Repo.transaction(fn ->
       delete_orphans(plan)
-      insert_marker(plan, summary, now)
-      Enum.each(Planner.new_messages(plan, summary, now), &insert_row(plan.agent_id, &1))
-      update_agent(plan, now)
+      insert_marker(plan, summary, now, mode)
+      Enum.each(Planner.new_messages(plan, summary, now, mode), &insert_row(plan.agent_id, &1))
+      update_agent(plan, now, mode)
     end)
     |> case do
       {:ok, _} -> :ok
@@ -52,8 +55,8 @@ defmodule Nest.Persistence.AgentCompaction.Writer do
     |> Repo.delete_all()
   end
 
-  defp insert_marker(%Planner{} = plan, summary, now) do
-    new_messages = Planner.new_messages(plan, summary, now)
+  defp insert_marker(%Planner{} = plan, summary, now, mode) do
+    new_messages = Planner.new_messages(plan, summary, now, mode)
 
     marker = %Compaction{
       index: plan.marker_index,
@@ -79,8 +82,8 @@ defmodule Nest.Persistence.AgentCompaction.Writer do
     end
   end
 
-  defp update_agent(%Planner{} = plan, now) do
-    new_count = length(Planner.new_messages(plan, "", now))
+  defp update_agent(%Planner{} = plan, now, mode) do
+    new_count = length(Planner.new_messages(plan, "", now, mode))
 
     from(a in PersistedAgent, where: a.id == ^plan.agent_id)
     |> Repo.update_all(

@@ -341,15 +341,8 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert length(replies) == 1,
              "expected exactly one committed final reply; got #{inspect(messages)}"
 
-      # The compaction produced the active summary_user — behind the runtime's
-      # header, which is why the body is matched rather than the row's start.
-      assert Enum.any?(messages, fn
-               {:user, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
-                 String.contains?(t, "Summary of previous conversation (")
-
-               _ ->
-                 false
-             end)
+      # The compaction produced the active summary_user, behind the runtime's header.
+      assert Enum.any?(messages, &summary_row?/1)
 
       assert Machine.status_for(state.live.machine) == :idle
     end
@@ -491,8 +484,8 @@ defmodule Nest.Agents.AgentCompactionTest do
       # returned).
       summary_row =
         Enum.find_value(messages, fn
-          {:user, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
-            if String.contains?(t, "Summary of previous conversation ("), do: t
+          {:user, %{parts: [%Part.Text{text: t}]}} = message when is_binary(t) ->
+            if summary_row?(message), do: t
 
           _ ->
             nil
@@ -692,6 +685,12 @@ defmodule Nest.Agents.AgentCompactionTest do
   # it orders the call sites' `assert_received/1` assertions behind it too.
   # Every call site first fences on the batch's own broadcast, so the
   # sandbox work (real bwrap processes) is never inside this wait.
+  # The compaction's summary row: the runtime's header, then the body.
+  defp summary_row?({:user, %{parts: [%Part.Text{text: t}]}}) when is_binary(t),
+    do: String.starts_with?(t, "[From nest runtime") and t =~ "Summary of previous conversation"
+
+  defp summary_row?(_message), do: false
+
   defp await_idle(pid) do
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
 

@@ -120,13 +120,15 @@ defmodule Nest.Agents.Agent.EmptyResponseRepromptTest do
     # bound, and allow two more.)
     for _ <- 1..3, do: MockClient.set_stream_events(silent_response_events())
 
-    log =
+    # The warning `finalize_warning(:silent)` writes is a constant, so asserting
+    # it here would pass under either comparison and pin nothing. The count
+    # below is the discriminator: a mode-dependent bound sees zero nudges from
+    # turn one, allows two more, and lands three.
+    _log =
       capture_log(fn ->
         :ok = Agent.chat(pid, "Second", "plan", nil, true)
         assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
-
-    assert log =~ "Empty assistant response finalized after 2 re-prompt(s)"
 
     # allowlist: snapshot — messages
     state = :sys.get_state(pid, 1_000)
@@ -136,7 +138,8 @@ defmodule Nest.Agents.Agent.EmptyResponseRepromptTest do
           text =~ "empty response",
           do: text
 
-    # One per turn, and the second states the mode its own turn ran in.
+    # One per turn — this is the assertion that kills the mutant — and the
+    # second states the mode its own turn ran in.
     assert length(nudges) == 2
     assert Enum.any?(nudges, &(&1 =~ "[From nest runtime | mode: act]"))
     assert Enum.any?(nudges, &(&1 =~ "[From nest runtime | mode: plan]"))

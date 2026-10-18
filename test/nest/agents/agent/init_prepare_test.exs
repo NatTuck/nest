@@ -28,6 +28,7 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
 
   import ExUnit.CaptureLog
   import Mimic
+  import Nest.Test.TmpCleanup
 
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Init
@@ -74,6 +75,35 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
         |> Map.drop([:sandbox_backend, :network_access])
 
       assert Init.prepare(unable) == unable
+    end
+  end
+
+  describe "build_state/2's starting mode" do
+    test "resolves a name this build does not implement, and keeps one it does", %{
+      space_id: space_id,
+      vocation: vocation
+    } do
+      # The resolution happens here, once, so `live.mode` agrees with what every
+      # other reader resolves (`ChatPipeline.resolve_mode_and_caps/3`). Without
+      # it a row holding an old `"chat"` would keep it, and the row's header
+      # would state `mode: chat` while its `metadata.mode` held the resolved
+      # value — the disagreement the client's stripper deliberately leaves on
+      # screen. `validate_mode/2` refuses such a value at the boundary, so this
+      # is the seam a hand-edited or pre-rename row reaches.
+      model = %{name: "qwen3.5-plus", provider: "model-studio"}
+      client_config = Config.create_client_config(model)
+
+      stale = Init.build_state(agent_attrs(space_id, vocation, %{mode: "chat"}), client_config)
+      on_exit(fn -> rm_tmp!(stale.mounts.scratch, stale.name) end)
+
+      assert stale.live.mode == Nest.Modes.default()
+      assert Nest.Modes.default() == "act"
+
+      # A mode this build implements is kept as it is.
+      known = Init.build_state(agent_attrs(space_id, vocation, %{mode: "plan"}), client_config)
+      on_exit(fn -> rm_tmp!(known.mounts.scratch, known.name) end)
+
+      assert known.live.mode == "plan"
     end
   end
 

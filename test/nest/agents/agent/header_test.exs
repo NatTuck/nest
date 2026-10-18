@@ -224,6 +224,34 @@ defmodule Nest.Agents.Agent.HeaderTest do
     end
   end
 
+  describe "the readers" do
+    test "runtime?/1 matches the sender, whatever the rest of the header says" do
+      assert Header.runtime?("[From nest runtime | mode: act]")
+
+      # Unreachable today — the reply marker is set from `kind == :query`, and a
+      # query's sender is an agent — but that invariant lives in `Inbox.Render`,
+      # not here, and a reader that under-counts would let the retry bound in
+      # `Machine.Response` allow a re-prompt indefinitely.
+      assert Header.runtime?("[From nest runtime, agents-send reply required | mode: act]")
+
+      refute Header.runtime?("[From agent peer | mode: act]")
+      refute Header.runtime?("[From user | mode: act]")
+      refute Header.runtime?("no header at all")
+    end
+
+    test "body/1 is the text behind a header, and nil without one" do
+      assert Header.body("[From user | mode: act]\nhello") == "hello"
+      assert Header.body("[From nest runtime | mode: act]\n\nmulti\nline") == "\nmulti\nline"
+
+      # No header: the whole text, unchanged (and the caller is told so).
+      assert Header.body("no header") == nil
+
+      # A header is a whole line. Text that merely starts with the opening is
+      # not one, and it must not be truncated.
+      assert Header.body("[From the top] of my head") == nil
+    end
+  end
+
   # --- helpers ---
 
   # Every context kind, one entry per 75% variant, each carrying the ack

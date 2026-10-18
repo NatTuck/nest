@@ -29,13 +29,13 @@ defmodule Nest.Persistence.AgentCompaction.Planner do
   """
 
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.PersistedAgent
   alias Nest.Messages.Assistant
   alias Nest.Messages.Compaction
   alias Nest.Messages.Message
   alias Nest.Messages.Part
   alias Nest.Messages.System
-  alias Nest.Messages.User
   alias Nest.Tokens.Estimator
   alias Nest.Tokens.Reserve
 
@@ -138,10 +138,18 @@ defmodule Nest.Persistence.AgentCompaction.Planner do
 
   @doc """
   The new active rows the writer inserts after the marker.
+
+  `mode` is the agent's own: the summary row is a single-sender user row, so it
+  states the sender and the mode it was committed under (`Nest.Messages.Header`).
   """
-  @spec new_messages(t(), String.t(), DateTime.t()) :: [Message.t()]
-  def new_messages(%__MODULE__{} = plan, summary, now) do
+  @spec new_messages(t(), String.t(), DateTime.t(), String.t()) :: [Message.t()]
+  def new_messages(%__MODULE__{} = plan, summary, now, mode) do
     marker = plan.marker_index
+
+    # The summary is the runtime's own record of the compaction, so it is
+    # headered like every other single-sender user row.
+    {:user, user} =
+      Dispatch.build_user_message(@summary_prefix <> summary, mode, sender: :runtime)
 
     [
       {:system,
@@ -153,14 +161,7 @@ defmodule Nest.Persistence.AgentCompaction.Planner do
          metadata: nil,
          tokens: nil
        }},
-      {:user,
-       %User{
-         index: marker + 2,
-         parts: [%Part.Text{text: @summary_prefix <> summary}],
-         timestamp: now,
-         api_logs: [],
-         tokens: nil
-       }}
+      {:user, %{user | index: marker + 2, timestamp: now}}
     ]
   end
 
