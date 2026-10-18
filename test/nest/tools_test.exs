@@ -130,56 +130,6 @@ defmodule Nest.ToolsTest do
         assert error_msg =~ "file-inspect"
       end
     end
-
-    test "caps the read at stat time, before any content is read", %{workspace: workspace} do
-      # Invalid UTF-8, so a read would answer "non-text". The cap error instead
-      # proves the size gate answered first: the content was never read.
-      File.write!(Path.join(workspace, "huge.bin"), :binary.copy(<<0xFF>>, 400_000))
-      File.write!(Path.join(workspace, "medium.txt"), String.duplicate("x", 4_000))
-      File.write!(Path.join(workspace, "small.txt"), "Hello, World!")
-
-      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
-
-      context = %{
-        caps: %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}},
-        context_limit: 100_000,
-        messages: [],
-        tool_call_id: "call-1"
-      }
-
-      # 400_000 bytes prices at 120_010 tokens. `context_limit: 100_000` leaves
-      # an 80_000-token content budget, so the cap is 64_000.
-      assert {:error, message} = function.function.(%{"path" => "huge.bin"}, context)
-
-      # The size gate has not read the file, so it names the byte size and the
-      # limit rather than claiming a token count, and it names the binary
-      # possibility — no limit makes a binary file readable through `file-read`.
-      # Without that, one file would get "non-text" below the cap and a bare
-      # token count above it, which is the misdescription that let the model
-      # conclude PDFs "reliably time out".
-      assert message =~
-               "File is 400000 bytes and this read would exceed your 64000-token limit, " <>
-                 "so it was not read."
-
-      assert message =~ "No limit makes a binary file readable through file-read"
-      assert message =~ "file-inspect"
-      assert message =~ "head -1 <path>"
-
-      # The model may lower the cap, and the gate honours that too: 4_000 bytes
-      # is 1_210 tokens, under the 64_000 default but over a 1_000-token
-      # override.
-      assert {:error, message} =
-               function.function.(
-                 %{"path" => "medium.txt", "max_result_tokens" => 1_000},
-                 context
-               )
-
-      assert message =~ "File is 4000 bytes and this read would exceed your 1000-token limit"
-
-      # A file under the cap still reads, so the gate is not refusing
-      # everything once a context is present.
-      assert {:ok, "Hello, World!"} = function.function.(%{"path" => "small.txt"}, context)
-    end
   end
 
   describe "file-write tool" do

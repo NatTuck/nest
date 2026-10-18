@@ -13,14 +13,11 @@ defmodule Nest.Tools.FileTools do
 
   require Logger
 
-  alias Nest.Agents.Agent.CapCalculator
   alias Nest.LLM.Tool
   alias Nest.Messages.Part
   alias Nest.Messages.Sanitize
-  alias Nest.Messages.ToolCall
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
-  alias Nest.Tokens.Estimator
   alias Nest.Tools.MediaKind
 
   # Stat-then-cap mirrors `InspectFile`'s cap so the BatchSizer's
@@ -59,8 +56,8 @@ defmodule Nest.Tools.FileTools do
         },
         "required" => ["path"]
       },
-      function: fn %{"path" => path} = args, context ->
-        read_file(path, mounts, context, args)
+      function: fn %{"path" => path}, context ->
+        read_file(path, mounts, context)
       end
     }
   end
@@ -147,25 +144,25 @@ defmodule Nest.Tools.FileTools do
   # `mounts` is the value `Nest.Sandbox` reads the bind layout out of.
   # Failed reads return bounded error strings whose sizes are
   # tracked accurately via `Estimator`.
-  defp read_file(path, mounts, context, args) do
+  defp read_file(path, mounts, context) do
     caps = caps_from_context(context)
 
     case Mounts.resolve(path, mounts) do
       {:ok, full_path} ->
-        read_after_stat(full_path, path, caps, mounts, context, args)
+        read_after_stat(full_path, path, caps, mounts, context)
 
       {:error, _} = err ->
         err
     end
   end
 
-  defp read_after_stat(full_path, original_path, caps, mounts, context, args) do
+  defp read_after_stat(full_path, original_path, caps, mounts, context) do
     case Sandbox.stat(full_path, caps, mounts) do
       {:ok, %{size: size}} when size > @max_read_file_bytes ->
         too_large_error(size)
 
-      {:ok, %{size: size}} ->
-        read_classified(full_path, original_path, caps, mounts, context, args, size)
+      {:ok, _} ->
+        read_classified(full_path, original_path, caps, mounts, context)
 
       {:error, reason} ->
         read_error(reason, original_path)
@@ -176,72 +173,13 @@ defmodule Nest.Tools.FileTools do
   # look like media never pays the extra `file --mime-type` spawn, and a path
   # that does look like media is still confirmed by `MediaKind.detect/3`
   # before anything is attached.
-  defp read_classified(full_path, original_path, caps, mounts, context, args, size) do
+  defp read_classified(full_path, original_path, caps, mounts, context) do
     case MediaKind.from_path(full_path) do
       :text ->
-        read_text_file(full_path, caps, mounts, args, context, size)
+        read_file_content(full_path, caps, mounts)
 
       {:ok, modality} ->
         read_media_file(full_path, original_path, caps, mounts, modality, context)
-    end
-  end
-
-  # A text read over the caller's inline cap answers before the read:
-  # otherwise up to 10 MB is pulled into memory, tokenized and scanned for
-  # non-text bytes only to be discarded.
-  #
-  # This can only fire earlier than `handle_over_cap/5`, never instead of it —
-  # `BatchSizer` still caps the result it actually receives, so content whose
-  # real token count exceeds `estimate_bytes/1`'s byte-based estimate (dense
-  # scripts, punctuation-heavy code) is still caught there.
-  #
-  # Media is excluded: its price is the modality ceiling, not the byte size, and
-  # `BatchSizer` has its own `media_over_cap_error/3` for it.
-  defp read_text_file(full_path, caps, mounts, args, context, size) do
-    cap = inline_cap(args, context)
-
-    if is_integer(cap) and Estimator.estimate_bytes(size) > cap do
-      {:error, over_cap_error(size, cap)}
-    else
-      read_file_content(full_path, caps, mounts)
-    end
-  end
-
-  # Deliberately a different message from `BatchSizer.handle_over_cap/5`'s,
-  # because the two know different things. That one has the content, so it can
-  # name a real token count. This one has not read the file: the only honest
-  # numbers are its byte size and the limit, and the file may not be text at
-  # all — in which case it has no token count and no limit makes it readable
-  # through `file-read`.
-  #
-  # Claiming "File is N tokens" here would be the same defect that produced the
-  # incident this gate exists for: a message that misdescribes *why* the call
-  # failed, which the model then builds a false conclusion on (it concluded
-  # "PDFs reliably time out" and wrote that into three summaries). So the same
-  # file must not get one explanation below the cap ("non-text") and a
-  # different one above it.
-  defp over_cap_error(size, cap) do
-    "File is #{size} bytes and this read would exceed your #{cap}-token limit, " <>
-      "so it was not read. No limit makes a binary file readable through " <>
-      "file-read — use file-inspect for metadata, or shell-cmd with hexdump/xxd. " <>
-      "For a text file, run shell-cmd directly on it (e.g. `head -1 <path>`) for " <>
-      "a partial read — never piped into head/tail."
-  end
-
-  # The cap `BatchSizer` will enforce on this result, or `nil` when the caller
-  # supplied no usable context window (a direct tool invocation, or a window
-  # with no room left) — then nothing is enforced here and `BatchSizer` is the
-  # only gate.
-  defp inline_cap(args, context) do
-    case CapCalculator.usable_window(context) do
-      {:ok, usable} ->
-        CapCalculator.effective_max_result_tokens(
-          %ToolCall{id: Map.get(context, :tool_call_id), name: "file-read", arguments: args},
-          usable
-        )
-
-      :none ->
-        nil
     end
   end
 
