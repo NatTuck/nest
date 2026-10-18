@@ -80,7 +80,7 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
     unusable_slug =
       Space.changeset(%Space{}, %{name: "My Space", slug: "my space", created_by_user_id: 1})
 
-    assert {"must be usable as an agent name (letters, digits, `_` and `-`)", _} =
+    assert {"must be usable as an agent name (lowercase letters, digits, `_` and `-`)", _} =
              unusable_slug.errors[:slug]
 
     log =

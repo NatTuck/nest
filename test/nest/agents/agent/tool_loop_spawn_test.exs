@@ -168,7 +168,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
       assert [%ToolResult{name: "agents-spawn", is_error: true, content: content}] = results
 
       assert content =~ "letters, digits"
-      assert content =~ "no spaces or slashes"
+      assert content =~ "no capitals, spaces or slashes"
       refute content =~ "Ecto.Changeset"
       assert log =~ "is_error=true tool result"
     end

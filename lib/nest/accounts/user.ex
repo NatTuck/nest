@@ -51,20 +51,20 @@ defmodule Nest.Accounts.User do
   def registration_changeset(source, params) do
     source
     |> cast(params, [:username, :password_hash, :is_admin])
+    # Before the validations, not after: a username is stored in its canonical
+    # form, so `"Jane Doe"` is validated as `jane-doe` and a name that sanitises
+    # to nothing (`"..."`, an all-CJK name) fails `validate_required` rather
+    # than being stored empty.
+    |> update_change(:username, &Nest.Name.sanitize/1)
     |> validate_required([:username])
     |> validate_length(:username, min: 1, max: 64)
-    |> update_change(:username, &normalize_username/1)
     |> unique_constraint(:username)
   end
 
-  # Lowercase + trim the username so case and surrounding
-  # whitespace can't cause duplicate-looking accounts. The
-  # underlying column is `citext`, so the comparison is
-  # case-insensitive; we still normalize on the way in so
-  # the canonical form is what gets stored.
-  defp normalize_username(nil), do: nil
-
-  defp normalize_username(username) when is_binary(username) do
-    username |> String.trim() |> String.downcase()
-  end
+  # The username is a `Nest.Name`: the same `[a-z0-9_-]+` rule an agent's name
+  # follows, so `@Nat` and `@nat` cannot be two accounts. The underlying column
+  # is `citext`, so *comparison* is case-insensitive either way — this is the
+  # stored canonical form, and it is what makes an address tokenise as one
+  # token. `Nest.Name.sanitize/1` is the fold; the validations above see its
+  # result.
 end

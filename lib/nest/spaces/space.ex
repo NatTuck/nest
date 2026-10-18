@@ -260,7 +260,7 @@ defmodule Nest.Spaces.Space do
       if PersistedAgent.valid_name?(slug <> @root_agent_suffix) do
         []
       else
-        [slug: "must be usable as an agent name (letters, digits, `_` and `-`)"]
+        [slug: "must be usable as an agent name (lowercase letters, digits, `_` and `-`)"]
       end
     end)
   end

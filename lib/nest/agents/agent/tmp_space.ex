@@ -94,14 +94,13 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # (a `..` component would escape the space dir), no whitespace, no
   # control characters.
   #
-  # This is the same rule `PersistedAgent.changeset/2` enforces at the DB
-  # boundary, re-checked here because this module is what turns a name
-  # into a path it later `rm_rf`s. It is the local backstop for a row that
-  # predates the changeset rule (see the `sanitize_agent_names`
-  # migration): without it, `cleanup/3` on a name of `..` would build
-  # `<space>/..` and wipe the whole shared `nest-<ospid>` root — every
-  # space, every agent's scratch.
-  @name_format ~r/\A[A-Za-z0-9_-]+\z/
+  # This is `Nest.Name` — the same rule `PersistedAgent.changeset/2` enforces at
+  # the DB boundary, read from its one home rather than spelled again,
+  # re-checked here because this module is what turns a name into a path it
+  # later `rm_rf`s. It is the local backstop for a row that predates the
+  # changeset rule (see the name migrations): without it, `cleanup/3` on a name
+  # of `..` would build `<space>/..` and wipe the whole shared `nest-<ospid>`
+  # root — every space, every agent's scratch.
 
   # What a `"none"` agent's scratch directory carries to say it is Nest's. See
   # the moduledoc.
@@ -425,5 +424,5 @@ defmodule Nest.Agents.Agent.TmpSpace do
     end
   end
 
-  defp single_segment?(name), do: is_binary(name) and String.match?(name, @name_format)
+  defp single_segment?(name), do: Nest.Name.valid?(name)
 end
