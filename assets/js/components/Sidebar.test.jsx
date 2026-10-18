@@ -1263,6 +1263,36 @@ describe("Sidebar space overview", () => {
   });
 });
 
+describe("Sidebar space overview on a campaign space", () => {
+  it("links the overview from a campaign space's row too", () => {
+    // The row never reads `blueprints`, so the link is blueprint-independent by
+    // construction — and that is the point: a campaign's Main View has no agent
+    // header, so this row is the only way into its environment.
+    act(() => {
+      useStore.setState({
+        agents: [],
+        archivedAgents: [],
+        spaces: [
+          { id: 3, slug: "campaign", name: "Campaign", blueprint_id: 7 },
+        ],
+        blueprints: [
+          { id: 7, name: "Tabletop RPG", main_view_config: { view: "rpg" } },
+        ],
+      });
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/campaign"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("link", { name: "Overview of Campaign" }),
+    ).toHaveAttribute("href", "/space/campaign/overview");
+  });
+});
+
 describe("Sidebar broken-agent rows", () => {
   // A persisted agent whose model no longer resolves has no live process,
   // so nothing broadcasts a status for it. It still gets a flat-list row —
@@ -1396,6 +1426,33 @@ describe("Sidebar space archiving", () => {
 
     const button = screen.getByRole("button", { name: /archive my space/i });
     expect(button).toBeInTheDocument();
+  });
+
+  it("links an archived row with the encoded slug and highlights it on its pages", () => {
+    // The slug goes into the link and into every comparison, so it is encoded
+    // once: a slug the browser had to escape would match nothing otherwise. The
+    // space's two pages both render the archived notice, so both count as
+    // "this space".
+    act(() => {
+      useStore.setState({
+        spaces: [],
+        archivedSpaces: [
+          { id: 4, slug: "my space", name: "My Space", archived: true },
+        ],
+        // The section starts collapsed; this test is about the row, not that.
+        archivedCollapsed: false,
+      });
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my%20space/overview"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    const link = screen.getByRole("link", { name: /^My Space/ });
+    expect(link).toHaveAttribute("href", "/space/my%20space");
+    expect(link.parentElement.className).toMatch(/bg-gray-200/);
   });
 
   it("clicking Archive pushes archive_space with the space id", async () => {

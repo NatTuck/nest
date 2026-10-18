@@ -23,11 +23,26 @@
  * has one definition and two ways in. It is reached from the sidebar's space
  * row, which is the space's own row and the only entry point that exists on
  * every page — a campaign's Main View has no agent header at all.
+ *
+ * A third case is an **archived** space: its sidebar row links here too, and the
+ * space exists (it is stopped, not gone), so "Space not found" would be a lie.
+ * It renders the archived notice with the same restore path the row's own button
+ * pushes.
+ *
+ * ## Which page this is
+ *
+ * The `overview` flag comes from the route table (`App.jsx`), not from a second
+ * reading of the path here. Two reasons: the route table is already the one place
+ * that says which path is which page, and a prop at the call site (`<SpaceView
+ * overview />`) reads as what it is. A `useMatch` on the overview's pattern would
+ * put that pattern in a second place, where a change to one spelling could leave
+ * the other silently matching nothing.
  */
 
 import { useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { useStore } from "../store";
+import { unarchiveSpace } from "../channels";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { EditSpaceDialog } from "../components/EditSpaceDialog";
 import { SpacePausedBanner } from "../components/SpacePausedBanner";
@@ -43,24 +58,26 @@ import { SANDBOX_BACKENDS, sandboxBackendHelp } from "../utils/newSpaceForm";
 export function SpaceView({ overview = false }) {
   const { spaceSlug } = useParams();
   const spaces = useStore((s) => s.spaces);
+  const archivedSpaces = useStore((s) => s.archivedSpaces);
   const agents = useStore((s) => s.agents);
   const blueprints = useStore((s) => s.blueprints);
 
   const space = spaces.find((s) => s.slug === spaceSlug);
+  // The space lives in exactly one of the two lists (`Nest.Spaces` keeps an
+  // archived space out of the active set), so an archived slug is a space that
+  // exists and is stopped — not a missing one.
+  const archivedSpace = space
+    ? null
+    : archivedSpaces.find((s) => s.slug === spaceSlug);
+  const resolved = space ?? archivedSpace;
   // The tab names the host and the space. The name falls back to the
   // slug when the store hasn't loaded the space yet (a hard load of a
   // deep URL) -- the slug is real information, so it beats a blank or
   // a placeholder. Both of the space's pages are the same page for this
   // purpose, so they share the title.
-  useDocumentTitle([space?.name ?? spaceSlug]);
-  const blueprint = space
-    ? blueprints.find((b) => b.id === space.blueprint_id)
-    : null;
-  const spaceAgents = space
-    ? agents.filter((a) => a.space_id === space.id)
-    : [];
+  useDocumentTitle([resolved?.name ?? spaceSlug]);
 
-  if (!space) {
+  if (!resolved) {
     return (
       <div className="max-w-4xl mx-auto py-12 text-center">
         <h1 className="text-2xl font-bold text-gray-900 mb-2">
@@ -73,6 +90,13 @@ export function SpaceView({ overview = false }) {
     );
   }
 
+  if (archivedSpace) {
+    return <ArchivedSpace space={archivedSpace} />;
+  }
+
+  const blueprint = blueprints.find((b) => b.id === space.blueprint_id);
+  const spaceAgents = agents.filter((a) => a.space_id === space.id);
+
   // The Main View dispatch. `main_view_config` is the blueprint's hook for
   // exactly this, and it has been on the schema since Phase 2.
   //
@@ -83,7 +107,18 @@ export function SpaceView({ overview = false }) {
     const mainView = blueprint?.main_view_config?.view ?? "chat";
 
     if (mainView === "rpg") {
-      return <RpgPlayInterface space={space} />;
+      // The pause banner belongs to the space, not to one of its pages: a
+      // campaign space's Main View has no agent header and no overview in its
+      // way, so without this it is the one screen where a paused space looks
+      // exactly like a stuck one.
+      return (
+        <>
+          <div className="max-w-4xl mx-auto">
+            <SpacePausedBanner spaceId={space.id} spaceName={space.name} />
+          </div>
+          <RpgPlayInterface space={space} />
+        </>
+      );
     }
 
     // The default Main View is the root agent's chat. `parentId == null` is the
@@ -109,6 +144,39 @@ export function SpaceView({ overview = false }) {
       blueprint={blueprint}
       spaceAgents={spaceAgents}
     />
+  );
+}
+
+/**
+ * What an archived space shows. Its sidebar row links here, and the space exists —
+ * it is stopped, and its agents with it — so the answer is the notice and the way
+ * back, not "Space not found". The restore is the same action the archived row's
+ * own button pushes (`Nest.Spaces.unarchive_space/1` behind
+ * `unarchive_space`); once it lands the store moves the space back into the active
+ * list, this page re-renders as the space's real page, and the archived agents
+ * appear in the sidebar's archived groups.
+ */
+function ArchivedSpace({ space }) {
+  return (
+    <div className="max-w-4xl mx-auto py-12 text-center">
+      <h1 className="text-2xl font-bold text-gray-900 mb-2">{space.name}</h1>
+      <p className="text-sm text-gray-600">
+        This space is archived. Unarchive it to see its agents and its
+        environment.
+      </p>
+      <button
+        type="button"
+        onClick={() => unarchiveSpace(space.id)}
+        className="mt-4 px-4 py-2 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors"
+      >
+        Unarchive space
+      </button>
+      <p className="mt-4 text-sm">
+        <Link to="/spaces" className="text-blue-600 hover:underline">
+          Back to spaces
+        </Link>
+      </p>
+    </div>
   );
 }
 

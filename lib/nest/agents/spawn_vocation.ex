@@ -21,7 +21,9 @@ defmodule Nest.Agents.SpawnVocation do
   alias Nest.Vocations.Vocation
 
   @doc """
-  Resolve the effective `vocation_id` for a fresh spawn.
+  Resolve the effective `vocation_id` for a fresh spawn, applying the blueprint's
+  whitelist. See `Nest.Agents.Supervisor.spawn_agent_in_space/5`'s doc for the
+  resolution rules.
 
   Refusals carry the whitelisted vocations (as `{name, slug}` labels) so the
   caller can tell the model what it may actually spawn.
@@ -32,11 +34,6 @@ defmodule Nest.Agents.SpawnVocation do
              {:vocation_not_found, String.t()}
              | {:vocation_required, [{String.t(), String.t()}]}
              | {:vocation_not_spawnable, [{String.t(), String.t()}]}}
-  # Resolve the effective `vocation_id` for a fresh spawn, applying
-  # the blueprint whitelist. See `spawn_agent_in_space/4`'s doc for
-  # the resolution rules. Refusals carry the whitelisted vocations
-  # (as `{name, slug}` labels) so the caller can tell the model what it
-  # may actually spawn.
   def resolve(parent_state, requested)
       when is_binary(requested) and requested != "" do
     case Vocations.get_by_slug(requested) do

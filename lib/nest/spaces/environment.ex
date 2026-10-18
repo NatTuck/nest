@@ -2,9 +2,10 @@ defmodule Nest.Spaces.Environment do
   @moduledoc """
   The space edit's **two phases**: the plan, the latch, and the cancellation.
 
-  `Nest.Spaces` owns the row and the announcement (`write_environment/3`); this
-  owns everything about *when* that write is allowed to happen, because an edit
-  stops work and the user has to be told what it costs first.
+  `Nest.Spaces` owns the row and the announcement (`prepare_environment/2` and
+  `commit_environment/2`); this owns everything about *when* that write is
+  allowed to happen, because an edit stops work and the user has to be told what
+  it costs first.
 
   ## Two phases
 
@@ -83,12 +84,31 @@ defmodule Nest.Spaces.Environment do
     end
   end
 
+  # Validate first, then latch, then plan, then ask: in that order, because each
+  # of the first three can make the next one unnecessary, and only the last two
+  # cost the space anything.
+  #
+  # A save that is refused, or that names what the row already says, stops
+  # nothing — not even the latch. The plan the user confirms says what the edit
+  # *will* stop, so it must not be computed (or paid for) for an edit that will
+  # never happen: a typo'd workspace path must not cancel every in-flight tool
+  # call and stop every background job on its way to `{:error, :workspace_missing}`.
   defp decide(space, params, old_backend, opts) do
+    with {:ok, changeset} <- Spaces.prepare_environment(space, params) do
+      if changeset.changes == %{} do
+        {:ok, changeset.data}
+      else
+        confirm_or_edit(space, changeset, old_backend, opts)
+      end
+    end
+  end
+
+  defp confirm_or_edit(space, changeset, old_backend, opts) do
     with :ok <- hold(space.id) do
       plan = edit_plan(space.id)
 
       if Keyword.get(opts, :confirm, false) or quiet?(plan) do
-        edit(space, params, old_backend, plan)
+        edit(space, changeset, old_backend, plan)
       else
         # The latch stays up while the user decides: nothing can start in the
         # space, so the plan the dialog shows cannot go stale, and cancelling
@@ -98,11 +118,11 @@ defmodule Nest.Spaces.Environment do
     end
   end
 
-  # The latch comes down whatever the write did: a refused changeset, a workspace
-  # the sandbox will not take, or a successful edit.
-  defp edit(space, params, old_backend, plan) do
+  # Quiesce, then write: the only two steps left, and the latch comes down whatever
+  # the write did.
+  defp edit(space, changeset, old_backend, plan) do
     quiesce(space.id, plan)
-    Spaces.write_environment(space, params, old_backend)
+    Spaces.commit_environment(changeset, old_backend)
   after
     SpaceGate.release(space.id)
   end

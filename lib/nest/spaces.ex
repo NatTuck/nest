@@ -229,6 +229,16 @@ defmodule Nest.Spaces do
   space inherits them, and an agent's `Nest.Sandbox.Mounts` is built from them
   once at start — so the row is the truth, and the agents have to be told.
 
+  ## Two phases
+
+  The edit **stops work**, so it asks first: with anything running it answers
+  `{:error, {:confirmation_required, plan}}` (the working agents, their running
+  job counts, and the total) **without writing**, and the same params with
+  `confirm: true` does the edit. A save that is refused, or that names what the
+  row already says, stops nothing. `Nest.Spaces.Environment` owns that protocol —
+  the `Nest.Agents.SpaceGate` latch, the plan, and the cancellation — and its
+  moduledoc is the description to read.
+
   Nothing is restarted. A live agent is cast the new values
   (`Nest.Agents.Agent.space_changed/2`): its mounts move, its tool closures are
   rebuilt from them, and it appends a notice pair stating the environment now in
@@ -257,9 +267,11 @@ defmodule Nest.Spaces do
   agents that are working at the time.
 
   Returns `{:ok, space}`, or `{:error, reason}` where `reason` is `:not_found`,
-  the space changeset, or a workspace refusal from `Nest.Sandbox.workspace_error/1`
-  — the same codes the create path produces, including the tagged
-  `{:config_file_not_regular, path, type}`.
+  `:space_changing` (another session holds the space), the space changeset, a
+  workspace refusal from `Nest.Sandbox.workspace_error/1` — the same codes the
+  create path produces, including the tagged
+  `{:config_file_not_regular, path, type}` — or
+  `{:confirmation_required, plan}` for the first phase.
   """
   @spec update_environment(integer(), map(), keyword()) ::
           {:ok, Space.t()}
@@ -273,34 +285,23 @@ defmodule Nest.Spaces do
              | {:confirmation_required, Environment.edit_plan()}}
   defdelegate update_environment(id, params, opts \\ []), to: Environment
 
-  # The write half, for `Nest.Spaces.Environment`: it owns the latch, the plan and
-  # the cancellation, and this owns the row and the announcement.
-  #
-  # A save that names what the row already says is not an edit: releasing the
-  # container here would destroy a live environment for nothing, and telling the
-  # agents would announce a change that did not happen.
+  # The validate half, for `Nest.Spaces.Environment`: the split exists so a save
+  # that would be refused never stops anything. The workspace gate runs here,
+  # before the caller quiesces, so a typo'd path does not cancel every in-flight
+  # tool call on its way to `{:error, :workspace_missing}`;
+  # `changeset.changes == %{}` is the other answer that stops nothing.
   @doc false
-  @spec write_environment(Space.t(), map(), String.t()) :: {:ok, Space.t()} | {:error, term()}
-  def write_environment(%Space{} = space, params, old_backend) do
-    space
-    |> Space.environment_changeset(params)
-    |> apply_environment(old_backend)
+  @spec prepare_environment(Space.t(), map()) :: {:ok, Ecto.Changeset.t()} | {:error, term()}
+  def prepare_environment(%Space{} = space, params) do
+    changeset = Space.environment_changeset(space, params)
+
+    with :ok <- workspace_gate(changeset), do: {:ok, changeset}
   end
 
-  # A save that names what the row already says is not an edit: releasing the
-  # container here would destroy a live environment for nothing, and telling the
-  # agents would announce a change that did not happen.
-  defp apply_environment(changeset, old_backend) do
-    with :ok <- workspace_gate(changeset) do
-      if changeset.changes == %{} do
-        {:ok, changeset.data}
-      else
-        write_environment(changeset, old_backend)
-      end
-    end
-  end
-
-  defp write_environment(changeset, old_backend) do
+  # The write half: the row, the container release and the announcement.
+  @doc false
+  @spec commit_environment(Ecto.Changeset.t(), String.t()) :: {:ok, Space.t()} | {:error, term()}
+  def commit_environment(%Ecto.Changeset{} = changeset, old_backend) do
     case Repo.update(changeset) do
       {:ok, updated} ->
         # The *old* backend: the containers to release are the ones it made.

@@ -29,13 +29,24 @@ import {
 
 // `pausedSpaces` is the space edit's latch (`SpacePausedBanner` reads it); no
 // space is paused in these tests.
-let mockState = { spaces: [], agents: [], blueprints: [], pausedSpaces: [] };
+let mockState = {
+  spaces: [],
+  archivedSpaces: [],
+  agents: [],
+  blueprints: [],
+  pausedSpaces: [],
+};
 
-const mocks = vi.hoisted(() => ({ editSpace: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  editSpace: vi.fn(),
+  unarchiveSpace: vi.fn(),
+}));
 
-// `EditSpaceDialog` pushes the edit; the page only opens it.
+// `EditSpaceDialog` pushes the edit; the page only opens it. The archived notice
+// pushes the restore.
 vi.mock("../channels", () => ({
   editSpace: mocks.editSpace,
+  unarchiveSpace: mocks.unarchiveSpace,
 }));
 
 vi.mock("../store", () => ({
@@ -148,8 +159,14 @@ beforeEach(() => {
       { name: "other-agent", space_id: 2, status: "idle", depth: 0 },
     ],
     blueprints: [{ id: 10, name: "Tabletop RPG" }],
+    archivedSpaces: [],
     pausedSpaces: [],
   };
+});
+
+beforeEach(() => {
+  mocks.editSpace.mockReset();
+  mocks.unarchiveSpace.mockReset();
 });
 
 describe("SpaceView", () => {
@@ -332,6 +349,29 @@ describe("SpaceView", () => {
     expect(screen.queryByText(/^agent chat:/)).not.toBeInTheDocument();
   });
 
+  it("shows the pause banner on a campaign's Main View", () => {
+    // The `rpg` page is a Main View, not the overview, and a paused space has to
+    // be visible there too: this is the one screen with no agent header and no
+    // overview in the way, so a pause would read as a stuck page.
+    mockState = {
+      ...mockState,
+      agents: [
+        { name: "gm", space_id: 1, status: "idle", depth: 0, parent_id: null },
+      ],
+      blueprints: [
+        { id: 10, name: "Tabletop RPG", main_view_config: { view: "rpg" } },
+      ],
+      pausedSpaces: [1],
+    };
+
+    renderView();
+
+    expect(
+      screen.getByRole("heading", { name: "RPG Play Interface" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("My Space is paused");
+  });
+
   it("gives a campaign space's overview its own path too", () => {
     // The `rpg` Main View wins on `/space/:slug`, but the overview is the
     // space's own page and ignores the Main View: without this route a campaign
@@ -372,6 +412,35 @@ describe("SpaceView", () => {
     renderView("my-space", "/space/my-space/overview");
 
     expect(screen.getByRole("status")).toHaveTextContent("My Space is paused");
+  });
+
+  it("says an archived space is archived rather than missing, and restores it", () => {
+    // The sidebar's archived row links here, and the space exists — it is
+    // stopped — so "Space not found" would be a lie about a space the user can
+    // see in their sidebar.
+    mockState = {
+      ...mockState,
+      spaces: [],
+      archivedSpaces: [
+        { id: 9, name: "Old Space", slug: "old-space", blueprint_id: null },
+      ],
+    };
+
+    renderView("old-space");
+
+    expect(
+      screen.getByRole("heading", { name: "Old Space" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/is archived/i)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Space not found" }),
+    ).not.toBeInTheDocument();
+    expect(document.title).toBe("vampire · Old Space");
+
+    fireEvent.click(screen.getByRole("button", { name: "Unarchive space" }));
+
+    // The same push the archived row's own button makes.
+    expect(mocks.unarchiveSpace).toHaveBeenCalledWith(9);
   });
 
   it("renders the not-found state for an unknown slug", () => {

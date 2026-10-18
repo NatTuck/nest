@@ -111,9 +111,9 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
     end
   end
 
-  # The wire form of `Nest.Spaces.edit_plan/0`: the agents the edit would stop,
-  # each with its status and its running job count, and the space's total. String
-  # keys because it is the wire.
+  # The wire form of `Nest.Spaces.Environment`'s `edit_plan` type: the agents the
+  # edit would stop, each with its status and its running job count, and the
+  # space's total. String keys because it is the wire.
   defp confirmation_payload(plan) do
     %{
       "reason" => "confirmation_required",

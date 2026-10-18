@@ -618,11 +618,30 @@ defmodule NestWeb.LobbyChannelTest do
     end
 
     test "the init payload carries the spaces that are paused" do
-      {_socket, payload} = join_lobby()
+      {socket, _payload} = join_lobby()
 
-      # Nothing is held in this test, and the key is present: a session that joins
-      # during a pause gets the set from the payload, because it missed the frame.
-      assert payload.paused_space_ids == []
+      ref =
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "held-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
+
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}, 500
+      AgentTestHelpers.ensure_cleanup(name)
+
+      # Held on behalf of this process, as an editing channel would.
+      assert :ok = SpaceGate.hold(space_id)
+
+      # A session that opens *during* the pause missed `space:paused`, so the set
+      # has to come from the payload — that is the whole reason it is there.
+      {_second, payload} = join_lobby()
+      assert payload.paused_space_ids == [space_id]
+
+      assert :ok = SpaceGate.release(space_id)
     end
   end
 

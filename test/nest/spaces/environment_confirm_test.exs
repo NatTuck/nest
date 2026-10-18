@@ -114,14 +114,26 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
   test "a start waits for the latch before it reads the row" do
     {_pid, _name} = AgentTestHelpers.start_agent()
     space_id = AgentTestHelpers.current_space_id()
+    test_pid = self()
 
     assert :ok = SpaceGate.hold(space_id)
 
     # A start reads the row for the space's three environment values, so it must
     # not run while an edit is writing them. The name has no row, so this would
     # answer `:not_found` at once — unless the gate is ahead of the read.
-    starter = Task.async(fn -> Supervisor.get_agent(space_id, "not-an-agent") end)
-    assert Task.yield(starter, 50) == nil
+    #
+    # The barrier is the task's own first message: once it has been received the
+    # task is running and inside the call, so "it has not finished" is evidence of
+    # blocking rather than of never having been scheduled. Without it, the window
+    # below would pass on a loaded machine even with the gate removed.
+    starter =
+      Task.async(fn ->
+        send(test_pid, {:started, self()})
+        Supervisor.get_agent(space_id, "not-an-agent")
+      end)
+
+    assert_receive {:started, _pid}, 1_000
+    refute Task.yield(starter, 50)
 
     assert :ok = SpaceGate.release(space_id)
     assert {:error, :not_found} = Task.await(starter, 1_000)
@@ -134,18 +146,25 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
   test "a spawn waits for the latch before it reads the row" do
     {pid, _name} = AgentTestHelpers.start_agent()
     space_id = AgentTestHelpers.current_space_id()
+    test_pid = self()
     # allowlist: harness — spawn_agent_in_space/3's state argument
     parent = :sys.get_state(pid, 1_000)
     child = "child-#{System.unique_integer([:positive])}"
 
     assert :ok = SpaceGate.hold(space_id)
 
+    # Same barrier as the start test: the task's first message proves it is
+    # running, so the missing row below is the gate's doing rather than the
+    # scheduler's.
     spawner =
       Task.async(fn ->
+        send(test_pid, {:started, self()})
+
         Supervisor.spawn_agent_in_space(parent, child, AgentTestHelpers.vocation_slug_for_test())
       end)
 
-    assert Task.yield(spawner, 100) == nil
+    assert_receive {:started, _pid}, 1_000
+    refute Task.yield(spawner, 50)
     assert Nest.Persistence.fetch_agent(space_id, child) == {:error, :not_found}
 
     assert :ok = SpaceGate.release(space_id)
@@ -238,6 +257,51 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
 
     on_exit(fn -> ShellJobs.stop_all(key) end)
     :ok
+  end
+
+  # The plan the user confirms says what the edit *will* stop. A save that never
+  # happens must therefore stop nothing — not a tool call, not a background job,
+  # and not even the latch.
+  test "a save the sandbox refuses stops nothing" do
+    {pid, name} = AgentTestHelpers.start_agent()
+    space_id = AgentTestHelpers.current_space_id()
+    # allowlist: snapshot — the agent's own mounts, which the job needs.
+    state = :sys.get_state(pid, 1_000)
+    start_job(space_id, name, pid, state.mounts)
+    workspace = Spaces.get_space(space_id).workspace_path
+
+    # Confirmed, so the plan is not the question: the refusal is.
+    assert {:error, :workspace_missing} =
+             Spaces.update_environment(
+               space_id,
+               %{workspace_path: "/nonexistent/nest-ws"},
+               confirm: true
+             )
+
+    assert [%{status: :running}] = ShellJobs.list({space_id, name})
+    assert Spaces.get_space(space_id).workspace_path == workspace
+    # The refusal came before the latch, so the space was never even paused.
+    refute SpaceGate.held?(space_id)
+  end
+
+  test "a save that names what the row already says stops nothing" do
+    {pid, name} = AgentTestHelpers.start_agent()
+    space_id = AgentTestHelpers.current_space_id()
+    # allowlist: snapshot — the agent's own mounts, which the job needs.
+    state = :sys.get_state(pid, 1_000)
+    start_job(space_id, name, pid, state.mounts)
+
+    # No confirmation, and none needed: there is nothing to write, so there is
+    # nothing to stop and nothing to ask about.
+    assert {:ok, %Spaces.Space{}} =
+             Spaces.update_environment(space_id, %{
+               workspace_path: Spaces.get_space(space_id).workspace_path,
+               network_access: Spaces.get_space(space_id).network_access,
+               sandbox_backend: Spaces.get_space(space_id).sandbox_backend
+             })
+
+    assert [%{status: :running}] = ShellJobs.list({space_id, name})
+    refute SpaceGate.held?(space_id)
   end
 
   test "a second session is refused while the first is deciding" do

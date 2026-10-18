@@ -9,7 +9,14 @@ import { Link } from "react-router-dom";
 import { unarchiveSpace } from "../channels";
 
 export function ArchivedSpaceRow({ space, location }) {
-  const isCurrent = location.pathname === `/space/${space.slug}`;
+  // The space's own pages, in the encoded form the pathname carries — its Main
+  // View and its overview both render this space (the archived notice, for a
+  // space in this list). `SidebarSpaceRow` derives the same prefix, for the same
+  // reason: a slug the browser had to escape would match nothing otherwise.
+  const spaceBase = `/space/${encodeURIComponent(space.slug)}`;
+  const isCurrent =
+    location.pathname === spaceBase ||
+    location.pathname === `${spaceBase}/overview`;
 
   return (
     <li key={space.id}>
@@ -21,7 +28,7 @@ export function ArchivedSpaceRow({ space, location }) {
         `}
       >
         <Link
-          to={`/space/${encodeURIComponent(space.slug)}`}
+          to={spaceBase}
           className="flex items-center gap-2 min-w-0 flex-1 px-3 py-2"
         >
           <div className="w-2 h-2 rounded-full flex-shrink-0 bg-gray-400" />

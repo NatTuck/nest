@@ -13,8 +13,13 @@ defmodule Nest.Agents.SpaceGate do
   This module is the latch that makes the window safe. While a space is held:
 
     * every tool use waits at the gate before it starts
-      (`Nest.Agents.Agent.BatchSizer`'s per-call dispatch), and runs — under the
-      space's *new* values — as soon as the latch comes down;
+      (`Nest.Agents.Agent.BatchSizer`'s per-call dispatch), and then runs with
+      the mounts its **batch** was built with: a batch that starts after the
+      write reads the new row and runs under the new values, while a batch
+      already in flight is a snapshot taken before it and keeps the old ones —
+      that batch is cancelled where it has a long call running
+      (`Nest.Agents.Agent.cancel_tools/2`) and the agent is told, but the calls
+      it has left still run against the mounts it was built with;
     * an agent that is starting waits at the gate too, so a process cannot read
       the row halfway through the write;
     * nothing is refused. A blocked start or tool call is a *pause*, so cancelling
@@ -89,9 +94,12 @@ defmodule Nest.Agents.SpaceGate do
   # suite tests flake while passing alone.
   @ttl_ms 120_000
 
-  # The ceiling on a wait. The latch is guaranteed down well before this (the TTL
-  # is the longest-lived claim), so reaching it means a claim was lost; the waiter
-  # proceeds rather than hanging a tool worker, and says so in the log.
+  # The ceiling on a wait. It is a bound on how long a waiter blocks, not proof
+  # that the claim was lost: a space re-held across its own TTLs outlasts it (two
+  # consecutive claims are longer than this), and so does a space held again
+  # immediately after a release. Reaching it therefore means "this waiter has
+  # waited long enough" — it proceeds rather than hanging a tool worker, and the
+  # log says that much without diagnosing a cause it cannot know.
   @await_ms @ttl_ms + 60_000
 
   @type reason :: :space_edit
@@ -122,8 +130,10 @@ defmodule Nest.Agents.SpaceGate do
   Hold `space_id` on behalf of the calling process.
 
   Idempotent for the caller that already holds it, so a two-push edit (a preview
-  and then a confirmation) keeps one claim across both. A *different* caller is
-  refused: two sessions editing one space at once is what the latch is for.
+  and then a confirmation) keeps one claim across both — and **re-arms** its TTL,
+  so the claim covers the confirmation's own quiesce and write rather than
+  expiring in the middle of them. A *different* caller is refused: two sessions
+  editing one space at once is what the latch is for.
 
   The `ttl_ms` argument exists for tests, which need a claim to expire without
   waiting two minutes. It is per-hold rather than an application setting on
@@ -186,8 +196,8 @@ defmodule Nest.Agents.SpaceGate do
     after
       timeout ->
         Logger.warning(
-          "space #{space_id} stayed held past the wait ceiling; proceeding " <>
-            "without the latch (a claim was lost)"
+          "space #{space_id} stayed held past the wait ceiling (#{timeout}ms); " <>
+            "proceeding without the latch"
         )
 
         :ok
@@ -220,11 +230,16 @@ defmodule Nest.Agents.SpaceGate do
       :error ->
         {:reply, :ok, claim(state, space_id, reason, owner, ttl_ms)}
 
-      {:ok, %{owner: ^owner}} ->
-        # The same caller asking again: the preview and the confirmation of one
-        # edit. The TTL runs from the first hold, so a dialog left open is not
-        # kept paused forever by the confirm that never came.
-        {:reply, :ok, state}
+      {:ok, %{owner: ^owner} = claim} ->
+        # The same caller asking again: the preview, and then the confirmation, of
+        # one edit. The TTL is **re-armed** rather than left running from the
+        # first hold, because the two asks mean different things: a preview
+        # abandoned without an answer sends nothing, so nothing renews it and the
+        # claim still expires (the dialog's own close releases it sooner), while a
+        # confirmation owns the latch for its own duration — a user who reads the
+        # plan for two minutes and then clicks "Stop and save" must not have the
+        # latch drop in the middle of the quiesce and the write.
+        {:reply, :ok, renew(state, space_id, claim, ttl_ms)}
 
       {:ok, _other} ->
         {:reply, {:error, :already_held}, state}
@@ -244,10 +259,26 @@ defmodule Nest.Agents.SpaceGate do
     {:noreply, drop_where(state, &(&1.ref == ref))}
   end
 
-  def handle_info({:ttl, space_id, ref}, state) do
+  def handle_info({:ttl, space_id, token}, state) do
     case Map.fetch(state.claims, space_id) do
-      {:ok, %{ref: ^ref}} -> {:noreply, drop(state, space_id)}
-      _other -> {:noreply, state}
+      {:ok, %{token: ^token} = claim} ->
+        # A claim that reaches its TTL is a client that went silent mid-edit (a
+        # closed laptop, a killed tab whose channel outlived it): the space
+        # resumes *without* the edit, and this is the only record of why it did.
+        # A warning rather than an info, because an abandoned edit is the
+        # noteworthy case — the operator wants to see it, and the reason names
+        # what was being done.
+        Logger.warning(
+          "space #{space_id}: the #{claim.reason} claim expired after " <>
+            "#{claim.ttl_ms}ms; the space resumed without it"
+        )
+
+        {:noreply, drop(state, space_id)}
+
+      # A timer this claim has already replaced (it was re-armed): the claim it
+      # belonged to is gone, and dropping this one would end the renewed claim.
+      _other ->
+        {:noreply, state}
     end
   end
 
@@ -257,14 +288,37 @@ defmodule Nest.Agents.SpaceGate do
   end
 
   defp claim(state, space_id, reason, owner, ttl_ms) do
+    ttl_ms = ttl_ms || @ttl_ms
+    {timer, token} = arm_ttl(space_id, ttl_ms)
     ref = Process.monitor(owner)
-    timer = Process.send_after(self(), {:ttl, space_id, ref}, ttl_ms || @ttl_ms)
-    claim = %{owner: owner, ref: ref, timer: timer, reason: reason}
+    claim = %{owner: owner, ref: ref, timer: timer, token: token, reason: reason, ttl_ms: ttl_ms}
 
     :ets.insert(@table, {space_id, reason})
     Phoenix.PubSub.broadcast(Nest.PubSub, topic(space_id), {:space_locked, space_id})
 
     %{state | claims: Map.put(state.claims, space_id, claim)}
+  end
+
+  # Re-arm a claim's TTL without disturbing its owner or its monitor.
+  #
+  # Each arm gets a **fresh token**, which is what makes the old timer harmless:
+  # `Process.cancel_timer/1` returns `false` for a timer that has already fired,
+  # and that message is then already in this mailbox — carrying the *old* token, so
+  # it matches no claim and is ignored, rather than dropping the one we just
+  # renewed. (Keying the message on the monitor ref, as this did first, cannot tell
+  # the two apart.)
+  defp renew(state, space_id, claim, ttl_ms) do
+    ttl_ms = ttl_ms || @ttl_ms
+    Process.cancel_timer(claim.timer)
+    {timer, token} = arm_ttl(space_id, ttl_ms)
+
+    renewed = %{claim | timer: timer, token: token, ttl_ms: ttl_ms}
+    %{state | claims: Map.put(state.claims, space_id, renewed)}
+  end
+
+  defp arm_ttl(space_id, ttl_ms) do
+    token = make_ref()
+    {Process.send_after(self(), {:ttl, space_id, token}, ttl_ms), token}
   end
 
   defp drop(state, space_id) do

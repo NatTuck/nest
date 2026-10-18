@@ -235,9 +235,12 @@ defmodule Nest.Agents.Agent.BatchSizer do
   # this module under credo/line-count rules).
   defp execute_one(%ToolCall{} = tc, ctx) do
     # The space's before-starts latch: while its environment is being edited,
-    # every tool use waits here and then runs under the space's new values.
-    # One ETS read when nothing is held. `Map.get/2`, not `ctx.space_id`: a
-    # `BatchSizer` caller may build a context with no space at all.
+    # every tool use waits here. What it then runs with is its *batch's* mounts
+    # (`ctx.mounts`, `ctx.caps`) — the new values for a batch that started after
+    # the write, the old ones for a batch already in flight, which the edit
+    # cancels where it has a long call running. One ETS read when nothing is
+    # held. `Map.get/2`, not `ctx.space_id`: a `BatchSizer` caller may build a
+    # context with no space at all.
     :ok = SpaceGate.await(Map.get(ctx, :space_id))
 
     case FilePolicy.check(tc, ctx) do

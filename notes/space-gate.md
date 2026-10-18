@@ -12,8 +12,12 @@ have the new values" is what `Nest.Agents.SpaceGate` makes safe.
 `SpaceGate` is a per-space **before-starts latch**, not a lock around the write:
 
 * while it is held, a **tool use** waits at the gate before it starts
-  (`Nest.Agents.Agent.BatchSizer.execute_one/2`) and then runs under the space's
-  *new* values;
+  (`Nest.Agents.Agent.BatchSizer.execute_one/2`), and then runs with the mounts
+  its **batch** was built with: a batch that starts after the write runs under
+  the new values, while a batch already in flight is a snapshot taken before it
+  and keeps the old ones — the edit cancels that batch where it has a long call
+  running (`Turn.cancel_tools/2`) and tells the agent, but the calls it has left
+  still run against what it was built with;
 * an **agent start** waits too (`Nest.Agents.Supervisor.fetch_or_start_agent/2`),
   so a process cannot read the row halfway through the write;
 * a **spawn** waits at its own entry point
@@ -60,7 +64,10 @@ error, so the agent can re-issue the call.
 Every other tool is *short* — `file-write`, `agents-spawn`, `context-compact`,
 anything answering from memory — and needs no cancellation: a short tool that
 arrives while the latch is up waits at the gate and then runs against the new
-values, so no retry is burned. This is a statement about **duration**, not a list
+values, so no retry is burned. (A cancellation that finds a worker *between* two
+commands is discarded before the next one starts —
+`ShellCmd.flush_cancel_tool/0` — so it cannot stop a command that began after the
+edit.) This is a statement about **duration**, not a list
 of exempted tools. A future tool that spawns an OS process or otherwise runs
 unbounded time belongs in the cancellable set (it needs a `{:cancel_tool, …}`
 clause that stops it); a future tool that merely waits for the latch does not, and
@@ -83,17 +90,23 @@ what makes cancelling free — the user's "no" is one `release/1`
 (`NestWeb.LobbyChannel`'s `cancel_edit_space`), and the space resumes.
 
 The row is written after the quiesce and before the release, so the cancel
-happens *inside* the window the latch protects: a batch that was cancelled cannot
-start its next call against the old environment.
+happens *inside* the window the latch protects. What that buys is bounded and
+worth stating exactly: a batch **that starts after the write** runs under the new
+values, and the long call a batch already had running is stopped. A batch already
+in flight is not moved onto the new environment — its context was built from the
+old mounts before the latch went up — so its remaining calls still run against
+them. Making an edit cancel every in-flight batch (rather than the long call it
+has running) is a follow-up; nothing today does it.
 
 ## What the user sees
 
 The hold is announced (`{:space_locked, id}`) and the release too, on the gate's
 topic; the lobby forwards both as `space:paused`/`space:resumed` to every session
 that can see the space, and the join payload carries `paused_space_ids` for a
-session that opens mid-pause. `SpacePausedBanner` renders it. A paused space looks
-exactly like a stuck one otherwise, and the transparency rule says the user must
-be able to see that work is held and why.
+session that opens mid-pause. `SpacePausedBanner` renders it on every screen that
+belongs to the space — the overview, an agent's chat, and a campaign's Main View
+— because a paused space looks exactly like a stuck one otherwise, and the
+transparency rule says the user must be able to see that work is held and why.
 
 ## Residuals
 

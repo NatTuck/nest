@@ -12,11 +12,9 @@ defmodule Nest.Agents.SpaceGateTest do
 
   use ExUnit.Case, async: true
 
-  alias Nest.Agents.SpaceGate
+  import ExUnit.CaptureLog
 
-  setup do
-    :ok
-  end
+  alias Nest.Agents.SpaceGate
 
   defp space_id, do: System.unique_integer([:positive])
 
@@ -92,11 +90,26 @@ defmodule Nest.Agents.SpaceGateTest do
   test "the holder dying releases the space" do
     id = watch(space_id())
 
-    holder = spawn(fn -> SpaceGate.hold(id) end)
-    # `hold` is a call, so the claim exists by the time the process exits.
+    spawn(fn -> SpaceGate.hold(id) end)
+    # `hold` is a call, so the claim exists by the time the process exits, and the
+    # release frame is the owner's `:DOWN` arriving.
     assert_receive {:space_unlocked, ^id}, 500
     refute SpaceGate.held?(id)
-    refute Process.alive?(holder) and SpaceGate.held?(id)
+  end
+
+  test "a second hold from the same owner re-arms the TTL" do
+    id = watch(space_id())
+
+    # The two-push edit: a preview, then the confirmation that has to cover its
+    # own quiesce and write. The confirmation's window is what counts, so the
+    # claim must not keep running on the preview's clock.
+    assert :ok = SpaceGate.hold(id, :space_edit, 30)
+    assert :ok = SpaceGate.hold(id, :space_edit, 500)
+
+    # Nothing releases the space across the first TTL's expiry point. (A late
+    # timer can only make this pass, so load cannot turn it into a failure.)
+    refute_receive {:space_unlocked, ^id}, 200
+    assert SpaceGate.held?(id)
   end
 
   test "an abandoned claim expires" do
@@ -105,10 +118,18 @@ defmodule Nest.Agents.SpaceGateTest do
     # Held by this process, which never releases it: a client alive but silent.
     # The TTL is passed per hold — a process-global setting would shorten every
     # other test's claim too.
-    assert :ok = SpaceGate.hold(id, :space_edit, 20)
-    assert SpaceGate.held?(id)
+    log =
+      capture_log(fn ->
+        assert :ok = SpaceGate.hold(id, :space_edit, 20)
+        assert SpaceGate.held?(id)
 
-    assert_receive {:space_unlocked, ^id}, 1_000
-    refute SpaceGate.held?(id)
+        assert_receive {:space_unlocked, ^id}, 1_000
+        refute SpaceGate.held?(id)
+      end)
+
+    # The expiry is the only record of *why* a paused space resumed by itself, and
+    # the reason is what names the edit it was.
+    assert log =~ "the space_edit claim expired after 20ms"
+    assert log =~ "the space resumed without it"
   end
 end

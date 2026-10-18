@@ -111,12 +111,18 @@ defmodule Nest.Agents.Agent.Turn do
 
   The pids are the machine's: the active worker and any batch it moved to the
   background. A worker that is not running a command — the http worker, a batch
-  between calls — simply never matches the message; the ones that are act on it in
-  `Nest.Tools.ShellCmd.collect_output/5`.
+  between calls — does not consume the message where it stands: `ShellCmd`
+  discards a leftover one before its next command starts
+  (`flush_cancel_tool/0`), so the message stops the command that was running when
+  the edit began and never one that began after it.
 
-  The space's `Nest.Agents.SpaceGate` latch is up when this runs, so a batch that
-  was cancelled cannot start its next call against the old environment: it waits
-  at the gate and runs under the new values.
+  A batch's context is a **snapshot** (`Turn.build_ctx/2` captures `mounts:` and
+  `caps:`, and `ToolLoop.execute/3` never re-reads the state), so cancelling here
+  does not move a batch already in flight onto the new environment: the call it
+  has running is stopped and the agent is told, and the calls it has left still
+  run against the mounts it was built with. Only a batch that *starts* after the
+  write — every later turn — runs under the new values. Cancelling every in-flight
+  batch as well is a follow-up, not something this function can do.
 
   Only a *long* tool can be cancelled, because only it owns an OS process to
   stop — `Nest.Tools.ShellCmd.collect_output/5` is the one clause that matches the

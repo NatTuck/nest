@@ -129,12 +129,17 @@ defmodule Nest.Agents.Agent.Callbacks do
     status = Machine.status_for(state.live.machine)
 
     cond do
-      # The space's before-starts latch is up: an environment edit is in
-      # progress, and a turn started now would run its first tool calls against
-      # the values being replaced. It is **queued**, not refused and not blocked
-      # — the same inbox a busy agent uses — and `{:space_unlocked, _}` drains it
-      # (`drain_after_unlock/1`).
-      SpaceGate.held?(state.space_id) ->
+      # The space's before-starts latch is up **and the agent is idle**: an
+      # environment edit is in progress, and a turn started now would run its
+      # first tool calls against the values being replaced. It is *queued*, not
+      # refused and not blocked — the same inbox a busy agent uses — and
+      # `{:space_unlocked, _}` drains it (`drain_after_unlock/1`).
+      #
+      # The idle half is not decoration: the unlock only drains an idle agent, so
+      # queueing for one that is busy or broken would leave the message with no
+      # drainer at all. A busy agent's own turn boundary takes it (below), and a
+      # broken one's drop-and-log is the answer the latch must not pre-empt.
+      status == :idle and SpaceGate.held?(state.space_id) ->
         {state, _disposition} = Inbox.deliver_user_message(state, sender, content, mode, human?)
         {:noreply, state}
 
