@@ -1,14 +1,18 @@
 import Config
 
+Code.require_file("checkout.exs", __DIR__)
+
 # Configure your database
 #
-# The MIX_TEST_PARTITION environment variable can be used
-# to provide test partitioning in CI environment.
-# Run `mix help test` for more information.
+# The database is per checkout: `nest_test` for the primary, `nest_test2` for
+# `nest2`, and `nest_test1` for anything else. The MIX_TEST_PARTITION
+# environment variable selects another slot — the mechanism this comment used to
+# promise without implementing — so two checkouts can run the suite at once.
+# `mix test`'s alias creates and migrates whichever one it lands on.
 config :nest, Nest.Repo,
   username: System.fetch_env!("USER"),
   socket_dir: "/var/run/postgresql",
-  database: "nest_test",
+  database: Nest.Config.Checkout.test_database(),
   pool_size: 40,
   ownership_timeout: 30_000,
   pool: Ecto.Adapters.SQL.Sandbox
