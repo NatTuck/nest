@@ -35,26 +35,26 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
     end
   end
 
+  # The edit path's refusals whose reply code is the reason's own name. One arm
+  # rather than four, because each is the same rule and credo counts arms.
+  @edit_simple [:agent_busy, :workspace_required, :workspace_missing, :workspace_under_tmp]
+
   @doc false
   def edit_payload(name, reason) do
     case reason do
-      :agent_busy ->
-        {:error, %{"reason" => "agent_busy"}}
+      simple when simple in @edit_simple ->
+        {:error, %{"reason" => to_string(simple)}}
 
-      :workspace_required ->
-        {:error, %{"reason" => "workspace_required"}}
-
-      :workspace_missing ->
-        {:error, %{"reason" => "workspace_missing"}}
-
-      :workspace_under_tmp ->
-        {:error, %{"reason" => "workspace_under_tmp"}}
-
-      :context_overflow ->
-        {:error, %{"reason" => "context_overflow"}}
+      {:config_file_not_regular, path} ->
+        # Same shape as the create path's clause: `to_string/1` on a tuple raises,
+        # which would kill the channel process and leave the client with no reply.
+        tagged_payload({:config_file_not_regular, path})
 
       {:invalid_model, _} ->
         {:error, %{"reason" => "invalid_model"}}
+
+      :context_overflow ->
+        {:error, %{"reason" => "context_overflow"}}
 
       :not_found ->
         {:error, %{"reason" => "not_found"}}

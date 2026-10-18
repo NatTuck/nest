@@ -140,7 +140,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
     # the prompt by a notice telling the agent it could read the file but not
     # trust it as policy. That policy is gone: a symlinked config path is
     # **refused** at both workspace gates now
-    # (`Nest.ProjectConfig.config_file_error/1`, reached from
+    # (`Nest.ConfigFile.error/1`, reached from
     # `Nest.Sandbox.workspace_error/1`), because omitting the mask left the file
     # replaceable — an `act` agent could delete the link and write its own
     # `AGENTS.md`, which is cross-agent prompt injection. So no agent starts in

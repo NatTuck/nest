@@ -539,7 +539,7 @@ defmodule Nest.Sandbox do
         {:error, :workspace_missing}
 
       true ->
-        Nest.ProjectConfig.config_file_error(workspace)
+        Nest.ConfigFile.error(workspace)
     end
   end
 

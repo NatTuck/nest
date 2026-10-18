@@ -222,6 +222,33 @@ defmodule Nest.Agents.NoneScratchNameTest do
     # lose the section because its prompt read staged where the container could
     # not see it. What remains worth pinning is that the mounts name the right
     # scratch, which the next test does directly.
+    test "the prompt's mounts and the agent's are the same value" do
+      # `Init` builds the prompt's mounts with `TmpSpace.prompt_mounts/5` and the
+      # agent's with `agent_mounts/6` — two independent constructions. Their
+      # agreement is what makes "the prompt states the environment its tools will
+      # use" true, and nothing else asserts it: the old `.cmds` guard observed it
+      # indirectly, through the staging a sandboxed `AGENTS.md` read left behind.
+      {:ok, space_id} = AgentTestHelpers.create_test_space()
+      workspace = AgentTestHelpers.default_test_workspace()
+      name = start_named(space_id, unique("mounts-agree"), workspace_path: workspace)
+
+      {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
+
+      # allowlist: snapshot — the mounts the *start path* built, which is the
+      # thing under test; no accessor exposes them and there is no event for
+      # "the agent started with these mounts".
+      agent_mounts = Mounts.from_agent(:sys.get_state(pid))
+
+      assert agent_mounts ==
+               TmpSpace.prompt_mounts(
+                 workspace,
+                 space_id,
+                 name,
+                 Mounts.backend(agent_mounts),
+                 Mounts.network_access(agent_mounts)
+               )
+    end
+
     test "carry the agent's real scratch, so a command can be staged" do
       {:ok, space_id} = AgentTestHelpers.create_test_space(%{sandbox_backend: "docker"})
 

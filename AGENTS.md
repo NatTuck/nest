@@ -118,7 +118,7 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   adopted. A removal that would take a live same-named agent's scratch in
   another space is refused too.
 - Anything that composes a prompt or runs a command must be given the agent's
-  *real* mounts (`TmpSpace.prompt_mounts/4` builds the prompt's mounts): the
+  *real* mounts (`TmpSpace.prompt_mounts/5` builds the prompt's mounts): the
   backend is resolved from them, and under `"docker"` the agent's scratch names a
   path *inside the container* — so a call that leaves the scratch out loses the
   agent's own scratch (its job logs, its offloads) rather than failing loudly.

@@ -1,7 +1,8 @@
 defmodule NestWeb.LobbyChannel.AgentErrorsTest do
   @moduledoc """
   Pins the reply payload `AgentErrors.create_payload/1` builds for each reason
-  `Spaces.create_space_with_root_agent/2` can return.
+  `Spaces.create_space_with_root_agent/2` can return, and the one tagged reason
+  `edit_agent` can carry.
 
   The create path's reason space is heterogeneous: the refusals a user can act
   on, plus changesets and internal terms from the space insert and the root
@@ -28,6 +29,21 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
         ] do
       assert {:error, %{"reason" => ^code}} = AgentErrors.create_payload(reason)
     end
+  end
+
+  test "names a config file Nest cannot protect, with its path, on both paths" do
+    # `create_payload/1` and `edit_payload/2` both have to name it. Without the
+    # edit clause the tuple falls through to `to_string/1`, which raises and
+    # kills the channel process — the client gets no reply at all.
+    reason = {:config_file_not_regular, "/home/nat/proj/AGENTS.md"}
+
+    assert {:error, %{"reason" => "config_file_not_regular", "path" => path}} =
+             AgentErrors.create_payload(reason)
+
+    assert path == "/home/nat/proj/AGENTS.md"
+
+    assert {:error, %{"reason" => "config_file_not_regular", "path" => ^path}} =
+             AgentErrors.edit_payload("some-agent", reason)
   end
 
   test "names a blueprint whose root vocation is gone, and logs the slug" do

@@ -102,7 +102,8 @@ defmodule Nest.Agents.Supervisor do
   end
 
   defp start_under_supervisor(attrs, name) do
-    with {:ok, prepared} <- prepare_for_start(attrs),
+    with :ok <- workspace_gate(attrs),
+         {:ok, prepared} <- prepare_for_start(attrs),
          {:ok, _pid} <- DynamicSupervisor.start_child(@supervisor_name, {Agent, prepared}) do
       {:ok, name}
     else
@@ -111,20 +112,22 @@ defmodule Nest.Agents.Supervisor do
     end
   end
 
+  # The config-file gate on the one route that never reaches `Sandbox.build/4`.
+  # `Nest.ConfigFile.error/1` explains why it is needed and why it is direct.
+  defp workspace_gate(%{workspace_path: path}) when is_binary(path),
+    do: Nest.ConfigFile.error(path)
+
+  defp workspace_gate(_attrs), do: :ok
+
   # Compose the expensive part of the initial state here, in the caller, rather
   # than inside `init/1` — `init/1` runs with this supervisor blocked until it
   # returns, so the composition it does was paid *serially* by every agent
   # start. See `Nest.Agents.Agent.Init.prepare/1`.
   #
-  # The rescue is a **boundary guard with no known reachable cause**, kept
-  # because the alternative is worse: `fetch_or_start_agent/2` and `get_agent/2`
-  # return error tuples, are called from channels, and log nothing themselves,
-  # so anything raised out of composition would escape them silently. There is
-  # no cause left to name: composition touches no sandbox (the `AGENTS.md` read
-  # is a host read, issue #132), creates no scratch directory (that is
-  # `TmpSpace.create/3`, in `init/1`), renders a malformed `.nest` as an error
-  # section rather than raising, and every `Map.fetch!` it does is gated by
-  # `compose_ready?/1`.
+  # The rescue is a **boundary guard with no known reachable cause** (composition
+  # touches no sandbox, creates no scratch directory, and renders a malformed
+  # `.nest` as an error section). It stays because `fetch_or_start_agent/2` and
+  # `get_agent/2` are channel-called and log nothing, so a raise would escape.
   defp prepare_for_start(attrs) do
     {:ok, Init.prepare(attrs)}
   rescue

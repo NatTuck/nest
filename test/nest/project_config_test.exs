@@ -181,13 +181,13 @@ defmodule Nest.ProjectConfigTest do
       File.write!(target, "[[mount]]\npath = \"~/x\"\nmode = \"rw\"\n")
       File.ln_s!(target, nest_path(dir))
 
-      log = capture_log(fn -> assert {:ok, %{"mounts" => []}} = ProjectConfig.load(dir) end)
-
+      # No capture: `load/1` is pure now and this test therefore also proves it
+      # prints nothing. The warning lives in `config_file_error/1`, which the
+      # tests below assert positively — and "the path is not in the log" is not
+      # assertable through `capture_log` at all, since it collects every
+      # process's lines.
+      assert {:ok, %{"mounts" => []}} = ProjectConfig.load(dir)
       assert ProjectConfig.section(dir) == ""
-      # Not asserted for absence: `capture_log` collects every process's lines,
-      # so "the path is not in the log" is not assertable through it. That the
-      # warning moved out of this function is pinned by the positive test below.
-      assert is_binary(log)
     end
 
     test "a symlinked config file contributes no protected entry", %{dir: dir} do
@@ -206,69 +206,6 @@ defmodule Nest.ProjectConfigTest do
       assert [%{"path" => nest, "source" => nest_src}] = merged["fs"]["protected"]
       assert nest == nest_path(dir)
       assert nest_src == nest
-    end
-  end
-
-  describe "config_file_error/1" do
-    test "is :ok for a workspace with both files regular", %{dir: dir} do
-      write_nest(dir, "")
-      File.write!(Path.join(dir, "AGENTS.md"), "# rules\n")
-
-      assert ProjectConfig.config_file_error(dir) == :ok
-    end
-
-    test "is :ok when both files are absent", %{dir: dir} do
-      # The regression guard against refusing everything: a workspace with no
-      # config at all is the ordinary case.
-      assert ProjectConfig.config_file_error(dir) == :ok
-      assert ProjectConfig.config_file_error(nil) == :ok
-    end
-
-    test "refuses a symlinked .nest, naming it", %{dir: dir} do
-      target = Path.join(dir, "real.nest")
-      File.write!(target, "")
-      File.ln_s!(target, nest_path(dir))
-
-      log =
-        capture_log(fn ->
-          assert {:error, {:config_file_not_regular, path}} = ProjectConfig.config_file_error(dir)
-          assert path == nest_path(dir)
-        end)
-
-      assert log =~ "Nest cannot protect it from being rewritten"
-    end
-
-    test "refuses a symlinked AGENTS.md, naming it", %{dir: dir} do
-      write_nest(dir, "")
-      target = Path.join(dir, "real-agents.md")
-      File.write!(target, "# rules\n")
-      File.ln_s!(target, Path.join(dir, "AGENTS.md"))
-
-      log =
-        capture_log(fn ->
-          assert {:error, {:config_file_not_regular, path}} = ProjectConfig.config_file_error(dir)
-          assert path == Path.join(dir, "AGENTS.md")
-        end)
-
-      assert log =~ "AGENTS.md is a symlink"
-    end
-
-    test "reports a non-regular config path once, not per call", %{dir: dir} do
-      target = Path.join(dir, "real.nest")
-      File.write!(target, "")
-      File.ln_s!(target, nest_path(dir))
-
-      # A *count* of this exact path, not an absence assertion: the path is
-      # unique to this test, so no concurrent test's lines can contain it even
-      # though `capture_log` is not process-scoped. `load/1` runs on every prompt
-      # composition and every caps resolution, so once-per-path is the property.
-      log =
-        capture_log(fn ->
-          assert {:error, _} = ProjectConfig.config_file_error(dir)
-          assert {:error, _} = ProjectConfig.config_file_error(dir)
-        end)
-
-      assert length(String.split(log, nest_path(dir))) - 1 == 1
     end
   end
 

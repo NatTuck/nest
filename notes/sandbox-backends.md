@@ -323,7 +323,17 @@ either file. Same statement as "caps cannot be enforced for a `none` space".
   **refuses the workspace**, naming the file and the remedy. That covers the
   choose-time path (space create and edit) and `Sandbox.build/4`'s final gate,
   so a workspace that becomes symlinked after it was chosen is refused too. It is
-  logged once per path per BEAM, in `:persistent_term`.
+  logged once per path per BEAM, in `:persistent_term`. The refusal is
+  unconditional on every backend, `"none"` included — it is a property of the
+  workspace, not of the backend.
+* **A `/dev/null` mask materialises an empty `0444` file in the workspace.** When
+  `.nest` or `AGENTS.md` is absent, the mask is a bind of `/dev/null` over its
+  path, and after one bwrap run the path exists on the host as a `-r--r--r--`
+  zero-byte file. That is what makes the mask a mount point (which is why `rm`
+  fails with `Device or resource busy` rather than the entry being replaceable),
+  but it is visible: a user who wants to *create* the file has to `rm` it first.
+  Pre-existing for `.nest`; it now applies to `AGENTS.md`, which people create by
+  hand far more often.
 * **Adding or removing `AGENTS.md` mid-session replaces the space's docker
   container.** The presence of either config file is part of `nest.layout`, so a
   change replaces the container — which takes every agent's `/tmp` with it:

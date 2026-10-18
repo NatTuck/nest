@@ -320,13 +320,13 @@ defmodule Nest.Agents.Agent.SystemPrompt do
     # `bwrap` fork per agent start (measured at ~9ms, ~1.5s of the suite). It
     # was never the read set doing the work either: both modes have
     # `fs.read: ["/"]`, so the caps could not have refused it.
-    path = Path.join(Mounts.workspace(mounts), Nest.ProjectConfig.agents_md_name())
+    path = Path.join(Mounts.workspace(mounts), Nest.ConfigFile.agents_md_name())
 
-    case Nest.ProjectConfig.read_config_file(path) do
+    case Nest.ConfigFile.read(path) do
       {:ok, content} ->
         agents_md_block(content)
 
-      # Unreachable: `Nest.ProjectConfig.config_file_error/1` refuses a workspace
+      # Unreachable: `Nest.ConfigFile.error/1` refuses a workspace
       # whose `AGENTS.md` is not a regular file, so no agent starts in one. The
       # clause is here because `read_config_file/1` is total.
       {:not_regular, _type} ->

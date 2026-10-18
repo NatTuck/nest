@@ -33,7 +33,7 @@ defmodule Nest.Sandbox.Mounts do
 
   Composing the system prompt is not one of those halves either, and it no
   longer runs anything: `AGENTS.md` and `.nest` are read on the **host**
-  (`Nest.ProjectConfig.read_config_file/1` is the one reader), so a prompt's
+  (`Nest.ConfigFile.read/1` is the one reader), so a prompt's
   mounts are only *stated* — the workspace path, the network sentence and the
   backend's enforcement sentence all come from this value. They are still the
   agent's real mounts, scratch included

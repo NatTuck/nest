@@ -116,15 +116,16 @@ describe("describeCreateError", () => {
     });
 
     expect(message).toContain("/home/nat/proj/AGENTS.md");
-    expect(message).toMatch(/symlink/i);
-    expect(message).toMatch(/regular file/i);
+    // Not "is a symlink": the reason fires for a directory, a fifo or an
+    // unreadable path too, and the server does not say which.
+    expect(message).toMatch(/not a regular file/i);
     expect(message).toMatch(/copy the file into the workspace/i);
   });
 
   it('does not say "undefined" when the config-file path is missing', () => {
     const message = describeCreateError({ reason: "config_file_not_regular" });
 
-    expect(message).toMatch(/symlink/i);
+    expect(message).toMatch(/not a regular file/i);
     expect(message).not.toContain("undefined");
   });
 

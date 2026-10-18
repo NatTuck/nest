@@ -128,6 +128,47 @@ defmodule Nest.SandboxProjectTest do
     assert File.read!(agents_md) == "# Project rules\n"
   end
 
+  test "the masked path cannot be removed either, present or absent", %{dir: dir} do
+    # The attack the mask exists against is `rm` *then* recreate: a read-only
+    # bind makes the write fail, but only a mount point stops the directory
+    # entry being replaced. `Device or resource busy` is that assertion — it is
+    # a different kernel answer from `Read-only file system`, and it is the one
+    # that distinguishes "cannot write it" from "cannot swap it".
+    ws = Path.join(dir, "ws")
+    File.mkdir_p!(ws)
+
+    present = Path.join(ws, ".nest")
+    File.write!(present, "")
+
+    absent = Path.join(ws, "AGENTS.md")
+    refute File.exists?(absent)
+
+    prot = [
+      %{"path" => present, "source" => present},
+      %{"path" => absent, "source" => "/dev/null"}
+    ]
+
+    mounts = Mounts.new(ws, nil)
+    caps = caps([], prot)
+
+    # The control: an unprotected file in the same workspace *can* be removed,
+    # so a broken sandbox cannot satisfy the assertions below.
+    unprotected = Path.join(ws, "scratch.txt")
+    File.write!(unprotected, "fine\n")
+    assert {:ok, _} = Sandbox.run("rm -- #{unprotected}", mounts, caps)
+    refute File.exists?(unprotected)
+
+    log =
+      capture_log(fn ->
+        for path <- [present, absent] do
+          assert {:error, reason} = Sandbox.run("rm -- #{path}", mounts, caps)
+          assert reason =~ "Device or resource busy"
+        end
+      end)
+
+    assert log =~ "ShellCmd.execute"
+  end
+
   test "read maps a tmp project path to its source", %{dir: dir} do
     src = Path.join(dir, "src")
     File.mkdir_p!(src)
