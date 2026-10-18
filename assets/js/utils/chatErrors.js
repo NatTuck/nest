@@ -113,6 +113,14 @@ export function describeSpaceEditError(err) {
       return "That sandbox backend isn't one this server implements.";
     case "not_found":
       return "Space not found. Refresh the page and try again.";
+    case "space_changing":
+      // Another session is editing this space: its edit holds the space paused,
+      // and only one edit may run at a time. Nothing is wrong with *this* save —
+      // it just has to wait for that one to finish. It is also what a socket that
+      // reconnected between the preview and the confirmation sees (the claim
+      // belongs to the channel process that took it, and the new one is a
+      // different caller), so the message must not name a second person.
+      return "Another session is editing this space — possibly this one, if the page reconnected. Try again once that edit finishes.";
     case "invalid_payload":
       return "Couldn't read the edit. Try again.";
     default:

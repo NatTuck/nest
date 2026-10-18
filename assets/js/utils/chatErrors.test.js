@@ -193,6 +193,14 @@ describe("describeSpaceEditError", () => {
     );
   });
 
+  it("explains a second session editing the space", () => {
+    // `:space_changing` is another session's edit holding the latch — a real
+    // state the user can act on (wait), not a failure to report raw.
+    expect(describeSpaceEditError({ reason: "space_changing" })).toBe(
+      "Another session is editing this space — possibly this one, if the page reconnected. Try again once that edit finishes.",
+    );
+  });
+
   it("falls back to the raw reason, then to a generic message", () => {
     expect(describeSpaceEditError({ reason: "failed_to_edit" })).toBe(
       "Failed to save the space: failed_to_edit",

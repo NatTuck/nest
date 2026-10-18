@@ -78,6 +78,27 @@ describe("store", () => {
       expect(useStore.getState().archivedSpaces).toEqual([]);
     });
 
+    it("setSpacePaused adds and removes one space, and setPausedSpaces replaces the set", () => {
+      const store = useStore.getState();
+
+      store.setSpacePaused(7, true);
+      store.setSpacePaused(8, true);
+      expect(useStore.getState().pausedSpaces).toEqual([7, 8]);
+
+      // Idempotent: a repeated pause does not duplicate the id.
+      store.setSpacePaused(7, true);
+      expect(useStore.getState().pausedSpaces).toEqual([7, 8]);
+
+      store.setSpacePaused(7, false);
+      expect(useStore.getState().pausedSpaces).toEqual([8]);
+
+      // The join payload's form: the whole set, including "none".
+      store.setPausedSpaces([9]);
+      expect(useStore.getState().pausedSpaces).toEqual([9]);
+      store.setPausedSpaces(undefined);
+      expect(useStore.getState().pausedSpaces).toEqual([]);
+    });
+
     it("unarchiveSpace moves a space back to the active list", () => {
       useStore.getState().setSpaces([s2]);
       useStore.getState().setArchivedSpaces([s1]);

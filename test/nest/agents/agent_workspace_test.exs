@@ -200,8 +200,11 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
         _ = AgentStateHelpers.set_status(pid, status)
         workspace = new_ws("busy-#{status}")
 
+        # `confirm: true`: a working agent makes the edit ask the user first
+        # (`Nest.Spaces.update_environment/2`'s plan), and the user said yes. What
+        # this test pins is what the *apply* does, not the prompt.
         assert {:ok, _space} =
-                 Spaces.update_environment(space_id, %{workspace_path: workspace})
+                 Spaces.update_environment(space_id, %{workspace_path: workspace}, confirm: true)
 
         # allowlist: barrier — the cast is the only writer here.
         state = :sys.get_state(pid, 1_000)

@@ -25,7 +25,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { editSpace } from "../channels";
+import { cancelEditSpace, editSpace } from "../channels";
 import { describeSpaceEditError } from "../utils/chatErrors.js";
 import {
   DEFAULT_SANDBOX_BACKEND,
@@ -40,12 +40,23 @@ import {
 export const EDIT_SPACE_CONSEQUENCE =
   "Saving restarts nothing, but every agent here is told. A change to a docker space releases its container, so /tmp offloads, background-job logs and any running background job are lost.";
 
+/**
+ * What a save does *when it has to stop something*, in the user's terms. The
+ * server answers the first push with `confirmation_required` and the plan it
+ * carries; this is the sentence above that list.
+ */
+export const EDIT_SPACE_STOPS_WORK =
+  "This space is being edited, so nothing new starts in it until you decide. Continuing stops the work below: the tool calls in flight are cancelled and report an error to their agent, background shell jobs are stopped, and the environment change is applied. Cancelling costs nothing — everything simply carries on.";
+
 export function EditSpaceDialog({ open, onClose, space }) {
   const [workspacePath, setWorkspacePath] = useState("");
   const [networkAccess, setNetworkAccess] = useState(true);
   const [sandboxBackend, setSandboxBackend] = useState(DEFAULT_SANDBOX_BACKEND);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
+  // The plan the server returned instead of saving: `{agents, jobs}`. Non-null
+  // means the space's latch is up on our behalf and the user has to decide.
+  const [confirmPlan, setConfirmPlan] = useState(null);
 
   // The latest row, so the seed below can read its values without *depending* on
   // them: the store replaces a space's whole object on every `space:updated`
@@ -70,6 +81,7 @@ export function EditSpaceDialog({ open, onClose, space }) {
     setSandboxBackend(row?.sandbox_backend ?? DEFAULT_SANDBOX_BACKEND);
     setSaving(false);
     setSaveError(null);
+    setConfirmPlan(null);
   }, [open, spaceId]);
 
   // The dialog is a modal, so the keyboard (Escape included) has to reach it
@@ -106,7 +118,21 @@ export function EditSpaceDialog({ open, onClose, space }) {
     );
   }
 
-  const handleSave = () => {
+  // Closing while the space is paused releases it: the latch the preview took is
+  // what stops anything starting in the space, and the server holds it until this
+  // session says no (or its claim expires). Sent unconditionally rather than only
+  // when the plan is on screen: the reply that carries the plan can arrive after
+  // the close, and a claim taken by that in-flight push has no other way down
+  // before its TTL. The release is owner-scoped server-side, so a dialog that
+  // never held anything is a no-op.
+  const handleClose = () => {
+    cancelEditSpace(space.id);
+    setConfirmPlan(null);
+    setSaving(false);
+    onClose();
+  };
+
+  const save = (confirm) => {
     const workspace = workspacePath.trim();
     if (!workspace) {
       setSaveError("Please enter a workspace path.");
@@ -116,26 +142,41 @@ export function EditSpaceDialog({ open, onClose, space }) {
     setSaving(true);
     setSaveError(null);
 
+    const values = {
+      workspace_path: workspace,
+      network_access: networkAccess,
+      sandbox_backend: sandboxBackend,
+    };
+
+    // Only the confirmation carries the flag; the first push is the one the
+    // server may answer with `confirmation_required`.
+    if (confirm) values.confirm = true;
+
     editSpace(
       space.id,
-      {
-        workspace_path: workspace,
-        network_access: networkAccess,
-        sandbox_backend: sandboxBackend,
-      },
+      values,
       () => {
         setSaving(false);
+        setConfirmPlan(null);
         onClose();
       },
       (err) => {
         setSaving(false);
+
+        // Not a refusal: the edit would stop work, and the server wants the
+        // user's word. It is holding the space paused while it asks.
+        if (err?.reason === "confirmation_required") {
+          setConfirmPlan({ agents: err.agents ?? [], jobs: err.jobs ?? 0 });
+          return;
+        }
+
         setSaveError(describeSpaceEditError(err));
       },
     );
   };
 
   const handleKeyDown = (e) => {
-    if (e.key === "Escape") onClose();
+    if (e.key === "Escape") handleClose();
   };
 
   return (
@@ -146,7 +187,7 @@ export function EditSpaceDialog({ open, onClose, space }) {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
       onKeyDown={handleKeyDown}
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) handleClose();
       }}
     >
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden">
@@ -154,7 +195,7 @@ export function EditSpaceDialog({ open, onClose, space }) {
           <h2 className="text-lg font-semibold text-gray-900">Edit space</h2>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             aria-label="Close"
             className="text-gray-400 hover:text-gray-600 transition-colors p-1"
           >
@@ -176,103 +217,120 @@ export function EditSpaceDialog({ open, onClose, space }) {
         </div>
 
         <div className="px-6 py-4 space-y-4">
-          <div>
-            <label
-              htmlFor="edit-space-workspace-path"
-              className="block text-sm font-medium text-gray-700 mb-1"
-            >
-              Workspace Path
-            </label>
-            <input
-              id="edit-space-workspace-path"
-              type="text"
-              ref={workspaceRef}
-              value={workspacePath}
-              onChange={(e) => setWorkspacePath(e.target.value)}
-              placeholder="/path/to/project"
-              disabled={saving}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm disabled:opacity-50"
-            />
-            <p className="mt-1 text-sm text-gray-500">
-              Every agent in this space binds this directory.
-            </p>
-          </div>
+          {confirmPlan ? (
+            <ConfirmStop plan={confirmPlan} error={saveError} />
+          ) : (
+            <>
+              <div>
+                <label
+                  htmlFor="edit-space-workspace-path"
+                  className="block text-sm font-medium text-gray-700 mb-1"
+                >
+                  Workspace Path
+                </label>
+                <input
+                  id="edit-space-workspace-path"
+                  type="text"
+                  ref={workspaceRef}
+                  value={workspacePath}
+                  onChange={(e) => setWorkspacePath(e.target.value)}
+                  placeholder="/path/to/project"
+                  disabled={saving}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm disabled:opacity-50"
+                />
+                <p className="mt-1 text-sm text-gray-500">
+                  Every agent in this space binds this directory.
+                </p>
+              </div>
 
-          <div className="flex items-start gap-3">
-            <input
-              id="edit-space-network-access"
-              type="checkbox"
-              checked={networkAccess}
-              onChange={(e) => setNetworkAccess(e.target.checked)}
-              disabled={saving}
-              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-            />
-            <div>
-              <label
-                htmlFor="edit-space-network-access"
-                className="text-sm font-medium text-gray-700"
-              >
-                Network access
-              </label>
-              <p className="text-sm text-gray-500">
-                Whether this space's agents may reach the network. A space with
-                no sandbox cannot enforce this.
+              <div className="flex items-start gap-3">
+                <input
+                  id="edit-space-network-access"
+                  type="checkbox"
+                  checked={networkAccess}
+                  onChange={(e) => setNetworkAccess(e.target.checked)}
+                  disabled={saving}
+                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+                />
+                <div>
+                  <label
+                    htmlFor="edit-space-network-access"
+                    className="text-sm font-medium text-gray-700"
+                  >
+                    Network access
+                  </label>
+                  <p className="text-sm text-gray-500">
+                    Whether this space's agents may reach the network. A space
+                    with no sandbox cannot enforce this.
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="edit-space-sandbox-backend"
+                  className="block text-sm font-medium text-gray-700 mb-1"
+                >
+                  Sandbox
+                </label>
+                <select
+                  id="edit-space-sandbox-backend"
+                  value={sandboxBackend}
+                  onChange={(e) => setSandboxBackend(e.target.value)}
+                  disabled={saving}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm disabled:opacity-50"
+                >
+                  {SANDBOX_BACKENDS.map((backend) => (
+                    <option key={backend} value={backend}>
+                      {backend}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-sm text-gray-500">
+                  {sandboxBackendHelp(sandboxBackend)}
+                </p>
+              </div>
+
+              <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                {EDIT_SPACE_CONSEQUENCE}
               </p>
-            </div>
-          </div>
 
-          <div>
-            <label
-              htmlFor="edit-space-sandbox-backend"
-              className="block text-sm font-medium text-gray-700 mb-1"
-            >
-              Sandbox
-            </label>
-            <select
-              id="edit-space-sandbox-backend"
-              value={sandboxBackend}
-              onChange={(e) => setSandboxBackend(e.target.value)}
-              disabled={saving}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm disabled:opacity-50"
-            >
-              {SANDBOX_BACKENDS.map((backend) => (
-                <option key={backend} value={backend}>
-                  {backend}
-                </option>
-              ))}
-            </select>
-            <p className="mt-1 text-sm text-gray-500">
-              {sandboxBackendHelp(sandboxBackend)}
-            </p>
-          </div>
-
-          <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
-            {EDIT_SPACE_CONSEQUENCE}
-          </p>
-
-          {saveError && (
-            <p className="text-sm text-red-600" role="alert">
-              {saveError}
-            </p>
+              {saveError && (
+                <p className="text-sm text-red-600" role="alert">
+                  {saveError}
+                </p>
+              )}
+            </>
           )}
         </div>
 
         <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex items-center justify-end gap-2">
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             className="px-4 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
           >
             Cancel
           </button>
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={saving}
-            className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {saving ? "Saving..." : "Save"}
-          </button>
+          {confirmPlan ? (
+            <button
+              type="button"
+              onClick={() => save(true)}
+              disabled={saving}
+              className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {saving ? "Saving..." : "Stop and save"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => save(false)}
+              disabled={saving}
+              className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {saving ? "Saving..." : "Save"}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -280,3 +338,60 @@ export function EditSpaceDialog({ open, onClose, space }) {
 }
 
 export default EditSpaceDialog;
+
+/**
+ * The step between "save" and the save: what the edit would stop, and the user's
+ * chance to say no.
+ *
+ * Not a refusal — the server is holding the space paused while it asks — so this
+ * is a confirmation, not an error. `EDIT_SPACE_STOPS_WORK` says what continuing
+ * costs and that cancelling costs nothing.
+ */
+function ConfirmStop({ plan, error }) {
+  const agents = plan.agents ?? [];
+  const jobs = plan.jobs ?? 0;
+
+  return (
+    <>
+      <p className="text-sm text-gray-700">{EDIT_SPACE_STOPS_WORK}</p>
+
+      <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+        <p className="text-sm font-medium text-amber-900">
+          {agents.length === 0
+            ? "No agent is working."
+            : `${agents.length} ${agents.length === 1 ? "agent is" : "agents are"} working:`}
+        </p>
+
+        {agents.length > 0 && (
+          <ul className="mt-1 space-y-0.5">
+            {agents.map((agent) => (
+              <li key={agent.name} className="text-sm text-amber-800">
+                <span className="font-mono">{agent.name}</span>{" "}
+                <span className="text-amber-700">({agent.status})</span>
+                {agent.jobs > 0 && (
+                  <span className="text-amber-700">
+                    {" "}
+                    — {agent.jobs} background{" "}
+                    {agent.jobs === 1 ? "job" : "jobs"}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <p className="mt-1 text-sm text-amber-800">
+          {jobs === 0
+            ? "No background shell job is running."
+            : `${jobs} background shell ${jobs === 1 ? "job" : "jobs"} will be stopped.`}
+        </p>
+      </div>
+
+      {error && (
+        <p className="text-sm text-red-600" role="alert">
+          {error}
+        </p>
+      )}
+    </>
+  );
+}

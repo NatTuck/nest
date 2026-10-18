@@ -487,7 +487,7 @@ describe("Sidebar tree", () => {
     // stays true on the way to the space's own page, so nothing re-derives the
     // row and the user would land on a collapsed row for the space they are in.
     act(() => {
-      fireEvent.click(screen.getByRole("link", { name: /my space/i }));
+      fireEvent.click(screen.getByRole("link", { name: /^My Space/ }));
     });
 
     expect(
@@ -729,7 +729,7 @@ describe("Sidebar tree", () => {
     // The expansion follows the route rather than freezing at mount, so
     // navigating away closes the row we left instead of leaving two open.
     act(() => {
-      fireEvent.click(screen.getByRole("link", { name: /second space/i }));
+      fireEvent.click(screen.getByRole("link", { name: /^Second Space/ }));
     });
 
     expect(screen.getByText("root-b")).toBeInTheDocument();
@@ -1073,8 +1073,8 @@ describe("Sidebar tree", () => {
 
     // The row's highlight class lives on the div wrapping the
     // space-name link; the link is its direct child.
-    const firstLink = screen.getByRole("link", { name: /first space/i });
-    const secondLink = screen.getByRole("link", { name: /second space/i });
+    const firstLink = screen.getByRole("link", { name: /^First Space/ });
+    const secondLink = screen.getByRole("link", { name: /^Second Space/ });
     expect(firstLink.parentElement.className).not.toMatch(/bg-blue-50/);
     expect(secondLink.parentElement.className).toMatch(/bg-blue-50/);
   });
@@ -1096,8 +1096,8 @@ describe("Sidebar tree", () => {
       </MemoryRouter>,
     );
 
-    const firstLink = screen.getByRole("link", { name: /first space/i });
-    const secondLink = screen.getByRole("link", { name: /second space/i });
+    const firstLink = screen.getByRole("link", { name: /^First Space/ });
+    const secondLink = screen.getByRole("link", { name: /^Second Space/ });
     expect(firstLink.parentElement.className).not.toMatch(/bg-blue-50/);
     expect(secondLink.parentElement.className).not.toMatch(/bg-blue-50/);
   });
@@ -1220,6 +1220,76 @@ describe("Sidebar tree", () => {
 
     // With no spaces, the sidebar shows the empty state.
     expect(container.textContent).toContain("No spaces yet");
+  });
+});
+
+describe("Sidebar space overview", () => {
+  it("links the space's own row to its overview, and marks it current there", () => {
+    act(() => {
+      withStore([{ name: "root", parentId: null, parentName: null, depth: 0 }]);
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space/agent/root"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    // The overview is the space's page, so it hangs off the space's own row
+    // rather than an agent's header: a space whose blueprint names an `rpg`
+    // Main View has no agent header at all, so a header link would leave that
+    // space's environment unreachable from its main screen.
+    const overview = screen.getByRole("link", {
+      name: "Overview of My Space",
+    });
+    expect(overview).toHaveAttribute("href", "/space/my-space/overview");
+    // The space's name still goes to its Main View.
+    expect(screen.getByRole("link", { name: /^My Space/ })).toHaveAttribute(
+      "href",
+      "/space/my-space",
+    );
+    // An agent's chat is open, so the overview is not the current page.
+    expect(overview).not.toHaveAttribute("aria-current");
+
+    act(() => {
+      fireEvent.click(overview);
+    });
+
+    // On the overview it says so, which is also how the row stays selected
+    // through a route that has no agent in it.
+    expect(
+      screen.getByRole("link", { name: "Overview of My Space" }),
+    ).toHaveAttribute("aria-current", "page");
+  });
+});
+
+describe("Sidebar space overview on a campaign space", () => {
+  it("links the overview from a campaign space's row too", () => {
+    // The row never reads `blueprints`, so the link is blueprint-independent by
+    // construction — and that is the point: a campaign's Main View has no agent
+    // header, so this row is the only way into its environment.
+    act(() => {
+      useStore.setState({
+        agents: [],
+        archivedAgents: [],
+        spaces: [
+          { id: 3, slug: "campaign", name: "Campaign", blueprint_id: 7 },
+        ],
+        blueprints: [
+          { id: 7, name: "Tabletop RPG", main_view_config: { view: "rpg" } },
+        ],
+      });
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/campaign"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("link", { name: "Overview of Campaign" }),
+    ).toHaveAttribute("href", "/space/campaign/overview");
   });
 });
 
@@ -1356,6 +1426,33 @@ describe("Sidebar space archiving", () => {
 
     const button = screen.getByRole("button", { name: /archive my space/i });
     expect(button).toBeInTheDocument();
+  });
+
+  it("links an archived row with the encoded slug and highlights it on its pages", () => {
+    // The slug goes into the link and into every comparison, so it is encoded
+    // once: a slug the browser had to escape would match nothing otherwise. The
+    // space's two pages both render the archived notice, so both count as
+    // "this space".
+    act(() => {
+      useStore.setState({
+        spaces: [],
+        archivedSpaces: [
+          { id: 4, slug: "my space", name: "My Space", archived: true },
+        ],
+        // The section starts collapsed; this test is about the row, not that.
+        archivedCollapsed: false,
+      });
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my%20space/overview"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    const link = screen.getByRole("link", { name: /^My Space/ });
+    expect(link).toHaveAttribute("href", "/space/my%20space");
+    expect(link.parentElement.className).toMatch(/bg-gray-200/);
   });
 
   it("clicking Archive pushes archive_space with the space id", async () => {

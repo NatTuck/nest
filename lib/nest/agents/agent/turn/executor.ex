@@ -435,6 +435,8 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   # rebroadcasts nothing. `{:consume_inbox, _}` is what clears the queue —
   # emitted only by the branch that appended the message — so a delivery that
   # parks (a compaction, a block) leaves the message queued and visible.
+  @spec peek_inbox(Nest.Agents.Agent.t()) ::
+          :empty | {Nest.Agents.Agent.t(), [map()], String.t()}
   defp peek_inbox(state) do
     case Inbox.batch(state.live.inbox) do
       [] ->

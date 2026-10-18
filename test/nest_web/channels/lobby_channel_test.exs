@@ -13,6 +13,7 @@ defmodule NestWeb.LobbyChannelTest do
   alias Nest.Accounts.User, as: UserSchema
   alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Agents.SpaceGate
   alias Nest.Agents.Supervisor
   alias Nest.Blueprints
   alias Nest.Repo
@@ -583,6 +584,64 @@ defmodule NestWeb.LobbyChannelTest do
         end)
 
       assert log =~ "Nest cannot protect it from being rewritten"
+    end
+  end
+
+  # The space edit's latch (`Nest.Agents.SpaceGate`): work in the space is held
+  # while its environment is edited, and every session that can see the space has
+  # to be told — a second browser shows the paused banner, or the space looks
+  # broken. The frames ride the gate's own topic, which this channel subscribes to
+  # alongside the space's.
+  describe "the space latch" do
+    test "a hold and a release reach the session as paused and resumed" do
+      {socket, _payload} = join_lobby()
+
+      ref =
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "latch-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
+
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}, 500
+      AgentTestHelpers.ensure_cleanup(name)
+
+      # The latch is held on behalf of this process, as an editing channel would.
+      assert :ok = SpaceGate.hold(space_id)
+      assert_push "space:paused", %{"space_id" => ^space_id}, 500
+
+      assert :ok = SpaceGate.release(space_id)
+      assert_push "space:resumed", %{"space_id" => ^space_id}, 500
+    end
+
+    test "the init payload carries the spaces that are paused" do
+      {socket, _payload} = join_lobby()
+
+      ref =
+        push(
+          socket,
+          "create_space",
+          create_space_payload(%{
+            "name" => "held-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+          })
+        )
+
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}, 500
+      AgentTestHelpers.ensure_cleanup(name)
+
+      # Held on behalf of this process, as an editing channel would.
+      assert :ok = SpaceGate.hold(space_id)
+
+      # A session that opens *during* the pause missed `space:paused`, so the set
+      # has to come from the payload — that is the whole reason it is there.
+      {_second, payload} = join_lobby()
+      assert payload.paused_space_ids == [space_id]
+
+      assert :ok = SpaceGate.release(space_id)
     end
   end
 

@@ -77,6 +77,9 @@ defmodule Nest.Application do
       {Task.Supervisor, name: Nest.Models.TaskSupervisor},
       # Background shell-job manager (per-agent `shell-cmd background`)
       ShellJobs.child_spec(),
+      # The per-space before-starts latch: holds a space's tool use and agent
+      # starts while its environment is being edited
+      Nest.Agents.SpaceGate,
       # Endpoint probing + cache (started before Models so the model
       # manager can read probed discovery paths)
       Nest.EndpointCache,

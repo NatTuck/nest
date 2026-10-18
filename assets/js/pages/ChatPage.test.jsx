@@ -17,6 +17,9 @@ import { MemoryRouter, Routes, Route } from "react-router-dom";
 // scenario flows end-to-end.
 let mockAgentsCache = {};
 let mockSpaces = [];
+// The space edit's latch (`SpacePausedBanner` reads it): no space is paused in
+// these tests.
+const mockPausedSpaces = [];
 vi.mock("../store", () => {
   const actions = {
     clearAgentError: (id) => {
@@ -36,11 +39,16 @@ vi.mock("../store", () => {
   };
 
   const useStore = (selector) =>
-    selector({ agentsCache: mockAgentsCache, spaces: mockSpaces });
+    selector({
+      agentsCache: mockAgentsCache,
+      spaces: mockSpaces,
+      pausedSpaces: mockPausedSpaces,
+    });
   useStore.getState = () => ({
     ...actions,
     agentsCache: mockAgentsCache,
     spaces: mockSpaces,
+    pausedSpaces: mockPausedSpaces,
   });
 
   return { useStore };

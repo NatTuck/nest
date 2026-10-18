@@ -101,8 +101,13 @@ defmodule Nest.Tools.MediaKind do
     command = "file --mime-type --brief -- #{ShellEscape.escape(full_path)}"
 
     case Sandbox.run(command, mounts, caps) do
-      {:ok, output} -> {:ok, String.trim(output)}
-      {:error, reason} -> {:error, "Failed to detect file type: #{inspect(reason)}"}
+      {:ok, output} ->
+        {:ok, String.trim(output)}
+
+      # `{:cancelled, _}` too: this command is short, and a caller that cancels it
+      # has nothing else to be told.
+      {tag, reason} when tag in [:error, :cancelled] ->
+        {:error, "Failed to detect file type: #{inspect(reason)}"}
     end
   end
 end

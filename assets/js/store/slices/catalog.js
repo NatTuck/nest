@@ -70,6 +70,32 @@ export function catalogSetters(set) {
       set({ archivedSpaces: archivedSpaces || [] });
     },
 
+    /**
+     * Replace the set of spaces whose work is held by the space edit's latch
+     * (`Nest.Agents.SpaceGate`). The join payload carries it, so a session that
+     * opens mid-pause shows the banner too.
+     */
+    setPausedSpaces: (spaceIds) => {
+      set({ pausedSpaces: spaceIds || [] });
+    },
+
+    /** One space's pause state, from the `space:paused`/`space:resumed` frames. */
+    setSpacePaused: (spaceId, paused) => {
+      set((state) => {
+        if (!paused) {
+          return {
+            pausedSpaces: state.pausedSpaces.filter((id) => id !== spaceId),
+          };
+        }
+
+        // Already paused: a repeated frame (a preview, then a confirmation) must
+        // not reorder the set.
+        return state.pausedSpaces.includes(spaceId)
+          ? state
+          : { pausedSpaces: [...state.pausedSpaces, spaceId] };
+      });
+    },
+
     setArchivedAgents: (archivedAgents) => {
       set({ archivedAgents: (archivedAgents || []).map(normalizeAgent) });
     },

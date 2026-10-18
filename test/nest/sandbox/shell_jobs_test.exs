@@ -1,6 +1,7 @@
 defmodule Nest.Sandbox.ShellJobsTest do
   use ExUnit.Case, async: true
 
+  import Eventually
   import Nest.Test.TmpCleanup
 
   import Nest.Sandbox.Backend.DockerTestHelpers
@@ -341,6 +342,43 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     assert :ok = ShellJobs.kill(key, id)
     assert_receive {:shell_jobs, %{jobs: [%{id: ^id, killed: true}]}}, 1_000
+  end
+
+  # The space edit's quiesce: a running job is work in the environment that is
+  # about to change, so it is stopped — but the agent is not going away, so the
+  # key, the job's history and the scratch all have to survive (unlike
+  # `stop_all/1`, which drops them).
+  test "stop_jobs stops the running jobs and keeps the key, history and scratch",
+       %{key: key, tmp: tmp} do
+    id = start_running!("sleep 30", tmp, key)
+    assert [%{id: ^id, status: :running}] = ShellJobs.list(key)
+
+    # Something in the scratch that is not the job's script: the offloads a
+    # `stop_all/1` would take with it.
+    offload = Path.join(tmp, "offload.txt")
+    File.write!(offload, "kept")
+
+    assert :ok = ShellJobs.stop_jobs(key)
+
+    # The stop is a kill: the manager learns the exit asynchronously, so the
+    # status becomes `:exited` a moment later. Stopped, not forgotten: the job is
+    # still listed.
+    eventually(fn ->
+      case ShellJobs.list(key) do
+        [%{id: ^id, status: status}] -> status != :running
+        _other -> false
+      end
+    end)
+
+    # The key still owns its history, and the scratch is untouched.
+    assert {:ok, _status} = ShellJobs.status(key, id)
+    assert File.read!(offload) == "kept"
+
+    # A second stop is a no-op, and the key still works: a new job starts on it
+    # (and is listed alongside the stopped one, because the history survived).
+    assert :ok = ShellJobs.stop_jobs(key)
+    assert {:ok, _message} = start_background("sleep 30", tmp, key)
+    assert length(ShellJobs.list(key)) == 2
   end
 
   describe "the job log on a container scratch" do

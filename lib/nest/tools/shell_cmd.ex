@@ -100,6 +100,11 @@ defmodule Nest.Tools.ShellCmd do
     * `{:ok, output}` - Command completed successfully
     * `{:error, output}` - Command failed or was terminated (a backend
       returning "Permission denied" surfaces as `{:error, "Exit code N: ..."}`)
+    * `{:cancelled, reason}` - The space's environment changed under the
+      command and the space edit called it off
+      (`Nest.Agents.Agent.cancel_tools/2`). Not a failure: nothing went wrong,
+      the call may be re-issued. Its own shape so a caller can tell it from an
+      error — the tool path must not report a routine edit as one.
 
   Both success and failure return the command output, which should be
   displayed as a message in the chat UI.
@@ -109,7 +114,7 @@ defmodule Nest.Tools.ShellCmd do
   back-compat with callers that haven't been migrated.
   """
   @spec execute(String.t(), Mounts.t(), map() | nil, keyword()) ::
-          {:ok, String.t()} | {:error, String.t()}
+          {:ok, String.t()} | {:error, String.t()} | {:cancelled, String.t()}
   def execute(command, mounts, caps \\ nil, opts \\ []) do
     with {:ok, mounts} <- validate_workspace(mounts),
          {:ok, spec, script, script_sandbox} <- build_command(command, mounts, caps) do
@@ -160,7 +165,13 @@ defmodule Nest.Tools.ShellCmd do
     with {:ok, mounts} <- validate_workspace(mounts),
          {:ok, spec, script, _script_sandbox} <- build_command(command, mounts, caps) do
       try do
-        run_with_erlexec_raw(spec, timeout, stdin)
+        case run_with_erlexec_raw(spec, timeout, stdin) do
+          # Nothing cancels a sandbox helper today (`cancel_tools/2` reaches tool
+          # workers, and `stat`/`glob` are not long calls), but the shape has to
+          # be total: an error string is what this function promises.
+          {:cancelled, reason} -> {:error, reason}
+          result -> result
+        end
       after
         File.rm(script)
       end
@@ -204,6 +215,14 @@ defmodule Nest.Tools.ShellCmd do
     case run_with_erlexec(spec, timeout, stdin) do
       {:ok, exit_code, output} ->
         handle_exit_result(command, exit_code, output, mounts)
+
+      # The space's environment changed under the command and the space edit
+      # called it off (`cancel_tools/2`). Not a failure to start and not a
+      # failure to run: nothing is logged, because a deliberate cancellation is
+      # not a defect to diagnose, and the caller gets the reason as a
+      # cancellation so its own error diagnostics can stay off too.
+      {:cancelled, reason} ->
+        {:cancelled, reason}
 
       {:error, reason} ->
         handle_startup_failure(command, reason, mounts)
@@ -398,6 +417,10 @@ defmodule Nest.Tools.ShellCmd do
   defp run_with_erlexec(spec, timeout, stdin) do
     case run_with_erlexec_streams(spec, timeout, stdin) do
       {:ok, exit_code, combined, _stdout, _stderr} -> {:ok, exit_code, combined}
+      # A cancellation is passed through as its own shape: `exec_staged/6` must
+      # not report it as a failure to *start* the process, which is what the
+      # `{:error, _}` clause means (nothing was started, and nothing ran).
+      {:cancelled, reason} -> {:cancelled, reason}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -405,6 +428,7 @@ defmodule Nest.Tools.ShellCmd do
   defp run_with_erlexec_raw(spec, timeout, stdin) do
     case run_with_erlexec_streams(spec, timeout, stdin) do
       {:ok, exit_code, _combined, stdout, stderr} -> {:ok, exit_code, stdout, stderr}
+      {:cancelled, reason} -> {:cancelled, reason}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -437,6 +461,16 @@ defmodule Nest.Tools.ShellCmd do
     # run forever.)
     deadline = System.monotonic_time(:millisecond) + timeout
 
+    # A cancellation that arrived while this worker was *not* running a command —
+    # parked at the space's gate, or between two calls of a batch — is still in
+    # the mailbox, and `collect_output/5` matches `{:cancel_tool, _}` before any
+    # output. Left there, it would stop a command that started in the *new*
+    # environment and report a cancellation nobody asked for: a non-idempotent
+    # command cut in half is the half-changed state the latch exists to prevent.
+    # The `:DOWN` clause is scoped by `^erl_pid` for the same reason; this message
+    # cannot be, because the command it would have cancelled no longer exists.
+    flush_cancel_tool()
+
     case :exec.run(
            to_charlist(spec.command),
            exec_options(spec, stdin_opt)
@@ -460,6 +494,19 @@ defmodule Nest.Tools.ShellCmd do
 
       {:error, reason} ->
         {:error, "Failed to start process: #{inspect(reason)}"}
+    end
+  end
+
+  # Drop `{:cancel_tool, _}` messages a cancellation left in this worker's mailbox
+  # while it had no command to stop. Called once, immediately before a command
+  # starts, so the window it leaves is only "cancelled between the flush and
+  # `:exec.run/2" — which is the intended behaviour anyway: the latch is up, and a
+  # command about to start is exactly what a cancellation should catch.
+  defp flush_cancel_tool do
+    receive do
+      {:cancel_tool, _reason} -> flush_cancel_tool()
+    after
+      0 -> :ok
     end
   end
 
@@ -497,6 +544,9 @@ defmodule Nest.Tools.ShellCmd do
 
       {:stop_chat, _from} ->
         handle_stop_chat(os_pid, acc)
+
+      {:cancel_tool, reason} ->
+        handle_cancel_tool(os_pid, reason)
 
       {:DOWN, _ref, :process, ^erl_pid, reason} ->
         handle_down(acc, reason)
@@ -554,6 +604,27 @@ defmodule Nest.Tools.ShellCmd do
     # 130 = 128 + SIGINT(2), the conventional shell cancellation
     # exit code (Ctrl-C).
     {:ok, 130, combine_output(acc), stdout_bin(acc), stderr_bin(acc)}
+  end
+
+  # The space's environment changed under this command, so the space edit
+  # cancelled it (`Nest.Agents.Agent.cancel_tools/2`). This is deliberately *not*
+  # the Stop path: a Stop is the human ending the turn, and its result is the
+  # command's own cancelled exit code. Here the command did not run to
+  # completion, so this is not a result at all — the agent gets a tool error and
+  # can re-issue the call against the space's new values.
+  #
+  # `{:cancelled, _}` rather than `{:error, _}` so the caller can tell a command
+  # that was called off from one that never started: only the latter is a
+  # failure worth a line in the operator log.
+  #
+  # This clause is the *only* one in the build, and that is the rule rather than
+  # an accident: cancellation is a message to a worker that owns an OS process,
+  # and a command is the one tool shape that does. A short tool waits at the gate
+  # instead (`Nest.Agents.SpaceGate`'s moduledoc states it), so it needs no clause
+  # and burns no retry.
+  defp handle_cancel_tool(os_pid, reason) do
+    :exec.stop(os_pid)
+    {:cancelled, reason}
   end
 
   defp handle_down(acc, reason) do

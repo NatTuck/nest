@@ -10,13 +10,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
-import { EDIT_SPACE_CONSEQUENCE, EditSpaceDialog } from "./EditSpaceDialog";
+import {
+  EDIT_SPACE_CONSEQUENCE,
+  EDIT_SPACE_STOPS_WORK,
+  EditSpaceDialog,
+} from "./EditSpaceDialog";
 import { sandboxBackendHelp } from "../utils/newSpaceForm";
 
-const mocks = vi.hoisted(() => ({ editSpace: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  editSpace: vi.fn(),
+  cancelEditSpace: vi.fn(),
+}));
 
 vi.mock("../channels", () => ({
   editSpace: mocks.editSpace,
+  cancelEditSpace: mocks.cancelEditSpace,
 }));
 
 const space = {
@@ -37,7 +45,16 @@ function setup(overrides = {}) {
 
 beforeEach(() => {
   mocks.editSpace.mockReset();
+  mocks.cancelEditSpace.mockReset();
 });
+
+// The plan the server answers the first push with: the edit would stop work, so
+// it is holding the space paused while the user decides.
+const STOPPING_PLAN = {
+  reason: "confirmation_required",
+  agents: [{ name: "alpha", status: "streaming", jobs: 1 }],
+  jobs: 2,
+};
 
 describe("EditSpaceDialog", () => {
   it("initializes all three fields from the space", () => {
@@ -206,5 +223,67 @@ describe("EditSpaceDialog", () => {
       /opened without a space.*bug in the page/,
     );
     expect(screen.queryByLabelText("Workspace Path")).not.toBeInTheDocument();
+  });
+});
+
+describe("EditSpaceDialog's confirmation step", () => {
+  // Put the dialog into the state the server's `confirmation_required` answer
+  // leaves it in: the plan on screen, the space paused on this session's behalf.
+  function askFirst() {
+    mocks.editSpace.mockImplementation((_id, _values, _onOk, onError) =>
+      onError(STOPPING_PLAN),
+    );
+    const { onClose } = setup();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    return { onClose };
+  }
+
+  it("asks before stopping work, and names what it would stop", () => {
+    const { onClose } = askFirst();
+
+    expect(screen.getByText(EDIT_SPACE_STOPS_WORK)).toBeInTheDocument();
+    expect(screen.getByText("alpha")).toBeInTheDocument();
+    expect(screen.getByText("(streaming)")).toBeInTheDocument();
+    expect(
+      screen.getByText(/2 background shell jobs will be stopped/),
+    ).toBeInTheDocument();
+    // The save did not happen, and the dialog stayed open.
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("continues with the confirmation flag, and only then", () => {
+    askFirst();
+    mocks.editSpace.mockImplementation((_id, _values, onOk) => onOk({}));
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop and save" }));
+
+    expect(mocks.editSpace).toHaveBeenLastCalledWith(
+      7,
+      expect.objectContaining({ confirm: true }),
+      expect.any(Function),
+      expect.any(Function),
+    );
+  });
+
+  it("cancels by releasing the pause, so the space is not left held", () => {
+    const { onClose } = askFirst();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(mocks.cancelEditSpace).toHaveBeenCalledWith(7);
+    expect(onClose).toHaveBeenCalled();
+    // Nothing was written.
+    expect(mocks.editSpace).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the pause when the dialog is dismissed without an answer", () => {
+    // Closing the X, the backdrop or with Escape while the space is held has to
+    // tell the server too, or the space stays paused until the claim expires.
+    const { onClose } = askFirst();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    expect(mocks.cancelEditSpace).toHaveBeenCalledWith(7);
+    expect(onClose).toHaveBeenCalled();
   });
 });

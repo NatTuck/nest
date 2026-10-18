@@ -1,20 +1,9 @@
 defmodule Nest.Agents.Agent.BatchSizerTest do
   @moduledoc """
-  Tests for `Nest.Agents.Agent.BatchSizer`.
-
-  Covers the three-phase batch sizing flow:
-
-    * Phase 1 (preflight) — refuses batches whose projected post-batch
-      size exceeds `context_limit`.
-    * Phase 2 (execute) — runs each tool and measures actual sizes
-      via `Nest.Tokens.Estimator`.
-    * Phase 3 (keep-or-summarize) — for `shell_cmd` results,
-      decides keep-full vs. summary-with-path to fit the budget.
-
-  Per `notes/extract-compaction-and-resumable-chat-turn.md`:
-  tool sizes are deterministic (read_file exact, others trivial or
-  fixed-summary). The BatchSizer surfaces the `is_error` flag
-  through refusal paths.
+  Tests for `Nest.Agents.Agent.BatchSizer`'s three phases: preflight, execute, and
+  keep-or-summarize. Per `notes/extract-compaction-and-resumable-chat-turn.md`,
+  tool sizes are deterministic (`file-read` exact, others trivial or
+  fixed-summary), and `is_error` is what carries a failed call to the model.
   """
 
   use ExUnit.Case, async: true
@@ -26,6 +15,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Agents.Agent.BatchSizer.ProjectedSize
+  alias Nest.Agents.SpaceGate
   alias Nest.LLM.Tool
   alias Nest.Messages.{Part, ToolCall, ToolResult}
   alias Nest.Sandbox
@@ -70,7 +60,8 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       mounts:
         Mounts.new(Keyword.get(opts, :workspace_path, nil), Keyword.get(opts, :tmp_path, nil)),
       agent_pid: self(),
-      agent_name: "test"
+      agent_name: "test",
+      space_id: Keyword.get(opts, :space_id, nil)
     }
   end
 
@@ -136,6 +127,21 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   end
 
   describe "Phase 2: execute" do
+    test "a batch waits for the space's latch, then runs under it" do
+      # The space is being edited: no tool starts until the environment is written.
+      id = System.unique_integer([:positive])
+      c = ctx([small_tool("echo")], space_id: id)
+
+      :ok = SpaceGate.hold(id)
+      batch = Task.async(fn -> BatchSizer.execute([call("c1", "echo")], c) end)
+      assert Task.yield(batch, 30) == nil
+
+      :ok = SpaceGate.release(id)
+
+      assert [{_tc, :ok, content}] = Task.await(batch, 500)
+      assert content =~ "small output"
+    end
+
     test "runs each tool in batch order and returns raw results" do
       tools = [small_tool("alpha"), small_tool("beta")]
       c = ctx(tools)
@@ -180,6 +186,20 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
 
       assert log =~ "BatchSizer produced is_error=true tool result"
       assert log =~ "tool=crashy"
+
+      # A call the space edit cancelled (`ShellCmd.execute/4`'s `{:cancelled,
+      # reason}`) is the same subject and the opposite verdict: `is_error: true` for
+      # the model, and no `[error]` line for the operator, because a routine edit is
+      # not a defect. Its own kind is what keeps both diagnostics off — they key on
+      # `:error`. Deliberately outside the capture: if either fired, the suite would
+      # print.
+      cancelled = make_tool("cancelled-tool", fn _, _ -> {:cancelled, "changed"} end)
+
+      assert [%ToolResult{is_error: true, content: "changed"}] =
+               BatchSizer.run([call("c2", "cancelled-tool")], ctx([cancelled]))
+
+      assert [{_tc, :cancelled, "changed"}] =
+               BatchSizer.execute([call("c3", "cancelled-tool")], ctx([cancelled]))
     end
 
     test "returns synthetic error results when preflight refuses the batch" do

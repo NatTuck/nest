@@ -22,6 +22,7 @@ defmodule Nest.Spaces do
   alias Nest.Sandbox
   alias Nest.Sandbox.Backend
   alias Nest.Spaces.Creation
+  alias Nest.Spaces.Environment
   alias Nest.Spaces.Space
 
   # The per-user PubSub topic: "this user's space *set* changed" (a space
@@ -228,6 +229,12 @@ defmodule Nest.Spaces do
   space inherits them, and an agent's `Nest.Sandbox.Mounts` is built from them
   once at start — so the row is the truth, and the agents have to be told.
 
+  The edit **stops work**, so it asks first: with anything running it answers
+  `{:error, {:confirmation_required, plan}}` **without writing**, and the same
+  params with `confirm: true` does the edit. A save that is refused, or that names
+  what the row already says, stops nothing. `Nest.Spaces.Environment` owns that
+  protocol and its moduledoc is the description to read.
+
   Nothing is restarted. A live agent is cast the new values
   (`Nest.Agents.Agent.space_changed/2`): its mounts move, its tool closures are
   rebuilt from them, and it appends a notice pair stating the environment now in
@@ -256,44 +263,45 @@ defmodule Nest.Spaces do
   agents that are working at the time.
 
   Returns `{:ok, space}`, or `{:error, reason}` where `reason` is `:not_found`,
-  the space changeset, or a workspace refusal from `Nest.Sandbox.workspace_error/1`
-  — the same codes the create path produces, including the tagged
-  `{:config_file_not_regular, path, type}`.
+  `:space_changing` (another session holds the space), the space changeset, a
+  workspace refusal from `Nest.Sandbox.workspace_error/1` — the same codes the
+  create path produces, including the tagged
+  `{:config_file_not_regular, path, type}` — or
+  `{:confirmation_required, plan}` for the first phase.
   """
-  @spec update_environment(integer(), map()) ::
+  @spec update_environment(integer(), map(), keyword()) ::
           {:ok, Space.t()}
           | {:error,
              Ecto.Changeset.t()
              | :not_found
+             | :space_changing
              | :workspace_missing
              | :workspace_under_tmp
-             | {:config_file_not_regular, String.t(), atom()}}
-  def update_environment(id, params) when is_integer(id) and is_map(params) do
-    case get_space(id) do
-      nil ->
-        {:error, :not_found}
+             | {:config_file_not_regular, String.t(), atom()}
+             | {:confirmation_required, Environment.edit_plan()}}
+  defdelegate update_environment(id, params, opts \\ []), to: Environment
 
-      %Space{sandbox_backend: old_backend} = space ->
-        space
-        |> Space.environment_changeset(params)
-        |> apply_environment(old_backend)
-    end
+  # The validate half, for `Nest.Spaces.Environment`: the gates run here, before
+  # the caller quiesces, so a save that would be refused stops nothing. Both, and
+  # in this order — `cast/4` records no change for a value it rejects, so an
+  # invalid changeset can have `changes == %{}` and would read as a successful save.
+  @doc false
+  @spec prepare_environment(Space.t(), map()) :: {:ok, Ecto.Changeset.t()} | {:error, term()}
+  def prepare_environment(%Space{} = space, params) do
+    changeset = Space.environment_changeset(space, params)
+
+    with :ok <- validity_gate(changeset),
+         :ok <- workspace_gate(changeset),
+         do: {:ok, changeset}
   end
 
-  # A save that names what the row already says is not an edit: releasing the
-  # container here would destroy a live environment for nothing, and telling the
-  # agents would announce a change that did not happen.
-  defp apply_environment(changeset, old_backend) do
-    with :ok <- workspace_gate(changeset) do
-      if changeset.changes == %{} do
-        {:ok, changeset.data}
-      else
-        write_environment(changeset, old_backend)
-      end
-    end
-  end
+  defp validity_gate(%Ecto.Changeset{valid?: true}), do: :ok
+  defp validity_gate(%Ecto.Changeset{} = changeset), do: {:error, changeset}
 
-  defp write_environment(changeset, old_backend) do
+  # The write half: the row, the container release, the announcement.
+  @doc false
+  @spec commit_environment(Ecto.Changeset.t(), String.t()) :: {:ok, Space.t()} | {:error, term()}
+  def commit_environment(%Ecto.Changeset{} = changeset, old_backend) do
     case Repo.update(changeset) do
       {:ok, updated} ->
         # The *old* backend: the containers to release are the ones it made.

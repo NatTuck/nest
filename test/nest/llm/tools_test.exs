@@ -74,6 +74,15 @@ defmodule Nest.LLM.ToolsTest do
       assert [%ToolResult{content: "boom", arguments: %{}, is_error: true}] = results
     end
 
+    test "propagates {:cancelled, reason} as an error result carrying the reason" do
+      # `ShellCmd.execute/4`'s shape for a call the space edit called off. The
+      # model has to see it as a call that did not run, with the reason as the
+      # content, so it can decide whether to re-issue it.
+      tool = tool_with("shell-cmd", fn _, _ -> {:cancelled, "changed"} end)
+      results = Tools.execute([tool], [%ToolCall{id: "c1", name: "shell-cmd"}], %{})
+      assert [%ToolResult{content: "changed", is_error: true}] = results
+    end
+
     test "executes all calls in order and returns one result per call" do
       tool_a = tool_with("a", fn _, _ -> {:ok, "out_a"} end)
       tool_b = tool_with("b", fn _, _ -> {:ok, "out_b"} end)

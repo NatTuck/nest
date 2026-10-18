@@ -106,6 +106,42 @@ defmodule Nest.Agents.Agent.Turn do
   end
 
   @doc """
+  Tell every tool worker this turn is running to stop its command and report a
+  tool error, because the space's environment changed under it.
+
+  The pids are the machine's: the active worker and any batch it moved to the
+  background. A worker that is not running a command — the http worker, a batch
+  between calls — does not consume the message where it stands: `ShellCmd`
+  discards a leftover one before its next command starts
+  (`flush_cancel_tool/0`), so the message stops the command that was running when
+  the edit began and never one that began after it.
+
+  A batch's context is a **snapshot** (`Turn.build_ctx/2` captures `mounts:` and
+  `caps:`, and `ToolLoop.execute/3` never re-reads the state), so cancelling here
+  does not move a batch already in flight onto the new environment: the call it
+  has running is stopped and the agent is told, and the calls it has left still
+  run against the mounts it was built with. Only a batch that *starts* after the
+  write — every later turn — runs under the new values. Cancelling every in-flight
+  batch as well is a follow-up, not something this function can do.
+
+  Only a *long* tool can be cancelled, because only it owns an OS process to
+  stop — `Nest.Tools.ShellCmd.collect_output/5` is the one clause that matches the
+  message. A short tool waits at the gate instead, which is why it needs no
+  clause here and burns no retry; `Nest.Agents.SpaceGate`'s moduledoc states the
+  rule.
+  """
+  @spec cancel_tools(Agent.t(), String.t()) :: :ok
+  def cancel_tools(state, reason) do
+    work = state.live.machine.work
+
+    [work.active_worker | Enum.map(Map.values(work.backgrounded), & &1.pid)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.each(&send(&1, {:cancel_tool, reason}))
+
+    :ok
+  end
+
+  @doc """
   Write down a mode change the turn **kept**.
 
   The row is written here, not where the mode is applied, and that is what keeps

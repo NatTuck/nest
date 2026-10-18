@@ -28,6 +28,7 @@ defmodule Nest.Agents.Agent.Callbacks do
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Watch
   alias Nest.Agents.Agent.WorkspaceHandler
+  alias Nest.Agents.SpaceGate
   alias Nest.Persistence
 
   # The space's environment changed (`Nest.Spaces.update_environment/2`): the
@@ -128,6 +129,20 @@ defmodule Nest.Agents.Agent.Callbacks do
     status = Machine.status_for(state.live.machine)
 
     cond do
+      # The space's before-starts latch is up **and the agent is idle**: an
+      # environment edit is in progress, and a turn started now would run its
+      # first tool calls against the values being replaced. It is *queued*, not
+      # refused and not blocked — the same inbox a busy agent uses — and
+      # `{:space_unlocked, _}` drains it (`drain_after_unlock/1`).
+      #
+      # The idle half is not decoration: the unlock only drains an idle agent, so
+      # queueing for one that is busy or broken would leave the message with no
+      # drainer at all. A busy agent's own turn boundary takes it (below), and a
+      # broken one's drop-and-log is the answer the latch must not pre-empt.
+      status == :idle and SpaceGate.held?(state.space_id) ->
+        {state, _disposition} = Inbox.deliver_user_message(state, sender, content, mode, human?)
+        {:noreply, state}
+
       status == :idle ->
         ChatPipeline.handle_chat(state, content, mode, human?)
 
@@ -262,6 +277,14 @@ defmodule Nest.Agents.Agent.Callbacks do
     {:reply, :ok, state}
   end
 
+  # The space's environment changed under the tools this turn is running, so the
+  # space edit cancels them: each worker stops its command and reports a tool
+  # error. Not a Stop — nothing here ends the turn or gives up a reply.
+  def handle_call({:cancel_tools, reason}, _from, state) do
+    :ok = Turn.cancel_tools(state, reason)
+    {:reply, :ok, state}
+  end
+
   # Synchronous retry/loop-ack handlers. The Agent API exposes
   # `retry_compaction/1` and `compaction_loop_detected_ok/1` as
   # `GenServer.call/3`s (was `send/2`) so callers can wait for
@@ -355,8 +378,32 @@ defmodule Nest.Agents.Agent.Callbacks do
     {:noreply, maybe_clear_space_notice(state, outcome)}
   end
 
+  # The space's latch came down. A turn that arrived while it was up is in the
+  # inbox (`chat_or_queue/5`), so this is the wake-up: the drain is
+  # `Turn.drain_inbox/1`, the single drain path, and not a second one. A busy agent
+  # needs nothing: its next boundary drains.
+  def handle_info({:space_unlocked, space_id}, state) when space_id == state.space_id do
+    {:noreply, drain_after_unlock(state)}
+  end
+
+  def handle_info({:space_unlocked, _other_space}, state), do: {:noreply, state}
+
   def handle_info(msg, state) do
     Handlers.handle(msg, state)
+  end
+
+  # `Turn.drain_inbox/1` rather than a peek plus a settle of our own: it is the
+  # documented single drain path, and it owns the mode bookkeeping a hand-rolled
+  # drain loses — it writes down a mode change it delivered (`keep_mode/2`) and
+  # undoes one whose message stayed queued (`restore_undelivered_mode/3`, issue
+  # #103). `Turn.notice_lost_batch/3` drains an idle agent the same way.
+  defp drain_after_unlock(state) do
+    if Machine.status_for(state.live.machine) == :idle do
+      {state, _result} = Turn.drain_inbox(state)
+      state
+    else
+      state
+    end
   end
 
   # The cast carries the space's own names; the handler works in mount names.

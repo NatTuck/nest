@@ -18,6 +18,9 @@ export const initialState = {
   archivedAgents: [],
   spaces: [],
   archivedSpaces: [],
+  // Spaces whose work is held by the space edit's latch (`Nest.Agents.SpaceGate`),
+  // by id. The banner is the only reader.
+  pausedSpaces: [],
   blueprints: [],
   models: [],
   vocations: [],

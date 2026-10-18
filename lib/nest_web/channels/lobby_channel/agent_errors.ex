@@ -89,6 +89,16 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
       simple when simple in @simple_reasons ->
         {:error, %{"reason" => to_string(simple)}}
 
+      # Another session is editing this space: its latch is up, so nothing may
+      # start in it until that edit finishes or its claim expires.
+      :space_changing ->
+        {:error, %{"reason" => "space_changing"}}
+
+      # Not a refusal — the edit needs the user's word first, because it stops
+      # work. The plan rides the reply so the dialog can name what it costs.
+      {:confirmation_required, plan} ->
+        {:error, confirmation_payload(plan)}
+
       tagged when is_tagged(tagged) ->
         tagged_payload(tagged, {"Failed to edit space", "failed_to_edit"})
 
@@ -99,6 +109,24 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
         Logger.error("Failed to edit space: #{inspect(other)}")
         {:error, %{"reason" => "failed_to_edit"}}
     end
+  end
+
+  # The wire form of `Nest.Spaces.Environment`'s `edit_plan` type: the agents the
+  # edit would stop, each with its status and its running job count, and the
+  # space's total. String keys because it is the wire.
+  defp confirmation_payload(plan) do
+    %{
+      "reason" => "confirmation_required",
+      "jobs" => plan.jobs,
+      "agents" =>
+        Enum.map(plan.agents, fn agent ->
+          %{
+            "name" => agent.name,
+            "status" => Atom.to_string(agent.status),
+            "jobs" => agent.jobs
+          }
+        end)
+    }
   end
 
   # `Spaces.create_space_with_root_agent/2` returns a *heterogeneous* reason
@@ -195,17 +223,27 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
     {:error, %{"reason" => code}}
   end
 
-  # A space changeset's one client-facing field, on both paths: the backend is
-  # the only thing a client sends that the changeset validates by *value*, so
-  # name it rather than answering "failed" about a choice the user just made.
-  # The rest (a blank name, a taken slug, an unshowable error) stays generic and
-  # logged, under the prefix of the action that was attempted.
+  # A space changeset's client-facing fields, on both paths. Two of them have a
+  # code both paths already own, so they are named rather than answered with a
+  # generic failure: the backend, the one thing a client sends that the changeset
+  # validates by *value* (a choice the user just made), and a blank workspace,
+  # which `Nest.Sandbox.workspace_error/1` names and `describeWorkspaceError/1`
+  # words. The rest (a blank name, a taken slug, an unshowable error) stays
+  # generic and logged, under the prefix of the action that was attempted.
   defp space_changeset_payload(%Ecto.Changeset{errors: errors}, log_prefix, fallback_code) do
-    if Keyword.has_key?(errors, :sandbox_backend) do
-      {:error, %{"reason" => "invalid_sandbox_backend"}}
-    else
-      Logger.error("#{log_prefix}: #{inspect(errors)}")
-      {:error, %{"reason" => fallback_code}}
+    cond do
+      Keyword.has_key?(errors, :sandbox_backend) ->
+        {:error, %{"reason" => "invalid_sandbox_backend"}}
+
+      # `environment_changeset/2`'s only `:workspace_path` error is
+      # `validate_required` (blank or nil), so `workspace_required` is exact — and
+      # a client mistake must not be logged at `:error` or shown as a raw code.
+      Keyword.has_key?(errors, :workspace_path) ->
+        {:error, %{"reason" => "workspace_required"}}
+
+      true ->
+        Logger.error("#{log_prefix}: #{inspect(errors)}")
+        {:error, %{"reason" => fallback_code}}
     end
   end
 end

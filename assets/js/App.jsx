@@ -11,7 +11,11 @@
  *         /login depending on outcome)
  * - /spaces → SpacesIndex (the user's spaces)
  * - /spaces/new → NewSpacePage (create new space)
- * - /space/:spaceSlug → SpaceView (space overview)
+ * - /space/:spaceSlug → SpaceView (the space's Main View: the blueprint's
+ *                       choice, which by default redirects to the root
+ *                       agent's chat)
+ * - /space/:spaceSlug/overview → SpaceView (the space's own page: its
+ *                       environment and its agents)
  * - /space/:spaceSlug/agent/:name → ChatPage (chat with agent)
  * - /about → AboutPage (about with mascot)
  * - /login, /register → standalone auth pages (no sidebar)
@@ -188,6 +192,10 @@ export function App() {
           <Route path="spaces" element={<SpacesIndex />} />
           <Route path="spaces/new" element={<NewSpacePage />} />
           <Route path="space/:spaceSlug" element={<SpaceView />} />
+          <Route
+            path="space/:spaceSlug/overview"
+            element={<SpaceView overview />}
+          />
           <Route path="space/:spaceSlug/agent/:name" element={<ChatPage />} />
           <Route path="about" element={<AboutPage />} />
           <Route path="invites" element={<InvitesPage />} />

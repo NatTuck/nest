@@ -210,6 +210,16 @@ defmodule Nest.Sandbox.ShellJobs do
   def stop_all(agent_key), do: GenServer.call(@name, {:stop_all, agent_key}, 10_000)
 
   @doc """
+  Stop every running job for `agent_key`, keeping its key, job history and scratch.
+
+  The space edit's quiesce (`Nest.Spaces.update_environment/2`): the job is work in
+  the environment about to change, but the agent is not going away, so `stop_all/1`
+  (which drops the key and removes the scratch) is the wrong tool.
+  """
+  @spec stop_jobs(agent_key()) :: :ok
+  def stop_jobs(agent_key), do: GenServer.call(@name, {:stop_jobs, agent_key}, 10_000)
+
+  @doc """
   Ask the manager to stop every job belonging to `agent_key`, without waiting
   for it to happen. `owner` is the agent's pid — the incarnation the stop is
   for; see `Nest.Agents.Agent.TmpSpace.cleanup_agent_key/2` for why it travels
@@ -343,6 +353,9 @@ defmodule Nest.Sandbox.ShellJobs do
     end
   end
 
+  def handle_call({:stop_jobs, agent_key}, _from, state),
+    do: {:reply, :ok, stop_running_jobs(agent_key, state)}
+
   def handle_call({:stop_all, agent_key}, _from, state) do
     # No incarnation to name: the sync form is a caller that only wants the
     # jobs gone (in this tree, the shell-jobs tests), so any live owner of the
@@ -472,6 +485,21 @@ defmodule Nest.Sandbox.ShellJobs do
 
   defp monitor_agent_pid(pid) when is_pid(pid), do: Process.monitor(pid)
   defp monitor_agent_pid(_pid), do: nil
+
+  # Stop this agent's running jobs, keeping its key, finished jobs and scratch.
+  defp stop_running_jobs(agent_key, state) do
+    jobs =
+      for job <- Map.values(state.jobs),
+          job.agent_key == agent_key and job.status == :running,
+          do: job
+
+    Enum.each(jobs, &stop_job/1)
+
+    # A waiter that outlives the kill would wait out its timeout.
+    Waiters.notify_gone(state.waiters, Enum.map(jobs, & &1.id))
+
+    state
+  end
 
   defp drop_agent(agent_key, state, owner) do
     jobs = state.jobs |> Map.values() |> Enum.filter(&(&1.agent_key == agent_key))

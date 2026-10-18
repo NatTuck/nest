@@ -12,14 +12,18 @@ defmodule Nest.Tools.ShellCmdTest do
   process's mailbox with `{:stop_chat, self()}` so that
   `collect_output/5`'s `receive` matches it on the first
   iteration instead of waiting for the command to complete
-  naturally. This keeps the test fast (sub-second) without
-  requiring mocks or a long-running command.
+  naturally; that message cannot outlive its worker (a Stop
+  kills it), so pre-seeding is sound there. A `{:cancel_tool, _}`
+  *can* outlive one — it is sent to a worker that may not be
+  inside `collect_output/5` at all — so its tests deliver it to a
+  running command instead, and pin that a leftover is discarded.
   """
 
   use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
   import Nest.Test.TmpCleanup
+  import Eventually
 
   alias Nest.Sandbox.Mounts
   alias Nest.Tools
@@ -69,6 +73,76 @@ defmodule Nest.Tools.ShellCmdTest do
     # self-documenting and the log doesn't escape.
     assert log =~ "ShellCmd.execute: bwrap exited non-zero"
     assert log =~ "exit_code=130"
+  end
+
+  @tag :bwrap
+  test "collect_output/5's {:cancel_tool, _} clause stops the command and returns a tool error",
+       %{ws: ws} do
+    # The space's environment changed under the command: the space edit cancelled
+    # it. The message has to arrive while the command is *running* — that is the
+    # only case the clause exists for, and one that finds the worker between two
+    # commands is discarded rather than carried into the next (`flush_cancel_tool/0`,
+    # pinned by the test below). So the command proves it started by touching a
+    # marker and only then is it cancelled: a barrier, not a sleep.
+    #
+    # 1s on the marker: bwrap start is ~100ms and erlexec's one-off boot is the
+    # ~350ms this module's `Exec.ensure_started/0` comment documents, so this is
+    # that first-call worst case plus margin rather than a guess.
+    reason = "The space's environment changed; this call did not run."
+    marker = Path.join(ws, "started")
+
+    task =
+      Task.async(fn ->
+        ShellCmd.execute("touch #{marker}; sleep 30", Mounts.new(ws, nil), nil, [])
+      end)
+
+    eventually(fn -> File.exists?(marker) end, timeout: 1_000)
+    send(task.pid, {:cancel_tool, reason})
+
+    # Not a Stop: a Stop is the human ending the turn and reports the command's
+    # own cancelled exit code. This is not a result at all — the agent gets the
+    # reason as its tool error, so it can re-issue the call against the space's
+    # new values — and it is not logged, because nothing failed. (`Task.yield`
+    # plus `shutdown` rather than `await`: a cancel that failed to land must fail
+    # the test rather than leave a `sleep 30` running.)
+    assert {:ok, {:cancelled, ^reason}} =
+             Task.yield(task, 2_000) || Task.shutdown(task, :brutal_kill)
+  end
+
+  @tag :bwrap
+  test "execute_raw/4 reports a cancellation as its error string", %{ws: ws} do
+    # `execute_raw/4`'s contract is `{:ok, code, stdout, stderr} | {:error, string}`
+    # — the sandbox helpers (`stat`, `glob`) have no place to put a cancellation of
+    # their own, so it comes back as the error. Nothing cancels one today; this is
+    # the shape being total, and it is the same message the tool path reports.
+    reason = "The space's environment changed; this call did not run."
+    marker = Path.join(ws, "raw-started")
+
+    task =
+      Task.async(fn ->
+        ShellCmd.execute_raw("touch #{marker}; sleep 30", Mounts.new(ws, nil), nil, [])
+      end)
+
+    eventually(fn -> File.exists?(marker) end, timeout: 1_000)
+    send(task.pid, {:cancel_tool, reason})
+
+    assert {:ok, {:error, ^reason}} =
+             Task.yield(task, 2_000) || Task.shutdown(task, :brutal_kill)
+  end
+
+  @tag :bwrap
+  test "a cancellation left over from between commands does not stop the next one", %{ws: ws} do
+    # The stale message this discards: a worker parked at the space's gate (or
+    # between two calls of a batch) is not inside `collect_output/5`, so the
+    # cancel it was sent sits in its mailbox until the *next* command starts.
+    # Matched there, it would stop a command that began in the new environment
+    # and hand the agent a cancellation it never asked for — and a command that is
+    # not idempotent would be half-run, which is the state the latch exists to
+    # prevent.
+    reason = "The space's environment changed; this call did not run."
+    send(self(), {:cancel_tool, reason})
+
+    assert {:ok, "after\n"} = ShellCmd.execute("echo after", Mounts.new(ws, nil), nil, [])
   end
 
   test "execute/5 returns the natural output for a successful command", %{ws: ws} do
