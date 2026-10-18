@@ -76,14 +76,24 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
       # before appending, and a second record would repeat the same words.
       assert :ok = Repair.classify_load(tail ++ [notice, ack])
 
-      # A `user` tail is covered by the same record (it lands as a lone
-      # assistant, so the bridge is not needed): the model's last word is not
-      # left waiting on a promise either way.
+      # A `user` tail is covered by the same record, which opens with the
+      # alternation bridge there (the notice is a user row): the model's last
+      # word is not left waiting on a promise either way.
       user_tail = tail ++ [user(5, "and then?")]
-      assert {:lost_promises, [record]} = Repair.classify_load(user_tail)
-      assert {:assistant, %Assistant{parts: [%Part.Text{text: text}]}} = record
+      assert {:lost_promises, record} = Repair.classify_load(user_tail)
+
+      # `tag_lost_promises/2` marks every assistant row in the record, so with
+      # the bridge shape both of them name the ids. `promise_ids/2` reads them
+      # into a set, so what the next classification sees — and the idempotency
+      # below — is unchanged.
+      assert [
+               {:assistant, %Assistant{metadata: %{"backgrounded_lost_ids" => ["call_1"]}}},
+               {:user, %User{parts: [%Part.Text{text: text}]}},
+               {:assistant, %Assistant{metadata: %{"backgrounded_lost_ids" => ["call_1"]}}}
+             ] = record
+
       assert text =~ "lost when this agent restarted"
-      assert :ok = Repair.classify_load(user_tail ++ [record])
+      assert :ok = Repair.classify_load(user_tail ++ record)
 
       # Two promises in one transcript: the record counts the *calls*, not the
       # result messages that carried them.

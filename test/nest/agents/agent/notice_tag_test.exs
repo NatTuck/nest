@@ -10,6 +10,8 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
     * the **notice** is always tagged, at the head of its own text, in every
       injection shape (`NoticePairInjector`) and on the drain's `:runtime` path
       (`Inbox.Render`);
+    * the synthetic **bridge** — the alternation ack a notice lands behind when
+      the tail is already wire-`user` — is never tagged;
     * the synthetic **response** — the ack — is never tagged.
 
   The enumeration below walks every injection shape against every notice kind,
@@ -62,13 +64,15 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
   end
 
   describe "the injector's :user_agent shape" do
-    test "tags the fused assistant row, notice and ack together" do
+    test "tags the notice user row and leaves the bridge and ack untagged" do
       for {label, spec} <- context_specs() ++ budget_specs(), tail <- [[user(0)], [tool(0)]] do
-        assert {:ok, [fused]} = NoticePairInjector.build_pair(tail, spec, :user_agent)
+        assert {:ok, [bridge, notice, ack]} =
+                 NoticePairInjector.build_pair(tail, spec, :user_agent)
 
-        text = row_text(fused)
-        assert String.starts_with?(text, NoticeTag.tag(spec.notice) <> " "), label
-        assert tagged?(fused), label
+        refute tagged?(bridge), label
+        assert {:user, _} = notice
+        assert row_text(notice) == NoticeTag.tag(spec.notice), label
+        refute tagged?(ack), label
       end
     end
 
@@ -95,16 +99,20 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
       end
     end
 
-    test "tags the fused assistant row when the record collapses" do
+    test "tags the notice row when the record has to bridge" do
       # A user/tool tail, and the deferred unpaired-`tool_use` tail the
-      # appender's terminal bridge repairs, both land the notice and its ack in
-      # one assistant message — with the marker at its head.
+      # appender's terminal bridge repairs, both land the bridge shape: the
+      # marker heads the notice row, and the bridge and the ack framing it are
+      # untagged.
       for {label, {notice, ack}} <- outcome_specs(),
           tail <- [[user(0)], [tool(0)], [assistant_tool_use(0)]] do
-        assert [{:assistant, _} = fused] =
+        assert [{:assistant, _} = bridge, {:user, _} = notice_row, {:assistant, _} = ack_row] =
                  NoticePairInjector.notice_record(tail, notice, ack)
 
-        assert row_text(fused) == NoticeTag.tag(notice <> " " <> ack), label
+        refute tagged?(bridge), label
+        assert row_text(notice_row) == NoticeTag.tag(notice), label
+        assert row_text(ack_row) == ack, label
+        refute tagged?(ack_row), label
       end
     end
   end
@@ -185,8 +193,11 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
       # that pins it.
       spec = %{kind: :something_else, attention: "Attention?", notice: "Notice."}
 
-      assert {:ok, [fused]} = NoticePairInjector.build_pair([user(0)], spec, :user_agent)
-      assert row_text(fused) == NoticeTag.tag("Notice. Okay.")
+      assert {:ok, [_bridge, notice, ack]} =
+               NoticePairInjector.build_pair([user(0)], spec, :user_agent)
+
+      assert row_text(notice) == NoticeTag.tag("Notice.")
+      assert row_text(ack) == "Okay."
     end
   end
 

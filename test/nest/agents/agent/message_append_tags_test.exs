@@ -25,6 +25,7 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.Repair
   alias Nest.Agents.Agent.Turn
+  alias Nest.LLM.Preflight
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
   alias Nest.Messages.Part
@@ -359,6 +360,82 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
 
       # ... and it really persisted, so this is not passing on a refused write.
       assert length(Persistence.load_full_messages(test_space_id(), name)) == before + 1
+    end
+  end
+
+  describe "the stop's cancellation record through the appender" do
+    test "a deferred tail lands as tool → assistant(bridge) → user(notice) → assistant(ack)" do
+      # The stop's record for a tail that carries an unpaired `tool_use` cannot
+      # be built by `build_pair/3` — it answers `:deferred` there — so
+      # `notice_record/3` lands the hand-built bridge shape. That shape is
+      # wire-legal only because the appender repairs the tail per message
+      # before the record's rows arrive, which is what this drives: the record
+      # comes from the stop's own action list, not from a fixture.
+      name = unique_name("stop-record-deferred")
+      {:ok, _} = Persistence.insert_agent(agent_attrs(name))
+
+      initial = [
+        system(0),
+        user(1),
+        assistant_tool_use(2, "call_1"),
+        tool_result(3, "call_1"),
+        assistant_text(4),
+        user(5),
+        assistant_tool_use(6, "call_2")
+      ]
+
+      insert_messages(name, initial)
+
+      # A backgrounded promise (so the stop emits a record at all) and a live
+      # batch's assistant tail: the `:deferred` case.
+      machine =
+        Machine.new(
+          phase: :executing_tools,
+          kind: :chat,
+          work: %Machine.Work{
+            worker_kind: :tools,
+            backgrounded: %{make_ref() => %{pid: self(), ids: ["call_1"]}},
+            ctx: %{messages: initial}
+          }
+        )
+
+      assert {:ok, actions, stopping} = Machine.step(machine, {:stop, self()})
+      assert [{:append_many, record}] = Enum.filter(actions, &match?({:append_many, _}, &1))
+
+      state = state(name, initial)
+      state = %{state | live: %{state.live | machine: stopping}}
+
+      assert {:ok, _stamped, landed} = MessageAppender.append_in_process(state, record)
+
+      persisted = Persistence.load_messages(test_space_id(), name)
+      roles = Enum.map(persisted, &elem(&1, 0))
+
+      # `call_2` is the unpaired tail: the appender answers it, then the record's
+      # three rows land — the notice on a `:user` row, between two assistants.
+      assert Enum.take(roles, 7) == [
+               :system,
+               :user,
+               :assistant,
+               :tool,
+               :assistant,
+               :user,
+               :assistant
+             ]
+
+      assert Enum.drop(roles, 7) == [:tool, :assistant, :user, :assistant]
+
+      # In-memory and persisted agree, and the indices are contiguous.
+      assert Enum.map(landed.chat_state.messages, &elem(&1, 0)) == roles
+      assert Enum.map(persisted, &index/1) == Enum.to_list(0..10)
+
+      assert {:tool, %Tool{parts: [%Part.ToolResult{tool_call_id: "call_2", is_error: true}]}} =
+               Enum.at(persisted, 7)
+
+      assert {:user, %User{parts: [%Part.Text{text: notice}]}} = Enum.at(persisted, 9)
+      assert notice =~ "cancelled when the conversation was stopped"
+
+      # The alternation the whole change is about, judged by the real rule set.
+      assert :ok = Preflight.validate(persisted)
     end
   end
 

@@ -181,9 +181,10 @@ defmodule Nest.Agents.Agent.Repair do
   end
 
   # A valid slice still needs one of two records before it can rest. The
-  # lost-promise record is checked first and covers both: `notice_record/3`
-  # answers a `user` tail with a lone assistant, so the bridge is only for the
-  # promise-free case.
+  # lost-promise record is checked first and covers both tails: `notice_record/3`
+  # always ends on an assistant row — a `user` tail gets the bridge shape, an
+  # assistant tail the pair — so a slice it heals never needs the load bridge,
+  # which is only for the promise-free case.
   defp valid_slice(active) do
     case MessageList.backgrounded_results(active) do
       [] ->

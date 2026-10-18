@@ -117,10 +117,11 @@ defmodule Nest.Agents.Agent.Machine.Stopping do
   end
 
   # One record for the whole stop, not one per killed batch: per-batch records
-  # would repeat the same words and land as two consecutive assistant messages,
-  # which the wire rejects. The count is what tells the model how many promises
-  # were voided, and it counts the *calls* each entry answered, not the entries:
-  # a three-call batch backgrounded once is three calls, and `map_size/1` would
+  # would repeat the same words, and a second record's bridge would land right
+  # after the first record's ack — two consecutive assistant rows, which the
+  # wire rejects. The count is what tells the model how many promises were
+  # voided, and it counts the *calls* each entry answered, not the entries: a
+  # three-call batch backgrounded once is three calls, and `map_size/1` would
   # call it one.
   defp cancellation_record(m) do
     case Backgrounding.call_count(m) do
