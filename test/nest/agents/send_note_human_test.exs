@@ -116,6 +116,14 @@ defmodule Nest.Agents.SendNoteHumanTest do
     # `answered_at` is the advisory banner's clear, set by the human's note back
     # to the agent that queried them — not by "any note from that agent", which
     # would clear it on a note that answered something else.
+    #
+    # The query here is addressed *to the human*, so it is a row and nothing
+    # else: no turn starts and `bob` stays idle. The human's note back is the one
+    # thing that starts a turn on him — one request, and no debt to answer, so it
+    # rests — and the teardown refuses an agent still in flight, so that turn is
+    # what the fence at the end is for. `answered_at` is already set when the
+    # delivery returns (the row is written before it), so no assertion here
+    # depends on the fence; only the test's *end* does.
     space = AddressTestHelpers.space_with_human("alice")
     {_pid, name} = start_agent_in(space.id, "bob")
 
@@ -124,6 +132,8 @@ defmodule Nest.Agents.SendNoteHumanTest do
 
     assert {:ok, :delivered} = Agents.send_note(space.id, "@alice", name, "the second one")
     assert %UserNote{answered_at: %DateTime{}} = answered(query)
+
+    await_idle(name)
   end
 
   # A real agent in `space_id`, mocked so a delivered note's turn never touches
@@ -157,8 +167,8 @@ defmodule Nest.Agents.SendNoteHumanTest do
       1_000
     )
 
-    # Two responses: the query's turn, and the reminder's. Neither answers the
-    # human, so the settle after them gives the reply up.
+    # Two responses: a query's turn, and the reminder that follows it. Neither
+    # answers the human, so the settle after them gives the reply up.
     MockClient.start_link(pid)
     MockClient.put_pending(pid, {:text, "I will look into it"})
     MockClient.put_pending(pid, {:text, "Still looking"})
