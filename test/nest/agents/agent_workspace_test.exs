@@ -31,6 +31,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
   alias Nest.Persistence
   alias Nest.Sandbox.Mounts
   alias Nest.Spaces
+  alias Nest.Tokens.ConversationSize
 
   setup do
     {:ok, _space_id} = AgentTestHelpers.create_test_space()
@@ -182,27 +183,36 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       assert pending?(space_id, name) == false
     end
 
-    test "a mid-turn machine stages nothing and keeps the space's flag set" do
+    test "a mid-turn machine stages nothing, and the edit leaves it marked" do
+      # Through the real edit, and *without* pre-setting the flag: the flag has to
+      # come from the edit itself, or a busy agent is silently never told. That is
+      # the whole subject — an agent the cast cannot reach is one whose only
+      # record of the change is the row.
       for status <- [:streaming, :executing_tools] do
         {pid, name} = AgentTestHelpers.start_agent()
         space_id = AgentTestHelpers.current_space_id()
-        :ok = Persistence.set_space_notice_pending(space_id, name, true)
 
         # A turn in flight: the machine is not `:idle`, so the notice has
         # nowhere to land.
         _ = AgentStateHelpers.set_status(pid, status)
-        values = new_values(pid)
-        :ok = Nest.Agents.Agent.space_changed(pid, values)
+        workspace = new_ws("busy-#{status}")
+
+        assert {:ok, _space} =
+                 Spaces.update_environment(space_id, %{workspace_path: workspace})
+
         # allowlist: barrier — the cast is the only writer here.
         state = :sys.get_state(pid, 1_000)
 
         # The mounts moved — a command the agent runs next uses the space's
         # current values whatever the machine is doing.
-        assert Mounts.workspace(state.mounts) == values.workspace_path
+        assert Mounts.workspace(state.mounts) == workspace
 
-        # ...and nothing was appended, staged or cleared.
+        # ...and nothing was appended or staged.
         assert notices(state) == []
         assert state.live.machine.work.pending_notice == nil
+
+        # The flag is the record: it was set by the edit, the cast could not
+        # deliver, and nothing cleared it — so the next start announces it.
         assert pending?(space_id, name) == true
 
         # Restore the fixture status, so the test's own leak check sees an idle
@@ -211,10 +221,55 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       end
     end
 
+    test "a conversation with no headroom for a compaction keeps the flag, and stages nothing" do
+      # The `:reserve_exhausted` rest: the transcript plus the reserve does not
+      # fit, so preflight says `:needs_compaction`, and `Compaction.stage/2`
+      # cannot fit the request into the reserve either — so it *rests*, leaving
+      # the values in the slot. Nothing is in flight to append them, which makes
+      # this the case that must not be reported as `:deferred`.
+      {pid, name} = AgentTestHelpers.start_agent()
+      space_id = AgentTestHelpers.current_space_id()
+      workspace = new_ws("env-no-headroom")
+
+      AgentStateHelpers.replace_state(pid, fn state ->
+        state = stuff_transcript(state)
+        size = ConversationSize.size(state.chat_state.messages)
+
+        put_in(state, [Access.key(:llm_metrics), Access.key(:context_limit)], size + 1)
+      end)
+
+      # The failed staging is a real failure and says so in the log; capture it
+      # and assert on the line. The barrier is inside the capture because the
+      # agent logs while it handles the cast.
+      log =
+        capture_log(fn ->
+          assert {:ok, _space} =
+                   Spaces.update_environment(space_id, %{workspace_path: workspace})
+
+          # allowlist: barrier — the cast is the only writer here.
+          state = :sys.get_state(pid, 1_000)
+          send(self(), {:state, state})
+        end)
+
+      assert_received {:state, state}
+
+      # Nothing was in flight, so nothing was deferred: the machine rested in
+      # `:idle`, the slot was cleared, and the agent was not told what its
+      # environment now is. (The staging failure appends its *own* notice —
+      # "Compaction did not start…" — which is a different row and not the pair.)
+      assert state.live.machine.phase == :idle
+      assert state.live.machine.work.pending_notice == nil
+      refute Enum.any?(notices(state), &(&1 =~ "This space's environment changed"))
+      assert pending?(space_id, name) == true
+      # The arm broadcasts its own `chat:error` ("Cannot compact: …"), which is
+      # the expected log here.
+      assert log =~ "Cannot compact"
+    end
+
     test "a conversation that cannot hold the pair reports the block, and keeps the flag" do
       {pid, name} = AgentTestHelpers.start_agent()
       space_id = AgentTestHelpers.current_space_id()
-      :ok = Persistence.set_space_notice_pending(space_id, name, true)
+      workspace = new_ws("env-too-small")
 
       # A limit too small for the system prompt alone: preflight's answer is
       # `:cannot_compact`, so the settle blocks in `:context_overflow` and the
@@ -224,15 +279,15 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
         put_in(state, [Access.key(:llm_metrics), Access.key(:context_limit)], 1)
       end)
 
-      values = new_values(pid)
-
       # The block is a real failure and says so in the log, which is the expected
       # outcome here — so capture it and assert on the line rather than let it
       # print. The barrier is inside the capture: the agent logs while it handles
       # the cast, so the read is what guarantees the line is in the window.
       log =
         capture_log(fn ->
-          :ok = Nest.Agents.Agent.space_changed(pid, values)
+          assert {:ok, _space} =
+                   Spaces.update_environment(space_id, %{workspace_path: workspace})
+
           # allowlist: barrier — the cast is the only writer here.
           state = :sys.get_state(pid, 1_000)
           send(self(), {:state, state})
@@ -266,16 +321,40 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
     end
   end
 
-  # The values a space edit casts: the agent's current environment, with the
-  # workspace moved so the notice has something to name.
-  defp new_values(pid) do
-    # allowlist: snapshot — the agent's own mounts, which have no accessor.
-    state = :sys.get_state(pid, 1_000)
+  # A conversation big enough that the limit the caller derives from it leaves no
+  # room for a compaction request: a `user` row with a large body, so the
+  # transcript is the thing that is too big rather than the system prompt (which
+  # would take the `:system_oversized` arm instead).
+  defp stuff_transcript(state) do
+    # A user/assistant exchange *before* the oversized row: `PreFlight` calls a
+    # compaction with nothing but the system row ahead of the last user message a
+    # no-op, which is a different arm (`:cannot_compact`).
+    exchange = [
+      {:user,
+       %Nest.Messages.User{
+         index: 1,
+         parts: [%Nest.Messages.Part.Text{text: "hello"}],
+         api_logs: []
+       }},
+      {:assistant,
+       %Nest.Messages.Assistant{
+         index: 2,
+         parts: [%Nest.Messages.Part.Text{text: "hi"}],
+         api_logs: []
+       }}
+    ]
+
+    big =
+      {:user,
+       %Nest.Messages.User{
+         index: 3,
+         parts: [%Nest.Messages.Part.Text{text: String.duplicate("word ", 20_000)}],
+         api_logs: []
+       }}
 
     %{
-      workspace_path: new_ws("edited"),
-      network_access: not Mounts.network_access(state.mounts),
-      sandbox_backend: Mounts.backend(state.mounts)
+      state
+      | chat_state: %{state.chat_state | messages: state.chat_state.messages ++ exchange ++ [big]}
     }
   end
 

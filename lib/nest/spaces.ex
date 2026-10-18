@@ -247,15 +247,26 @@ defmodule Nest.Spaces do
   A save that names what the row already says is **not** an edit: nothing is
   released, nobody is told, and the row is not rewritten.
 
-  A *stopped* agent is marked with `space_notice_pending`, so it announces the
-  change when it next starts. A live one is cast instead and clears the flag as
-  it appends — or leaves it set when it is mid-turn and cannot take the notice
-  (`Nest.Agents.Agent.WorkspaceHandler`), which is the same seam.
+  Every agent in the space is marked with `space_notice_pending` and the live
+  ones are also cast. The flag is cleared by whoever actually appends the notice:
+  a live agent as it appends, or the agent's own start path. An agent that is
+  mid-turn cannot take the notice — `Nest.Agents.Agent.WorkspaceHandler` says so
+  with `{:ignored, phase}` — so it keeps the flag and announces the change at its
+  next start. That is what keeps an edit from being silently dropped for the
+  agents that are working at the time.
 
-  Returns `{:ok, space}` or `{:error, reason}`.
+  Returns `{:ok, space}`, or `{:error, reason}` where `reason` is `:not_found`,
+  the space changeset, or a workspace refusal from `Nest.Sandbox.workspace_error/1`
+  — the same codes the create path produces, including the tagged
+  `{:config_file_not_regular, path, type}`.
   """
   @spec update_environment(integer(), map()) ::
-          {:ok, Space.t()} | {:error, Ecto.Changeset.t() | :not_found}
+          {:ok, Space.t()}
+          | {:error,
+             Ecto.Changeset.t()
+             | :not_found
+             | atom()
+             | {:config_file_not_regular, String.t(), atom()}}
   def update_environment(id, params) when is_integer(id) and is_map(params) do
     case get_space(id) do
       nil ->
@@ -315,53 +326,57 @@ defmodule Nest.Spaces do
     }
   end
 
-  # Every agent in the space is owed the notice, and there are two ways to owe it.
+  # Every agent in the space is owed the notice, and the flag is what records it
+  # for an agent that cannot be told now.
   #
-  # The live ones are told first: a cast, which they answer by appending the pair
-  # and clearing their own flag. Then the flag is set for the agents that have no
-  # process — those are the ones whose only chance is their next start.
+  # Mark *every* agent first, in one statement, then cast the live ones. A live
+  # agent answers the cast by appending the pair and clearing its own flag, so it
+  # ends up clear; a stopped agent, and a **mid-turn** one — the cast cannot
+  # deliver the notice to a machine that is `:generating` or `:executing_tools`
+  # (`Nest.Agents.Agent.WorkspaceHandler`) — keeps the flag and announces the
+  # change at its next start.
   #
-  # In that order, and with the flag set only for the agents that were *not*
-  # cast, because the alternative double-announces: an agent that starts inside
-  # this window reads the flag (announcing at start) and then finds the cast in
-  # its mailbox (announcing again). The pair is a reconciliation, so the
-  # duplicate would be harmless — and it is still avoidable for one list and one
-  # query, so it is avoided.
+  # Marking every agent rather than only the ones with no process is what makes
+  # the mid-turn case recoverable at all: an agent that is *cast* cannot be
+  # excluded from the mark, because the cast is a request it may refuse. The cost
+  # is the other direction — an agent that starts inside this window announces at
+  # start and then finds the cast in its mailbox, so it appends the pair twice.
+  # The pair reconciles the values now in force, so the duplicate is harmless, and
+  # it is the safe side of the trade: the other side is a notice no agent ever
+  # hears.
   defp announce_environment(%Space{id: id} = space) do
-    values = environment_values(space)
-
-    told =
-      id
-      |> Agents.Registry.list_for_space()
-      |> Enum.filter(&cast_environment(id, &1, values))
-      |> MapSet.new()
-
-    mark_notice_pending(id, told)
+    mark_notice_pending(id)
+    tell_agents(space)
   end
 
-  defp cast_environment(id, name, values) do
-    case Agents.Registry.lookup(id, name) do
-      {:ok, pid} ->
-        Agents.Agent.space_changed(pid, values)
-        true
-
-      {:error, :not_found} ->
-        false
-    end
-  end
-
-  defp mark_notice_pending(id, told) do
-    query = from(a in PersistedAgent, where: a.space_id == ^id)
-
-    query =
-      case MapSet.to_list(told) do
-        [] -> query
-        names -> from(a in query, where: a.name not in ^names)
-      end
-
-    Repo.update_all(query, set: [space_notice_pending: true])
+  defp mark_notice_pending(id) do
+    from(a in PersistedAgent, where: a.space_id == ^id)
+    |> Repo.update_all(set: [space_notice_pending: true])
 
     :ok
+  end
+
+  # Hand the space's new environment to every live agent in it. The values travel
+  # on an agent's `Nest.Sandbox.Mounts`, which is what its caps are resolved from
+  # and what its tool closures were built with, so an agent that started before
+  # the change would otherwise keep the old values for the rest of its life —
+  # this is the only thing that closes that window short of a restart.
+  #
+  # A cast, not a call: the values are the *space's*, so there is nothing an agent
+  # could refuse, and an edit must not wait on a turn. A name in the registry with
+  # no live process behind it is skipped; that agent's `space_notice_pending` flag
+  # is what tells it on its next start.
+  defp tell_agents(%Space{id: id} = space) do
+    values = environment_values(space)
+
+    id
+    |> Agents.Registry.list_for_space()
+    |> Enum.each(fn name ->
+      case Agents.Registry.lookup(id, name) do
+        {:ok, pid} -> Agents.Agent.space_changed(pid, values)
+        {:error, :not_found} -> :ok
+      end
+    end)
   end
 
   @doc """

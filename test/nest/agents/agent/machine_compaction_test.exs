@@ -12,6 +12,44 @@ defmodule MachineCompactionTest do
   alias Nest.Agents.Agent.Machine.Turn
   alias Nest.Agents.Agent.Repair
   alias Nest.Messages.Part
+  alias Nest.Tokens.ConversationSize
+
+  # A conversation the transcript is too big for, at any limit near its own size:
+  # a user/assistant exchange ahead of a large `user` row, so `PreFlight` does not
+  # call the compaction a no-op (which is the `:cannot_compact` arm).
+  defp near_limit_conversation do
+    [
+      system_message(),
+      {:user,
+       %Nest.Messages.User{
+         index: 1,
+         parts: [%Nest.Messages.Part.Text{text: "hello"}],
+         api_logs: []
+       }},
+      {:assistant,
+       %Nest.Messages.Assistant{
+         index: 2,
+         parts: [%Nest.Messages.Part.Text{text: "hi"}],
+         api_logs: []
+       }},
+      {:user,
+       %Nest.Messages.User{
+         index: 3,
+         parts: [%Nest.Messages.Part.Text{text: String.duplicate("word ", 20_000)}],
+         api_logs: []
+       }}
+    ]
+  end
+
+  defp notice_step(messages, limit) do
+    values = %{workspace: "/tmp/x", network_access: true, backend: "bwrap"}
+    machine = state_at(:idle, ctx: %{ctx() | messages: messages, context_limit: limit})
+
+    {:ok, _actions, next} =
+      Machine.step(%{machine | work: %{machine.work | pending_notice: values}}, :workspace_notice)
+
+    next
+  end
 
   describe "compaction decisions" do
     test "the loop-breaker blocks after the consecutive cap" do
@@ -64,6 +102,40 @@ defmodule MachineCompactionTest do
 
       assert next.phase == :idle
       assert Enum.any?(actions, &match?({:append_many, _}, &1))
+    end
+
+    # The notice slot holds one map, and the `:workspace_notice` transition has
+    # three arms that leave it there: the staged compaction (`:generating`, kind
+    # `:compaction`), the `:reserve_exhausted` rest (still `:idle` — nothing is in
+    # flight), and the blocks (system oversized, loop breaker). Only the first is
+    # a delivery in waiting, so
+    # `WorkspaceHandler.apply_space_environment/2` may only call that one
+    # `:deferred`; the rest have to clear the slot and keep the space's flag.
+    #
+    # Pure: no agent, no DB, no daemon. The transcript is built from the
+    # estimator's own size so the test does not encode a chars-per-token constant.
+    test "a staged compaction keeps the values, and a reserve that cannot hold one rests with them" do
+      messages = near_limit_conversation()
+      size = ConversationSize.size(messages)
+
+      # `:needs_compaction` (the transcript plus the reserve does not fit) *and*
+      # `compute_summary_budget/4` can still plan: a compaction is in flight, so
+      # the values must stay for `Compaction.resume/1`.
+      staged = notice_step(messages, size + 4_000)
+
+      assert staged.phase == :generating
+      assert staged.kind == :compaction
+      assert is_map(staged.work.pending_notice)
+
+      # The same transcript with no headroom left at all: the request cannot be
+      # fitted into the reserve, so `Compaction.stage/2` *rests* — and leaves the
+      # map in the slot. Nothing will append it, which is why the caller has to
+      # clear it and report that the notice was not delivered.
+      rested = notice_step(messages, size + 1)
+
+      assert rested.phase == :idle
+      assert Machine.status_for(rested) == :idle
+      assert is_map(rested.work.pending_notice)
     end
 
     test "a resume with nothing staged carries the reply instead of a stale notice" do

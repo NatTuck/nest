@@ -17,9 +17,9 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   edits in a row cannot leave the agent holding a partial picture.
 
   When preflight decides the conversation needs compaction, the insertion is
-  deferred: `state.live.pending_notice` carries the values and the compactor is
-  triggered; on success `Machine.Compaction.resume/1` appends the pair without an
-  LLM request.
+  deferred: `state.live.machine.work.pending_notice` carries the values and the
+  compactor is triggered; on success `Machine.Compaction.resume/1` appends the
+  pair without an LLM request.
 
   ## Naming
 
@@ -57,17 +57,22 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   What the apply did with the notice.
 
     * `:appended` — the pair is in the transcript now;
-    * `:deferred` — preflight decided the conversation needs compaction, so the
-      values are staged in `state.live.pending_notice` and
-      `Machine.Compaction.resume/1` appends the pair when the commit lands;
+    * `:deferred` — preflight decided the conversation needs compaction and a
+      compaction is *in flight*: the values are staged in
+      `state.live.machine.work.pending_notice` and `Machine.Compaction.resume/1`
+      appends the pair when the commit lands;
     * `{:ignored, phase}` — the machine is mid-turn, so the `:workspace_notice`
       transition has nowhere to land (it is `:idle`-only) and nothing is staged
       or appended. The caller must leave `space_notice_pending` set: the agent
       then announces the change when it next starts;
-    * `{:error, status}` — the machine blocked instead of delivering: the
-      conversation cannot hold the pair and cannot be compacted either
-      (`:context_overflow`), or the compaction it would need could not start.
-      Nothing is appended, and the caller must leave the flag set.
+    * `{:error, status}` — the settle did not deliver the pair and nothing is in
+      flight to deliver it later. `status` is where the machine ended up: a
+      blocked phase (the conversation cannot hold the pair, or the compaction it
+      would need could not start) or `:idle` (the compaction could not be staged
+      at all, so the turn rested). The caller must leave the flag set.
+
+  Only `:deferred` means "a compaction will append it"; everything else that is
+  not `:appended` means the transcript does not have it.
   """
   @type outcome :: :appended | :deferred | {:ignored, Machine.phase()} | {:error, atom()}
 
@@ -124,8 +129,9 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
 
   # `:workspace_notice` is an `:idle` transition: it appends the pair when the
   # conversation fits, stages a compaction when it does not, and blocks when it
-  # cannot be compacted. The slot is cleared on the way out of the first two, so
-  # what is left in it tells the caller which one happened.
+  # cannot be compacted. Three different things can be true afterwards, and none
+  # of them is readable from the machine's status alone — so the transcript says
+  # whether the pair landed, and the slot only says whether a compaction has it.
   defp settle_notice(state, values) do
     state = %{
       state
@@ -141,22 +147,62 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
     {:ok, settled} = Turn.settle(state, :workspace_notice)
 
     status = Machine.status_for(settled.live.machine)
+    staged = settled.live.machine.work.pending_notice
 
     cond do
-      # Any blocked phase means the pair was never appended and never will be:
-      # the conversation cannot hold it (`:context_overflow`), or the compaction
-      # that would have made room failed to start (`:compaction_loop_detected`
-      # and friends). The caller keeps the flag, so the change survives to a
-      # start.
-      status in Machine.blocked_phases() ->
-        {settled, {:error, status}}
+      # The transcript is the record of what happened to the *pair*, and the
+      # status is not: the `:fits` arm appends it and then runs
+      # `{:drain_inbox}`, and a drain that delivers a message the conversation
+      # cannot hold blocks *after* the pair is in. Asking the status alone would
+      # report a failure for a notice the agent has, and the caller would keep
+      # the flag and announce the same pair again at the next start.
+      appended_notice?(state, settled, values) ->
+        {clear_pending_notice(settled), :appended}
 
-      is_map(settled.live.machine.work.pending_notice) ->
+      # Only a compaction that is actually in flight will append the pair later.
+      status == :compacting and is_map(staged) ->
         {settled, :deferred}
 
+      # Everything else left in the slot is a leftover, and a dangerous one:
+      # `Compaction.stage/2` *rests* in `:idle` when the reserve cannot hold the
+      # request, and blocks with the map still there when the system prompt is
+      # too large or the loop breaker trips. Nothing will append it, so it is
+      # cleared here — otherwise it would sit in the slot until some later,
+      # unrelated compaction consumed it, appending a stale notice and dropping
+      # whatever that compaction carried.
       true ->
-        {settled, :appended}
+        {clear_pending_notice(settled), {:error, status}}
     end
+  end
+
+  # Did *this* settle append the pair? Only the rows it added are considered, so
+  # a pair from an earlier edit cannot be mistaken for this one.
+  defp appended_notice?(before, settled, values) do
+    text = notice_text(values)
+
+    settled.chat_state.messages
+    |> Enum.drop(length(before.chat_state.messages))
+    |> Enum.any?(fn
+      {:user, %{parts: parts}} -> Enum.any?(parts, &match?(%Part.Text{text: ^text}, &1))
+      _other -> false
+    end)
+  end
+
+  # The slot is one map shared with the iteration-budget reminder and read by the
+  # compactor, so an outcome that leaves it filled for nobody is worse than a
+  # no-op: it would disable the budget reminder (`||` treats a map as truthy) and
+  # be appended by an unrelated later compaction.
+  defp clear_pending_notice(state) do
+    %{
+      state
+      | live: %{
+          state.live
+          | machine: %{
+              state.live.machine
+              | work: %{state.live.machine.work | pending_notice: nil}
+            }
+        }
+    }
   end
 
   @doc """
@@ -174,7 +220,7 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
        %User{
          index: nil,
          timestamp: DateTime.utc_now(),
-         parts: [%Part.Text{text: "[mode: notice]\n" <> NoticeTag.tag(body(values))}],
+         parts: [%Part.Text{text: notice_text(values)}],
          metadata: %{"mode" => "notice"},
          api_logs: []
        }},
@@ -203,6 +249,10 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
       backend: Mounts.backend(state.mounts)
     }
   end
+
+  # The pair's user row, in one place: `notice_pair/1` builds it and
+  # `appended_notice?/3` looks for exactly this text in the rows a settle added.
+  defp notice_text(values), do: "[mode: notice]\n" <> NoticeTag.tag(body(values))
 
   # One sentence per property, naming the values now in force. A single line
   # rather than a bulleted list because it is a notice, not a document.

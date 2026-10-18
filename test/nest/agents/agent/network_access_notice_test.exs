@@ -14,10 +14,11 @@ defmodule Nest.Agents.Agent.NetworkAccessNoticeTest do
   deliver it, so a space-wide edit would cost one LLM call per live agent. The
   pair goes in as a `:workspace_notice` step, which costs no turn.
 
-  It lands only on an idle machine. A mid-turn agent is not told and is not
-  silently forgotten either: the space's `space_notice_pending` flag stays set,
-  so the change is announced at its next start (`apply_space_environment/2`'s
-  `:appended | :deferred | {:ignored, phase}` outcomes).
+  It lands only on an idle machine. A mid-turn agent is not told *now* and is not
+  silently forgotten either: the space edit marks every agent in the space before
+  it casts (`Nest.Spaces.announce_environment/1`), and the cast cannot deliver to
+  a busy machine (`apply_space_environment/2` returns `{:ignored, phase}`), so the
+  flag survives and the change is announced at that agent's next start.
 
   The prompt-bytes assertion is the one that protects the project's cache rule:
   once a conversation is active the system message does not change except on
