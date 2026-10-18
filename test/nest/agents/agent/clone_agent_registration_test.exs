@@ -42,7 +42,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
 
     # Allow Mimic to stub `Nest.Agents.chat/2` in this test.
     Mimic.copy(Nest.Agents)
-    Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content -> :ok end)
+    Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content, _mode, _sender -> :ok end)
 
     {:ok, vid: upsert_vocation()}
   end

@@ -130,7 +130,11 @@ defmodule Nest.Agents.Agent.Machine.Stopping do
 
       count ->
         {notice, ack} = Backgrounded.cancellation(count)
-        [{:append_many, NoticePairInjector.notice_record(transcript(m), notice, ack)}]
+
+        [
+          {:append_many,
+           NoticePairInjector.notice_record(transcript(m), notice, ack, m.work.ctx.mode)}
+        ]
     end
   end
 

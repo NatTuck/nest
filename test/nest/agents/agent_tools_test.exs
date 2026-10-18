@@ -50,13 +50,16 @@ defmodule Nest.Agents.AgentToolsTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      :ok = Agent.chat(pid, "List the files")
+      :ok = Agent.chat(pid, "List the files", nil, nil, true)
 
       # User message: first broadcast is empty, second carries the
       # request log. Match the second (non-empty api_logs).
       assert_receive {:chat_message,
                       {:user,
-                       %{index: 1, parts: [%Part.Text{text: "[mode: act]\nList the files"}]}}},
+                       %{
+                         index: 1,
+                         parts: [%Part.Text{text: "[From user | mode: act]\nList the files"}]
+                       }}},
                      500
 
       assert_receive {:chat_status, %{status: "streaming"}}, 1_000
@@ -228,14 +231,14 @@ defmodule Nest.Agents.AgentToolsTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      :ok = Agent.chat(pid, "List files")
+      :ok = Agent.chat(pid, "List files", nil, nil, true)
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # drain loop killed with fire, it can *NEVER EVER* come back
 
       MockClient.set_response("Second response received")
 
-      :ok = Agent.chat(pid, "What else is there?")
+      :ok = Agent.chat(pid, "What else is there?", nil, nil, true)
 
       # Indices shift based on context-notice synthetic pair
       # injections from the first turn. Match by content (first
@@ -243,11 +246,13 @@ defmodule Nest.Agents.AgentToolsTest do
       # starts with "What else is there?" — only turn 2 matches.
       assert_receive {:chat_message,
                       {:user,
-                       %{parts: [%Part.Text{text: "[mode: act]\nWhat else is there?"}]} =
+                       %{
+                         parts: [%Part.Text{text: "[From user | mode: act]\nWhat else is there?"}]
+                       } =
                          second_user}},
                      500
 
-      assert hd(second_user.parts).text == "[mode: act]\nWhat else is there?"
+      assert hd(second_user.parts).text == "[From user | mode: act]\nWhat else is there?"
 
       # First turn's assistant starts with `%Part.ToolUse{}`; turn 2's
       # starts with `%Part.Text{text: "Second response received"}`.

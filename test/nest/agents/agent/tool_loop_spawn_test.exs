@@ -184,7 +184,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
 
       # The child's own chat cycle is short-circuited; the test drives its
       # completion below, and the parent's delivery turn is scripted.
-      Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _prompt -> :ok end)
+      Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _prompt, _mode, _sender -> :ok end)
       Mimic.allow(Nest.Agents, self(), parent_pid)
       MockClient.set_response("noted")
 
@@ -206,7 +206,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
       # states the mode the parent's delivered turn runs in — the child
       # inherited the parent's `act`.
       assert [delivered] = await_delivery(parent_pid, "the answer")
-      assert delivered =~ ~s([Message from agent "#{child_name}" | mode: act])
+      assert delivered =~ ~s([From agent #{child_name} | mode: act])
       assert delivered =~ "the answer"
 
       # The child's usage merged into the parent's descendant totals.
@@ -218,7 +218,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
       {parent_pid, parent_name} = start_agent(vid)
       child_name = "stopped-child-#{System.unique_integer([:positive])}"
 
-      Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _prompt -> :ok end)
+      Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _prompt, _mode, _sender -> :ok end)
       Mimic.allow(Nest.Agents, self(), parent_pid)
       MockClient.set_response("noted")
 

@@ -9,7 +9,7 @@ defmodule Nest.Agents.Agent.Inbox.Mode do
 
   There is no writing half. A mode that arrives this way is applied at the drain
   and written down by `Nest.Agents.Agent.Turn.keep_mode/2`; nothing announces it,
-  because the message that carried it states it (a `[mode: X]` prefix, or the
+  because the message that carried it states it (its header's mode clause, or the
   peer header).
 
   Extracted from `Nest.Agents.Agent.Inbox` because the mode is a property of the

@@ -8,8 +8,7 @@ defmodule Nest.Agents.Agent.Turn.ContextReminder do
   "already announced" set lives on `state.live.crossed_thresholds`.
   """
 
-  alias Nest.LLM.ClientConfig
-  alias Nest.Messages.NoticeTag
+  alias Nest.Messages.Header
   alias Nest.Messages.Part
   alias Nest.Messages.User
   alias Nest.Tokens.ConversationSize
@@ -155,15 +154,20 @@ defmodule Nest.Agents.Agent.Turn.ContextReminder do
   defp find_threshold(value), do: Enum.find(@threshold_atoms, &(Atom.to_string(&1) == value))
 
   @doc """
-  Build a `{:user, _}` message from the given notice text.
+  Build the runtime's `{:user, _}` notice row: `text` behind the runtime's
+  header, in `mode`.
+
+  `metadata` is merged over the row's `mode`: a context notice's threshold
+  (`context_metadata/1`) rides there, and `announced_thresholds/1` reads it off
+  whichever row carries it.
   """
-  @spec build_user_notice(String.t(), ClientConfig.t() | nil, map() | nil) :: {:user, User.t()}
-  def build_user_notice(text, _client_config, metadata \\ nil) do
+  @spec build_user_notice(String.t(), String.t(), map() | nil) :: {:user, User.t()}
+  def build_user_notice(text, mode, metadata \\ nil) do
     {:user,
      %User{
-       parts: [%Part.Text{text: text}],
+       parts: [%Part.Text{text: Header.put(text, :runtime, mode)}],
        timestamp: DateTime.utc_now(),
-       metadata: metadata,
+       metadata: Map.merge(%{"mode" => mode}, metadata || %{}),
        api_logs: []
      }}
   end
@@ -172,16 +176,16 @@ defmodule Nest.Agents.Agent.Turn.ContextReminder do
   Build the context-notice row for the given threshold atom.
 
   The row is exactly the one the live paths announce: the decided text
-  (`notice_text/2`) on the `{:user, _}` row `build_user_notice/3` builds,
-  carrying the `[nest notice]` marker (`NoticeTag.tag/1`). `compact?` picks the
-  75% variant, as it does for the text itself.
+  (`notice_text/2`) on the `{:user, _}` row `build_user_notice/3` builds, behind
+  the runtime's header in `mode`. `compact?` picks the 75% variant, as it does
+  for the text itself.
 
   It takes no counts because the decided wording carries none: a parameter that
   no longer reaches the row would read as if it still did.
   """
-  @spec build_message(atom(), boolean()) :: {:user, User.t()}
-  def build_message(atom, compact? \\ true) do
-    build_user_notice(NoticeTag.tag(notice_text(atom, compact?)), nil)
+  @spec build_message(atom(), String.t(), boolean()) :: {:user, User.t()}
+  def build_message(atom, mode, compact? \\ true) do
+    build_user_notice(notice_text(atom, compact?), mode)
   end
 
   @doc """

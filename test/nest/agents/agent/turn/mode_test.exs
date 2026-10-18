@@ -29,7 +29,7 @@ defmodule Nest.Agents.Agent.Turn.ModeTest do
     messages = [system_msg(), user_msg(), assistant_msg(), user_msg()]
     base = state()
 
-    content = "[Message from agent \"peer\" | mode: plan]\npeer note"
+    content = "[From agent peer | mode: plan]\npeer note"
     projected = messages ++ [Dispatch.build_user_message(content, "act")]
     limit = ConversationSize.size(projected) + 8_191
 

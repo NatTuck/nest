@@ -59,7 +59,14 @@ defmodule Nest.Agents.Agent.Turn.CommitTest do
       {[summary], {:compaction, marker}} =
         active_segment_with_preserve("the summary text", "PRESERVED: task and state")
 
-      assert {:user, %User{parts: [%Part.Text{text: text}]}} = summary
+      assert {:user, %User{parts: [%Part.Text{text: text}], metadata: metadata}} = summary
+
+      # The row states its sender and the mode it was committed under — exactly,
+      # not merely somewhere in the text: an agent's header here would be the
+      # impersonation this format exists to prevent. `state()` starts the agent
+      # in `act`.
+      assert String.starts_with?(text, "[From nest runtime | mode: act]\n")
+      assert metadata == %{"mode" => "act"}
 
       # The count is the marker's own, so one event cannot report two numbers.
       header =

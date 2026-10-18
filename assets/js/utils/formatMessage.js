@@ -28,8 +28,7 @@
  */
 
 import { stripAgentHeaderMode } from "./agentHeader.js";
-import { stripModePrefix } from "./stripModePrefix.js";
-import { stripNoticePrefix } from "./stripNoticePrefix.js";
+import { stripHeader } from "./stripHeader.js";
 import { splitThinkFromParts } from "./thinkTags.js";
 import { mediaSummary } from "./media.js";
 
@@ -155,7 +154,7 @@ function partIsReasoning(part, role) {
 /**
  * Whether this role's *body* renderer splits `<think>` blocks out of its
  * text. `Message.jsx` sends a `user` message's own text through
- * `stripModePrefix(messageText(…))` and a `system` message through
+ * `stripHeader(messageText(…))` and a `system` message through
  * `SystemMessageContent` (both raw), while every other role (assistant,
  * tool, …) goes through `textPartsFor` / `splitThinkFromParts`.
  *
@@ -179,12 +178,9 @@ function stripsThinkTags(role) {
  */
 function visibleForRole(text, role, mode) {
   if (role === "user") {
-    return stripAgentHeaderMode(
-      stripNoticePrefix(stripModePrefix(text, mode)),
-      mode,
-    );
+    return stripAgentHeaderMode(stripHeader(text, mode), mode);
   }
-  return stripNoticePrefix(stripsThinkTags(role) ? visibleText(text) : text);
+  return stripHeader(stripsThinkTags(role) ? visibleText(text) : text, mode);
 }
 
 /**

@@ -7,7 +7,7 @@ defmodule Nest.Messages.MessageList do
 
   alias Nest.LLM.Client
   alias Nest.Messages.Assistant
-  alias Nest.Messages.NoticeTag
+  alias Nest.Messages.Header
   alias Nest.Messages.Part
   alias Nest.Messages.Tool
   alias Nest.Messages.ToolCall
@@ -324,7 +324,7 @@ defmodule Nest.Messages.MessageList do
   An idle agent must never end on a user message: the next user turn
   would then need the live-path bridge (`Repair.classify_live/2`). Both
   the compaction commit (`Turn.Commit.active_segment/7`) and the
-  load-time heal (`Repair.classify_load/1`) append this ack so the
+  load-time heal (`Repair.classify_load/2`) append this ack so the
   invariant is enforced upstream and the turn-opening append is clean.
 
   The wording is case-specific so the ack reads sensibly in context:
@@ -459,7 +459,7 @@ defmodule Nest.Messages.MessageList do
   message with no `index` (the append path stamps it) and no `api_logs`. It is
   what keeps the wire valid when the wait ends the turn — the wait's result is a
   `{:tool, _}`, a wire-`user` message, so without an assistant after it the idle
-  agent would end on a user role, the one shape `Repair.classify_load/1` and the
+  agent would end on a user role, the one shape `Repair.classify_load/2` and the
   compaction commit exist to prevent. It also tells the model what is happening:
   the call registered a watch, the turn is over, and the result will arrive as a
   message.
@@ -482,7 +482,7 @@ defmodule Nest.Messages.MessageList do
   The promise is kept only while the batch's entry is live in
   `Machine.Work.backgrounded`, which dies with the process. A *restored*
   transcript therefore still promises a message that can never come, so
-  `Repair.classify_load/1` records the loss (`tag_lost_promises/2`) — and a
+  `Repair.classify_load/2` records the loss (`tag_lost_promises/2`) — and a
   promise an existing record already names is not reported again, which is what
   makes the load heal idempotent (`Init.LoadHeal.refresh/1` re-classifies the
   tail before appending).
@@ -598,24 +598,27 @@ defmodule Nest.Messages.MessageList do
   assistant wire roles, so the sequence alternates again.
 
   It is a row the runtime wrote to the model — it reports what happened to the
-  previous turn and asks the model to continue — so it carries the
-  `[nest notice]` marker (`NoticeTag.tag/1`), exactly like every other notice.
-  Without it the row would read as a human's message. The assistant bridges
-  (`repair_ack/0`, `idle_bridge_ack/1`) are acknowledgements and stay untagged.
+  previous turn and asks the model to continue — so it carries the runtime's
+  header in `mode` (`Nest.Messages.Header`). Without it the row would read as a
+  human's message. The assistant bridges (`repair_ack/0`, `idle_bridge_ack/1`)
+  are acknowledgements and carry no header.
   """
-  @spec continuation_prompt() :: term()
-  def continuation_prompt do
+  @spec continuation_prompt(String.t()) :: term()
+  def continuation_prompt(mode) do
     {:user,
      %User{
        parts: [
          %Part.Text{
            text:
-             NoticeTag.tag(
+             Header.put(
                "An earlier assistant turn did not complete cleanly. " <>
-                 "Please continue from here."
+                 "Please continue from here.",
+               :runtime,
+               mode
              )
          }
-       ]
+       ],
+       metadata: %{"mode" => mode}
      }}
   end
 

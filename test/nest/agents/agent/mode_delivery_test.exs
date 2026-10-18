@@ -77,7 +77,7 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       assert state.live.mode == "plan"
 
       assert delivered(pid, "peer note") ==
-               ["[mode: plan]\n[Message from agent \"peer\" | mode: plan]\npeer note"]
+               ["[From agent peer | mode: plan]\npeer note"]
 
       # And the change is written down, so a restart restores it.
       assert {:ok, %{mode: "plan"}} = row_mode(name)
@@ -91,7 +91,7 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       wait_idle(pid)
 
       assert delivered(pid, "peer note") ==
-               ["[mode: plan]\n[Message from agent \"peer\" | mode: plan]\npeer note"]
+               ["[From agent peer | mode: plan]\npeer note"]
 
       assert Agent.get_public_info(pid, 1_000).current_mode == "plan"
       assert {:ok, %{mode: "plan"}} = row_mode(name)
@@ -112,7 +112,7 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       # The change arrived on a message, and that message's header states the
       # mode the turn runs in — so nothing announces it a second time.
       assert {:ok, %{mode: "plan"}} = row_mode(name)
-      assert delivered(pid, "[nest notice]") == []
+      assert delivered(pid, "[From nest runtime") == []
     end
 
     test "the human's own mode is written down on either path, and announces nothing" do
@@ -126,7 +126,7 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       :ok = Agent.chat(pid, "do the thing", "plan", "alice", true)
       wait_idle(pid)
 
-      assert delivered(pid, "do the thing") == ["[mode: plan]\ndo the thing"]
+      assert delivered(pid, "do the thing") == ["[From user | mode: plan]\ndo the thing"]
       assert {:ok, %{mode: "plan"}} = row_mode(name)
 
       # ...or a queued delivery, applied when the drain delivers it.
@@ -136,8 +136,8 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       Agent.stop_chat(pid, self())
       wait_idle(pid)
 
-      assert delivered(pid, "and another") == ["[mode: act]\nand another"]
-      assert delivered(pid, "[nest notice]") == []
+      assert delivered(pid, "and another") == ["[From user | mode: act]\nand another"]
+      assert delivered(pid, "[From nest runtime") == []
       assert Agent.get_public_info(pid, 1_000).current_mode == "act"
       assert {:ok, %{mode: "act"}} = row_mode(name)
     end

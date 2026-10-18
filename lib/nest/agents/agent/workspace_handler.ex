@@ -38,7 +38,7 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   alias Nest.Agents.Agent.ToolFilter
   alias Nest.Agents.Agent.Turn
   alias Nest.Messages.Assistant
-  alias Nest.Messages.NoticeTag
+  alias Nest.Messages.Header
   alias Nest.Messages.Part
   alias Nest.Messages.User
   alias Nest.Sandbox.Mounts
@@ -173,7 +173,7 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   # Did *this* settle append the pair? Only the rows it added are considered, so
   # a pair from an earlier edit cannot be mistaken for this one.
   defp appended_notice?(before, settled, values) do
-    text = notice_text(values)
+    text = notice_text(values, settled.live.mode)
 
     settled.chat_state.messages
     |> Enum.drop(length(before.chat_state.messages))
@@ -187,19 +187,19 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   The notice user/assistant pair appended when the space's environment changes.
 
   The user row is the runtime speaking — it is a notice, not the human's words
-  — so it carries the `[nest notice]` marker after its `[mode: notice]` prefix
-  (the client strips both on render). The assistant row is the acknowledgement,
-  which is never tagged.
+  — so it carries the runtime's header in `mode` (`Nest.Messages.Header`), the
+  mode being the recipient's, exactly as every other delivered row states it.
+  The assistant row is the acknowledgement, which carries no header.
   """
-  @spec notice_pair(values()) :: [Agent.message()]
-  def notice_pair(values) do
+  @spec notice_pair(values(), String.t()) :: [Agent.message()]
+  def notice_pair(values, mode) do
     [
       {:user,
        %User{
          index: nil,
          timestamp: DateTime.utc_now(),
-         parts: [%Part.Text{text: notice_text(values)}],
-         metadata: %{"mode" => "notice"},
+         parts: [%Part.Text{text: notice_text(values, mode)}],
+         metadata: %{"mode" => mode},
          api_logs: []
        }},
       {:assistant,
@@ -228,9 +228,9 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
     }
   end
 
-  # The pair's user row, in one place: `notice_pair/1` builds it and
+  # The pair's user row, in one place: `notice_pair/2` builds it and
   # `appended_notice?/3` looks for exactly this text in the rows a settle added.
-  defp notice_text(values), do: "[mode: notice]\n" <> NoticeTag.tag(body(values))
+  defp notice_text(values, mode), do: Header.put(body(values), :runtime, mode)
 
   # One sentence per property, naming the values now in force. A single line
   # rather than a bulleted list because it is a notice, not a document.

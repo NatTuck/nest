@@ -30,7 +30,7 @@ defmodule Nest.Agents.Agent.Machine.Response do
   alias Nest.Agents.Agent.Turn.Messages
   alias Nest.LLM.RunResponse
   alias Nest.Messages.Assistant
-  alias Nest.Messages.NoticeTag
+  alias Nest.Messages.Header
   alias Nest.Messages.Part
   alias Nest.Messages.Tool
   alias Nest.Messages.ToolCall
@@ -148,7 +148,7 @@ defmodule Nest.Agents.Agent.Machine.Response do
   defp branch(kind, m, _response, assistant_msg, base) when kind in [:truncated, :silent] do
     case reprompt_decision(m, kind) do
       {:reprompt, nudge} ->
-        nudge_msg = ContextReminder.build_user_notice(NoticeTag.tag(nudge), nil)
+        nudge_msg = ContextReminder.build_user_notice(nudge, m.work.ctx.mode)
         machine = Phase.enter(m, :chat, :generating, :http)
         {:ok, base ++ [{:append, assistant_msg}, {:append, nudge_msg}, :iterate], machine}
 
@@ -187,12 +187,10 @@ defmodule Nest.Agents.Agent.Machine.Response do
           # broadcast the transient idle that #15 exists to prevent, and an
           # idle peer is by construction one with no unpaid debt.
           #
-          # The reminder is a synthetic user message — no sender label, no
-          # `[mode: X]` prefix, no metadata — because the runtime is not a
-          # peer and must not read as one. It carries the `[nest notice]`
-          # marker, because it is the runtime's own words and a bare user row
-          # would read as a human's or a peer's.
-          reminder = ContextReminder.build_user_notice(NoticeTag.tag(text), nil)
+          # The reminder is a synthetic user message, and its header says so:
+          # `[From nest runtime | mode: …]`, because the runtime is not a peer
+          # and the row must not read as one.
+          reminder = ContextReminder.build_user_notice(text, m.work.ctx.mode)
           machine = Phase.enter(m, :chat, :generating, :http)
           {:ok, base ++ [{:append, assistant_msg}, {:append, reminder}, :iterate], machine}
 
@@ -520,7 +518,11 @@ defmodule Nest.Agents.Agent.Machine.Response do
 
     context = compute_context_spec(m, projected)
 
-    [budget, context] |> Enum.reject(&is_nil/1)
+    # Every spec carries the mode its notice row will state: the recipient's,
+    # exactly as the row's own header and metadata do.
+    [budget, context]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&Map.put(&1, :mode, m.work.ctx.mode))
   end
 
   defp compute_context_spec(m, projected) do
@@ -557,10 +559,11 @@ defmodule Nest.Agents.Agent.Machine.Response do
     limit = m.work.ctx.context_limit
 
     if is_integer(limit) and limit > 0 do
-      # The pair is `[assistant(attention), user(tag(notice))]`, so the marker
-      # the injector adds is part of what it costs.
+      # The pair is `[assistant(attention), user(header + notice)]`, so the
+      # header the injector adds is part of what it costs.
       pair_size =
-        Estimator.estimate(spec.attention) + Estimator.estimate(NoticeTag.tag(spec.notice))
+        Estimator.estimate(spec.attention) +
+          Estimator.estimate(Header.put(spec.notice, :runtime, spec.mode))
 
       Budget.remaining(messages, limit) < pair_size
     else
@@ -621,15 +624,19 @@ defmodule Nest.Agents.Agent.Machine.Response do
   end
 
   # Counts how many of `texts` the transcript already carries. The nudges are
-  # persisted tagged (they are runtime notices), so the comparison is against
-  # the tagged form: the retry bound is a count of what was actually appended,
-  # and a bare comparison would never match and re-prompt forever.
+  # persisted behind the runtime's header, so the comparison is against the
+  # *body*: the header's mode clause is the mode the row was written under, and
+  # this bound counts what was appended, not what was appended under the current
+  # mode. Comparing headered text made the count mode-dependent, which reset it
+  # on a turn that changed the mode and gave a pathological model a second run of
+  # re-prompts.
   defp count_prior(messages, texts) do
-    tagged = Enum.map(texts, &NoticeTag.tag/1)
-
     Enum.count(messages, fn
-      {:user, %{parts: [%Part.Text{text: text}]}} when is_binary(text) -> text in tagged
-      _ -> false
+      {:user, %{parts: [%Part.Text{text: text}]}} when is_binary(text) ->
+        Header.runtime?(text) and Header.body(text) in texts
+
+      _ ->
+        false
     end)
   end
 

@@ -157,10 +157,10 @@ defmodule Nest.Vocations do
   @doc """
   Canonical description text for the `compact` mode as it appears in the agent's
   `[Available modes]` list. Single source of truth — the mode-catalog render
-  reads from this function. The per-call `[mode: compact]` suffix (rendered by
-  `Nest.Scripts.CompactionProbeSupport.compaction_suffix/2`) is intentionally a
-  different shape: it's a protocol marker carrying the dynamic token-budget hint,
-  not the prose guidance.
+  reads from this function. The per-call request (its header plus
+  `Nest.Scripts.CompactionProbeSupport.compaction_suffix/2`'s text) is
+  intentionally a different shape: it is a protocol marker carrying the dynamic
+  token-budget hint, not the prose guidance.
 
   It lives here rather than in `Nest.Modes` because the modes section is rendered
   next to it by `Nest.Agents.Agent.SystemPrompt`, and `Nest.Modes` deliberately

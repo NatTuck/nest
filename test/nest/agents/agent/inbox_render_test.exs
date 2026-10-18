@@ -35,25 +35,25 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
   @oversized String.duplicate("hello world ", 4_000)
 
   describe "combine_and_offload/2" do
-    test "a human entry renders bare, a runtime notice carries the notice tag, every other kind keeps its label" do
-      # intentional: the rendered text is LLM-facing. A human entry is its bare
-      # content (its `[mode: X]` prefix is added when the message is built), so
-      # a queued human message reads exactly like one that arrived while the
-      # agent was idle. Agent entries keep `[Message from agent "X"]`, which is
-      # what disambiguates a batch; a missing or blank sender drops the quoted
-      # name rather than printing `nil` or `""`. A runtime notice has no label
-      # (no agent said it) but does carry the `[nest notice]` marker at the head
-      # of its own text, which is what tells the model the body is the runtime's.
-      # The label also states the mode the recipient's turn will run in, so the
+    test "every body states its sender, and the framing rows carry no header" do
+      # intentional: the rendered text is LLM-facing. Every entry's body opens
+      # with its own `[From … | mode: …]` header, so a batch disambiguates its
+      # senders without an outer header; the mode is the recipient's, so the
       # fixture names a real one (`Nest.Modes.default/0`).
       state = %Agent{live: %Agent.ChatState.Live{mode: "act"}}
 
-      assert Render.combine_and_offload([entry(:user, "alice", "from a human", "plan")], state) ==
-               "from a human"
+      # A human's own words are `user`, whatever name the channel passed —
+      # including none.
+      assert Render.combine_and_offload(
+               [entry(:user, "alice", "from a human", "plan", nil, true)],
+               state
+             ) == "[From user | mode: act]\nfrom a human"
 
-      assert Render.combine_and_offload([entry(:user, nil, "from nobody")], state) ==
-               "from nobody"
+      assert Render.combine_and_offload([entry(:user, nil, "from nobody", nil, nil, true)], state) ==
+               "[From user | mode: act]\nfrom nobody"
 
+      # A missing or blank sender still says `agent`: the body must not read as
+      # a human's, and printing `nil` would be worse.
       assert Render.combine_and_offload(
                [
                  entry(:agent, "peer", "from an agent"),
@@ -62,21 +62,21 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
                ],
                state
              ) ==
-               "[Message from agent \"peer\" | mode: act]\nfrom an agent\n\n" <>
-                 "[Message from agent | mode: act]\nfrom a blank agent\n\n" <>
-                 "[Message from agent | mode: act]\nfrom nobody"
+               "[From agent peer | mode: act]\nfrom an agent\n\n" <>
+                 "[From agent | mode: act]\nfrom a blank agent\n\n" <>
+                 "[From agent | mode: act]\nfrom nobody"
 
-      # A query is a peer's words and keeps the label (decision 7); a notice
-      # is the runtime's own and must never be framed as an agent's (decision
-      # 9) — it carries no label, exactly like a human's, plus the notice
-      # marker the client strips on render.
+      # A query is a peer's words and says so (decision 7): it is the one kind
+      # that obliges an answer.
       assert Render.combine_and_offload([entry(:query, "peer", "may I ask?")], state) ==
-               "[Message from agent \"peer\" | mode: act]\nmay I ask?"
+               "[From agent peer, agents-send reply required | mode: act]\nmay I ask?"
 
+      # A notice is the runtime's own and must never be framed as an agent's
+      # (decision 9) — it says `nest runtime` whatever agent it is *about*.
       assert Render.combine_and_offload(
                [entry(:runtime, "peer", "peer never answered")],
                state
-             ) == "[nest notice]\npeer never answered"
+             ) == "[From nest runtime | mode: act]\npeer never answered"
     end
 
     test "an over-cap batch is offloaded to a file named after its first entry's id" do
@@ -140,17 +140,17 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
     test "an over-cap batch reaches the transcript as a scratch-file pointer", %{pid: pid} do
       # intentional: an over-cap batch is not delivered inline — the model is
       # given a pointer naming the file the text went to — for a peer's message
-      # and a human's alike. The human's pointer still carries its
-      # `[mode: plan]` prefix, because that is added when the delivered message
-      # is built, not when the batch is rendered.
+      # and a human's alike. The pointer still carries the body's header,
+      # because that is rendered when the batch is built, and the batch's one
+      # entry is its one body.
       cases = [
-        {"a peer's message", nil,
+        {"a peer's message", "[From agent alice",
          fn pid -> assert {:ok, :queued} = Agent.deliver_note(pid, "alice", @oversized) end},
-        {"a human's message", "plan",
-         fn pid -> assert :ok = Agent.chat(pid, @oversized, "plan", "alice") end}
+        {"a human's message", "[From user | mode: plan]",
+         fn pid -> assert :ok = Agent.chat(pid, @oversized, "plan", "alice", true) end}
       ]
 
-      for {{label, mode, deliver}, n} <- Enum.with_index(cases, 1) do
+      for {{label, header, deliver}, n} <- Enum.with_index(cases, 1) do
         before = Agent.get_public_info(pid, 1_000).message_count
         set_status(pid, :streaming)
         deliver.(pid)
@@ -174,14 +174,16 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
 
         assert pointer =~ "You have 1 queued message"
 
-        if mode do
-          assert pointer =~ "[mode: #{mode}]", label
-        end
+        # The pointer carries no header: a header heads a body, and the body is
+        # what went to the file.
+        refute pointer =~ "[From "
 
-        # One scratch file per delivery, holding the batch's whole text.
+        # One scratch file per delivery, holding the batch's whole text — and
+        # therefore the body's header, which the model reads back there.
         files = Path.wildcard(Path.join(Mounts.scratch(state.mounts), "agent-inbox-*.txt"))
         assert length(files) == n, label
         assert Enum.all?(files, &(File.read!(&1) =~ "hello world"))
+        assert Enum.any?(files, &(File.read!(&1) =~ header)), label
 
         wait_idle(pid)
       end

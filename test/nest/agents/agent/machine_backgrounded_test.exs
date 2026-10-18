@@ -335,7 +335,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
          }}
       ]
 
-      machine = %{machine | work: %{machine.work | ctx: %{messages: messages}}}
+      machine = %{machine | work: %{machine.work | ctx: %{messages: messages, mode: "act"}}}
 
       assert {:ok, actions, _stopping} = Machine.step(machine, {:stop, self()})
 
@@ -418,9 +418,9 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
       # (the baseline assertion below), and a restart would append a record for a
       # call whose outcome is already in the transcript. The notice's own user
       # tail is a different heal: `{:bridge, …}`, the idle-agent rule.
-      assert {:lost_promises, _} = Repair.classify_load(promised_tail())
+      assert {:lost_promises, _} = Repair.classify_load(promised_tail(), "act")
       assert [] = MessageList.backgrounded_results(loaded)
-      assert {:bridge, _} = Repair.classify_load(loaded)
+      assert {:bridge, _} = Repair.classify_load(loaded, "act")
     end
   end
 
@@ -454,7 +454,8 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
       work: %Machine.Work{
         worker_kind: worker_kind,
         worker_ref: worker_ref,
-        backgrounded: backgrounded
+        backgrounded: backgrounded,
+        ctx: %{messages: [], mode: "act"}
       }
     )
   end

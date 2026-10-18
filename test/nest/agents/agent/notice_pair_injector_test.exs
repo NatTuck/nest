@@ -29,7 +29,7 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
 
       assert {:user,
               %User{
-                parts: [%Part.Text{text: "[nest notice]\nNotice."}],
+                parts: [%Part.Text{text: "[From nest runtime | mode: act]\nNotice."}],
                 metadata: %{"context_threshold" => "p25"}
               }} = second
     end
@@ -59,7 +59,7 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
       # it off whichever row carries it.
       assert {:user,
               %User{
-                parts: [%Part.Text{text: "[nest notice]\nNotice."}],
+                parts: [%Part.Text{text: "[From nest runtime | mode: act]\nNotice."}],
                 metadata: %{"context_threshold" => "p25"}
               }} = notice
 
@@ -68,12 +68,15 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
     end
 
     test "trailing :user with a budget spec defaults the ack" do
-      spec = %{kind: :budget, attention: "Tool limit?", notice: "Last round."}
+      spec = %{kind: :budget, attention: "Tool limit?", notice: "Last round.", mode: "act"}
 
       assert {:ok, [_bridge, notice, ack]} =
                NoticePairInjector.build_pair([user(0)], spec, :user_agent)
 
-      assert {:user, %User{parts: [%Part.Text{text: "[nest notice]\nLast round."}]}} = notice
+      assert {:user,
+              %User{parts: [%Part.Text{text: "[From nest runtime | mode: act]\nLast round."}]}} =
+               notice
+
       assert {:assistant, %Assistant{parts: [%Part.Text{text: "Okay, noted."}]}} = ack
     end
 
@@ -87,7 +90,10 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
                NoticePairInjector.build_pair(tail, spec(), :user_agent)
 
       assert {:assistant, _} = bridge
-      assert {:user, %User{parts: [%Part.Text{text: "[nest notice]\nNotice."}]}} = notice
+
+      assert {:user, %User{parts: [%Part.Text{text: "[From nest runtime | mode: act]\nNotice."}]}} =
+               notice
+
       assert {:assistant, %Assistant{parts: [%Part.Text{text: "Ack."}]}} = ack
       assert alternates?(tail ++ [bridge, notice, ack])
     end
@@ -95,7 +101,8 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
     test "trailing :assistant (no tool_use) builds [user(notice), assistant(ack)]" do
       assert {:ok,
               [
-                {:user, %User{parts: [%Part.Text{text: "[nest notice]\nNotice."}]}},
+                {:user,
+                 %User{parts: [%Part.Text{text: "[From nest runtime | mode: act]\nNotice."}]}},
                 {:assistant, %Assistant{parts: [%Part.Text{text: "Ack."}]}}
               ] = rows} = NoticePairInjector.build_pair([assistant(0)], spec(), :user_agent)
 
@@ -115,7 +122,7 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
       # acknowledgement are two rows of their own, and neither is fused into an
       # assistant row that would read as the agent's words.
       for messages <- [[user(0)], [tool(0)]] do
-        record = NoticePairInjector.notice_record(messages, "Notice.", "Ack.")
+        record = NoticePairInjector.notice_record(messages, "Notice.", "Ack.", "act")
 
         assert [
                  {:assistant, %Assistant{parts: [%Part.Text{text: bridge}]}},
@@ -124,7 +131,7 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
                ] = record
 
         assert bridge == "Okay, continuing from here."
-        assert notice_row == "[nest notice]\nNotice."
+        assert notice_row == "[From nest runtime | mode: act]\nNotice."
         assert alternates?(messages ++ record), inspect(messages)
       end
     end
@@ -133,10 +140,11 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
       # An empty list has no tail to alternate with, so the pair is wire-legal
       # there too (`[user, assistant]` is the opening shape of any conversation).
       for messages <- [[assistant(0)], []] do
-        record = NoticePairInjector.notice_record(messages, "Notice.", "Ack.")
+        record = NoticePairInjector.notice_record(messages, "Notice.", "Ack.", "act")
 
         assert [
-                 {:user, %User{parts: [%Part.Text{text: "[nest notice]\nNotice."}]}},
+                 {:user,
+                  %User{parts: [%Part.Text{text: "[From nest runtime | mode: act]\nNotice."}]}},
                  {:assistant, %Assistant{parts: [%Part.Text{text: "Ack."}]}}
                ] = record
 
@@ -155,9 +163,10 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
 
       assert [
                {:assistant, _} = bridge,
-               {:user, %User{parts: [%Part.Text{text: "[nest notice]\nNotice."}]}},
+               {:user,
+                %User{parts: [%Part.Text{text: "[From nest runtime | mode: act]\nNotice."}]}},
                {:assistant, %Assistant{parts: [%Part.Text{text: "Ack."}]}}
-             ] = record = NoticePairInjector.notice_record(messages, "Notice.", "Ack.")
+             ] = record = NoticePairInjector.notice_record(messages, "Notice.", "Ack.", "act")
 
       # The repair the appender performs on the first row: one tool result and
       # *no* ack of its own — a second one would make the record close twice.
@@ -187,7 +196,14 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
   end
 
   defp spec do
-    %{kind: :context, attention: "Context?", notice: "Notice.", ack: "Ack.", threshold: :p25}
+    %{
+      kind: :context,
+      attention: "Context?",
+      notice: "Notice.",
+      ack: "Ack.",
+      threshold: :p25,
+      mode: "act"
+    }
   end
 
   defp user(index) do

@@ -247,7 +247,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
 
       assert Enum.any?(
                user_texts(second),
-               &(&1 =~ "have not answered" and &1 =~ "peer" and &1 =~ "[nest notice]")
+               &(&1 =~ "have not answered" and &1 =~ "peer" and &1 =~ "[From nest runtime")
              )
 
       # The reminder itself caused no status frame (the phase never left

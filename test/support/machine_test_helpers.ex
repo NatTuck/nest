@@ -39,7 +39,11 @@ defmodule Nest.TestSupport.MachineTestHelpers do
   def compaction_request do
     %Nest.Messages.User{
       index: nil,
-      parts: [%Nest.Messages.Part.Text{text: "[mode: compact] Summarize the conversation."}],
+      parts: [
+        %Nest.Messages.Part.Text{
+          text: "[From nest runtime | mode: compact]\nSummarize the conversation."
+        }
+      ],
       metadata: User.compaction_metadata(),
       api_logs: []
     }

@@ -350,7 +350,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     parent_vocation = programmer_vocation_id_for_test()
     specialist_slug = specialist_vocation_slug()
 
-    Mimic.stub(Agents, :chat, fn _space_id, _name, _content -> :ok end)
+    Mimic.stub(Agents, :chat, fn _space_id, _name, _content, _mode, _sender -> :ok end)
 
     child_name = "kid-#{System.unique_integer([:positive])}"
 

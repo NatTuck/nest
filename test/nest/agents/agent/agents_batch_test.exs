@@ -270,7 +270,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
       # ...and the children's own answers still arrive: with the reporting
       # target gone, delivery falls back to the parent's inbox.
       assert [message] = await_message(parent_pid, "alpha-done")
-      assert message =~ ~s([Message from agent "#{child0}" | mode: act])
+      assert message =~ ~s([From agent #{child0} | mode: act])
     end)
   end
 
@@ -678,7 +678,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
 
   defp stub_child_chat do
     Mimic.copy(Agents)
-    Mimic.stub(Agents, :chat, fn _space_id, _name, _content -> :ok end)
+    Mimic.stub(Agents, :chat, fn _space_id, _name, _content, _mode, _sender -> :ok end)
   end
 
   # The coordinator's vocation exposes `agents-batch`. The children take the

@@ -241,7 +241,13 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
   # --- helpers ---
 
   defp spec do
-    %{kind: :context, attention: "Context?", notice: "token budget", ack: "Okay, context noted."}
+    %{
+      kind: :context,
+      attention: "Context?",
+      notice: "token budget",
+      ack: "Okay, context noted.",
+      mode: "act"
+    }
   end
 
   defp user_struct(index, text) do

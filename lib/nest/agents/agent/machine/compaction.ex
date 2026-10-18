@@ -35,7 +35,6 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.LLM.Preflight
-  alias Nest.Messages.NoticeTag
 
   @max_consecutive_compactions 3
 
@@ -148,6 +147,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
         Phase.block(m, :context_overflow, :system_oversized, [
           {:broadcast, {:overflow, :system_oversized, "compact"}, nil},
           compaction_not_started(
+            m,
             "Compaction did not start: the system prompt is too large for the " <>
               "model's context window."
           )
@@ -168,8 +168,8 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   #
   # Deliberately not a second tool result: that would answer the same tool call
   # twice, which the wire's pairing rule rejects.
-  defp compaction_not_started(reason) do
-    {:append, ContextReminder.build_user_notice(NoticeTag.tag(reason), nil)}
+  defp compaction_not_started(m, reason) do
+    {:append, ContextReminder.build_user_notice(reason, m.work.ctx.mode)}
   end
 
   # The request message is appended *before* the compactor is dispatched, so
@@ -222,6 +222,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
 
     notice =
       compaction_not_started(
+        m,
         "Compaction did not start: the system prompt plus the compaction request " <>
           "exceed the compaction reserve."
       )
@@ -447,7 +448,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
     # messages are what the reminder would be appended to.
     case ReplyReminder.decision(m) do
       {:remind, text, m} ->
-        reminder = ContextReminder.build_user_notice(NoticeTag.tag(text), nil)
+        reminder = ContextReminder.build_user_notice(text, m.work.ctx.mode)
         machine = Phase.init_turn(Phase.enter(m, :chat, :generating, :http), carried)
         {:ok, [{:append, reminder}, :iterate], machine}
 
@@ -504,7 +505,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   # leave the agent with the new mounts and a transcript describing the old ones —
   # the notice it is owed would be lost until some later edit.
   defp resume_notice(m, notice) do
-    pair = WorkspaceHandler.notice_pair(notice)
+    pair = WorkspaceHandler.notice_pair(notice, m.work.ctx.mode)
 
     Phase.rest(
       %{m | entry: nil},

@@ -44,29 +44,25 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
 
   ## Tagging
 
-  Every notice row the builders produce carries the `[nest notice]` marker at
-  the head of its text (`NoticeTag.tag/1`), in every shape — the notice row is
-  the one tagged row in all of them. The synthetic attention line, the
-  alternation bridge and the acknowledgement are untagged: they frame the
-  notice, they are not the notice. So the tag is always at the head of a row's
-  text and never mid-text, which is what keeps the client's strip a simple
-  leading-prefix removal.
-
-  Transcripts recorded before the alternation bridge still carry a fused
-  `[assistant(notice + ack)]` row, with the tag at the head of the fused text.
-  Nothing emits that shape any more; the client's strip handles both.
+  Every notice row the builders produce carries the runtime's header
+  (`Nest.Messages.Header`) in `spec.mode`, in every shape — the notice row is
+  the one headered row in all of them. The synthetic attention line, the
+  alternation bridge and the acknowledgement carry no header: they frame the
+  notice, they are not messages from anyone. So the header is always at the head
+  of a row's text and never mid-text, which is what keeps the client's strip a
+  simple line-at-a-body-head removal.
   """
 
   alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
-  alias Nest.Messages.NoticeTag
   alias Nest.Messages.Part
 
   @type spec :: %{
           required(:kind) => atom(),
           optional(:attention) => String.t(),
           required(:notice) => String.t(),
+          required(:mode) => String.t(),
           optional(:threshold) => atom(),
           optional(:ack) => String.t()
         }
@@ -95,8 +91,8 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
        [
          build_attention_assistant(spec.attention),
          ContextReminder.build_user_notice(
-           NoticeTag.tag(spec.notice),
-           nil,
+           spec.notice,
+           spec.mode,
            ContextReminder.context_metadata(spec)
          )
        ]}
@@ -123,8 +119,8 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
       last_source_role in [:user, :tool] ->
         notice_row =
           ContextReminder.build_user_notice(
-            NoticeTag.tag(spec.notice),
-            nil,
+            spec.notice,
+            spec.mode,
             ContextReminder.context_metadata(spec)
           )
 
@@ -145,8 +141,8 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
         {:ok,
          [
            ContextReminder.build_user_notice(
-             NoticeTag.tag(spec.notice),
-             nil,
+             spec.notice,
+             spec.mode,
              ContextReminder.context_metadata(spec)
            ),
            build_single_assistant(ack_text)
@@ -173,9 +169,9 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
 
   Pure, and total on an empty message list (the shape a hand-built fixture has).
   """
-  @spec notice_record([term()], String.t(), String.t()) :: [term()]
-  def notice_record(messages, notice, ack) do
-    spec = %{kind: :stop_cancellation, notice: notice, ack: ack}
+  @spec notice_record([term()], String.t(), String.t(), String.t()) :: [term()]
+  def notice_record(messages, notice, ack, mode) do
+    spec = %{kind: :stop_cancellation, notice: notice, ack: ack, mode: mode}
 
     case build_pair(messages, spec, :user_agent) do
       {:ok, pair} ->
@@ -186,7 +182,7 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
         # call takes its `{:assistant, …}` clause and returns `[tool,
         # repair_ack()]`, which would pre-empt the appender's own repair *and*
         # add the second acknowledgement this record must not have.
-        notice_row = ContextReminder.build_user_notice(NoticeTag.tag(notice), nil, nil)
+        notice_row = ContextReminder.build_user_notice(notice, mode)
         [MessageList.idle_bridge_ack(:live), notice_row, build_single_assistant(ack)]
     end
   end

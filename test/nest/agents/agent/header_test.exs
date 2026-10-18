@@ -1,31 +1,24 @@
-defmodule Nest.Agents.Agent.NoticeTagTest do
+defmodule Nest.Agents.Agent.HeaderTest do
   @moduledoc """
-  The `[nest notice]` marker: which row carries it, and where.
+  The `[From … | mode: …]` header: which row carries it, and what it says.
 
-  Every synthetic runtime notice is built from up to three messages, and each
-  has its own rule for the marker (`Nest.Messages.NoticeTag`):
+  Every **user-role** row states its sender and the recipient's mode
+  (`Nest.Messages.Header`). A batch states each body's sender; a single-sender
+  row states it once; the synthetic rows that frame a notice — the attention
+  line, the alternation bridge, the acknowledgement — carry no header at all,
+  because they are not messages from anyone.
 
-    * the synthetic **request** — the attention line (`Context?`, `Tool
-      limit?`) — is never tagged;
-    * the **notice** is always tagged, at the head of its own text, in every
-      injection shape (`NoticePairInjector`) and on the drain's `:runtime` path
-      (`Inbox.Render`);
-    * the synthetic **bridge** — the alternation ack a notice lands behind when
-      the tail is already wire-`user` — is never tagged;
-    * the synthetic **response** — the ack — is never tagged.
-
-  The enumeration below walks every injection shape against every notice kind,
-  so the rule cannot pass by accident: a new shape or kind that forgets the
-  marker fails here. The decided notice texts and acks themselves are pinned
-  in `ContextReminderTest` and `BudgetReminderTest`; this module pins where the
-  marker sits relative to them, and the exact wording of the two kinds the
-  marker must wrap without rewording.
+  The enumeration below walks every producer against every notice kind, so the
+  rule cannot pass by accident: a producer that forgets the header, or a
+  framing row that grows one, fails here. The decided notice texts and acks
+  themselves are pinned in `ContextReminderTest` and `BudgetReminderTest`; this
+  module pins where the header sits relative to them, and the exact wording of
+  the two kinds a header must wrap without rewording.
 
   The rows that do not go through the injector are pinned by the test that
   already exercises them end to end: the re-prompt nudge
-  (`EmptyResponseRepromptTest`, `MaxTokensContinuationTest`) and the reply
-  obligation (`ReplyDebtTest`), both built inside `Machine.Response` /
-  `Machine.Compaction`.
+  (`EmptyResponseRepromptTest`, `MaxTokensContinuationTest`), the reply
+  obligation (`ReplyDebtTest`) and the drain's own rendering (`InboxRenderTest`).
   """
 
   use ExUnit.Case, async: true
@@ -41,84 +34,85 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
   alias Nest.Agents.Agent.WaitForIdle
   alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.Messages.Assistant
+  alias Nest.Messages.Header
   alias Nest.Messages.MessageList
-  alias Nest.Messages.NoticeTag
   alias Nest.Messages.Part
   alias Nest.Messages.Tool
   alias Nest.Messages.User
 
-  @marker "[nest notice]"
+  @runtime_header "[From nest runtime | mode: act]"
 
   describe "the injector's :agent_user shape" do
-    test "tags the notice user row and leaves the attention row untagged" do
+    test "headers the notice row and leaves the attention row bare" do
       for {label, spec} <- context_specs() ++ budget_specs() do
         assert {:ok, [attention, notice]} =
                  NoticePairInjector.build_pair([], spec, :agent_user)
 
         assert row_text(attention) == spec.attention, label
-        refute tagged?(attention), label
+        refute headered?(attention), label
 
-        assert row_text(notice) == NoticeTag.tag(spec.notice), label
+        assert header_of(notice) == @runtime_header, label
+        assert body_of(notice) == spec.notice, label
       end
     end
   end
 
   describe "the injector's :user_agent shape" do
-    test "tags the notice user row and leaves the bridge and ack untagged" do
+    test "headers the notice row and leaves the bridge and ack bare" do
       for {label, spec} <- context_specs() ++ budget_specs(), tail <- [[user(0)], [tool(0)]] do
         assert {:ok, [bridge, notice, ack]} =
                  NoticePairInjector.build_pair(tail, spec, :user_agent)
 
-        refute tagged?(bridge), label
+        refute headered?(bridge), label
         assert {:user, _} = notice
-        assert row_text(notice) == NoticeTag.tag(spec.notice), label
-        refute tagged?(ack), label
+        assert header_of(notice) == @runtime_header, label
+        assert body_of(notice) == spec.notice, label
+        refute headered?(ack), label
       end
     end
 
-    test "tags the notice row and leaves the ack row untagged on an assistant tail" do
+    test "headers the notice row and leaves the ack row bare on an assistant tail" do
       for {label, spec} <- context_specs() ++ budget_specs() do
         assert {:ok, [notice, ack]} =
                  NoticePairInjector.build_pair([assistant(0)], spec, :user_agent)
 
-        assert row_text(notice) == NoticeTag.tag(spec.notice), label
-        refute tagged?(ack), label
+        assert header_of(notice) == @runtime_header, label
+        assert body_of(notice) == spec.notice, label
+        refute headered?(ack), label
       end
     end
   end
 
   describe "notice_record/3" do
-    test "tags the notice row when the record lands the full pair" do
+    test "headers the notice row when the record lands the full pair" do
       for {label, {notice, ack}} <- outcome_specs(), tail <- [[assistant(0)], []] do
         assert [{:user, _} = notice_row, {:assistant, _} = ack_row] =
-                 NoticePairInjector.notice_record(tail, notice, ack)
+                 NoticePairInjector.notice_record(tail, notice, ack, "act")
 
-        assert row_text(notice_row) == NoticeTag.tag(notice), label
+        assert header_of(notice_row) == @runtime_header, label
+        assert body_of(notice_row) == notice, label
         assert row_text(ack_row) == ack, label
-        refute tagged?(ack_row), label
+        refute headered?(ack_row), label
       end
     end
 
-    test "tags the notice row when the record has to bridge" do
-      # A user/tool tail, and the deferred unpaired-`tool_use` tail the
-      # appender's terminal bridge repairs, both land the bridge shape: the
-      # marker heads the notice row, and the bridge and the ack framing it are
-      # untagged.
+    test "headers the notice row when the record has to bridge" do
       for {label, {notice, ack}} <- outcome_specs(),
           tail <- [[user(0)], [tool(0)], [assistant_tool_use(0)]] do
         assert [{:assistant, _} = bridge, {:user, _} = notice_row, {:assistant, _} = ack_row] =
-                 NoticePairInjector.notice_record(tail, notice, ack)
+                 NoticePairInjector.notice_record(tail, notice, ack, "act")
 
-        refute tagged?(bridge), label
-        assert row_text(notice_row) == NoticeTag.tag(notice), label
+        refute headered?(bridge), label
+        assert header_of(notice_row) == @runtime_header, label
+        assert body_of(notice_row) == notice, label
         assert row_text(ack_row) == ack, label
-        refute tagged?(ack_row), label
+        refute headered?(ack_row), label
       end
     end
   end
 
   describe "the drain's :runtime entry" do
-    test "renders the marker at the head of the notice body" do
+    test "renders the runtime header at the head of the notice body" do
       # Every producer that queues a `:runtime` entry reaches the same
       # `render_entry/1` clause, so one content per producer is driven here: a
       # backgrounded outcome (its result and its worker's death), a give-up, a
@@ -135,54 +129,54 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
       ]
 
       for {label, content} <- cases do
-        assert Render.combine_and_offload([entry(:runtime, content)], %Agent{}) ==
-                 NoticeTag.tag(content),
+        agent = %Agent{live: %Agent.ChatState.Live{mode: "act"}}
+
+        assert Render.combine_and_offload([entry(:runtime, content)], agent) ==
+                 Header.put(content, :runtime, "act"),
                label
       end
     end
   end
 
   describe "the machine's own notice rows" do
-    test "a space-environment change and a wire-repair continuation are tagged" do
+    test "a space-environment change and a wire-repair continuation carry the runtime header" do
       # Neither goes through the injector: each builds its own row, so each is
-      # pinned here. Both are the runtime speaking, so both carry the marker —
-      # without it a user row reads as a human's or a peer's message. The
-      # environment row's `[mode: notice]` prefix comes first (the row's mode is
-      # encoded exactly as every delivered row's is), so the marker heads the
-      # notice body after it.
+      # pinned here. Both are the runtime speaking, so both carry its header —
+      # without it a user row reads as a human's or a peer's message.
       assert [
-               {:user, %User{parts: [%Part.Text{text: notice}]}},
+               {:user, %User{parts: [%Part.Text{text: notice}], metadata: metadata}},
                {:assistant, %Assistant{parts: [%Part.Text{text: ack}]}}
              ] =
-               WorkspaceHandler.notice_pair(%{
-                 workspace: "/tmp/ws",
-                 network_access: true,
-                 backend: "bwrap"
-               })
+               WorkspaceHandler.notice_pair(
+                 %{workspace: "/tmp/ws", network_access: true, backend: "bwrap"},
+                 "act"
+               )
+
+      assert metadata == %{"mode" => "act"}
+      assert header_of({:user, %User{parts: [%Part.Text{text: notice}]}}) == @runtime_header
 
       assert notice ==
-               "[mode: notice]\n" <>
-                 NoticeTag.tag(
-                   "This space's environment changed. Workspace: /tmp/ws. " <>
-                     "Network access: enabled. Sandbox: bwrap. " <>
-                     "The `plan` restriction is enforced here: a write outside the " <>
-                     "scratch directory fails."
-                 )
+               @runtime_header <>
+                 "\nThis space's environment changed. Workspace: /tmp/ws. " <>
+                 "Network access: enabled. Sandbox: bwrap. " <>
+                 "The `plan` restriction is enforced here: a write outside the " <>
+                 "scratch directory fails."
 
       assert ack == "Space environment change confirmed."
 
-      assert {:user, %User{parts: [%Part.Text{text: continuation}]}} =
-               MessageList.continuation_prompt()
+      assert {:user, %User{parts: [%Part.Text{text: continuation}], metadata: continuation_meta}} =
+               MessageList.continuation_prompt("act")
+
+      assert continuation_meta == %{"mode" => "act"}
 
       assert continuation ==
-               NoticeTag.tag(
-                 "An earlier assistant turn did not complete cleanly. Please continue from here."
-               )
+               @runtime_header <>
+                 "\nAn earlier assistant turn did not complete cleanly. Please continue from here."
     end
   end
 
-  describe "the untagged framing" do
-    test "the attention texts are unchanged and untagged" do
+  describe "the bare framing" do
+    test "the attention texts are unchanged and unheadered" do
       assert ContextReminder.spec(40_001, 200_000, MapSet.new()).attention == "Context?"
       assert BudgetReminder.spec(2).attention == "Tool limit?"
     end
@@ -191,20 +185,20 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
       # `ack_for_kind/1`'s catch-all is reached only by a hand-built spec (in
       # `lib/` every caller puts its ack on the spec), so this is the fixture
       # that pins it.
-      spec = %{kind: :something_else, attention: "Attention?", notice: "Notice."}
+      spec = %{kind: :something_else, attention: "Attention?", notice: "Notice.", mode: "act"}
 
       assert {:ok, [_bridge, notice, ack]} =
                NoticePairInjector.build_pair([user(0)], spec, :user_agent)
 
-      assert row_text(notice) == NoticeTag.tag("Notice.")
+      assert body_of(notice) == "Notice."
       assert row_text(ack) == "Okay."
     end
   end
 
-  describe "the wording the marker wraps" do
+  describe "the wording the header wraps" do
     test "cancellation and lost keep their own wording, exactly" do
-      # These two kinds keep the wording they had before the marker existed:
-      # the tag is added around it, never in place of it. Pinned exactly (not by
+      # These two kinds keep the wording they had before the header existed: the
+      # header is added around it, never in place of it. Pinned exactly (not by
       # substring) so a later edit cannot quietly reword a promise the model
       # has already been told will not be kept, and both counts are covered
       # because the machine writes one record for a whole stop.
@@ -230,6 +224,34 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
     end
   end
 
+  describe "the readers" do
+    test "runtime?/1 matches the sender, whatever the rest of the header says" do
+      assert Header.runtime?("[From nest runtime | mode: act]")
+
+      # Unreachable today — the reply marker is set from `kind == :query`, and a
+      # query's sender is an agent — but that invariant lives in `Inbox.Render`,
+      # not here, and a reader that under-counts would let the retry bound in
+      # `Machine.Response` allow a re-prompt indefinitely.
+      assert Header.runtime?("[From nest runtime, agents-send reply required | mode: act]")
+
+      refute Header.runtime?("[From agent peer | mode: act]")
+      refute Header.runtime?("[From user | mode: act]")
+      refute Header.runtime?("no header at all")
+    end
+
+    test "body/1 is the text behind a header, and nil without one" do
+      assert Header.body("[From user | mode: act]\nhello") == "hello"
+      assert Header.body("[From nest runtime | mode: act]\n\nmulti\nline") == "\nmulti\nline"
+
+      # No header: the whole text, unchanged (and the caller is told so).
+      assert Header.body("no header") == nil
+
+      # A header is a whole line. Text that merely starts with the opening is
+      # not one, and it must not be truncated.
+      assert Header.body("[From the top] of my head") == nil
+    end
+  end
+
   # --- helpers ---
 
   # Every context kind, one entry per 75% variant, each carrying the ack
@@ -247,18 +269,19 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
          attention: "Context?",
          notice: ContextReminder.notice_text(atom, compact?),
          ack: ContextReminder.ack_text(),
-         threshold: atom
+         threshold: atom,
+         mode: "act"
        }}
     end
   end
 
   defp budget_specs do
     for {label, remaining} <- [{"budget, 2 rounds", 2}, {"budget, last round", 1}] do
-      {label, BudgetReminder.spec(remaining)}
+      {label, Map.put(BudgetReminder.spec(remaining), :mode, "act")}
     end
   end
 
-  # The two notice kinds that close a promise through `notice_record/3`.
+  # The two notice kinds that close a promise through `notice_record/4`.
   defp outcome_specs do
     [
       {"stop cancellation, one call", Backgrounded.cancellation(1)},
@@ -268,7 +291,23 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
     ]
   end
 
-  defp tagged?({_role, message}), do: String.starts_with?(row_text(message), @marker <> "\n")
+  defp headered?({_role, message}), do: String.starts_with?(row_text(message), "[From ")
+
+  # The header line, or nil when the row has none.
+  defp header_of({_role, message}) do
+    case String.split(row_text(message), "\n", parts: 2) do
+      [line, _rest] -> if String.starts_with?(line, "[From "), do: line
+      _ -> nil
+    end
+  end
+
+  # The row's text with its header line removed.
+  defp body_of({_role, message}) do
+    case String.split(row_text(message), "\n", parts: 2) do
+      [_header, body] -> body
+      [body] -> body
+    end
+  end
 
   defp row_text({_role, message}), do: row_text(message)
 

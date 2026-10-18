@@ -37,7 +37,7 @@ defmodule Nest.Agents.AgentChatTest do
     test "broadcasts user message and LLM response via PubSub" do
       {pid, _agent_id} = start_agent()
 
-      :ok = Agent.chat(pid, "Hello")
+      :ok = Agent.chat(pid, "Hello", nil, nil, true)
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
@@ -49,7 +49,7 @@ defmodule Nest.Agents.AgentChatTest do
     test "broadcasts status changes via PubSub" do
       {pid, _agent_id} = start_agent()
 
-      :ok = Agent.chat(pid, "Hello")
+      :ok = Agent.chat(pid, "Hello", nil, nil, true)
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
@@ -65,12 +65,16 @@ defmodule Nest.Agents.AgentChatTest do
 
       log =
         capture_log(fn ->
-          :ok = Agent.chat(pid, "Hello")
+          :ok = Agent.chat(pid, "Hello", nil, nil, true)
 
           assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
           assert_received {:chat_message,
-                           {:user, %{index: 1, parts: [%Part.Text{text: "[mode: act]\nHello"}]}}}
+                           {:user,
+                            %{
+                              index: 1,
+                              parts: [%Part.Text{text: "[From user | mode: act]\nHello"}]
+                            }}}
 
           assert_received {:chat_error, _error}
         end)
@@ -87,12 +91,16 @@ defmodule Nest.Agents.AgentChatTest do
 
       log =
         capture_log(fn ->
-          :ok = Agent.chat(pid, "Hello")
+          :ok = Agent.chat(pid, "Hello", nil, nil, true)
 
           assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
           assert_received {:chat_message,
-                           {:user, %{index: 1, parts: [%Part.Text{text: "[mode: act]\nHello"}]}}}
+                           {:user,
+                            %{
+                              index: 1,
+                              parts: [%Part.Text{text: "[From user | mode: act]\nHello"}]
+                            }}}
 
           assert_received {:chat_error, _error}
         end)
@@ -115,7 +123,7 @@ defmodule Nest.Agents.AgentChatTest do
       {pid, _agent_id} = start_agent()
 
       capture_log(fn ->
-        :ok = Agent.chat(pid, "Hello")
+        :ok = Agent.chat(pid, "Hello", nil, nil, true)
         assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
@@ -132,7 +140,7 @@ defmodule Nest.Agents.AgentChatTest do
     test "accumulates delta content from streaming LLM response" do
       {pid, _agent_id} = start_agent()
 
-      :ok = Agent.chat(pid, "Hello")
+      :ok = Agent.chat(pid, "Hello", nil, nil, true)
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
@@ -189,7 +197,7 @@ defmodule Nest.Agents.AgentChatTest do
 
       MockClient.set_response("Done")
 
-      :ok = Agent.chat(pid, "next question")
+      :ok = Agent.chat(pid, "next question", nil, nil, true)
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
@@ -206,7 +214,7 @@ defmodule Nest.Agents.AgentChatTest do
       assert ack_text =~ "continuing from here"
       refute Map.has_key?(metadata || %{}, "context_threshold")
 
-      assert {:user, %User{parts: [%Part.Text{text: "[mode: act]\nnext question"}]}} =
+      assert {:user, %User{parts: [%Part.Text{text: "[From user | mode: act]\nnext question"}]}} =
                Enum.at(tail, 2)
 
       assert :ok = Preflight.validate(messages)
@@ -250,7 +258,7 @@ defmodule Nest.Agents.AgentChatTest do
       assert :ok = Preflight.validate(messages)
 
       MockClient.set_response("Done")
-      :ok = Agent.chat(pid, "next question")
+      :ok = Agent.chat(pid, "next question", nil, nil, true)
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       refute_received {:chat_error, _}
@@ -276,7 +284,7 @@ defmodule Nest.Agents.AgentChatTest do
     test "accumulates deltas with correct character counts" do
       {pid, _agent_id} = start_agent()
 
-      :ok = Agent.chat(pid, "Hello")
+      :ok = Agent.chat(pid, "Hello", nil, nil, true)
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 

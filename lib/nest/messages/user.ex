@@ -29,10 +29,9 @@ defmodule Nest.Messages.User do
   # The origin marking the runtime's compaction request.
   @compaction_origin "compaction"
 
-  # The `mode` the request carries, matching the `[mode: compact]` tag
-  # `CompactionProbeSupport.compaction_suffix/2` puts on the row's first line.
-  # The client strips that tag by matching it against this key and renders a
-  # badge instead, so the user sees what the row is rather than raw wire text.
+  # The `mode` the request carries: the header's `mode:` clause, which is what
+  # the client matches against to strip the header and render a badge instead.
+  # The user sees what the row is rather than raw wire text.
   @compaction_mode "compact"
 
   defstruct [:index, :parts, :timestamp, :metadata, :api_logs, :tokens]
@@ -68,14 +67,25 @@ defmodule Nest.Messages.User do
   `MessageAppender.progress_message?/1` — it is not progress, and counting it
   as progress would disarm the consecutive-compaction loop breaker.
 
-  The `"mode"` key is set too, and it is not cosmetic: the row's text begins
-  with the `[mode: compact]` tag, and the client strips that tag on render by
-  matching it against this key. Without it the user reads the raw wire tag.
+  The `"mode"` key is set too, and it is not cosmetic: it is the mode the row's
+  header states (`Nest.Messages.Header`), and the client strips the header on
+  render by matching its clause against this key. Without it the user reads the
+  raw wire header.
   """
   @spec compaction_metadata() :: map()
   def compaction_metadata do
     %{@origin_key => @compaction_origin, "mode" => @compaction_mode}
   end
+
+  @doc """
+  The mode a compaction request row states — its header's clause and its badge.
+
+  Not a mode the operator can select (`Nest.Modes` has `plan` and `act`): it
+  marks the row as the runtime's compaction request, which is what the model's
+  system prompt explains and what the client badges.
+  """
+  @spec compaction_mode() :: String.t()
+  def compaction_mode, do: @compaction_mode
 
   @doc "The `origin` value marking the runtime's compaction request."
   @spec compaction_origin() :: String.t()

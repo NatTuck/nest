@@ -67,6 +67,43 @@ describe("textPartsFor", () => {
     expect(textPartsFor({ parts: [toolUse] })).toEqual([toolUse]);
   });
 
+  it("strips the header from a row whose mode it names", () => {
+    // Every user-role body is headered now, and this function is what a
+    // non-user row's parts go through: a runtime notice is a `user` row, but a
+    // transcript recorded before that still puts one on an assistant row, and a
+    // peer delivery in a batch is a body whose head is its header.
+    expect(
+      textPartsFor({
+        mode: "act",
+        parts: [
+          {
+            kind: "text",
+            text: "[From nest runtime | mode: act]\nContext at 50%.",
+          },
+        ],
+      }),
+    ).toEqual([{ kind: "text", text: "Context at 50%." }]);
+
+    // The guard: a clause that disagrees with the row's own mode keeps the
+    // header, so a disagreement stays visible.
+    expect(
+      textPartsFor({
+        mode: "plan",
+        parts: [
+          {
+            kind: "text",
+            text: "[From nest runtime | mode: act]\nContext at 50%.",
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        kind: "text",
+        text: "[From nest runtime | mode: act]\nContext at 50%.",
+      },
+    ]);
+  });
+
   it("strips the `[nest notice]` marker from a runtime notice's row", () => {
     // The fused `assistant(notice + ack)` row is an assistant row whose text
     // starts with the server's marker (`Nest.Agents.Agent.NoticePairInjector`);

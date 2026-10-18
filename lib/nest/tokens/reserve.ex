@@ -22,7 +22,7 @@ defmodule Nest.Tokens.Reserve do
   entirely in `L - C`. The only operation allowed to spend `C` is a
   compaction (its request and its response). A proposed ordinary message that
   would cross `L - C` is deferred and compaction runs first. Because
-  `size(M) + C <= L` always holds, `M` plus a small `[mode: compact]` suffix
+  `size(M) + C <= L` always holds, `M` plus a small compaction request
   always fits under `L`, and `C` always funds the summary response.
 
   `compaction_reserve/1` is the single source of this number. It backs the

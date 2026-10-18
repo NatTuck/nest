@@ -8,9 +8,10 @@ defmodule Nest.Scripts.CompactionProbeSupport do
 
     1. Resolve a provider block from `~/.config/nest/config.toml`
        and build a `Nest.LLM.ClientConfig`.
-    2. Build a `Nest.LLM.RunRequest` whose `messages` ends with a
-       `[mode: compact]\nSummarize in your <N> remaining tokens.`
-       suffix (the agent recognizes the prefix; the
+    2. Build a `Nest.LLM.RunRequest` whose `messages` ends with the
+       compaction request row — `[From nest runtime | mode: compact]` and
+       `Summarize in your <N> remaining tokens.` (the agent recognizes the
+       header; the
        summarization contract itself lives in the `[Available modes]`
        list under the `compact` entry — see
        `Nest.Vocations.compact_description/0`).
@@ -64,20 +65,17 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   `compaction_mention/0` for a `context-compact` call.
 
   Format:
-      [mode: compact]
       Summarize the conversation in your <N> remaining tokens. <guidance?>
 
-  The tag is on its own line, exactly like the `[mode: <name>]\\n` prefix every
-  human row carries. That is what lets the client's `stripModePrefix` remove it
-  on render and show a `mode: compact` badge instead: this row is committed to
-  the transcript (it is the request the model is answering), so without the
-  standard form the user would read the raw wire tag.
+  This is the *body* of the compaction request row, not the whole row: the
+  row's sender and mode are its header (`Nest.Messages.Header`), which
+  `Nest.Tokens.Compactor` puts in front of this text. It used to carry a
+  `[mode: compact]` line of its own; the header says the same thing, so it is
+  gone.
   """
   @spec compaction_suffix(non_neg_integer(), String.t() | nil) :: String.t()
   def compaction_suffix(remaining_tokens, optional_guidance) do
-    base =
-      "[mode: compact]\nSummarize the conversation in your " <>
-        "#{remaining_tokens} remaining tokens."
+    base = "Summarize the conversation in your #{remaining_tokens} remaining tokens."
 
     case optional_guidance do
       nil -> base
@@ -155,9 +153,8 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   Build the LLM callback the compactor expects:
   `[Message.t()] -> {:ok, String.t()} | {:error, term()}`.
 
-  The callback appends the precomputed `[mode: compact]`
-  suffix system message (built by
-  `Nest.Tokens.Compactor.compute_summary_budget/4`) to the
+  The callback appends the precomputed compaction request
+  (built by `Nest.Tokens.Compactor.compute_summary_budget/4`) to the
   agent's messages list (preserving the agent's own system
   prompt at position 0), runs a streaming `RunRequest`, and
   consumes the stream quietly (no PubSub). Returns

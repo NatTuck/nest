@@ -270,13 +270,18 @@ Every **user-role** row states who is speaking. A batch states each body's
 sender; a single-sender row states it once.
 
 ```
-[From user @nat | mode: act]
-[From user @nat, agents-send reply required | mode: act]
+[From user | mode: act]
+[From user, agents-send reply required | mode: act]
 [From agent crazy-dolphin | mode: plan]
 [From agent crazy-dolphin, agents-send reply required | mode: plan]
 [From nest runtime | mode: act]
 [From nest runtime | mode: compact]
 ```
+
+The human arm carries **no name yet**: `@nat` arrives with `Nest.Name` and the
+`user_notes` half of this PR. Until then the arm is exactly `user`, and that is
+deliberate rather than an oversight — the header states the *sender class* the
+model needs to tell a human's words from an agent's or the runtime's.
 
 `agents-send reply required` maps to exactly **one predicate**: `kind ==
 :query`. It is a statement that *this* note obliges an answer, which is what

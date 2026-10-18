@@ -247,7 +247,21 @@ defmodule Nest.Agents.Agent.Init do
   # The mode the row carries. `PreSpawn` derived it; the fallback is for a caller
   # that built attrs without one, and it is the permissive default — what an
   # agent had before a mode was a per-agent property at all.
-  defp initial_mode(attrs), do: Map.get(attrs, :mode) || Nest.Modes.default()
+  # Resolved once, here: a row holding a name this build does not implement — an
+  # old `"chat"`, a hand-edited row — starts in the default rather than keeping a
+  # name nothing else resolves. Every other reader of the mode resolves it
+  # (`ChatPipeline.resolve_mode_and_caps/3`), and a row that kept the raw name
+  # would state one mode in its header and another in `metadata.mode`, which is
+  # the disagreement the client's stripper leaves visible.
+  defp initial_mode(attrs) do
+    case Map.get(attrs, :mode) do
+      mode when is_binary(mode) ->
+        if Nest.Modes.valid?(mode), do: mode, else: Nest.Modes.default()
+
+      _ ->
+        Nest.Modes.default()
+    end
+  end
 
   # Non-clone agents spawned at max depth must not be able to
   # spawn children, so `agents-spawn` and `agents-batch` are

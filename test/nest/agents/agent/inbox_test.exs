@@ -40,7 +40,7 @@ defmodule Nest.Agents.Agent.InboxTest do
 
     assert Enum.any?(
              user_texts(state.chat_state.messages),
-             &(&1 =~ "[Message from agent \"peer\" | mode: act]" and &1 =~ "do the thing")
+             &(&1 =~ "[From agent peer | mode: act]" and &1 =~ "do the thing")
            )
 
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
@@ -92,8 +92,8 @@ defmodule Nest.Agents.Agent.InboxTest do
         &(&1 =~ "first message" and &1 =~ "second message")
       )
 
-    assert combined =~ "[Message from agent \"alice\" | mode: act]"
-    assert combined =~ "[Message from agent \"bob\" | mode: act]"
+    assert combined =~ "[From agent alice | mode: act]"
+    assert combined =~ "[From agent bob | mode: act]"
 
     wait_idle(pid)
   end
@@ -253,7 +253,8 @@ defmodule Nest.Agents.Agent.InboxTest do
 
           assert Enum.any?(
                    user_texts(state.chat_state.messages),
-                   &(&1 =~ "[Message from agent \"peer\" | mode: act]" and &1 =~ "summarize this")
+                   &(&1 =~ "[From agent peer, agents-send reply required | mode: act]" and
+                       &1 =~ "summarize this")
                  )
 
           assert Machine.owed_senders(state.live.machine) == ["peer"]
@@ -420,7 +421,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     } do
       MockClient.set_response("ok")
 
-      assert :ok = Agent.chat(pid, "hello now", "plan", "alice")
+      assert :ok = Agent.chat(pid, "hello now", "plan", "alice", true)
 
       assert_receive {:chat_status, %{status: "streaming"}}, 1_000
       # allowlist: snapshot — inbox + mode + messages
@@ -429,7 +430,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       assert state.live.inbox == []
       assert state.live.mode == "plan"
       assert Enum.any?(user_texts(state.chat_state.messages), &(&1 =~ "hello now"))
-      assert Enum.any?(user_texts(state.chat_state.messages), &(&1 =~ "[mode: plan]"))
+      assert Enum.any?(user_texts(state.chat_state.messages), &(&1 =~ "[From user | mode: plan]"))
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
@@ -591,7 +592,7 @@ defmodule Nest.Agents.Agent.InboxTest do
   # message, or nil when the message has none. Any mode name (dashes, uppercase)
   # is accepted, so the helper cannot silently report nil for a real mode.
   defp mode_of(message) do
-    case Regex.run(~r/^\[mode: ([^\]]+)\]/, text_of(message)) do
+    case Regex.run(~r/^\[From [^|\]]*\| mode: ([^\]]+)\]/, text_of(message)) do
       [_, mode] -> mode
       nil -> nil
     end

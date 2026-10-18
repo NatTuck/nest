@@ -43,7 +43,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     # parent.s `handle_spawn_request/3` doesn't actually drive an
     # LLM cycle on the spawned child.
     Mimic.copy(Nest.Agents)
-    Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content -> :ok end)
+    Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content, _mode, _sender -> :ok end)
 
     {:ok, vid: upsert_vocation()}
   end

@@ -158,9 +158,15 @@ defmodule Nest.Agents.Agent.SubAgent do
           # The spawn's `query` kickoff is not the human's own words, so it must
           # never be tagged `origin: "human"` (it would then appear in the
           # child's Ctrl/Cmd+Up recall list). `Agents.chat/6`'s `human?` defaults
-          # to `false` — the marker has to be earned — so the three-argument
-          # call is the non-human one; only the chat channel passes `true`.
-          Nest.Agents.chat(state.space_id, child_name, Map.get(opts, :query))
+          # to `false` — the marker has to be earned — so this call passes the
+          # sender and no mode: only the chat channel passes `true`.
+          #
+          # The sender is this agent's name, which is what makes the child's
+          # first row read `[From agent <parent> | mode: …]`. Without it the
+          # child learns its parent from nowhere: `SystemPrompt`'s identity
+          # section states its own name and depth and nothing about who started
+          # it.
+          Nest.Agents.chat(state.space_id, child_name, Map.get(opts, :query), nil, state.name)
         end
 
         {:reply, {:ok, child_name}, state}

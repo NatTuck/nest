@@ -144,7 +144,7 @@ defmodule Nest.Agents.Agent.Callbacks do
         {:noreply, state}
 
       status == :idle ->
-        ChatPipeline.handle_chat(state, content, mode, human?)
+        ChatPipeline.handle_chat(state, content, mode, sender, human?)
 
       Inbox.busy_status?(status) ->
         {state, _disposition} = Inbox.deliver_user_message(state, sender, content, mode, human?)

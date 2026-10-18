@@ -150,7 +150,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     # through a text-containment assertion.
     assert [delivered] = Enum.filter(notices(pid), &(&1 =~ "Agents now idle"))
     assert delivered =~ "bob"
-    assert delivered =~ "[nest notice]"
+    assert delivered =~ "[From nest runtime"
     refute delivered =~ "Message from agent"
     assert watchers(pid) == %{}
     await_idle(pid)
@@ -174,7 +174,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     # The same kind pin as the fire above: an expired watch is the runtime
     # speaking, so its body is marker-tagged and carries no peer label.
     assert [delivered] = Enum.filter(notices(pid), &(&1 =~ "Timed out after 50ms"))
-    assert delivered =~ "[nest notice]"
+    assert delivered =~ "[From nest runtime"
     refute delivered =~ "Message from agent"
 
     await_idle(pid)
