@@ -82,6 +82,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   alias Nest.Messages.ToolResult
   alias Nest.Tokens.Budget
   alias Nest.Tokens.Estimator
+  alias Nest.Tokens.RequestSize
   alias Nest.Tokens.Reserve
 
   require Logger
@@ -170,17 +171,44 @@ defmodule Nest.Agents.Agent.BatchSizer do
 
   def preflight(tool_calls, %{context_limit: limit} = ctx)
       when is_integer(limit) and limit > 0 do
-    projected = projected_content_size(tool_calls, ctx)
+    {projected, media} = projected_content_size_and_media(tool_calls, ctx)
     total = projected + Reserve.compaction_reserve(limit)
+    messages = Map.get(ctx, :messages) || []
 
-    if total <= limit do
-      {:fits, projected}
-    else
-      {:refuse,
-       "Batch refused: projected message list ~#{total} tokens exceeds " <>
-         "limit ~#{limit}. Reformulate (e.g., call context-compact first " <>
-         "or use smaller tools)."}
+    cond do
+      total > limit ->
+        {:refuse,
+         "Batch refused: projected message list ~#{total} tokens exceeds " <>
+           "limit ~#{limit}. Reformulate (e.g., call context-compact first " <>
+           "or use smaller tools)."}
+
+      # The byte ceiling. Media is priced at a flat token ceiling, so this is
+      # the only budget that can see it — and a refusal here is fixable by
+      # compaction, which replaces the conversation with a summary and drops the
+      # images. That is why the caller may route it into one: a refusal
+      # compaction cannot fix is the shape that loops, and this is not it.
+      not RequestSize.within?(messages, media) ->
+        {:refuse, request_bytes_refusal(RequestSize.bytes(messages) + media)}
+
+      true ->
+        {:fits, projected}
     end
+  end
+
+  # One stat pass for both numbers (issue #48): the token projection and the
+  # media bytes come from the same memoized sizes, so a batch is statted once
+  # per response however many of these numbers a caller wants.
+  defp projected_content_size_and_media(tool_calls, ctx) do
+    {projected, media} = ProjectedSize.project_batch_with_media(tool_calls, ctx)
+    {Budget.size(ctx.messages || []) + ceil(projected), media}
+  end
+
+  defp request_bytes_refusal(bytes) do
+    "Batch refused: attaching these images would put the request at " <>
+      "~#{Float.round(bytes / 1_000_000, 1)} MB, over the " <>
+      "#{Float.round(RequestSize.max_bytes() / 1_000_000, 1)} MB limit. " <>
+      "Call context-compact first — it replaces the conversation with a summary " <>
+      "and drops the images."
   end
 
   @doc """

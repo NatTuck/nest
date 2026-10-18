@@ -18,6 +18,7 @@ defmodule Nest.Tools.FileTools do
   alias Nest.Messages.Sanitize
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
+  alias Nest.Tokens.RequestSize
   alias Nest.Tools.MediaKind
 
   # Stat-then-cap mirrors `InspectFile`'s cap so the BatchSizer's
@@ -161,8 +162,8 @@ defmodule Nest.Tools.FileTools do
       {:ok, %{size: size}} when size > @max_read_file_bytes ->
         too_large_error(size)
 
-      {:ok, _} ->
-        read_classified(full_path, original_path, caps, mounts, context)
+      {:ok, %{size: size}} ->
+        read_classified(full_path, original_path, caps, mounts, context, size)
 
       {:error, reason} ->
         read_error(reason, original_path)
@@ -173,13 +174,20 @@ defmodule Nest.Tools.FileTools do
   # look like media never pays the extra `file --mime-type` spawn, and a path
   # that does look like media is still confirmed by `MediaKind.detect/3`
   # before anything is attached.
-  defp read_classified(full_path, original_path, caps, mounts, context) do
+  defp read_classified(full_path, original_path, caps, mounts, context, size) do
     case MediaKind.from_path(full_path) do
       :text ->
         read_file_content(full_path, caps, mounts)
 
       {:ok, modality} ->
-        read_media_file(full_path, original_path, caps, mounts, modality, context)
+        # The byte gate runs before the modality gate, and the order is
+        # deliberate: a model that cannot accept images never has any in its
+        # conversation (`file-read` refused them), so a conversation this large
+        # is one whose images the model can see. It is also the order that makes
+        # the gate reachable in a test without a multi-modal model fixture.
+        with :ok <- check_request_bytes(size, context) do
+          read_media_file(full_path, original_path, caps, mounts, modality, context)
+        end
     end
   end
 
@@ -206,6 +214,33 @@ defmodule Nest.Tools.FileTools do
       {:error, _} = error -> error
     end
   end
+
+  # Refuse a new image when attaching it would put the request over the byte
+  # ceiling. Projected, not measured: one more image must not sail through a
+  # conversation that is already just under the line.
+  defp check_request_bytes(size, context) do
+    # A tool invoked with no context — a direct call, or a test — has no message
+    # list to measure, and nothing to project against.
+    messages = if is_map(context), do: Map.get(context, :messages) || [], else: []
+    already = RequestSize.bytes(messages)
+    wire = RequestSize.media_wire_bytes(size)
+
+    if RequestSize.within?(messages, wire) do
+      :ok
+    else
+      {:error, request_bytes_error(already, wire, already + wire)}
+    end
+  end
+
+  defp request_bytes_error(already, wire, projected) do
+    "file-read refused: too many images are already in context. This conversation " <>
+      "carries ~#{mb(already)}, and this image would add ~#{mb(wire)} — " <>
+      "~#{mb(projected)} against a #{mb(RequestSize.max_bytes())} request limit. " <>
+      "No more images until you run context-compact, which replaces the conversation " <>
+      "with a summary and drops them. Text files can still be read."
+  end
+
+  defp mb(bytes), do: "#{Float.round(bytes / 1_000_000, 1)} MB"
 
   defp read_media_bytes(full_path, caps, mounts) do
     case Sandbox.read(full_path, caps, mounts) do
