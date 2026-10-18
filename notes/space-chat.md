@@ -55,8 +55,8 @@ answer one question — *from whom*: `:agent | :user | :query | :runtime`.
 Today three answer that and the fourth names a *speaker*, so a runtime note
 and an agent note cannot be told apart by kind alone.
 
-Mechanical and wide: the three names appear **145 times across 44 files** in
-`lib`, `test` and `assets` — the `:notice` kind is 74 of those, across 25
+Mechanical and wide: the three names appear **146 times across 45 files** in
+`lib`, `test` and `assets` — the `:notice` kind is 75 of those, across 26
 files, plus the string `"notice"` it becomes on the wire. Treat that as a
 survey, not a promise. Most of a rename that misses a pattern match fails to
 compile, which is the right failure mode; the two that do not are named here
@@ -510,6 +510,29 @@ mistake for it:
 * **`agents-list`'s result cap.** The tool's output is capped (~4000 chars) and
   its projection is a fixed size; one human line fits, and the projection
   should be revisited when a space can have several.
+* **The kind reaches one persisted artifact, and nothing reads it.**
+  `record_inbox/6` passes the entry's kind into `Timeline`, which
+  `Jason.encode`s to an append-only `events.jsonl`. So a run recorded before
+  the rename says `"notice"` and one after says `"runtime"`, in the same log
+  format. Nothing parses the value — the digest interpolates it verbatim and no
+  timeline module names it — and there is no second spelling to miss, because
+  the value is derived from `entry.kind` by construction. It is not a
+  migration, but a digest spanning the rename will show both with nothing
+  explaining why.
+* **`Turn.Backgrounded.notice/1` still says "notice".** It returns the text of
+  a backgrounded batch's outcome, and the renderer applies the marker to any
+  `:runtime` entry, so the name is about the wording rather than the kind.
+  Step 2 rewrites its body anyway, so it moves then — but unlike
+  `Inbox.deliver_notice/3`, which was renamed with the kind because retiring
+  the marker is what would have made its name denote nothing, this one has a
+  job that survives the marker's retirement.
+* **Two producer paths validate the kind and two do not.**
+  `Inbox.enqueue_internal/5` guards `when kind in [...]`;
+  `handle_delivery/5` and `deliver_internal/4` take a `kind()` and check
+  nothing. A stray atom there compiles, passes credo and the line caps, and is
+  silent at delivery — it surfaces only as a wrongly-labelled render. Precommit
+  runs no dialyzer, so `@type kind` is documentation and the tests are the
+  entire net.
 
 ## What this does not do
 
