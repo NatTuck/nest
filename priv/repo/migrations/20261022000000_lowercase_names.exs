@@ -21,17 +21,34 @@ defmodule Nest.Repo.Migrations.LowercaseNames do
   # `/tmp/<name>`), so a lowercased name is a **different directory**. Two
   # arms exist for that:
   #
-  # * **A scratch directory that exists is a refusal, not a rename.** If
-  #   `/tmp/<old>` is there, renaming the row would leave the old directory
-  #   orphaned and point the agent at a fresh empty one. The migration raises,
-  #   naming every offending agent, and the transaction rolls back — nothing is
-  #   renamed. (On a `none` space that directory is the host's own `/tmp`, so a
-  #   move would be moving host state; the refusal is the same either way.)
+  # * **A scratch directory that exists is a refusal, not a rename — on the one
+  #   backend where this migration can see it.** A `"none"` space's scratch is
+  #   the host's own `/tmp/<name>`, and only a directory carrying Nest's
+  #   `.nest-scratch` marker is Nest's; a host directory that merely shares the
+  #   name is not, so refusing on it would block the migration for the wrong
+  #   reason. If a marked one exists for a name this migration would change,
+  #   renaming the row would orphan it and point the agent at a fresh, empty
+  #   one, so the migration raises, naming every offender, and the transaction
+  #   rolls back — nothing is renamed. The raise aborts the **whole** migration,
+  #   including the username rewrite below. A `"bwrap"` space's scratch is
+  #   `/tmp/nest-<BEAM os pid>/space-<space_id>/<name>`, whose pid belongs to
+  #   the BEAM that created it, so a migration running in another (or a
+  #   restarted) BEAM cannot compute the path and there is nothing to check; a
+  #   `"docker"` space's scratch is inside the container and never on the host.
+  #   Both are left to OS/container cleanup. This is a deliberate change from
+  #   `20261011000000_sanitize_agent_names.exs`, which touched no scratch
+  #   directory at all.
   # * **A space's root agent is a refusal too.** `Nest.Spaces.Creation` names
   #   the root agent `<slug>-root` and resolves it the same way, so lowercasing
   #   such an agent would leave the slug (a URL) disagreeing with the name
   #   derived from it. Lowercasing the slug as well is a URL change, which is
   #   the operator's call rather than a migration's, so this raises instead.
+  #
+  # `down/0` refuses the same way, on the directory the rollback would leave:
+  # restoring a row renames it away from the lowercase name `up/0` wrote, so a
+  # marked `"none"` scratch at that name is a refusal too (a `"bwrap"` or
+  # `"docker"` directory is not checked, and is left behind exactly as it is on
+  # the way up).
   #
   # ## Collisions
   #
@@ -81,6 +98,12 @@ defmodule Nest.Repo.Migrations.LowercaseNames do
   @fallback_user "user"
   @sandbox_root "/tmp"
 
+  # What a `"none"` agent's scratch directory carries to say it is Nest's
+  # (`Nest.Agents.Agent.TmpSpace`). Only a directory with this marker is a
+  # scratch directory this migration may refuse on; the name alone proves
+  # nothing, because `/tmp` is the host's own.
+  @marker ".nest-scratch"
+
   # Runs of characters that are not allowed in a name. Matched with the `u` flag
   # so a multi-byte character is one run, not one per byte. `_` and `-` are
   # allowed, so a name that is already valid is never touched.
@@ -129,7 +152,11 @@ defmodule Nest.Repo.Migrations.LowercaseNames do
   def lowercase_agent_names do
     rows = agents()
 
-    refuse_occupied_scratch_dirs(rows)
+    # Only the rows this migration would rename can orphan a scratch directory;
+    # an already-safe name is left exactly as it is.
+    unsafe = for {id, space_id, name} <- rows, not safe?(name), do: {id, space_id, name}
+
+    refuse_occupied_scratch_dirs(unsafe, "lowercase")
     refuse_root_agents(rows)
 
     rows
@@ -166,8 +193,24 @@ defmodule Nest.Repo.Migrations.LowercaseNames do
   # Order does not matter for collisions: every name this migration wrote is
   # lowercase and every name it restores is not, so no restore can collide with
   # a name that is still in place.
+  #
+  # It refuses before it writes anything if a `"none"` agent's marked scratch
+  # directory sits at a name it is about to leave (see
+  # `refuse_occupied_scratch_dirs/2`): a rollback would orphan the directory the
+  # agent has been using.
   def restore_names do
-    for {subject, row_id, old_name, new_name} <- recorded_renames() do
+    renames = recorded_renames()
+
+    # A rollback renames each agent away from the lowercase name `up/0` wrote, so
+    # that is the directory it would orphan — the same question `up/0` asks about
+    # the name it is about to leave, asked in the other direction.
+    left_behind =
+      for {"agents", row_id, space_id, _old_name, new_name} <- renames,
+          do: {row_id, space_id, new_name}
+
+    refuse_occupied_scratch_dirs(left_behind, "restore")
+
+    for {subject, row_id, _space_id, old_name, new_name} <- renames do
       case subject do
         "agents" ->
           rewrite_system_message(row_id, new_name, old_name)
@@ -181,27 +224,57 @@ defmodule Nest.Repo.Migrations.LowercaseNames do
 
   # --- refusals ---
 
-  # A scratch directory that exists belongs to the old name. Renaming the row
-  # would orphan it and point the agent at a fresh empty one, so this refuses —
-  # reporting every offender at once — rather than moving or deleting anything.
-  defp refuse_occupied_scratch_dirs(rows) do
+  # A scratch directory that exists belongs to the name being left. Renaming the
+  # row would orphan it and point the agent at a fresh empty one, so this refuses
+  # — reporting every offender at once — rather than moving or deleting anything.
+  #
+  # Only a `"none"` space's scratch is a host directory at `/tmp/<name>`, and only
+  # one carrying Nest's marker is Nest's (see `occupied_none_scratch/3`). A
+  # `"bwrap"` space's scratch is `/tmp/nest-<BEAM os pid>/space-<space_id>/<name>`
+  # and the pid belongs to the BEAM that created it, so a migration running in
+  # another (or a restarted) BEAM cannot compute the path; a `"docker"` space's
+  # scratch is inside the container. Neither has anything at `/tmp/<name>` to
+  # check, so both are left to OS/container cleanup.
+  #
+  # The raise aborts the whole migration, including the username rewrite: nothing
+  # is renamed when one agent's directory is in the way.
+  defp refuse_occupied_scratch_dirs(rows, action) do
+    backends = space_backends()
+
     offenders =
       for {id, space_id, name} <- rows,
-          not safe?(name),
-          File.exists?(scratch_dir(name)),
-          do: {id, space_id, name, scratch_dir(name)}
+          dir = occupied_none_scratch(space_id, name, backends),
+          dir != nil,
+          do: {id, space_id, name, dir}
 
     if offenders != [] do
       raise """
-      refusing to lowercase agent names: the scratch directory of a name this
-      migration would change already exists on disk, so renaming the row would
-      orphan it (and point the agent at a fresh, empty one):
+      refusing to #{action} agent names: a scratch directory carrying Nest's
+      `.nest-scratch` marker already exists for a name this migration would
+      change, so renaming the row would orphan it (and point the agent at a
+      fresh, empty one):
 
       #{Enum.map_join(offenders, "\n", &offender_line/1)}
 
-      Move or remove each directory first — or rename that agent by hand — and
-      run the migration again.
+      This aborts the whole migration, including the username rewrite: nothing
+      is renamed. Move or remove each directory first — or rename that agent by
+      hand — and run the migration again.
       """
+    end
+  end
+
+  # The only scratch directory this migration can see: a `"none"` space's, which
+  # is the host's own `/tmp/<name>`. A directory that merely shares the name is
+  # not Nest's, so refusing on it would block the migration for the wrong reason;
+  # the `.nest-scratch` marker is what says the directory is the agent's scratch
+  # (`Nest.Agents.Agent.TmpSpace`). Every other backend's scratch is elsewhere and
+  # is not checked (see `refuse_occupied_scratch_dirs/2`).
+  defp occupied_none_scratch(space_id, name, backends) do
+    with "none" <- Map.get(backends, space_id) do
+      dir = scratch_dir(name)
+      if File.exists?(Path.join(dir, @marker)), do: dir
+    else
+      _ -> nil
     end
   end
 
@@ -286,11 +359,15 @@ defmodule Nest.Repo.Migrations.LowercaseNames do
     Nest.Repo.all(from(s in "spaces", order_by: [asc: s.id], select: {s.id, s.slug}))
   end
 
+  defp space_backends do
+    Map.new(Nest.Repo.all(from(s in "spaces", select: {s.id, s.sandbox_backend})))
+  end
+
   defp recorded_renames do
     Nest.Repo.all(
       from(m in "lowercase_name_migrations",
         order_by: [asc: m.id],
-        select: {m.subject, m.row_id, m.old_name, m.new_name}
+        select: {m.subject, m.row_id, m.space_id, m.old_name, m.new_name}
       )
     )
   end
@@ -301,15 +378,18 @@ defmodule Nest.Repo.Migrations.LowercaseNames do
 
   # The readable fold of `old_name`, disambiguated against `taken` when needed.
   #
-  # Length is already bounded: `agents.name` is `varchar(255)` and this fold
-  # never grows a name — the multi-character decompositions NFD applies are a
-  # base letter plus combining marks (stripped), and Hangul syllables into jamo,
-  # which are not `[a-z0-9]` and so collapse into the single `-` that
-  # `@unsafe_run` produces. Do not "improve" this into NFKD (which applies the
-  # compatibility mappings, so `ﬁ` becomes `fi` and a 255-character name can
-  # fold to 510 characters) or add a prefix. The `-<digest>` suffix is the one
-  # thing that can push past the cap, which is why `disambiguated/4` truncates
-  # the base before appending.
+  # Length is already bounded: `agents.name` is `varchar(255)` and the audit
+  # table's `old_name` is too, and this fold never grows a name in bytes — the
+  # multi-character decompositions NFD applies are a base letter plus combining
+  # marks (stripped), and Hangul syllables into jamo, which are not `[a-z0-9]`
+  # and so collapse into the single `-` that `@unsafe_run` produces. A migrated
+  # username therefore lands inside `Nest.Name` and inside
+  # `User.registration_changeset/2`, whose cap is `Nest.Name.max_bytes/0`.
+  #
+  # Do not "improve" this into NFKD (which applies the compatibility mappings, so
+  # `ﬁ` becomes `fi` and a 255-character name can fold to 510 characters) or add
+  # a prefix. The `-<digest>` suffix is the one thing that can push past the cap,
+  # which is why `disambiguated/4` truncates the base before appending.
   defp folded_name(old_name, fallback, taken) do
     base = base_name(old_name, fallback)
 

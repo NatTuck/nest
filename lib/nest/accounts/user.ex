@@ -57,14 +57,21 @@ defmodule Nest.Accounts.User do
     # than being stored empty.
     |> update_change(:username, &Nest.Name.sanitize/1)
     |> validate_required([:username])
-    |> validate_length(:username, min: 1, max: 64)
+    # The same rule an agent's name follows, read from its one home: the cap is
+    # `Nest.Name.max_bytes/0` in bytes, not a second, character-based limit.
+    |> validate_length(:username, min: 1, max: Nest.Name.max_bytes(), count: :bytes)
+    |> validate_format(:username, Nest.Name.pattern(),
+      message: "must contain only lowercase letters, digits, `_` and `-`"
+    )
     |> unique_constraint(:username)
   end
 
-  # The username is a `Nest.Name`: the same `[a-z0-9_-]+` rule an agent's name
-  # follows, so `@Nat` and `@nat` cannot be two accounts. The underlying column
-  # is `citext`, so *comparison* is case-insensitive either way — this is the
-  # stored canonical form, and it is what makes an address tokenise as one
-  # token. `Nest.Name.sanitize/1` is the fold; the validations above see its
-  # result.
+  # The username is a `Nest.Name`: the same `[a-z0-9_-]+` rule and 255-byte cap
+  # an agent's name follows, so `@Nat` and `@nat` cannot be two accounts and
+  # `Nest.Name.valid?/1` is the whole rule for both. `sanitize/1` is the
+  # transform; the validations above check its result, so the schema applies
+  # the rule by transform **and** by check exactly as `PersistedAgent` does.
+  # The underlying column is `citext`, so *comparison* is case-insensitive
+  # either way — this is the stored canonical form, and it is what makes an
+  # address tokenise as one token.
 end

@@ -195,7 +195,14 @@ defmodule Nest.Accounts do
           {:ok, UserSchema.t()} | {:error, :invalid_credentials | :missing_fields}
   def authenticate(username, password)
       when is_binary(username) and is_binary(password) do
-    username = username |> String.trim() |> String.downcase()
+    # The same fold the writer applies (`User.registration_changeset/2` stores
+    # `Nest.Name.sanitize/1`), so the reader cannot disagree with what was
+    # stored: a plain `String.trim/1 |> String.downcase/1` would look up
+    # `"jane doe"` for a stored `"jane-doe"` and lock the user out. The two
+    # surfaces that call this — the channel and `POST /api/v1/login` — get the
+    # same answer for `"Jane Doe"`, `"Jane.Doe"` and `"@nat"` as for their
+    # stored forms.
+    username = Nest.Name.sanitize(username)
 
     case Repo.get_by(UserSchema, username: username) do
       %UserSchema{password_hash: hash} = user when is_binary(hash) ->

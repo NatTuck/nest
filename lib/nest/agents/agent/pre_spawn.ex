@@ -212,7 +212,7 @@ defmodule Nest.Agents.Agent.PreSpawn do
   # not put there is refused by name rather than adopted: `TmpSpace.create/3`
   # would otherwise stamp its marker into it and hand the next `cleanup/3` a
   # licence to delete it (`nest-4` is another BEAM's whole scratch root, and
-  # `X11-unix` and `snap-private-tmp` are real `/tmp` entries).
+  # `snap-private-tmp` is a real `/tmp` entry).
   #
   # The refusal belongs here, at the point the name is chosen, rather than as a
   # raise from `init/1` that the start path rolls back: the caller can then say

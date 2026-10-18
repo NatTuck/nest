@@ -81,20 +81,41 @@ defmodule Nest.NameTest do
       assert Name.sanitize("a/../b") == "a-b"
     end
 
-    test "never lengthens a name, so it cannot push one past the cap" do
-      at_cap = String.duplicate("A", Name.max_bytes())
+    test "never lengthens a name in bytes, so it cannot push one past the cap" do
+      # The trivial ASCII case, then the two mechanisms that could lengthen a
+      # name: NFD decomposition (one 2-byte `é` becomes two codepoints, but the
+      # combining mark is stripped) and Hangul (one syllable becomes three jamo,
+      # which are not `[a-z0-9]` and collapse into one `-`).
+      inputs = [
+        String.duplicate("A", Name.max_bytes()),
+        String.duplicate("é", 127),
+        "agent" <> String.duplicate("각", 100)
+      ]
 
-      sanitized = Name.sanitize(at_cap)
+      for input <- inputs do
+        sanitized = Name.sanitize(input)
 
-      assert byte_size(sanitized) == Name.max_bytes()
-      assert Name.valid?(sanitized)
+        assert byte_size(sanitized) <= byte_size(input), inspect(input)
+        assert Name.valid?(sanitized), inspect(input)
+      end
+
+      assert Name.sanitize(String.duplicate("A", Name.max_bytes())) ==
+               String.duplicate("a", Name.max_bytes())
+
+      assert Name.sanitize(String.duplicate("é", 127)) == String.duplicate("e", 127)
     end
 
-    test "is idempotent, so a sanitised name is a fixed point" do
-      for name <- ["Jane Doe", "Café ☕", "review-prA5", "..", "日本語"] do
+    test "is idempotent, but trims an edge dash even from a valid name" do
+      for name <- ["Jane Doe", "Café ☕", "review-prA5", "..", "日本語", "-nat", "nat-"] do
         once = Name.sanitize(name)
         assert Name.sanitize(once) == once, name
       end
+
+      # `valid?/1` allows a dash on the edge, but `sanitize/1` trims it, so a
+      # valid name is not necessarily a fixed point of the fold.
+      assert Name.valid?("-nat")
+      assert Name.sanitize("-nat") == "nat"
+      assert Name.sanitize("nat-") == "nat"
     end
 
     test "leaves nil nil — a missing name is not an empty one" do

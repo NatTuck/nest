@@ -30,9 +30,13 @@ defmodule Nest.Name do
   @pattern ~r/\A[a-z0-9_-]+\z/
 
   # Runs of characters that are not allowed in a name, matched with the `u` flag
-  # so a multi-byte character is one run rather than one per byte. `_` and `-`
-  # are allowed, so a name that is already valid is a fixed point of
-  # `sanitize/1` — the fold only ever touches what the pattern refuses.
+  # so a multi-byte character is one run rather than one per byte.
+  #
+  # The fold is idempotent, but it is **not** the identity on every valid name:
+  # `String.trim("-")` removes leading and trailing dashes, and the pattern
+  # allows those, so `"-nat"` folds to `"nat"` and `"nat-"` to `"nat"`. A dash
+  # on the edge is the one thing `sanitize/1` changes that `valid?/1` would
+  # already accept.
   @unsafe_run ~r/[^a-z0-9_-]+/u
 
   # Combining marks left by NFD decomposition, stripped so accented Latin
@@ -65,8 +69,12 @@ defmodule Nest.Name do
 
   Deterministic, and as recognizable as it can be: `"Café ☕"` becomes `"cafe"`,
   `"Jane Doe"` becomes `"jane-doe"`, `".."` becomes `""`. It never *lengthens* a
-  name — a 255-character input folds to at most 255 ASCII characters — so it
-  cannot push a name past the byte cap on its own.
+  name in **bytes** — every character it emits is ASCII (one byte) and the
+  output is at most as many bytes as the input — so it cannot push a name past
+  the byte cap on its own. (It is not true in *characters*: a grapheme can
+  normalize into a longer sequence and survive as a `-`, so a 255-character
+  input can fold to more than 255 characters — but never to more than 255
+  bytes.)
 
   **`""` means nothing survived.** An all-CJK name has no ASCII fold, and a name
   of nothing but punctuation is all separator. This function does not invent a

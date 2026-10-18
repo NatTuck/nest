@@ -42,9 +42,9 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # ## A `"none"` scratch carries Nest's own marker
   #
   # `/tmp/<name>` is not distinguishable from the host's own `/tmp` entries by
-  # its shape: the name is client- and model-controlled, `@name_format` allows
-  # `nest-4`, `X11-unix` and `snap-private-tmp`, and all three are real things to
-  # find in a `/tmp`. An `rm_rf` on one of them would take another BEAM's whole
+  # its shape: the name is client- and model-controlled, `Nest.Name` allows
+  # `nest-4` and `snap-private-tmp`, and both are real things to find in a
+  # `/tmp`. An `rm_rf` on one of them would take another BEAM's whole
   # scratch root (every space's offloads, shell-job logs and `.nest` tmp mounts)
   # or a host directory Nest never owned.
   #
@@ -133,7 +133,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
     # A `"none"` scratch is the host's own `/tmp/<name>`, so `mkdir_p!` would
     # silently *adopt* whatever is already there — including exactly the
     # directories the marker exists to protect (another BEAM's `nest-<pid>`, a
-    # host `X11-unix`). Stamping the marker into one would hand the next
+    # host `snap-private-tmp`). Stamping the marker into one would hand the next
     # `cleanup/3` a licence to delete it, so refuse instead. A directory Nest
     # marked earlier still re-opens idempotently, which is what re-creating a
     # stopped agent's scratch needs.
