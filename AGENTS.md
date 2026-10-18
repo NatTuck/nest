@@ -160,7 +160,8 @@ every agent in a space) and a project root (and thus an AGENTS.md if present).
 The agent's own *mode* is deliberately not in it: it is a per-agent runtime
 property that can change while the agent works, so it travels on the messages
 instead.
-- All role: user messages are tagged with the sender and the recipient's mode.
+- All role: user messages are tagged with the sender name and the recipient's
+mode.
 
 ### Modes
 
