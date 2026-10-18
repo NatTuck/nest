@@ -4,7 +4,7 @@ mode   = "rw"
 create = true
 
 [[mount]]
-path   = "~/.local/share/pnpm/store"
+path   = "~/.local/share/pnpm"
 mode   = "rw"
 create = true
 
