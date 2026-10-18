@@ -586,7 +586,7 @@ defmodule NestWeb.LobbyChannelTest do
     end
   end
 
-  describe "handle_in(set_space_network)" do
+  describe "handle_in(edit_space)" do
     test "flips the space's network access and announces it" do
       {socket, _payload} = join_lobby()
 
@@ -605,9 +605,14 @@ defmodule NestWeb.LobbyChannelTest do
       assert Nest.Spaces.get_space(space_id).network_access == true
 
       toggle =
-        push(socket, "set_space_network", %{"space_id" => space_id, "network_access" => false})
+        push(socket, "edit_space", %{"space_id" => space_id, "network_access" => false})
 
-      assert_reply toggle, :ok, %{"network_access" => false}, 500
+      # The reply carries the whole environment, not just the field that moved:
+      # the dialog updates its cache from it.
+      assert_reply toggle, :ok, reply, 500
+      assert reply["network_access"] == false
+      assert reply["workspace_path"] == Nest.Spaces.get_space(space_id).workspace_path
+      assert reply["sandbox_backend"] == Nest.Spaces.get_space(space_id).sandbox_backend
       assert Nest.Spaces.get_space(space_id).network_access == false
 
       # The frame carries the whole space, so another session of the same user
@@ -626,7 +631,7 @@ defmodule NestWeb.LobbyChannelTest do
             %{"network_access" => true},
             %{}
           ] do
-        assert_reply push(socket, "set_space_network", payload),
+        assert_reply push(socket, "edit_space", payload),
                      :error,
                      %{"reason" => "invalid_payload"},
                      500
@@ -636,7 +641,7 @@ defmodule NestWeb.LobbyChannelTest do
     test "refuses a space the user does not own" do
       {socket, _payload} = join_lobby()
 
-      assert_reply push(socket, "set_space_network", %{
+      assert_reply push(socket, "edit_space", %{
                      "space_id" => -1,
                      "network_access" => false
                    }),

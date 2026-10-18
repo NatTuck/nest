@@ -140,6 +140,44 @@ defmodule Nest.Spaces.Space do
   end
 
   @doc """
+  Build the changeset for editing a space's **environment**: the three properties
+  every agent in the space inherits.
+
+  One changeset for all three because they are one decision — an agent's mounts
+  are built from them together, and `Nest.Spaces.update_environment/2` tells the
+  space's agents about them together. `:sandbox_backend` is cast **only when the
+  caller names one**, so an edit that changes the network does not silently reset
+  the backend to the default.
+
+  `:workspace_path` is required here as well as on insert: an edit may move a
+  space's workspace, but it may not leave the space without one — every agent in
+  it would then fail to start. The insert-only requirement still lives in
+  `create_changeset/2`, so `rename_space/1` on a row a previous build left
+  workspace-less keeps working.
+  """
+  @spec environment_changeset(Ecto.Schema.t() | Ecto.Changeset.t(), map()) ::
+          Ecto.Changeset.t()
+  def environment_changeset(source, params) do
+    source
+    |> cast(params, [:workspace_path, :network_access])
+    |> cast_named_backend(params)
+    |> validate_required([:workspace_path])
+    |> validate_inclusion(:sandbox_backend, @sandbox_backends,
+      message: "must be one of #{Enum.join(@sandbox_backends, ", ")}"
+    )
+  end
+
+  defp cast_named_backend(changeset, params) do
+    [:sandbox_backend, "sandbox_backend"]
+    |> Enum.map(&Map.get(params, &1))
+    |> Enum.find(&present?/1)
+    |> case do
+      nil -> changeset
+      backend -> cast(changeset, %{sandbox_backend: backend}, [:sandbox_backend])
+    end
+  end
+
+  @doc """
   Build the changeset for **inserting** a space row: `changeset/2` plus the
   creation-only `:sandbox_backend`.
 

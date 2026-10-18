@@ -84,6 +84,36 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
   # internal terms from the space insert and the agent spawn. Everything
   # except the first two groups stays generic (and logged), because an
   # `Ecto.Changeset` is neither `to_string/1`-able nor fit to show a user.
+  # The space edit's reply codes: the same refusals a create can carry (a
+  # workspace the sandbox will not run, a tagged config-file reason), plus the
+  # one field a client sends by *value* — the backend.
+  @doc false
+  def edit_space_payload(reason) do
+    case reason do
+      simple when simple in @simple_reasons ->
+        {:error, %{"reason" => to_string(simple)}}
+
+      tagged when is_tagged(tagged) ->
+        tagged_payload(tagged, {"Failed to edit space", "failed_to_edit"})
+
+      %Ecto.Changeset{} = changeset ->
+        edit_space_changeset_payload(changeset)
+
+      other ->
+        Logger.error("Failed to edit space: #{inspect(other)}")
+        {:error, %{"reason" => "failed_to_edit"}}
+    end
+  end
+
+  defp edit_space_changeset_payload(%Ecto.Changeset{errors: errors}) do
+    if Keyword.has_key?(errors, :sandbox_backend) do
+      {:error, %{"reason" => "invalid_sandbox_backend"}}
+    else
+      Logger.error("Failed to edit space: #{inspect(errors)}")
+      {:error, %{"reason" => "failed_to_edit"}}
+    end
+  end
+
   @doc false
   def create_payload(reason) do
     case reason do

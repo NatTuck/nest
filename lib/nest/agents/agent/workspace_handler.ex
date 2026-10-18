@@ -132,12 +132,43 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
     ]
   end
 
+  @doc """
+  The values a *running* agent's mounts already carry.
+
+  For the start path, where the change happened while the agent was stopped: the
+  mounts were built from the space's current row, so the notice is a statement of
+  what they say rather than of anything new.
+  """
+  @spec values_from_mounts(Agent.t()) :: values()
+  def values_from_mounts(state) do
+    %{
+      workspace: Mounts.workspace(state.mounts),
+      network_access: Mounts.network_access(state.mounts),
+      backend: Mounts.backend(state.mounts)
+    }
+  end
+
   # One sentence per property, naming the values now in force. A single line
   # rather than a bulleted list because it is a notice, not a document.
+  #
+  # The mode sentence is here because the prompt's own enforcement sentence was
+  # composed for the backend the agent *started* on and is never rebuilt (prefix
+  # cache) — so after a backend change the prompt would keep making a claim the
+  # new backend cannot honour. The notice is the only place that can correct it.
   defp body(values) do
     "This space's environment changed. Workspace: #{values.workspace || "(none)"}. " <>
       "Network access: #{if values.network_access, do: "enabled", else: "disabled"}. " <>
-      "Sandbox: #{values.backend}."
+      "Sandbox: #{values.backend}. " <> enforcement_sentence(values.backend)
+  end
+
+  defp enforcement_sentence(backend) when backend in ["bwrap", "docker"] do
+    "The `plan` restriction is enforced here: a write outside the scratch " <>
+      "directory fails."
+  end
+
+  defp enforcement_sentence(_backend) do
+    "The `plan` restriction is not enforced on this backend: nothing here stops " <>
+      "a write, so keep to it yourself."
   end
 
   defp tool_names(state) do

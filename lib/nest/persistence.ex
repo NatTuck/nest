@@ -535,6 +535,21 @@ defmodule Nest.Persistence do
   defp ensure_not_archived(%PersistedAgent{archived: true}), do: {:error, :archived}
   defp ensure_not_archived(%PersistedAgent{}), do: :ok
 
+  @doc """
+  Set or clear one agent's `space_notice_pending` flag.
+
+  Set for every agent in a space by `Nest.Spaces.update_environment/2`; cleared by
+  the agent itself when it appends the notice — from the cast if it was live, or
+  from its own start path if it was stopped.
+  """
+  @spec set_space_notice_pending(integer(), String.t(), boolean()) :: :ok
+  def set_space_notice_pending(space_id, name, pending) when is_boolean(pending) do
+    from(a in PersistedAgent, where: a.space_id == ^space_id and a.name == ^name)
+    |> Repo.update_all(set: [space_notice_pending: pending])
+
+    :ok
+  end
+
   # The `Agent.start_link/1` attrs map. Extracted from
   # `build_attrs_for_start/2` so the load path stays under credo's ABC
   # cap (the map literal is the bulk of the assignments).
@@ -548,6 +563,7 @@ defmodule Nest.Persistence do
       workspace_path: Nest.Spaces.workspace_path(row.space_id),
       sandbox_backend: Nest.Spaces.sandbox_backend(row.space_id),
       network_access: Nest.Spaces.network_access(row.space_id),
+      space_notice_pending: row.space_notice_pending == true,
       next_message_index: row.next_message_index,
       last_compaction_index: boundary,
       mode: row.mode,

@@ -143,6 +143,11 @@ defmodule Nest.Agents.PersistedAgent do
     # from persisted message-history / parent-child joins.
     field :archived, :boolean, default: false
 
+    # Set by `Nest.Spaces.update_environment/2` on every agent in the space. A
+    # live agent is told immediately and clears it; a stopped one announces the
+    # change when it next starts.
+    field :space_notice_pending, :boolean, default: false
+
     timestamps(type: :utc_datetime_usec)
   end
 

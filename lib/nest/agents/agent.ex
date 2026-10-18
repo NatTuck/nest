@@ -288,23 +288,16 @@ defmodule Nest.Agents.Agent do
   # Change the agent's resolved LLM client + persisted `model` map.
   # Handler: `IntrospectionHandler` → `ModelHandler`.
   @doc """
-  Point this agent at the space's current network access.
+  Tell a live agent that its space's environment changed.
 
-  A space's network access is editable, and it rides the agent's `Mounts` — which
-  are built once, at start. So a change has to *reach* the agent, or a live agent
-  keeps the value it started with and the space's own claim that the change takes
-  effect for its agents' subsequent commands is false.
-
-  A **cast**, unlike `set_model/2`: the edit must not wait on an agent's turn,
-  and there is nothing to refuse — the value is the space's, not the agent's. The
-  mounts are updated and the tool closures are rebuilt (they capture the mounts);
-  a turn already in flight picks the new value up at its next settle, which is
-  when `Turn.build_ctx/2` re-reads them. The caller is
-  `Nest.Spaces.set_network_access/2`.
+  `values` is `Nest.Spaces.environment_values/1`: the workspace, the network
+  access and the backend now in force. The agent moves its mounts, rebuilds its
+  tool closures from them, and appends a notice pair — see
+  `Nest.Agents.Agent.WorkspaceHandler`.
   """
-  @spec set_network_access(pid(), boolean()) :: :ok
-  def set_network_access(pid, value) when is_boolean(value) do
-    GenServer.cast(pid, {:set_network_access, value})
+  @spec space_changed(pid(), map()) :: :ok
+  def space_changed(pid, values) when is_pid(pid) and is_map(values) do
+    GenServer.cast(pid, {:space_changed, values})
   end
 
   @spec set_model(pid(), map()) :: :ok | {:error, term()}
@@ -450,6 +443,7 @@ defmodule Nest.Agents.Agent do
     case Config.create_client_config(model) do
       {:ok, client_config} ->
         state = Init.build_active_state(attrs, client_config)
+        announce_pending_space_change(attrs)
 
         case Map.get(attrs, :sequence_violations, []) do
           [] ->
@@ -479,6 +473,16 @@ defmodule Nest.Agents.Agent do
 
         {:ok, Callbacks.build_recovery_state(attrs, model, reason)}
     end
+  end
+
+  # The space changed while this agent was stopped: `init/1` may not touch the DB,
+  # so it hands the announcement to a message it sends itself, and the notice is
+  # appended from the mounts it just started with — already the space's current
+  # values. `Nest.Spaces.update_environment/2` sets the flag on every agent in the
+  # space, live or not.
+  defp announce_pending_space_change(attrs) do
+    if attrs[:space_notice_pending], do: send(self(), :space_notice_pending)
+    :ok
   end
 
   defp log_active_start(state) do

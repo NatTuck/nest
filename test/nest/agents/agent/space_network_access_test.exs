@@ -4,7 +4,7 @@ defmodule Nest.Agents.Agent.SpaceNetworkAccessTest do
 
   `spaces.network_access` is carried on an agent's `Nest.Sandbox.Mounts`, which
   is what its caps are resolved from and what its tool closures were built with
-  — so `Nest.Spaces.set_network_access/2` has to hand the new value to every
+  — so `Nest.Spaces.update_environment/2` has to hand the new value to every
   live agent in the space. Without that push a live agent would keep the value
   it started with until it was restarted, which is the hole this closes.
 
@@ -32,11 +32,11 @@ defmodule Nest.Agents.Agent.SpaceNetworkAccessTest do
     assert names != []
     assert network_access(pid) == true
 
-    assert {:ok, _space} = Spaces.set_network_access(space_id, false)
+    assert {:ok, _space} = Spaces.update_environment(space_id, %{network_access: false})
     assert network_access(pid) == false
     assert tool_names(pid) == names
 
-    assert {:ok, _space} = Spaces.set_network_access(space_id, true)
+    assert {:ok, _space} = Spaces.update_environment(space_id, %{network_access: true})
     assert network_access(pid) == true
     assert tool_names(pid) == names
   end
@@ -50,7 +50,7 @@ defmodule Nest.Agents.Agent.SpaceNetworkAccessTest do
 
     assert other_space_id != first_space_id
 
-    assert {:ok, _space} = Spaces.set_network_access(first_space_id, false)
+    assert {:ok, _space} = Spaces.update_environment(first_space_id, %{network_access: false})
 
     assert network_access(pid) == false
     assert network_access(other_pid) == true

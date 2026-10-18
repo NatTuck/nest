@@ -14,10 +14,12 @@ defmodule Nest.Spaces do
 
   alias Nest.Agents
   alias Nest.Agents.NameGenerator
+  alias Nest.Agents.PersistedAgent
   alias Nest.Agents.Supervisor
   alias Nest.Blueprints
   alias Nest.Persistence
   alias Nest.Repo
+  alias Nest.Sandbox
   alias Nest.Sandbox.Backend
   alias Nest.Spaces.CreationParams
   alias Nest.Spaces.Space
@@ -177,42 +179,83 @@ defmodule Nest.Spaces do
   end
 
   @doc """
-  Turn this space's network access on or off.
+  Edit this space's **environment**: its workspace, its network access and its
+  sandbox backend.
 
-  Editable, unlike `sandbox_backend`: a space can be closed off or opened up
-  without recreating it. Every live agent in the space is told as part of the
-  change, so the *next* command it runs already resolves its caps with the new
-  value; a command already in flight keeps the caps it started with.
+  One action owns all three because they are one decision. Every agent in the
+  space inherits them, and an agent's `Nest.Sandbox.Mounts` is built from them
+  once at start — so the row is the truth, and the agents have to be told.
 
-  A `"docker"` space's container is removed as part of the change, because
-  `--network none` is fixed when the container is created: without that, the next
-  command would keep using the container's old network. The container is
-  recreated lazily by that next command, and everything that lived only in it —
-  the agents' `/tmp` (offloads, background-job logs) and any running background
-  job — goes with it. The UI says so before the toggle is flipped. For a
-  `"none"` space nothing is released: the caps were never enforceable there, and
-  the toggle has always been advisory.
+  Nothing is restarted. A live agent is cast the new values
+  (`Nest.Agents.Agent.space_changed/2`): its mounts move, its tool closures are
+  rebuilt from them, and it appends a notice pair stating the environment now in
+  force. Its system prompt is deliberately **not** rebuilt — that would break the
+  LLM prefix cache — which is why the notice exists.
+
+  A `"docker"` space's container is released when the **backend** changes,
+  because the container is the old backend's: `--network` and the image are fixed
+  at creation. `remove_sandbox/1` is therefore given the **old** backend, read
+  before the row is written; reading it afterwards would release the new
+  backend's containers and leak the old. Everything that lived only in the
+  container — the agents' `/tmp` (offloads, background-job logs) and any running
+  background job — goes with it, and the UI says so before the save.
+
+  Every agent in the space gets `space_notice_pending` set first, so one that is
+  *stopped* still announces the change when it next starts; a live one clears it
+  as it appends. That is the seam that keeps a stopped agent from silently
+  running on a stale environment.
 
   Returns `{:ok, space}` or `{:error, reason}`.
   """
-  @spec set_network_access(integer(), boolean()) ::
+  @spec update_environment(integer(), map()) ::
           {:ok, Space.t()} | {:error, Ecto.Changeset.t() | :not_found}
-  def set_network_access(id, value) when is_integer(id) and is_boolean(value) do
+  def update_environment(id, params) when is_integer(id) and is_map(params) do
     case get_space(id) do
       nil ->
         {:error, :not_found}
 
-      %Space{} = space ->
-        case space |> Space.changeset(%{network_access: value}) |> Repo.update() do
-          {:ok, updated} ->
-            remove_sandbox(updated)
-            tell_agents(updated, value)
-            {:ok, updated}
+      %Space{sandbox_backend: old_backend} = space ->
+        changeset = Space.environment_changeset(space, params)
 
-          error ->
-            error
+        with :ok <- workspace_gate(changeset),
+             {:ok, updated} <- Repo.update(changeset) do
+          # The *old* backend: the containers to release are the ones it made.
+          remove_sandbox(%{updated | sandbox_backend: old_backend})
+          mark_notice_pending(updated)
+          tell_agents(updated)
+          {:ok, updated}
         end
     end
+  end
+
+  # A workspace the sandbox cannot run is refused **here** rather than at the next
+  # agent start: the edit is the moment the user can still pick another one, and
+  # the reply codes are the ones the create path already produces.
+  defp workspace_gate(changeset) do
+    case Ecto.Changeset.get_change(changeset, :workspace_path) do
+      nil -> :ok
+      path -> Sandbox.workspace_error(path)
+    end
+  end
+
+  # The space's environment, as the three values an agent's mounts carry.
+  @spec environment_values(Space.t()) :: map()
+  def environment_values(%Space{} = space) do
+    %{
+      workspace_path: space.workspace_path,
+      network_access: space.network_access,
+      sandbox_backend: space.sandbox_backend
+    }
+  end
+
+  # Every agent in the space, live or not, is owed the notice. A live one is told
+  # by the cast that follows and clears the flag as it appends; one with no
+  # process behind it keeps the flag and announces on its next start.
+  defp mark_notice_pending(%Space{id: id}) do
+    from(a in PersistedAgent, where: a.space_id == ^id)
+    |> Repo.update_all(set: [space_notice_pending: true])
+
+    :ok
   end
 
   @doc """
@@ -417,23 +460,24 @@ defmodule Nest.Spaces do
     Backend.remove_space(id, backend)
   end
 
-  # Hand the space's new network access to every live agent in it. The value
-  # travels on an agent's `Nest.Sandbox.Mounts`, which is what its caps are
-  # resolved from and what its tool closures were built with, so an agent that
-  # started before the change would otherwise keep the old value for the rest of
-  # its life — this is the only thing that closes that window short of a restart.
+  # Hand the space's new environment to every live agent in it. The values travel
+  # on an agent's `Nest.Sandbox.Mounts`, which is what its caps are resolved from
+  # and what its tool closures were built with, so an agent that started before
+  # the change would otherwise keep the old values for the rest of its life —
+  # this is the only thing that closes that window short of a restart.
   #
-  # A cast, not a call: the value is the *space's*, so there is nothing an agent
-  # could refuse, and an edit to a space must not wait on a turn. Nothing is
-  # reported back either — a name in the registry with no live process behind it
-  # is skipped, which the registry already guarantees but the lookup is what makes
-  # true rather than assumed.
-  defp tell_agents(%Space{id: id}, value) do
+  # A cast, not a call: the values are the *space's*, so there is nothing an agent
+  # could refuse, and an edit must not wait on a turn. A name in the registry with
+  # no live process behind it is skipped; that agent's `space_notice_pending` flag
+  # is what tells it on its next start.
+  defp tell_agents(%Space{id: id} = space) do
+    values = environment_values(space)
+
     id
     |> Agents.Registry.list_for_space()
     |> Enum.each(fn name ->
       case Agents.Registry.lookup(id, name) do
-        {:ok, pid} -> Agents.Agent.set_network_access(pid, value)
+        {:ok, pid} -> Agents.Agent.space_changed(pid, values)
         {:error, :not_found} -> :ok
       end
     end)

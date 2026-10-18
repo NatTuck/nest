@@ -190,7 +190,7 @@ defmodule Nest.Spaces.NetworkAccessTest do
     end
   end
 
-  describe "set_network_access/2" do
+  describe "update_environment/2" do
     test "turns it off and back on" do
       {:ok, space} =
         Spaces.create_space(nil, %{
@@ -198,15 +198,19 @@ defmodule Nest.Spaces.NetworkAccessTest do
           name: unique("net-set")
         })
 
-      assert {:ok, %Space{network_access: false}} = Spaces.set_network_access(space.id, false)
+      assert {:ok, %Space{network_access: false}} =
+               Spaces.update_environment(space.id, %{network_access: false})
+
       assert Spaces.network_access(space.id) == false
 
-      assert {:ok, %Space{network_access: true}} = Spaces.set_network_access(space.id, true)
+      assert {:ok, %Space{network_access: true}} =
+               Spaces.update_environment(space.id, %{network_access: true})
+
       assert Spaces.network_access(space.id) == true
     end
 
     test "refuses a missing space" do
-      assert {:error, :not_found} = Spaces.set_network_access(-1, false)
+      assert {:error, :not_found} = Spaces.update_environment(-1, %{network_access: false})
     end
 
     test "leaves the space's other properties alone" do
@@ -217,7 +221,7 @@ defmodule Nest.Spaces.NetworkAccessTest do
           sandbox_backend: "none"
         })
 
-      assert {:ok, updated} = Spaces.set_network_access(space.id, false)
+      assert {:ok, updated} = Spaces.update_environment(space.id, %{network_access: false})
 
       assert updated.sandbox_backend == "none"
       assert updated.name == space.name
@@ -239,8 +243,11 @@ defmodule Nest.Spaces.NetworkAccessTest do
           sandbox_backend: "docker"
         })
 
-      assert {:ok, %Space{network_access: false}} = Spaces.set_network_access(docker.id, false)
-      assert {:ok, %Space{network_access: true}} = Spaces.set_network_access(docker.id, true)
+      assert {:ok, %Space{network_access: false}} =
+               Spaces.update_environment(docker.id, %{network_access: false})
+
+      assert {:ok, %Space{network_access: true}} =
+               Spaces.update_environment(docker.id, %{network_access: true})
 
       {:ok, plain} =
         Spaces.create_space(nil, %{
@@ -248,7 +255,8 @@ defmodule Nest.Spaces.NetworkAccessTest do
           name: unique("net-release-plain")
         })
 
-      assert {:ok, %Space{network_access: false}} = Spaces.set_network_access(plain.id, false)
+      assert {:ok, %Space{network_access: false}} =
+               Spaces.update_environment(plain.id, %{network_access: false})
     end
   end
 end

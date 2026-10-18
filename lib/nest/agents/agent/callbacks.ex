@@ -27,37 +27,27 @@ defmodule Nest.Agents.Agent.Callbacks do
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Watch
-  alias Nest.Messages.NoticeTag
-  alias Nest.Sandbox.Mounts
+  alias Nest.Agents.Agent.WorkspaceHandler
+  alias Nest.Persistence
 
-  # The space's network access changed (`Nest.Spaces.set_network_access/2`).
+  # The space's environment changed (`Nest.Spaces.update_environment/2`): the
+  # workspace, the network access and the backend, all three.
   #
-  # Two things move together and must not drift: the mounts (and the tool closures
-  # built from them) and the agent's *knowledge* of the change. The system prompt's
-  # network sentence was composed from the value the agent started with and is
-  # deliberately never rebuilt — changing it would break the prefix cache — so a
-  # `[Nest notice]` in the transcript is the only thing that makes the change
-  # visible to the model. It is a message, not a system-message edit.
+  # `WorkspaceHandler` moves the mounts, rebuilds the tool closures from them and
+  # appends the notice pair — after a preflight check, so a conversation that
+  # needs compaction defers the notice rather than dropping it. The system prompt
+  # is deliberately not rebuilt (prefix cache), which is why the notice exists.
   #
-  # Nothing is refused and nothing waits: the value is the space's. The notice is
-  # *queued*, not appended, and this is the one judgement call in the change:
-  # `Turn.drain_inbox/1` would append it immediately, but draining starts a turn,
-  # and a turn is an LLM call — a space-wide toggle would cost one per live agent,
-  # which is not a cost a checkbox should have. Queued means the agent learns it
-  # at the start of its next turn, which is when it can act on it.
-  # A turn in flight re-reads the mounts at its next settle.
-  def handle_cast({:set_network_access, value}, state) do
-    state = apply_network_access(state, value)
-
-    {:noreply,
-     Inbox.enqueue_internal(
-       state,
-       nil,
-       network_notice(value, Mounts.backend(state.mounts)),
-       :notice
-     )}
+  # Nothing is refused and nothing waits: the values are the *space's*. The notice
+  # is appended, not queued: appending costs no turn, while queueing would defer
+  # it to the agent's next one — and a space edit must not cost an LLM call per
+  # live agent.
+  def handle_cast({:space_changed, values}, state) do
+    {state, _result} = WorkspaceHandler.apply_space_environment(state, to_mounts_values(values))
+    {:noreply, clear_space_notice(state)}
   end
 
+  # A tool worker's "my `agents-send` reached its target"
   # A tool worker's "my `agents-send` reached its target": a turn event for this
   # agent, translated by `Turn.handle/2` like the other worker results. The
   # worker casts it *before* its `{:tool_results, …}`, so the debt is discharged
@@ -151,61 +141,8 @@ defmodule Nest.Agents.Agent.Callbacks do
     end
   end
 
-  # Move the agent onto the space's new network access. The mounts are what carry
-  # it (`Nest.Sandbox.Mounts.network_access/1`), and the tool closures capture
-  # them — `Nest.Agents.Agent.Tools.get_functions/2` is the one builder — so both
-  # have to move together. Nothing else in the mounts changed, which is why this
-  # is a two-field update rather than a re-resolve.
-  defp apply_network_access(state, value) do
-    mounts = %{state.mounts | network_access: value}
-
-    %{state | mounts: mounts, tools: Nest.Tools.get_functions(tool_names(state), mounts)}
-  end
-
-  # What the agent is told when the space's network access changes. One sentence,
-  # in one place: the prompt's own sentence is the value the agent started with
-  # (`SystemPrompt.network_sentence/2`, never rebuilt while a conversation is
-  # live), so this is the only thing that makes a change visible. The
-  # `[mode: notice]` prefix and `NoticeTag` are the shape
-  # `WorkspaceHandler.notice_pair/1` already uses, so every runtime notice is
-  # built alike.
-  # The confident sentence is enumerated over the backends that actually
-  # enforce, and the catch-all is the honest one: a backend added later inherits
-  # "cannot enforce" rather than a claim it cannot keep, which is the failure mode
-  # this pair exists to prevent. `none` runs the bare command on the host, so
-  # nothing restricts its network in either direction.
-  defp network_notice(value, backend) when backend in ["bwrap", "docker"] do
-    if value do
-      "[mode: notice]\n" <>
-        NoticeTag.tag(
-          "Network access for this space is now enabled: your commands can reach the " <>
-            "network."
-        )
-    else
-      "[mode: notice]\n" <>
-        NoticeTag.tag(
-          "Network access for this space is now disabled: the sandbox blocks your " <>
-            "commands from reaching the network."
-        )
-    end
-  end
-
-  defp network_notice(value, _backend) do
-    "[mode: notice]\n" <>
-      NoticeTag.tag(
-        "Network access for this space is now #{enabled_or_disabled(value)}, but this " <>
-          "space has no sandbox to enforce it: your commands can reach the network " <>
-          "either way."
-      )
-  end
-
-  defp enabled_or_disabled(true), do: "enabled"
-  defp enabled_or_disabled(false), do: "disabled"
-
   # The tool *names* an agent was built with, so the closures can be rebuilt
   # without re-reading the vocation. `state.tools` holds the closures themselves.
-  defp tool_names(%{tools: tools}), do: Enum.map(tools, & &1.name)
-
   # Construct the `:model_missing` recovery state. The
   # implementation lives in `Init.Recovery` so this module
   # stays focused on the dispatch surface.
@@ -402,7 +339,35 @@ defmodule Nest.Agents.Agent.Callbacks do
 
   # Compaction completion is handled in-process by the `{:commit_done}`
   # transition (`Machine.Compaction.resume/1`), so it never arrives here.
+  # The space changed while this agent was **stopped**, so nobody could cast it.
+  # `init/1` sends this to itself — it may not touch the DB — and the notice is
+  # appended here, from the mounts the agent just started with, which are already
+  # the space's current values.
+  def handle_info(:space_notice_pending, state) do
+    {state, _result} =
+      WorkspaceHandler.apply_space_environment(state, WorkspaceHandler.values_from_mounts(state))
+
+    {:noreply, clear_space_notice(state)}
+  end
+
   def handle_info(msg, state) do
     Handlers.handle(msg, state)
+  end
+
+  # The cast carries the space's own names; the handler works in mount names.
+  defp to_mounts_values(values) do
+    %{
+      workspace: values.workspace_path,
+      network_access: values.network_access,
+      backend: values.sandbox_backend
+    }
+  end
+
+  # The flag is only set by a space edit, so clearing it is the last thing either
+  # notice path does — once the notice is in the transcript, or deferred behind a
+  # compaction that will append it.
+  defp clear_space_notice(state) do
+    :ok = Persistence.set_space_notice_pending(state.space_id, state.name, false)
+    state
   end
 end

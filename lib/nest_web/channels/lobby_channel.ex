@@ -328,34 +328,16 @@ defmodule NestWeb.LobbyChannel do
     do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
 
   @impl true
-  def handle_in("set_space_network", %{"space_id" => space_id, "network_access" => value}, socket)
-      when is_integer(space_id) and is_boolean(value) do
-    case Authz.authorize_space_owner(space_id, socket.assigns.current_user) do
-      {:ok, :owner} ->
-        case Spaces.set_network_access(space_id, value) do
-          {:ok, space} ->
-            # Announced on the per-user topic like every other space-set change,
-            # so the owner's other sessions show the same value — and so the
-            # toggle is not the only place it exists.
-            broadcast_space_updated(socket, space)
-            {:reply, {:ok, %{"network_access" => space.network_access}}, socket}
-
-          {:error, :not_found} ->
-            {:reply, {:error, %{"reason" => "not_found"}}, socket}
-
-          {:error, other} ->
-            # A changeset refusal here would be a bug: the value is a boolean and
-            # the row already exists and is valid.
-            Logger.error("Failed to set network access on space #{space_id}: #{inspect(other)}")
-            {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
-        end
-
-      {:error, reason} ->
-        {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
+  def handle_in("edit_space", %{"space_id" => space_id} = payload, socket)
+      when is_integer(space_id) do
+    if valid_environment_payload?(payload) do
+      do_edit_space(space_id, payload, socket)
+    else
+      {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
     end
   end
 
-  def handle_in("set_space_network", _payload, socket),
+  def handle_in("edit_space", _payload, socket),
     do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
 
   @impl true
@@ -681,4 +663,54 @@ defmodule NestWeb.LobbyChannel do
       [first | _] -> first.slug
     end
   end
+
+  # The three environment properties, from either key shape. Only these three are
+  # taken: the edit is not a general space update, and `name`/`slug` have their
+  # own action.
+  @environment_keys ["workspace_path", "network_access", "sandbox_backend"]
+
+  defp environment_params(payload) do
+    payload
+    |> Map.take(@environment_keys)
+    |> Map.new(fn {key, value} -> {String.to_existing_atom(key), value} end)
+  end
+
+  # A `network_access` that is not a boolean is a client bug rather than a
+  # changeset refusal: the column is a boolean, and this is its only writer.
+  # Answering `not_found` (the row is there) or `failed_to_edit` would both be
+  # misleading about a payload the client got wrong.
+  defp valid_environment_payload?(payload) do
+    case Map.fetch(payload, "network_access") do
+      :error -> Enum.any?(@environment_keys, &Map.has_key?(payload, &1))
+      {:ok, value} -> is_boolean(value)
+    end
+  end
+
+  defp do_edit_space(space_id, payload, socket) do
+    case Authz.authorize_space_owner(space_id, socket.assigns.current_user) do
+      {:ok, :owner} ->
+        case Spaces.update_environment(space_id, environment_params(payload)) do
+          {:ok, space} ->
+            # Announced on the per-user topic like every other space-set change,
+            # so the owner's other sessions show the same values — and so the
+            # dialog is not the only place they exist.
+            broadcast_space_updated(socket, space)
+            # String keys: the reply is the wire, and the client reads
+            # `network_access`/`workspace_path`/`sandbox_backend`.
+            {:reply, {:ok, wire_values(Spaces.environment_values(space))}, socket}
+
+          {:error, :not_found} ->
+            {:reply, {:error, %{"reason" => "not_found"}}, socket}
+
+          {:error, reason} ->
+            {:reply, AgentErrors.edit_space_payload(reason), socket}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
+    end
+  end
+
+  defp wire_values(values),
+    do: Map.new(values, fn {key, value} -> {Atom.to_string(key), value} end)
 end

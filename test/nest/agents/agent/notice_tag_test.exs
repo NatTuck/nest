@@ -156,7 +156,9 @@ defmodule Nest.Agents.Agent.NoticeTagTest do
                "[mode: notice]\n" <>
                  NoticeTag.tag(
                    "This space's environment changed. Workspace: /tmp/ws. " <>
-                     "Network access: enabled. Sandbox: bwrap."
+                     "Network access: enabled. Sandbox: bwrap. " <>
+                     "The `plan` restriction is enforced here: a write outside the " <>
+                     "scratch directory fails."
                  )
 
       assert ack == "Space environment change confirmed."
