@@ -183,7 +183,9 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       assert Enum.all?(File.ls!(dir), &(not String.starts_with?(&1, "exec-")))
     end
 
-    test "read_file exceeding cap returns error with token-count hint", %{tmp_dir: dir} do
+    test "read_file exceeding cap is refused at stat time, naming bytes and limit", %{
+      tmp_dir: dir
+    } do
       # ~5_000 bytes ≈ 1_250 tokens → exceeds the 100-token override.
       big_content = TextFixtures.big_text(5_000)
       file = Path.join(dir, "big.txt")
@@ -205,14 +207,41 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
                      c
                    )
 
-          assert error =~ "File is"
-          assert error =~ "tokens which exceeds your requested limit of 100"
+          # The tool refuses before reading, so it has no token count to
+          # report and says so. `cook/2`'s own message (below) is the one that
+          # can name tokens, because it has the content.
+          assert error =~ "File is 5000 bytes"
+          assert error =~ "would exceed your 100-token limit"
+          assert error =~ "so it was not read"
         end)
 
       # The `is_error=true` cap-overflow path is a deliberate
       # diagnostic — assert on it so the test's intent is
       # self-documenting and the log doesn't escape to the test
       # output.
+      assert log =~ "BatchSizer produced is_error=true tool result"
+      assert log =~ "tool=file-read"
+    end
+
+    test "cook's file-read cap path still names a real token count" do
+      # The layer that has the content can count tokens, so it keeps the
+      # "File is N tokens" wording — and it stays the backstop for content
+      # denser than `estimate_bytes/1` assumes, which the stat-time gate lets
+      # through. Pinned here so the two messages cannot collapse into one: the
+      # tool must not claim a token count it never computed, and this path must
+      # not lose the count it did.
+      big = TextFixtures.big_text(5_000)
+      tc = call("c1", "file-read", %{"path" => "big.txt", "max_result_tokens" => 100})
+      c = ctx([], context_limit: 100_000)
+
+      log =
+        capture_log(fn ->
+          assert [%ToolResult{is_error: true, content: error}] =
+                   BatchSizer.cook([{tc, :ok, big}], c)
+
+          assert error =~ "tokens which exceeds your requested limit of 100"
+        end)
+
       assert log =~ "BatchSizer produced is_error=true tool result"
       assert log =~ "tool=file-read"
     end
