@@ -174,6 +174,29 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
 
     eventually(fn -> length(Persistence.load_messages(space_id, name)) > 1 end)
     eventually(fn -> Agent.get_public_info(pid, 1_000).pending_messages == [] end)
+    # Both waits above are satisfied the moment the turn *starts*, and
+    # `AgentTestLifecycle` refuses a test that leaves an owned agent in flight, so
+    # the turn has to be seen to finish before the body returns.
+    eventually(fn -> Agent.get_public_info(pid, 1_000).status == :idle end)
+  end
+
+  # The unlock's drain is `Turn.drain_inbox/1`, the single drain path, so it keeps
+  # that path's mode bookkeeping: a queued message's mode is *written down* when it
+  # is delivered (`keep_mode/2`). A hand-rolled peek-then-settle would apply the
+  # mode in memory and never persist it, and a restart would put the agent back in
+  # the mode the row still holds.
+  test "the unlock's drain writes down the mode a queued message asked for" do
+    {pid, name} = AgentTestHelpers.start_agent()
+    space_id = AgentTestHelpers.current_space_id()
+
+    assert :ok = SpaceGate.hold(space_id)
+    assert :ok = Agents.chat(space_id, name, "hi", "plan", "tester", true)
+
+    assert :ok = SpaceGate.release(space_id)
+
+    eventually(fn -> Agent.get_public_info(pid, 1_000).current_mode == "plan" end)
+    assert {:ok, %{mode: "plan"}} = Persistence.fetch_agent(space_id, name)
+    eventually(fn -> Agent.get_public_info(pid, 1_000).status == :idle end)
   end
 
   # The plan has to count a job that is really running: the confirmation is what

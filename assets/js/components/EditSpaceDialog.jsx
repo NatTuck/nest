@@ -120,9 +120,13 @@ export function EditSpaceDialog({ open, onClose, space }) {
 
   // Closing while the space is paused releases it: the latch the preview took is
   // what stops anything starting in the space, and the server holds it until this
-  // session says no (or its claim expires). A no-op when nothing is held.
+  // session says no (or its claim expires). Sent unconditionally rather than only
+  // when the plan is on screen: the reply that carries the plan can arrive after
+  // the close, and a claim taken by that in-flight push has no other way down
+  // before its TTL. The release is owner-scoped server-side, so a dialog that
+  // never held anything is a no-op.
   const handleClose = () => {
-    if (confirmPlan) cancelEditSpace(space.id);
+    cancelEditSpace(space.id);
     setConfirmPlan(null);
     setSaving(false);
     onClose();

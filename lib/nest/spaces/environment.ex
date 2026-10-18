@@ -166,15 +166,29 @@ defmodule Nest.Spaces.Environment do
   # here — between the latch going up and the row being written — so nothing can
   # start in the window the cancellation opens.
   defp quiesce(id, plan) do
-    Enum.each(plan.agents, fn %{name: name} ->
-      case Agents.Registry.lookup(id, name) do
-        {:ok, pid} -> Agents.Agent.cancel_tools(pid, @environment_changed)
-        {:error, :not_found} -> :ok
-      end
-    end)
+    Enum.each(plan.agents, fn %{name: name} -> cancel_tools(id, name) end)
 
     Enum.each(live_agents(id), fn {name, _pid} -> ShellJobs.stop_jobs({id, name}) end)
 
     :ok
+  end
+
+  # A pid that dies between the registry read and this call has nothing left to
+  # cancel, and `GenServer.call/3` would otherwise *exit* the editing process —
+  # abandoning the edit after the quiesce and before the write, with no reply to
+  # the client. The plan is read while the user decides, so the agents it names
+  # have had the length of the dialog to stop.
+  defp cancel_tools(id, name) do
+    case Agents.Registry.lookup(id, name) do
+      {:ok, pid} ->
+        try do
+          Agents.Agent.cancel_tools(pid, @environment_changed)
+        catch
+          :exit, _ -> :ok
+        end
+
+      {:error, :not_found} ->
+        :ok
+    end
   end
 end

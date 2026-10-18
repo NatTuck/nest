@@ -26,7 +26,6 @@ defmodule Nest.Agents.Agent.Callbacks do
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.Turn
-  alias Nest.Agents.Agent.Turn.Executor
   alias Nest.Agents.Agent.Watch
   alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.Agents.SpaceGate
@@ -375,10 +374,9 @@ defmodule Nest.Agents.Agent.Callbacks do
   end
 
   # The space's latch came down. A turn that arrived while it was up is in the
-  # inbox (`chat_or_queue/5`), so this is the wake-up: the drain is the turn
-  # boundary's own — `Executor.peek_inbox/1` then the `{:inbox_drain, …}` event —
-  # rather than a second delivery path. A busy agent needs nothing: its next
-  # boundary drains.
+  # inbox (`chat_or_queue/5`), so this is the wake-up: the drain is
+  # `Turn.drain_inbox/1`, the single drain path, and not a second one. A busy agent
+  # needs nothing: its next boundary drains.
   def handle_info({:space_unlocked, space_id}, state) when space_id == state.space_id do
     {:noreply, drain_after_unlock(state)}
   end
@@ -389,16 +387,15 @@ defmodule Nest.Agents.Agent.Callbacks do
     Handlers.handle(msg, state)
   end
 
+  # `Turn.drain_inbox/1` rather than a peek plus a settle of our own: it is the
+  # documented single drain path, and it owns the mode bookkeeping a hand-rolled
+  # drain loses — it writes down a mode change it delivered (`keep_mode/2`) and
+  # undoes one whose message stayed queued (`restore_undelivered_mode/3`, issue
+  # #103). `Turn.notice_lost_batch/3` drains an idle agent the same way.
   defp drain_after_unlock(state) do
     if Machine.status_for(state.live.machine) == :idle do
-      case Executor.peek_inbox(state) do
-        :empty ->
-          state
-
-        {state, batch, content} ->
-          {:ok, settled} = Turn.settle(state, {:inbox_drain, batch, content})
-          settled
-      end
+      {state, _result} = Turn.drain_inbox(state)
+      state
     else
       state
     end

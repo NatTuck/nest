@@ -83,16 +83,16 @@ defmodule Nest.Agents.SpaceGate do
 
   # How long a claim may outlive its owner's last word. Long enough for a human to
   # read the confirmation dialog and decide; short enough that an abandoned one
-  # does not pause a space indefinitely. Configurable so a test can pin the
-  # expiry without waiting two minutes.
+  # does not pause a space indefinitely. A test that needs the expiry sooner
+  # passes its own to `hold/3`; there is deliberately **no** application setting,
+  # because one would shorten every space's claim at once — which is what made two
+  # suite tests flake while passing alone.
   @ttl_ms 120_000
 
   # The ceiling on a wait. The latch is guaranteed down well before this (the TTL
   # is the longest-lived claim), so reaching it means a claim was lost; the waiter
   # proceeds rather than hanging a tool worker, and says so in the log.
   @await_ms @ttl_ms + 60_000
-
-  defp ttl_ms, do: Application.get_env(:nest, :space_gate_ttl_ms, @ttl_ms)
 
   @type reason :: :space_edit
 
@@ -107,10 +107,15 @@ defmodule Nest.Agents.SpaceGate do
   """
   @spec held?(integer()) :: boolean()
   def held?(space_id) when is_integer(space_id) do
-    case :ets.whereis(@table) do
-      :undefined -> false
-      _reference -> :ets.member(@table, space_id)
-    end
+    :ets.member(@table, space_id)
+  rescue
+    # The table is the gate process's, so it goes when that process does: a
+    # restart between this call and the read leaves no latch to read, which is
+    # the same answer as "not held" (`await/2` and `chat_or_queue/5` both treat
+    # it as a pause that is over). Catching it here rather than probing with
+    # `:ets.whereis/1` keeps the hot path one call and closes the window between
+    # the probe and the read.
+    ArgumentError -> false
   end
 
   @doc """
@@ -253,7 +258,7 @@ defmodule Nest.Agents.SpaceGate do
 
   defp claim(state, space_id, reason, owner, ttl_ms) do
     ref = Process.monitor(owner)
-    timer = Process.send_after(self(), {:ttl, space_id, ref}, ttl_ms || ttl_ms())
+    timer = Process.send_after(self(), {:ttl, space_id, ref}, ttl_ms || @ttl_ms)
     claim = %{owner: owner, ref: ref, timer: timer, reason: reason}
 
     :ets.insert(@table, {space_id, reason})
