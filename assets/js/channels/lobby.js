@@ -35,6 +35,7 @@ export function joinLobby(onOk, onError) {
     store.setProviders(payload.providers || []);
     store.setSpaces(payload.spaces || []);
     store.setArchivedSpaces(payload.archived_spaces || []);
+    store.setPausedSpaces(payload.paused_space_ids || []);
     store.setBlueprints(payload.blueprints || []);
     store.setSuggestedName(payload.suggested_name);
     if (payload.current_user !== undefined) {
@@ -101,6 +102,21 @@ export function joinLobby(onOk, onError) {
   lobbyChannel.on("space:archived", (payload) => {
     if (payload?.space_id != null) {
       getStore().archiveSpace(payload.space_id);
+    }
+  });
+
+  // An environment edit is in progress, so the space's work is held: turns and
+  // tool calls wait until it finishes. Every session that can see the space gets
+  // this, which is what lets a second browser show the banner.
+  lobbyChannel.on("space:paused", (payload) => {
+    if (payload?.space_id != null) {
+      getStore().setSpacePaused(payload.space_id, true);
+    }
+  });
+
+  lobbyChannel.on("space:resumed", (payload) => {
+    if (payload?.space_id != null) {
+      getStore().setSpacePaused(payload.space_id, false);
     }
   });
 

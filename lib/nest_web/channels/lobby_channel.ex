@@ -26,6 +26,7 @@ defmodule NestWeb.LobbyChannel do
   alias Nest.Accounts
   alias Nest.Agents
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.SpaceGate
   alias Nest.Blueprints
   alias Nest.Models
   alias Nest.Spaces
@@ -62,57 +63,7 @@ defmodule NestWeb.LobbyChannel do
 
   @impl true
   def handle_info(:after_join, socket) do
-    user = socket.assigns.current_user
-
-    # Assign `user_id` before subscribing to anything. Every frame handler
-    # below keys off `socket.assigns.user_id` — notably the
-    # `{:spaces_changed, _}` guard, which would otherwise fall through to the
-    # drop clause — so the assign must not be something a later reader can
-    # outrun. Today nothing can be handled between here and the end of this
-    # function (`:after_join` is a single `handle_info/2`, and `join/3`
-    # self-sends it before any client push can arrive), but doing it first
-    # keeps that true by construction rather than by the accident that this
-    # body has not been split up yet.
-    socket = assign(socket, :user_id, user.id)
-
-    # Subscribe BEFORE the reads below. A frame that lands while we are
-    # reading is queued in this process's mailbox and handled after the
-    # `init` push, so the client always applies the newer state last.
-    Phoenix.PubSub.subscribe(Nest.PubSub, Spaces.user_topic(user.id))
-    space_subs = subscribe_space_topics(user.id)
-
-    spaces = Spaces.list_for_user(user.id)
-    archived_spaces = Spaces.list_archived_for_user(user.id)
-    agents = visible_agents_across_spaces(spaces, user.id)
-    archived_agents = archived_agents_across_spaces(spaces, user.id)
-    vocations = Vocations.list_vocations()
-    blueprints = Blueprints.list_blueprints()
-    models = safe_models_list()
-
-    push(socket, "init", %{
-      spaces: spaces,
-      archived_spaces: archived_spaces,
-      agents: agents,
-      archived_agents: archived_agents,
-      broken_agents: [],
-      blueprints: blueprints,
-      models: models,
-      vocations: vocations,
-      providers: Providers.providers(),
-      suggested_name: Spaces.suggest_name(),
-      current_user: public_current_user(user),
-      invites:
-        user.id
-        |> Accounts.list_user_invites()
-        |> Enum.map(&InviteJSON.public_invite/1)
-    })
-
-    Phoenix.PubSub.subscribe(Nest.PubSub, "models")
-
-    socket = assign(socket, :space_subs, space_subs)
-
-    fetch_broken_agents_async(socket, spaces, user.id)
-    {:noreply, socket}
+    {:noreply, after_join(socket)}
   end
 
   @impl true
@@ -133,13 +84,7 @@ defmodule NestWeb.LobbyChannel do
   # is no separate client push here.
   @impl true
   def handle_info({:models_scan_complete, %{scan_id: scan_id}}, socket) do
-    pending = Map.get(socket.assigns, :pending_rescan, [])
-
-    {matching, rest} = Enum.split_with(pending, fn {id, _ref} -> id == scan_id end)
-
-    Enum.each(matching, fn {_id, ref} -> reply(ref, {:ok, %{"scan_id" => scan_id}}) end)
-
-    {:noreply, assign(socket, :pending_rescan, rest)}
+    {:noreply, answer_scan_waiters(socket, scan_id)}
   end
 
   # A space's agent changed status. The frame arrives on the space topic, so
@@ -219,6 +164,22 @@ defmodule NestWeb.LobbyChannel do
     {:noreply, socket}
   end
 
+  # The space's before-starts latch (`Nest.Agents.SpaceGate`): an environment edit
+  # is in progress, so work in the space is held. Every session that can see the
+  # space is told, not only the one editing it — a second browser has to show that
+  # work is paused, and why, or the space looks broken.
+  @impl true
+  def handle_info({:space_locked, space_id}, socket) do
+    push(socket, "space:paused", %{"space_id" => space_id})
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:space_unlocked, space_id}, socket) do
+    push(socket, "space:resumed", %{"space_id" => space_id})
+    {:noreply, socket}
+  end
+
   # Anything else on a topic we subscribed to is a frame we do not know.
   # Without this clause a single unrecognised PubSub message would raise a
   # `FunctionClauseError` in `handle_info/2` and take the whole channel
@@ -229,6 +190,75 @@ defmodule NestWeb.LobbyChannel do
   def handle_info(message, socket) do
     Logger.warning("LobbyChannel ignoring unknown PubSub frame: #{inspect(message)}")
     {:noreply, socket}
+  end
+
+  # --- helpers for the `handle_info/2` frames above ---
+  #
+  # `handle_info/2` is one function however many clauses it has, so credo's ABC
+  # budget counts them all together; the bodies that are more than a push live
+  # here rather than between the clauses (which the compiler also warns about).
+
+  # The `init` push and the subscriptions around it.
+  #
+  # `user_id` is assigned before anything subscribes: every frame handler keys off
+  # `socket.assigns.user_id` — notably the `{:spaces_changed, _}` guard, which
+  # would otherwise fall through to the drop clause — so the assign must not be
+  # something a later reader can outrun.
+  #
+  # And the subscriptions come BEFORE the reads: a frame that lands while we are
+  # reading is queued in this process's mailbox and handled after the `init`
+  # push, so the client always applies the newer state last.
+  defp after_join(socket) do
+    user = socket.assigns.current_user
+
+    socket = assign(socket, :user_id, user.id)
+
+    Phoenix.PubSub.subscribe(Nest.PubSub, Spaces.user_topic(user.id))
+    space_subs = subscribe_space_topics(user.id)
+    spaces = Spaces.list_for_user(user.id)
+
+    push(socket, "init", init_payload(spaces, user))
+
+    Phoenix.PubSub.subscribe(Nest.PubSub, "models")
+
+    socket = assign(socket, :space_subs, space_subs)
+
+    fetch_broken_agents_async(socket, spaces, user.id)
+    socket
+  end
+
+  defp init_payload(spaces, user) do
+    %{
+      spaces: spaces,
+      archived_spaces: Spaces.list_archived_for_user(user.id),
+      # A session that joins while a space is paused has missed the
+      # `space:paused` frame, so the pause travels with the payload.
+      paused_space_ids: for(space <- spaces, SpaceGate.held?(space.id), do: space.id),
+      agents: visible_agents_across_spaces(spaces, user.id),
+      archived_agents: archived_agents_across_spaces(spaces, user.id),
+      broken_agents: [],
+      blueprints: Blueprints.list_blueprints(),
+      models: safe_models_list(),
+      vocations: Vocations.list_vocations(),
+      providers: Providers.providers(),
+      suggested_name: Spaces.suggest_name(),
+      current_user: public_current_user(user),
+      invites:
+        user.id
+        |> Accounts.list_user_invites()
+        |> Enum.map(&InviteJSON.public_invite/1)
+    }
+  end
+
+  # A rescan's terminal event: answer every push waiting on that scan.
+  defp answer_scan_waiters(socket, scan_id) do
+    pending = Map.get(socket.assigns, :pending_rescan, [])
+
+    {matching, rest} = Enum.split_with(pending, fn {id, _ref} -> id == scan_id end)
+
+    Enum.each(matching, fn {_id, ref} -> reply(ref, {:ok, %{"scan_id" => scan_id}}) end)
+
+    assign(socket, :pending_rescan, rest)
   end
 
   # All `handle_in` clauses grouped together so the compiler
@@ -409,8 +439,16 @@ defmodule NestWeb.LobbyChannel do
     |> MapSet.new()
   end
 
+  # Two topics per space: the frames about its agents, and the latch's
+  # paused/resumed pair. The latch has its own topic because a `{:space_unlocked,
+  # _}` frame on the space topic would reach the unknown-frame clause below for
+  # every watcher.
   defp subscribe_space_ids(ids) do
-    Enum.each(ids, &Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.space_topic(&1)))
+    Enum.each(ids, fn id ->
+      Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.space_topic(id))
+      Phoenix.PubSub.subscribe(Nest.PubSub, SpaceGate.topic(id))
+    end)
+
     ids
   end
 
@@ -430,7 +468,10 @@ defmodule NestWeb.LobbyChannel do
 
     have
     |> MapSet.difference(wanted)
-    |> Enum.each(&Phoenix.PubSub.unsubscribe(Nest.PubSub, Broadcasts.space_topic(&1)))
+    |> Enum.each(fn id ->
+      Phoenix.PubSub.unsubscribe(Nest.PubSub, Broadcasts.space_topic(id))
+      Phoenix.PubSub.unsubscribe(Nest.PubSub, SpaceGate.topic(id))
+    end)
 
     assign(socket, :space_subs, wanted)
   end

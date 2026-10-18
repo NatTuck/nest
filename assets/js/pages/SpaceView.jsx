@@ -22,6 +22,7 @@ import { Link, Navigate, useParams } from "react-router-dom";
 import { useStore } from "../store";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { EditSpaceDialog } from "../components/EditSpaceDialog";
+import { SpacePausedBanner } from "../components/SpacePausedBanner";
 import { StatusDot } from "../components/StatusDot";
 import { RpgPlayInterface } from "../components/RpgPlayInterface";
 import { SANDBOX_BACKENDS, sandboxBackendHelp } from "../utils/newSpaceForm";
@@ -144,6 +145,8 @@ export function SpaceView() {
           </button>
         </div>
       </div>
+
+      <SpacePausedBanner spaceId={space.id} spaceName={space.name} />
 
       <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
         Agents

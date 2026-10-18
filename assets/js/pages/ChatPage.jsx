@@ -28,6 +28,7 @@ import {
 } from "../channels";
 import { StatusBanner } from "../components/StatusBanner";
 import { NotificationBanner } from "../components/NotificationBanner";
+import { SpacePausedBanner } from "../components/SpacePausedBanner";
 import { ChatHeader } from "../components/ChatHeader";
 import { ChatComposer } from "../components/ChatComposer";
 import { ChatMessages } from "../components/ChatMessages";
@@ -556,6 +557,10 @@ export function ChatPage() {
           error={reloadError}
         />
       )}
+
+      {/* The space's environment is being edited: work is held, and the user
+          has to see that rather than an agent that looks stuck. */}
+      <SpacePausedBanner spaceId={spaceId} spaceName={space?.name} />
 
       {/* Notification banner */}
       <NotificationBanner

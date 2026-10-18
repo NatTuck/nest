@@ -24,6 +24,7 @@ defmodule Nest.Agents.Agent do
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.Registry
+  alias Nest.Agents.SpaceGate
   alias Nest.LLM.ClientConfig
   alias Nest.Messages.Assistant
   alias Nest.Messages.System
@@ -451,6 +452,13 @@ defmodule Nest.Agents.Agent do
     # ---------------------------------------------------------------------
     # Trap exits to ensure cleanup runs when agent is stopped
     Process.flag(:trap_exit, true)
+
+    # The space's before-starts latch: a turn that arrives while the space is
+    # being edited is queued rather than started
+    # (`Callbacks.chat_or_queue/5`), and the unlock is what wakes it
+    # (`Callbacks.handle_info({:space_unlocked, _})`). Subscribed once, here, so a
+    # deferral cannot subscribe a second time — PubSub does not deduplicate.
+    Phoenix.PubSub.subscribe(Nest.PubSub, SpaceGate.topic(attrs.space_id))
 
     do_init(attrs)
   end

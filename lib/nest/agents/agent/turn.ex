@@ -117,6 +117,12 @@ defmodule Nest.Agents.Agent.Turn do
   The space's `Nest.Agents.SpaceGate` latch is up when this runs, so a batch that
   was cancelled cannot start its next call against the old environment: it waits
   at the gate and runs under the new values.
+
+  Only a *long* tool can be cancelled, because only it owns an OS process to
+  stop — `Nest.Tools.ShellCmd.collect_output/5` is the one clause that matches the
+  message. A short tool waits at the gate instead, which is why it needs no
+  clause here and burns no retry; `Nest.Agents.SpaceGate`'s moduledoc states the
+  rule.
   """
   @spec cancel_tools(Agent.t(), String.t()) :: :ok
   def cancel_tools(state, reason) do

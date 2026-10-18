@@ -15,7 +15,6 @@ defmodule Nest.Agents.SpaceGateTest do
   alias Nest.Agents.SpaceGate
 
   setup do
-    on_exit(fn -> Application.delete_env(:nest, :space_gate_ttl_ms) end)
     :ok
   end
 
@@ -101,11 +100,12 @@ defmodule Nest.Agents.SpaceGateTest do
   end
 
   test "an abandoned claim expires" do
-    Application.put_env(:nest, :space_gate_ttl_ms, 20)
     id = watch(space_id())
 
     # Held by this process, which never releases it: a client alive but silent.
-    assert :ok = SpaceGate.hold(id)
+    # The TTL is passed per hold — a process-global setting would shorten every
+    # other test's claim too.
+    assert :ok = SpaceGate.hold(id, :space_edit, 20)
     assert SpaceGate.held?(id)
 
     assert_receive {:space_unlocked, ^id}, 1_000

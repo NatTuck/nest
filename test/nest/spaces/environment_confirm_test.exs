@@ -13,15 +13,22 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
 
   use Nest.DataCase, async: true
 
+  import Eventually
   import Mimic
 
   import Nest.Agents.AgentTurnTestHelpers
 
   alias Nest.Agents
+  alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.SpaceGate
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
+  alias Nest.Persistence
+  alias Nest.Sandbox.Mounts
+  alias Nest.Sandbox.Paths
+  alias Nest.Sandbox.ShellJobs
   alias Nest.Spaces
 
   setup :verify_on_exit!
@@ -118,6 +125,96 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
 
     assert :ok = SpaceGate.release(space_id)
     assert {:error, :not_found} = Task.await(starter, 1_000)
+  end
+
+  # The spawn paths do not go through `fetch_or_start_agent/2`, so the latch has
+  # to be taken by the spawn itself: it reads the space's workspace from the row
+  # and starts a process from it, and a child that started in the window would be
+  # new — no cast reaches it and no mark exists for it yet.
+  test "a spawn waits for the latch before it reads the row" do
+    {pid, _name} = AgentTestHelpers.start_agent()
+    space_id = AgentTestHelpers.current_space_id()
+    # allowlist: harness — spawn_agent_in_space/3's state argument
+    parent = :sys.get_state(pid, 1_000)
+    child = "child-#{System.unique_integer([:positive])}"
+
+    assert :ok = SpaceGate.hold(space_id)
+
+    spawner =
+      Task.async(fn ->
+        Supervisor.spawn_agent_in_space(parent, child, AgentTestHelpers.vocation_slug_for_test())
+      end)
+
+    assert Task.yield(spawner, 100) == nil
+    assert Nest.Persistence.fetch_agent(space_id, child) == {:error, :not_found}
+
+    assert :ok = SpaceGate.release(space_id)
+    assert {:ok, ^child} = Task.await(spawner, 2_000)
+    AgentTestHelpers.ensure_cleanup(child)
+  end
+
+  # A turn that arrives while the space is paused is **queued**, not refused and
+  # not blocked: the agent process must never wait on the latch. The unlock is the
+  # wake-up, and it drains through the turn boundary's own path.
+  test "a turn that arrives while the space is paused is queued, and the unlock runs it" do
+    {pid, name} = AgentTestHelpers.start_agent()
+    space_id = AgentTestHelpers.current_space_id()
+
+    assert :ok = SpaceGate.hold(space_id)
+
+    assert :ok = Agents.chat(space_id, name, "hi", nil, "tester", true)
+
+    # allowlist: barrier — the cast is the only writer here.
+    state = :sys.get_state(pid, 1_000)
+    assert Machine.status_for(state.live.machine) == :idle
+    assert [%{"content" => "hi"}] = Agent.get_public_info(pid, 1_000).pending_messages
+
+    # The unlock drains it: the turn runs, and the queue empties.
+    assert :ok = SpaceGate.release(space_id)
+
+    eventually(fn -> length(Persistence.load_messages(space_id, name)) > 1 end)
+    eventually(fn -> Agent.get_public_info(pid, 1_000).pending_messages == [] end)
+  end
+
+  # The plan has to count a job that is really running: the confirmation is what
+  # tells the user a background job is about to be stopped.
+  test "the plan counts a real background job" do
+    {pid, name} = AgentTestHelpers.start_agent()
+    space_id = AgentTestHelpers.current_space_id()
+    # allowlist: snapshot — the agent's own mounts, which the job needs.
+    state = :sys.get_state(pid, 1_000)
+
+    start_job(space_id, name, pid, state.mounts)
+
+    assert {:error, {:confirmation_required, plan}} =
+             Spaces.update_environment(space_id, %{network_access: false})
+
+    assert plan.jobs == 1
+    assert :ok = SpaceGate.release(space_id)
+  end
+
+  # A real background job for `{space_id, name}`, staged the way `ShellCmd` stages
+  # one: the job's command line is the backend's to build from a staged script.
+  defp start_job(space_id, name, pid, mounts) do
+    key = {space_id, name}
+    scratch = Mounts.scratch(mounts)
+    dir = Paths.stage_dir(scratch)
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "run.sh"), "sleep 30\n")
+
+    {:ok, _id, _log} =
+      ShellJobs.start_job(%{
+        agent_key: key,
+        agent_pid: pid,
+        command: "sleep 30",
+        script_sandbox: Paths.stage_dir_sandbox(scratch),
+        script_path: nil,
+        mounts: mounts,
+        max_jobs: 100
+      })
+
+    on_exit(fn -> ShellJobs.stop_all(key) end)
+    :ok
   end
 
   test "a second session is refused while the first is deciding" do

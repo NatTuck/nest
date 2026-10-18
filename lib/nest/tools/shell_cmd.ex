@@ -565,6 +565,12 @@ defmodule Nest.Tools.ShellCmd do
   # command's own cancelled exit code. Here the command did not run to
   # completion, so this is not a result at all — the agent gets a tool error and
   # can re-issue the call against the space's new values.
+  #
+  # This clause is the *only* one in the build, and that is the rule rather than
+  # an accident: cancellation is a message to a worker that owns an OS process,
+  # and a command is the one tool shape that does. A short tool waits at the gate
+  # instead (`Nest.Agents.SpaceGate`'s moduledoc states it), so it needs no clause
+  # and burns no retry.
   defp handle_cancel_tool(os_pid, reason) do
     :exec.stop(os_pid)
     {:error, reason}

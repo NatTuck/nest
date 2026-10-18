@@ -15,7 +15,9 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Routes, Route, useParams } from "react-router-dom";
 
-let mockState = { spaces: [], agents: [], blueprints: [] };
+// `pausedSpaces` is the space edit's latch (`SpacePausedBanner` reads it); no
+// space is paused in these tests.
+let mockState = { spaces: [], agents: [], blueprints: [], pausedSpaces: [] };
 
 const mocks = vi.hoisted(() => ({ editSpace: vi.fn() }));
 
@@ -91,6 +93,7 @@ beforeEach(() => {
       { name: "other-agent", space_id: 2, status: "idle", depth: 0 },
     ],
     blueprints: [{ id: 10, name: "Tabletop RPG" }],
+    pausedSpaces: [],
   };
 });
 

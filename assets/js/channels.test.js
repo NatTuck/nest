@@ -101,6 +101,18 @@ describe("editSpace", () => {
     });
   });
 
+  it("marks a space paused and resumed from the latch's frames", async () => {
+    simulateServerEvent("lobby", "space:paused", { space_id: 7 });
+    await vi.waitFor(() => {
+      assert.deepStrictEqual(useStore.getState().pausedSpaces, [7]);
+    });
+
+    simulateServerEvent("lobby", "space:resumed", { space_id: 7 });
+    await vi.waitFor(() => {
+      assert.deepStrictEqual(useStore.getState().pausedSpaces, []);
+    });
+  });
+
   it("applies the server's whole space:updated frame to the store", async () => {
     useStore.setState({
       spaces: [

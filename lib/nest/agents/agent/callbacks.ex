@@ -26,8 +26,10 @@ defmodule Nest.Agents.Agent.Callbacks do
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.Turn
+  alias Nest.Agents.Agent.Turn.Executor
   alias Nest.Agents.Agent.Watch
   alias Nest.Agents.Agent.WorkspaceHandler
+  alias Nest.Agents.SpaceGate
   alias Nest.Persistence
 
   # The space's environment changed (`Nest.Spaces.update_environment/2`): the
@@ -128,6 +130,15 @@ defmodule Nest.Agents.Agent.Callbacks do
     status = Machine.status_for(state.live.machine)
 
     cond do
+      # The space's before-starts latch is up: an environment edit is in
+      # progress, and a turn started now would run its first tool calls against
+      # the values being replaced. It is **queued**, not refused and not blocked
+      # — the same inbox a busy agent uses — and `{:space_unlocked, _}` drains it
+      # (`drain_after_unlock/1`).
+      SpaceGate.held?(state.space_id) ->
+        {state, _disposition} = Inbox.deliver_user_message(state, sender, content, mode, human?)
+        {:noreply, state}
+
       status == :idle ->
         ChatPipeline.handle_chat(state, content, mode, human?)
 
@@ -363,8 +374,34 @@ defmodule Nest.Agents.Agent.Callbacks do
     {:noreply, maybe_clear_space_notice(state, outcome)}
   end
 
+  # The space's latch came down. A turn that arrived while it was up is in the
+  # inbox (`chat_or_queue/5`), so this is the wake-up: the drain is the turn
+  # boundary's own — `Executor.peek_inbox/1` then the `{:inbox_drain, …}` event —
+  # rather than a second delivery path. A busy agent needs nothing: its next
+  # boundary drains.
+  def handle_info({:space_unlocked, space_id}, state) when space_id == state.space_id do
+    {:noreply, drain_after_unlock(state)}
+  end
+
+  def handle_info({:space_unlocked, _other_space}, state), do: {:noreply, state}
+
   def handle_info(msg, state) do
     Handlers.handle(msg, state)
+  end
+
+  defp drain_after_unlock(state) do
+    if Machine.status_for(state.live.machine) == :idle do
+      case Executor.peek_inbox(state) do
+        :empty ->
+          state
+
+        {state, batch, content} ->
+          {:ok, settled} = Turn.settle(state, {:inbox_drain, batch, content})
+          settled
+      end
+    else
+      state
+    end
   end
 
   # The cast carries the space's own names; the handler works in mount names.

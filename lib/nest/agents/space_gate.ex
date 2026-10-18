@@ -27,10 +27,31 @@ defmodule Nest.Agents.SpaceGate do
   that is already executing is handled by the cancellation rather than by a
   count.
 
+  ## What can be cancelled, and why that is a rule about *time*
+
+  Only tools that **take time** can be cancelled, because only they own an OS
+  process to stop. The cancellation is a message to the turn's worker pids
+  (`Nest.Agents.Agent.Turn.cancel_tools/2`), and the one clause that matches it is
+  `Nest.Tools.ShellCmd.collect_output/5`'s: it stops the process and returns a
+  tool error, so the agent can re-issue the call.
+
+  Every other tool is *short* — `file-write`, `agents-spawn`, `context-compact`,
+  anything that answers from memory — and needs no cancellation. A short tool that
+  arrives while the latch is up simply waits at the gate and then runs against the
+  new values, so nothing is burned and nothing is retried. That is a statement
+  about duration, not a list of exempted tools: a future tool that spawns an OS
+  process or otherwise runs unbounded time belongs in the cancellable set (it
+  needs a `{:cancel_tool, …}` clause that stops it); a future tool that merely
+  waits for the latch does not, and giving it a clause would report a cancellation
+  it never had.
+
   ## Why it cannot outlive its owner
 
-  A hold is owned by the process that asked for it (a lobby channel) and released
-  in three ways, all of which broadcast `{:space_unlocked, space_id}`:
+  A hold is owned by the process that asked for it (a lobby channel). It is
+  announced (`{:space_locked, space_id}`) when it goes up, so every session that
+  can see the space shows the pause — not only the one that is editing it — and
+  it is released in three ways, all of which broadcast
+  `{:space_unlocked, space_id}`:
 
     * `release/1` by the owner;
     * the owner's `:DOWN` — a closed tab, a crashed channel;
@@ -47,9 +68,11 @@ defmodule Nest.Agents.SpaceGate do
   has to arm the monitor and the timer.
 
   The wake-up rides its own PubSub topic rather than `Broadcasts.space_topic/1`,
-  which the lobby's channels subscribe to: a `{:space_unlocked, _}` frame on that
-  topic would reach `NestWeb.LobbyChannel`'s unknown-frame clause and log for
-  every watcher.
+  which carries the agent and space frames: a `{:space_unlocked, _}` frame there
+  would reach `NestWeb.LobbyChannel`'s unknown-frame clause and log for every
+  watcher. The gate's topic is subscribed by the agents of the space (a deferred
+  turn waits for it) and by the lobby channels that show the paused banner, and by
+  nobody else.
   """
 
   use GenServer
@@ -96,10 +119,16 @@ defmodule Nest.Agents.SpaceGate do
   Idempotent for the caller that already holds it, so a two-push edit (a preview
   and then a confirmation) keeps one claim across both. A *different* caller is
   refused: two sessions editing one space at once is what the latch is for.
+
+  The `ttl_ms` argument exists for tests, which need a claim to expire without
+  waiting two minutes. It is per-hold rather than an application setting on
+  purpose: a global knob would be changed by one test and silently shorten every
+  other test's claim (and every other space's, in production, if it were ever
+  set there).
   """
-  @spec hold(integer(), reason()) :: :ok | {:error, :already_held}
-  def hold(space_id, reason \\ :space_edit) when is_integer(space_id) do
-    GenServer.call(__MODULE__, {:hold, space_id, reason, self()})
+  @spec hold(integer(), reason(), pos_integer() | nil) :: :ok | {:error, :already_held}
+  def hold(space_id, reason \\ :space_edit, ttl_ms \\ nil) when is_integer(space_id) do
+    GenServer.call(__MODULE__, {:hold, space_id, reason, self(), ttl_ms})
   end
 
   @doc """
@@ -181,10 +210,10 @@ defmodule Nest.Agents.SpaceGate do
   end
 
   @impl true
-  def handle_call({:hold, space_id, reason, owner}, _from, state) do
+  def handle_call({:hold, space_id, reason, owner, ttl_ms}, _from, state) do
     case Map.fetch(state.claims, space_id) do
       :error ->
-        {:reply, :ok, claim(state, space_id, reason, owner)}
+        {:reply, :ok, claim(state, space_id, reason, owner, ttl_ms)}
 
       {:ok, %{owner: ^owner}} ->
         # The same caller asking again: the preview and the confirmation of one
@@ -222,12 +251,13 @@ defmodule Nest.Agents.SpaceGate do
     {:noreply, state}
   end
 
-  defp claim(state, space_id, reason, owner) do
+  defp claim(state, space_id, reason, owner, ttl_ms) do
     ref = Process.monitor(owner)
-    timer = Process.send_after(self(), {:ttl, space_id, ref}, ttl_ms())
+    timer = Process.send_after(self(), {:ttl, space_id, ref}, ttl_ms || ttl_ms())
     claim = %{owner: owner, ref: ref, timer: timer, reason: reason}
 
     :ets.insert(@table, {space_id, reason})
+    Phoenix.PubSub.broadcast(Nest.PubSub, topic(space_id), {:space_locked, space_id})
 
     %{state | claims: Map.put(state.claims, space_id, claim)}
   end
