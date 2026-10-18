@@ -6,6 +6,7 @@ defmodule Nest.ToolsTest do
   import Nest.Test.TmpCleanup
 
   alias Nest.LLM.Tool, as: Function
+  alias Nest.Messages.Part
   alias Nest.Sandbox.Mounts
   alias Nest.Tools
 
@@ -115,6 +116,45 @@ defmodule Nest.ToolsTest do
 
       assert {:error, "No workspace configured for this agent"} =
                function.function.(%{"path" => "test.txt"}, nil)
+    end
+
+    test "the modality gate answers before the byte gate", %{workspace: workspace} do
+      # Two cases, one setup. In both, no model is declared, so the modality
+      # gate is the one that should answer — including in the conversation that
+      # is already over the byte ceiling, because "run context-compact" is
+      # advice that does not work for a model that cannot accept images at all.
+      # Images can outlive a model swap: `Agents.change_model/3` does not touch
+      # the transcript.
+      #
+      # The small-conversation case is also the guard against a gate that
+      # refuses everything: it must reach the modality check, not stop at the
+      # byte one.
+      File.write!(Path.join(workspace, "small.png"), :binary.copy(<<0>>, 1_000))
+
+      over_ceiling =
+        {:user,
+         %{
+           parts: [
+             %Part.Media{
+               tool_call_id: "c0",
+               modality: :image,
+               media_type: "image/png",
+               data: String.duplicate("A", 16_100_000),
+               bytes: 16_100_000,
+               path: "old.png"
+             }
+           ]
+         }}
+
+      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
+
+      for messages <- [[], [over_ceiling]] do
+        assert {:error, message} =
+                 function.function.(%{"path" => "small.png"}, %{messages: messages})
+
+        assert message =~ "is not known"
+        refute message =~ "over the"
+      end
     end
 
     test "returns a non-text error for NUL and invalid UTF-8", %{workspace: workspace} do

@@ -25,6 +25,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   alias Nest.Messages.ToolCall
   alias Nest.Sandbox
   alias Nest.Tokens.Estimator
+  alias Nest.Tokens.RequestSize
   alias Nest.Tools.MediaKind
 
   @safety_padding 1.20
@@ -165,9 +166,72 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   """
   @spec project_batch([ToolCall.t()], map()) :: number()
   def project_batch(tool_calls, ctx) when is_list(tool_calls) do
-    ctx = Map.put(ctx, :file_read_sizes, read_file_sizes(tool_calls, ctx))
-    Enum.reduce(tool_calls, 0, fn tc, acc -> acc + project(tc, ctx) end)
+    {tokens, _media_bytes} = project_batch_with_media(tool_calls, ctx)
+    tokens
   end
+
+  @doc """
+  `project_batch/2` and the batch's media bytes, from **one** stat pass.
+
+  The two have to come from one call: `stat_many/3` is expected to run exactly
+  once per response (issue #48), and a caller that needs both numbers would
+  otherwise stat twice. `media_bytes/2` reads the memo this puts on `ctx`.
+  """
+  @spec project_batch_with_media([ToolCall.t()], map()) :: {number(), non_neg_integer()}
+  def project_batch_with_media(tool_calls, ctx) when is_list(tool_calls) do
+    ctx = Map.put(ctx, :file_read_sizes, read_file_sizes(tool_calls, ctx))
+    tokens = Enum.reduce(tool_calls, 0, fn tc, acc -> acc + project(tc, ctx) end)
+    {tokens, media_bytes(tool_calls, ctx)}
+  end
+
+  @doc """
+  The wire bytes a batch's media `file-read` results would add.
+
+  Media is the one tool result whose byte cost is not visible in its token
+  price — an image is 4,096 tokens whatever its size — so it is the one a
+  batch has to project in bytes. A batch can hold several images that each fit
+  under the ceiling alone and still put the request over it together, which is
+  why this is a batch-level sum and not a per-call check.
+
+  Reads the sizes `project_batch_with_media/2` memoized. Called on its own it
+  pays for a stat pass, so a caller that also wants the token projection should
+  use `project_batch_with_media/2` instead.
+  """
+  @spec media_bytes([ToolCall.t()], map()) :: non_neg_integer()
+  def media_bytes(tool_calls, ctx) when is_list(tool_calls) do
+    sizes = Map.get(ctx, :file_read_sizes) || read_file_sizes(tool_calls, ctx)
+
+    tool_calls
+    |> Enum.flat_map(&media_wire_bytes_for(&1, ctx, sizes))
+    |> Enum.sum()
+  end
+
+  # The wire bytes one call contributes, or `[]` when it is not a `file-read`
+  # of a media path whose size could be read.
+  #
+  # A path that could not be statted contributes **nothing**, which for a size
+  # gate is the direction that lets a request *through* — so this is not a
+  # conservative default, it is a known hole. It is covered by `file-read`'s own
+  # gate, which runs when the batch is executed and refuses the read that the
+  # preflight could not price.
+  defp media_wire_bytes_for(
+         %ToolCall{name: "file-read", arguments: %{"path" => path}} = tc,
+         ctx,
+         sizes
+       )
+       when is_binary(path) do
+    with {:ok, _modality} <- MediaKind.from_path(path),
+         {:ok, full_path} <- resolved_read_path(tc, ctx),
+         # `read_file_sizes/2` maps a path to `{:ok, size}`, so this is the
+         # map's value rather than the fetch result.
+         {:ok, {:ok, size}} <- Map.fetch(sizes, full_path) do
+      [RequestSize.media_wire_bytes(size)]
+    else
+      _ -> []
+    end
+  end
+
+  defp media_wire_bytes_for(_tool_call, _ctx, _sizes), do: []
 
   # ---- private helpers ----
 

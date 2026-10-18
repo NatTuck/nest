@@ -18,6 +18,7 @@ defmodule Nest.Tools.FileTools do
   alias Nest.Messages.Sanitize
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
+  alias Nest.Tokens.RequestSize
   alias Nest.Tools.MediaKind
 
   # Stat-then-cap mirrors `InspectFile`'s cap so the BatchSizer's
@@ -161,8 +162,8 @@ defmodule Nest.Tools.FileTools do
       {:ok, %{size: size}} when size > @max_read_file_bytes ->
         too_large_error(size)
 
-      {:ok, _} ->
-        read_classified(full_path, original_path, caps, mounts, context)
+      {:ok, %{size: size}} ->
+        read_classified(full_path, original_path, caps, mounts, context, size)
 
       {:error, reason} ->
         read_error(reason, original_path)
@@ -173,25 +174,33 @@ defmodule Nest.Tools.FileTools do
   # look like media never pays the extra `file --mime-type` spawn, and a path
   # that does look like media is still confirmed by `MediaKind.detect/3`
   # before anything is attached.
-  defp read_classified(full_path, original_path, caps, mounts, context) do
+  defp read_classified(full_path, original_path, caps, mounts, context, size) do
     case MediaKind.from_path(full_path) do
       :text ->
         read_file_content(full_path, caps, mounts)
 
       {:ok, modality} ->
-        read_media_file(full_path, original_path, caps, mounts, modality, context)
+        read_media_file(full_path, original_path, caps, mounts, modality, context, size)
     end
   end
 
   # The media path.
   #
-  # The gate runs FIRST — before the `file` check, before the read, and
-  # before any part is built. A media part is re-sent on every subsequent
-  # request, so attaching one the caller's model cannot accept would break
-  # every later turn until the conversation is compacted. Refusing here, with
+  # Both gates run FIRST — before the `file` check, before the read, and before
+  # any part is built. A media part is re-sent on every subsequent request, so
+  # attaching one the caller's model cannot accept, or one that puts the request
+  # over the provider's body limit, breaks every later turn. Refusing here, with
   # a message the model can act on, is the only fail-fast point there is.
-  defp read_media_file(full_path, original_path, caps, mounts, modality, context) do
+  #
+  # The modality gate is first because it is both the cheaper check (a catalog
+  # lookup against a walk over every message) and the more fundamental one: a
+  # model that cannot accept images will still refuse them after a compaction,
+  # so telling the model to compact first would be advice that does not work.
+  # Images can outlive a model swap — `Agents.change_model/3` does not touch the
+  # transcript — so that case is reachable.
+  defp read_media_file(full_path, original_path, caps, mounts, modality, context, size) do
     with :ok <- check_media_input(modality, context),
+         :ok <- check_request_bytes(size, context),
          {:ok, modality, mime} <- MediaKind.detect(full_path, caps, mounts),
          {:ok, bytes} <- read_media_bytes(full_path, caps, mounts),
          {:ok, part} <- build_media_part(original_path, modality, mime, bytes, context) do
@@ -206,6 +215,37 @@ defmodule Nest.Tools.FileTools do
       {:error, _} = error -> error
     end
   end
+
+  # Refuse a new image when attaching it would put the request over the byte
+  # ceiling. Projected, not measured: one more image must not sail through a
+  # conversation that is already just under the line.
+  defp check_request_bytes(size, context) do
+    # A tool invoked with no context — a direct call, or a test — has no message
+    # list to measure, and nothing to project against.
+    messages = if is_map(context), do: Map.get(context, :messages) || [], else: []
+    already = RequestSize.bytes(messages)
+    wire = RequestSize.media_wire_bytes(size)
+
+    if RequestSize.within?(messages, wire) do
+      :ok
+    else
+      {:error, request_bytes_error(already, wire, already + wire)}
+    end
+  end
+
+  # States the arithmetic rather than a diagnosis: a text-full conversation can
+  # reach the ceiling with no images in it at all, so "too many images are
+  # already in context" would sometimes be false.
+  defp request_bytes_error(already, wire, projected) do
+    "file-read refused: attaching this image would put the request at " <>
+      "~#{mb(projected)} — this conversation already carries ~#{mb(already)} and " <>
+      "the image adds ~#{mb(wire)} — over the #{mb(RequestSize.max_bytes())} limit. " <>
+      "No more images until you run context-compact, which replaces the " <>
+      "conversation with a summary and drops any images in it. Text files can " <>
+      "still be read."
+  end
+
+  defp mb(bytes), do: "#{Float.round(bytes / 1_000_000, 1)} MB"
 
   defp read_media_bytes(full_path, caps, mounts) do
     case Sandbox.read(full_path, caps, mounts) do

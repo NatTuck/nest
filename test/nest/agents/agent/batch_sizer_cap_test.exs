@@ -452,4 +452,82 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       assert {:refuse, _} = BatchSizer.preflight(calls, c)
     end
   end
+
+  describe "the request byte ceiling" do
+    # Media is priced at a flat token ceiling, so a batch of images can be
+    # trivial on tokens and enormous on the wire. These two are the same batch
+    # shape at two file sizes: the token budget admits both, and only the byte
+    # ceiling separates them.
+    setup do
+      tmp_dir =
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
+          "batchsizer-bytes-#{System.unique_integer([:positive])}"
+        ])
+
+      File.mkdir_p!(tmp_dir)
+      on_exit(fn -> rm_tmp!(tmp_dir, "batchsizer-bytes-") end)
+      {:ok, tmp_dir: tmp_dir}
+    end
+
+    test "refuses a batch of images that would put the request over it", %{tmp_dir: dir} do
+      # 13 MB of image is ~17.3 MB once base64-encoded — over the 16 MB ceiling —
+      # while its token price is a flat 4,096.
+      File.write!(Path.join(dir, "big.png"), :binary.copy(<<0>>, 13_000_000))
+
+      c = ctx([], context_limit: 100_000, workspace_path: dir)
+      calls = [call("c1", "file-read", %{"path" => "big.png"})]
+
+      # The premise: the token budget would have admitted this batch on its own,
+      # which is exactly how agent 916 reached a 51 MB request at 25% of its
+      # window.
+      assert ProjectedSize.project_batch(calls, c) + Reserve.compaction_reserve(100_000) <=
+               100_000
+
+      assert {:refuse, reason} = BatchSizer.preflight(calls, c)
+      assert reason =~ "MB"
+      # The refusal names the remedy, and compaction is one: it replaces the
+      # conversation with a summary and drops the images, so this is not the
+      # shape that loops.
+      assert reason =~ "context-compact"
+    end
+
+    test "admits the same batch when the images fit under it", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "small.png"), :binary.copy(<<0>>, 1_000_000))
+
+      c = ctx([], context_limit: 100_000, workspace_path: dir)
+      calls = [call("c1", "file-read", %{"path" => "small.png"})]
+
+      assert {:fits, _} = BatchSizer.preflight(calls, c)
+    end
+
+    test "does not refuse a batch that adds no media, even over the ceiling", %{tmp_dir: dir} do
+      # The ceiling is self-imposed and sits well under the provider's 48 MiB, so
+      # refusing ordinary work at 16 MB would be a false refusal: text is bounded
+      # by the token window and no window holds 16 MB of text, so a media-free
+      # batch cannot push the request past what the provider accepts. Without
+      # this, a media-heavy conversation could not run `shell-cmd ls`.
+      over_ceiling =
+        {:user,
+         %{
+           parts: [
+             %Nest.Messages.Part.Media{
+               tool_call_id: "c0",
+               modality: :image,
+               media_type: "image/png",
+               data: String.duplicate("A", 16_100_000),
+               bytes: 16_100_000,
+               path: "old.png"
+             }
+           ]
+         }}
+
+      c =
+        ctx([], context_limit: 1_048_576, messages: [over_ceiling], workspace_path: dir)
+
+      assert {:fits, _} = BatchSizer.preflight([call("c1", "shell-cmd", %{"command" => "ls"})], c)
+    end
+  end
 end
