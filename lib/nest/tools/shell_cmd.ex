@@ -388,9 +388,7 @@ defmodule Nest.Tools.ShellCmd do
           {:ok, mounts}
 
         {:error, {:config_file_not_regular, bad}} ->
-          {:error,
-           "#{bad} is not a regular file, so the sandbox cannot protect it from " <>
-             "being rewritten. Replace it with a regular file."}
+          {:error, Nest.ConfigFile.error_message(bad)}
       end
     else
       {:error, "Workspace directory does not exist: #{path}"}

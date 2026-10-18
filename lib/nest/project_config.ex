@@ -486,6 +486,22 @@ defmodule Nest.ProjectConfig do
     end
   end
 
+  @doc """
+  Create the canonical-workspace memo's table, if it is not there already.
+
+  Called from `Nest.Application.start/2` so the table is owned by the application
+  rather than by whichever process needed it first. It used to be created lazily
+  by the first reader — usually an agent composing a prompt — so stopping that
+  agent deleted the table and a concurrent reader crashed on `:ets.lookup` with
+  "the table identifier does not refer to an existing ETS table". `cache_table/0`
+  keeps its lazy fallback for a caller outside a running application.
+  """
+  @spec init_cache() :: :ok
+  def init_cache do
+    _ = cache_table()
+    :ok
+  end
+
   # `FSPath.canonical/1` shells out to `realpath`; cache the result per
   # workspace so per-message caps resolution doesn't spawn a process.
   defp canonical_ws(workspace) do

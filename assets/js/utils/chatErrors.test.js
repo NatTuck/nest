@@ -50,18 +50,54 @@ describe("getStatusLabel", () => {
 
 describe("describeEditError", () => {
   it("maps known reasons to friendly messages", () => {
-    expect(describeEditError("agent_busy")).toMatch(/busy/i);
-    expect(describeEditError("invalid_model")).toMatch(/model/i);
-    expect(describeEditError("context_overflow")).toMatch(/compact/i);
-    expect(describeEditError("not_found")).toMatch(/not found/i);
-    expect(describeEditError("invalid_payload")).toMatch(/try again/i);
-    expect(describeEditError("workspace_required")).toMatch(/required/i);
-    expect(describeEditError("workspace_missing")).toMatch(/doesn't exist/i);
-    expect(describeEditError("workspace_under_tmp")).toMatch(/under \/tmp/i);
+    expect(describeEditError({ reason: "agent_busy" })).toMatch(/busy/i);
+    expect(describeEditError({ reason: "invalid_model" })).toMatch(/model/i);
+    expect(describeEditError({ reason: "context_overflow" })).toMatch(
+      /compact/i,
+    );
+    expect(describeEditError({ reason: "not_found" })).toMatch(/not found/i);
+    expect(describeEditError({ reason: "invalid_payload" })).toMatch(
+      /try again/i,
+    );
+    expect(describeEditError({ reason: "workspace_required" })).toMatch(
+      /required/i,
+    );
+    expect(describeEditError({ reason: "workspace_missing" })).toMatch(
+      /doesn't exist/i,
+    );
+    expect(describeEditError({ reason: "workspace_under_tmp" })).toMatch(
+      /under \/tmp/i,
+    );
+  });
+
+  it("names the non-regular config file, with or without the path", () => {
+    // The edit path needs `err.path` too: the server refuses the workspace and
+    // says which file, so the message must not drop it.
+    const withPath = describeEditError({
+      reason: "config_file_not_regular",
+      path: "/home/nat/proj/.nest",
+    });
+
+    expect(withPath).toContain("/home/nat/proj/.nest");
+    expect(withPath).toMatch(/not a regular file/i);
+    expect(withPath).toMatch(/copy the file into the workspace/i);
+
+    const withoutPath = describeEditError({
+      reason: "config_file_not_regular",
+    });
+
+    // The server always sends it, but "undefined" in a message would be worse
+    // than the vaguer sentence.
+    expect(withoutPath).toMatch(/\.nest/);
+    expect(withoutPath).toMatch(/AGENTS\.md/);
+    expect(withoutPath).toMatch(/not a regular file/i);
+    expect(withoutPath).not.toContain("undefined");
   });
 
   it("falls back to the raw reason, or a generic message when absent", () => {
-    expect(describeEditError("weird_reason")).toContain("weird_reason");
+    expect(describeEditError({ reason: "weird_reason" })).toContain(
+      "weird_reason",
+    );
     expect(describeEditError(undefined)).toBe("Failed to edit agent.");
   });
 });
@@ -149,13 +185,18 @@ describe("describeCreateError", () => {
     expect(message).not.toContain("undefined");
   });
 
-  it("words the workspace refusals exactly as the edit-agent path does", () => {
+  it("words the shared refusals exactly as the edit-agent path does", () => {
+    // The workspace refusals and the non-regular config-file refusal each come
+    // from one helper both paths call, so their wording cannot drift apart.
     for (const reason of [
       "workspace_required",
       "workspace_missing",
       "workspace_under_tmp",
+      "config_file_not_regular",
     ]) {
-      expect(describeCreateError({ reason })).toBe(describeEditError(reason));
+      expect(describeCreateError({ reason })).toBe(
+        describeEditError({ reason }),
+      );
     }
   });
 

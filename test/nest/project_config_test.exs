@@ -204,7 +204,7 @@ defmodule Nest.ProjectConfigTest do
       # over itself, the second gets no entry. That omission is **defensive
       # only** — it is not protection, because with no mount point over the path
       # an `act` agent could delete the link and write a regular file. The
-      # mechanism is `config_file_error/1`, which refuses the workspace; this
+      # mechanism is `Nest.ConfigFile.error/1`, which refuses the workspace; this
       # pins what the bind list looks like if anything ever asks anyway.
       write_nest(dir, "")
       File.write!(Path.join(dir, "real-agents.md"), "# rules\n")

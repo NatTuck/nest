@@ -84,7 +84,11 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   never on a caps signature or on the BEAM: it binds the superset a space can
   need (what a mode that writes the workspace gets) and the bwrap *inside* it
   tightens per call, so a read-only mode keeps its teeth without needing a
-  container of its own. The name is therefore stable across restarts — nothing
+  container of its own. The two protected config files are the one thing the
+  container does **not** bind: the bwrap inside masks them per call, and a
+  container-level copy would shadow the file a human adds later while making the
+  layout depend on whether the files exist yet. The name is therefore stable
+  across restarts — nothing
   per-BEAM is bound any more, since the scratch is the container's own `/tmp` and
   the staging directory is keyed on the space — and the layout travels as a
   `nest.layout` **label** instead, which `ensure_container/3` compares so that a

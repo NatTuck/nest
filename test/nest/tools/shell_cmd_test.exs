@@ -529,9 +529,11 @@ defmodule Nest.Tools.ShellCmdTest do
     } do
       # The only per-command gate `docker` and `none` have: `Docker.command/3` and
       # `job_spec/4` build the inner bwrap from `Binds.specs/2` and never reach
-      # `Sandbox.build/4`, and `none` builds no sandbox at all. Removing this
-      # clause would reopen the escalation on two of the three backends with a
-      # green suite, which is why the loop is over the backends rather than one.
+      # `Sandbox.build/4`, and `none` builds no sandbox at all. Remove this clause
+      # and the `docker` and `none` iterations fail; the `bwrap` ones still match,
+      # because `Sandbox.build/4`'s own gate produces the same message. That
+      # asymmetry is why the loop covers all three: with only `bwrap` here, two of
+      # the three backends could reopen the escalation with a green suite.
       for {backend, filename} <-
             Enum.flat_map(
               ["bwrap", "docker", "none"],

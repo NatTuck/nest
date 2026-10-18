@@ -9,6 +9,7 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
 
   alias Nest.Agents.PersistedAgent
   alias Nest.Spaces.Space
+  alias NestWeb.ErrorPayload
 
   # The `Nest.Sandbox.workspace_error/1` refusals a create can carry.
   @workspace_reasons [:workspace_required, :workspace_missing, :workspace_under_tmp]
@@ -31,7 +32,7 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
 
       other ->
         Logger.error("Failed to change model on agent #{inspect(name)}: #{inspect(other)}")
-        {:error, %{"reason" => to_string(other)}}
+        {:error, ErrorPayload.from_reason(other)}
     end
   end
 
@@ -129,8 +130,8 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
   # user which file to replace.
   #
   # Each takes a `{log_prefix, fallback_code}` context; only the last arm uses it.
-  defp tagged_payload({:config_file_not_regular, path}, _context) do
-    {:error, %{"reason" => "config_file_not_regular", "path" => path}}
+  defp tagged_payload({:config_file_not_regular, _path} = tagged, _context) do
+    {:error, ErrorPayload.from_reason(tagged)}
   end
 
   # The refusals whose reason carries a detail term. The two `"none"`-space

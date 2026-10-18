@@ -431,7 +431,7 @@ export function ChatPage() {
       draft.workspace_path,
       undefined,
       (err) => {
-        setChangeModelError(describeEditError(err?.reason));
+        setChangeModelError(describeEditError(err));
       },
     );
   };

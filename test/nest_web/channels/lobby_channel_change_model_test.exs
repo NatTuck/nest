@@ -205,7 +205,10 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
               "workspace_path" => ws
             })
 
-          assert_reply ref, :error, %{"reason" => "config_file_not_regular", "path" => path}, 750
+          # 500 ms, the SMELLS.md ceiling: the work is two authz queries plus
+          # `Sandbox.workspace_error/1`'s `realpath` fork — no agent is created
+          # here, unlike the `create_space` tests that need the longer bound.
+          assert_reply ref, :error, %{"reason" => "config_file_not_regular", "path" => path}, 500
 
           assert path == Path.join(ws, ".nest")
         end)
@@ -316,6 +319,51 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
     test "returns :invalid_payload for a malformed message", %{socket: socket} do
       ref = push(socket, "edit_agent", %{"name" => "no-model-field"})
       assert_reply ref, :error, %{"reason" => "invalid_payload"}
+    end
+  end
+
+  describe "change_model on a workspace the gate refuses" do
+    test "replies with the refusal rather than killing the channel", %{
+      socket: socket,
+      user: user
+    } do
+      # `Agents.change_model/3` reaches `Supervisor.get_agent/2`, so a workspace
+      # `Nest.ConfigFile.error/1` refuses comes back as the tagged reason — and
+      # the lobby's `change_model_payload/2` has to answer it rather than hand a
+      # tuple to `to_string/1`, which raises and leaves the client with no reply.
+      ws = AgentTestHelpers.default_test_workspace()
+
+      {pid, name} =
+        AgentTestHelpers.start_agent(%{
+          workspace_path: ws,
+          created_by_user_id: user.id,
+          model: %{name: "qwen3.5-plus", provider: "model-studio"},
+          vocation_id: AgentTestHelpers.programmer_vocation_id_for_test()
+        })
+
+      space_id = AgentTestHelpers.current_space_id()
+      path = Path.join(ws, ".nest")
+      File.write!(Path.join(ws, "real.nest"), "")
+      File.ln_s!(Path.join(ws, "real.nest"), path)
+      # `start_agent/1` links the agent to the test process, so stopping it in the
+      # body would take the test down with it; unlink first, as an `on_exit`
+      # caller gets for free by running in another process.
+      Process.unlink(pid)
+      :ok = Nest.Agents.Supervisor.stop_agent(space_id, name)
+
+      log =
+        capture_log(fn ->
+          ref =
+            push(socket, "change_model", %{
+              "name" => name,
+              "space_id" => space_id,
+              "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+            })
+
+          assert_reply ref, :error, %{"reason" => "config_file_not_regular", "path" => ^path}
+        end)
+
+      assert log =~ "Nest cannot protect it from being rewritten"
     end
   end
 end

@@ -112,7 +112,11 @@ defmodule Nest.ConfigFileTest do
       on_exit(fn -> File.chmod(locked, 0o755) end)
 
       # The `.nest` is inside the unreadable directory, so `lstat` is `:eacces`.
-      assert ConfigFile.state(Path.join(locked, ".nest")) == {:not_regular, :unreadable}
+      # This needs a **non-root** user: as root the `lstat` succeeds, `state/1`
+      # answers `:absent`, and the assertion fails. The suite runs as the
+      # developer's own user, never as root.
+      assert ConfigFile.state(Path.join(locked, ".nest")) == {:not_regular, :unreadable},
+             "as root, `lstat` through a mode-000 directory succeeds — this test needs a non-root user"
 
       assert ConfigFile.state(Path.join(locked, "AGENTS.md")) ==
                {:not_regular, :unreadable}
@@ -137,5 +141,26 @@ defmodule Nest.ConfigFileTest do
 
       assert log =~ "is not a regular file"
     end
+  end
+
+  test "refuses a hardlink, because the mask protects the path and not the inode", %{
+    dir: dir
+  } do
+    # A second name for the same bytes: masking *this* path protects nothing,
+    # since writing the other name rewrites the config the host read picks up.
+    # `lstat` answers it on the host (`links`), so this is a refusal rather than
+    # a documented residual.
+    real = Path.join(dir, "real-config")
+    File.write!(real, "")
+    File.ln!(real, nest_path(dir))
+
+    log =
+      capture_log(fn ->
+        assert {:error, {:config_file_not_regular, path}} = ConfigFile.error(dir)
+        assert path == nest_path(dir)
+      end)
+
+    assert log =~ "a hardlink to another name"
+    assert log =~ "so Nest cannot protect it"
   end
 end

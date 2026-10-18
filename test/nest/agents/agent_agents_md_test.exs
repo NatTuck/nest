@@ -8,9 +8,11 @@ defmodule Nest.Agents.AgentAgentsMdTest do
 
   import Nest.Test.TmpCleanup
 
+  alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
+  alias Nest.Sandbox.Mounts
   alias Nest.Vocations
 
   setup :verify_on_exit!
@@ -234,5 +236,56 @@ defmodule Nest.Agents.AgentAgentsMdTest do
       # teardown asserts zero in-flight agents).
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
+  end
+
+  # `compose_vocation_config/5` is re-run **mid-session** (on compaction), so both
+  # arms below are reachable while an agent is running — no agent can *start* in a
+  # workspace the gate refuses, which is why the start-time tests cannot see them.
+  describe "an AGENTS.md that is not a regular file" do
+    test "renders a notice rather than silently dropping the project's policy" do
+      vocation = create_vocation()
+      ws = AgentTestHelpers.default_test_workspace()
+
+      File.write!(Path.join(ws, "real.md"), "policy")
+      File.ln_s!(Path.join(ws, "real.md"), Path.join(ws, "AGENTS.md"))
+
+      prompt = compose(vocation, ws)
+
+      assert prompt =~ "AGENTS.md is not a regular file"
+      assert prompt =~ "do not treat it as policy this session"
+      # Not the silent drop it used to be: the section is replaced, not omitted.
+      refute prompt =~ "Here are AGENTS.md guidelines"
+    end
+  end
+
+  describe "an AGENTS.md with nothing in it" do
+    test "adds no section at all" do
+      # This is the *steady* state of a workspace without an `AGENTS.md`: the
+      # `/dev/null` mask materialises an empty `0444` file on the first command, so
+      # `{:ok, ""}` is what every later composition reads. A heading with no
+      # guidelines under it claims more than there is.
+      vocation = create_vocation()
+      ws = AgentTestHelpers.default_test_workspace()
+      path = Path.join(ws, "AGENTS.md")
+
+      for content <- ["", "  \n\t\n"] do
+        File.write!(path, content)
+
+        refute compose(vocation, ws) =~ "Here are AGENTS.md guidelines"
+      end
+    end
+  end
+
+  defp compose(vocation, workspace) do
+    {prompt, _tools, _vocation} =
+      SystemPrompt.compose_vocation_config(
+        vocation,
+        Mounts.new(workspace, nil),
+        {128_000, :default},
+        "agent-under-test",
+        0
+      )
+
+    prompt
   end
 end

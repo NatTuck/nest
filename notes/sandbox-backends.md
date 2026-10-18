@@ -328,28 +328,38 @@ either file. Same statement as "caps cannot be enforced for a `none` space".
   It is logged once per path per BEAM, in `:persistent_term`. The refusal is
   unconditional on every backend, `"none"` included — it is a property of the
   workspace, not of the backend.
-* **A hardlink is not a symlink, and the mask protects the path, not the inode.**
-  An agent cannot create one (`ln` across devices is `Invalid cross-device link`,
-  and `mv` over the mount point is `EBUSY`), but a *pre-existing* hardlink inside
-  the workspace is writable, and rewriting it rewrites the config bytes the host
-  read will pick up. Same class as the symlink residual, same conclusion — the
-  refusal is not warranted, because the path itself is masked and a hardlink is
-  not distinguishable from the file it names without an inode comparison the
-  sandbox cannot do.
+* **A hardlink is refused, exactly like a symlink.** A regular file whose inode
+  has more than one link is a second name for the same bytes, so a mask over
+  *this* path protects nothing: writing the other name rewrites the config the
+  host read picks up. `Nest.ConfigFile.state/1` refuses it on `links > 1` from the
+  `lstat`, which is a **host**-side answer — no comparison inside the sandbox is
+  needed, and an earlier draft of this note was wrong to claim one was. An agent
+  cannot *create* such a link either way: `ln` across the workspace bind is
+  `Invalid cross-device link`, and `mv` over the mount point is `EBUSY`. The
+  remedy is the symlink's: copy the file in rather than linking it.
 * **A `/dev/null` mask materialises an empty `0444` file in the workspace.** When
   `.nest` or `AGENTS.md` is absent, the mask is a bind of `/dev/null` over its
-  path, and after one bwrap run the path exists on the host as a `-r--r--r--`
+  path, and after one sandbox run the path exists on the host as a `-r--r--r--`
   zero-byte file. That is what makes the mask a mount point (which is why `rm`
   fails with `Device or resource busy` rather than the entry being replaceable),
   but it is visible: a user who wants to *create* the file has to `rm` it first.
   Pre-existing for `.nest`; it now applies to `AGENTS.md`, which people create by
-  hand far more often.
-* **Adding or removing `AGENTS.md` mid-session replaces the space's docker
-  container.** The presence of either config file is part of `nest.layout`, so a
-  change replaces the container — which takes every agent's `/tmp` with it:
-  offloads, background-job logs, and any running background job. Unlike `.nest`,
-  people do add an `AGENTS.md` while agents are running, so it is worth knowing
-  before you do.
+  hand far more often. It is the **same on every backend**, because the docker
+  container does not bind these two files either — the bwrap inside creates the
+  mount point, in the workspace bind, exactly as the bwrap backend does.
+* **Neither config file is part of a docker container's layout.** The container
+  does not bind `.nest` or `AGENTS.md` at all (`Binds.container_specs/1`);
+  the bwrap inside masks them per call, exactly as the bwrap backend does. A
+  container-level copy would be worse than redundant: the inner bwrap only
+  *self*-binds a spec's dest to set its mode, so a `/dev/null` container bind is
+  what the sandbox inside would see — shadowing the file a human adds later — and
+  it made `nest.layout` depend on whether the two files exist, so an `AGENTS.md`
+  appearing (which the mask itself causes, above) replaced the container and took
+  every agent's `/tmp` with it: offloads, background-job logs, and any running
+  background job. Adding or removing either file is now a non-event for the
+  container. What *does* still replace it is a change to what `.nest` declares —
+  its `[[mount]]`s and its packages — because those are the container's binds and
+  its image.
 
 ## The derived image
 

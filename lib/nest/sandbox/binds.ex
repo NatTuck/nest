@@ -52,7 +52,7 @@ defmodule Nest.Sandbox.Binds do
       extra_write_binds(caps, mounts) ++
       scratch_bind(mounts, writes) ++
       project_binds(caps) ++
-      protected_binds(caps)
+      protected_specs(caps)
   end
 
   @doc """
@@ -71,10 +71,11 @@ defmodule Nest.Sandbox.Binds do
   caps ask for. They are the binds of a mode that writes the workspace — which
   is exactly the set `.nest` project mounts are granted to
   (`Nest.ProjectConfig.effective_caps/2` gives them only to modes that write
-  `":workspace"`, along with the `.nest`/`AGENTS.md` mask) — and the sandbox inside the
-  container tightens per call. A read-only mode therefore still cannot write the
-  workspace or a project mount; it merely sees them, read-only, which is what it
-  would see under bwrap too (through bwrap's own read-only root bind).
+  `":workspace"`; the `.nest`/`AGENTS.md` mask comes from the same call and is
+  dropped again below) — and the sandbox inside the container tightens per call.
+  A read-only mode therefore still cannot write the workspace or a project mount;
+  it merely sees them, read-only, which is what it would see under bwrap too
+  (through bwrap's own read-only root bind).
 
   The scratch bind is dropped here, and only here: a container binds *host*
   paths, and under a backend whose `/tmp` is the container's own there is
@@ -99,10 +100,36 @@ defmodule Nest.Sandbox.Binds do
     # per-call refusal (`Nest.Sandbox.Backend.Docker`) stays, because it is what
     # gives the agent a sentence it can act on.
     unbackable = MapSet.new(non_host_project_mounts(caps, mounts))
+    protected = MapSet.new(protected_specs(caps))
 
     caps
     |> specs(mounts)
-    |> Enum.reject(&(container_scratch?(&1) or unbackable?(&1, unbackable)))
+    |> Enum.reject(&dropped_at_container?(&1, unbackable, protected))
+  end
+
+  # Three kinds of spec are dropped at the *container* and applied per call
+  # instead:
+  #
+  #   * the scratch, because a container binds host paths and this backend's
+  #     scratch is the container's own `/tmp`;
+  #   * a `mode = "tmp"` project mount, because its source is a path inside the
+  #     container (`non_host_project_mounts/2`);
+  #   * `.nest` and `AGENTS.md`, because the sandbox inside binds *those* itself
+  #     and the container's copy is not just redundant but wrong.
+  #
+  # The inner bwrap does not bind a spec's source: the container has already put
+  # the source at the dest, and the inner bind is a self-bind whose job is to set
+  # the path's mode (`Nest.Sandbox.Backend.Docker.CommandLine`). So for these two files
+  # the container's copy is what the sandbox inside would see — and it is a
+  # `/dev/null` mask whenever the file is absent, which shadows the file a human
+  # adds later. It also made the *layout* depend on whether the two files exist,
+  # so an `AGENTS.md` appearing (the `/dev/null` mask materialises one on the
+  # first command) replaced the whole container and took the space's `/tmp` with
+  # it. Neither file is bound here; both are masked per call, exactly as under
+  # bwrap.
+  defp dropped_at_container?(spec, unbackable, protected) do
+    container_scratch?(spec) or unbackable?(spec, unbackable) or
+      MapSet.member?(protected, spec)
   end
 
   @doc """
@@ -227,7 +254,16 @@ defmodule Nest.Sandbox.Binds do
     |> Enum.map(fn %{"dest" => dest, "source" => source} -> {source, dest, :rw} end)
   end
 
-  defp protected_binds(caps) do
+  @doc """
+  The `.nest` and `AGENTS.md` binds a call's caps ask for, as `{source, dest, :ro}`.
+
+  Public because two places need to recognise them by identity rather than by
+  spelling: `container_specs/1` drops them (see `container_specs/1`) and
+  `Nest.Sandbox.Backend.Docker.CommandLine` masks them itself. A source of
+  `"/dev/null"` means the file is absent.
+  """
+  @spec protected_specs(map()) :: [spec()]
+  def protected_specs(caps) do
     caps
     |> protected_list()
     |> Enum.flat_map(fn %{"path" => path, "source" => source} -> [{source, path, :ro}] end)

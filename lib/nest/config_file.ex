@@ -33,7 +33,8 @@ defmodule Nest.ConfigFile do
 
   @typedoc """
   What is at a config path: a regular file, nothing, or something Nest cannot
-  protect (`:symlink`, `:directory`, `:unreadable`, or any other type).
+  protect (`:symlink`, `:directory`, `:hardlink`, `:unreadable`, or any other
+  type).
   """
   @type state :: :regular | :absent | {:not_regular, atom()}
 
@@ -63,6 +64,16 @@ defmodule Nest.ConfigFile do
   @spec state(String.t()) :: state()
   def state(path) do
     case File.lstat(path) do
+      # A hardlink is a regular file whose bytes another name also reaches, so a
+      # mask over *this* path protects nothing: an agent that writes the other
+      # name rewrites the bytes the host read picks up, which is the same
+      # escalation as a symlink. `lstat` answers it on the host — `links` is the
+      # inode's link count — so this is a refusal, not a residual. (An agent
+      # cannot *create* one: `ln` across the workspace bind is `EXDEV`, and `mv`
+      # over the mount point is `EBUSY`.)
+      {:ok, %File.Stat{type: :regular, links: links}} when links > 1 ->
+        {:not_regular, :hardlink}
+
       {:ok, %File.Stat{type: :regular}} ->
         :regular
 
@@ -111,6 +122,10 @@ defmodule Nest.ConfigFile do
   canonical-workspace memo uses: that table has an owner, so "once per BEAM" was
   really "once per table lifetime", which made a test flake. A concurrent first
   call can log twice; that is benign.
+
+  The keys are never removed, and every `put` costs the VM a scan of all
+  processes — so this stays what it is, one write per refused path per BEAM, and
+  never becomes a per-call memo.
   """
   @spec error(String.t() | nil) :: :ok | {:error, {:config_file_not_regular, String.t()}}
   def error(workspace) when is_binary(workspace) do
@@ -125,6 +140,19 @@ defmodule Nest.ConfigFile do
   end
 
   def error(_no_workspace), do: :ok
+
+  @doc """
+  The refusal as a sentence, for a `{:config_file_not_regular, path}` reason.
+
+  One spelling, because three backends' worth of reply paths hand it to a user
+  and a model: `Nest.Sandbox.build/4`'s final gate, the channel's
+  `NestWeb.ErrorPayload`, and `Nest.Tools.ShellCmd`'s tool error.
+  """
+  @spec error_message(String.t()) :: String.t()
+  def error_message(path) do
+    "#{path} is not a regular file, so the sandbox cannot protect it from being " <>
+      "rewritten. Replace it with a regular file."
+  end
 
   defp refuse(path, type) do
     key = {:nest_config_file_not_regular, path}
@@ -144,5 +172,6 @@ defmodule Nest.ConfigFile do
   defp describe(:symlink), do: "a symlink"
   defp describe(:directory), do: "a directory"
   defp describe(:unreadable), do: "unreadable"
+  defp describe(:hardlink), do: "a hardlink to another name"
   defp describe(_other), do: "not a regular file"
 end

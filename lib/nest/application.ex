@@ -14,6 +14,11 @@ defmodule Nest.Application do
     # Check system dependencies first
     check_system_dependencies!()
 
+    # The canonical-workspace memo's table is owned by the application, so it
+    # lives for the whole BEAM. Created lazily it was owned by whichever process
+    # read a workspace first — an agent — and died with it.
+    Nest.ProjectConfig.init_cache()
+
     # Start the cl100k_base vocabulary build here and await it last.
     #
     # `Tokenizer.load/0` is ~95ms of Rust-side work (parse the bundled

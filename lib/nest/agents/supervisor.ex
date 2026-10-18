@@ -233,16 +233,15 @@ defmodule Nest.Agents.Supervisor do
   @doc """
   Test-only: start a single agent under the supervisor.
 
-  Applies `Agent.pre_load_heal/1` in the caller's DB context (matching
-  `fetch_or_start_agent/2`) so an interrupted sequence is healed before
-  the child spawns. The heal is idempotent, so an already-healed tail is
-  left alone.
+  Heals in the caller's DB context first (matching `fetch_or_start_agent/2`) and
+  runs the config-file gate, because it is a start route like any other.
   """
   @spec start_under_test(map()) :: {:ok, pid()} | {:error, term()}
   def start_under_test(attrs) do
     _name = Map.fetch!(attrs, :name)
 
-    with {:ok, prepared} <- prepare_for_start(Agent.pre_load_heal(attrs)),
+    with :ok <- workspace_gate(attrs),
+         {:ok, prepared} <- prepare_for_start(Agent.pre_load_heal(attrs)),
          {:ok, pid} <- DynamicSupervisor.start_child(@supervisor_name, {Agent, prepared}) do
       {:ok, pid}
     else

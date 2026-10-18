@@ -16,11 +16,34 @@ function describeWorkspaceError(reason) {
 }
 
 /**
- * Map the `edit_agent` server error-reason string to a user-friendly
- * message. Each branch mirrors a `:reply` reason from
- * `LobbyChannel.handle_in("edit_agent", …)`.
+ * A `.nest` or `AGENTS.md` that is not a regular file cannot be masked, and a
+ * mask that is merely omitted lets an agent replace the file with one that
+ * grants host access (`.nest`) or changes another agent's prompt (`AGENTS.md`).
+ * So the workspace is refused until it is a regular file. Not "is a symlink":
+ * the reason fires for a directory, a fifo or an unreadable path too, so the
+ * sentence must not name a type it was not told. Returns `null` for any other
+ * reason.
  */
-export function describeEditError(reason) {
+function describeConfigFileError(err) {
+  if (err?.reason !== "config_file_not_regular") return null;
+
+  return err?.path
+    ? `${err.path} is not a regular file. Nest can't protect it from being rewritten, so it must be a regular file — copy the file into the workspace instead of linking it.`
+    : "A .nest or AGENTS.md in that workspace is not a regular file. Nest can't protect it from being rewritten, so it must be a regular file — copy the file into the workspace instead of linking it.";
+}
+
+/**
+ * Map an `edit_agent` error reply to a user-friendly message. The reply is
+ * `{reason: <code>, path?: <path>}` — the whole payload, not a bare reason
+ * string, because some reasons need the `path` — mirroring the `:reply`
+ * payload from `LobbyChannel.handle_in("edit_agent", …)`.
+ */
+export function describeEditError(err) {
+  const reason = err?.reason;
+
+  const configFile = describeConfigFileError(err);
+  if (configFile) return configFile;
+
   const workspace = describeWorkspaceError(reason);
   if (workspace) return workspace;
 
@@ -51,6 +74,9 @@ export function describeEditError(reason) {
 export function describeCreateError(err) {
   const reason = err?.reason;
 
+  const configFile = describeConfigFileError(err);
+  if (configFile) return configFile;
+
   const workspace = describeWorkspaceError(reason);
   if (workspace) return workspace;
 
@@ -63,16 +89,6 @@ export function describeCreateError(err) {
       return "No agent vocation is configured on the server.";
     case "invalid_agent_name":
       return "Agent names can only contain letters, numbers, dashes and underscores.";
-    case "config_file_not_regular":
-      // A `.nest` or `AGENTS.md` that is not a regular file cannot be masked, and
-      // a mask that is merely omitted lets an agent replace the file with one
-      // that grants host access (`.nest`) or changes another agent's prompt
-      // (`AGENTS.md`). So the workspace is refused until it is a regular file.
-      // Not "is a symlink": the reason fires for a directory, a fifo or an
-      // unreadable path too, so the sentence must not name a type it was not told.
-      return err?.path
-        ? `${err.path} is not a regular file. Nest can't protect it from being rewritten, so it must be a regular file — copy the file into the workspace instead of linking it.`
-        : "A .nest or AGENTS.md in that workspace is not a regular file. Nest can't protect it from being rewritten, so it must be a regular file — copy the file into the workspace instead of linking it.";
     case "scratch_path_taken":
       // The name is free, but the host directory Nest would use for this
       // agent's scratch already exists and is not Nest's — so Nest will not
