@@ -37,7 +37,7 @@ describe("messageToMarkdown — user messages", () => {
   it("returns the user content as-is when the mode prefix disagrees with the message mode", () => {
     // Server is the source of truth — leave the prefix alone if
     // it doesn't match the explicit `mode` field. See
-    // `stripModePrefix` for the rationale.
+    // `stripHeader` for the rationale.
     expect(
       messageToMarkdown({
         role: "user",

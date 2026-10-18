@@ -266,11 +266,12 @@ describe("Message peer deliveries", () => {
   });
 
   it("shows the mode once — as the badge — and not a second time in the header", () => {
-    // The server states the recipient's mode in the header of a peer delivery,
-    // which is how an agent whose inbox is all peer traffic learns its own mode.
-    // The bubble already renders the same value as the mode badge, so the
-    // header's copy is dropped from the display (exactly as `stripModePrefix`
-    // drops the `[mode: X]` prefix the badge also shows).
+    // A row recorded before the `[From … | mode: …]` header states the
+    // recipient's mode in the old `[Message from agent "peer" | mode: act]`
+    // label, which is how an agent whose inbox is all peer traffic learned its
+    // own mode. The bubble already renders the same value as the mode badge, so
+    // the label's copy is dropped from the display (exactly as `stripHeader`
+    // drops the header the badge also shows).
     render(<MessageBubble agentName="test-agent" message={peerMessage()} />);
 
     expect(screen.getByText("mode: act")).toBeInTheDocument();

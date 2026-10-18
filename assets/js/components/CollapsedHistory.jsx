@@ -29,8 +29,7 @@ import { ToolMedia } from "./ToolMedia.jsx";
 import { ApiLogsBlock } from "./ApiLogsBlock.jsx";
 import { SystemMessageContent } from "./SystemMessageContent.jsx";
 import { CompactionMarkerBox } from "./CompactionMarker.jsx";
-import { stripModePrefix } from "../utils/stripModePrefix.js";
-import { stripNoticePrefix } from "../utils/stripNoticePrefix.js";
+import { stripHeader } from "../utils/stripHeader.js";
 import { textFromParts } from "../utils/messageText.js";
 import {
   thinkingFor,
@@ -110,9 +109,7 @@ function MessageBubble({ message }) {
             parts={[
               {
                 kind: "text",
-                text: stripNoticePrefix(
-                  stripModePrefix(textFromParts(message.parts), message.mode),
-                ),
+                text: stripHeader(textFromParts(message.parts), message.mode),
               },
               // Media is appended rather than replaced: the text part above is
               // synthesised from `textFromParts`, which is text-only, so
