@@ -252,6 +252,51 @@ defmodule Nest.Agents.Agent.HeaderTest do
     end
   end
 
+  describe "sender/3" do
+    test "a human's row names them, from `human?` plus the sender's name" do
+      # The row has to state *who* is speaking, and `human?` is the producer's
+      # statement that the name it is passing is a human's — so the name is not
+      # dropped, and it is stated as the address a reply goes to.
+      assert Header.sender("alice", true) == {:user, "alice"}
+      assert Header.line(Header.sender("alice", true), "act") == "[From user @alice | mode: act]"
+
+      # Folded the way a username is stored, so the row and the address an agent
+      # would write for that person are one string.
+      assert Header.sender("Jane Doe", true) == {:user, "jane-doe"}
+
+      # **The drift guard**: a note from `@nat` and a chat from `nat` are the
+      # same speaker, so they must be the same row framing. The sigil is how you
+      # address somebody in a tool argument (`Nest.Address`), not how a row that
+      # already knows its speaker is a human gets labelled.
+      assert Header.sender("@nat", false, :query) == Header.sender("nat", true)
+
+      assert Header.line(Header.sender("@nat", false, :query), "act", true) ==
+               "[From user @nat, agents-send reply required | mode: act]"
+
+      # No name is the one case that stays bare: the row must not read as an
+      # agent's, and printing `nil` would be worse.
+      assert Header.sender(nil, true) == :user
+      assert Header.sender("", true) == :user
+      assert Header.line(Header.sender(nil, true), "act") == "[From user | mode: act]"
+    end
+
+    test "a bare name with no `human?` is an agent's, and is not folded" do
+      # A bare name is an identifier rather than a written address, so it is
+      # taken as written: `Nat` names no agent, and the send tools' refusal
+      # names the human `@nat` it could have meant.
+      assert Header.sender("nat", false) == {:agent, "nat"}
+      assert Header.sender("Nat", false) == {:agent, "Nat"}
+      assert Header.sender(nil, false) == {:agent, nil}
+    end
+
+    test "the runtime's own words are the runtime's whatever name they carry" do
+      # A notice about an agent must never be framed as that agent's words, nor
+      # as a human's — the kind wins over both the name and the flag.
+      assert Header.sender("crazy-dolphin", false, :runtime) == :runtime
+      assert Header.sender("@nat", true, :runtime) == :runtime
+    end
+  end
+
   # --- helpers ---
 
   # Every context kind, one entry per 75% variant, each carrying the ack

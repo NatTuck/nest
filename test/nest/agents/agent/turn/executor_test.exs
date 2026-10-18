@@ -436,7 +436,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
 
       assert state.live.inbox == [human]
       assert state.live.mode == "plan"
-      assert content == "[From user | mode: plan]\nhuman note"
+      assert content == "[From user @alice | mode: plan]\nhuman note"
 
       # A mode this build does not know resolves to `Nest.Modes.default/0`,
       # exactly as an idle chat's request would, so `currentMode` never holds a

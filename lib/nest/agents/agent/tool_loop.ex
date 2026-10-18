@@ -231,6 +231,11 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # running or persisted-only — and serialize their name,
   # vocation, status, and depth. Pure read — no GenServer
   # round-trip needed.
+  #
+  # The space's **humans** are named too, on their own line and marked as
+  # human: an agent discovers `@nat` here rather than from the system prompt,
+  # which is fixed and would go stale the moment someone joins the space. See
+  # `humans_section/1` for why one line is the whole shape today.
   defp run_list_agents(ctx, %ToolCall{} = tc) do
     listing =
       Nest.Agents.list_agents_info_for_space(ctx.space_id)
@@ -247,14 +252,34 @@ defmodule Nest.Agents.Agent.ToolLoop do
         }
       end)
 
+    humans = Nest.Notes.list_humans_for_space(ctx.space_id)
+
     content =
       if listing == [] do
-        "No agents in this space."
+        "No agents in this space." <> humans_section(humans)
       else
-        listing |> inspect() |> String.slice(0, @list_agents_max_chars)
+        (listing |> inspect() |> String.slice(0, @list_agents_max_chars)) <>
+          humans_section(humans)
       end
 
     build_tool_result(tc, "agents-list", content)
+  end
+
+  # One human is one line in the existing result — appended after the cap is
+  # applied, because a space's humans are a fixed, tiny set and dropping them
+  # to a truncation would hide the address an agent needs.
+  #
+  # A space has one owner and no membership table (`notes/multiple-users.md`),
+  # so this is one address today. **Several humans would need a shape of their
+  # own** — the projection is a fixed size and `@list_agents_max_chars` is
+  # already close for a big space — and this change deliberately does not build
+  # for that; it lists them, which is honest about who exists, and records the
+  # open question here rather than capping silently.
+  defp humans_section([]), do: ""
+
+  defp humans_section(humans) do
+    "\nHumans in this space (a human is addressed with the @ sigil; a bare name is " <>
+      "an agent): " <> Enum.map_join(humans, ", ", &Nest.Address.format({:user, &1}))
   end
 
   # `agents-list-archived`: read the space's archived agents and
@@ -379,7 +404,12 @@ defmodule Nest.Agents.Agent.ToolLoop do
         build_tool_result(tc, "agents-query", query_confirmation(target, disposition))
 
       {:error, :not_found} ->
-        build_tool_result(tc, "agents-query", "Agent #{target} not found in this space.", true)
+        build_tool_result(
+          tc,
+          "agents-query",
+          Nest.Agents.target_error(ctx.space_id, target),
+          true
+        )
 
       {:error, reason} ->
         build_tool_result(tc, "agents-query", refusal_message("query", target, reason), true)
@@ -390,9 +420,14 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # synchronous mode, so the *reply* is what the peer owes, and the answer comes
   # back as a message.
   defp query_confirmation(target, :delivered) do
-    "Query delivered to #{target}, which now owes you a reply: it stays in its " <>
-      "turn until it answers, and its answer will arrive as a message in your " <>
-      "inbox. Use `agents-wait` to be notified when it answers."
+    if Nest.Address.user?(target) do
+      "Query delivered to #{target}. A human owes no reply and has no turn to be in, " <>
+        "so nothing waits on it: any answer arrives later as a note in your inbox."
+    else
+      "Query delivered to #{target}, which now owes you a reply: it stays in its " <>
+        "turn until it answers, and its answer will arrive as a message in your " <>
+        "inbox. Use `agents-wait` to be notified when it answers."
+    end
   end
 
   defp query_confirmation(target, :queued) do
@@ -436,7 +471,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
         build_tool_result(tc, "agents-send", "Message queued for #{target} (busy).")
 
       {:error, :not_found} ->
-        build_tool_result(tc, "agents-send", "Agent #{target} not found in this space.", true)
+        build_tool_result(tc, "agents-send", Nest.Agents.target_error(ctx.space_id, target), true)
 
       {:error, reason} ->
         build_tool_result(tc, "agents-send", refusal_message("send to", target, reason), true)
@@ -571,25 +606,39 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # only which actor is asking and what it asked for.
   defp requested_mode(ctx, tc, target) do
     case extract_string_arg(tc, "set_mode") do
-      "" ->
-        {:ok, nil}
-
-      asked ->
-        requested = if asked == "mine", do: ctx.mode, else: asked
-
-        actor = %{
-          kind: :agent,
-          space_id: ctx.space_id,
-          name: ctx.agent_name,
-          mode: ctx.mode,
-          target: target
-        }
-
-        case ModeAuthority.authorize(actor, requested) do
-          :ok -> {:ok, requested}
-          {:error, reason} -> {:error, reason}
-        end
+      "" -> {:ok, nil}
+      asked -> authorize_mode(ctx, target, asked)
     end
+  end
+
+  defp authorize_mode(ctx, target, asked) do
+    if Nest.Address.user?(target) do
+      {:error, human_mode_refusal(target)}
+    else
+      requested = if asked == "mine", do: ctx.mode, else: asked
+
+      actor = %{
+        kind: :agent,
+        space_id: ctx.space_id,
+        name: ctx.agent_name,
+        mode: ctx.mode,
+        target: target
+      }
+
+      case ModeAuthority.authorize(actor, requested) do
+        :ok -> {:ok, requested}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  # A human has no mode: `set_mode` is about the permission a turn runs under,
+  # and a human has no turn. Refused in words rather than by the monotone rule's
+  # "not one of your descendants", which would be a true sentence about the
+  # wrong thing.
+  defp human_mode_refusal(target) do
+    "Could not change the mode of #{target}: a human has no mode. `set_mode` " <>
+      "moves an agent's mode; send the note without it."
   end
 
   defp extract_string_arg(%ToolCall{arguments: args}, key) when is_map(args) do

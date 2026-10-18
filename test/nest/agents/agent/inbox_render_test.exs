@@ -47,7 +47,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       assert Render.combine_and_offload(
                [entry(:user, "alice", "from a human", "plan", nil, true)],
                state
-             ) == "[From user | mode: act]\nfrom a human"
+             ) == "[From user @alice | mode: act]\nfrom a human"
 
       assert Render.combine_and_offload([entry(:user, nil, "from nobody", nil, nil, true)], state) ==
                "[From user | mode: act]\nfrom nobody"
@@ -146,7 +146,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       cases = [
         {"a peer's message", "[From agent alice",
          fn pid -> assert {:ok, :queued} = Agent.deliver_note(pid, "alice", @oversized) end},
-        {"a human's message", "[From user | mode: plan]",
+        {"a human's message", "[From user @alice | mode: plan]",
          fn pid -> assert :ok = Agent.chat(pid, @oversized, "plan", "alice", true) end}
       ]
 

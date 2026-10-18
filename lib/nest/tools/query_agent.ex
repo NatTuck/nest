@@ -42,7 +42,9 @@ defmodule Nest.Tools.QueryAgent do
         "properties" => %{
           "name" => %{
             "type" => "string",
-            "description" => "The name of the agent to query."
+            "description" =>
+              "The name of the agent to query, or `@<username>` to address a human " <>
+                "in this space (a human's address needs the `@`; a bare name is an agent's)."
           },
           "prompt" => %{
             "type" => "string",

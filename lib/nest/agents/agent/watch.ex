@@ -132,31 +132,112 @@ defmodule Nest.Agents.Agent.Watch do
   Register interest for an `agents-wait` call (issue #54). Resolves the
   targets; a wait with nothing to watch reports inline and registers nothing.
 
+  A target may be an **address** (`Nest.Address`): a human's, `@nat`. A human is
+  never mid-turn, so there is nothing to wait for — `:ok` is the honest answer
+  and an error would teach the model that the address is wrong. Every human
+  target is dropped from the watch (and named in the result, so the call is not
+  silently answered about someone else), and a call that named only humans
+  returns inline.
+
   Returns `{:waiting, confirmation}` when a watch is now outstanding (the
-  caller's turn ends), `{:ok, confirmation}` when every target was already idle
-  or the space holds no other agent (the caller's turn continues), or
-  `{:error, content}` when the call was refused and registered nothing.
+  caller's turn ends), `{:ok, confirmation}` when every target was already idle,
+  was a human, or the space holds no other agent (the caller's turn continues),
+  or `{:error, content}` when the call was refused and registered nothing.
   """
   @spec register_call(map(), Nest.Messages.ToolCall.t()) ::
           {:waiting, String.t()} | {:ok, String.t()} | {:error, String.t()}
   def register_call(ctx, %Nest.Messages.ToolCall{} = tc) do
+    case split_humans(ctx, tc) do
+      {:error, content} -> {:error, content}
+      {:humans, humans} -> {:ok, humans_sentence(humans)}
+      {:ok, humans, tc} -> register_agents(ctx, tc, humans)
+    end
+  end
+
+  # The human half of a wait: an address names a human, who is never mid-turn,
+  # so it is taken out of the call and named in the answer. The agent names go
+  # through untouched — `WaitForIdle` decides which of those exist, against the
+  # same listing it has always used.
+  #
+  # `@nobody` is the same "not found" a missing agent gets: an address that names
+  # nobody is refused, not silently dropped.
+  defp split_humans(ctx, %Nest.Messages.ToolCall{arguments: args} = tc) when is_map(args) do
+    case Map.get(args, "names") do
+      names when is_list(names) -> split_named(ctx, tc, names)
+      _absent_or_invalid -> {:ok, [], tc}
+    end
+  end
+
+  defp split_humans(_ctx, tc), do: {:ok, [], tc}
+
+  # No address in the call means no human to look up: the common case stays a
+  # pure classification with no database read, and the agent names go straight
+  # through to `WaitForIdle`.
+  defp split_named(ctx, tc, names) do
+    case Enum.split_with(names, &Nest.Address.user?/1) do
+      {[], _agents} -> {:ok, [], tc}
+      {humans, agents} -> resolve_humans(ctx, tc, humans, agents)
+    end
+  end
+
+  defp resolve_humans(ctx, tc, humans, agents) do
+    case Enum.find(humans, &(not human?(&1))) do
+      nil -> split_known_humans(tc, humans, agents)
+      unknown -> {:error, Nest.Agents.target_error(ctx.space_id, unknown)}
+    end
+  end
+
+  # Every name was a human: there is nothing to watch, and the empty list must
+  # not fall through to `WaitForIdle`'s "every other agent in the space" form —
+  # the call named somebody, and the answer is about them.
+  defp split_known_humans(_tc, humans, []), do: {:humans, humans}
+  defp split_known_humans(tc, humans, agents), do: {:ok, humans, put_names(tc, agents)}
+
+  # The same resolution an address gets when a note is sent to it
+  # (`Nest.Notes.human?/1`): `agents-wait` must not refuse an address the send
+  # tools would deliver to.
+  defp human?(address) do
+    case Nest.Address.parse(address) do
+      {:user, username} -> Nest.Notes.human?(username)
+      {:agent, _name} -> false
+    end
+  end
+
+  defp put_names(%Nest.Messages.ToolCall{arguments: args} = tc, names),
+    do: %{tc | arguments: Map.put(args, "names", names)}
+
+  defp register_agents(ctx, tc, humans) do
     case WaitForIdle.resolve(ctx, tc) do
       {:error, content} ->
         {:error, content}
 
       {:ok, [], _timeout, _all?, _initial} ->
-        {:ok, "No other agents in this space to wait for."}
+        {:ok, "No other agents in this space to wait for." <> humans_note(humans)}
 
       {:ok, names, timeout, all?, initial} ->
         if initial.still_busy == [] do
-          {:ok, WaitForIdle.watch_confirmation(initial)}
+          {:ok, WaitForIdle.watch_confirmation(initial) <> humans_note(humans)}
         else
-          start_agent_watch(ctx, names, timeout, all?, initial)
+          start_agent_watch(ctx, names, timeout, all?, initial, humans)
         end
     end
   end
 
-  defp start_agent_watch(ctx, names, timeout, all?, partition) do
+  # A human is never mid-turn: there is nothing to watch and nothing to time
+  # out, so a call that named one is told so rather than being answered about
+  # somebody else.
+  defp humans_note([]), do: ""
+  defp humans_note(humans), do: " " <> humans_sentence(humans)
+
+  # The addresses as the caller wrote them: they are already `@name`, and
+  # echoing the spelling the model sent is what lets it see its own argument
+  # coming back rather than a form it never typed.
+  defp humans_sentence(humans) do
+    "A human is never mid-turn, so there is nothing to wait for: " <>
+      Enum.join(humans, ", ") <> "."
+  end
+
+  defp start_agent_watch(ctx, names, timeout, all?, partition, humans) do
     ref = make_ref()
     spec = {:agent_idle, ctx.space_id, names, timeout, all?}
     :ok = Agent.register_watch(ctx.agent_pid, ref, spec)
@@ -164,7 +245,7 @@ defmodule Nest.Agents.Agent.Watch do
     case start(ctx.agent_pid, ref, spec) do
       {:ok, pid} ->
         Agent.watch_attached(ctx.agent_pid, ref, pid)
-        {:waiting, WaitForIdle.watch_confirmation(partition)}
+        {:waiting, WaitForIdle.watch_confirmation(partition) <> humans_note(humans)}
 
       {:error, reason} ->
         Agent.unregister_watch(ctx.agent_pid, ref)

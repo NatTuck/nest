@@ -70,18 +70,30 @@ defmodule Nest.Agents.Agent.Machine.ReplyReminder do
   No quote of the outstanding message (decision 4 — the agent looks that up in
   its own inbox), no sender label and no mode prefix: the runtime is not a peer,
   and the reminder is worded so it cannot read as one.
+
+  A debtor's name is an address (`Nest.Address`), so it is named as what it is:
+  an agent is `agent "crazy-dolphin"` and a human is `user @nat`. The debt key is
+  the address string either way (`Machine.owed_replies`), and the reply that
+  discharges it is an `agents-send` back to that same string.
   """
   @spec text([String.t()]) :: String.t()
   def text([sender]) do
-    "You have not answered agent \"#{sender}\" yet. Its query is in your " <>
+    "You have not answered #{debtor(sender)} yet. Its query is in your " <>
       "inbox above — send your reply now with the `agents-send` tool."
   end
 
   def text(senders) do
-    named = Enum.map_join(senders, ", ", &"agent \"#{&1}\"")
+    named = Enum.map_join(senders, ", ", &debtor/1)
 
     "You have not answered #{named} yet. Their queries are in your inbox " <>
       "above — send your replies now with the `agents-send` tool."
+  end
+
+  defp debtor(sender) do
+    case Nest.Address.parse(sender) do
+      {:user, username} -> "user @#{username}"
+      {:agent, name} -> "agent \"#{name}\""
+    end
   end
 
   # The machine's own active message list. A hand-built fixture may carry no
