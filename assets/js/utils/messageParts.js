@@ -31,10 +31,11 @@ export function thinkingFor(message) {
 // caller wraps the text in a single Part.Text (with the mode prefix
 // stripped), so this is only used for non-user rows.
 //
-// A synthetic runtime notice renders into an assistant row too: the fused
-// `assistant(notice + ack)` shape puts the `[nest notice]` marker at the head
-// of the row's text (`Nest.Agents.Agent.NoticePairInjector`). The marker is
-// stripped from the first text part here — the same render-time removal
+// A synthetic runtime notice is a `user` row now, but a transcript recorded
+// before the alternation bridge still carries the old fused
+// `assistant(notice + ack)` row, with the `[nest notice]` marker at the head of
+// its text (`Nest.Agents.Agent.NoticePairInjector`). The marker is stripped
+// from the first text part here — the same render-time removal
 // `stripModePrefix` performs for a user row's `[mode: X]` prefix — so the
 // operator sees the notice, not the wire framing. Only the first text part is
 // touched: the marker is always at the head of the row, never mid-text.

@@ -659,18 +659,18 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       assert state.live.machine.work.backgrounded == %{}
       assert state.live.inbox == []
 
-      # The record is one message: the tail was the delivered human message (a
-      # wire-user role), so the notice and its acknowledgement land together
-      # instead of forcing the appender's terminal bridge to fabricate an
-      # acknowledgement of its own.
-      assert Enum.map(state.chat_state.messages, &elem(&1, 0)) ==
-               [:system, :user, :assistant, :tool, :assistant, :user, :assistant]
+      # The record opens with the alternation bridge: the tail was the delivered
+      # human message (a wire-user role) and the notice is a user row, so the
+      # record is `assistant(bridge) → user(notice) → assistant(ack)`.
+      roles = Enum.map(state.chat_state.messages, &elem(&1, 0))
+      assert Enum.take(roles, 6) == [:system, :user, :assistant, :tool, :assistant, :user]
+      assert Enum.drop(roles, 6) == [:assistant, :user, :assistant]
 
-      cancelled = text_of(List.last(state.chat_state.messages))
+      assert [notice, ack] = Enum.take(state.chat_state.messages, -2)
 
-      assert cancelled =~ "cancelled when the conversation was stopped"
-      assert cancelled =~ "its result will not arrive"
-      assert cancelled =~ "I will not wait for it"
+      assert text_of(notice) =~ "cancelled when the conversation was stopped"
+      assert text_of(notice) =~ "its result will not arrive"
+      assert text_of(ack) =~ "I will not wait for it"
 
       # The batch's worker is dead, so its result cannot arrive — but a late one
       # must not deliver a second notice for a call the record already reported.

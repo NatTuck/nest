@@ -294,11 +294,12 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
 
       # One cancellation record for the whole stop: a `backgrounded` entry
       # carries no call identity, so per-entry records would repeat the same
-      # words — and two collapsed records would be two consecutive assistant
-      # messages, which the wire rejects. The count is what tells the model how
-      # many promises the stop voided, and it counts the *calls*: three entries
-      # carrying 2, 1 and 3 calls voided six promises, so a count of the entries
-      # (or of the two distinct pids) would understate it.
+      # words — and a second record would land its bridge right after the first
+      # record's ack, two consecutive assistant rows the wire rejects. The count
+      # is what tells the model how many promises the stop voided, and it counts
+      # the *calls*: three entries carrying 2, 1 and 3 calls voided six
+      # promises, so a count of the entries (or of the two distinct pids) would
+      # understate it.
       assert [{:append_many, record}] = Enum.filter(actions, &match?({:append_many, _}, &1))
 
       assert [
@@ -312,6 +313,50 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
 
       Process.exit(first, :kill)
       Process.exit(second, :kill)
+    end
+
+    test "bridges a cancellation record whose tail is an unpaired tool_use" do
+      # A backgrounded promise *and* a live batch's assistant tail: the record
+      # cannot be built by `build_pair/3` there (it defers on the unpaired
+      # `tool_use`), so the record lands the bridge shape itself. It is valid
+      # because the appender's terminal bridge answers those ids with one
+      # synthetic result before the first row arrives — and adds no
+      # acknowledgement of its own, since its incoming message is an assistant.
+      machine = backgrounded_machine(%{make_ref() => %{pid: self(), ids: ["c1"]}})
+
+      messages = [
+        system(0),
+        {:user, %User{index: 1, parts: [%Part.Text{text: "hi"}]}},
+        {:assistant,
+         %Assistant{
+           index: 2,
+           parts: [%Part.ToolUse{id: "call_9", name: "shell-cmd", arguments: %{}}],
+           api_logs: []
+         }}
+      ]
+
+      machine = %{machine | work: %{machine.work | ctx: %{messages: messages}}}
+
+      assert {:ok, actions, _stopping} = Machine.step(machine, {:stop, self()})
+
+      assert [{:append_many, [bridge, notice, ack]}] =
+               Enum.filter(actions, &match?({:append_many, _}, &1))
+
+      assert {:assistant, %Assistant{parts: [%Part.Text{text: "Okay, continuing from here."}]}} =
+               bridge
+
+      assert {:user, %User{parts: [%Part.Text{text: text}]}} = notice
+      assert text =~ "cancelled when the conversation was stopped"
+
+      assert {:assistant,
+              %Assistant{parts: [%Part.Text{text: "Understood. I will not wait for it."}]}} =
+               ack
+
+      # What the appender does to the first row: one interrupted result and no
+      # acknowledgement, so the record closes exactly once.
+      assert [
+               {:tool, %Tool{parts: [%Part.ToolResult{tool_call_id: "call_9", is_error: true}]}}
+             ] = MessageList.pairing_bridge(messages, bridge)
     end
 
     test "re-arms the timer when the cancellation record is refused" do
