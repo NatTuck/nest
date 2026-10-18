@@ -73,14 +73,17 @@ remaining running budget is replaced by a path-and-head substitute sized
 to fit, so no single result and no batch can overflow — regardless of
 whether an individual result was kept full above its projection.
 
-`ProjectedSize` projections are **lower bounds**, not upper bounds: they
-are each tool's minimum substitutable size (so preflight admits the batch
-with room for substitutes). A tool can be kept full above its projection
-(e.g. `shell-cmd` under the cap, or a token-dense `file-read` under the
-byte heuristic), and that is fine because the running pass re-checks the
-actual size. What must never happen — and no longer does — is keeping a
-result that does not fit. `ProjectedSize.projected?/1` is asserted against
-the registered tool set in `test/nest/agents/agent/batch_sizer_test.exs`
+`ProjectedSize` projections are, for most tools, **lower bounds** on the
+result: they are each tool's minimum substitutable size (so preflight admits
+the batch with room for substitutes). `file-read` is the exception — its
+projection is a byte-based estimate clamped to the per-call cap, so it is an
+upper bound on what the tool can keep inline rather than a lower bound on
+what it returns. Either way a tool can be kept full above its projection
+(e.g. `shell-cmd` under the cap, or a token-dense `file-read` under the byte
+heuristic), and that is fine because the running pass re-checks the actual
+size. What must never happen — and no longer does — is keeping a result that
+does not fit. `ProjectedSize.projected?/1` is asserted against the
+registered tool set in `test/nest/agents/agent/batch_sizer_test.exs`
 so a new tool cannot be added with only the catch-all.
 
 ## Formula
@@ -108,15 +111,17 @@ end
 ```
 
 When `ctx.context_limit` is `nil` (degraded-but-hopeful path), no cap.
-When `usable ≤ 0`, the preflight has already refused the batch, so this
-branch is unreachable in practice.
+When `usable ≤ 0` the preflight has normally refused the batch already, but
+`cook/2` is reachable on its own — it runs once over a merged regular +
+sub-agent batch — so a spent window is treated as no cap and the result is
+substituted rather than raising.
 
 ## Per-tool behavior when the cap is exceeded
 
 | Tool | Action when `content_size > effective_cap` |
 |---|---|
 | `shell-cmd` / `shell-wait` / `shell-list` | Write full content to `<tmp>/exec-<rand>.txt`. Return `<label> (<N> tokens) saved to <path>.\n\n<head>` (`Overflow.substitute/5`). |
-| `file-read` | Return `{:error, "File is X tokens which exceeds your requested limit of Y."}`. The LLM gets a structured error and can retry with a higher `max_result_tokens` or use `file-inspect` / `shell-cmd head/tail`. |
+| `file-read` | Return `{:error, "File is X tokens which exceeds your requested limit of Y."}`. The LLM gets a structured error and can use `file-inspect` for metadata, or `shell-cmd` directly on the file for a partial read. It cannot raise the limit — an override may only lower the default. |
 | `agents-spawn` (with query) / `agents-query` | Write full response to `<tmp>/agents-<rand>.txt`. Return `<label> (<N> tokens) saved to <path>.\n\n<head>`. |
 | `agents-batch` | `BatchLoop` offloads the JSON aggregate via `Overflow.substitute/5`. |
 | Bounded tools (`file-write`, `file-edit`, `file-inspect`, `context-check`, `shell-kill`, `agents-archive`, `agents-list`, `models-list`) | Fixed/derived output; cap-exceeded is unreachable. If it somehow happens they are substituted too — never kept full. |
