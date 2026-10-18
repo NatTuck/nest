@@ -302,7 +302,7 @@ defmodule Nest.SandboxTest do
 
       log =
         capture_log(fn ->
-          assert {:error, {:config_file_not_regular, path}} = Sandbox.workspace_error(dir)
+          assert {:error, {:config_file_not_regular, path, _type}} = Sandbox.workspace_error(dir)
           assert path == Path.join(dir, ".nest")
         end)
 

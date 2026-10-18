@@ -106,7 +106,8 @@ defmodule Nest.Agents do
   Gets the public info of an agent by its `{space_id, name}`.
   """
   @spec get_info(integer(), String.t()) ::
-          {:ok, map()} | {:error, :not_found | {:config_file_not_regular, String.t()}}
+          {:ok, map()}
+          | {:error, :not_found | {:config_file_not_regular, String.t(), atom()}}
   def get_info(space_id, name) do
     case Supervisor.get_agent(space_id, name) do
       {:ok, pid} ->
@@ -377,8 +378,8 @@ defmodule Nest.Agents do
       # at every start, and this route is one of them. The contract above is that
       # every error is a sentence, so this one is too — the alternative is a
       # `CaseClauseError` out of a channel handler.
-      {:error, {:config_file_not_regular, path}} ->
-        {:error, Nest.ConfigFile.error_message(path)}
+      {:error, {:config_file_not_regular, _path, _type} = reason} ->
+        {:error, Nest.ConfigFile.error_message(reason)}
 
       {:error, reason} ->
         {:error, "The agent #{inspect(name)} could not be reached: #{inspect(reason)}"}

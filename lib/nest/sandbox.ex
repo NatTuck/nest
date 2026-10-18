@@ -514,7 +514,7 @@ defmodule Nest.Sandbox do
   Returns `:ok`, `{:error, :workspace_missing}` (the path is not an existing
   directory), `{:error, :workspace_under_tmp}` (the path is at or under
   `#{Paths.sandbox_root()}`, which the scratch bind shadows), or
-  `{:error, {:config_file_not_regular, path}}` (the workspace's `.nest` or
+  `{:error, {:config_file_not_regular, path, type}}` (the workspace's `.nest` or
   `AGENTS.md` is a symlink or otherwise not a regular file, so Nest cannot mask
   it). `nil` means "no workspace" and is always `:ok`; whether a workspace is
   *required* is the caller's policy, and a caller that requires one refuses the
@@ -527,7 +527,7 @@ defmodule Nest.Sandbox do
   @spec workspace_error(String.t() | nil) ::
           :ok
           | {:error, :workspace_missing | :workspace_under_tmp}
-          | {:error, {:config_file_not_regular, String.t()}}
+          | {:error, {:config_file_not_regular, String.t(), atom()}}
   def workspace_error(nil), do: :ok
 
   def workspace_error(workspace) when is_binary(workspace) do
@@ -561,8 +561,8 @@ defmodule Nest.Sandbox do
       {:error, :workspace_missing} ->
         {:error, "Workspace directory does not exist: #{workspace}"}
 
-      {:error, {:config_file_not_regular, path}} ->
-        {:error, Nest.ConfigFile.error_message(path)}
+      {:error, {:config_file_not_regular, _path, _type} = reason} ->
+        {:error, Nest.ConfigFile.error_message(reason)}
     end
   end
 

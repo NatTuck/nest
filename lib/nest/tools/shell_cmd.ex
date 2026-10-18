@@ -387,8 +387,8 @@ defmodule Nest.Tools.ShellCmd do
         :ok ->
           {:ok, mounts}
 
-        {:error, {:config_file_not_regular, bad}} ->
-          {:error, Nest.ConfigFile.error_message(bad)}
+        {:error, {:config_file_not_regular, _path, _type} = reason} ->
+          {:error, Nest.ConfigFile.error_message(reason)}
       end
     else
       {:error, "Workspace directory does not exist: #{path}"}

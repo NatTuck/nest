@@ -58,6 +58,12 @@ defmodule NestWeb.AgentChannel do
   defp join_refusal(_rest, :forbidden), do: %{"reason" => "forbidden"}
   defp join_refusal(_rest, :space_archived), do: %{"reason" => "space_archived"}
 
+  # A workspace `Nest.ConfigFile.error/1` refuses. This is the most common way a
+  # user meets the refusal — opening a chat for an agent that is not running in a
+  # bad workspace — so it names the file, like every other reply path does.
+  defp join_refusal(_rest, {:config_file_not_regular, _path, _type} = reason),
+    do: ErrorPayload.from_reason(reason)
+
   defp join_refusal(rest, reason) do
     Logger.warning("agent:#{rest} channel join failed: #{inspect(reason)}")
     %{"reason" => "agent_unavailable"}
@@ -626,7 +632,7 @@ defmodule NestWeb.AgentChannel do
   def handle_in("chat:history", payload, socket) do
     case History.page(socket.assigns.space_id, socket.assigns.name, payload) do
       {:ok, reply} -> {:reply, {:ok, reply}, socket}
-      {:error, reason} -> {:reply, {:error, %{"reason" => reason}}, socket}
+      {:error, reason} -> {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
     end
   end
 

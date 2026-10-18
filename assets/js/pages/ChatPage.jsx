@@ -45,6 +45,7 @@ import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { useAgentMode } from "../hooks/useAgentMode";
 import { buildChatHistory } from "../utils/chatHistory.js";
 import { describeEditError, getStatusLabel } from "../utils/chatErrors.js";
+import { errorText } from "../utils/errorText";
 import { parseSlashCommand, SLASH_COMMANDS } from "../utils/slashCommands.js";
 
 // Stable empty fallbacks so selector return values are
@@ -386,7 +387,11 @@ export function ChatPage() {
     // client-side reset here.
 
     sendMessage(name, content, mode, (err) => {
-      setSendError(err.message || "Failed to send message");
+      // A channel `error` reply is `{reason, path?, type?}` and has no
+      // `.message`, so the shared helper is what turns the workspace's
+      // config-file refusal into its sentence (with the path) instead of the
+      // generic fallback below.
+      setSendError(errorText(err, "Failed to send message"));
     });
   };
 

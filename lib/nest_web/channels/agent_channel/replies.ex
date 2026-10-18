@@ -5,7 +5,7 @@ defmodule NestWeb.AgentChannel.Replies do
 
   Split out of `NestWeb.AgentChannel` to keep that module under the file cap.
   Every error goes through `NestWeb.ErrorPayload`, because a reason carrying a
-  detail term (`{:config_file_not_regular, path}`) is not `to_string/1`-able, and
+  detail term (`{:config_file_not_regular, path, type}`) is not `to_string/1`-able, and
   raising inside a channel leaves the client with no reply at all.
   """
 
@@ -29,8 +29,7 @@ defmodule NestWeb.AgentChannel.Replies do
   # authority (it queues the message while it is busy).
   def reply_chat(socket, :ok), do: {:reply, {:ok, %{}}, socket}
 
-  def reply_chat(socket, {:error, :not_found}),
-    do: {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
+  def reply_chat(socket, {:error, :not_found}), do: reply_err("agent_not_found", socket)
 
   def reply_chat(socket, {:error, reason}),
     do: {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
@@ -46,7 +45,10 @@ defmodule NestWeb.AgentChannel.Replies do
 
   # The two refusals `chat:message` spells differently from the atom's own name:
   # `:not_found` is `agent_not_found` on this channel, and an archived agent has
-  # its own code because its row must not be resurrected to answer.
+  # its own code because its row must not be resurrected to answer. Both are
+  # reached through `chat:message`'s generic `{:error, reason}` arm — the handler
+  # used to have an arm each, and folding them here is what let that `case` stay
+  # inside credo's complexity bound.
   def chat_message_reason(:not_found), do: "agent_not_found"
   def chat_message_reason(:archived), do: "agent_archived"
   def chat_message_reason(reason), do: reason

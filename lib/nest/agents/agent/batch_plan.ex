@@ -405,5 +405,8 @@ defmodule Nest.Agents.Agent.BatchPlan do
   def spawn_error_message({:mode_refused, reason}),
     do: "Could not spawn batch children: #{reason}"
 
+  def spawn_error_message({:config_file_not_regular, _path, _type} = reason),
+    do: "Could not spawn batch children: #{Nest.ConfigFile.error_message(reason)}"
+
   def spawn_error_message(reason), do: "Could not spawn batch children: #{inspect(reason)}"
 end

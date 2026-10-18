@@ -208,7 +208,14 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
           # 500 ms, the SMELLS.md ceiling: the work is two authz queries plus
           # `Sandbox.workspace_error/1`'s `realpath` fork — no agent is created
           # here, unlike the `create_space` tests that need the longer bound.
-          assert_reply ref, :error, %{"reason" => "config_file_not_regular", "path" => path}, 500
+          assert_reply ref,
+                       :error,
+                       %{
+                         "reason" => "config_file_not_regular",
+                         "path" => path,
+                         "type" => "symlink"
+                       },
+                       500
 
           assert path == Path.join(ws, ".nest")
         end)
@@ -360,7 +367,11 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
               "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
             })
 
-          assert_reply ref, :error, %{"reason" => "config_file_not_regular", "path" => ^path}
+          assert_reply ref, :error, %{
+            "reason" => "config_file_not_regular",
+            "path" => ^path,
+            "type" => "symlink"
+          }
         end)
 
       assert log =~ "Nest cannot protect it from being rewritten"

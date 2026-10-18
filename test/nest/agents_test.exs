@@ -597,7 +597,7 @@ defmodule Nest.AgentsTest do
       # the channel shows it verbatim to the user. Without an arm for the tagged
       # reason this raised `CaseClauseError` and took the socket with it.
       stub(Supervisor, :get_agent, fn _space_id, _name ->
-        {:error, {:config_file_not_regular, "/ws/.nest"}}
+        {:error, {:config_file_not_regular, "/ws/.nest", :symlink}}
       end)
 
       assert {:error, reason} = Agents.set_mode(1, "some-agent", "plan")

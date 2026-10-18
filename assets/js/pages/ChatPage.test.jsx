@@ -1243,7 +1243,26 @@ describe("ChatPage error display", () => {
     sendMessage.mockClear();
   });
 
-  it("shows a send error when sendMessage's onError fires", () => {
+  it("words a failed send from the reply, whatever shape it came in", () => {
+    // Every failure the send path reports goes through the shared
+    // `errorText` helper: a thrown `Error` keeps its message, a reply that
+    // explains nothing falls back to the click's own sentence, and a
+    // `config_file_not_regular` refusal names the file — a channel `error`
+    // reply is `{reason, path, type}` with no `.message`, so the bare enum
+    // (or the generic fallback) is all a `.message`-only path could show.
+    const cases = [
+      { reply: new Error("connection lost"), match: "connection lost" },
+      { reply: {}, match: "Failed to send message" },
+      {
+        reply: {
+          reason: "config_file_not_regular",
+          path: "/ws/AGENTS.md",
+          type: "symlink",
+        },
+        match: /\/ws\/AGENTS\.md/,
+      },
+    ];
+
     mockAgentsCache = {
       "test-agent": {
         status: "connected",
@@ -1253,41 +1272,23 @@ describe("ChatPage error display", () => {
       },
     };
 
-    renderChat();
+    for (const { reply, match } of cases) {
+      sendMessage.mockClear();
+      const { unmount } = renderChat();
 
-    // Type into the textarea and click Send to trigger
-    // handleSendMessage, which calls sendMessage with the
-    // onError callback at index 3.
-    const textarea = screen.getByLabelText("Message");
-    fireEvent.change(textarea, { target: { value: "hello" } });
-    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+      // Type into the textarea and click Send to trigger
+      // handleSendMessage, which calls sendMessage with the
+      // onError callback at index 3.
+      const textarea = screen.getByLabelText("Message");
+      fireEvent.change(textarea, { target: { value: "hello" } });
+      fireEvent.click(screen.getByRole("button", { name: /send/i }));
 
-    const errorCallback = sendMessage.mock.calls[0][3];
-    act(() => errorCallback(new Error("connection lost")));
+      const errorCallback = sendMessage.mock.calls[0][3];
+      act(() => errorCallback(reply));
 
-    expect(screen.getByText("connection lost")).toBeInTheDocument();
-  });
-
-  it("falls back to 'Failed to send message' when the error has no message", () => {
-    mockAgentsCache = {
-      "test-agent": {
-        status: "connected",
-        agentState: "idle",
-        messages: [],
-        model: { name: "qwen3.5-plus" },
-      },
-    };
-
-    renderChat();
-
-    const textarea = screen.getByLabelText("Message");
-    fireEvent.change(textarea, { target: { value: "hello" } });
-    fireEvent.click(screen.getByRole("button", { name: /send/i }));
-
-    const errorCallback = sendMessage.mock.calls[0][3];
-    act(() => errorCallback({}));
-
-    expect(screen.getByText("Failed to send message")).toBeInTheDocument();
+      expect(screen.getByText(match)).toBeInTheDocument();
+      unmount();
+    }
   });
 
   it("keeps the error banner visible across the companion chat:status: idle", () => {
@@ -2245,11 +2246,21 @@ describe("ChatPage model picker (model_missing recovery)", () => {
       { reason: "not_found", match: /agent not found/i },
       { reason: "invalid_payload", match: /couldn't read the edit/i },
       { reason: "boom", match: /failed to edit agent: boom/i },
+      {
+        // The call site has to hand `describeEditError` the whole reply, not
+        // just `err?.reason`: the config-file refusal's only useful part is
+        // the path it names, so a call site passing the bare reason would
+        // render "Failed to edit agent: config_file_not_regular".
+        reason: "config_file_not_regular",
+        path: "/ws/AGENTS.md",
+        type: "symlink",
+        match: /\/ws\/AGENTS\.md/,
+      },
     ];
 
-    for (const { reason, match } of cases) {
+    for (const { match, ...reply } of cases) {
       mocks.editAgent.mockImplementation((_n, _s, _m, _w, _ok, onError) => {
-        if (onError) onError({ reason });
+        if (onError) onError(reply);
       });
 
       mockAgentsCache = {

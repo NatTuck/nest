@@ -291,8 +291,22 @@ The mask is a real bind of `/dev/null` (or of the file itself, when it exists)
 at the file's path, read-only, in both layers. Reading it therefore fails with
 `EACCES` rather than returning empty bytes: bwrap's read-only binds are mounted
 with `nodev`, so a char device bound through one cannot be opened. That is true
-on bwrap and on docker alike — it is one rendering of one bind list — and it is
-what makes the mask a mask rather than an empty file.
+on bwrap and on docker alike, and it is what makes the mask a mask rather than an
+empty file.
+
+**The workspace's spelling is where that guarantee is easiest to lose**, and the
+two backends differ. Under bwrap there is one rendering of one bind list and the
+workspace appears at its canonical path only; a symlinked `workspace_path` is an
+ordinary symlink into that mount, so a mask at the canonical path covers every
+spelling. Under docker the container sees only the image and the explicit binds —
+nothing resolves a symlink for it — so `CommandLine.workspace_spelling/2` binds
+the path the caller named *as well*, which is a second writable view of the same
+directory, and that spelling is what `--chdir`, the prompt and every tool path
+use. The masks are therefore rendered **twice**: at the canonical path and again
+at the spelling, the second after the rw self-bind so it wins. Measured at the
+kernel level with two binds of one directory and the mask under only the first, a
+write through the second succeeds and rewrites the canonical file; with both
+masks it is `EACCES` and the file is untouched.
 
 Because both are masked, the runtime reads both on the **host**: `load/1` for
 `.nest`, `Nest.Agents.Agent.SystemPrompt` for `AGENTS.md`. The sandbox is *handed*

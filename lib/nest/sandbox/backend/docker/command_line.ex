@@ -88,18 +88,45 @@ defmodule Nest.Sandbox.Backend.Docker.CommandLine do
 
   defp sandbox_line(mounts, caps, script) do
     protected = MapSet.new(Binds.protected_specs(caps))
+    spelling = workspace_spelling(mounts, Binds.workspace_mode(caps))
 
     binds =
-      (Binds.specs(caps, mounts) ++ workspace_spelling(mounts, Binds.workspace_mode(caps)))
+      (Binds.specs(caps, mounts) ++ spelling)
       |> Enum.flat_map(&inner_bind(&1, MapSet.member?(protected, &1)))
 
     args =
       @inner_flags ++
         binds ++
+        spelling_masks(spelling, caps) ++
         ["--chdir", ShellEscape.escape(chdir(mounts))] ++
         ["/bin/bash", ShellEscape.escape(script)]
 
     Enum.join(["bwrap" | args], " ")
+  end
+
+  # The protected masks again, re-dest'd at the workspace's **own spelling**.
+  #
+  # `Binds.specs/2` binds the workspace at its canonical path, symlinks resolved,
+  # and that is where the `.nest`/`AGENTS.md` masks point. `workspace_spelling/2`
+  # then binds the path the caller named as well whenever it differs, because the
+  # container sees only the image and the explicit binds — nothing resolves a
+  # symlink for it. Two binds of one directory is two writable views of it, so a
+  # mask at the canonical path leaves `<spelling>/.nest` an ordinary writable
+  # file, at the very path `--chdir`, the prompt and every tool path use: an `act`
+  # agent writes it, the host file stays a regular file, and the `ShellCmd` gate
+  # has nothing to refuse. These masks are rendered *after* the spelling self-bind
+  # so they win. (Under bwrap there is no second bind — the alias stays a symlink
+  # into the masked canonical mount — so this is docker's alone.)
+  defp spelling_masks([], _caps), do: []
+
+  defp spelling_masks([{spelling, _dest, _mode}], caps) do
+    Enum.flat_map(Binds.protected_specs(caps), fn {source, dest, _ro} ->
+      [
+        "--ro-bind",
+        ShellEscape.escape(source),
+        ShellEscape.escape(Path.join(spelling, Path.basename(dest)))
+      ]
+    end)
   end
 
   # The one exception, and it is the `.nest`/`AGENTS.md` mask: the container does

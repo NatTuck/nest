@@ -14,11 +14,18 @@ defmodule NestWeb.ErrorPayloadTest do
 
   alias NestWeb.ErrorPayload
 
-  test "carries the path of a config file Nest cannot protect" do
-    # The path is the whole point: the user has to know which file to replace,
-    # and the browser renders it (`describeConfigFileError`).
-    assert %{"reason" => "config_file_not_regular", "path" => "/ws/AGENTS.md"} =
-             ErrorPayload.from_reason({:config_file_not_regular, "/ws/AGENTS.md"})
+  test "carries the path and the type of a config file Nest cannot protect" do
+    # Both are the point: the user has to know which file to replace, and the
+    # wording depends on the type — a hardlink *is* a regular file, and its remedy
+    # is different. `describeConfigFileError` in the browser renders both.
+    assert %{
+             "reason" => "config_file_not_regular",
+             "path" => "/ws/AGENTS.md",
+             "type" => "hardlink"
+           } = ErrorPayload.from_reason({:config_file_not_regular, "/ws/AGENTS.md", :hardlink})
+
+    assert %{"type" => "symlink"} =
+             ErrorPayload.from_reason({:config_file_not_regular, "/ws/.nest", :symlink})
   end
 
   test "passes a wire code through and stringifies a bare reason" do
@@ -26,6 +33,20 @@ defmodule NestWeb.ErrorPayloadTest do
     # `"agent_not_found"` on the agent channel, and a binary is that spelling.
     assert ErrorPayload.from_reason("agent_not_found") == %{"reason" => "agent_not_found"}
     assert ErrorPayload.from_reason(:agent_busy) == %{"reason" => "agent_busy"}
+  end
+
+  test "answers a tagged reason of any arity with the tag, never unknown_error" do
+    # A reason that grows a field must not fall silently to the catch-all: that is
+    # how `{:config_file_not_regular, path, type}` would have become
+    # `"unknown_error"` if the tuple clause had stayed at arity two.
+    log =
+      capture_log(fn ->
+        assert ErrorPayload.from_reason({:a_new_reason, "one", :two}) ==
+                 %{"reason" => "a_new_reason"}
+      end)
+
+    assert log =~ "Unmapped error reason :a_new_reason"
+    assert log =~ ~s(["one", :two])
   end
 
   test "answers a tagged reason it has no clause for with the tag, and logs the detail" do

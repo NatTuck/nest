@@ -114,7 +114,7 @@ defmodule Nest.ConfigFile do
 
   @doc """
   Whether either protected config file in `workspace` is a path Nest cannot
-  protect: `:ok`, or `{:error, {:config_file_not_regular, path}}`.
+  protect: `:ok`, or `{:error, {:config_file_not_regular, path, type}}`.
 
   Warns **once per path per BEAM**, in `:persistent_term`. `ProjectConfig.load/1`
   runs on every prompt composition *and* every caps resolution, so a per-call log
@@ -127,7 +127,8 @@ defmodule Nest.ConfigFile do
   processes — so this stays what it is, one write per refused path per BEAM, and
   never becomes a per-call memo.
   """
-  @spec error(String.t() | nil) :: :ok | {:error, {:config_file_not_regular, String.t()}}
+  @spec error(String.t() | nil) ::
+          :ok | {:error, {:config_file_not_regular, String.t(), atom()}}
   def error(workspace) when is_binary(workspace) do
     Enum.find_value([@nest_name, @agents_md_name], :ok, fn name ->
       path = Path.join(workspace, name)
@@ -142,14 +143,26 @@ defmodule Nest.ConfigFile do
   def error(_no_workspace), do: :ok
 
   @doc """
-  The refusal as a sentence, for a `{:config_file_not_regular, path}` reason.
+  The refusal as a sentence, for a `{:config_file_not_regular, path, type}` reason.
 
   One spelling, because three backends' worth of reply paths hand it to a user
   and a model: `Nest.Sandbox.build/4`'s final gate, the channel's
   `NestWeb.ErrorPayload`, and `Nest.Tools.ShellCmd`'s tool error.
+
+  `:hardlink` gets its own wording because it is the one type where "is not a
+  regular file" is false — a hardlink **is** a regular file — and where the
+  generic remedy does not work: `cp` over a file with two names leaves the link
+  count at two, so only removing the other name (or deleting and re-creating)
+  gives the file one name again.
   """
-  @spec error_message(String.t()) :: String.t()
-  def error_message(path) do
+  @spec error_message({:config_file_not_regular, String.t(), atom()}) :: String.t()
+  def error_message({:config_file_not_regular, path, :hardlink}) do
+    "#{path} has more than one name on disk (a hardlink), so a mask over this path " <>
+      "protects nothing: writing the other name rewrites it. Remove the other name — " <>
+      "or delete this file and copy it back — and try again."
+  end
+
+  def error_message({:config_file_not_regular, path, _type}) do
     "#{path} is not a regular file, so the sandbox cannot protect it from being " <>
       "rewritten. Replace it with a regular file."
   end
@@ -166,7 +179,7 @@ defmodule Nest.ConfigFile do
       )
     end
 
-    {:error, {:config_file_not_regular, path}}
+    {:error, {:config_file_not_regular, path, type}}
   end
 
   defp describe(:symlink), do: "a symlink"

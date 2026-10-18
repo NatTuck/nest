@@ -18,4 +18,20 @@ describe("errorText", () => {
     expect(errorText({}, "fallback")).toBe("fallback");
     expect(errorText(undefined, "fallback")).toBe("fallback");
   });
+
+  it("names the config file a refusal is about, even with no message", () => {
+    // The one reason a bare enum is useless: the user needs the path, and the
+    // sentence depends on the `type`. Shared with the create/edit paths, so
+    // all three word it identically.
+    expect(
+      errorText(
+        {
+          reason: "config_file_not_regular",
+          path: "/ws/AGENTS.md",
+          type: "hardlink",
+        },
+        "fallback",
+      ),
+    ).toMatch(/^\/ws\/AGENTS\.md has more than one name on disk/);
+  });
 });

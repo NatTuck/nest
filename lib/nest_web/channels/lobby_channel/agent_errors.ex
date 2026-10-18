@@ -18,6 +18,12 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
   # covers them (see `create_payload/1`).
   @simple_reasons @workspace_reasons ++ [:blueprint_missing, :missing_vocation]
 
+  # A reason that carries its detail beside the tag: `{:scratch_path_taken, path}`,
+  # `{:config_file_not_regular, path, type}`. One guard rather than a `{tag, _}`
+  # pattern, which would send the wider ones to the `other` arm.
+  defguardp is_tagged(reason)
+            when is_tuple(reason) and tuple_size(reason) > 0 and is_atom(elem(reason, 0))
+
   @doc false
   def change_model_payload(name, reason) do
     case reason do
@@ -59,7 +65,11 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
       # raises — which kills the channel process and leaves the client with no
       # reply at all. `create_payload/1` has the same arm; the log line and the
       # fallback code differ because this is an edit.
-      {tag, _detail} = tagged when is_atom(tag) ->
+      # Any tuple whose head is a tag: the detail term may be one field
+      # (`{:scratch_path_taken, path}`) or two (`{:config_file_not_regular, path,
+      # type}`), and a narrow `{tag, _detail}` pattern would send the wider ones to
+      # the `other` arm below, where `inspect` is all that is left.
+      tagged when is_tagged(tagged) ->
         tagged_payload(tagged, {"Failed to edit agent #{inspect(name)}", "failed_to_edit"})
 
       other ->
@@ -84,7 +94,7 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
         {:error, %{"reason" => to_string(simple)}}
 
       # The tagged refusals, which all carry a detail term beside the code.
-      {tag, _detail} = tagged when is_atom(tag) ->
+      tagged when is_tagged(tagged) ->
         tagged_payload(tagged, {"Failed to create space", "failed_to_create"})
 
       # The root agent's name (`create_space`'s `agent_name`) is not a
@@ -130,7 +140,7 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
   # user which file to replace.
   #
   # Each takes a `{log_prefix, fallback_code}` context; only the last arm uses it.
-  defp tagged_payload({:config_file_not_regular, _path} = tagged, _context) do
+  defp tagged_payload({:config_file_not_regular, _path, _type} = tagged, _context) do
     {:error, ErrorPayload.from_reason(tagged)}
   end
 

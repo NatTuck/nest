@@ -48,7 +48,7 @@ defmodule Nest.ConfigFileTest do
 
       log =
         capture_log(fn ->
-          assert {:error, {:config_file_not_regular, path}} = ConfigFile.error(dir)
+          assert {:error, {:config_file_not_regular, path, _type}} = ConfigFile.error(dir)
           assert path == nest_path(dir)
         end)
 
@@ -63,7 +63,7 @@ defmodule Nest.ConfigFileTest do
 
       log =
         capture_log(fn ->
-          assert {:error, {:config_file_not_regular, path}} = ConfigFile.error(dir)
+          assert {:error, {:config_file_not_regular, path, _type}} = ConfigFile.error(dir)
           assert path == Path.join(dir, "AGENTS.md")
         end)
 
@@ -95,7 +95,7 @@ defmodule Nest.ConfigFileTest do
 
       log =
         capture_log(fn ->
-          assert {:error, {:config_file_not_regular, _}} = ConfigFile.error(dir)
+          assert {:error, {:config_file_not_regular, _, _}} = ConfigFile.error(dir)
         end)
 
       assert log =~ "is a directory"
@@ -136,7 +136,7 @@ defmodule Nest.ConfigFileTest do
 
       log =
         capture_log(fn ->
-          assert {:error, {:config_file_not_regular, ^fifo}} = ConfigFile.error(dir)
+          assert {:error, {:config_file_not_regular, ^fifo, _type}} = ConfigFile.error(dir)
         end)
 
       assert log =~ "is not a regular file"
@@ -156,8 +156,18 @@ defmodule Nest.ConfigFileTest do
 
     log =
       capture_log(fn ->
-        assert {:error, {:config_file_not_regular, path}} = ConfigFile.error(dir)
+        assert {:error, {:config_file_not_regular, path, :hardlink} = reason} =
+                 ConfigFile.error(dir)
+
         assert path == nest_path(dir)
+
+        # The sentence has to be true of a hardlink, which **is** a regular file,
+        # and its remedy has to work: `cp` over a file with two names leaves the
+        # link count at two, so only removing the other name does.
+        message = ConfigFile.error_message(reason)
+        refute message =~ "is not a regular file"
+        assert message =~ "has more than one name on disk"
+        assert message =~ "Remove the other name"
       end)
 
     assert log =~ "a hardlink to another name"

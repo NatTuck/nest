@@ -94,6 +94,57 @@ describe("describeEditError", () => {
     expect(withoutPath).not.toContain("undefined");
   });
 
+  it("gives a hardlink its own sentence, because a hardlink is a regular file", () => {
+    // The one type the generic sentence would be false about. Its remedy is
+    // also different: copying over a file with two names leaves both, so the
+    // other name has to go.
+    const withPath = describeEditError({
+      reason: "config_file_not_regular",
+      path: "/home/nat/proj/AGENTS.md",
+      type: "hardlink",
+    });
+
+    expect(withPath).toContain("/home/nat/proj/AGENTS.md");
+    expect(withPath).toMatch(/more than one name on disk/i);
+    expect(withPath).toMatch(/remove the other name/i);
+    expect(withPath).not.toMatch(/is not a regular file/i);
+    expect(withPath).not.toContain("undefined");
+
+    const withoutPath = describeEditError({
+      reason: "config_file_not_regular",
+      type: "hardlink",
+    });
+
+    expect(withoutPath).toMatch(/more than one name on disk/i);
+    expect(withoutPath).toMatch(/remove the other name/i);
+    expect(withoutPath).not.toMatch(/is not a regular file/i);
+    expect(withoutPath).not.toContain("undefined");
+  });
+
+  it("keeps the generic sentence for every type that is not a hardlink", () => {
+    // A `symlink`, a `directory` and an absent `type` are all "not a regular
+    // file", and the message must not name a type it was not told.
+    for (const err of [
+      {
+        reason: "config_file_not_regular",
+        path: "/ws/.nest",
+        type: "symlink",
+      },
+      {
+        reason: "config_file_not_regular",
+        path: "/ws/.nest",
+        type: "directory",
+      },
+      { reason: "config_file_not_regular", path: "/ws/.nest" },
+    ]) {
+      const message = describeEditError(err);
+
+      expect(message).toContain("/ws/.nest");
+      expect(message).toMatch(/not a regular file/i);
+      expect(message).not.toMatch(/more than one name/i);
+    }
+  });
+
   it("falls back to the raw reason, or a generic message when absent", () => {
     expect(describeEditError({ reason: "weird_reason" })).toContain(
       "weird_reason",

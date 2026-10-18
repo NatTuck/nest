@@ -168,14 +168,14 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
 
       log =
         capture_log(fn ->
-          assert {:error, {:config_file_not_regular, path}} =
+          assert {:error, {:config_file_not_regular, path, _type}} =
                    Supervisor.fetch_or_start_agent(space_id, %{name: attrs.name})
 
           assert path == Path.join(ws, ".nest")
 
           # And the same through the other entry point, so this is the gate rather
           # than `prepare_for_start/1`'s rescue (which would be `:prepare_failed`).
-          assert {:error, {:config_file_not_regular, _}} =
+          assert {:error, {:config_file_not_regular, _, _}} =
                    Supervisor.get_agent(space_id, attrs.name)
         end)
 

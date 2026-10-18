@@ -570,7 +570,14 @@ defmodule NestWeb.LobbyChannelTest do
               "workspace_path" => ws
             })
 
-          assert_reply ref, :error, %{"reason" => "config_file_not_regular", "path" => path}, 500
+          assert_reply ref,
+                       :error,
+                       %{
+                         "reason" => "config_file_not_regular",
+                         "path" => path,
+                         "type" => "symlink"
+                       },
+                       500
 
           assert path == Path.join(ws, ".nest")
         end)

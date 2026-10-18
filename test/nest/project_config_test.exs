@@ -147,9 +147,13 @@ defmodule Nest.ProjectConfigTest do
 
       on_exit(fn -> File.chmod(nest_path(dir), 0o644) end)
 
+      # This needs a **non-root** user: root can read a mode-`000` file, so
+      # `load/1` would succeed and the assertion below would fail. The suite runs
+      # as the developer's own user, never as root.
       log =
         capture_log(fn ->
-          assert ProjectConfig.load(dir) == {:error, "could not read .nest: :eacces"}
+          assert ProjectConfig.load(dir) == {:error, "could not read .nest: :eacces"},
+                 "as root a mode-000 file is still readable — this test needs a non-root user"
         end)
 
       # Asserted for inclusion only: `capture_log` collects every process's
@@ -367,5 +371,21 @@ defmodule Nest.ProjectConfigTest do
 
       assert log =~ "ignoring"
     end
+  end
+
+  test "the canonical-workspace memo's table outlives the process that first reads it" do
+    # The table is created by `Nest.Application.start/2`, not lazily. Created
+    # lazily it was owned by whichever process read a workspace first — usually an
+    # agent composing a prompt — so stopping that agent deleted the table and the
+    # next reader died with "the table identifier does not refer to an existing
+    # ETS table". A `Task` is the cheapest stand-in for that short-lived reader:
+    # if the table were created here it would die with the task.
+    dir = Path.join(System.tmp_dir!(), "nest_projcfg_cache_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    Task.async(fn -> ProjectConfig.load(dir) end) |> Task.await()
+
+    refute :ets.info(:nest_project_config_cache) == :undefined
   end
 end

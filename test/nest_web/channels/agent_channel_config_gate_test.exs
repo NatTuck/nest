@@ -3,7 +3,7 @@ defmodule NestWeb.AgentChannelConfigGateTest do
   The agent channel's reply when the supervisor refuses to start the agent,
   split from `NestWeb.AgentChannelTest` to keep that file under the credo cap.
 
-  `Supervisor.get_agent/2` answers `{:error, {:config_file_not_regular, path}}`
+  `Supervisor.get_agent/2` answers `{:error, {:config_file_not_regular, path, type}}`
   for a workspace `Nest.ConfigFile.error/1` refuses, so every `handle_in/3` that
   reaches for the agent can be handed a reason carrying a detail term.
   `NestWeb.ErrorPayload` is what makes that a reply instead of a
@@ -31,11 +31,14 @@ defmodule NestWeb.AgentChannelConfigGateTest do
   setup :verify_on_exit!
 
   describe "a config file Nest cannot protect" do
-    test "every control-plane entry point answers, rather than killing the socket", %{
+    # One push per **reply shape**, not per event: `chat:compact`,
+    # `chat:retry-compaction`, `chat:stop` and `chat:loop-detected-ok` all go
+    # through `Replies.reply_control/2`, so the two here stand for all four.
+    test "every reply shape answers, rather than killing the socket", %{
       socket: socket
     } do
       path = "/home/nat/proj/AGENTS.md"
-      refused = {:error, {:config_file_not_regular, path}}
+      refused = {:error, {:config_file_not_regular, path, :symlink}}
 
       stub(Agents, :get_info, fn _space, _name -> refused end)
       stub(Agents, :get_agent_sync, fn _space, _name -> refused end)
@@ -48,7 +51,7 @@ defmodule NestWeb.AgentChannelConfigGateTest do
       # `set_mode/3` answers every error as a *sentence*, because the client shows
       # it verbatim — so its reply is not the wire code.
       stub(Agents, :set_mode, fn _space, _name, _mode ->
-        {:error, ConfigFile.error_message(path)}
+        {:error, ConfigFile.error_message({:config_file_not_regular, path, :symlink})}
       end)
 
       # The channel is a process of its own: a stub set here is invisible to it
@@ -72,7 +75,11 @@ defmodule NestWeb.AgentChannelConfigGateTest do
               ] do
             ref = push(socket, event, payload)
 
-            assert_reply ref, :error, %{"reason" => "config_file_not_regular", "path" => ^path}
+            assert_reply ref, :error, %{
+              "reason" => "config_file_not_regular",
+              "path" => ^path,
+              "type" => "symlink"
+            }
           end
 
           ref = push(socket, "set_agent_mode", %{"mode" => "plan"})
@@ -83,6 +90,22 @@ defmodule NestWeb.AgentChannelConfigGateTest do
 
       assert log =~ "change_model failed on agent"
       assert log =~ "set_agent_mode failed on agent"
+    end
+
+    test "chat:message keeps its own spelling for the two refusals it renames", %{
+      socket: socket
+    } do
+      Mimic.allow(Agents, self(), socket.channel_pid)
+
+      stub(Agents, :get_info, fn _space, _name -> {:error, :not_found} end)
+      ref = push(socket, "chat:message", %{"content" => "hi"})
+      assert_reply ref, :error, %{"reason" => "agent_not_found"}
+
+      # An archived agent is its own code rather than "not found": the row exists,
+      # it is stopped, and it must not be resurrected to answer.
+      stub(Agents, :get_info, fn _space, _name -> {:error, :archived} end)
+      ref = push(socket, "chat:message", %{"content" => "hi"})
+      assert_reply ref, :error, %{"reason" => "agent_archived"}
     end
   end
 end

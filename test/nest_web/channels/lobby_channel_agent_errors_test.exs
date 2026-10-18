@@ -35,14 +35,15 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
     # `create_payload/1` and `edit_payload/2` both have to name it. Without the
     # edit clause the tuple falls through to `to_string/1`, which raises and
     # kills the channel process — the client gets no reply at all.
-    reason = {:config_file_not_regular, "/home/nat/proj/AGENTS.md"}
+    reason = {:config_file_not_regular, "/home/nat/proj/AGENTS.md", :symlink}
 
-    assert {:error, %{"reason" => "config_file_not_regular", "path" => path}} =
+    assert {:error, %{"reason" => "config_file_not_regular", "path" => path, "type" => "symlink"}} =
              AgentErrors.create_payload(reason)
 
     assert path == "/home/nat/proj/AGENTS.md"
 
-    assert {:error, %{"reason" => "config_file_not_regular", "path" => ^path}} =
+    assert {:error,
+            %{"reason" => "config_file_not_regular", "path" => ^path, "type" => "symlink"}} =
              AgentErrors.edit_payload("some-agent", reason)
   end
 

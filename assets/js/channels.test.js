@@ -1755,26 +1755,47 @@ describe("channels", () => {
       );
     });
 
-    it("should set agent status to error on join error", async () => {
+    it("should set agent status to error on join error, naming the config file when that is the refusal", async () => {
       // The store intentionally logs a console.error on join failure
       // for server-side observability. Silence the leak here; the
       // dedicated "should log console error on agent join failure"
       // test below asserts the error was emitted.
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
-        setNextJoinResult("agent:1:agent-1", { error: "agent_not_found" });
-        joinAgent("agent-1", 1);
+        // A join can be refused with the same payload a push gets. A bare
+        // reason is shown as-is; a workspace Nest cannot protect names the
+        // offending file, because opening a chat for an agent that is not
+        // running in a bad workspace is how most users meet that refusal.
+        const cases = [
+          { error: "agent_not_found", shown: "agent_not_found" },
+          {
+            error: {
+              reason: "config_file_not_regular",
+              path: "/ws/AGENTS.md",
+              type: "symlink",
+            },
+            shown: /^\/ws\/AGENTS\.md is not a regular file\./,
+          },
+        ];
 
-        await vi.waitFor(() => {
-          assert.strictEqual(
-            useStore.getState().agentsCache["agent-1"]?.status,
-            "error",
-          );
-          assert.strictEqual(
-            useStore.getState().agentsCache["agent-1"]?.error,
-            "agent_not_found",
-          );
-        });
+        for (const { error, shown } of cases) {
+          resetMockSocket();
+          useStore.getState()._reset();
+          clearAgentChannels();
+
+          setNextJoinResult("agent:1:agent-1", { error });
+          joinAgent("agent-1", 1);
+
+          await vi.waitFor(() => {
+            const cache = useStore.getState().agentsCache["agent-1"];
+            assert.strictEqual(cache?.status, "error");
+            if (typeof shown === "string") {
+              assert.strictEqual(cache?.error, shown);
+            } else {
+              assert.match(cache?.error ?? "", shown);
+            }
+          });
+        }
       } finally {
         errorSpy.mockRestore();
       }
