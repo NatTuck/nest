@@ -464,16 +464,25 @@ mistake for it:
   `MessageList.pairing_bridge/2`'s `{:user, _} | {:tool, _}` clause already
   returns exactly the bridge row and `bridge_ack_kind/1` falls through to
   `:live`, so neither needs changing. **Two sites, not one**: `build_pair/3`'s
-  `:user_agent` clause and `notice_record/3`, which falls back to
-  `build_single_assistant(NoticeTag.tag(...))` when `build_pair` defers (the
-  `:stop_cancellation` path). The trailing ack is structural rather than
+  `:user_agent` clause, and `notice_record/3` — which *did* fall back to a
+  single fused assistant row when `build_pair` deferred (the
+  `:stop_cancellation` path), and now builds the same three rows itself. It
+  cannot call `pairing_bridge/2` there: on that tail the bridge clause returns
+  `[tool, repair_ack]`, which would pre-empt the appender's own repair and add
+  a second acknowledgement. The trailing ack is structural rather than
   decorative: the shape ends a turn, so the row after the notice must be
   `assistant` or the next turn's user message gives `user → user`. The cost is
-  two synthetic rows and one extra fabricated ack on a rare path — context
-  thresholds, budget, stop cancellation, backgrounded completion — paid for one
-  identity for the runtime's voice. Rejected: routing `:user_agent` through
-  `:agent_user` and iterating, which is the most semantically clean shape but
-  costs a full LLM call per notice, exactly what `:user_agent` exists to avoid.
+  one extra row — the bridge — plus the notice no longer sharing a row with the
+  ack, on a rare path (context thresholds, budget, stop cancellation,
+  backgrounded completion), paid for one identity for the runtime's voice.
+  Rejected: routing `:user_agent` through `:agent_user` and iterating, which is
+  the most semantically clean shape but costs a full LLM call per notice,
+  exactly what `:user_agent` exists to avoid. One wire consequence: the
+  `context_threshold` tag used to ride the fused *assistant* row, and
+  `Assistant.to_json/1` emits the whole metadata map while `User.to_json/1`
+  emits only `"mode"` and `"origin"` — so the tag no longer reaches the client.
+  Nothing reads it there and the notice's text is still rendered, which makes it
+  a payload change rather than a transparency one.
 * **`/space/:slug/overview` is retired**, and `/space/:slug` is the feed. Two
   routes remain: the feed and the agent page.
 * **No `read_at`.** Per-item read tracking has no UI behind it; `answered_at`
