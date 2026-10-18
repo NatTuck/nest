@@ -118,6 +118,10 @@ defmodule Nest.Notes do
   :user`) and the ones they sent (`from_kind: :user`) — which is what makes a
   note between two humans one row that appears in both of their feeds. Ordered
   by `id`, the table's monotonic key, so the two index scans need no sort.
+
+  This is the SQL form of `for_user?/2`, which asks the same question about one
+  row (a broadcast's). They are one rule in two execution contexts and must move
+  together.
   """
   @spec list_for(integer(), {:user, String.t()}) :: [UserNote.t()]
   def list_for(space_id, {:user, username}) do
@@ -130,6 +134,22 @@ defmodule Nest.Notes do
     )
     |> Repo.all()
   end
+
+  @doc """
+  Whether `{:user, username}` is one end of `note` — `list_for/2`'s rule, asked
+  about one row.
+
+  The two must agree, and this is the one that can be asked of a row a broadcast
+  handed us: the space's topic reaches every session of every human in the
+  space, so "in this space" is not enough to decide who may see a note. A note
+  between two other humans is in the space and is none of this human's business,
+  which is why the feed's push applies the same predicate as its read rather
+  than only the space.
+  """
+  @spec for_user?(UserNote.t(), {:user, String.t()}) :: boolean()
+  def for_user?(%UserNote{to_kind: :user, to_name: name}, {:user, name}), do: true
+  def for_user?(%UserNote{from_kind: :user, from_name: name}, {:user, name}), do: true
+  def for_user?(%UserNote{}, {:user, _username}), do: false
 
   @doc """
   The usernames of the humans in `space_id`, oldest account first.

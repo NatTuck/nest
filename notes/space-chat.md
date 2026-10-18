@@ -387,6 +387,43 @@ card and `EditSpaceDialog`, so the overview would be a second page for the same
 content with nothing linking to it; its agent list is the feed's recipient
 picker. Two routes remain, and the next section is why they must not converge.
 
+A campaign space keeps its environment: `RpgPlayInterface` is unchanged, and the
+environment card is rendered *below* it. The retired overview route was the only
+way to a campaign space's settings from its main screen (the reason the sidebar
+used to carry an overview icon at all), so the card moved rather than vanished.
+
+### The transport
+
+Notes are already casts and broadcasts, so the feed adds no socket, no channel
+and no topic. `LobbyChannel` subscribes to `Broadcasts.space_topic/1` for every
+space the user can see, and every `user_notes` insert broadcasts there:
+
+| direction | event | payload |
+|---|---|---|
+| client → server | `space_feed` | `%{"space_id" => id}` |
+| server → client (reply) | — | `%{"notes" => [row], "modes" => [name], "default_mode" => name}` |
+| client → server | `send_note` | `%{"space_id" => id, "to" => agent, "content" => text, "mode" => name \| nil}` |
+| server → client (reply) | — | `%{"disposition" => "delivered" \| "queued"}` |
+| server → client (push) | `user_note:created` | `%{"note" => row}` |
+
+A `row` is `Nest.Notes.UserNote`'s own JSON, so a column added to the schema's
+encoder reaches the feed without a second mapping. `modes` and `default_mode`
+ride the read because the feed is the one page with no agent channel behind it:
+`Nest.Modes.names/0` is the authority on which modes exist and the space's
+blueprint says which one a message from here asks for by default. Nothing about
+either is decided in the browser.
+
+Both the read and the push are scoped twice: to a space the user owns (the same
+check `archive_space` makes, which is exactly the subscription set), and to a
+note with that human at one end (`Nest.Notes.for_user?/2`, which is
+`list_for/2`'s predicate asked about one row). The second is what stops a note
+between two other humans in the same space from reaching this human's feed.
+
+The composer's send is a **query**, and it is also the owed-reply banner's clear:
+`send_note/6` marks that agent's outstanding queries answered, and the feed
+applies the same action to its own copy, because `answered_at` is deliberately
+not broadcast.
+
 ### Two routes, two meanings
 
 | route | what it is |
