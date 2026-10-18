@@ -24,6 +24,29 @@ describe("messageToMarkdown — user messages", () => {
     ).toBe("What's up?");
   });
 
+  it("strips the header from a user message, matching the row's mode", () => {
+    // The header the server writes now: `[From … | mode: <mode>]`. The mode it
+    // names must be the message's own, or the guard leaves it on screen — which
+    // is the point of the disagreement case below.
+    expect(
+      messageToMarkdown({
+        role: "user",
+        content: "[From user | mode: act]\nHello",
+        mode: "act",
+      }),
+    ).toBe("Hello");
+
+    expect(
+      messageToMarkdown({
+        role: "agent",
+        mode: "plan",
+        parts: [
+          { kind: "text", text: "[From agent peer | mode: plan]\nhi there" },
+        ],
+      }),
+    ).toBe("hi there");
+  });
+
   it("strips the prefix from a user message's text part too", () => {
     expect(
       messageToMarkdown({

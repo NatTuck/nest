@@ -179,6 +179,25 @@ describe("stripHeader", () => {
       "Context at 50%.",
     );
 
+    // The marker is the whole line, so a body that starts with a blank line
+    // keeps it: only the marker line goes.
+    expect(stripHeader("[nest notice]\n\nblank line body", "act")).toBe(
+      "\nblank line body",
+    );
+
+    expect(stripHeader("[nest notice]\n\nA\n\nB", "act")).toBe("\nA\n\nB");
+
+    // The decided 75% notice, at its full length: the marker is the only thing
+    // removed, and the body is untouched.
+    expect(
+      stripHeader(
+        "[nest notice]\nContext at 75%. Do not stop due to context concerns, continue working through compaction.",
+        "act",
+      ),
+    ).toBe(
+      "Context at 75%. Do not stop due to context concerns, continue working through compaction.",
+    );
+
     // Not the whole of a line, or not at a body head: text someone wrote.
     expect(stripHeader("[nest notice] no newline", "act")).toBe(
       "[nest notice] no newline",

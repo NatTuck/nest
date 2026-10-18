@@ -103,6 +103,45 @@ defmodule Nest.Agents.Agent.EmptyResponseRepromptTest do
     assert log =~ "Empty assistant response finalized after 2 re-prompt(s)"
   end
 
+  test "the retry bound counts nudges written under another mode" do
+    {pid, _name} = start_agent()
+
+    # Turn one, in the agent's own mode: a silent response is nudged once, then
+    # the model speaks — so exactly one nudge is in the transcript.
+    MockClient.set_stream_events(silent_response_events())
+    MockClient.set_response("First turn's reply.")
+    :ok = Agent.chat(pid, "First", nil, nil, true)
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
+
+    # Turn two asks for `plan`, so its own nudge carries a different mode clause.
+    # The bound counts nudges, not nudges-under-this-mode: one of the two
+    # re-prompts is already spent, so the model gets one more and the turn
+    # finalizes. (Counting the headered text instead would see zero, reset the
+    # bound, and allow two more.)
+    for _ <- 1..3, do: MockClient.set_stream_events(silent_response_events())
+
+    log =
+      capture_log(fn ->
+        :ok = Agent.chat(pid, "Second", "plan", nil, true)
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
+      end)
+
+    assert log =~ "Empty assistant response finalized after 2 re-prompt(s)"
+
+    # allowlist: snapshot — messages
+    state = :sys.get_state(pid, 1_000)
+
+    nudges =
+      for {:user, %{parts: [%Part.Text{text: text}]}} <- state.chat_state.messages,
+          text =~ "empty response",
+          do: text
+
+    # One per turn, and the second states the mode its own turn ran in.
+    assert length(nudges) == 2
+    assert Enum.any?(nudges, &(&1 =~ "[From nest runtime | mode: act]"))
+    assert Enum.any?(nudges, &(&1 =~ "[From nest runtime | mode: plan]"))
+  end
+
   test "a normal text response is not nudged" do
     {pid, _name} = start_agent()
 

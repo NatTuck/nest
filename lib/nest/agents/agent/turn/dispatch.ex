@@ -165,7 +165,7 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
   Pure compaction plan: `{:ok, request_message}` when the compactor can
   run, or `{:error, :system_oversized | :reserve_exhausted}`.
 
-  `request_message` is the `[mode: compact]` request the caller **appends
+  `request_message` is the compaction request the caller **appends
   through `MessageAppender`** before dispatching the compactor. It is a
   committed message, not a request-only addition, so the compactor's
   request is the ordinary message list — there is no alternation bridge to

@@ -596,7 +596,7 @@ defmodule Nest.Agents.Agent.Machine.Response do
   # --- nudges ---
 
   defp reprompt_decision(m, :silent) do
-    nudges = count_prior(m.work.ctx.messages, @empty_nudges, m.work.ctx.mode)
+    nudges = count_prior(m.work.ctx.messages, @empty_nudges)
 
     if nudges < @max_empty_retries do
       nudge_or_finalize(m, Enum.at(@empty_nudges, nudges))
@@ -606,8 +606,7 @@ defmodule Nest.Agents.Agent.Machine.Response do
   end
 
   defp reprompt_decision(m, :truncated) do
-    if count_prior(m.work.ctx.messages, [@truncation_nudge], m.work.ctx.mode) <
-         @max_truncation_retries do
+    if count_prior(m.work.ctx.messages, [@truncation_nudge]) < @max_truncation_retries do
       nudge_or_finalize(m, @truncation_nudge)
     else
       :finalize
@@ -625,16 +624,19 @@ defmodule Nest.Agents.Agent.Machine.Response do
   end
 
   # Counts how many of `texts` the transcript already carries. The nudges are
-  # persisted with their header (they are the runtime's own words), so the
-  # comparison is against the headered form: the retry bound is a count of what
-  # was actually appended, and a bare comparison would never match and re-prompt
-  # forever.
-  defp count_prior(messages, texts, mode) do
-    headered = Enum.map(texts, &Header.put(&1, :runtime, mode))
-
+  # persisted behind the runtime's header, so the comparison is against the
+  # *body*: the header's mode clause is the mode the row was written under, and
+  # this bound counts what was appended, not what was appended under the current
+  # mode. Comparing headered text made the count mode-dependent, which reset it
+  # on a turn that changed the mode and gave a pathological model a second run of
+  # re-prompts.
+  defp count_prior(messages, texts) do
     Enum.count(messages, fn
-      {:user, %{parts: [%Part.Text{text: text}]}} when is_binary(text) -> text in headered
-      _ -> false
+      {:user, %{parts: [%Part.Text{text: text}]}} when is_binary(text) ->
+        Header.runtime?(text) and Header.body(text) in texts
+
+      _ ->
+        false
     end)
   end
 

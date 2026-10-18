@@ -59,7 +59,15 @@ defmodule Nest.Agents.AgentChatModeTest do
       assert Modes.default() == "act"
     end
 
-    test "a user message carries the resolved mode in its prefix and metadata" do
+    test "a user message carries the resolved mode in its header and metadata" do
+      # The idle path's row is the whole of the design here: the mode the turn
+      # will run in is stated in the row's header *and* on its metadata, and
+      # both come from one builder (`Dispatch.build_user_message/3`). If you are
+      # changing this test you are almost certainly changing that design — talk
+      # to the team first. (It is the case
+      # `agent_user_message_mode_prefix_test.exs` used to pin alone, under the
+      # retired `[mode: X]` prefix: the same setup and the same assertion, so the
+      # two are one test now.)
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       :ok = Agent.chat(pid, "Hello", nil, nil, true)

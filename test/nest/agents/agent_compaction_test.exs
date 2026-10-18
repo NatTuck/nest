@@ -219,7 +219,8 @@ defmodule Nest.Agents.AgentCompactionTest do
       ]
 
       # The compactor LLM's response text. The commit wraps it as
-      # "Summary of previous conversation (compacted from N tokens):\n\n…".
+      # "[From nest runtime | mode: …]\nSummary of previous conversation
+      # (compacted from N tokens):\n\n…".
       summary_text = "..."
 
       # `:tool_call` continuation: the resumed post-compaction turn
@@ -340,10 +341,11 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert length(replies) == 1,
              "expected exactly one committed final reply; got #{inspect(messages)}"
 
-      # The compaction produced the active summary_user.
+      # The compaction produced the active summary_user — behind the runtime's
+      # header, which is why the body is matched rather than the row's start.
       assert Enum.any?(messages, fn
                {:user, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
-                 String.starts_with?(t, "Summary of previous conversation (")
+                 String.contains?(t, "Summary of previous conversation (")
 
                _ ->
                  false
@@ -490,7 +492,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       summary_row =
         Enum.find_value(messages, fn
           {:user, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
-            if String.starts_with?(t, "Summary of previous conversation ("), do: t
+            if String.contains?(t, "Summary of previous conversation ("), do: t
 
           _ ->
             nil

@@ -26,13 +26,14 @@ defmodule Nest.Agents.Agent.Inbox do
   `kind` is the *provenance* of an entry, and the delivery path is the
   same for every one of them:
 
-    * `:agent` — a peer's words, delivered as `[Message from agent "X"]`.
+    * `:agent` — a peer's words, delivered behind `[From agent X | mode: M]`.
     * `:query` — `agents-query`: the same peer framing (the requester is an
-      agent, so the target reads it as one), plus a **reply obligation** on
-      the target (`Machine.owe_replies/2`, set at delivery).
+      agent, so the target reads it as one) plus `, agents-send reply required`
+      in the header, and a **reply obligation** on the target
+      (`Machine.owe_replies/2`, set at delivery).
     * `:runtime` — the runtime speaking for itself, not an agent's words
-      (issue #31 decision 9). It is rendered **bare**, never under a
-      `[Message from agent …]` label, because no agent said it.
+      (issue #31 decision 9). It says `[From nest runtime | mode: M]` whatever
+      agent it is *about*, because no agent said it.
     * `:user` — a human's words, rendered behind `[From user | mode: X]`
       (its header is added when the message is built).
 

@@ -153,9 +153,8 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   Build the LLM callback the compactor expects:
   `[Message.t()] -> {:ok, String.t()} | {:error, term()}`.
 
-  The callback appends the precomputed `[mode: compact]`
-  suffix system message (built by
-  `Nest.Tokens.Compactor.compute_summary_budget/4`) to the
+  The callback appends the precomputed compaction request
+  (built by `Nest.Tokens.Compactor.compute_summary_budget/4`) to the
   agent's messages list (preserving the agent's own system
   prompt at position 0), runs a streaming `RunRequest`, and
   consumes the stream quietly (no PubSub). Returns

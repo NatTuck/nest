@@ -34,20 +34,20 @@ defmodule Nest.Tokens.Compactor do
   not wrap, rename, or otherwise reshape the response.
 
   The LLM call is set up by the caller. It sends a request whose
-  messages END with a `[mode: compact]` suffix — a `user` row, because
-  that is what every provider's wire format can carry — on its own
-  line, carrying the dynamic budget hint:
+  messages END with the compaction request — a `user` row, because
+  that is what every provider's wire format can carry — carrying the
+  dynamic budget hint behind the runtime's header:
 
-      [mode: compact]
+      [From nest runtime | mode: compact]
       Summarize the conversation in your <N> remaining tokens.
       <optional_guidance?>
 
-  That row is committed to the transcript before this call, so the tag is
-  on its own line exactly like the `[mode: <name>]\n` prefix every human
-  row carries: the client strips it on render and shows a badge instead.
+  That row is committed to the transcript before this call. It states its
+  sender and mode exactly like every other user row (`Nest.Messages.Header`),
+  and the client strips the header on render and shows a badge instead.
 
-  The agent's initial system prompt carries a `[mode: compact]`
-  paragraph explaining the summarization contract. Together,
+  The agent's initial system prompt carries the `compact` entry of its
+  `[Available modes]` list, explaining the summarization contract. Together,
   the agent's known guidelines + the per-call budget produce a
   bounded summary.
 
@@ -66,7 +66,7 @@ defmodule Nest.Tokens.Compactor do
   ## KV-cache friendliness
 
   Pass 1's input is the agent's full prior conversation plus
-  the trailing `[mode: compact]` suffix. The post-compaction
+  the trailing compaction request. The post-compaction
   LLM call starts with the same prefix plus the new summary.
   LLM providers that support prompt caching can hit the cache
   for the `[system, …, last_user_prefix, …]` portion across
@@ -199,7 +199,7 @@ defmodule Nest.Tokens.Compactor do
     * `llm_call` — callback `(messages, remaining_tokens,
       optional_guidance) -> {:ok, run_response} | {:error, reason}`.
       The caller builds the actual LLM request, appending the
-      `[mode: compact]` suffix to the agent's prior conversation.
+      compaction request to the agent's prior conversation.
       The callback returns the wire-level `RunResponse`; the
       compactor extracts `.text` for the empty-summary guard and
       forwards both to the caller.

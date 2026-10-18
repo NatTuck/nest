@@ -63,6 +63,31 @@ defmodule Nest.Messages.Header do
     do: line(sender, mode, reply_required?) <> "\n" <> text
 
   @doc """
+  Whether `text`'s header says the runtime wrote it.
+  """
+  @spec runtime?(String.t()) :: boolean()
+  def runtime?(text), do: String.starts_with?(text, "[From nest runtime | mode: ")
+
+  @doc """
+  The body behind `text`'s header, or `nil` when it has none.
+
+  The counterpart of `put/4` for a reader that compares **bodies**: the mode a
+  row was written under is part of its header, not its body, so a comparison
+  over bodies does not depend on it. `Machine.Response`'s retry bound needs
+  exactly that — the bound counts what was appended, and a turn that changed the
+  mode must not reset it.
+  """
+  @spec body(String.t()) :: String.t() | nil
+  def body(text) do
+    with true <- String.starts_with?(text, "[From "),
+         [_header, body] <- String.split(text, "\n", parts: 2) do
+      body
+    else
+      _ -> nil
+    end
+  end
+
+  @doc """
   Who a row is from, from the three facts every producer already has.
 
   `human?` wins over `from`, and the inbox kind decides the runtime arm, so a

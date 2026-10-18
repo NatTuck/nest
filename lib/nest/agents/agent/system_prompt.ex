@@ -2,8 +2,8 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   @moduledoc """
   Composes the agent's initial system prompt from the
   vocation's base prompt and several contextual sections
-  (the universal modes, the `[mode: compact]` compaction
-  contract, workspace, network access, tool-call budget,
+  (the universal modes and their `compact` contract, workspace,
+  network access, tool-call budget,
   context limit, AGENTS.md).
 
   Extracted from `Nest.Agents.Agent` so the GenServer
@@ -12,14 +12,14 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   `{:system, _}` message at position 0 of the agent's
   messages list.
 
-  The `[mode: compact]` paragraph is the SOLE source of
-  compaction semantics in the agent's prompt. The
-  compactor's per-call request appends a SUFFIX system
-  message of the form `[mode: compact]\nSummarize the
+  The `compact` entry in the `[Available modes]` list is the SOLE
+  source of compaction semantics in the agent's prompt. The
+  compactor's per-call request appends a suffix user message
+  `[From nest runtime | mode: compact]\nSummarize the
   conversation in your <N> remaining tokens.`; the agent
-  recognizes that prefix and follows the paragraph's
-  guidance. Centralizing the guidance here means
-  per-compaction input tokens are tiny (just the suffix)
+  recognizes that header and follows the entry's guidance.
+  Centralizing the guidance here means per-compaction input
+  tokens are tiny (just the request)
   and we don't ship a separate "you are a summarizer"
   prompt template.
   """
@@ -157,8 +157,8 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   # for a mode to restrict, so it would describe a distinction the agent cannot
   # act on. The `compact` contract is not about modes and a tool-less agent still
   # compacts, so it is rendered either way — inside the same `[Available modes]`
-  # marker it has always been in, which is what the runtime's `[mode: compact]`
-  # suffix refers to.
+  # marker it has always been in, which is what the runtime's compaction request
+  # (`mode: compact` in its header) refers to.
   #
   # `enforced?` is the space's, not the agent's: a `"none"` space has no sandbox
   # to enforce the restriction with, so the text has to say so rather than claim
