@@ -72,7 +72,8 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
       # the default-vocation behavior.
       vocation: maybe_vocation(payload, vocation),
       workspace_path: Keyword.get(opts, :workspace_path),
-      # Chosen once, at creation, and immutable afterwards. Absent or blank
+      # Chosen here at creation; editable afterwards through `edit_space`, which
+      # is the same action as the workspace and the network. Absent or blank
       # means the default; an unknown value is refused by
       # `Space.create_changeset/2` rather than silently replaced.
       sandbox_backend: payload["sandbox_backend"],

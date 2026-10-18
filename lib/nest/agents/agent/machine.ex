@@ -113,7 +113,7 @@ defmodule Nest.Agents.Agent.Machine do
     :set_context_projection,
     :set_api_log_sequences,
     :set_cancelled,
-    :set_space_notice_pending,
+    :clear_space_notice,
     :set_streaming,
     :llm_error,
     :fail_turn,

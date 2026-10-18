@@ -152,7 +152,10 @@ defmodule Nest.TestSupport.MachineTestHelpers do
   def sample_event(:loop_ack), do: :loop_ack
   def sample_event(:blocked), do: {:blocked, :needs_repair, nil}
   def sample_event(:unblocked), do: {:unblocked}
-  def sample_event(:workspace_notice), do: :workspace_notice
+
+  def sample_event(:workspace_notice),
+    do: {:workspace_notice, %{workspace: nil, network_access: false, backend: "bwrap"}}
+
   def sample_event(:tool_results), do: {:tool_results, make_ref(), []}
   def sample_event(:reply_sent), do: {:reply_sent, "peer"}
   def sample_event(:child_spawned), do: {:child_spawned, "kid", false, nil}

@@ -27,13 +27,14 @@ defmodule Nest.Spaces.Space do
   ## Sandbox backend
 
   * `sandbox_backend` — how this space's agents are sandboxed:
-    `#{inspect(@sandbox_backends)}` (see `Nest.Sandbox.Backend`). It is chosen
-    **once, at creation**:
-    `create_changeset/2` sets it and `changeset/2` (the update path)
-    deliberately cannot change it, because swapping a backend means
-    replacing the environment the space's agents run in — not a live
-    edit. `#{@default_sandbox_backend}` is the default, so every
-    pre-existing row is a bwrap space.
+    `#{inspect(@sandbox_backends)}` (see `Nest.Sandbox.Backend`).
+    `create_changeset/2` sets it and `environment_changeset/2` moves it, with
+    the workspace and the network, because the three are one decision: an edit to
+    any of them releases the space's sandbox environment (a container's image,
+    `--network` value and workspace binds are fixed when it is created).
+    `changeset/2` — the rename path — deliberately cannot move it.
+    `#{@default_sandbox_backend}` is the default, so every pre-existing row is a
+    bwrap space.
 
     `"bwrap"` runs commands under bubblewrap and enforces the mode's
     caps. `"docker"` runs them in a container the space shares, which sees
@@ -44,9 +45,9 @@ defmodule Nest.Spaces.Space do
   ## Network access
 
   * `network_access` — whether this space's agents may reach the network. It is
-    a **space** property (not a vocation mode's), and unlike `sandbox_backend`
-    it is **editable** (`Nest.Spaces.update_environment/2`): a space can be
-    closed off, or opened up, without recreating it. The resolved caps carry it
+    a **space** property (not a vocation mode's), and it is **editable** with
+    the other two (`Nest.Spaces.update_environment/2`): a space can be closed
+    off, or opened up, without recreating it. The resolved caps carry it
     as `"net"`, injected at caps-resolution time
     (`Nest.Sandbox.with_network_access/2`), which is what
     `Nest.Sandbox.build/2` and both backends read. A `"none"` space cannot

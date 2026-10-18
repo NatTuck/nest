@@ -1,8 +1,10 @@
 # Sandbox backends
 
-A space is created with a **sandbox backend**, chosen once and immutable
-afterwards: `spaces.sandbox_backend` is one of `bwrap` (the default), `docker`
-or `none`. `Nest.Sandbox.Backend` owns the list and dispatches on it; every
+A space is created with a **sandbox backend**: `spaces.sandbox_backend` is one
+of `bwrap` (the default), `docker` or `none`. It is editable, through the one
+environment edit (`Nest.Spaces.update_environment/2`), together with the
+workspace and the network — see "An environment edit replaces the container"
+below for what an edit costs. `Nest.Sandbox.Backend` owns the list and dispatches on it; every
 agent in a space runs its commands through the space's backend.
 
 `Nest.Tools.ShellCmd` is the single seam: a `shell-cmd`, a `read`, a `stat`, a
@@ -37,7 +39,8 @@ the real machine, and its caps are unenforceable by construction — including t
 read-only mask over `.nest` and `AGENTS.md`, so an agent in a `none` space can
 edit either.
 That is stated in `Nest.Sandbox.Backend.None`'s moduledoc, in `Nest.Spaces.Space`'s
-and in the New Space form's help text, rather than papered over.
+(see its `network_access` paragraph) and in the New Space form's help text,
+rather than papered over.
 
 Agent-visible paths are identical on every backend: `/tmp/<agent-name>/…` for
 scratch and the workspace's own path for the workspace.

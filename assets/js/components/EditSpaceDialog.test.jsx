@@ -81,7 +81,7 @@ describe("EditSpaceDialog", () => {
     // The two facts the user cannot discover afterwards.
     expect(EDIT_SPACE_CONSEQUENCE).toMatch(/every agent here is told/);
     expect(EDIT_SPACE_CONSEQUENCE).toMatch(
-      /A change releases this space's container.*\/tmp offloads, background-job logs and any running background job are lost/,
+      /A change to a docker space releases its container.*\/tmp offloads, background-job logs and any running background job are lost/,
     );
   });
 

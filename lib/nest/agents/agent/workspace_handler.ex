@@ -17,9 +17,12 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   edits in a row cannot leave the agent holding a partial picture.
 
   When preflight decides the conversation needs compaction, the insertion is
-  deferred: `state.live.machine.work.pending_notice` carries the values and the
-  compactor is triggered; on success `Machine.Compaction.resume/1` appends the
-  pair without an LLM request.
+  deferred: the values ride that compaction's **entry**
+  (`{:compaction, carried, values}`), and on success
+  `Machine.Compaction.resume/1` appends the pair without an LLM request. They are
+  on the entry rather than in `work.pending_notice` so that only the compaction
+  that staged them can deliver them — a failed staging, a failed commit or any
+  route out of the turn drops the entry and the notice with it.
 
   ## Naming
 
@@ -91,14 +94,11 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   machine. Only the *notice* is conditional, and the outcome says what happened
   to it — see `t:outcome/0`.
 
-  A mid-turn machine gets `{:ignored, phase}` and **nothing is staged**, which is
-  load-bearing rather than tidy: `pending_notice` is one slot shared with the
-  iteration-budget reminder (a binary, written by `do_dispatch_http/1`) and read
-  by `Machine.Compaction.resume/1`, so a map left there while the agent is busy
-  would both disable the budget reminder (`||` treats a map as truthy) and be
-  consumed by an unrelated later compaction, which would drop whatever that
-  compaction carried. A map is therefore written only when the `:idle` machine
-  can consume it in the same settle.
+  A mid-turn machine gets `{:ignored, phase}` and **nothing is staged**: the
+  `:workspace_notice` transition is `:idle`-only, and the values' only other home
+  is a compaction's entry, which only a settle that starts a compaction can
+  write. `work.pending_notice` is never involved — it is the iteration-budget
+  reminder's slot (`do_dispatch_http/1` writes it, `String.t() | nil`).
   """
   @spec apply_space_environment(Agent.t(), values()) :: {Agent.t(), outcome()}
   def apply_space_environment(state, values) do

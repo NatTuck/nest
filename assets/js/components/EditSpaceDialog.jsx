@@ -38,7 +38,7 @@ import {
  * rather than a substring of the markup.
  */
 export const EDIT_SPACE_CONSEQUENCE =
-  "Saving restarts nothing, but every agent here is told. A change releases this space's container, so /tmp offloads, background-job logs and any running background job are lost.";
+  "Saving restarts nothing, but every agent here is told. A change to a docker space releases its container, so /tmp offloads, background-job logs and any running background job are lost.";
 
 export function EditSpaceDialog({ open, onClose, space }) {
   const [workspacePath, setWorkspacePath] = useState("");

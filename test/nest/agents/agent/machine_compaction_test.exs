@@ -107,11 +107,14 @@ defmodule MachineCompactionTest do
       # The space's flag is cleared by the executor, *after* the append: until
       # this ran, the row was the only record that the agent still owed the
       # notice (a stop, archive, crash or deploy before the commit loses the
-      # entry, and the next start must announce it).
-      assert {:set_space_notice_pending, false} in actions
+      # entry, and the next start must announce it). The action carries the
+      # values, because the executor clears the row only while the space still
+      # holds them.
+      assert {:clear_space_notice, values} = List.keyfind(actions, :clear_space_notice, 0)
+      assert values == notice_values()
 
       assert Enum.find_index(actions, &match?({:append_many, _}, &1)) <
-               Enum.find_index(actions, &match?({:set_space_notice_pending, _}, &1))
+               Enum.find_index(actions, &match?({:clear_space_notice, _}, &1))
     end
 
     # A space-environment notice lives on the compaction entry that will append

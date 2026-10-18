@@ -50,8 +50,15 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   machine (`%{m | pending_user_message: entry}`) before calling this, and the
   drain path under peek-then-consume (#26) never parks one at all, so a
   parameter for it was always `nil` at every call site.
+
+  `notice` is the space-environment change this compaction was staged to
+  deliver (`WorkspaceHandler.values/0`), or `nil` for a compaction nobody asked
+  for. It is stored **on the entry**, not in a slot of its own, so that only the
+  compaction that staged it can append it: a failed staging, a failed commit or
+  any route out of the turn drops the entry and the notice with it, and no later
+  compaction can find a stale one.
   """
-  @spec stage(Machine.t(), Machine.entry() | nil, map() | nil) ::
+  @spec stage(Machine.t(), Machine.entry() | nil, WorkspaceHandler.values() | nil) ::
           {:ok, [term()], Machine.t()}
   def stage(m, carried_entry, notice \\ nil) do
     count = m.loop_count + 1
@@ -490,6 +497,12 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   # not when the notice was staged — because until this runs the transcript does
   # not have it and a stop, archive, crash or deploy would lose it: the flag is
   # what makes the next start announce it.
+  #
+  # The clear carries the values it is clearing *for*: the executor clears the row
+  # only if the space still holds them. An edit that landed while this compaction
+  # was in flight has already marked the row again, and erasing that mark would
+  # leave the agent with the new mounts and a transcript describing the old ones —
+  # the notice it is owed would be lost until some later edit.
   defp resume_notice(m, notice) do
     pair = WorkspaceHandler.notice_pair(notice)
 
@@ -497,7 +510,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
       %{m | entry: nil},
       :chat,
       :workspace_notice,
-      [{:append_many, pair}, {:set_space_notice_pending, false}, {:drain_inbox}]
+      [{:append_many, pair}, {:clear_space_notice, notice}, {:drain_inbox}]
     )
   end
 
