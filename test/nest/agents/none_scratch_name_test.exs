@@ -212,60 +212,54 @@ defmodule Nest.Agents.NoneScratchNameTest do
   end
 
   describe "the mounts an agent's prompt is composed through" do
-    test "carry the scratch bind for a bwrap space too" do
-      # The regression guard for the docker defect: reverting the prompt's mounts
-      # to a nil scratch fails nothing today, because a docker space *with a
-      # workspace* cannot be created in the suite (its prompt read is a real
-      # `docker exec`). What it does leave behind is observable under bwrap: the
-      # prompt's `AGENTS.md` read stages its transcript through the scratch bind,
-      # so `<space_dir>/.cmds` exists afterwards only if the mounts carried one.
-      # (Under bwrap the read would have succeeded either way — bwrap reaches
-      # `<host tmp>/.nest-cmds` through its read-only root bind — which is exactly
-      # why the staging directory, not the content, is the observable. Building
-      # the agent's *tools* with a mounts value stages nothing (checked directly:
-      # `Tools.get_functions/2` creates no `.cmds`), so the directory can only
-      # come from the prompt's read — though not from *which* of the two prompt
-      # call sites.)
-      workspace = Path.join([File.cwd!(), "_build", "tmp", "nest_prompt_mounts"])
-      File.mkdir_p!(workspace)
-      File.write!(Path.join(workspace, "AGENTS.md"), "# Project notes\n")
-
-      on_exit(fn ->
-        if String.contains?(workspace, "nest_prompt_mounts"), do: File.rm_rf(workspace)
-      end)
-
+    # There was a "carry the scratch bind for a bwrap space too" test here. It
+    # asserted that `<space_dir>/.cmds` existed after an agent started, which
+    # could only happen if the prompt's `AGENTS.md` read staged a command — and
+    # therefore that the mounts the prompt was composed through carried the
+    # scratch bind. Its subject is gone, and so is the bug class it guarded: the
+    # `AGENTS.md` read is a **host** read (issue #132), so composing a prompt
+    # stages nothing on any backend, and a docker space can no longer silently
+    # lose the section because its prompt read staged where the container could
+    # not see it. What remains worth pinning is that the mounts name the right
+    # scratch, which the next test does directly.
+    test "the prompt's mounts and the agent's are the same value" do
+      # `Init` builds the prompt's mounts with `TmpSpace.prompt_mounts/5` and the
+      # agent's with `agent_mounts/6` — two independent constructions. Their
+      # agreement is what makes "the prompt states the environment its tools will
+      # use" true, and nothing else asserts it: the old `.cmds` guard observed it
+      # indirectly, through the staging a sandboxed `AGENTS.md` read left behind.
       {:ok, space_id} = AgentTestHelpers.create_test_space()
-
-      name = start_named(space_id, unique("bwrap-mounts"), workspace_path: workspace)
+      workspace = AgentTestHelpers.default_test_workspace()
+      name = start_named(space_id, unique("mounts-agree"), workspace_path: workspace)
 
       {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
 
       # allowlist: snapshot — the mounts the *start path* built, which is the
       # thing under test; no accessor exposes them and there is no event for
       # "the agent started with these mounts".
-      mounts = Mounts.from_agent(:sys.get_state(pid))
-      scratch = Mounts.scratch(mounts)
+      agent_mounts = Mounts.from_agent(:sys.get_state(pid))
 
-      assert scratch == TmpSpace.agent_dir(space_id, name, "bwrap")
-      assert File.dir?(Path.join(Path.dirname(scratch), ".cmds"))
+      assert agent_mounts ==
+               TmpSpace.prompt_mounts(
+                 workspace,
+                 space_id,
+                 name,
+                 Mounts.backend(agent_mounts),
+                 Mounts.network_access(agent_mounts)
+               )
     end
 
     test "carry the agent's real scratch, so a command can be staged" do
       {:ok, space_id} = AgentTestHelpers.create_test_space(%{sandbox_backend: "docker"})
 
-      # The space has a workspace — every space does now
-      # (`Space.create_changeset/2`) — but this agent's *mounts* do not: a
-      # workspace reaches an agent through `Agents.create_agent/3`'s
-      # `:workspace_path` option and from nowhere else, and `start_named/3` names
-      # none. So composing the prompt takes
-      # `SystemPrompt.agents_md_section/2`'s first clause, which returns `""` for
-      # `%Mounts{workspace: nil}` without reading — no `docker exec`, nothing
-      # printed. (A docker agent *with* a workspace would make that read; it is the
-      # one docker call the inert `docker_runner` in `config/test.exs` does not
-      # cover.) What this asserts is the thing that made a docker space silently
-      # lose its `AGENTS.md` section — the mounts the prompt is composed through
-      # must name the agent's scratch, or the staged transcript lands where the
-      # container cannot reach it.
+      # This agent's *mounts* name no workspace: a workspace reaches an agent
+      # through `Agents.create_agent/3`'s `:workspace_path` option and from
+      # nowhere else, and `start_named/3` names none. That no longer decides
+      # whether the prompt makes a `docker exec` — the `AGENTS.md` read is a host
+      # read, so no agent of any shape reaches a backend from composition — but
+      # what this asserts is unaffected: the mounts the prompt is composed
+      # through must name the agent's scratch, so the mounts are the agent's real
+      # ones rather than a second spelling of them.
       name = start_named(space_id, unique("docker-mounts"))
       {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
 

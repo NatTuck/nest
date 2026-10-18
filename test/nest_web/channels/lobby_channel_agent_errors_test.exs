@@ -1,7 +1,8 @@
 defmodule NestWeb.LobbyChannel.AgentErrorsTest do
   @moduledoc """
   Pins the reply payload `AgentErrors.create_payload/1` builds for each reason
-  `Spaces.create_space_with_root_agent/2` can return.
+  `Spaces.create_space_with_root_agent/2` can return, and the one tagged reason
+  `edit_agent` can carry.
 
   The create path's reason space is heterogeneous: the refusals a user can act
   on, plus changesets and internal terms from the space insert and the root
@@ -28,6 +29,22 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
         ] do
       assert {:error, %{"reason" => ^code}} = AgentErrors.create_payload(reason)
     end
+  end
+
+  test "names a config file Nest cannot protect, with its path, on both paths" do
+    # `create_payload/1` and `edit_payload/2` both have to name it. Without the
+    # edit clause the tuple falls through to `to_string/1`, which raises and
+    # kills the channel process — the client gets no reply at all.
+    reason = {:config_file_not_regular, "/home/nat/proj/AGENTS.md", :symlink}
+
+    assert {:error, %{"reason" => "config_file_not_regular", "path" => path, "type" => "symlink"}} =
+             AgentErrors.create_payload(reason)
+
+    assert path == "/home/nat/proj/AGENTS.md"
+
+    assert {:error,
+            %{"reason" => "config_file_not_regular", "path" => ^path, "type" => "symlink"}} =
+             AgentErrors.edit_payload("some-agent", reason)
   end
 
   test "names a blueprint whose root vocation is gone, and logs the slug" do
@@ -75,6 +92,25 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
       end)
 
     assert log =~ "Failed to create space"
+  end
+
+  test "answers a tagged reason it has no clause for with the caller's own code" do
+    # A tagged reason carries a detail term, so neither path may pass it to
+    # `to_string/1` — that raises and kills the channel. The two paths do not
+    # share a fallback code either: the client shows the user whether it was
+    # creating or editing.
+    reason = {:some_new_refusal, "detail"}
+
+    log =
+      capture_log(fn ->
+        assert {:error, %{"reason" => "failed_to_create"}} = AgentErrors.create_payload(reason)
+
+        assert {:error, %{"reason" => "failed_to_edit"}} =
+                 AgentErrors.edit_payload("some-agent", reason)
+      end)
+
+    assert log =~ "Failed to create space: {:some_new_refusal, \"detail\"}"
+    assert log =~ "Failed to edit agent \"some-agent\": {:some_new_refusal, \"detail\"}"
   end
 
   test "stays generic and logs a reason it cannot show a user" do

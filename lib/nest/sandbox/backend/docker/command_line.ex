@@ -18,7 +18,9 @@ defmodule Nest.Sandbox.Backend.Docker.CommandLine do
 
   # The flags the sandbox *inside* the container runs with. `--ro-bind / /` makes
   # the whole image read-only, and each bind the call's caps ask for is re-applied
-  # as a self-bind, which is what sets that path's mode.
+  # as a self-bind, which is what sets that path's mode. One exception: an absent
+  # `.nest`/`AGENTS.md` is bound from `/dev/null`, because the container does not
+  # bind those two at all (`Binds.container_specs/1`).
   @inner_flags ~w(--die-with-parent --new-session --ro-bind / / --dev-bind /dev /dev --proc /proc)
 
   @doc """
@@ -85,17 +87,57 @@ defmodule Nest.Sandbox.Backend.Docker.CommandLine do
   end
 
   defp sandbox_line(mounts, caps, script) do
+    protected = MapSet.new(Binds.protected_specs(caps))
+    spelling = workspace_spelling(mounts, Binds.workspace_mode(caps))
+
     binds =
-      (Binds.specs(caps, mounts) ++ workspace_spelling(mounts, Binds.workspace_mode(caps)))
-      |> Enum.flat_map(&inner_bind/1)
+      (Binds.specs(caps, mounts) ++ spelling)
+      |> Enum.flat_map(&inner_bind(&1, MapSet.member?(protected, &1)))
 
     args =
       @inner_flags ++
         binds ++
+        spelling_masks(spelling, caps) ++
         ["--chdir", ShellEscape.escape(chdir(mounts))] ++
         ["/bin/bash", ShellEscape.escape(script)]
 
     Enum.join(["bwrap" | args], " ")
+  end
+
+  # The protected masks again, re-dest'd at the workspace's **own spelling**.
+  #
+  # `Binds.specs/2` binds the workspace at its canonical path, symlinks resolved,
+  # and that is where the `.nest`/`AGENTS.md` masks point. `workspace_spelling/2`
+  # then binds the path the caller named as well whenever it differs, because the
+  # container sees only the image and the explicit binds — nothing resolves a
+  # symlink for it. Two binds of one directory is two writable views of it, so a
+  # mask at the canonical path leaves `<spelling>/.nest` an ordinary writable
+  # file, at the very path `--chdir`, the prompt and every tool path use: an `act`
+  # agent writes it, the host file stays a regular file, and the `ShellCmd` gate
+  # has nothing to refuse. These masks are rendered *after* the spelling self-bind
+  # so they win. (Under bwrap there is no second bind — the alias stays a symlink
+  # into the masked canonical mount — so this is docker's alone.)
+  defp spelling_masks([], _caps), do: []
+
+  defp spelling_masks([{spelling, _dest, _mode} | _rest], caps) do
+    Enum.flat_map(Binds.protected_specs(caps), fn {source, dest, _ro} ->
+      [
+        "--ro-bind",
+        ShellEscape.escape(source),
+        ShellEscape.escape(Path.join(spelling, Path.basename(dest)))
+      ]
+    end)
+  end
+
+  # The one exception, and it is the `.nest`/`AGENTS.md` mask: the container does
+  # *not* bind those (`Binds.container_specs/1`), so there is no source at
+  # the dest to set the mode of. An absent file is masked with `/dev/null` here
+  # instead of self-bound, which is exactly what the bwrap backend does — and it
+  # is why reading a masked file fails with `EACCES` rather than returning empty
+  # bytes, `--ro-bind` mounting with `nodev`. `/dev/null` is there because
+  # `--dev-bind /dev /dev` is one of the flags above.
+  defp inner_bind({"/dev/null", dest, :ro}, true) do
+    ["--ro-bind", "/dev/null", ShellEscape.escape(dest)]
   end
 
   # The container has already put this bind's source at its `dest`, so what the
@@ -103,7 +145,7 @@ defmodule Nest.Sandbox.Backend.Docker.CommandLine do
   # everything read-only, and a read-only bind cannot be upgraded from inside.
   # A self-bind is exactly "set this path's mode", and bwrap applies it to the
   # mount that is already there.
-  defp inner_bind({_source, dest, mode}) do
+  defp inner_bind({_source, dest, mode}, _protected) do
     [bind_flag(mode), ShellEscape.escape(dest), ShellEscape.escape(dest)]
   end
 

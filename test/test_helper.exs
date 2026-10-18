@@ -30,6 +30,7 @@ mimic_modules = [
   {Nest.Vocations, []},
   {Nest.Agents.Agent, []},
   {Nest.Agents.Agent.Config, []},
+  {Nest.Agents.Agent.Init, []},
   {Nest.Agents, []},
   {Nest.Agents.Supervisor, []},
   {Phoenix.Channel, []},

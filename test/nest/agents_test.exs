@@ -138,7 +138,7 @@ defmodule Nest.AgentsTest do
       space_id = AgentTestHelpers.current_space_id()
       name = fresh_name()
 
-      # `:vocation_id` is omitted → no vocation struct → `compose_vocation_config/6`
+      # `:vocation_id` is omitted → no vocation struct → `compose_vocation_config/5`
       # returns `nil` → creation is refused.
       assert {:error, :missing_system_prompt} =
                Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
@@ -590,4 +590,29 @@ defmodule Nest.AgentsTest do
   # without coupling to the source shape.
   defp model_name(model), do: model[:name] || model["name"]
   defp model_provider(model), do: model[:provider] || model["provider"]
+
+  describe "set_mode/3" do
+    test "answers a workspace the config gate refuses with a sentence" do
+      # The one start route whose contract is "every error is a sentence", because
+      # the channel shows it verbatim to the user. Without an arm for the tagged
+      # reason this raised `CaseClauseError` and took the socket with it.
+      stub(Supervisor, :get_agent, fn _space_id, _name ->
+        {:error, {:config_file_not_regular, "/ws/.nest", :symlink}}
+      end)
+
+      assert {:error, reason} = Agents.set_mode(1, "some-agent", "plan")
+      assert reason =~ "/ws/.nest is not a regular file"
+      assert reason =~ "Replace it with a regular file"
+    end
+
+    test "answers any other refusal with a sentence too" do
+      # `:archived` is the other reason `Supervisor.get_agent/2` really returns.
+      # The point is that nothing escapes as a `CaseClauseError`.
+      stub(Supervisor, :get_agent, fn _space_id, _name -> {:error, :archived} end)
+
+      assert {:error, reason} = Agents.set_mode(1, "some-agent", "plan")
+      assert reason =~ "could not be reached"
+      assert reason =~ ":archived"
+    end
+  end
 end

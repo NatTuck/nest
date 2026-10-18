@@ -466,13 +466,12 @@ defmodule Nest.Agents.AgentTestHelpers do
       # `Map.get/2` so `nil` is fine. Tests that need a workspace
       # can override `:workspace_path` in `attrs`.
       #
-      # It stays `nil` by default on purpose. A workspace is not free: composing
-      # the system prompt reads `AGENTS.md` through the sandbox
-      # (`SystemPrompt.agents_md_section/2`), and a *sandboxed* read forks a
-      # `bwrap` — measured at ~9 ms, and ~5 s across the suite because every agent
-      # start pays it. The `nil` clause returns `""` without a read at all. So the
-      # default is "no workspace", and the tests that actually need one pass it;
-      # they are the ones that exercise the read.
+      # It stays `nil` by default because most tests do not need one. A
+      # workspace changes what the prompt *says* — the working-directory
+      # section, the `.nest` section, and the `AGENTS.md` section, which reads
+      # the file from the **host** (`SystemPrompt.agents_md_section/1`), so it
+      # costs a `File.read`, not the 7.8-10.2 ms `bwrap` fork it used to — and the
+      # tests that exercise any of those pass one.
       workspace_path: nil,
       # Multi-user identity. Defaults to `nil` so tests that
       # pre-date the multi-user migration keep working

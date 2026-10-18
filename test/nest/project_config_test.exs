@@ -137,14 +137,23 @@ defmodule Nest.ProjectConfigTest do
       expect_error(dir, body, "duplicate")
     end
 
-    test "reports a .nest it cannot read", %{dir: dir} do
-      # A directory where the file should be is the cheapest way to make the
-      # read fail, and unlike a permission bit it behaves the same for any user.
-      File.mkdir_p!(nest_path(dir))
+    test "reports a regular .nest it cannot read", %{dir: dir} do
+      # A *regular* file with no read bit: the one state that still reaches the
+      # error branch. A directory (or a symlink) is a non-regular path, and that
+      # is a different answer — it grants nothing, and the *workspace* is refused
+      # (see the describe below).
+      write_nest(dir, "")
+      File.chmod!(nest_path(dir), 0o000)
 
+      on_exit(fn -> File.chmod(nest_path(dir), 0o644) end)
+
+      # This needs a **non-root** user: root can read a mode-`000` file, so
+      # `load/1` would succeed and the assertion below would fail. The suite runs
+      # as the developer's own user, never as root.
       log =
         capture_log(fn ->
-          assert ProjectConfig.load(dir) == {:error, "could not read .nest: :eisdir"}
+          assert ProjectConfig.load(dir) == {:error, "could not read .nest: :eacces"},
+                 "as root a mode-000 file is still readable — this test needs a non-root user"
         end)
 
       # Asserted for inclusion only: `capture_log` collects every process's
@@ -155,6 +164,62 @@ defmodule Nest.ProjectConfigTest do
       # is not assertable from here.
       assert log =~ "could not read .nest"
     end
+
+    test "renders a visible error for a .nest that is not a regular file", %{dir: dir} do
+      # A `.nest` Nest cannot protect must not degrade silently — the same rule a
+      # malformed one follows. A directory is the cheapest non-regular path that
+      # is not a symlink. Nothing here logs: the *gate* owns the warning, and this
+      # is the re-render path (a running agent whose file was replaced).
+      File.mkdir_p!(nest_path(dir))
+
+      assert {:error, reason} = ProjectConfig.load(dir)
+      assert reason =~ "not a regular file"
+
+      section = ProjectConfig.section(dir)
+      assert section =~ "[Project sandbox config error]"
+      assert section =~ "not a regular file"
+    end
+  end
+
+  describe "a config path that is not a regular file" do
+    test "load/1 refuses a symlinked .nest and never follows the link", %{dir: dir} do
+      # The *gate* owns the warning (`Nest.ConfigFile.error/1`); `load/1` only has
+      # to not follow the link, and to say so where a reader sees it. This is the
+      # re-render path — a running agent whose file was replaced — so it is not
+      # the gate's business.
+      target = Path.join(dir, "real.nest")
+      File.write!(target, "[[mount]]\npath = \"~/x\"\nmode = \"rw\"\n")
+      File.ln_s!(target, nest_path(dir))
+
+      # No capture: `load/1` logs nothing (the gate does), so this also proves it
+      # prints nothing. "The path is not in the log" is not assertable through
+      # `capture_log` at all, since it collects every process's lines.
+      assert {:error, reason} = ProjectConfig.load(dir)
+      assert reason =~ "not a regular file"
+
+      # And it grants nothing, visibly: the target's `[[mount]]` never applies.
+      section = ProjectConfig.section(dir)
+      assert section =~ "[Project sandbox config error]"
+      refute section =~ "~/x"
+    end
+
+    test "a symlinked config file contributes no protected entry", %{dir: dir} do
+      # `.nest` is a regular file, `AGENTS.md` is a symlink: the first is masked
+      # over itself, the second gets no entry. That omission is **defensive
+      # only** — it is not protection, because with no mount point over the path
+      # an `act` agent could delete the link and write a regular file. The
+      # mechanism is `Nest.ConfigFile.error/1`, which refuses the workspace; this
+      # pins what the bind list looks like if anything ever asks anyway.
+      write_nest(dir, "")
+      File.write!(Path.join(dir, "real-agents.md"), "# rules\n")
+      File.ln_s!(Path.join(dir, "real-agents.md"), Path.join(dir, "AGENTS.md"))
+
+      assert {:ok, merged} = ProjectConfig.effective_caps(caps(), Mounts.new(dir, "/tmp/agent"))
+
+      assert [%{"path" => nest, "source" => nest_src}] = merged["fs"]["protected"]
+      assert nest == nest_path(dir)
+      assert nest_src == nest
+    end
   end
 
   describe "effective_caps/2" do
@@ -164,15 +229,26 @@ defmodule Nest.ProjectConfigTest do
       assert {:ok, ^caps} = ProjectConfig.effective_caps(caps, Mounts.new(dir, "/tmp/agent"))
     end
 
-    test "adds project mounts and protected .nest", %{dir: dir} do
+    test "adds project mounts and protects .nest and AGENTS.md", %{dir: dir} do
       write_nest(dir, "[[mount]]\npath = \"~/x\"\nmode = \"rw\"\n")
+      File.write!(Path.join(dir, "AGENTS.md"), "# Project rules\n")
+
       assert {:ok, merged} = ProjectConfig.effective_caps(caps(), Mounts.new(dir, "/tmp/agent"))
       assert [%{"dest" => dest, "source" => source}] = merged["fs"]["project"]
       assert dest == Path.expand("~/x")
       assert source == dest
-      assert [%{"path" => nest, "source" => nest_src}] = merged["fs"]["protected"]
+
+      # Both human-authored config files are masked read-only, each sourced from
+      # the real file when it is there (issue #97).
+      assert [
+               %{"path" => nest, "source" => nest_src},
+               %{"path" => agents_md, "source" => agents_md_src}
+             ] = merged["fs"]["protected"]
+
       assert nest == Path.join(dir, ".nest")
       assert nest_src == nest
+      assert agents_md == Path.join(dir, "AGENTS.md")
+      assert agents_md_src == agents_md
     end
 
     test "merges the shell background cap in a writable mode", %{dir: dir} do
@@ -197,9 +273,20 @@ defmodule Nest.ProjectConfigTest do
       assert String.starts_with?(source, "/tmp/agent/project/")
     end
 
-    test "masks /dev/null over a missing .nest", %{dir: dir} do
+    test "masks /dev/null over a missing .nest and a missing AGENTS.md", %{dir: dir} do
+      # Neither file exists in this fixture. The mask is what stops an agent
+      # *creating* one — which would be picked up on the next spawn, granting
+      # extra host access (`.nest`) or quietly changing its own prompt
+      # (`AGENTS.md`).
       assert {:ok, merged} = ProjectConfig.effective_caps(caps(), Mounts.new(dir, "/tmp/agent"))
-      assert [%{"source" => "/dev/null"}] = merged["fs"]["protected"]
+
+      assert [
+               %{"path" => nest, "source" => "/dev/null"},
+               %{"path" => agents_md, "source" => "/dev/null"}
+             ] = merged["fs"]["protected"]
+
+      assert nest == Path.join(dir, ".nest")
+      assert agents_md == Path.join(dir, "AGENTS.md")
     end
 
     test "resolve_caps leaves caps unchanged when malformed", %{dir: dir} do
@@ -284,5 +371,29 @@ defmodule Nest.ProjectConfigTest do
 
       assert log =~ "ignoring"
     end
+  end
+
+  test "the canonical-workspace memo's table outlives the process that first reads it" do
+    # The table is created by `Nest.Application.start/2`, not lazily. Created
+    # lazily it was owned by whichever process read a workspace first — usually an
+    # agent composing a prompt — so stopping that agent deleted the table and the
+    # next reader died with "the table identifier does not refer to an existing
+    # ETS table". A `Task` is the cheapest stand-in for that short-lived reader:
+    # if the table were created here it would die with the task.
+    #
+    # Caps resolution, not `load/1`: a workspace with no `.nest` answers `:absent`
+    # before anything is canonicalised, so `load/1` never touches the memo. The
+    # memo is reached from `protected_entries/1` via `effective_caps/2`, and that
+    # is what has to happen in the short-lived process for this to mean anything.
+    dir = Path.join(System.tmp_dir!(), "nest_projcfg_cache_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    caps = %{"net" => false, "fs" => %{"read" => ["/"], "write" => [":workspace"]}}
+
+    Task.async(fn -> ProjectConfig.effective_caps(caps, Mounts.new(dir, nil)) end)
+    |> Task.await()
+
+    assert :ets.lookup(:nest_project_config_cache, {:workspace, dir}) != []
   end
 end

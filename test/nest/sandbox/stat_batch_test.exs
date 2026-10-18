@@ -18,7 +18,11 @@ defmodule Nest.Sandbox.StatBatchTest do
   setup :verify_on_exit!
 
   setup do
-    unique = System.unique_integer([:positive])
+    # `System.unique_integer/1` restarts with every BEAM, so a directory left by
+    # an *interrupted* run collides with this run's first workspace — and one of
+    # these fixtures leaves a mode-`000` directory that `rm_rf!` cannot walk, so
+    # the next run's `mkdir_p!` fails. The OS pid makes a leftover unreachable.
+    unique = "#{System.pid()}-#{System.unique_integer([:positive])}"
     workspace = Path.join([File.cwd!(), "_build", "tmp", "nest_stat_batch_ws_#{unique}"])
     File.mkdir_p!(workspace)
 

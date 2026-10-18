@@ -27,12 +27,18 @@ Instrumented full-suite run (`:counters` probes in `init/1` and
 Because the starts are serialized, that sum *is* the span the supervisor was
 busy: ~3.6 s of a 5.5 s run.
 
-`init_pipeline` is `SystemPrompt.compose_vocation_config/6`. Micro-benchmarked
-in isolation (200 iterations, idle, `mix run`), it is **0.078 ms/call with no
-workspace and 10.148 ms/call with one**, and the whole difference is
-`agents_md_section/2` -> `Nest.Sandbox.read/3`, which shells `cat` through the
-backend and forks a `bwrap` (7.8-10.2 ms/call). `ProjectConfig.section/1`,
-`Mounts.resolve/2` and `Modes.catalog/2` are all ≤ 0.013 ms.
+`init_pipeline` is `SystemPrompt.compose_vocation_config/5`. Micro-benchmarked
+in isolation (200 iterations, idle, `mix run`), it measured **0.078 ms/call with
+no workspace and 10.148 ms/call with one**, and the whole difference was
+`agents_md_section/2` -> `Nest.Sandbox.read/3`, which shelled `cat` through the
+backend and forked a `bwrap` (7.8-10.2 ms/call). `ProjectConfig.section/1`,
+`Mounts.resolve/2` and `Modes.catalog/2` were all ≤ 0.013 ms.
+
+**That read is gone** (issues #97/#132): `AGENTS.md` is a host read, so the
+`/2` -> `/1` section costs a `File.read` and the workspace no longer makes
+composition an order of magnitude more expensive. The numbers above are the
+measurement that motivated moving composition into the caller, kept as the
+record of *why*; they no longer describe the code.
 
 ## What was changed
 

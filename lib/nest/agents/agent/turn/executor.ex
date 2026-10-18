@@ -628,8 +628,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
         Mounts.from_agent(state),
         {state.llm_metrics.context_limit, state.llm_metrics.context_limit_source},
         state.name,
-        state.depth,
-        state.live.mode
+        state.depth
       )
 
     tool_names = ToolFilter.exclude_spawn_at_max_depth(tool_names, state.depth)

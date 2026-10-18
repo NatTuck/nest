@@ -16,11 +16,49 @@ function describeWorkspaceError(reason) {
 }
 
 /**
- * Map the `edit_agent` server error-reason string to a user-friendly
- * message. Each branch mirrors a `:reply` reason from
+ * A `.nest` or `AGENTS.md` that is not a regular file cannot be masked, and a
+ * mask that is merely omitted lets an agent replace the file with one that
+ * grants host access (`.nest`) or changes another agent's prompt (`AGENTS.md`).
+ * So the workspace is refused until it is a regular file. Not "is a symlink":
+ * the reason fires for a directory, a fifo, a hardlink or an unreadable path
+ * too, so the sentence must not name a type it was not told. Returns `null`
+ * for any other reason.
+ *
+ * The single wording for this refusal: `describeEditError`,
+ * `describeCreateError` and `errorText` (the send and channel-join paths) all
+ * call it, so the three cannot drift apart.
+ */
+export function describeConfigFileError(err) {
+  if (err?.reason !== "config_file_not_regular") return null;
+
+  // The one type the generic sentence would be false about: a hardlink *is* a
+  // regular file. It is refused because writing the other name rewrites this
+  // one, so the remedy is not `cp` — copying over it leaves two names on the
+  // inode — but removing the other name.
+  if (err?.type === "hardlink") {
+    return err?.path
+      ? `${err.path} has more than one name on disk, so Nest can't protect it — writing the other name rewrites it. Remove the other name (or delete the file and copy it back) and try again.`
+      : "A .nest or AGENTS.md in that workspace has more than one name on disk, so Nest can't protect it — writing the other name rewrites it. Remove the other name and try again.";
+  }
+
+  return err?.path
+    ? `${err.path} is not a regular file. Nest can't protect it from being rewritten, so it must be a regular file — copy the file into the workspace instead of linking it.`
+    : "A .nest or AGENTS.md in that workspace is not a regular file. Nest can't protect it from being rewritten, so it must be a regular file — copy the file into the workspace instead of linking it.";
+}
+
+/**
+ * Map an `edit_agent` error reply to a user-friendly message. The reply is
+ * `{reason: <code>, path?: <path>, type?: <type>}` — the whole payload, not a
+ * bare reason string, because some reasons need the `path` (and the config-file
+ * refusal needs the `type`) — mirroring the `:reply` payload from
  * `LobbyChannel.handle_in("edit_agent", …)`.
  */
-export function describeEditError(reason) {
+export function describeEditError(err) {
+  const reason = err?.reason;
+
+  const configFile = describeConfigFileError(err);
+  if (configFile) return configFile;
+
   const workspace = describeWorkspaceError(reason);
   if (workspace) return workspace;
 
@@ -44,12 +82,15 @@ export function describeEditError(reason) {
 
 /**
  * Map a `create_space` error reply to a user-friendly message. The reply is
- * `{reason: <code>}` (mirroring the `:reply` reasons from
- * `LobbyChannel.handle_in("create_space", …)`); an `Error` object still falls
- * through to its `message`.
+ * `{reason: <code>, path?: <path>, type?: <type>}` (mirroring the `:reply`
+ * reasons from `LobbyChannel.handle_in("create_space", …)`); an `Error` object
+ * still falls through to its `message`.
  */
 export function describeCreateError(err) {
   const reason = err?.reason;
+
+  const configFile = describeConfigFileError(err);
+  if (configFile) return configFile;
 
   const workspace = describeWorkspaceError(reason);
   if (workspace) return workspace;

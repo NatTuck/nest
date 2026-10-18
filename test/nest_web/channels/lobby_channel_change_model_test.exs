@@ -180,6 +180,49 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
       assert log =~ "could not resolve model"
     end
 
+    test "replies with a config-file refusal rather than crashing the channel", %{
+      socket: socket
+    } do
+      {:ok, space_id, name} = create_test_agent(socket, "qwen3.5-plus")
+
+      # `edit_agent` reaches `ModelHandler.validate_workspace/2` ->
+      # `Sandbox.workspace_error/1`, so the tuple lands in `edit_payload/2`.
+      # Without a clause there it falls through to `to_string/1`, which raises
+      # and kills the channel process — the client gets *no* reply.
+      # The payload's workspace is what `validate_workspace/2` checks, so it does
+      # not have to be the agent's own.
+      ws = AgentTestHelpers.default_test_workspace()
+      File.write!(Path.join(ws, "real.nest"), "")
+      File.ln_s!(Path.join(ws, "real.nest"), Path.join(ws, ".nest"))
+
+      log =
+        capture_log(fn ->
+          ref =
+            push(socket, "edit_agent", %{
+              "name" => name,
+              "space_id" => space_id,
+              "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+              "workspace_path" => ws
+            })
+
+          # 500 ms, the SMELLS.md ceiling: the work is two authz queries plus
+          # `Sandbox.workspace_error/1`'s `realpath` fork — no agent is created
+          # here, unlike the `create_space` tests that need the longer bound.
+          assert_reply ref,
+                       :error,
+                       %{
+                         "reason" => "config_file_not_regular",
+                         "path" => path,
+                         "type" => "symlink"
+                       },
+                       500
+
+          assert path == Path.join(ws, ".nest")
+        end)
+
+      assert log =~ "Nest cannot protect it from being rewritten"
+    end
+
     test "returns :invalid_model for an unknown model", %{socket: socket} do
       {:ok, space_id, name} = create_test_agent(socket, "qwen3.5-plus")
 
@@ -283,6 +326,55 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
     test "returns :invalid_payload for a malformed message", %{socket: socket} do
       ref = push(socket, "edit_agent", %{"name" => "no-model-field"})
       assert_reply ref, :error, %{"reason" => "invalid_payload"}
+    end
+  end
+
+  describe "change_model on a workspace the gate refuses" do
+    test "replies with the refusal rather than killing the channel", %{
+      socket: socket,
+      user: user
+    } do
+      # `Agents.change_model/3` reaches `Supervisor.get_agent/2`, so a workspace
+      # `Nest.ConfigFile.error/1` refuses comes back as the tagged reason — and
+      # the lobby's `change_model_payload/2` has to answer it rather than hand a
+      # tuple to `to_string/1`, which raises and leaves the client with no reply.
+      ws = AgentTestHelpers.default_test_workspace()
+
+      {pid, name} =
+        AgentTestHelpers.start_agent(%{
+          workspace_path: ws,
+          created_by_user_id: user.id,
+          model: %{name: "qwen3.5-plus", provider: "model-studio"},
+          vocation_id: AgentTestHelpers.programmer_vocation_id_for_test()
+        })
+
+      space_id = AgentTestHelpers.current_space_id()
+      path = Path.join(ws, ".nest")
+      File.write!(Path.join(ws, "real.nest"), "")
+      File.ln_s!(Path.join(ws, "real.nest"), path)
+      # `start_agent/1` links the agent to the test process, so stopping it in the
+      # body would take the test down with it; unlink first, as an `on_exit`
+      # caller gets for free by running in another process.
+      Process.unlink(pid)
+      :ok = Nest.Agents.Supervisor.stop_agent(space_id, name)
+
+      log =
+        capture_log(fn ->
+          ref =
+            push(socket, "change_model", %{
+              "name" => name,
+              "space_id" => space_id,
+              "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+            })
+
+          assert_reply ref, :error, %{
+            "reason" => "config_file_not_regular",
+            "path" => ^path,
+            "type" => "symlink"
+          }
+        end)
+
+      assert log =~ "Nest cannot protect it from being rewritten"
     end
   end
 end

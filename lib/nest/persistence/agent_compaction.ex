@@ -149,10 +149,7 @@ defmodule Nest.Persistence.AgentCompaction do
         ),
         {limit, source},
         agent.name,
-        agent.depth || 0,
-        # The mode the agent is in, which only decides the caps the `AGENTS.md`
-        # read is authorized with.
-        Map.get(agent, :mode, Nest.Modes.default())
+        agent.depth || 0
       )
 
     system_prompt

@@ -31,15 +31,15 @@ defmodule Nest.Sandbox.Mounts do
   A caller passes what its call actually needs, and `nil` is a legitimate
   half — the value describes one call's binds, not the agent's.
 
-  Composing the system prompt is *not* one of those halves, though it used to be
-  built as one: it reads `AGENTS.md` through the sandbox, so it runs the backend,
-  and a backend whose staging directory is only reachable through the scratch
-  bind cannot run at all without it (`Nest.Sandbox.Backend.Docker.command/3`).
-  The prompt therefore uses the agent's real mounts, scratch included —
-  `Nest.Agents.Agent.TmpSpace.prompt_mounts/5` is the one place that builds them.
-  Under bwrap a scratch bind cannot change the bytes a read of an absolute
-  workspace path returns, which is what made the omission look harmless; under
-  docker it loses the read entirely.
+  Composing the system prompt is not one of those halves either, and it no
+  longer runs anything: `AGENTS.md` and `.nest` are read on the **host**
+  (`Nest.ConfigFile.read/1` is the one reader), so a prompt's
+  mounts are only *stated* — the workspace path, the network sentence and the
+  backend's enforcement sentence all come from this value. They are still the
+  agent's real mounts, scratch included
+  (`Nest.Agents.Agent.TmpSpace.prompt_mounts/5` is the one place that builds
+  them), so what the prompt says about its environment is what its tools will
+  do.
 
   ## The value is the agent's
 
@@ -60,11 +60,11 @@ defmodule Nest.Sandbox.Mounts do
 
     * `resolve/2`, to turn a relative tool path into an absolute one:
       `Nest.Tools.FileTools`, `Nest.Tools.InspectFile`,
-      `Nest.Agents.Agent.SystemPrompt`, `Nest.Agents.Agent.IntrospectionHandler`
-      and `Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess`.
+      `Nest.Agents.Agent.IntrospectionHandler` and
+      `Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess`.
     * The workspace, to name it to the agent or to an operator log:
-      `Nest.Agents.Agent.SystemPrompt` (the working-directory and
-      project-config sections), `Nest.ProjectConfig` (which reads
+      `Nest.Agents.Agent.SystemPrompt` (the working-directory, project-config
+      and `AGENTS.md` sections), `Nest.ProjectConfig` (which reads
       `<workspace>/.nest`), and `Nest.Tools`, `Nest.Tools.FileTools`,
       `Nest.Tools.InspectFile` and `Nest.Tools.ShellCmd`, which print it.
     * The scratch directory: `Nest.Tools` prints it; `Nest.Tools.ShellCmd`

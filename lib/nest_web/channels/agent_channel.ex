@@ -2,17 +2,12 @@ defmodule NestWeb.AgentChannel do
   @moduledoc """
   Channel for real-time chat with a specific agent.
 
-  Handles:
-  - Joining agent chat room
-  - Sending/receiving chat messages
-  - Streaming responses via deltas
+  Handles joining an agent's chat room, sending and receiving messages, and
+  streaming responses via deltas, over Phoenix.PubSub.
 
-  Topic format: `"agent:<space_id>:<name>"` (e.g.
-  `"agent:1:clever-raven"`). The space_id and name are
-  parsed from the topic on join and used as the
-  authoritative identity for every backend call.
-
-  Uses Phoenix.PubSub for broadcasting to all connected clients.
+  Topic format: `"agent:<space_id>:<name>"` (e.g. `"agent:1:clever-raven"`). The
+  space_id and name are parsed from the topic on join and are the authoritative
+  identity for every backend call.
   """
 
   use NestWeb, :channel
@@ -27,13 +22,14 @@ defmodule NestWeb.AgentChannel do
   alias Nest.Sandbox.ShellJobs
   alias Nest.Spaces
   alias NestWeb.AgentChannel.History
+  alias NestWeb.AgentChannel.Replies
   alias NestWeb.AgentChannel.ShellLog
   alias NestWeb.AgentChannel.Sync
+  alias NestWeb.ErrorPayload
 
-  # The statuses that cannot accept a chat message at all: the machine's
-  # declared blocked phases, which need an operator action (repair, model
-  # change, compaction retry/ack) before the agent can work again. Every
-  # other status is the agent's call — a busy agent queues the message.
+  # The statuses that cannot accept a chat message at all: the machine's declared
+  # blocked phases, which need an operator action (repair, model change, compaction
+  # retry/ack) first. Any other status is the agent's call — a busy agent queues.
   @broken_statuses Machine.blocked_phases()
 
   @impl true
@@ -61,6 +57,12 @@ defmodule NestWeb.AgentChannel do
   defp join_refusal(_rest, :archived), do: %{"reason" => "agent_archived"}
   defp join_refusal(_rest, :forbidden), do: %{"reason" => "forbidden"}
   defp join_refusal(_rest, :space_archived), do: %{"reason" => "space_archived"}
+
+  # A workspace `Nest.ConfigFile.error/1` refuses. This is the most common way a
+  # user meets the refusal — opening a chat for an agent that is not running in a
+  # bad workspace — so it names the file, like every other reply path does.
+  defp join_refusal(_rest, {:config_file_not_regular, _path, _type} = reason),
+    do: ErrorPayload.from_reason(reason)
 
   defp join_refusal(rest, reason) do
     Logger.warning("agent:#{rest} channel join failed: #{inspect(reason)}")
@@ -337,7 +339,7 @@ defmodule NestWeb.AgentChannel do
       when is_binary(content) do
     space_id = socket.assigns.space_id
     name = socket.assigns.name
-    mode = requested_mode(payload)
+    mode = Replies.requested_mode(payload)
     sender = socket.assigns.current_user.username
 
     case Agents.get_info(space_id, name) do
@@ -345,16 +347,16 @@ defmodule NestWeb.AgentChannel do
         {:reply, {:error, %{"reason" => "agent_status_#{status}"}}, socket}
 
       {:ok, _agent} ->
-        reply_chat(socket, Agents.chat(space_id, name, content, mode, sender, true))
+        Replies.reply_chat(socket, Agents.chat(space_id, name, content, mode, sender, true))
 
-      {:error, :not_found} ->
-        {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
-
-      # The agent was archived (stopped) after this channel joined it.
-      # Its row must not be resurrected to answer, so tell the client
-      # rather than crashing on an unhandled error.
-      {:error, :archived} ->
-        {:reply, {:error, %{"reason" => "agent_archived"}}, socket}
+      # Every refusal, spelled for this channel: `:not_found` is `agent_not_found`
+      # here and an archived agent has its own code, because its row must not be
+      # resurrected to answer. Anything else — a workspace `Nest.ConfigFile.error/1`
+      # refuses, say — goes through `NestWeb.ErrorPayload`: a reason carrying a
+      # detail term is not `to_string/1`-able, and passing it to one raised inside
+      # the channel and left the client with no reply at all.
+      {:error, reason} ->
+        {:reply, {:error, ErrorPayload.from_reason(Replies.chat_message_reason(reason))}, socket}
     end
   end
 
@@ -388,7 +390,7 @@ defmodule NestWeb.AgentChannel do
       {:error, reason} ->
         Logger.warning("change_model failed on agent:#{space_id}:#{name}: #{inspect(reason)}")
 
-        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+        {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
     end
   end
 
@@ -410,7 +412,7 @@ defmodule NestWeb.AgentChannel do
           "set_agent_mode failed on agent:#{socket.assigns.space_id}: #{inspect(reason)}"
         )
 
-        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+        {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
     end
   end
 
@@ -429,14 +431,14 @@ defmodule NestWeb.AgentChannel do
     case Agents.reload_agent(space_id, name) do
       {:ok, _name} -> {:reply, {:ok, %{}}, socket}
       {:error, :not_found} -> {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
-      {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+      {:error, reason} -> {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
     end
   end
 
   @impl true
   def handle_in("chat:retry-compaction", _payload, socket) do
     Agents.retry_compaction(socket.assigns.space_id, socket.assigns.name)
-    |> reply_control(socket)
+    |> Replies.reply_control(socket)
   end
 
   # Manual `/compact [focus]`: the Agent is the authority on whether a
@@ -445,20 +447,20 @@ defmodule NestWeb.AgentChannel do
   # `nil`, or `""` means no guidance.
   @impl true
   def handle_in("chat:compact", payload, socket) do
-    Agents.compact(socket.assigns.space_id, socket.assigns.name, optional_focus(payload))
-    |> reply_control(socket)
+    Agents.compact(socket.assigns.space_id, socket.assigns.name, Replies.optional_focus(payload))
+    |> Replies.reply_control(socket)
   end
 
   @impl true
   def handle_in("chat:loop-detected-ok", _payload, socket) do
     Agents.compaction_loop_detected_ok(socket.assigns.space_id, socket.assigns.name)
-    |> reply_control(socket)
+    |> Replies.reply_control(socket)
   end
 
   @impl true
   def handle_in("chat:stop", _payload, socket) do
     Agents.stop_chat(socket.assigns.space_id, socket.assigns.name, self())
-    |> reply_control(socket)
+    |> Replies.reply_control(socket)
   end
 
   # Fetch the agent's current background shell jobs. The same list is
@@ -528,7 +530,7 @@ defmodule NestWeb.AgentChannel do
         {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
 
       {:error, reason} ->
-        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+        {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
     end
   end
 
@@ -574,7 +576,7 @@ defmodule NestWeb.AgentChannel do
         {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
 
       {:error, reason} ->
-        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+        {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
     end
   end
 
@@ -605,7 +607,7 @@ defmodule NestWeb.AgentChannel do
         {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
 
       {:error, reason} ->
-        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+        {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
     end
   end
 
@@ -619,7 +621,7 @@ defmodule NestWeb.AgentChannel do
         {:reply, {:ok, %{"apiLogs" => api_logs}}, socket}
 
       {:error, reason} ->
-        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+        {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
     end
   end
 
@@ -630,41 +632,9 @@ defmodule NestWeb.AgentChannel do
   def handle_in("chat:history", payload, socket) do
     case History.page(socket.assigns.space_id, socket.assigns.name, payload) do
       {:ok, reply} -> {:reply, {:ok, reply}, socket}
-      {:error, reason} -> {:reply, {:error, %{"reason" => reason}}, socket}
+      {:error, reason} -> {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
     end
   end
-
-  # Reply shaper shared by the control-plane `chat:*` handlers.
-  # A non-binary mode is "no mode requested" rather than a value on the wire
-  # (the browser contract is string-or-null; `Inbox.put_entry/5` also guards).
-  defp requested_mode(payload) do
-    case Map.get(payload, "mode") do
-      mode when is_binary(mode) -> mode
-      _ -> nil
-    end
-  end
-
-  # The channel only maps the agent's reply: the agent is the disposition
-  # authority (it queues the message while it is busy).
-  defp reply_chat(socket, :ok), do: {:reply, {:ok, %{}}, socket}
-
-  defp reply_chat(socket, {:error, :not_found}),
-    do: {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
-
-  defp reply_chat(socket, {:error, reason}),
-    do: {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
-
-  defp reply_control(:ok, socket), do: {:reply, {:ok, %{}}, socket}
-  defp reply_control({:error, :not_found}, socket), do: reply_err("agent_not_found", socket)
-  defp reply_control({:error, {:not_idle, s}}, socket), do: reply_err("agent_status_#{s}", socket)
-  defp reply_control({:error, reason}, socket), do: reply_err(to_string(reason), socket)
-
-  defp reply_err(reason, socket), do: {:reply, {:error, %{"reason" => reason}}, socket}
-
-  # The optional `/compact <focus>` argument: an omitted key, a non-string,
-  # or a blank string all mean "no operator guidance".
-  defp optional_focus(%{"focus" => focus}) when is_binary(focus) and focus != "", do: focus
-  defp optional_focus(_payload), do: nil
 
   # Filter helper for `chat:sync`: keep only messages whose
   # `index` is greater than `last_index`. The `chat_state.messages`

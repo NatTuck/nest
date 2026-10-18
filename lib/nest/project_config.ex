@@ -52,16 +52,36 @@ defmodule Nest.ProjectConfig do
 
   Project mounts are merged into a mode's caps **only when that mode
   already writes the symbolic `":workspace"`** — a read-only mode must
-  stay read-only. In those modes the `.nest` file itself is mounted
-  read-only (see `Nest.Sandbox`), so an agent can never edit its own
-  sandbox. When `.nest` is absent, a read-only `/dev/null` is masked
-  over the path so an agent can't create one either.
+  stay read-only. In those modes the two human-authored config files are
+  mounted read-only (see `Nest.Sandbox`), so an agent can never edit its own
+  sandbox or its own instructions: `.nest`, which grants host access, and
+  `AGENTS.md`, which is the project's policy rendered into its prompt. When
+  either is absent, a read-only `/dev/null` is masked over the path so an
+  agent can't create one either.
+
+  The two are one class and get one treatment. Both are read on the **host** by
+  the runtime — `load/1` for `.nest`, `Nest.Agents.Agent.SystemPrompt` for
+  `AGENTS.md` — and handed to the sandbox as read-only binds rather than
+  discovered by it, so **a regular file at either path** is the host's file by
+  construction, on every backend. A path that is *not* a regular file (a symlink,
+  a directory) cannot be masked at all, so it is **refused** rather than
+  tolerated — `Nest.ConfigFile.error/1`, reached from
+  `Nest.Sandbox.workspace_error/1`, is the gate.
 
   Both halves of that are **binds**, so they hold only on a backend that
   binds: a `"none"` space has no sandbox to protect, and an agent there can
-  edit or create its own `.nest` like any other file. That is the same
-  statement as "caps cannot be enforced for a `"none"` space" (see
+  edit or create its own `.nest` or `AGENTS.md` like any other file. That is the
+  same statement as "caps cannot be enforced for a `"none"` space" (see
   `Nest.Sandbox.Backend.None`), not a separate hole.
+
+  The *refusal* of a config path that is not a regular file
+  (`Nest.ConfigFile.error/1`) is **unconditional on every backend**, `"none"`
+  included. It is a property of the workspace rather than of the backend, so it
+  answers the same question everywhere and cannot be sidestepped by changing the
+  answer where enforcement is weaker. The cost is a `"none"` space being refused
+  for a protection that backend could not have offered anyway, and the remedy is
+  the same everywhere: copy the file into the workspace instead of linking it.
+  The alternative is a gate that means something different on each backend.
 
   ## Failures
 
@@ -76,7 +96,6 @@ defmodule Nest.ProjectConfig do
   alias Nest.ParseCache
   alias Nest.Sandbox.Mounts
 
-  @file_name ".nest"
   @modes ~w(rw tmp)
 
   @typedoc "A project mount with its host path expanded."
@@ -105,12 +124,28 @@ defmodule Nest.ProjectConfig do
   """
   @spec load(String.t() | nil) :: {:ok, config()} | {:error, String.t()}
   def load(workspace) when is_binary(workspace) do
-    path = Path.join(workspace, @file_name)
+    path = Path.join(workspace, Nest.ConfigFile.nest_name())
 
-    case File.read(path) do
-      {:ok, content} -> parse_cached(path, content, workspace)
-      {:error, :enoent} -> {:ok, %{"mounts" => []}}
-      {:error, reason} -> read_failure(path, reason)
+    case Nest.ConfigFile.read(path) do
+      {:ok, content} ->
+        parse_cached(path, content, workspace)
+
+      :absent ->
+        {:ok, %{"mounts" => []}}
+
+      # Reached when a config path is replaced *while an agent is running*:
+      # composition is re-run on compaction, so this is not the start gate's
+      # business. A `.nest` we cannot protect must not degrade silently — the same
+      # rule a malformed one follows — so this is an error, which `section/1`
+      # renders as a visible block.
+      # `error_message/1` rather than a sentence of its own: a hardlink **is** a
+      # regular file, so the type has to reach the wording, and this is the
+      # mid-session re-render path the model reads.
+      {:not_regular, type} ->
+        {:error, Nest.ConfigFile.error_message({:config_file_not_regular, path, type})}
+
+      {:error, reason} ->
+        read_failure(path, reason)
     end
   end
 
@@ -282,8 +317,8 @@ defmodule Nest.ProjectConfig do
   Merge the project config into `caps`, returning effective caps.
 
   Only modes that write the symbolic `":workspace"` receive project
-  mounts (plus the `.nest` read-only protection); every other mode is
-  returned unchanged. Returns `{:error, reason}` when `.nest` is
+  mounts (plus the read-only mask over `.nest` and `AGENTS.md`); every other mode
+  is returned unchanged. Returns `{:error, reason}` when `.nest` is
   malformed.
   """
   @spec effective_caps(map(), Mounts.t()) :: {:ok, map()} | {:error, String.t()}
@@ -399,19 +434,41 @@ defmodule Nest.ProjectConfig do
     :crypto.hash(:sha256, dest) |> Base.encode16(case: :lower) |> binary_part(0, 16)
   end
 
-  # The `.nest` file is always protected (read-only) in a writable
-  # workspace. When the file is absent we mask `/dev/null` over the
-  # path so an agent can't create one (which would be picked up on the
-  # next spawn and grant it extra host access). The mask is a real bind
-  # inside the sandbox, so `stat`/`read` see the char device directly —
-  # and, because bwrap's `--ro-bind` mounts with `nodev`, *reading* it
-  # fails with `EACCES` rather than returning empty bytes. That is what
-  # both binding backends do, identically. A backend that binds nothing
-  # has nothing to mask with (see the moduledoc's Gating section).
+  # The `.nest` and `AGENTS.md` files are always protected (read-only) in a
+  # writable workspace. Both are **human-authored project config**: `.nest`
+  # grants host access, `AGENTS.md` states the project's policy, and an agent
+  # that can rewrite either drifts its own constraints — which is why the
+  # runtime reads them on the host (`Nest.ProjectConfig.load/1` for one,
+  # `Nest.Agents.Agent.SystemPrompt` for the other) and the sandbox is *handed*
+  # them as read-only binds rather than discovering them.
+  #
+  # When a file is absent we mask `/dev/null` over its path so an agent can't
+  # create one (which would be picked up on the next spawn and grant it extra
+  # host access, or quietly change its own prompt). The mask is a real bind
+  # inside the sandbox, so `stat`/`read` see the char device directly — and,
+  # because bwrap's `--ro-bind` mounts with `nodev`, *reading* it fails with
+  # `EACCES` rather than returning empty bytes. That is what both binding
+  # backends do, identically. A backend that binds nothing has nothing to mask
+  # with (see the moduledoc's Gating section).
   defp protected_entries(workspace) do
-    nest = Path.join(canonical_ws(workspace), @file_name)
-    source = if File.exists?(nest), do: nest, else: "/dev/null"
-    [%{"path" => nest, "source" => source}]
+    ws = canonical_ws(workspace)
+    names = [Nest.ConfigFile.nest_name(), Nest.ConfigFile.agents_md_name()]
+    Enum.flat_map(names, &protected_entry(Path.join(ws, &1)))
+  end
+
+  # A regular file is masked over itself; an absent one is masked with
+  # `/dev/null` so it cannot be created. A path that exists but is not a regular
+  # file gets **no entry** — and that is defensive only, because omitting the
+  # entry is *not* protection: with no mount point over the path an `act` agent
+  # could delete the symlink and write a regular `.nest` that grants host access.
+  # The mechanism is the gate, `Nest.ConfigFile.error/1`, which refuses the workspace
+  # before any of this runs.
+  defp protected_entry(path) do
+    case Nest.ConfigFile.state(path) do
+      :regular -> [%{"path" => path, "source" => path}]
+      :absent -> [%{"path" => path, "source" => "/dev/null"}]
+      {:not_regular, _type} -> []
+    end
   end
 
   # The canonical-workspace memo's table. (The `.nest` parse has its own cache,
@@ -430,6 +487,22 @@ defmodule Nest.ProjectConfig do
       _ ->
         @cache_table
     end
+  end
+
+  @doc """
+  Create the canonical-workspace memo's table, if it is not there already.
+
+  Called from `Nest.Application.start/2` so the table is owned by the application
+  rather than by whichever process needed it first. It used to be created lazily
+  by the first reader — usually an agent composing a prompt — so stopping that
+  agent deleted the table and a concurrent reader crashed on `:ets.lookup` with
+  "the table identifier does not refer to an existing ETS table". `cache_table/0`
+  keeps its lazy fallback for a caller outside a running application.
+  """
+  @spec init_cache() :: :ok
+  def init_cache do
+    _ = cache_table()
+    :ok
   end
 
   # `FSPath.canonical/1` shells out to `realpath`; cache the result per
@@ -494,7 +567,8 @@ defmodule Nest.ProjectConfig do
     "\n\n[Project sandbox config]\n\n" <>
       "This project has a `.nest` file granting extra sandbox settings " <>
       "(only in modes that can write the project):\n\n" <>
-      Enum.join(lines, "\n") <> "\n\nThe `.nest` file itself is mounted read-only.\n"
+      Enum.join(lines, "\n") <>
+      "\n\nThe `.nest` file itself is mounted read-only, like `AGENTS.md`.\n"
   end
 
   defp shell_lines(%{"shell" => %{"background" => n}}) do

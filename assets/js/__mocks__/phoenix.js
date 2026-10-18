@@ -55,7 +55,8 @@ export function resetMockSocket() {
  * @param {string} topic - Channel topic
  * @param {Object} config - Configuration object
  * @param {Object} [config.autoInit] - Successful join with init payload (triggers init event)
- * @param {string} [config.error] - Join error with reason
+ * @param {string|Object} [config.error] - Join error: a bare reason string,
+ *   or the whole `{reason, path?, type?}` reply payload
  * @param {boolean} [config.timeout] - Join timeout
  */
 export function setNextJoinResult(topic, config) {
@@ -189,7 +190,15 @@ function createMockChannel(topic) {
                 initHandler(behavior.autoInit);
               }
             } else if (status === "error" && behavior.error !== undefined) {
-              callback({ reason: behavior.error });
+              // A join refusal is a payload, not just a reason: the server
+              // can answer with `{reason, path, type}` (a workspace it cannot
+              // protect), so an object is passed through verbatim and a bare
+              // string keeps its old `{reason}` shape.
+              callback(
+                typeof behavior.error === "object"
+                  ? behavior.error
+                  : { reason: behavior.error },
+              );
             } else if (status === "timeout" && behavior.timeout) {
               callback();
             }

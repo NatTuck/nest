@@ -368,8 +368,28 @@ defmodule Nest.Tools.ShellCmd do
   defp validate_workspace(%Mounts{workspace: nil} = mounts), do: {:ok, mounts}
 
   defp validate_workspace(%Mounts{workspace: path} = mounts) do
+    # The one place all three backends pass through for a command, so the
+    # config-file refusal has to be here as well as in `Sandbox.build/4`:
+    # `Docker.command/3` and `job_spec/4` build the inner bwrap from
+    # `Binds.specs/2` and never reach `build/4`, and `None` builds no sandbox at
+    # all.
+    #
+    # `Nest.ConfigFile.error/1` rather than `Sandbox.workspace_error/1`:
+    # the latter canonicalises the path, and `FSPath.canonical/1` shells out to
+    # `realpath` — a fork per command on the hottest path in the system. The
+    # other two arms of `workspace_error/1` are covered here already (`File.dir?`)
+    # or cannot occur (a workspace at or under `/tmp` is refused at creation).
+    # `File.dir?` first, matching `Sandbox.workspace_error/1`'s order: a workspace
+    # path that is a regular file should say the directory does not exist, not
+    # name a config file inside something that is not a directory.
     if File.dir?(path) do
-      {:ok, mounts}
+      case Nest.ConfigFile.error(path) do
+        :ok ->
+          {:ok, mounts}
+
+        {:error, {:config_file_not_regular, _path, _type} = reason} ->
+          {:error, Nest.ConfigFile.error_message(reason)}
+      end
     else
       {:error, "Workspace directory does not exist: #{path}"}
     end
