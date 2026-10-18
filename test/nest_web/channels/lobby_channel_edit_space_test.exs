@@ -119,7 +119,8 @@ defmodule NestWeb.LobbyChannelEditSpaceTest do
     } do
       # Refused at the edit, not at the next agent start: this is the moment the
       # user can still pick another directory. The reply is the same code the
-      # create path produces for the same path.
+      # create path produces for the same path — including the blank one, which
+      # the changeset rejects before the workspace gate ever runs.
       {:ok, space} =
         Spaces.create_space(user.id, %{
           name: "edit-space-#{System.unique_integer([:positive])}",
@@ -127,6 +128,7 @@ defmodule NestWeb.LobbyChannelEditSpaceTest do
         })
 
       for {path, code} <- [
+            {"", "workspace_required"},
             {"/tmp/not-a-workspace", "workspace_under_tmp"},
             {"/nonexistent/nest-workspace", "workspace_missing"}
           ] do

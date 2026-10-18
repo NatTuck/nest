@@ -32,7 +32,11 @@ defmodule Nest.LLM.Tool do
             parameters_schema: nil,
             function: nil
 
-  @type execute_result :: {:ok, String.t()} | {:error, String.t()}
+  # `{:cancelled, reason}` is a call the space edit called off
+  # (`Nest.Agents.SpaceGate`): `Nest.Tools.ShellCmd.execute/4`'s shape for it, and
+  # `BatchSizer` carries it as the entry kind `:cancelled` — `is_error: true` for
+  # the model, silent in the operator log.
+  @type execute_result :: {:ok, String.t()} | {:error, String.t()} | {:cancelled, String.t()}
 
   @type t :: %__MODULE__{
           name: String.t(),

@@ -158,7 +158,10 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
 
     # Same barrier, and the same limit, as the start test: the task's first
     # message proves it is running, so the missing row below is the gate's doing
-    # rather than the scheduler's; the 50ms is a grace for one DB read.
+    # rather than the scheduler's. The 50ms is a grace for the *handful* of reads
+    # the un-gated path would need — the vocation lookup and the spawn's own
+    # `Persistence.fetch_agent` and pre-spawn checks before it starts a child — not
+    # for one, and it is still a grace rather than proof of parking in `await/1`.
     spawner =
       Task.async(fn ->
         send(test_pid, {:started, self()})
@@ -321,13 +324,20 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
     {_pid, _name} = AgentTestHelpers.start_agent()
     space_id = AgentTestHelpers.current_space_id()
 
+    Phoenix.PubSub.subscribe(Nest.PubSub, SpaceGate.topic(space_id))
+
     # `""` casts to no change *and* fails `validate_required`, so this is the shape
     # that has no changes at all: it must be an error, never `{:ok, old_row}`.
     assert {:error, %Ecto.Changeset{errors: errors}} =
              Spaces.update_environment(space_id, %{workspace_path: ""})
 
     assert Keyword.has_key?(errors, :workspace_path)
-    refute SpaceGate.held?(space_id)
+
+    # Never paused, and `held?/1` cannot say so: the refusal happens before the
+    # latch, but the edit's own `after` releases it either way, so `held?` reads
+    # `false` whether or not it was ever taken. The frame `hold/3` broadcasts
+    # before it returns is the observable.
+    refute_receive {:space_locked, ^space_id}, 0
   end
 
   test "a save that names what the row already says stops nothing" do

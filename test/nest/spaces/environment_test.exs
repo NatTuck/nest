@@ -64,8 +64,10 @@ defmodule Nest.Spaces.EnvironmentTest do
       # A row can name a backend this build does not have — `sandbox/backend.ex`
       # says so: it is what a rollback leaves behind. The refusal has to come
       # *before* the latch and the quiesce, or every save on such a space cancels
-      # the whole space's work and then refuses; `SpaceGate.held?` is the
-      # observable that tells the two apart.
+      # the whole space's work and then refuses. The observable is the
+      # `{:space_locked, _}` frame `SpaceGate.hold/3` broadcasts before it returns,
+      # below: `held?/1` cannot tell the two apart, because the edit releases the
+      # latch in an `after` and it reads `false` either way.
       {:ok, space} = space(%{workspace_path: AgentTestHelpers.default_test_workspace()})
 
       id = space.id

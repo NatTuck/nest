@@ -206,12 +206,27 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
                AgentErrors.edit_space_payload(changeset)
     end
 
-    test "stays generic, and logs, for a changeset error it cannot show" do
-      # An empty workspace path: the field is there, so this is not the backend
-      # arm, and an `Ecto.Changeset` is not fit to hand a user.
+    test "names a blank workspace, the changeset's other client-facing field" do
+      # `environment_changeset/2`'s only `:workspace_path` error is
+      # `validate_required`, and `Nest.Sandbox.workspace_error/1` already names that
+      # refusal — so the client gets a code it can word, and an ordinary mistake is
+      # not logged at `:error`. Not captured: if the generic arm were taken, the
+      # suite would print.
       changeset = %Ecto.Changeset{
         data: %Space{},
         errors: [workspace_path: {"can't be blank", [validation: :required]}]
+      }
+
+      assert {:error, %{"reason" => "workspace_required"}} =
+               AgentErrors.edit_space_payload(changeset)
+    end
+
+    test "stays generic, and logs, for a changeset error it cannot show" do
+      # A slug collision: not a field the user can fix from the dialog, and an
+      # `Ecto.Changeset` is not fit to hand a user.
+      changeset = %Ecto.Changeset{
+        data: %Space{},
+        errors: [slug: {"has already been taken", [constraint: :unique]}]
       }
 
       log =

@@ -94,9 +94,20 @@ defmodule Nest.LLM.Tools do
   in something that has not happened yet and its real result will arrive later
   as a message (the wait tools, issue #54). `BatchSizer` carries that through as
   the entry kind `:waiting`, which stamps the result part's `state`.
+
+  And it may return `{:cancelled, reason}`: the space's environment changed under
+  the call and the space edit cancelled it
+  (`Nest.Agents.Agent.cancel_tools/2`, reaching `shell-cmd` as
+  `Nest.Tools.ShellCmd.execute/4`'s own shape). `BatchSizer` carries it as the
+  entry kind `:cancelled` — `is_error: true` for the model, because the call did
+  not run, and *silent* in the operator log, because a routine space edit is not
+  a defect to diagnose.
   """
   @spec execute_one([Tool.t()], ToolCall.t(), map()) ::
-          {:ok, String.t()} | {:error, String.t()} | {:waiting, String.t()}
+          {:ok, String.t()}
+          | {:error, String.t()}
+          | {:waiting, String.t()}
+          | {:cancelled, String.t()}
   def execute_one(tool_defs, %ToolCall{name: name, arguments: args}, context)
       when is_list(tool_defs) do
     case Enum.find(tool_defs, fn %Tool{name: n} -> n == name end) do

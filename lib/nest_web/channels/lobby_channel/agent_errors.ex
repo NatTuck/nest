@@ -223,17 +223,27 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
     {:error, %{"reason" => code}}
   end
 
-  # A space changeset's one client-facing field, on both paths: the backend is
-  # the only thing a client sends that the changeset validates by *value*, so
-  # name it rather than answering "failed" about a choice the user just made.
-  # The rest (a blank name, a taken slug, an unshowable error) stays generic and
-  # logged, under the prefix of the action that was attempted.
+  # A space changeset's client-facing fields, on both paths. Two of them have a
+  # code both paths already own, so they are named rather than answered with a
+  # generic failure: the backend, the one thing a client sends that the changeset
+  # validates by *value* (a choice the user just made), and a blank workspace,
+  # which `Nest.Sandbox.workspace_error/1` names and `describeWorkspaceError/1`
+  # words. The rest (a blank name, a taken slug, an unshowable error) stays
+  # generic and logged, under the prefix of the action that was attempted.
   defp space_changeset_payload(%Ecto.Changeset{errors: errors}, log_prefix, fallback_code) do
-    if Keyword.has_key?(errors, :sandbox_backend) do
-      {:error, %{"reason" => "invalid_sandbox_backend"}}
-    else
-      Logger.error("#{log_prefix}: #{inspect(errors)}")
-      {:error, %{"reason" => fallback_code}}
+    cond do
+      Keyword.has_key?(errors, :sandbox_backend) ->
+        {:error, %{"reason" => "invalid_sandbox_backend"}}
+
+      # `environment_changeset/2`'s only `:workspace_path` error is
+      # `validate_required` (blank or nil), so `workspace_required` is exact — and
+      # a client mistake must not be logged at `:error` or shown as a raw code.
+      Keyword.has_key?(errors, :workspace_path) ->
+        {:error, %{"reason" => "workspace_required"}}
+
+      true ->
+        Logger.error("#{log_prefix}: #{inspect(errors)}")
+        {:error, %{"reason" => fallback_code}}
     end
   end
 end
