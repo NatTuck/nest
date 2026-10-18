@@ -2,8 +2,8 @@
  * Tests for `EditSpaceDialog` — the one form that edits a space's environment.
  *
  * It pins the three fields (a save sends all of them, because they are one
- * decision), the consequence sentence (a backend change releases the container,
- * which is not something the user can discover afterwards), the per-backend help
+ * decision), the consequence sentence (any change releases the container, which
+ * is not something the user can discover afterwards), the per-backend help
  * text it borrows from the New Space form, and a refused save: the server's
  * reason has to reach the user with the dialog still open.
  */
@@ -74,14 +74,14 @@ describe("EditSpaceDialog", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("states what a save does, including what a backend change costs", () => {
+  it("states what a save does, including what a change costs", () => {
     setup();
 
     expect(screen.getByText(EDIT_SPACE_CONSEQUENCE)).toBeInTheDocument();
     // The two facts the user cannot discover afterwards.
     expect(EDIT_SPACE_CONSEQUENCE).toMatch(/every agent here is told/);
     expect(EDIT_SPACE_CONSEQUENCE).toMatch(
-      /releases this space's container.*\/tmp offloads, background-job logs and any running background job are lost/,
+      /A change releases this space's container.*\/tmp offloads, background-job logs and any running background job are lost/,
     );
   });
 

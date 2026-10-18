@@ -6,8 +6,10 @@
  * One dialog for all three because they are one decision: every agent in the
  * space inherits them, and a save tells the live ones (`Agent.space_changed/2`)
  * rather than restarting anything. The consequence sentence is not decoration —
- * a *backend* change releases this space's container, and everything that lived
- * only there goes with it — so it is stated before the save, not after.
+ * all three properties are part of the container's identity, so *any* change
+ * releases it and everything that lived only there goes with it — and it is
+ * stated before the save, not after. A save that changes nothing releases
+ * nothing (the server skips it), which is why the sentence says "a change".
  *
  * The per-backend help text is the New Space form's (`sandboxBackendHelp/1`),
  * reused rather than restated: the two forms offer the same three backends and
@@ -36,7 +38,7 @@ import {
  * rather than a substring of the markup.
  */
 export const EDIT_SPACE_CONSEQUENCE =
-  "Saving restarts nothing, but every agent here is told. A backend change releases this space's container, so /tmp offloads, background-job logs and any running background job are lost.";
+  "Saving restarts nothing, but every agent here is told. A change releases this space's container, so /tmp offloads, background-job logs and any running background job are lost.";
 
 export function EditSpaceDialog({ open, onClose, space }) {
   const [workspacePath, setWorkspacePath] = useState("");

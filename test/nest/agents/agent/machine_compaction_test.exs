@@ -66,6 +66,36 @@ defmodule MachineCompactionTest do
       assert Enum.any?(actions, &match?({:append_many, _}, &1))
     end
 
+    test "a resume with nothing staged carries the reply instead of a stale notice" do
+      # `pending_notice` holds one of two things, and `resume/1` is only the
+      # compactor's for the second: a staged space notice (a map, written by
+      # `WorkspaceHandler.apply_space_environment/2` for an *idle* machine, which
+      # consumes it in the same settle). So a compaction that is not that one
+      # finds the slot empty and resumes what it actually carried. The contrast
+      # below is what a stale map would do — append a notice pair and rest with
+      # `entry: nil`, dropping the reply.
+      carried = {:assistant_response, %Nest.Messages.Assistant{parts: []}, 0, 5}
+      base = state_at(:idle)
+      staged = %{base | entry: {:compaction, carried}}
+
+      values = %{workspace: "/tmp/x", network_access: true, backend: "bwrap"}
+      stale = %{staged | work: %{staged.work | pending_notice: values}}
+
+      {:ok, stale_actions, _next} = Machine.Compaction.resume(stale)
+      assert Enum.any?(stale_actions, &match?({:append_many, _}, &1))
+
+      {:ok, actions, next} = Machine.Compaction.resume(staged)
+
+      refute Enum.any?(actions, &match?({:append_many, _}, &1)),
+             "an empty slot must not append a notice pair"
+
+      # The carried reply's own resume ran — it settles the turn it was carried
+      # across (`:compaction_carry`), rather than resting on a notice.
+      assert {:finalize, :clean} in actions
+      assert next.phase == :idle
+      assert next.entry == nil
+    end
+
     # BLOCKER, found by the PR #101 review. A refused batch is the
     # near-the-limit case compaction exists for, and `Response.regular/5` has
     # already appended the assistant carrying that batch's `tool_use` parts.

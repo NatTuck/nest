@@ -42,9 +42,15 @@ defmodule Nest.Agents.Agent.Callbacks do
   # is appended, not queued: appending costs no turn, while queueing would defer
   # it to the agent's next one — and a space edit must not cost an LLM call per
   # live agent.
+  #
+  # A machine that is mid-turn cannot take the notice (see
+  # `WorkspaceHandler.apply_space_environment/2`), and then the flag stays set so
+  # the change is announced at the agent's next start instead of being lost.
   def handle_cast({:space_changed, values}, state) do
-    {state, _result} = WorkspaceHandler.apply_space_environment(state, to_mounts_values(values))
-    {:noreply, clear_space_notice(state)}
+    {state, outcome} =
+      WorkspaceHandler.apply_space_environment(state, to_mounts_values(values))
+
+    {:noreply, maybe_clear_space_notice(state, outcome)}
   end
 
   # A tool worker's "my `agents-send` reached its target"
@@ -344,10 +350,10 @@ defmodule Nest.Agents.Agent.Callbacks do
   # appended here, from the mounts the agent just started with, which are already
   # the space's current values.
   def handle_info(:space_notice_pending, state) do
-    {state, _result} =
+    {state, outcome} =
       WorkspaceHandler.apply_space_environment(state, WorkspaceHandler.values_from_mounts(state))
 
-    {:noreply, clear_space_notice(state)}
+    {:noreply, maybe_clear_space_notice(state, outcome)}
   end
 
   def handle_info(msg, state) do
@@ -363,11 +369,22 @@ defmodule Nest.Agents.Agent.Callbacks do
     }
   end
 
-  # The flag is only set by a space edit, so clearing it is the last thing either
-  # notice path does — once the notice is in the transcript, or deferred behind a
-  # compaction that will append it.
-  defp clear_space_notice(state) do
+  # The flag means "this agent has not been told", so it is cleared only when the
+  # notice actually reached the transcript or is staged behind the compaction
+  # this turn is already running. Neither path may clear it on an outcome that
+  # appended nothing: the flag is what makes the change survive to a start, and a
+  # mid-turn cast is exactly the case where nothing could be appended.
+  defp maybe_clear_space_notice(state, outcome) when outcome in [:appended, :deferred] do
     :ok = Persistence.set_space_notice_pending(state.space_id, state.name, false)
+    state
+  end
+
+  defp maybe_clear_space_notice(state, outcome) do
+    Logger.info(
+      "space environment change not announced on agent #{inspect(state.name)} " <>
+        "(#{inspect(outcome)}); it stays pending and is announced at the next start"
+    )
+
     state
   end
 end

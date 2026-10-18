@@ -78,22 +78,19 @@ defmodule Nest.Persistence.Messages do
   """
   @spec load_slice(integer(), String.t(), keyword()) :: [Message.t()]
   def load_slice(space_id, agent_name, opts) do
-    load(space_id, agent_name, Keyword.delete(opts, :projection))
-  end
-
-  # The one entry point both public readers go through. `:projection` is
-  # internal, and `load_slice/3` strips it so only `archived_summary/3` can
-  # reach it: a projection read selects the named fields and skips the decode,
-  # so the rows come back as partial structs rather than messages. That is only
-  # legitimate for a reader that wants facts *about* rows, because a partial
-  # row's `parts` and `api_logs` are empty — `PersistedMessage`'s catch-alls
-  # return `[]` for both — so a caller that decoded one would get a message
-  # that looks like an empty one rather than an error.
-  defp load(space_id, agent_name, opts) do
     case Nest.Persistence.fetch_agent(space_id, agent_name) do
-      {:ok, row} -> collect_slice(row, MapSet.new(), opts)
+      {:ok, row} -> load_slice_for(row, opts)
       {:error, :not_found} -> []
     end
+  end
+
+  # The same read for a caller that already holds the agent row — the start path
+  # does, and resolving it again here is a second query for a row the caller
+  # just read.
+  @doc false
+  @spec load_slice_for(PersistedAgent.t(), keyword()) :: [Message.t()]
+  def load_slice_for(%PersistedAgent{} = row, opts) do
+    collect_slice(row, MapSet.new(), Keyword.delete(opts, :projection))
   end
 
   @doc """
@@ -124,18 +121,47 @@ defmodule Nest.Persistence.Messages do
   end
 
   def archived_summary(space_id, agent_name, boundary) do
+    case Nest.Persistence.fetch_agent(space_id, agent_name) do
+      {:ok, row} -> archived_summary_for(row, boundary)
+      {:error, :not_found} -> archived_summary_for(nil, boundary)
+    end
+  end
+
+  # The same summary for a caller that already holds the row (see
+  # `load_slice_for/2`). `nil` is "no row", which is the empty summary.
+  @doc false
+  @spec archived_summary_for(PersistedAgent.t() | nil, integer()) :: %{
+          has_system_row: boolean(),
+          highest_index: integer(),
+          marker_count: non_neg_integer()
+        }
+  def archived_summary_for(row, boundary) when is_integer(boundary) and boundary >= 0 do
     rows =
-      load(space_id, agent_name,
-        cap: boundary,
-        limit: :all,
-        projection: [:message_index, :role]
-      )
+      case row do
+        nil -> []
+        %PersistedAgent{} -> collect_slice(row, MapSet.new(), summary_opts(boundary))
+      end
 
     %{
       has_system_row: Enum.any?(rows, &(&1.role == "system")),
       highest_index: rows |> Enum.map(& &1.message_index) |> Enum.max(fn -> -1 end),
       marker_count: Enum.count(rows, &(&1.role == "compaction"))
     }
+  end
+
+  def archived_summary_for(_row, _boundary) do
+    %{has_system_row: false, highest_index: -1, marker_count: 0}
+  end
+
+  # A projection read: only the facts `archived_summary_for/2` needs, decoded as
+  # partial structs. That is legitimate only for a reader that wants facts *about*
+  # rows, because a partial row's `parts` and `api_logs` are empty —
+  # `PersistedMessage`'s catch-alls return `[]` for both — so a caller that
+  # decoded one would get a message that looks like an empty one rather than an
+  # error. `load_slice/3` therefore strips `:projection`, so this is the only
+  # reader that can reach it.
+  defp summary_opts(boundary) do
+    [cap: boundary, limit: :all, projection: [:message_index, :role]]
   end
 
   defp collect_slice(%PersistedAgent{} = row, seen, opts) do

@@ -11,12 +11,21 @@
  * what the next message inherits if the user does not choose. Re-seeding on
  * every frame would overwrite a selection still in progress, so the draft
  * follows the server only when the server's value actually moves.
+ *
+ * A draft belongs to **one agent**. The route component is reused across
+ * `/space/:slug/agent/:name`, so switching agents is a re-render, not a
+ * remount: without the `name` reset below, a selection left unsent on agent A
+ * would be the mode agent B's next message asks for — and the "only when the
+ * server's value moves" rule would not even notice, because both agents can
+ * report the same mode.
  */
 
 import { useEffect, useRef, useState } from "react";
 
 /**
  * @param {object} options
+ * @param {string|null} options.name the agent the draft belongs to; a change
+ *   starts a fresh draft, because the previous one was about another agent
  * @param {string|null} options.currentModeFromCache the mode the server last
  *   reported for this agent, from its cache entry
  * @param {string|null} options.defaultMode the mode a new agent starts in,
@@ -28,7 +37,7 @@ import { useEffect, useRef, useState } from "react";
  * }} the draft, a setter for the history walk to restore a selection with, and
  *   the selector's change handler (also just a local set)
  */
-export function useAgentMode({ currentModeFromCache, defaultMode }) {
+export function useAgentMode({ name, currentModeFromCache, defaultMode }) {
   const [currentMode, setCurrentMode] = useState(null);
 
   // The server value the draft was last seeded from. `undefined` means "never
@@ -36,12 +45,23 @@ export function useAgentMode({ currentModeFromCache, defaultMode }) {
   // first `chat:status` arrives and must still fall through to `defaultMode`.
   const seededFrom = useRef(undefined);
 
+  // The agent the draft (and `seededFrom`) belong to.
+  const agent = useRef(name);
+
   useEffect(() => {
+    if (agent.current !== name) {
+      agent.current = name;
+      // A different agent: nothing is known about its draft yet, and the
+      // seeding below must run even if the two agents share a mode.
+      seededFrom.current = undefined;
+      setCurrentMode(null);
+    }
+
     const serverMode = currentModeFromCache ?? defaultMode;
     if (!serverMode || seededFrom.current === serverMode) return;
     seededFrom.current = serverMode;
     setCurrentMode(serverMode);
-  }, [currentModeFromCache, defaultMode]);
+  }, [name, currentModeFromCache, defaultMode]);
 
   return {
     currentMode,

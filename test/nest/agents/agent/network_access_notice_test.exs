@@ -10,10 +10,14 @@ defmodule Nest.Agents.Agent.NetworkAccessNoticeTest do
       the system prompt's network sentence was composed from the value the agent
       started with and is deliberately never rebuilt.
 
-  The notice is *queued*, not appended: appending it would mean draining, and
-  draining starts a turn, so a space-wide toggle would cost one LLM call per live
-  agent. Queued is also what a peer's mode notice does, and the agent learns it at
-  the start of its next turn — which is when it can act on it.
+  The notice is *appended*, not queued: a queued notice would need a turn to
+  deliver it, so a space-wide edit would cost one LLM call per live agent. The
+  pair goes in as a `:workspace_notice` step, which costs no turn.
+
+  It lands only on an idle machine. A mid-turn agent is not told and is not
+  silently forgotten either: the space's `space_notice_pending` flag stays set,
+  so the change is announced at its next start (`apply_space_environment/2`'s
+  `:appended | :deferred | {:ignored, phase}` outcomes).
 
   The prompt-bytes assertion is the one that protects the project's cache rule:
   once a conversation is active the system message does not change except on

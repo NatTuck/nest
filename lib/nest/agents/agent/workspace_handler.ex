@@ -53,6 +53,24 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
           required(:backend) => String.t()
         }
 
+  @typedoc """
+  What the apply did with the notice.
+
+    * `:appended` — the pair is in the transcript now;
+    * `:deferred` — preflight decided the conversation needs compaction, so the
+      values are staged in `state.live.pending_notice` and
+      `Machine.Compaction.resume/1` appends the pair when the commit lands;
+    * `{:ignored, phase}` — the machine is mid-turn, so the `:workspace_notice`
+      transition has nowhere to land (it is `:idle`-only) and nothing is staged
+      or appended. The caller must leave `space_notice_pending` set: the agent
+      then announces the change when it next starts;
+    * `{:error, status}` — the machine blocked instead of delivering: the
+      conversation cannot hold the pair and cannot be compacted either
+      (`:context_overflow`), or the compaction it would need could not start.
+      Nothing is appended, and the caller must leave the flag set.
+  """
+  @type outcome :: :appended | :deferred | {:ignored, Machine.phase()} | {:error, atom()}
+
   @doc """
   Apply a space-environment change to `state`.
 
@@ -60,14 +78,34 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   moves the agent's copy of it. The caller owns the row write and the status
   broadcast.
 
-  Returns `{state, :ok}` when the notice is inserted immediately, or
-  `{state, :ok}` with `state.live.pending_notice` set and compaction triggered
-  when preflight decides the conversation needs compaction, or
-  `{state, {:error, :context_overflow}}` when compaction is impossible.
+  The **mounts and the tool closures move whatever the outcome**: a command the
+  agent runs next has to use the space's current values, and that half needs no
+  machine. Only the *notice* is conditional, and the outcome says what happened
+  to it — see `t:outcome/0`.
+
+  A mid-turn machine gets `{:ignored, phase}` and **nothing is staged**, which is
+  load-bearing rather than tidy: `pending_notice` is one slot shared with the
+  iteration-budget reminder (a binary, written by `do_dispatch_http/1`) and read
+  by `Machine.Compaction.resume/1`, so a map left there while the agent is busy
+  would both disable the budget reminder (`||` treats a map as truthy) and be
+  consumed by an unrelated later compaction, which would drop whatever that
+  compaction carried. A map is therefore written only when the `:idle` machine
+  can consume it in the same settle.
   """
-  @spec apply_space_environment(Agent.t(), values()) ::
-          {Agent.t(), :ok | {:error, :context_overflow}}
+  @spec apply_space_environment(Agent.t(), values()) :: {Agent.t(), outcome()}
   def apply_space_environment(state, values) do
+    state = apply_mounts(state, values)
+
+    if state.live.machine.phase == :idle do
+      settle_notice(state, values)
+    else
+      {state, {:ignored, state.live.machine.phase}}
+    end
+  end
+
+  # The mounts are what a tool call reads, so they move even for a machine that
+  # cannot be told yet.
+  defp apply_mounts(state, values) do
     names = tool_names(state)
 
     state = %{
@@ -81,8 +119,14 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
         chat_state: %{state.chat_state | read_files: %{}}
     }
 
-    state = %{state | tools: Tools.get_functions(names, Mounts.from_agent(state))}
+    %{state | tools: Tools.get_functions(names, Mounts.from_agent(state))}
+  end
 
+  # `:workspace_notice` is an `:idle` transition: it appends the pair when the
+  # conversation fits, stages a compaction when it does not, and blocks when it
+  # cannot be compacted. The slot is cleared on the way out of the first two, so
+  # what is left in it tells the caller which one happened.
+  defp settle_notice(state, values) do
     state = %{
       state
       | live: %{
@@ -94,12 +138,24 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
         }
     }
 
-    {:ok, state} = Turn.settle(state, :workspace_notice)
+    {:ok, settled} = Turn.settle(state, :workspace_notice)
 
-    if Machine.status_for(state.live.machine) == :context_overflow do
-      {state, {:error, :context_overflow}}
-    else
-      {state, :ok}
+    status = Machine.status_for(settled.live.machine)
+
+    cond do
+      # Any blocked phase means the pair was never appended and never will be:
+      # the conversation cannot hold it (`:context_overflow`), or the compaction
+      # that would have made room failed to start (`:compaction_loop_detected`
+      # and friends). The caller keeps the flag, so the change survives to a
+      # start.
+      status in Machine.blocked_phases() ->
+        {settled, {:error, status}}
+
+      is_map(settled.live.machine.work.pending_notice) ->
+        {settled, :deferred}
+
+      true ->
+        {settled, :appended}
     end
   end
 

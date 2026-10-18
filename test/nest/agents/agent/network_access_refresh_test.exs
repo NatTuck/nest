@@ -1,7 +1,7 @@
 defmodule Nest.Agents.Agent.NetworkAccessRefreshTest do
   @moduledoc """
   The space's `network_access` is editable, and it rides the agent's `Mounts` —
-  which are built once, at start. `Agent.update_environment/2` is the cast that
+  which are built once, at start. `Agent.space_changed/2` is the cast that
   tells a live agent, so the space's own claim that a change takes effect for its
   agents' subsequent commands is true.
 

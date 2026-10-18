@@ -6,23 +6,31 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
 
   There is no per-agent workspace to edit: a workspace is
   `spaces.workspace_path`, so the agent edit dialog no longer carries one and
-  `Agents.change_workspace/3` / `Agents.set_workspace/2` are gone. The function
-  these tests drive has no caller yet — the space edit that will drive it is the
-  next step — so what they pin is the seam it will use: the mounts move, the tool
-  closures are rebuilt against them, the persisted system prompt (index 0) is
-  untouched to preserve the LLM prefix cache, and the change is announced as a
-  user/assistant notice pair naming the values now in force.
+  `Agents.change_workspace/3` / `Agents.set_workspace/2` are gone. The caller is
+  `Nest.Spaces.update_environment/2` (the space edit), so what these tests pin is
+  the seam it uses: the mounts move, the tool closures are rebuilt against them,
+  the persisted system prompt (index 0) is untouched to preserve the LLM prefix
+  cache, and the change is announced as a user/assistant notice pair naming the
+  values now in force — or, for a machine that cannot take it, left for the
+  agent's next start.
   """
 
   use Nest.DataCase, async: true
 
+  import ExUnit.CaptureLog
   import Nest.Test.TmpCleanup
+
+  alias Ecto.Adapters.SQL.Sandbox
 
   alias Nest.Agents
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.WorkspaceHandler
+  alias Nest.Agents.AgentStateHelpers
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Agents.Supervisor
+  alias Nest.Persistence
   alias Nest.Sandbox.Mounts
+  alias Nest.Spaces
 
   setup do
     {:ok, _space_id} = AgentTestHelpers.create_test_space()
@@ -52,7 +60,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       assert Mounts.workspace(before.mounts) == old
       system_before = List.first(before.chat_state.messages)
 
-      {state, :ok} =
+      {state, :appended} =
         WorkspaceHandler.apply_space_environment(before, %{
           workspace: new,
           network_access: false,
@@ -106,15 +114,135 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       assert Enum.any?(before.tools, &(&1.name == "agents-spawn"))
 
       # Below max depth the spawn tools survive the rebuild.
-      {below, :ok} = apply_workspace(before, second)
+      {below, :appended} = apply_workspace(before, second)
       assert Enum.any?(below.tools, &(&1.name == "agents-spawn"))
 
       # At max depth they are dropped, matching `Init` and compaction.
       at_max = %{before | depth: Config.configured_max_depth()}
-      {dropped, :ok} = apply_workspace(at_max, second)
+      {dropped, :appended} = apply_workspace(at_max, second)
 
       refute Enum.any?(dropped.tools, &(&1.name in ["agents-spawn", "agents-batch"]))
       assert Enum.any?(dropped.tools, &(&1.name == "file-read"))
+    end
+  end
+
+  # The outcome decides whether the space's `space_notice_pending` flag is
+  # cleared, and the flag is the only record that an agent still owes the
+  # notice. A mid-turn machine cannot take it — `:workspace_notice` is an
+  # `:idle` transition — so the apply reports that instead of staging a map the
+  # machine would never consume (and that the budget reminder and the compactor
+  # would both trip over).
+  describe "apply_space_environment/2 outcomes" do
+    test "an idle machine appends the pair, and the space's flag is cleared" do
+      {pid, name} = AgentTestHelpers.start_agent()
+      space_id = AgentTestHelpers.current_space_id()
+      workspace = new_ws("env-edit")
+
+      # The whole caller, not a hand-rolled cast: the space edit writes the row,
+      # marks the agent, and hands it the values.
+      assert {:ok, _space} =
+               Nest.Spaces.update_environment(space_id, %{workspace_path: workspace})
+
+      # allowlist: barrier — the cast appends and clears the flag; no frame
+      # announces either, so the read is the fence.
+      state = :sys.get_state(pid, 1_000)
+
+      assert Mounts.workspace(state.mounts) == workspace
+      assert [notice] = notices(state)
+      assert notice =~ "Workspace: #{workspace}"
+      assert pending?(space_id, name) == false
+    end
+
+    test "a stopped agent is told at its next start, once" do
+      {pid, name} = AgentTestHelpers.start_agent()
+      space_id = AgentTestHelpers.current_space_id()
+      workspace = new_ws("env-stopped")
+
+      # A stopped agent has no process to cast, so the edit can only mark it —
+      # and the mark is what makes the announcement survive the stop.
+      Process.unlink(pid)
+      :ok = Supervisor.stop_agent(space_id, name)
+      assert {:ok, _space} = Spaces.update_environment(space_id, %{workspace_path: workspace})
+      assert pending?(space_id, name) == true
+
+      {:ok, restarted} = Supervisor.get_agent(space_id, name)
+      # The new pid's `init/1` self-sends the notice and appends it, which is a DB
+      # write from a process this checkout does not otherwise reach.
+      Sandbox.allow(Nest.Repo, self(), restarted)
+
+      # allowlist: barrier — the start path appends and clears the flag, and
+      # emits no frame of its own.
+      state = :sys.get_state(restarted, 1_000)
+
+      # One pair, not two: the start path is the only one that ran (there was no
+      # process to cast), and the flag it clears is what keeps a later start from
+      # announcing it again.
+      assert [notice] = notices(state)
+      assert notice =~ "Workspace: #{workspace}"
+      assert pending?(space_id, name) == false
+    end
+
+    test "a mid-turn machine stages nothing and keeps the space's flag set" do
+      for status <- [:streaming, :executing_tools] do
+        {pid, name} = AgentTestHelpers.start_agent()
+        space_id = AgentTestHelpers.current_space_id()
+        :ok = Persistence.set_space_notice_pending(space_id, name, true)
+
+        # A turn in flight: the machine is not `:idle`, so the notice has
+        # nowhere to land.
+        _ = AgentStateHelpers.set_status(pid, status)
+        values = new_values(pid)
+        :ok = Nest.Agents.Agent.space_changed(pid, values)
+        # allowlist: barrier — the cast is the only writer here.
+        state = :sys.get_state(pid, 1_000)
+
+        # The mounts moved — a command the agent runs next uses the space's
+        # current values whatever the machine is doing.
+        assert Mounts.workspace(state.mounts) == values.workspace_path
+
+        # ...and nothing was appended, staged or cleared.
+        assert notices(state) == []
+        assert state.live.machine.work.pending_notice == nil
+        assert pending?(space_id, name) == true
+
+        # Restore the fixture status, so the test's own leak check sees an idle
+        # agent rather than one left mid-turn on purpose.
+        _ = AgentStateHelpers.set_status(pid, :idle)
+      end
+    end
+
+    test "a conversation that cannot hold the pair reports the block, and keeps the flag" do
+      {pid, name} = AgentTestHelpers.start_agent()
+      space_id = AgentTestHelpers.current_space_id()
+      :ok = Persistence.set_space_notice_pending(space_id, name, true)
+
+      # A limit too small for the system prompt alone: preflight's answer is
+      # `:cannot_compact`, so the settle blocks in `:context_overflow` and the
+      # pair is never appended. The flag has to survive that — a block is not a
+      # delivery.
+      AgentStateHelpers.replace_state(pid, fn state ->
+        put_in(state, [Access.key(:llm_metrics), Access.key(:context_limit)], 1)
+      end)
+
+      values = new_values(pid)
+
+      # The block is a real failure and says so in the log, which is the expected
+      # outcome here — so capture it and assert on the line rather than let it
+      # print. The barrier is inside the capture: the agent logs while it handles
+      # the cast, so the read is what guarantees the line is in the window.
+      log =
+        capture_log(fn ->
+          :ok = Nest.Agents.Agent.space_changed(pid, values)
+          # allowlist: barrier — the cast is the only writer here.
+          state = :sys.get_state(pid, 1_000)
+          send(self(), {:state, state})
+        end)
+
+      assert_received {:state, state}
+      assert state.live.machine.phase == :context_overflow
+      assert notices(state) == []
+      assert pending?(space_id, name) == true
+      assert log =~ "cannot fit the system prompt"
     end
   end
 
@@ -136,6 +264,38 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       {:ok, tmp_space} = AgentTestHelpers.create_test_space(%{workspace_path: "/tmp/ws"})
       assert {:error, :workspace_under_tmp} = Agents.create_agent(tmp_space, model)
     end
+  end
+
+  # The values a space edit casts: the agent's current environment, with the
+  # workspace moved so the notice has something to name.
+  defp new_values(pid) do
+    # allowlist: snapshot — the agent's own mounts, which have no accessor.
+    state = :sys.get_state(pid, 1_000)
+
+    %{
+      workspace_path: new_ws("edited"),
+      network_access: not Mounts.network_access(state.mounts),
+      sandbox_backend: Mounts.backend(state.mounts)
+    }
+  end
+
+  defp pending?(space_id, name) do
+    {:ok, row} = Persistence.fetch_agent(space_id, name)
+    row.space_notice_pending
+  end
+
+  # The runtime notices in the transcript: the pair `WorkspaceHandler` appends.
+  defp notices(state) do
+    state.chat_state.messages
+    |> Enum.map(fn {_role, message} -> text_of(message) end)
+    |> Enum.filter(&(&1 =~ "[nest notice]"))
+  end
+
+  defp text_of(%{parts: parts}) do
+    Enum.map_join(parts, "", fn
+      %{text: text} when is_binary(text) -> text
+      _other -> ""
+    end)
   end
 
   defp apply_workspace(state, path) do

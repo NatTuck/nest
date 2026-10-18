@@ -66,6 +66,10 @@ defmodule Nest.Persistence do
   alias Nest.Spaces.Space
   alias Nest.Vocations
 
+  # The three space properties an agent's attrs carry (see
+  # `put_space_properties/1`).
+  @space_properties [:sandbox_backend, :network_access, :workspace_path]
+
   @doc """
   Resolve a `vocation_id` to a loaded `Vocations.Vocation`
   struct (or `nil` if the id is `nil`).
@@ -100,18 +104,27 @@ defmodule Nest.Persistence do
   # here for the same reason the other two are, and `agents.workspace_path` no
   # longer exists.
   #
-  # `put_new_lazy` so a caller that already named one keeps it *and* no query
-  # runs for it: a spawned child's attrs are built from its parent's mounts,
-  # and those came from this same space.
+  # A caller that already named one keeps it, and no query runs for it: a
+  # spawned child's attrs are built from its parent's mounts, and those came
+  # from this same space.
   #
   # Public so `Nest.Agents.Agent.PreSpawn.pre_spawn/1` — the one gate every
   # agent-creation path goes through — can apply it to attrs it did not build.
   @doc false
   def put_space_properties(%{space_id: space_id} = attrs) when is_integer(space_id) do
-    attrs
-    |> Map.put_new_lazy(:sandbox_backend, fn -> Nest.Spaces.sandbox_backend(space_id) end)
-    |> Map.put_new_lazy(:network_access, fn -> Nest.Spaces.network_access(space_id) end)
-    |> Map.put_new_lazy(:workspace_path, fn -> Nest.Spaces.workspace_path(space_id) end)
+    # A spawned child's attrs are built from its parent's mounts and already
+    # carry all three, so the common path is no query at all; anything else is
+    # one read for the environment rather than one per missing property.
+    if Enum.all?(@space_properties, &Map.has_key?(attrs, &1)) do
+      attrs
+    else
+      environment = Nest.Spaces.environment(space_id)
+
+      attrs
+      |> Map.put_new(:sandbox_backend, environment.sandbox_backend)
+      |> Map.put_new(:network_access, environment.network_access)
+      |> Map.put_new(:workspace_path, environment.workspace_path)
+    end
   end
 
   def put_space_properties(attrs), do: attrs
@@ -438,14 +451,12 @@ defmodule Nest.Persistence do
       # made a cold start scale with the whole conversation instead of the
       # active window (issue #52). `archived_summary/3` reads those facts as a
       # projection, so the payloads are never decoded.
+      # Both reads take the row this call already resolved: re-resolving it by
+      # name inside them was a second query per start for a row in hand.
       preloaded =
-        Messages.load_slice(space_id, agent_name,
-          cap: :all,
-          limit: :all,
-          floor: boundary
-        )
+        Messages.load_slice_for(row, cap: :all, limit: :all, floor: boundary)
 
-      archived = Messages.archived_summary(space_id, agent_name, boundary)
+      archived = Messages.archived_summary_for(row, boundary)
       {violations, load_heal} = classify_sequence(preloaded, boundary)
 
       attrs =
@@ -488,15 +499,19 @@ defmodule Nest.Persistence do
   # `build_attrs_for_start/2` so the load path stays under credo's ABC
   # cap (the map literal is the bulk of the assignments).
   defp start_attrs(row, boundary, preloaded, archived, violations, load_heal, parent_name) do
+    # One read for the space's environment, not one per property: this runs on
+    # every agent start.
+    environment = Nest.Spaces.environment(row.space_id)
+
     %{
       space_id: row.space_id,
       name: row.name,
       agent_row_id: row.id,
       model: row.model,
       vocation_id: row.vocation_id,
-      workspace_path: Nest.Spaces.workspace_path(row.space_id),
-      sandbox_backend: Nest.Spaces.sandbox_backend(row.space_id),
-      network_access: Nest.Spaces.network_access(row.space_id),
+      workspace_path: environment.workspace_path,
+      sandbox_backend: environment.sandbox_backend,
+      network_access: environment.network_access,
       space_notice_pending: row.space_notice_pending == true,
       next_message_index: row.next_message_index,
       last_compaction_index: boundary,

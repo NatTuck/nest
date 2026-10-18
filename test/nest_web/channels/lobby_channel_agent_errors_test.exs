@@ -128,4 +128,102 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
 
     assert log =~ "Failed to create space"
   end
+
+  describe "change_model_payload/2 and edit_payload/2" do
+    test "name each refusal the agent edit can produce" do
+      for {reason, code} <- [
+            {:agent_busy, "agent_busy"},
+            {{:invalid_model, "ghost"}, "invalid_model"},
+            {:not_found, "not_found"}
+          ] do
+        assert {:error, %{"reason" => ^code}} = AgentErrors.change_model_payload("a", reason)
+      end
+
+      for {reason, code} <- [
+            {:agent_busy, "agent_busy"},
+            {{:invalid_model, "ghost"}, "invalid_model"},
+            {:context_overflow, "context_overflow"},
+            {:not_found, "not_found"}
+          ] do
+        assert {:error, %{"reason" => ^code}} = AgentErrors.edit_payload("a", reason)
+      end
+    end
+
+    test "log, and stay generic, for a reason neither path can show" do
+      log =
+        capture_log(fn ->
+          # The change-model path answers with the reason's own name here
+          # (`ErrorPayload.from_reason/1`), which is a code the client already
+          # knows; the edit path has no such arm and falls back to its own.
+          assert {:error, %{"reason" => "gen_server_timeout"}} =
+                   AgentErrors.change_model_payload("a", :gen_server_timeout)
+
+          assert {:error, %{"reason" => "failed_to_edit"}} =
+                   AgentErrors.edit_payload("a", :missing_system_prompt)
+        end)
+
+      assert log =~ "Failed to change model on agent \"a\""
+      assert log =~ "Failed to edit agent \"a\""
+    end
+  end
+
+  describe "edit_space_payload/1" do
+    test "names every refusal a user can act on" do
+      # The same codes the create path produces for the same refusals, because a
+      # workspace the sandbox will not run is refused at the edit for exactly the
+      # reason it is refused at the create.
+      for {reason, code} <- [
+            {:workspace_required, "workspace_required"},
+            {:workspace_missing, "workspace_missing"},
+            {:workspace_under_tmp, "workspace_under_tmp"},
+            {:blueprint_missing, "blueprint_missing"},
+            {:missing_vocation, "missing_vocation"}
+          ] do
+        assert {:error, %{"reason" => ^code}} = AgentErrors.edit_space_payload(reason)
+      end
+    end
+
+    test "names a config file Nest cannot protect, with its path and type" do
+      reason = {:config_file_not_regular, "/home/nat/proj/.nest", :symlink}
+
+      assert {:error,
+              %{
+                "reason" => "config_file_not_regular",
+                "path" => "/home/nat/proj/.nest",
+                "type" => "symlink"
+              }} =
+               AgentErrors.edit_space_payload(reason)
+    end
+
+    test "names the backend, the one field the changeset validates by value" do
+      changeset =
+        Space.environment_changeset(
+          %Space{workspace_path: "/home/nat/ws"},
+          %{sandbox_backend: "firecracker"}
+        )
+
+      assert {:error, %{"reason" => "invalid_sandbox_backend"}} =
+               AgentErrors.edit_space_payload(changeset)
+    end
+
+    test "stays generic, and logs, for a changeset error it cannot show" do
+      # An empty workspace path: the field is there, so this is not the backend
+      # arm, and an `Ecto.Changeset` is not fit to hand a user.
+      changeset = %Ecto.Changeset{
+        data: %Space{},
+        errors: [workspace_path: {"can't be blank", [validation: :required]}]
+      }
+
+      log =
+        capture_log(fn ->
+          assert {:error, %{"reason" => "failed_to_edit"}} =
+                   AgentErrors.edit_space_payload(changeset)
+
+          assert {:error, %{"reason" => "failed_to_edit"}} =
+                   AgentErrors.edit_space_payload({:some_new_refusal, "detail"})
+        end)
+
+      assert log =~ "Failed to edit space"
+    end
+  end
 end

@@ -527,10 +527,19 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     end
   end
 
+  # `pending_notice` carries one of two things: the iteration-budget reminder (a
+  # binary, set by this function) or a staged space-environment change (a map,
+  # set by `WorkspaceHandler.apply_space_environment/2` while the machine is
+  # idle). Only the binary belongs to a dispatch — the map is delivered by its own
+  # `:workspace_notice` transition — and `||` would treat a map as truthy and
+  # silently drop the reminder for this iteration.
+  defp budget_pending(pending) when is_binary(pending), do: pending
+  defp budget_pending(_pending), do: nil
+
   defp do_dispatch_http(m) do
     pre_iteration = m.work.iteration
     notice = BudgetReminder.notice_text(m.work.max_iterations - pre_iteration)
-    pending_notice = m.work.pending_notice || notice
+    pending_notice = budget_pending(m.work.pending_notice) || notice
     iteration = pre_iteration + 1
 
     ctx = m.work.ctx

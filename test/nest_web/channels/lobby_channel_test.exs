@@ -7,7 +7,6 @@ defmodule NestWeb.LobbyChannelTest do
   import ExUnit.CaptureLog
   import NestWeb.LobbyChannelTestHelpers
 
-  alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Accounts
   alias Nest.Accounts.AuthToken
   alias Nest.Accounts.Invite, as: InviteSchema
@@ -584,79 +583,6 @@ defmodule NestWeb.LobbyChannelTest do
         end)
 
       assert log =~ "Nest cannot protect it from being rewritten"
-    end
-  end
-
-  describe "handle_in(edit_space)" do
-    test "flips the space's network access and announces it" do
-      {socket, _payload} = join_lobby()
-
-      ref =
-        push(
-          socket,
-          "create_space",
-          create_space_payload(%{
-            "name" => "net-toggle-#{System.unique_integer([:positive])}",
-            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-          })
-        )
-
-      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}, 500
-      AgentTestHelpers.ensure_cleanup(name)
-      assert Nest.Spaces.get_space(space_id).network_access == true
-
-      toggle =
-        push(socket, "edit_space", %{"space_id" => space_id, "network_access" => false})
-
-      # The reply carries the whole environment, not just the field that moved:
-      # the dialog updates its cache from it.
-      assert_reply toggle, :ok, reply, 500
-      assert reply["network_access"] == false
-      assert reply["workspace_path"] == Nest.Spaces.get_space(space_id).workspace_path
-      assert reply["sandbox_backend"] == Nest.Spaces.get_space(space_id).sandbox_backend
-      assert Nest.Spaces.get_space(space_id).network_access == false
-
-      # The frame carries the whole space, so another session of the same user
-      # shows the same value rather than its stale one.
-      assert_push "space:updated",
-                  %{"space" => %Nest.Spaces.Space{id: ^space_id, network_access: false}},
-                  500
-
-      # The live root agent is cast the same environment: allow it the checkout
-      # its notice append writes through, then barrier on the cast finishing.
-      {:ok, agent_pid} = Agents.Registry.lookup(space_id, name)
-      Sandbox.allow(Nest.Repo, self(), agent_pid)
-
-      # allowlist: barrier — the cast's writes must finish before the checkout goes
-      _ = :sys.get_state(agent_pid)
-    end
-
-    test "refuses a payload that is not a boolean, or names no space" do
-      {socket, _payload} = join_lobby()
-
-      for payload <- [
-            %{"space_id" => 1, "network_access" => "yes"},
-            %{"space_id" => 1},
-            %{"network_access" => true},
-            %{}
-          ] do
-        assert_reply push(socket, "edit_space", payload),
-                     :error,
-                     %{"reason" => "invalid_payload"},
-                     500
-      end
-    end
-
-    test "refuses a space the user does not own" do
-      {socket, _payload} = join_lobby()
-
-      assert_reply push(socket, "edit_space", %{
-                     "space_id" => -1,
-                     "network_access" => false
-                   }),
-                   :error,
-                   %{"reason" => _reason},
-                   500
     end
   end
 

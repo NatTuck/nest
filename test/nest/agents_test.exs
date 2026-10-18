@@ -17,6 +17,7 @@ defmodule Nest.AgentsTest do
 
   alias Nest.Agents
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
@@ -146,6 +147,62 @@ defmodule Nest.AgentsTest do
 
       # No agent row was created (pre_spawn validated before inserting).
       assert Nest.Persistence.fetch_agent(space_id, name) == {:error, :not_found}
+    end
+
+    test "rolls back the pre-spawned row when the process fails to start" do
+      # `pre_spawn` inserts the agent row (and its index-0 system
+      # message) *before* the supervisor starts the process, so a start
+      # that fails used to leave an orphan row — which also made every
+      # retry with that name fail on `unique_constraint([:space_id,
+      # :name])`.
+      #
+      # Make `init/1` fail deterministically: `TmpSpace.create/3` does
+      # `File.mkdir_p!` on the agent's scratch dir, so a *file* sitting
+      # where that directory belongs raises `File.Error` during start.
+      space_id = AgentTestHelpers.current_space_id()
+      name = fresh_name()
+      space_dir = TmpSpace.space_dir(space_id, "bwrap")
+      blocker = Path.join(space_dir, name)
+
+      File.mkdir_p!(space_dir)
+      File.write!(blocker, "not a directory")
+
+      on_exit(fn ->
+        File.rm(blocker)
+      end)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:error, _reason} =
+                   Agents.create_agent(
+                     space_id,
+                     %{name: "qwen3.5-plus", provider: "model-studio"},
+                     name: name,
+                     vocation_id: AgentTestHelpers.vocation_id_for_test()
+                   )
+        end)
+
+      # The row is gone, and so is the system message it wrote (the
+      # `messages.agent_id` FK cascades) — the space has no agent left,
+      # so it has no messages left either.
+      assert Nest.Persistence.fetch_agent(space_id, name) == {:error, :not_found}
+
+      assert message_count(space_id) == 0
+      assert log =~ "failed to start"
+
+      # The name is free again: the retry now succeeds (which it could
+      # not have if the orphan row were still there).
+      File.rm!(blocker)
+
+      assert {:ok, ^name} =
+               Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
+                 name: name,
+                 vocation_id: AgentTestHelpers.vocation_id_for_test()
+               )
+
+      AgentTestHelpers.ensure_cleanup(name)
+      assert {:ok, _row} = Nest.Persistence.fetch_agent(space_id, name)
+      assert message_count(space_id) == 1
     end
 
     test "rolls back the pre-spawned row when the start raises" do
@@ -533,7 +590,4 @@ defmodule Nest.AgentsTest do
   # without coupling to the source shape.
   defp model_name(model), do: model[:name] || model["name"]
   defp model_provider(model), do: model[:provider] || model["provider"]
-
-  describe "set_mode/3" do
-  end
 end

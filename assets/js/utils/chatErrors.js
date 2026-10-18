@@ -1,15 +1,19 @@
 /**
- * The workspace refusals the *space* create path can carry. Returns `null` for
- * any other reason.
+ * The workspace refusals the *space* create and edit paths can carry. Returns
+ * `null` for any other reason.
  *
- * Only the space path has them: a workspace is a space property, so an agent
+ * Only the space paths have them: a workspace is a space property, so an agent
  * edit cannot produce one (`LobbyChannel`'s `edit_agent` neither takes nor
- * validates a workspace).
+ * validates a workspace). The wording therefore names the *space*, not the
+ * agent — "a working directory is required for this space".
  */
 function describeWorkspaceError(reason) {
   switch (reason) {
     case "workspace_required":
-      return "A working directory is required for this agent.";
+      // The space's, not the agent's: this reason comes from the space create
+      // and edit paths, where the workspace belongs to the space every agent in
+      // it inherits.
+      return "A working directory is required for this space.";
     case "workspace_missing":
       return "That working directory doesn't exist on the server.";
     case "workspace_under_tmp":

@@ -395,7 +395,14 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   @spec resume(Machine.t()) :: {:ok, [term()], Machine.t()}
   def resume(%{entry: {:compaction, carried}} = m) do
     cond do
-      not is_nil(m.work.pending_notice) ->
+      # Only a *staged space notice* (a map) is the compactor's to append. The
+      # other thing that slot holds is budget-reminder text, which is delivered by
+      # `:iterate`, not here — and a map cannot outlive the turn that staged it,
+      # because `WorkspaceHandler.apply_space_environment/2` writes one only for
+      # an idle machine that consumes it in the same settle. This clause is
+      # therefore about the notice staged by that settle's own compaction, and
+      # never about a stale one.
+      is_map(m.work.pending_notice) ->
         resume_notice(m)
 
       match?({:assistant_response, _, _, _}, carried) ->

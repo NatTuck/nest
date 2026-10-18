@@ -151,11 +151,13 @@ defmodule Nest.Spaces do
   def sandbox_backend(space_id) when is_integer(space_id) do
     from(s in Space, where: s.id == ^space_id, select: s.sandbox_backend)
     |> Repo.one()
-    |> case do
-      backend when is_binary(backend) -> backend
-      _ -> Backend.default()
-    end
+    |> backend_or_default()
   end
+
+  # The one fallback for a missing/absent backend, shared with
+  # `environment/1` so the two cannot disagree.
+  defp backend_or_default(backend) when is_binary(backend), do: backend
+  defp backend_or_default(_backend), do: Backend.default()
 
   @doc """
   The network access of `space_id`.
@@ -176,9 +178,45 @@ defmodule Nest.Spaces do
   def network_access(space_id) when is_integer(space_id) do
     from(s in Space, where: s.id == ^space_id, select: s.network_access)
     |> Repo.one()
+    |> network_or_default()
+  end
+
+  # The one fallback for a missing/absent network value, shared with
+  # `environment/1`.
+  defp network_or_default(value) when is_boolean(value), do: value
+  defp network_or_default(_value), do: true
+
+  @doc """
+  The three environment values of `space_id`, in **one** read.
+
+  The start path needs all three together — an agent's `Nest.Sandbox.Mounts` is
+  built from them — so asking the three readers above costs three round trips
+  for one row. Each value falls back exactly as its own reader does, and the
+  fallbacks are the same code, so the two paths cannot disagree: a missing row
+  is `nil` for the workspace, `Backend.default/0` for the backend and `true` for
+  the network.
+  """
+  @spec environment(integer()) :: %{
+          workspace_path: String.t() | nil,
+          network_access: boolean(),
+          sandbox_backend: String.t()
+        }
+  def environment(space_id) when is_integer(space_id) do
+    from(s in Space,
+      where: s.id == ^space_id,
+      select: {s.workspace_path, s.sandbox_backend, s.network_access}
+    )
+    |> Repo.one()
     |> case do
-      value when is_boolean(value) -> value
-      _ -> true
+      {workspace, backend, network} ->
+        %{
+          workspace_path: workspace,
+          sandbox_backend: backend_or_default(backend),
+          network_access: network_or_default(network)
+        }
+
+      nil ->
+        %{workspace_path: nil, sandbox_backend: Backend.default(), network_access: true}
     end
   end
 
@@ -196,18 +234,23 @@ defmodule Nest.Spaces do
   force. Its system prompt is deliberately **not** rebuilt — that would break the
   LLM prefix cache — which is why the notice exists.
 
-  A `"docker"` space's container is released when the **backend** changes,
-  because the container is the old backend's: `--network` and the image are fixed
-  at creation. `remove_sandbox/1` is therefore given the **old** backend, read
-  before the row is written; reading it afterwards would release the new
-  backend's containers and leak the old. Everything that lived only in the
-  container — the agents' `/tmp` (offloads, background-job logs) and any running
-  background job — goes with it, and the UI says so before the save.
+  Any change to the three releases this space's sandbox environment, not only a
+  backend change: all three are part of a container's identity (the image, the
+  `--network` value and the workspace binds are fixed at creation), so a
+  `"docker"` space's container is replaced by the next command whatever moved.
+  `remove_sandbox/1` is therefore given the **old** backend, read before the row
+  is written; reading it afterwards would release the new backend's containers
+  and leak the old. Everything that lived only in the container — the agents'
+  `/tmp` (offloads, background-job logs) and any running background job — goes
+  with it, and the UI says so before the save.
 
-  Every agent in the space gets `space_notice_pending` set first, so one that is
-  *stopped* still announces the change when it next starts; a live one clears it
-  as it appends. That is the seam that keeps a stopped agent from silently
-  running on a stale environment.
+  A save that names what the row already says is **not** an edit: nothing is
+  released, nobody is told, and the row is not rewritten.
+
+  A *stopped* agent is marked with `space_notice_pending`, so it announces the
+  change when it next starts. A live one is cast instead and clears the flag as
+  it appends — or leaves it set when it is mid-turn and cannot take the notice
+  (`Nest.Agents.Agent.WorkspaceHandler`), which is the same seam.
 
   Returns `{:ok, space}` or `{:error, reason}`.
   """
@@ -219,16 +262,35 @@ defmodule Nest.Spaces do
         {:error, :not_found}
 
       %Space{sandbox_backend: old_backend} = space ->
-        changeset = Space.environment_changeset(space, params)
+        space
+        |> Space.environment_changeset(params)
+        |> apply_environment(old_backend)
+    end
+  end
 
-        with :ok <- workspace_gate(changeset),
-             {:ok, updated} <- Repo.update(changeset) do
-          # The *old* backend: the containers to release are the ones it made.
-          remove_sandbox(%{updated | sandbox_backend: old_backend})
-          mark_notice_pending(updated)
-          tell_agents(updated)
-          {:ok, updated}
-        end
+  # A save that names what the row already says is not an edit: releasing the
+  # container here would destroy a live environment for nothing, and telling the
+  # agents would announce a change that did not happen.
+  defp apply_environment(changeset, old_backend) do
+    with :ok <- workspace_gate(changeset) do
+      if changeset.changes == %{} do
+        {:ok, changeset.data}
+      else
+        write_environment(changeset, old_backend)
+      end
+    end
+  end
+
+  defp write_environment(changeset, old_backend) do
+    case Repo.update(changeset) do
+      {:ok, updated} ->
+        # The *old* backend: the containers to release are the ones it made.
+        remove_sandbox(%{updated | sandbox_backend: old_backend})
+        announce_environment(updated)
+        {:ok, updated}
+
+      {:error, changeset} ->
+        {:error, changeset}
     end
   end
 
@@ -243,6 +305,7 @@ defmodule Nest.Spaces do
   end
 
   # The space's environment, as the three values an agent's mounts carry.
+  @doc false
   @spec environment_values(Space.t()) :: map()
   def environment_values(%Space{} = space) do
     %{
@@ -252,12 +315,51 @@ defmodule Nest.Spaces do
     }
   end
 
-  # Every agent in the space, live or not, is owed the notice. A live one is told
-  # by the cast that follows and clears the flag as it appends; one with no
-  # process behind it keeps the flag and announces on its next start.
-  defp mark_notice_pending(%Space{id: id}) do
-    from(a in PersistedAgent, where: a.space_id == ^id)
-    |> Repo.update_all(set: [space_notice_pending: true])
+  # Every agent in the space is owed the notice, and there are two ways to owe it.
+  #
+  # The live ones are told first: a cast, which they answer by appending the pair
+  # and clearing their own flag. Then the flag is set for the agents that have no
+  # process — those are the ones whose only chance is their next start.
+  #
+  # In that order, and with the flag set only for the agents that were *not*
+  # cast, because the alternative double-announces: an agent that starts inside
+  # this window reads the flag (announcing at start) and then finds the cast in
+  # its mailbox (announcing again). The pair is a reconciliation, so the
+  # duplicate would be harmless — and it is still avoidable for one list and one
+  # query, so it is avoided.
+  defp announce_environment(%Space{id: id} = space) do
+    values = environment_values(space)
+
+    told =
+      id
+      |> Agents.Registry.list_for_space()
+      |> Enum.filter(&cast_environment(id, &1, values))
+      |> MapSet.new()
+
+    mark_notice_pending(id, told)
+  end
+
+  defp cast_environment(id, name, values) do
+    case Agents.Registry.lookup(id, name) do
+      {:ok, pid} ->
+        Agents.Agent.space_changed(pid, values)
+        true
+
+      {:error, :not_found} ->
+        false
+    end
+  end
+
+  defp mark_notice_pending(id, told) do
+    query = from(a in PersistedAgent, where: a.space_id == ^id)
+
+    query =
+      case MapSet.to_list(told) do
+        [] -> query
+        names -> from(a in query, where: a.name not in ^names)
+      end
+
+    Repo.update_all(query, set: [space_notice_pending: true])
 
     :ok
   end
@@ -441,34 +543,12 @@ defmodule Nest.Spaces do
   # but docker is a no-op, and a failure is logged by that layer, not raised.
   #
   # Three callers, and the third is not a lifecycle event: archiving and deleting
-  # a space release its containers, and so does a change to the space's network
-  # access, because a container's network is fixed at creation and the next
-  # command has to build one with the new value.
+  # a space release its containers, and so does an edit to its environment. All
+  # three of the environment's properties are part of a container's identity —
+  # the image, the `--network` value and the workspace binds are fixed when it is
+  # created — so any edit leaves a container the next command must not reuse.
   defp remove_sandbox(%Space{id: id, sandbox_backend: backend}) do
     Backend.remove_space(id, backend)
-  end
-
-  # Hand the space's new environment to every live agent in it. The values travel
-  # on an agent's `Nest.Sandbox.Mounts`, which is what its caps are resolved from
-  # and what its tool closures were built with, so an agent that started before
-  # the change would otherwise keep the old values for the rest of its life —
-  # this is the only thing that closes that window short of a restart.
-  #
-  # A cast, not a call: the values are the *space's*, so there is nothing an agent
-  # could refuse, and an edit must not wait on a turn. A name in the registry with
-  # no live process behind it is skipped; that agent's `space_notice_pending` flag
-  # is what tells it on its next start.
-  defp tell_agents(%Space{id: id} = space) do
-    values = environment_values(space)
-
-    id
-    |> Agents.Registry.list_for_space()
-    |> Enum.each(fn name ->
-      case Agents.Registry.lookup(id, name) do
-        {:ok, pid} -> Agents.Agent.space_changed(pid, values)
-        {:error, :not_found} -> :ok
-      end
-    end)
   end
 
   defp set_archived(id, archived) do
