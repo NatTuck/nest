@@ -14,6 +14,10 @@ export const initialState = {
   // (issue #95). It cannot distinguish a rejected token from an unreachable
   // server — see `initChannels` in `channels.js`.
   connectionFailed: false,
+  // True once the lobby channel has joined (its join's `ok` reply). Distinct
+  // from `isConnected`, which is only the socket handshake — a lobby push sent
+  // between the two is refused.
+  lobbyJoined: false,
   agents: [],
   archivedAgents: [],
   spaces: [],
@@ -31,6 +35,12 @@ export const initialState = {
   // explicit "state unknown", never as an empty cache.
   probeCacheStats: null,
   suggestedName: null,
+  // The space feed's cache, by space id: the notes at `/space/:slug`, the modes
+  // the server says exist, and the mode a message from there asks for by
+  // default. An entry exists only once the feed has been opened (see
+  // `slices/spaceFeed.js`), so this is empty until then rather than one entry
+  // per space.
+  spaceFeeds: {},
   agentsCache: {},
   currentUser: null,
   invites: [],

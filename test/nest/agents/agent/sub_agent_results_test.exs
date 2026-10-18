@@ -5,7 +5,7 @@ defmodule Nest.Agents.Agent.SubAgentResultsTest do
 
   A completion is the child's own words (`kind: :agent`, so the inbox labels
   it `[Message from agent "X"]`). Everything else is the *runtime* speaking
-  (`kind: :notice`, rendered bare), because the child did not say it: a child
+  (`kind: :runtime`, rendered bare), because the child did not say it: a child
   that finished its turn without text, failed, or was stopped before it
   answered.
   """
@@ -17,10 +17,10 @@ defmodule Nest.Agents.Agent.SubAgentResultsTest do
   test "a completion is the child's words; a child that did not answer is the runtime's" do
     for {result, content, kind} <- [
           {{:ok, "the answer"}, "the answer", :agent},
-          {{:ok, ""}, "Child agent kid finished its turn without producing any text.", :notice},
-          {{:failed, :boom}, "Child agent kid failed before it answered: :boom", :notice},
+          {{:ok, ""}, "Child agent kid finished its turn without producing any text.", :runtime},
+          {{:failed, :boom}, "Child agent kid failed before it answered: :boom", :runtime},
           {{:terminated, :shutdown}, "Child agent kid was stopped before it answered: :shutdown",
-           :notice}
+           :runtime}
         ] do
       assert SubAgentResults.child_message("kid", result) == {content, kind}
     end

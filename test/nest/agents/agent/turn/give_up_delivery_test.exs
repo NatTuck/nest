@@ -12,12 +12,46 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
   import ExUnit.CaptureLog
   import Mimic
 
+  alias Nest.AddressTestHelpers
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Turn.GiveUpDelivery
   alias Nest.Agents.AgentTestHelpers
 
   setup :verify_on_exit!
+
+  test "a human requester gets a row, not a refusal: there is no process to find" do
+    # A human has no process and no inbox, so the give-up is a `user_notes` row —
+    # `from_kind: :runtime` with the agent that did not answer as its
+    # `from_name`. The header still reads `[From nest runtime]` (the kind says
+    # the runtime spoke) and the feed can group the give-up by that agent.
+    {:ok, space_id} = AgentTestHelpers.create_test_space()
+    AddressTestHelpers.human("alice")
+    Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.space_topic(space_id))
+
+    # A human is never resolved as a process: a lookup here would be the
+    # agent-shaped assumption leaking, and it would refuse a requester that
+    # exists.
+    Mimic.stub(Nest.Agents.Supervisor, :get_running_agent, fn _space, _sender ->
+      flunk("a human requester has no process to resolve")
+    end)
+
+    giver = giver(space_id)
+
+    assert :ok = GiveUpDelivery.deliver(giver, ["@alice"], :no_reminder)
+
+    assert [note] = Nest.Notes.list_for(space_id, {:user, "alice"})
+    assert note.from_kind == :runtime
+    assert note.from_name == giver.name
+    assert {note.to_kind, note.to_name} == {:user, "alice"}
+    assert note.kind == :runtime
+    assert note.content =~ giver.name
+    assert note.content =~ "did not reply"
+
+    assert_receive {:user_note, %{id: id}}, 500
+    assert id == note.id
+  end
 
   test "a requester whose inbox is full is reported, and the debt is discharged anyway" do
     {peer_pid, peer_name} =

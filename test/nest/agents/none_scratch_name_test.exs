@@ -132,7 +132,7 @@ defmodule Nest.Agents.NoneScratchNameTest do
                  vocation_id: AgentTestHelpers.vocation_id_for_test()
                )
 
-      assert {"must contain only letters, digits, `_` and `-`", _meta} =
+      assert {"must contain only lowercase letters, digits, `_` and `-`", _meta} =
                changeset.errors[:name]
     end
 

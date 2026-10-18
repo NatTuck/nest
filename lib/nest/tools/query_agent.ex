@@ -7,7 +7,7 @@ defmodule Nest.Tools.QueryAgent do
 
   The `function` here is a stub: real execution lives in
   `Nest.Agents.Agent.ToolLoop.run_query_agent/2`, which delivers the
-  message to the target via `Agent.deliver_message/4` and reports the
+  message to the target via `Agent.deliver_note/4` and reports the
   delivery disposition. Nothing waits: the target owes the caller a
   reply, and that reply arrives later as an ordinary message in the
   caller's inbox — or, if the target never answers, as a runtime notice
@@ -42,7 +42,9 @@ defmodule Nest.Tools.QueryAgent do
         "properties" => %{
           "name" => %{
             "type" => "string",
-            "description" => "The name of the agent to query."
+            "description" =>
+              "The name of the agent to query, or `@<username>` to address a human " <>
+                "in this space (a human's address needs the `@`; a bare name is an agent's)."
           },
           "prompt" => %{
             "type" => "string",

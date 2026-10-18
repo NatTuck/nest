@@ -181,7 +181,7 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   # carries (`:agent` for `agents-send`, `:query` for `agents-query`).
   #
   # The two harnesses install one stub over the one function both tools reach —
-  # `Nest.Agents.send_message/6` (the mode rides the message, so there is no
+  # `Nest.Agents.send_note/6` (the mode rides the message, so there is no
   # longer a four-arity and a five-arity clause to keep them apart) — and each
   # arms the park for its own `kind`. A test that parks both an `agents-send`
   # and an `agents-query` therefore gets both parks, instead of the second
@@ -191,7 +191,7 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   @park_config_key :nest_agent_send_park_config
 
   @doc """
-  Park the tool worker inside `Nest.Agents.send_message/6` — the `agents-send`
+  Park the tool worker inside `Nest.Agents.send_note/6` — the `agents-send`
   entry point — so the test decides when the batch's call reaches its target.
 
   The worker always parks *before* the real delivery: it sends
@@ -214,7 +214,7 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   end
 
   @doc """
-  Park the tool worker inside `Nest.Agents.send_message/6` — the `agents-query`
+  Park the tool worker inside `Nest.Agents.send_note/6` — the `agents-query`
   entry point — so the test decides when the batch's query reaches its target
   and when the batch returns.
 
@@ -253,7 +253,7 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
 
     Process.put(@park_config_key, config)
 
-    Mimic.stub(Nest.Agents, :send_message, fn space_id, from, target, content, call_kind, mode ->
+    Mimic.stub(Nest.Agents, :send_note, fn space_id, from, target, content, call_kind, mode ->
       deliver_parked(test_pid, config, call_kind, [
         space_id,
         from,
@@ -272,7 +272,7 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   # `Mimic.call_original/3`.
   defp deliver_parked(test_pid, config, call_kind, args) do
     case Map.get(config, call_kind) do
-      nil -> Mimic.call_original(Nest.Agents, :send_message, args)
+      nil -> Mimic.call_original(Nest.Agents, :send_note, args)
       park -> park_around(test_pid, park, args)
     end
   end
@@ -282,7 +282,7 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   # message's turn runs.
   defp park_around(test_pid, park, args) do
     park(test_pid, park.blocked, park.release)
-    result = Mimic.call_original(Nest.Agents, :send_message, args)
+    result = Mimic.call_original(Nest.Agents, :send_note, args)
 
     if park.hold do
       park(test_pid, park.delivered, :release_result)

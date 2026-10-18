@@ -100,7 +100,7 @@ defmodule Nest.Agents.Agent.InboxDeltaTest do
     {pid, _name} = AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus"}})
     TimelineTestHelpers.set_status(pid, :streaming)
 
-    assert {:ok, :queued} = Agent.deliver_message(pid, "peer", "queued")
+    assert {:ok, :queued} = Agent.deliver_note(pid, "peer", "queued")
     assert_receive {:chat_inbox, %{op: "append", count: 1, inboxSeq: seq}}, 1_000
 
     info = Agent.get_public_info(pid, 1_000)

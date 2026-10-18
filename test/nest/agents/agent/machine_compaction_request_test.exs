@@ -284,8 +284,11 @@ defmodule MachineCompactionRequestTest do
       assert Enum.any?(actions, &match?({:append, {:tool, _}}, &1))
 
       refute Enum.any?(actions, fn
-               {:append, {:user, %{parts: [%Part.Text{text: text}]}}} -> text =~ "[mode: compact]"
-               _ -> false
+               {:append, {:user, %{parts: [%Part.Text{text: text}]}}} ->
+                 text =~ "[From nest runtime | mode: compact]"
+
+               _ ->
+                 false
              end)
 
       notice =

@@ -91,6 +91,35 @@ match, and common sense domain correctness.
   - `capture_io` *is* process-scoped (it swaps the calling process's group
     leader), so `capture_io` is fine for both presence and absence assertions.
 - Sleeps in tests are strictly disallowed.
+- **An assertion must be able to fail.** The most expensive test defect is not a
+  flake — it is an assertion that passes whether or not the code is correct,
+  because it reads as coverage and is silent. The usual cause is a *proxy*:
+  something convenient to observe that is correlated with the behaviour when the
+  code is right, and equally true when it is wrong. Ask of every assertion:
+  **"what would this look like if the code were wrong?"** If the answer is "the
+  same", it is not a test. Then ask **"what is the earliest event only the
+  correct implementation produces?"** — that is the barrier, and it is almost
+  always an *event* rather than a state, because state gets normalised by
+  teardown and events do not. Four shapes this has actually taken:
+  - **A post-condition that cleanup normalises.** `refute SpaceGate.held?(id)`
+    after a call whose `after` releases the latch: `false` either way, so the
+    assertion tests the teardown. The event (`{:space_locked, id}`, broadcast
+    before `hold/3` returns) is the observable.
+  - **A timeout used as a barrier.** `refute Task.yield(task, 50)` proves "not
+    yet", not "blocked" — on a loaded host the *un-gated* path also fails to
+    finish in 50 ms, so the test passes with the gate deleted. A timeout
+    measures the machine; only an event measures the code.
+  - **A barrier upstream of the claim.** `assert_receive {:started, pid}` proves
+    the task was *scheduled*, not that it reached the gate, which leaves the rest
+    of the distance to a clock.
+  - **Asserting the return value of a behaviour that also has a side effect.**
+    A "refuses" path that returns the right error *after* quiescing every tool
+    and stopping every job passes a return-value assertion. For a refusal, the
+    interesting claim is usually that nothing happened.
+  - **A fixture that silently produces a degenerate instance.** A `start_job`
+    helper that staged the script but passed the stage *directory* made every
+    "real background job" exit 126 immediately; `jobs == 1` still held, so every
+    test above it was vacuous.
 - Timeouts in tests should be as low as possible. Typically 50ms, absolutely
 no more than 500ms unless there are comments describing the concrete timings
 (with real, measured numbers) and a clear justification.

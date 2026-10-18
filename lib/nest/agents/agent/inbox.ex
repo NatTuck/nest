@@ -5,7 +5,7 @@ defmodule Nest.Agents.Agent.Inbox do
   Three producers queue here:
 
     * an `agents-send` tool call from another agent
-      (`Agent.deliver_message/4` → `handle_delivery/4`), recorded with
+      (`Agent.deliver_note/4` → `handle_delivery/4`), recorded with
       `kind: :agent`,
     * a human chat message that arrived while the agent was busy
       (`Agent.chat/5` → `Callbacks.chat_or_queue/5` →
@@ -14,8 +14,8 @@ defmodule Nest.Agents.Agent.Inbox do
       (`enqueue_internal/4`, W2's async spawn/batch completion).
 
   An entry is `%{id, from, content, timestamp, kind, mode, human?, fulfilled_ids}`.
-  `content` is stored **verbatim** (no `[mode: ...]` prefix — that
-  is added when the entry is delivered), `mode` is the mode the entry asks the
+  `content` is stored **verbatim** (no header — that is added when the entry
+  is delivered), `mode` is the mode the entry asks the
   recipient to run under — a human's own, or a peer's `set_mode` — and is `nil`
   for an entry that asks for no change, and the producer-supplied fields are
   `human?` (the human's own words) and `fulfilled_ids` (the tool-call ids a
@@ -26,15 +26,16 @@ defmodule Nest.Agents.Agent.Inbox do
   `kind` is the *provenance* of an entry, and the delivery path is the
   same for every one of them:
 
-    * `:agent` — a peer's words, delivered as `[Message from agent "X"]`.
+    * `:agent` — a peer's words, delivered behind `[From agent X | mode: M]`.
     * `:query` — `agents-query`: the same peer framing (the requester is an
-      agent, so the target reads it as one), plus a **reply obligation** on
-      the target (`Machine.owe_replies/2`, set at delivery).
-    * `:notice` — the runtime speaking for itself, not an agent's words
-      (issue #31 decision 9). It is rendered **bare**, never under a
-      `[Message from agent …]` label, because no agent said it.
-    * `:user` — a human's words, rendered bare (its `[mode: X]` prefix is
-      added when the message is built).
+      agent, so the target reads it as one) plus `, agents-send reply required`
+      in the header, and a **reply obligation** on the target
+      (`Machine.owe_replies/2`, set at delivery).
+    * `:runtime` — the runtime speaking for itself, not an agent's words
+      (issue #31 decision 9). It says `[From nest runtime | mode: M]` whatever
+      agent it is *about*, because no agent said it.
+    * `:user` — a human's words, rendered behind `[From user | mode: X]`
+      (its header is added when the message is built).
 
   ## Disposition
 
@@ -46,8 +47,8 @@ defmodule Nest.Agents.Agent.Inbox do
       the message is queued on `state.live.inbox`. A target executing a tool
       batch is the one exception (issue #36): the batch is moved to the
       background, the message is delivered immediately, and the batch's own
-      result arrives later as a `:notice`. That deferral is armed from the
-      batch's own side too (`Machine.Backgrounding.deferred_actions/1`): a
+      result arrives later as a `:runtime` entry. That deferral is armed from
+      the batch's own side too (`Machine.Backgrounding.deferred_actions/1`): a
       batch that *starts* while messages are queued backgrounds itself and
       delivers them (issue #103), so a message that arrived while the model was
       still streaming the response asking for the batch is not left waiting for
@@ -66,16 +67,20 @@ defmodule Nest.Agents.Agent.Inbox do
 
   ## Delivery
 
-  `batch/1` selects what a drain delivers: a human message at the FIFO head is
+  `batch/1` selects what a drain delivers: a human's words at the FIFO head are
   delivered **alone**, a run of leading non-human entries is delivered as one
-  batch. `Nest.Agents.Agent.Inbox.Render` then renders the batch: a human entry
-  is its bare content (so a queued human message reads exactly like one that
-  arrived while the agent was idle, and its own `[mode: X]` prefix is added
-  when the message is built), a `:notice` is bare because the runtime — not an
-  agent — said it, while each `:agent`/`:query` entry keeps
-  `[Message from agent "<from>"]` — that label is what disambiguates a batch of
-  peer messages — and an unknown sender (`nil`) drops the quoted name rather
-  than putting `nil` in the prompt.
+  batch. A human's words are a `:user` entry *or* a note whose sender is a human
+  address (`"@nat"`, `Nest.Address`) whatever its kind — a human's query is a
+  `:query` entry, and it keeps its own turn boundary like any other human
+  message. `Nest.Agents.Agent.Inbox.Render` then renders the batch: a human entry
+  is its content behind `[From user @nat | mode: X]` — the human's own words, and
+  the address a reply goes to, so a queued human message reads exactly like one
+  that arrived while the agent was idle (or a note delivered from `@nat`) — a
+  `:runtime` entry says `nest runtime` because the runtime — not an agent — said
+  it, and each `:agent`/`:query` entry names its sender — which is what
+  disambiguates a batch of peer messages. An unknown sender (`nil`) still says
+  `agent` rather than putting `nil` in the prompt, and a human whose name the
+  producer did not have says `user`.
   A batch over `Nest.Agents.Agent.Config.configured_async_message_max_tokens/0`
   is written to the agent's scratch dir and replaced by a short pointer telling
   the agent how many messages there were and where to read them.
@@ -159,7 +164,7 @@ defmodule Nest.Agents.Agent.Inbox do
   # an `:inbox_full` error and nothing is queued.
   @max_inbox_size 100
 
-  @type kind :: :agent | :user | :query | :notice
+  @type kind :: :agent | :user | :query | :runtime
 
   @type entry :: %{
           id: String.t(),
@@ -189,8 +194,8 @@ defmodule Nest.Agents.Agent.Inbox do
   defp backgroundable?(status), do: status in @backgroundable_statuses
 
   @doc """
-  `handle_call/3` body for `Agent.deliver_message/4` (the `agents-send` and
-  `agents-query` paths, and the runtime's own `:notice`).
+  `handle_call/3` body for `Agent.deliver_note/4` (the `agents-send` and
+  `agents-query` paths, and the runtime's own `:runtime`).
 
   `kind` is the entry's provenance (`t:kind/0`); it is stored on the entry
   and decides only how the entry renders. The disposition is the same for
@@ -381,8 +386,10 @@ defmodule Nest.Agents.Agent.Inbox do
   """
   @spec enqueue_internal(Agent.t(), String.t() | nil, String.t(), kind(), [String.t()]) ::
           Agent.t()
+  # Guards `enqueue_internal`'s producers only: `handle_delivery/5` and
+  # `deliver_internal/4` take a `kind()` and validate nothing.
   def enqueue_internal(state, from, content, kind, fulfilled_ids \\ [])
-      when kind in [:agent, :user, :query, :notice] do
+      when kind in [:agent, :user, :query, :runtime] do
     {state, entry} =
       state
       |> satisfy_watch(from, kind)
@@ -399,20 +406,20 @@ defmodule Nest.Agents.Agent.Inbox do
   end
 
   @doc """
-  Queue a backgrounded batch's outcome as a runtime `:notice` (issue #36).
+  Queue a backgrounded batch's outcome as a `:runtime` entry (issue #36).
 
   The notice's wording is `Turn.Backgrounded`'s (it keys off the outcome and the
   command's own timeout marker); `Inbox` owns the entry and the enqueue. Nothing
-  says it: no agent did this, so the entry renders bare (`kind: :notice`).
+  says it: no agent did this, so the entry renders bare (`kind: :runtime`).
 
   `fulfilled_ids` is the delivery's own — the tool-call ids the notice answers
   or closes (`Backgrounding.fulfilled_ids/1` for a result,
   `Backgrounding.ids_for/2` for a worker's death). It rides the entry onto the
   message the drain appends (`build_drained_message/3`).
   """
-  @spec deliver_notice(Agent.t(), term(), [String.t()]) :: Agent.t()
-  def deliver_notice(state, outcome, fulfilled_ids) do
-    enqueue_internal(state, nil, Backgrounded.notice(outcome), :notice, fulfilled_ids)
+  @spec enqueue_runtime(Agent.t(), term(), [String.t()]) :: Agent.t()
+  def enqueue_runtime(state, outcome, fulfilled_ids) do
+    enqueue_internal(state, nil, Backgrounded.notice(outcome), :runtime, fulfilled_ids)
   end
 
   @doc """
@@ -464,7 +471,7 @@ defmodule Nest.Agents.Agent.Inbox do
   @doc """
   JSON-safe view of the queued entries, for the wire (channel/status)
   and tests. `"kind"` is one of `"agent"`, `"user"`, `"query"`,
-  `"notice"`; `"mode"` is a string or `nil`; `"id"` is the delivery id
+  `"runtime"`; `"mode"` is a string or `nil`; `"id"` is the delivery id
   (issue #62); `"human"` is `true` only for a prompt the human typed.
 
   `"human"` is not derivable from `"kind"`: an `agents-spawn` `query`
@@ -514,16 +521,30 @@ defmodule Nest.Agents.Agent.Inbox do
   still batches: a run of leading non-human entries is delivered as one
   message. The selection never reorders anything; it only takes a prefix.
 
+  **The rule is about human words, not about the kind.** A `kind: :user` entry
+  is a human's own prompt — and also an `agents-spawn` `query` kickoff, which is
+  why the kind alone is not the whole rule. A note whose *sender* is a human
+  (`"@nat"`, `Nest.Address`) is a human's words whatever its kind: a human's
+  query to an agent is a `:query` entry, and merging it into a batch of peer
+  traffic would lose the one thing the rule exists to preserve — its own turn
+  boundary and its own mode.
+
   Total over any entry *kind* on purpose: a future kind must not be able to
-  crash the drain inside the Agent process, so anything that is not a human
-  message batches exactly like a peer message does today — `:agent`, `:query`
-  and `:notice` entries all take the second clause. An entry map with no
-  `:kind` key raises rather than batching: that is the entry contract
-  (`put_entry/7` always sets it), not a shape the drain has to tolerate.
+  crash the drain inside the Agent process, so anything that is not a human's
+  batches exactly like a peer message does today — `:agent`, `:query` and
+  `:runtime` entries all take the run clause. An entry map with no `:kind` key
+  raises rather than batching: that is the entry contract (`put_entry/7` always
+  sets it), not a shape the drain has to tolerate.
   """
   @spec batch([entry()]) :: [entry()]
-  def batch([%{kind: :user} = head | _rest]), do: [head]
-  def batch(entries), do: Enum.take_while(entries, &(&1.kind != :user))
+  def batch([]), do: []
+
+  def batch([head | _rest] = entries) do
+    if human_note?(head), do: [head], else: Enum.take_while(entries, &(not human_note?(&1)))
+  end
+
+  defp human_note?(%{kind: :user}), do: true
+  defp human_note?(%{kind: _kind} = entry), do: Nest.Address.user?(Map.get(entry, :from))
 
   # The delivery-id and consume API lives in `Delivery` (issue #62); these
   # delegates keep `Inbox` the one public surface for a queued entry.

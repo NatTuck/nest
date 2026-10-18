@@ -229,6 +229,26 @@ describe("CollapsedHistory", () => {
       expect(bubble.textContent).toContain("Hello there");
     });
 
+    it("strips the header from an archived user message, matching its mode", () => {
+      // Every user-role row states its sender and the recipient's mode in a
+      // header (`Nest.Messages.Header`). Archived (post-compaction) rows carry
+      // the same wire form, so the history view strips it on render — and only
+      // when the clause agrees with the row's own `mode`.
+      const history = buildHistory([
+        {
+          role: "user",
+          parts: [
+            { kind: "text", text: "[From user | mode: act]\nHello there" },
+          ],
+          mode: "act",
+        },
+      ]);
+      render(<CollapsedHistory history={history} />);
+      const bubble = screen.getByTestId("history-message");
+      expect(bubble.textContent).toContain("Hello there");
+      expect(bubble.textContent).not.toContain("[From user");
+    });
+
     it("strips the [mode: X]\\n prefix from archived user messages", () => {
       // Server-side ChatPipeline.build_user_messages/3
       // intentionally prefixes every persisted user message

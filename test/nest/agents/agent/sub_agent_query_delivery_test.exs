@@ -68,7 +68,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
   test "an answer arriving after the batch leaves the inline confirmation", %{vid: vid} do
     {coordinator_pid, coordinator_name, specialist_pid, specialist_name} = start_pair(vid)
 
-    # The peer's answer is parked inside `Nest.Agents.send_message/6` before it
+    # The peer's answer is parked inside `Nest.Agents.send_note/6` before it
     # reaches the coordinator, so it cannot land while the batch below is
     # executing. That gate is the whole difference between the two outcomes, and
     # the test owns it.
@@ -76,7 +76,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
 
     script_coordinator(specialist_name)
 
-    :ok = Agent.chat(coordinator_pid, "ask the specialist")
+    :ok = Agent.chat(coordinator_pid, "ask the specialist", nil, nil, true)
 
     # The peer's turn reached the `agents-send` that answers the query and is
     # held there: the query has been delivered, and the answer is still unsent.
@@ -104,12 +104,10 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # is also what keeps the answer's frame below unambiguous, since the two
     # deliveries differ only in their sender and a `chat:message` frame carries
     # no agent identity.
-    assert_receive {:chat_message,
-                    {:user,
-                     %{parts: [%Part.Text{text: "[mode: act]\n[Message from agent \"" <> rest}]}}},
+    assert_receive {:chat_message, {:user, %{parts: [%Part.Text{text: "[From agent " <> rest}]}}},
                    1_000
 
-    assert rest == "#{coordinator_name}\" | mode: act]\nwhat is 2+2?"
+    assert rest == "#{coordinator_name}, agents-send reply required | mode: act]\nwhat is 2+2?"
 
     # ...and its answer, released only now, arrives as a message in the
     # coordinator's inbox — the delivery appends it inside the call, so the
@@ -119,9 +117,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # see the invariant on `AgentTurnTestHelpers.park/3`.
     send(sender, :release_send)
 
-    assert_receive {:chat_message,
-                    {:user,
-                     %{parts: [%Part.Text{text: "[mode: act]\n[Message from agent \"" <> _}]}}},
+    assert_receive {:chat_message, {:user, %{parts: [%Part.Text{text: "[From agent " <> _}]}}},
                    1_000
 
     assert Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "the specialist answer"))
@@ -172,7 +168,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
 
     script_coordinator(specialist_name)
 
-    :ok = Agent.chat(coordinator_pid, "ask the specialist")
+    :ok = Agent.chat(coordinator_pid, "ask the specialist", nil, nil, true)
 
     # The batch reached the tool worker, parked before its query.
     assert_receive {:query_blocked, batch}, 1_000
@@ -194,12 +190,10 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # Consuming it here keeps the answer's frame below unambiguous: the two
     # deliveries differ only in their sender, and a `chat:message` frame carries
     # no agent identity.
-    assert_receive {:chat_message,
-                    {:user,
-                     %{parts: [%Part.Text{text: "[mode: act]\n[Message from agent \"" <> rest}]}}},
+    assert_receive {:chat_message, {:user, %{parts: [%Part.Text{text: "[From agent " <> rest}]}}},
                    1_000
 
-    assert rest == "#{coordinator_name}\" | mode: act]\nwhat is 2+2?"
+    assert rest == "#{coordinator_name}, agents-send reply required | mode: act]\nwhat is 2+2?"
 
     assert Agent.get_public_info(coordinator_pid, 1_000).status == :executing_tools
 
@@ -233,17 +227,15 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # The answer arrives as a message in the coordinator's inbox — appended
     # inside the delivery call, so the coordinator's own `{:user, …}` broadcast
     # is the fence...
-    assert_receive {:chat_message,
-                    {:user,
-                     %{parts: [%Part.Text{text: "[mode: act]\n[Message from agent \"" <> _}]}}},
+    assert_receive {:chat_message, {:user, %{parts: [%Part.Text{text: "[From agent " <> _}]}}},
                    1_000
 
     assert Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "the specialist answer"))
 
     # The batch returns with no live worker to settle it, so its *real* result
     # arrives as a notice — which is where the confirmation the delivery
-    # produced shows up. A notice renders bare (no `[Message from agent …]`
-    # label), so the coordinator's own broadcast of it is the fence. Decisive
+    # produced shows up. A notice renders behind the runtime's header (never an
+    # agent's), so the coordinator's own broadcast of it is the fence. Decisive
     # park's release: between the hold and this line only the batch's own result
     # and the peer's turn are waited on (two fences); everything after the
     # delivery handshake is already true, so the 3 s valve cannot fire first —
@@ -261,7 +253,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
                      %{
                        parts: [
                          %Part.Text{
-                           text: "[mode: act]\n[nest notice]\nYour backgrounded command" <> _
+                           text: "[From nest runtime | mode: act]\nYour backgrounded command" <> _
                          }
                        ]
                      }}},

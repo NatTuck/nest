@@ -35,14 +35,14 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
     :ok
   end
 
-  describe "Repair.classify_load/1" do
+  describe "Repair.classify_load/2" do
     test "bridges a valid slice ending on a user role and leaves the rest unchanged" do
-      assert {:bridge, [ack]} = Repair.classify_load([system(0), user(1, "hi")])
+      assert {:bridge, [ack]} = Repair.classify_load([system(0), user(1, "hi")], "act")
       assert {:assistant, %Assistant{parts: [%Part.Text{text: text}]}} = ack
       assert text =~ "interrupted"
 
-      assert :ok = Repair.classify_load([system(0), user(1, "hi"), assistant_text(2)])
-      assert :ok = Repair.classify_load([])
+      assert :ok = Repair.classify_load([system(0), user(1, "hi"), assistant_text(2)], "act")
+      assert :ok = Repair.classify_load([], "act")
     end
 
     test "records a restored backgrounded promise as lost, once" do
@@ -59,7 +59,7 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
         assistant_text(4)
       ]
 
-      assert {:lost_promises, [notice, ack]} = Repair.classify_load(tail)
+      assert {:lost_promises, [notice, ack]} = Repair.classify_load(tail, "act")
 
       assert {:user, %User{parts: [%Part.Text{text: notice_text}]}} = notice
       assert notice_text =~ "lost when this agent restarted"
@@ -74,16 +74,26 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
       # The record names the ids it voids, so re-classifying the healed tail
       # finds nothing left to record — `Init.LoadHeal.refresh/1` re-classifies
       # before appending, and a second record would repeat the same words.
-      assert :ok = Repair.classify_load(tail ++ [notice, ack])
+      assert :ok = Repair.classify_load(tail ++ [notice, ack], "act")
 
-      # A `user` tail is covered by the same record (it lands as a lone
-      # assistant, so the bridge is not needed): the model's last word is not
-      # left waiting on a promise either way.
+      # A `user` tail is covered by the same record, which opens with the
+      # alternation bridge there (the notice is a user row): the model's last
+      # word is not left waiting on a promise either way.
       user_tail = tail ++ [user(5, "and then?")]
-      assert {:lost_promises, [record]} = Repair.classify_load(user_tail)
-      assert {:assistant, %Assistant{parts: [%Part.Text{text: text}]}} = record
+      assert {:lost_promises, record} = Repair.classify_load(user_tail, "act")
+
+      # `tag_lost_promises/2` marks every assistant row in the record, so with
+      # the bridge shape both of them name the ids. `promise_ids/2` reads them
+      # into a set, so what the next classification sees — and the idempotency
+      # below — is unchanged.
+      assert [
+               {:assistant, %Assistant{metadata: %{"backgrounded_lost_ids" => ["call_1"]}}},
+               {:user, %User{parts: [%Part.Text{text: text}]}},
+               {:assistant, %Assistant{metadata: %{"backgrounded_lost_ids" => ["call_1"]}}}
+             ] = record
+
       assert text =~ "lost when this agent restarted"
-      assert :ok = Repair.classify_load(user_tail ++ [record])
+      assert :ok = Repair.classify_load(user_tail ++ record, "act")
 
       # Two promises in one transcript: the record counts the *calls*, not the
       # result messages that carried them.
@@ -96,7 +106,7 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
       ]
 
       assert {:lost_promises, [{:user, %User{parts: [%Part.Text{text: two_text}]}}, _]} =
-               Repair.classify_load(two)
+               Repair.classify_load(two, "act")
 
       assert two_text =~ "The 2 backgrounded tool calls were lost"
     end
@@ -119,7 +129,7 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
         assistant_tool(6, "call_2")
       ]
 
-      assert {:lost_promises, heal} = Repair.classify_load(active)
+      assert {:lost_promises, heal} = Repair.classify_load(active, "act")
 
       assert [
                {:tool, %Tool{parts: [%Part.ToolResult{tool_call_id: "call_2", is_error: true}]}},
@@ -132,7 +142,7 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
 
       # The healed tail classifies clean: the orphan is answered and the promise
       # is named, so a second load appends nothing.
-      assert :ok = Repair.classify_load(active ++ heal)
+      assert :ok = Repair.classify_load(active ++ heal, "act")
     end
   end
 
@@ -319,7 +329,7 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
 
       log =
         capture_log(fn ->
-          {:bridge, [ack]} = Repair.classify_load(initial)
+          {:bridge, [ack]} = Repair.classify_load(initial, "act")
           healed = Init.LoadHeal.heal(state, {:bridge, [ack]})
 
           assert {:assistant, %Assistant{parts: [%Part.Text{text: text}]}} =
@@ -356,7 +366,7 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
 
       log =
         capture_log(fn ->
-          assert {:lost_promises, record} = Repair.classify_load(initial)
+          assert {:lost_promises, record} = Repair.classify_load(initial, "act")
           healed = Init.LoadHeal.heal(state, {:lost_promises, record})
 
           # The promise is answered in the transcript: the model reads that the
@@ -393,7 +403,7 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
       # index plus `insert_message/3`'s `on_conflict: :nothing` drops the
       # loser's row, so the persisted sequence keeps one heal row and
       # neither caller holds a row the DB does not have.
-      {:bridge, [ack]} = Repair.classify_load(initial)
+      {:bridge, [ack]} = Repair.classify_load(initial, "act")
       state_a = load_state(name, space_id, initial)
       state_b = load_state(name, space_id, initial)
 

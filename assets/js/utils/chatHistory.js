@@ -26,8 +26,7 @@
  */
 
 import { messageText } from "./messageText.js";
-import { stripModePrefix } from "./stripModePrefix.js";
-import { stripNoticePrefix } from "./stripNoticePrefix.js";
+import { stripHeader } from "./stripHeader.js";
 
 // The `metadata.origin` value the server stamps on the human's own message.
 const HUMAN_ORIGIN = "human";
@@ -45,7 +44,7 @@ function toHistoryEntry(message) {
   if (!raw) return null;
 
   return {
-    content: stripNoticePrefix(stripModePrefix(raw, message.mode ?? "")),
+    content: stripHeader(raw, message.mode ?? ""),
     mode: message.mode ?? null,
   };
 }

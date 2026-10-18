@@ -7,7 +7,7 @@
  */
 
 import { splitThinkFromParts } from "./thinkTags.js";
-import { stripNoticePrefix } from "./stripNoticePrefix.js";
+import { stripHeader } from "./stripHeader.js";
 
 // Concatenate the thinking content for an assistant message:
 // both `Part.Thinking` entries AND any `<!--think...-->` blocks buried
@@ -31,22 +31,26 @@ export function thinkingFor(message) {
 // caller wraps the text in a single Part.Text (with the mode prefix
 // stripped), so this is only used for non-user rows.
 //
-// A synthetic runtime notice renders into an assistant row too: the fused
-// `assistant(notice + ack)` shape puts the `[nest notice]` marker at the head
-// of the row's text (`Nest.Agents.Agent.NoticePairInjector`). The marker is
-// stripped from the first text part here — the same render-time removal
-// `stripModePrefix` performs for a user row's `[mode: X]` prefix — so the
-// operator sees the notice, not the wire framing. Only the first text part is
-// touched: the marker is always at the head of the row, never mid-text.
+// A non-user row can still carry wire framing: a transcript recorded before
+// the `[From … | mode: …]` header has the retired `[nest notice]` marker at the
+// head of a runtime notice's text (and a fused `assistant(notice + ack)` row
+// puts it at the head of an assistant row). The framing is stripped from the
+// first text part here — the same render-time removal `stripHeader` performs
+// for a user row — so the operator sees the words, not the wire. Only the first
+// text part is touched: a header or a marker always heads a body, never
+// mid-text.
 export function textPartsFor(message) {
-  return stripNoticeFromParts(splitThinkFromParts(message?.parts).textParts);
+  return stripHeaderFromParts(
+    splitThinkFromParts(message?.parts).textParts,
+    message,
+  );
 }
 
-function stripNoticeFromParts(parts) {
+function stripHeaderFromParts(parts, message) {
   const index = parts.findIndex((part) => part?.kind === "text");
   if (index === -1) return parts;
 
-  const stripped = stripNoticePrefix(parts[index].text);
+  const stripped = stripHeader(parts[index].text, message?.mode);
   if (stripped === parts[index].text) return parts;
 
   const next = parts.slice();

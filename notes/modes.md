@@ -28,21 +28,31 @@ messages (below).
 
 ## How an agent learns its own mode
 
-Every message an agent receives states **the recipient's** mode:
+Every **user-role** row an agent receives states **the recipient's** mode in its
+header (`Nest.Messages.Header`):
 
-* a user message as a `[mode: <mode>]\n` prefix;
-* a message from another agent in its header,
-  `[Message from agent "NAME" | mode: <mode>]\n`.
+```
+[From user | mode: act]
+[From agent crazy-dolphin | mode: plan]
+[From nest runtime | mode: act]
+```
 
-Both are the mode *at delivery* — the mode the turn will run in — not the
-sender's, and not a request to change anything. That is the only mechanism by
-which an agent whose inbox is all peer traffic learns its own mode.
+A `:query` note adds `, agents-send reply required` after the sender — it is the
+one kind that obliges an answer — and the runtime's compaction request states
+`mode: compact`. The mode is the mode *at delivery* — the mode the turn will run
+in — not the sender's, and not a request to change anything. That is the only
+mechanism by which an agent whose inbox is all peer traffic learns its own mode.
 
-The UI drops the header's copy from the display when it agrees with the row's
-`mode` badge (which shows the same value), exactly as it drops the `[mode: X]`
-prefix; a header that *disagrees* keeps its text, so a disagreement stays visible
-rather than being silently resolved either way
-(`assets/js/utils/agentHeader.js`).
+A drained batch is one user row holding several entries, so it has no outer
+header: each entry's body carries its own. A single-sender row states it once.
+
+The UI drops the header from the display when its mode clause agrees with the
+row's `mode` badge (which shows the same value); a header that *disagrees* keeps
+its text, so a disagreement stays visible rather than being silently resolved
+either way (`assets/js/utils/stripHeader.js`, which also still removes the
+`[mode: X]` prefix and `[nest notice]` marker from rows recorded before the
+header, and `assets/js/utils/agentHeader.js` for the old
+`[Message from agent "NAME" | mode: X]` label).
 
 ## How a mode changes
 
@@ -65,13 +75,12 @@ rather than being silently resolved either way
   message already states the recipient's mode, so a notice would duplicate it.
   The mode is written down (`agents.mode`, by `Turn.keep_mode/2`) and that is
   all.
-* **Stated twice on the wire, once in the UI — deliberately.** A peer delivery
-  carries the recipient's mode in *both* the user-role row's `[mode: X]` prefix
-  and the `[Message from agent … | mode: M]` header. That is not redundancy to be
-  tidied away: the prefix is what the runtime's mode machinery reads and the
-  header is what a reader sees, and the UI drops whichever copy agrees with the
-  row's badge so that a disagreement stays visible
-  (`assets/js/utils/agentHeader.js`).
+* **Stated once on the wire, once in the UI.** Every user-role row carries its
+  header's `mode:` clause, and the row's `metadata.mode` repeats it for the badge
+  and for the client's guard. The two are written from the same value in one
+  place (`Dispatch.build_user_message/3`), and the UI drops the header only when
+  the clause agrees with the badge, so a disagreement stays visible
+  (`assets/js/utils/stripHeader.js`).
 * **Never propagated.** A parent's own change does not touch existing
   descendants: the user flipping the root to `plan` for a planning discussion
   must not jam background workers that are mid-task in `act`.

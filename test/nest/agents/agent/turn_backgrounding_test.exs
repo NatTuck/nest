@@ -98,7 +98,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       MockClient.set_response("Done")
       MockClient.set_response("After the notes")
 
-      :ok = Agent.chat(pid, "queue some messages")
+      :ok = Agent.chat(pid, "queue some messages", nil, nil, true)
 
       {first, llm1} = next_request()
       assert Enum.any?(user_texts(first), &(&1 =~ "queue some messages"))
@@ -151,8 +151,8 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # has to say what happened to the call.
       assert ack =~ "running in the background"
 
-      first_header = "[Message from agent \"#{name}\" | mode: act]\nfirst"
-      assert delivered == "[mode: act]\n#{first_header}"
+      first_header = "[From agent #{name} | mode: act]\nfirst"
+      assert delivered == first_header
 
       # The request the delivered message rides in on: the synthetic result and
       # the message are already there, before the batch returned.
@@ -201,7 +201,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       tool_index = Enum.find_index(messages, &match?({:tool, _}, &1))
       ack_index = Enum.find_index(messages, &(text_of(&1) =~ "running in the background"))
-      drained_index = Enum.find_index(messages, &(text_of(&1) =~ "Message from agent"))
+      drained_index = Enum.find_index(messages, &(text_of(&1) =~ "From agent "))
       done_index = Enum.find_index(messages, &(text_of(&1) == "Done"))
       late_index = Enum.find_index(messages, &(text_of(&1) =~ "backgrounded command"))
       final_index = Enum.find_index(messages, &(text_of(&1) =~ "After the notes"))
@@ -227,7 +227,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # arrived after the batch left `:executing_tools` was queued behind it.
       late = text_of(Enum.at(messages, late_index))
 
-      assert late =~ "[Message from agent \"#{name}\" | mode: act]\nsecond"
+      assert late =~ "[From agent #{name} | mode: act]\nsecond"
       assert late =~ "Message delivered to #{name}"
       assert late =~ "Message queued for #{name} (busy)"
 
@@ -237,7 +237,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       assert {second_at, _} = :binary.match(late, "Message queued for")
       assert first_at < second_at
 
-      assert Enum.any?(user_texts(third), &(&1 =~ "Message from agent"))
+      assert Enum.any?(user_texts(third), &(&1 =~ "From agent "))
 
       AgentTestHelpers.assert_unique_message_indices(state.chat_state.messages)
     end
@@ -302,11 +302,12 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       assert Enum.map(state.chat_state.messages, &elem(&1, 0)) ==
                [:system, :user, :assistant, :tool, :assistant, :user]
 
-      assert text_of(Enum.at(state.chat_state.messages, 5)) == "[mode: plan]\nhuman note"
+      assert text_of(Enum.at(state.chat_state.messages, 5)) ==
+               "[From user @alice | mode: plan]\nhuman note"
 
       # It rides in on the next request, bare: no sender framing, so a queued
       # human message reads exactly like one typed while the agent was idle.
-      assert Enum.any?(user_texts(second), &(&1 == "[mode: plan]\nhuman note"))
+      assert Enum.any?(user_texts(second), &(&1 == "[From user @alice | mode: plan]\nhuman note"))
       refute Enum.any?(user_texts(second), &(&1 =~ "peer note"))
 
       # Releasing the batch runs its `agents-send` while this agent is
@@ -370,13 +371,14 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       assert [tool_index, ack_index, human_index, done_index, peer_index] ==
                Enum.to_list(tool_index..(final_index - 1))
 
-      assert text_of(Enum.at(messages, human_index)) == "[mode: plan]\nhuman note"
+      assert text_of(Enum.at(messages, human_index)) ==
+               "[From user @alice | mode: plan]\nhuman note"
 
       # The peer's entry arrives with the batch's late result, in one batch: its
       # label names the mode the drain applies (the human's `plan` — no entry here
       # asks for a change), and the late result reports the disposition.
       late = text_of(Enum.at(messages, peer_index))
-      assert late =~ "[Message from agent \"#{name}\" | mode: plan]\npeer note"
+      assert late =~ "[From agent #{name} | mode: plan]\npeer note"
       assert late =~ "Message queued for #{name} (busy)"
       assert Enum.any?(user_texts(third), &(&1 =~ "peer note"))
 
@@ -478,7 +480,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # transcript would still carry the synthetic `state: "backgrounded"` part
       # and the heal would claim the call was "lost when this agent restarted"
       # — a lie about a result that arrived.
-      assert Repair.classify_load(state.chat_state.messages) == :ok
+      assert Repair.classify_load(state.chat_state.messages, "act") == :ok
 
       {:ok, attrs} = Persistence.build_attrs_for_start(current_space_id(), name)
       assert attrs.load_heal == nil
@@ -530,7 +532,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # The aggregate is the disposition the coordinator relies on: `:delivered`
       # means it reached the transcript.
       assert {:ok, :delivered} =
-               Agent.deliver_internal(pid, "agents-batch", "the aggregate", :notice)
+               Agent.deliver_internal(pid, "agents-batch", "the aggregate", :runtime)
 
       # The turn that started is the notice's: its own request carries it.
       {notice_request, notice_llm} = next_request()
@@ -619,7 +621,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       # A human message backgrounds the batch, so it is *still running* — parked
       # inside its call — when the stop lands.
-      :ok = Agent.chat(pid, "human note")
+      :ok = Agent.chat(pid, "human note", nil, nil, true)
 
       # The delivered message's turn is in flight (its request is parked), so
       # nothing else will move the machine before the stop.
@@ -659,18 +661,18 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       assert state.live.machine.work.backgrounded == %{}
       assert state.live.inbox == []
 
-      # The record is one message: the tail was the delivered human message (a
-      # wire-user role), so the notice and its acknowledgement land together
-      # instead of forcing the appender's terminal bridge to fabricate an
-      # acknowledgement of its own.
-      assert Enum.map(state.chat_state.messages, &elem(&1, 0)) ==
-               [:system, :user, :assistant, :tool, :assistant, :user, :assistant]
+      # The record opens with the alternation bridge: the tail was the delivered
+      # human message (a wire-user role) and the notice is a user row, so the
+      # record is `assistant(bridge) → user(notice) → assistant(ack)`.
+      roles = Enum.map(state.chat_state.messages, &elem(&1, 0))
+      assert Enum.take(roles, 6) == [:system, :user, :assistant, :tool, :assistant, :user]
+      assert Enum.drop(roles, 6) == [:assistant, :user, :assistant]
 
-      cancelled = text_of(List.last(state.chat_state.messages))
+      assert [notice, ack] = Enum.take(state.chat_state.messages, -2)
 
-      assert cancelled =~ "cancelled when the conversation was stopped"
-      assert cancelled =~ "its result will not arrive"
-      assert cancelled =~ "I will not wait for it"
+      assert text_of(notice) =~ "cancelled when the conversation was stopped"
+      assert text_of(notice) =~ "its result will not arrive"
+      assert text_of(ack) =~ "I will not wait for it"
 
       # The batch's worker is dead, so its result cannot arrive — but a late one
       # must not deliver a second notice for a call the record already reported.

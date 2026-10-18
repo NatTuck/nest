@@ -63,7 +63,7 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       # Busy, so the delivery queues: the mode applies when the drain delivers
       # it, never when it is queued.
       set_status(pid, :streaming)
-      assert {:ok, :queued} = Agent.deliver_message(pid, "peer", "peer note", :agent, "plan")
+      assert {:ok, :queued} = Agent.deliver_note(pid, "peer", "peer note", :agent, "plan")
 
       Agent.stop_chat(pid, self())
       wait_idle(pid)
@@ -77,7 +77,7 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       assert state.live.mode == "plan"
 
       assert delivered(pid, "peer note") ==
-               ["[mode: plan]\n[Message from agent \"peer\" | mode: plan]\npeer note"]
+               ["[From agent peer | mode: plan]\npeer note"]
 
       # And the change is written down, so a restart restores it.
       assert {:ok, %{mode: "plan"}} = row_mode(name)
@@ -87,11 +87,11 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       {pid, name} = start()
       MockClient.set_response("ok")
 
-      assert {:ok, :delivered} = Agent.deliver_message(pid, "peer", "peer note", :agent, "plan")
+      assert {:ok, :delivered} = Agent.deliver_note(pid, "peer", "peer note", :agent, "plan")
       wait_idle(pid)
 
       assert delivered(pid, "peer note") ==
-               ["[mode: plan]\n[Message from agent \"peer\" | mode: plan]\npeer note"]
+               ["[From agent peer | mode: plan]\npeer note"]
 
       assert Agent.get_public_info(pid, 1_000).current_mode == "plan"
       assert {:ok, %{mode: "plan"}} = row_mode(name)
@@ -104,7 +104,7 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       MockClient.set_response("ok")
 
       set_status(pid, :streaming)
-      assert {:ok, :queued} = Agent.deliver_message(pid, "peer", "peer note", :agent, "plan")
+      assert {:ok, :queued} = Agent.deliver_note(pid, "peer", "peer note", :agent, "plan")
 
       Agent.stop_chat(pid, self())
       wait_idle(pid)
@@ -112,7 +112,7 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       # The change arrived on a message, and that message's header states the
       # mode the turn runs in — so nothing announces it a second time.
       assert {:ok, %{mode: "plan"}} = row_mode(name)
-      assert delivered(pid, "[nest notice]") == []
+      assert delivered(pid, "[From nest runtime") == []
     end
 
     test "the human's own mode is written down on either path, and announces nothing" do
@@ -123,10 +123,14 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       # The human's own selection is stated by the delivered message's own
       # `[mode: X]` prefix, never by a notice. It is written down whether it
       # rides a chat message — applied at once — ...
+      #
+      # The row also names her (`@alice`), because a direct chat and a note from
+      # the same speaker must be the same framing: `Header.sender/3`'s drift
+      # guard is in `HeaderTest`, and this is the producer end of it.
       :ok = Agent.chat(pid, "do the thing", "plan", "alice", true)
       wait_idle(pid)
 
-      assert delivered(pid, "do the thing") == ["[mode: plan]\ndo the thing"]
+      assert delivered(pid, "do the thing") == ["[From user @alice | mode: plan]\ndo the thing"]
       assert {:ok, %{mode: "plan"}} = row_mode(name)
 
       # ...or a queued delivery, applied when the drain delivers it.
@@ -136,8 +140,8 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       Agent.stop_chat(pid, self())
       wait_idle(pid)
 
-      assert delivered(pid, "and another") == ["[mode: act]\nand another"]
-      assert delivered(pid, "[nest notice]") == []
+      assert delivered(pid, "and another") == ["[From user @alice | mode: act]\nand another"]
+      assert delivered(pid, "[From nest runtime") == []
       assert Agent.get_public_info(pid, 1_000).current_mode == "act"
       assert {:ok, %{mode: "act"}} = row_mode(name)
     end
@@ -150,7 +154,7 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       MockClient.set_response("ok")
 
       set_status(pid, :streaming)
-      assert {:ok, :queued} = Agent.deliver_message(pid, "peer", "peer note", :agent, "plan")
+      assert {:ok, :queued} = Agent.deliver_note(pid, "peer", "peer note", :agent, "plan")
 
       Agent.stop_chat(pid, self())
       wait_idle(pid)

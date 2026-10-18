@@ -6,7 +6,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
   A batch moved to the background has no live worker: its result arrives
   keyed on `work.backgrounded`, and its worker's `:DOWN` would otherwise
   fall through to `:unknown_worker_down`. Both are delivered once, as a
-  runtime `:notice`, and the entry is cleared.
+  `:runtime` entry, and the entry is cleared.
   """
 
   use ExUnit.Case, async: true
@@ -26,13 +26,13 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
   alias Nest.Messages.User
 
   describe "a backgrounded batch's late result" do
-    test "is delivered exactly once as a :notice and clears the entry" do
+    test "is delivered exactly once as a :runtime entry and clears the entry" do
       ref = make_ref()
       machine = backgrounded_machine(%{ref => %{pid: self(), ids: ["c1"]}})
 
       {:ok, state} = Turn.settle(state(machine), {:tool_results, ref, [result("done")]})
 
-      assert [%{kind: :notice, content: content}] = state.live.inbox
+      assert [%{kind: :runtime, content: content}] = state.live.inbox
       assert content =~ "finished"
       assert content =~ "done"
       assert state.live.machine.work.backgrounded == %{}
@@ -40,7 +40,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
       # The entry is gone, so a duplicate delivery for the same ref is
       # stale-dropped: the ref answered exactly once.
       {:ok, again} = Turn.settle(state, {:tool_results, ref, [result("again")]})
-      assert [%{kind: :notice, content: ^content}] = again.live.inbox
+      assert [%{kind: :runtime, content: ^content}] = again.live.inbox
     end
 
     test "a timed-out command's result is worded as a timeout, not a finish" do
@@ -50,7 +50,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
 
       {:ok, state} = Turn.settle(state(machine), {:tool_results, ref, [timed_out]})
 
-      assert [%{kind: :notice, content: content}] = state.live.inbox
+      assert [%{kind: :runtime, content: content}] = state.live.inbox
       assert content =~ "timed out"
       refute content =~ "finished"
     end
@@ -67,7 +67,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
 
       {:ok, state} = Turn.settle(state(machine), {:tool_results, ref, [result("late")]})
 
-      assert [%{kind: :notice, content: content}] = state.live.inbox
+      assert [%{kind: :runtime, content: content}] = state.live.inbox
       assert content =~ "late"
 
       # Routing keys on the entry, not on `worker_ref` being nil: the live
@@ -79,14 +79,14 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
   end
 
   describe "a backgrounded worker's death" do
-    test "produces a notice and clears the entry" do
+    test "produces a :runtime entry and clears the entry" do
       ref = make_ref()
       pid = self()
       machine = backgrounded_machine(%{ref => %{pid: pid, ids: ["c1"]}})
 
       {:ok, state} = Turn.settle(state(machine), {:worker_down, pid, :killed})
 
-      assert [%{kind: :notice, content: content}] = state.live.inbox
+      assert [%{kind: :runtime, content: content}] = state.live.inbox
       assert content =~ "stopped before it finished"
       assert content =~ ":killed"
       assert state.live.machine.work.backgrounded == %{}
@@ -114,7 +114,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
 
       # Two entries can share a pid, so resolving only the first would leave
       # the other's promise dangling forever.
-      assert [%{kind: :notice}, %{kind: :notice}] = state.live.inbox
+      assert [%{kind: :runtime}, %{kind: :runtime}] = state.live.inbox
       assert state.live.machine.work.backgrounded == %{}
     end
 
@@ -133,7 +133,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
 
       {:ok, state} = Turn.settle(state(machine), {:worker_down, self(), :killed})
 
-      assert [%{kind: :notice, content: content}] = state.live.inbox
+      assert [%{kind: :runtime, content: content}] = state.live.inbox
       assert content =~ "stopped before it finished"
       assert state.live.machine.work.backgrounded == %{}
     end
@@ -294,11 +294,12 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
 
       # One cancellation record for the whole stop: a `backgrounded` entry
       # carries no call identity, so per-entry records would repeat the same
-      # words — and two collapsed records would be two consecutive assistant
-      # messages, which the wire rejects. The count is what tells the model how
-      # many promises the stop voided, and it counts the *calls*: three entries
-      # carrying 2, 1 and 3 calls voided six promises, so a count of the entries
-      # (or of the two distinct pids) would understate it.
+      # words — and a second record would land its bridge right after the first
+      # record's ack, two consecutive assistant rows the wire rejects. The count
+      # is what tells the model how many promises the stop voided, and it counts
+      # the *calls*: three entries carrying 2, 1 and 3 calls voided six
+      # promises, so a count of the entries (or of the two distinct pids) would
+      # understate it.
       assert [{:append_many, record}] = Enum.filter(actions, &match?({:append_many, _}, &1))
 
       assert [
@@ -312,6 +313,50 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
 
       Process.exit(first, :kill)
       Process.exit(second, :kill)
+    end
+
+    test "bridges a cancellation record whose tail is an unpaired tool_use" do
+      # A backgrounded promise *and* a live batch's assistant tail: the record
+      # cannot be built by `build_pair/3` there (it defers on the unpaired
+      # `tool_use`), so the record lands the bridge shape itself. It is valid
+      # because the appender's terminal bridge answers those ids with one
+      # synthetic result before the first row arrives — and adds no
+      # acknowledgement of its own, since its incoming message is an assistant.
+      machine = backgrounded_machine(%{make_ref() => %{pid: self(), ids: ["c1"]}})
+
+      messages = [
+        system(0),
+        {:user, %User{index: 1, parts: [%Part.Text{text: "hi"}]}},
+        {:assistant,
+         %Assistant{
+           index: 2,
+           parts: [%Part.ToolUse{id: "call_9", name: "shell-cmd", arguments: %{}}],
+           api_logs: []
+         }}
+      ]
+
+      machine = %{machine | work: %{machine.work | ctx: %{messages: messages, mode: "act"}}}
+
+      assert {:ok, actions, _stopping} = Machine.step(machine, {:stop, self()})
+
+      assert [{:append_many, [bridge, notice, ack]}] =
+               Enum.filter(actions, &match?({:append_many, _}, &1))
+
+      assert {:assistant, %Assistant{parts: [%Part.Text{text: "Okay, continuing from here."}]}} =
+               bridge
+
+      assert {:user, %User{parts: [%Part.Text{text: text}]}} = notice
+      assert text =~ "cancelled when the conversation was stopped"
+
+      assert {:assistant,
+              %Assistant{parts: [%Part.Text{text: "Understood. I will not wait for it."}]}} =
+               ack
+
+      # What the appender does to the first row: one interrupted result and no
+      # acknowledgement, so the record closes exactly once.
+      assert [
+               {:tool, %Tool{parts: [%Part.ToolResult{tool_call_id: "call_9", is_error: true}]}}
+             ] = MessageList.pairing_bridge(messages, bridge)
     end
 
     test "re-arms the timer when the cancellation record is refused" do
@@ -364,7 +409,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
 
       {_agent, {:inbox_drain, [entry], content}} = Executor.run_all(actions, agent)
 
-      assert %{kind: :notice, fulfilled_ids: ["call_1"]} = entry
+      assert %{kind: :runtime, fulfilled_ids: ["call_1"]} = entry
 
       notice = Inbox.build_drained_message([entry], content, "chat")
       loaded = promised_tail() ++ [notice]
@@ -373,9 +418,9 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
       # (the baseline assertion below), and a restart would append a record for a
       # call whose outcome is already in the transcript. The notice's own user
       # tail is a different heal: `{:bridge, …}`, the idle-agent rule.
-      assert {:lost_promises, _} = Repair.classify_load(promised_tail())
+      assert {:lost_promises, _} = Repair.classify_load(promised_tail(), "act")
       assert [] = MessageList.backgrounded_results(loaded)
-      assert {:bridge, _} = Repair.classify_load(loaded)
+      assert {:bridge, _} = Repair.classify_load(loaded, "act")
     end
   end
 
@@ -409,7 +454,8 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
       work: %Machine.Work{
         worker_kind: worker_kind,
         worker_ref: worker_ref,
-        backgrounded: backgrounded
+        backgrounded: backgrounded,
+        ctx: %{messages: [], mode: "act"}
       }
     )
   end

@@ -21,24 +21,24 @@ defmodule Nest.Agents.Agent.SubAgentResults do
   @doc """
   The inbox message a child's outcome arrives as, and the kind that frames it
   (issue #31 §2.1). A completion is the child's own words — `kind: :agent`, so
-  `Inbox.combine/1` labels it `[Message from agent "<name>"]` — while a child
-  that produced nothing, failed, or was stopped is the *runtime* speaking
-  (`kind: :notice`, rendered bare), because the child did not say it (decision
-  9's instinct). An answer is bounded by the inbox's own offload cap when it is
-  delivered, so nothing is capped here.
+  its body is headered `[From agent <name> | mode: …]` — while a child that
+  produced nothing, failed, or was stopped is the *runtime* speaking
+  (`kind: :runtime`, headered `[From nest runtime | mode: …]`), because the
+  child did not say it (decision 9's instinct). An answer is bounded by the
+  inbox's own offload cap when it is delivered, so nothing is capped here.
   """
   @spec child_message(String.t(), term()) :: {String.t(), Inbox.kind()}
   def child_message(_name, {:ok, response}) when is_binary(response) and response != "",
     do: {response, :agent}
 
   def child_message(name, {:ok, _empty}),
-    do: {"Child agent #{name} finished its turn without producing any text.", :notice}
+    do: {"Child agent #{name} finished its turn without producing any text.", :runtime}
 
   def child_message(name, {:failed, reason}),
-    do: {"Child agent #{name} failed before it answered: #{inspect(reason)}", :notice}
+    do: {"Child agent #{name} failed before it answered: #{inspect(reason)}", :runtime}
 
   def child_message(name, {:terminated, reason}),
-    do: {"Child agent #{name} was stopped before it answered: #{inspect(reason)}", :notice}
+    do: {"Child agent #{name} was stopped before it answered: #{inspect(reason)}", :runtime}
 
   # -- bounding --
 

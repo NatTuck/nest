@@ -219,7 +219,8 @@ defmodule Nest.Agents.AgentCompactionTest do
       ]
 
       # The compactor LLM's response text. The commit wraps it as
-      # "Summary of previous conversation (compacted from N tokens):\n\n…".
+      # "[From nest runtime | mode: …]\nSummary of previous conversation
+      # (compacted from N tokens):\n\n…".
       summary_text = "..."
 
       # `:tool_call` continuation: the resumed post-compaction turn
@@ -340,14 +341,8 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert length(replies) == 1,
              "expected exactly one committed final reply; got #{inspect(messages)}"
 
-      # The compaction produced the active summary_user.
-      assert Enum.any?(messages, fn
-               {:user, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
-                 String.starts_with?(t, "Summary of previous conversation (")
-
-               _ ->
-                 false
-             end)
+      # The compaction produced the active summary_user, behind the runtime's header.
+      assert Enum.any?(messages, &summary_row?/1)
 
       assert Machine.status_for(state.live.machine) == :idle
     end
@@ -470,7 +465,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # re-renders the system message per AGENTS.md exception).
       #
       # History:  [old_system, old_user, old_assistant, compact_assistant,
-      #             compact_tool_result, bridge_ack, [mode: compact] request,
+      #             compact_tool_result, bridge_ack, compaction request,
       #             compactor_assistant, marker]
       # Messages: [new_system_fresh, summary_user, post_chat_assistant]
       #
@@ -489,8 +484,8 @@ defmodule Nest.Agents.AgentCompactionTest do
       # returned).
       summary_row =
         Enum.find_value(messages, fn
-          {:user, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
-            if String.starts_with?(t, "Summary of previous conversation ("), do: t
+          {:user, %{parts: [%Part.Text{text: t}]}} = message when is_binary(t) ->
+            if summary_row?(message), do: t
 
           _ ->
             nil
@@ -532,7 +527,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert ack =~ "Let me pause to summarize"
 
       assert {:user, request} = Enum.at(archive, call_at + 3)
-      assert request =~ "[mode: compact]"
+      assert request =~ "[From nest runtime | mode: compact]"
 
       # And none of it leaks into the new segment.
       refute Enum.any?(messages, fn
@@ -585,29 +580,29 @@ defmodule Nest.Agents.AgentCompactionTest do
                  String.starts_with?(t, "[mode: compact]")
 
                {:user, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
-                 String.starts_with?(t, "[mode: compact]")
+                 String.starts_with?(t, "[From nest runtime | mode: compact]")
 
                _ ->
                  false
              end),
-             "expected the [mode: compact] suffix in history"
+             "expected the compaction request's header in history"
 
       # Trigger user message archived during the swap.
       assert Enum.any?(history, &match?({:user, _}, &1)),
              "expected the trigger user message archived into history"
 
-      # Exactly once: the staged `[mode: compact]` suffix is committed once
+      # Exactly once: the staged compaction request is committed once
       # (it is not persisted before the compaction and never re-appended).
       suffix_count =
         Enum.count(history, fn
           {_, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
-            String.starts_with?(t, "[mode: compact]")
+            String.starts_with?(t, "[From nest runtime | mode: compact]")
 
           _ ->
             false
         end)
 
-      assert suffix_count == 1, "expected exactly one [mode: compact] suffix; got #{suffix_count}"
+      assert suffix_count == 1, "expected exactly one compaction request; got #{suffix_count}"
 
       Agent.terminate(pid)
     end
@@ -644,7 +639,7 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       requests =
         for {:user, %User{parts: [%Part.Text{text: text}]} = user} <- state.chat_state.messages,
-            String.contains?(text, "[mode: compact]"),
+            String.contains?(text, "[From nest runtime | mode: compact]"),
             do: {user, text}
 
       # Exactly one: the failed attempt did not append a second request, and
@@ -663,7 +658,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # own state.
       assert Enum.any?(Agent.get_messages(pid, 1_000), fn
                {:user, %User{parts: [%Part.Text{text: text}]}} ->
-                 String.contains?(text, "[mode: compact]")
+                 String.contains?(text, "[From nest runtime | mode: compact]")
 
                _ ->
                  false
@@ -690,6 +685,12 @@ defmodule Nest.Agents.AgentCompactionTest do
   # it orders the call sites' `assert_received/1` assertions behind it too.
   # Every call site first fences on the batch's own broadcast, so the
   # sandbox work (real bwrap processes) is never inside this wait.
+  # The compaction's summary row: the runtime's header, then the body.
+  defp summary_row?({:user, %{parts: [%Part.Text{text: t}]}}) when is_binary(t),
+    do: String.starts_with?(t, "[From nest runtime") and t =~ "Summary of previous conversation"
+
+  defp summary_row?(_message), do: false
+
   defp await_idle(pid) do
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
 

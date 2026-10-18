@@ -21,8 +21,8 @@ defmodule Nest.Agents.Agent.SubAgentTest do
       usage into `descendant_usage`, removes the running
       entry, and enqueues the child's answer into the parent's
       own inbox (`kind: :agent`).
-    * A failed or stopped child reaches the parent as a runtime
-      `:notice` naming the child, so the parent learns the answer
+    * A failed or stopped child reaches the parent as a `:runtime`
+      entry naming the child, so the parent learns the answer
       is not coming instead of waiting it out.
     * When `handle_child_completed/4` arrives for an
       unknown child (e.g. double-completion), the
@@ -133,11 +133,11 @@ defmodule Nest.Agents.Agent.SubAgentTest do
 
         assert {:noreply, new_state} = handle.(state, child_name, reason)
 
-        # The runtime speaks, not the child — a `:notice` (rendered bare),
+        # The runtime speaks, not the child — a `:runtime` entry (rendered bare),
         # naming the child and quoting why the answer is not coming. The
         # child's slot is dropped and terminal; whether a terminal transition
         # emits an archive is pinned in `Machine.ChildrenTest`.
-        assert [%{from: ^child_name, kind: :notice, content: content}] = new_state.live.inbox
+        assert [%{from: ^child_name, kind: :runtime, content: content}] = new_state.live.inbox
         assert content == "Child agent #{child_name} #{news}"
 
         assert Machine.pending_children(new_state.live.machine) == %{}

@@ -171,7 +171,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # so a failing test cannot leave a worker parked.
       park_llm_requests(agent_pid)
 
-      Mimic.stub(Nest.Agents, :send_message, fn space, from, target, content, kind, mode ->
+      Mimic.stub(Nest.Agents, :send_note, fn space, from, target, content, kind, mode ->
         send(test_pid, {:tool_batch_blocked, self()})
 
         receive do
@@ -180,7 +180,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
           1_000 -> :ok
         end
 
-        Mimic.call_original(Nest.Agents, :send_message, [
+        Mimic.call_original(Nest.Agents, :send_note, [
           space,
           from,
           target,
@@ -252,7 +252,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
                   500
 
       assert is_integer(delivered["index"])
-      assert human_text == "[mode: plan]\nhuman note"
+      assert human_text == "[From user @#{user.username} | mode: plan]\nhuman note"
 
       # The backgrounding left `:executing_tools` for the delivered turn, and no
       # idle went out with it: an idle here would resolve an idle-based
@@ -298,13 +298,13 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       assert_push "chat:message",
                   %{
                     "role" => "user",
-                    "parts" => [%{"text" => "[mode: plan]\n[Message from agent \"" <> rest}]
+                    "parts" => [%{"text" => "[From agent " <> rest}]
                   },
                   500
 
       # The peer's entry's header states the mode the drain applies — the human's
       # `plan`, since no entry in this batch asks for a change.
-      assert rest =~ "#{name}\" | mode: plan]\npeer note"
+      assert rest =~ "#{name} | mode: plan]\npeer note"
       assert rest =~ "Message queued for #{name} (busy)"
 
       assert_push "chat:status", %{status: "idle"}, 1_000
@@ -350,7 +350,9 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       assert ack_index < human_index
       assert human_index < peer_index
       assert human_index == delivered["index"]
-      assert text_of(Enum.at(messages, human_index)) == "[mode: plan]\nhuman note"
+
+      assert text_of(Enum.at(messages, human_index)) ==
+               "[From user @#{user.username} | mode: plan]\nhuman note"
 
       assert state.live.inbox == []
       assert Machine.status_for(state.live.machine) == :idle
@@ -448,7 +450,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
                   %{"role" => "user", "mode" => "plan", "parts" => [%{"text" => text}]},
                   500
 
-      assert text == "[mode: plan]\nhuman note"
+      assert text == "[From user @#{user.username} | mode: plan]\nhuman note"
 
       # The turn the delivered message started runs to completion.
       assert_push "chat:status", %{status: "idle"}, 1_000
@@ -462,14 +464,14 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
     end
   end
 
-  # The compactor's request ends on the `[mode: compact]` suffix, which is what
-  # distinguishes it from a chat request.
+  # The compactor's request opens with the runtime's header in `compact` mode,
+  # which is what distinguishes it from a chat request.
   defp compaction_request?(request) do
     Enum.any?(request.messages, fn
       {:user, %{parts: parts}} ->
         Enum.any?(
           parts || [],
-          &match?(%Nest.Messages.Part.Text{text: "[mode: compact]" <> _}, &1)
+          &match?(%Nest.Messages.Part.Text{text: "[From nest runtime | mode: compact]" <> _}, &1)
         )
 
       _ ->

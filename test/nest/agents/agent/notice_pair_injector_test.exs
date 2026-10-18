@@ -29,7 +29,7 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
 
       assert {:user,
               %User{
-                parts: [%Part.Text{text: "[nest notice]\nNotice."}],
+                parts: [%Part.Text{text: "[From nest runtime | mode: act]\nNotice."}],
                 metadata: %{"context_threshold" => "p25"}
               }} = second
     end
@@ -41,37 +41,72 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
   end
 
   describe ":user_agent direction" do
-    test "trailing :user builds a single [assistant(notice + ack)]" do
-      assert {:ok,
-              [{:assistant, %Assistant{parts: [%Part.Text{text: "[nest notice]\nNotice. Ack."}]}}]} =
-               NoticePairInjector.build_pair([user(0)], spec(), :user_agent)
+    test "trailing :user builds [assistant(bridge), user(notice), assistant(ack)]" do
+      # The notice is a user row in every shape — the runtime's words are never
+      # the agent's — so the alternation is repaired explicitly instead of fusing
+      # the notice and its ack into one assistant row.
+      tail = [user(0)]
+
+      assert {:ok, [bridge, notice, ack]} =
+               NoticePairInjector.build_pair(tail, spec(), :user_agent)
+
+      # The bridge is the canonical `:live` alternation ack, not a new wording.
+      assert {:assistant, %Assistant{parts: [%Part.Text{text: "Okay, continuing from here."}]}} =
+               bridge
+
+      # The threshold metadata rides the notice row now: it used to ride the
+      # fused assistant row, and `ContextReminder.announced_thresholds/1` reads
+      # it off whichever row carries it.
+      assert {:user,
+              %User{
+                parts: [%Part.Text{text: "[From nest runtime | mode: act]\nNotice."}],
+                metadata: %{"context_threshold" => "p25"}
+              }} = notice
+
+      assert {:assistant, %Assistant{parts: [%Part.Text{text: "Ack."}]}} = ack
+      assert alternates?(tail ++ [bridge, notice, ack])
     end
 
     test "trailing :user with a budget spec defaults the ack" do
-      spec = %{kind: :budget, attention: "Tool limit?", notice: "Last round."}
+      spec = %{kind: :budget, attention: "Tool limit?", notice: "Last round.", mode: "act"}
 
-      assert {:ok,
-              [
-                {:assistant,
-                 %Assistant{
-                   parts: [%Part.Text{text: "[nest notice]\nLast round. Okay, noted."}]
-                 }}
-              ]} = NoticePairInjector.build_pair([user(0)], spec, :user_agent)
+      assert {:ok, [_bridge, notice, ack]} =
+               NoticePairInjector.build_pair([user(0)], spec, :user_agent)
+
+      assert {:user,
+              %User{parts: [%Part.Text{text: "[From nest runtime | mode: act]\nLast round."}]}} =
+               notice
+
+      assert {:assistant, %Assistant{parts: [%Part.Text{text: "Okay, noted."}]}} = ack
     end
 
-    test "trailing :tool builds a single [assistant(notice + ack)]" do
-      # Trailing :tool is wire-equivalent to :user; a full pair would
-      # create back-to-back users.
-      assert {:ok, [{:assistant, _}]} =
-               NoticePairInjector.build_pair([tool(0)], spec(), :user_agent)
+    test "trailing :tool builds the same three rows, with the notice on a user row" do
+      # Trailing `:tool` is wire-equivalent to `:user`, so it takes the same
+      # bridge. The notice's *role* is the point of the shape: only a user row
+      # can carry the runtime's own words without impersonating the agent.
+      tail = [tool(0)]
+
+      assert {:ok, [bridge, notice, ack]} =
+               NoticePairInjector.build_pair(tail, spec(), :user_agent)
+
+      assert {:assistant, _} = bridge
+
+      assert {:user, %User{parts: [%Part.Text{text: "[From nest runtime | mode: act]\nNotice."}]}} =
+               notice
+
+      assert {:assistant, %Assistant{parts: [%Part.Text{text: "Ack."}]}} = ack
+      assert alternates?(tail ++ [bridge, notice, ack])
     end
 
     test "trailing :assistant (no tool_use) builds [user(notice), assistant(ack)]" do
       assert {:ok,
               [
-                {:user, %User{parts: [%Part.Text{text: "[nest notice]\nNotice."}]}},
+                {:user,
+                 %User{parts: [%Part.Text{text: "[From nest runtime | mode: act]\nNotice."}]}},
                 {:assistant, %Assistant{parts: [%Part.Text{text: "Ack."}]}}
-              ]} = NoticePairInjector.build_pair([assistant(0)], spec(), :user_agent)
+              ] = rows} = NoticePairInjector.build_pair([assistant(0)], spec(), :user_agent)
+
+      assert alternates?([assistant(0)] ++ rows)
     end
 
     test "defers when the trailing assistant carries an unpaired tool_use" do
@@ -81,18 +116,23 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
   end
 
   describe "notice_record/3" do
-    test "collapses to one assistant message when the tail is user or tool" do
+    test "opens with the bridge when the tail is user or tool, so the notice is a user row" do
       # A user-role notice on a wire-user tail is two consecutive user roles, so
-      # the appender's terminal bridge would insert an alternation ack of its own
-      # — the record would close with two acknowledgements. The collapsed shape
-      # is the same `:user_agent` rule `build_pair/3` uses, and lands the notice
-      # and its acknowledgement in one message.
+      # the record opens with the alternation bridge: the notice and its
+      # acknowledgement are two rows of their own, and neither is fused into an
+      # assistant row that would read as the agent's words.
       for messages <- [[user(0)], [tool(0)]] do
+        record = NoticePairInjector.notice_record(messages, "Notice.", "Ack.", "act")
+
         assert [
-                 {:assistant,
-                  %Assistant{parts: [%Part.Text{text: "[nest notice]\nNotice. Ack."}]}}
-               ] =
-                 NoticePairInjector.notice_record(messages, "Notice.", "Ack.")
+                 {:assistant, %Assistant{parts: [%Part.Text{text: bridge}]}},
+                 {:user, %User{parts: [%Part.Text{text: notice_row}]}},
+                 {:assistant, %Assistant{parts: [%Part.Text{text: "Ack."}]}}
+               ] = record
+
+        assert bridge == "Okay, continuing from here."
+        assert notice_row == "[From nest runtime | mode: act]\nNotice."
+        assert alternates?(messages ++ record), inspect(messages)
       end
     end
 
@@ -100,37 +140,70 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
       # An empty list has no tail to alternate with, so the pair is wire-legal
       # there too (`[user, assistant]` is the opening shape of any conversation).
       for messages <- [[assistant(0)], []] do
+        record = NoticePairInjector.notice_record(messages, "Notice.", "Ack.", "act")
+
         assert [
-                 {:user, %User{parts: [%Part.Text{text: "[nest notice]\nNotice."}]}},
+                 {:user,
+                  %User{parts: [%Part.Text{text: "[From nest runtime | mode: act]\nNotice."}]}},
                  {:assistant, %Assistant{parts: [%Part.Text{text: "Ack."}]}}
-               ] = NoticePairInjector.notice_record(messages, "Notice.", "Ack.")
+               ] = record
+
+        assert alternates?(messages ++ record), inspect(messages)
       end
     end
 
-    test "resolves a deferred tail to one assistant message the bridge repairs without an ack" do
+    test "resolves a deferred tail to the bridge shape the appender repairs without an ack" do
       # `build_pair/3` defers on an unpaired `tool_use` tail, because a caller
       # there has a next safe boundary to retry at. A record that must land now
-      # does not, so it collapses to the single assistant message: the appender's
-      # terminal bridge answers the unpaired ids before it lands, and fabricates
-      # no acknowledgement of its own (its incoming message is an assistant).
+      # does not, so it lands the bridge shape: the appender's terminal bridge
+      # answers the unpaired ids before the first row arrives, and fabricates no
+      # acknowledgement of its own (its incoming message is an assistant), so the
+      # effective tail is `tool` and the three rows alternate.
       messages = [assistant_tool_use(0)]
 
-      assert [{:assistant, _} = record] =
-               NoticePairInjector.notice_record(messages, "Notice.", "Ack.")
-
       assert [
-               {:tool,
-                %Tool{
-                  parts: [%Part.ToolResult{tool_call_id: "call_0", is_error: true}]
-                }}
-             ] = MessageList.pairing_bridge(messages, record)
+               {:assistant, _} = bridge,
+               {:user,
+                %User{parts: [%Part.Text{text: "[From nest runtime | mode: act]\nNotice."}]}},
+               {:assistant, %Assistant{parts: [%Part.Text{text: "Ack."}]}}
+             ] = record = NoticePairInjector.notice_record(messages, "Notice.", "Ack.", "act")
+
+      # The repair the appender performs on the first row: one tool result and
+      # *no* ack of its own — a second one would make the record close twice.
+      assert [
+               {:tool, %Tool{parts: [%Part.ToolResult{tool_call_id: "call_0", is_error: true}]}} =
+                 repaired
+             ] = MessageList.pairing_bridge(messages, bridge)
+
+      assert alternates?(messages ++ [repaired] ++ record)
     end
   end
 
   # --- helpers ---
 
+  # `:tool` is wire-`user` (Anthropic sends tool results as user-role messages,
+  # per `MessageList.last_wire_role/1`), so alternation is checked over the two
+  # wire roles: two consecutive rows of the same one is what every provider
+  # rejects.
+  defp alternates?(messages) do
+    messages
+    |> Enum.map(fn
+      {:tool, _} -> :user
+      {role, _} -> role
+    end)
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.all?(fn [left, right] -> left != right end)
+  end
+
   defp spec do
-    %{kind: :context, attention: "Context?", notice: "Notice.", ack: "Ack.", threshold: :p25}
+    %{
+      kind: :context,
+      attention: "Context?",
+      notice: "Notice.",
+      ack: "Ack.",
+      threshold: :p25,
+      mode: "act"
+    }
   end
 
   defp user(index) do

@@ -73,12 +73,19 @@ defmodule Nest.Persistence.AgentCompaction.PlannerTest do
 
       now = ~U[2026-01-01 00:00:00Z]
 
-      assert [{:system, sys}, {:user, %User{parts: [%Part.Text{text: text}]}}] =
-               Planner.new_messages(plan, "S", now)
+      assert [
+               {:system, sys},
+               {:user, %User{parts: [%Part.Text{text: text}], metadata: metadata}}
+             ] = Planner.new_messages(plan, "S", now, "act")
 
       assert sys.index == plan.marker_index + 1
       assert sys.parts == [%Part.Text{text: plan.system_text}]
-      assert text == "Summary of earlier conversation:\n\nS"
+
+      # The summary is a single-sender user row, so it states its sender and the
+      # mode the plan carries — the agent's own, `act` on this fixture — exactly
+      # as the online commit's row does.
+      assert text == "[From nest runtime | mode: act]\nSummary of earlier conversation:\n\nS"
+      assert metadata == %{"mode" => "act"}
       assert Planner.orphan_from(plan) == 3
     end
   end

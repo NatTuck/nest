@@ -14,7 +14,8 @@
  *     their `[mode: X]\n` prefix stripped (the mode badge is rendered
  *     separately in the UI; the user does not want it re-pasted), and a
  *     runtime notice has its `[nest notice]\n` marker stripped wherever it
- *     sits (a user row or the fused assistant row). Tool
+ *     sits (its user row, or the fused assistant row an older transcript
+ *     still carries). Tool
  *     calls and tool results have no natural markdown form, so they are
  *     rendered as a bold header plus a fenced code block; a part kind this
  *     build does not recognise is called out in the output rather than
@@ -27,8 +28,7 @@
  */
 
 import { stripAgentHeaderMode } from "./agentHeader.js";
-import { stripModePrefix } from "./stripModePrefix.js";
-import { stripNoticePrefix } from "./stripNoticePrefix.js";
+import { stripHeader } from "./stripHeader.js";
 import { splitThinkFromParts } from "./thinkTags.js";
 import { mediaSummary } from "./media.js";
 
@@ -154,7 +154,7 @@ function partIsReasoning(part, role) {
 /**
  * Whether this role's *body* renderer splits `<think>` blocks out of its
  * text. `Message.jsx` sends a `user` message's own text through
- * `stripModePrefix(messageText(…))` and a `system` message through
+ * `stripHeader(messageText(…))` and a `system` message through
  * `SystemMessageContent` (both raw), while every other role (assistant,
  * tool, …) goes through `textPartsFor` / `splitThinkFromParts`.
  *
@@ -172,17 +172,15 @@ function stripsThinkTags(role) {
  * the `user`'s own text with the mode prefix stripped, a `system` message
  * verbatim, and everyone else with `<think>` reasoning split out. A synthetic
  * runtime notice carries the `[nest notice]` marker at the head of its text
- * (on a user row or on the fused `assistant(notice + ack)` row), which is
- * stripped here too — the clipboard shows what the renderer shows.
+ * (on its user row, or on the fused `assistant(notice + ack)` row a transcript
+ * recorded before the alternation bridge still carries), which is stripped
+ * here too — the clipboard shows what the renderer shows.
  */
 function visibleForRole(text, role, mode) {
   if (role === "user") {
-    return stripAgentHeaderMode(
-      stripNoticePrefix(stripModePrefix(text, mode)),
-      mode,
-    );
+    return stripAgentHeaderMode(stripHeader(text, mode), mode);
   }
-  return stripNoticePrefix(stripsThinkTags(role) ? visibleText(text) : text);
+  return stripHeader(stripsThinkTags(role) ? visibleText(text) : text, mode);
 }
 
 /**

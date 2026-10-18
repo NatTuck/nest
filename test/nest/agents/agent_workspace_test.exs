@@ -90,7 +90,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
 
       text = Enum.map_join(user.parts, "", &(&1.text || ""))
 
-      assert text =~ "[nest notice]"
+      assert text =~ "[From nest runtime"
       assert text =~ "Workspace: #{new}"
       assert text =~ "Network access: disabled"
       assert text =~ "Sandbox: none"
@@ -290,7 +290,8 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       AgentStateHelpers.replace_state(pid, fn state ->
         pair_size =
           ConversationSize.size(
-            state.chat_state.messages ++ WorkspaceHandler.notice_pair(notice_values(workspace))
+            state.chat_state.messages ++
+              WorkspaceHandler.notice_pair(notice_values(workspace), "act")
           )
 
         %{
@@ -488,7 +489,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
   defp notices(state) do
     state.chat_state.messages
     |> Enum.map(fn {_role, message} -> text_of(message) end)
-    |> Enum.filter(&(&1 =~ "[nest notice]"))
+    |> Enum.filter(&(&1 =~ "[From nest runtime"))
   end
 
   defp text_of(%{parts: parts}) do

@@ -270,7 +270,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
       # ...and the children's own answers still arrive: with the reporting
       # target gone, delivery falls back to the parent's inbox.
       assert [message] = await_message(parent_pid, "alpha-done")
-      assert message =~ ~s([Message from agent "#{child0}" | mode: act])
+      assert message =~ ~s([From agent #{child0} | mode: act])
     end)
   end
 
@@ -461,12 +461,12 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     set_status(parent_pid, :streaming)
 
     Enum.each(1..100, fn n ->
-      assert {:ok, :queued} = Agent.deliver_message(parent_pid, "peer-#{n}", "queued #{n}")
+      assert {:ok, :queued} = Agent.deliver_note(parent_pid, "peer-#{n}", "queued #{n}")
     end)
 
     # A peer's message is refused at the cap — which is what the aggregate's
-    # delivery would hit through `Agent.deliver_message/4`, losing the batch.
-    assert {:error, :inbox_full} = Agent.deliver_message(parent_pid, "peer", "one too many")
+    # delivery would hit through `Agent.deliver_note/4`, losing the batch.
+    assert {:error, :inbox_full} = Agent.deliver_note(parent_pid, "peer", "one too many")
 
     cast_child_completed(parent_pid, child0, "alpha-done")
     cast_child_completed(parent_pid, child1, "beta-done")
@@ -678,7 +678,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
 
   defp stub_child_chat do
     Mimic.copy(Agents)
-    Mimic.stub(Agents, :chat, fn _space_id, _name, _content -> :ok end)
+    Mimic.stub(Agents, :chat, fn _space_id, _name, _content, _mode, _sender -> :ok end)
   end
 
   # The coordinator's vocation exposes `agents-batch`. The children take the

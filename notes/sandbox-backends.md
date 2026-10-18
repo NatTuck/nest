@@ -248,9 +248,9 @@ change.
 ## A `"none"` scratch is removed only if Nest marked it
 
 A `"none"` agent's scratch is the host's own `/tmp/<name>`, and the name is
-client- and model-controlled: `@name_format` admits `nest-4` (another BEAM's
-whole scratch root), `X11-unix` and `snap-private-tmp`, all of which are real
-entries in a real `/tmp`. So `TmpSpace.create/3` writes a `.nest-scratch` marker
+client- and model-controlled: `Nest.Name` admits `nest-4` (another BEAM's
+whole scratch root) and `snap-private-tmp`, both of which are real entries in a
+real `/tmp`. So `TmpSpace.create/3` writes a `.nest-scratch` marker
 into a `"none"` agent's scratch, and **every** removal requires it — the
 `terminate/2` cleanup and the stale-directory clear at creation.
 

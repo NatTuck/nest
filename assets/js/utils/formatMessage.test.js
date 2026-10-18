@@ -24,6 +24,29 @@ describe("messageToMarkdown — user messages", () => {
     ).toBe("What's up?");
   });
 
+  it("strips the header from a user message, matching the row's mode", () => {
+    // The header the server writes now: `[From … | mode: <mode>]`. The mode it
+    // names must be the message's own, or the guard leaves it on screen — which
+    // is the point of the disagreement case below.
+    expect(
+      messageToMarkdown({
+        role: "user",
+        content: "[From user | mode: act]\nHello",
+        mode: "act",
+      }),
+    ).toBe("Hello");
+
+    expect(
+      messageToMarkdown({
+        role: "agent",
+        mode: "plan",
+        parts: [
+          { kind: "text", text: "[From agent peer | mode: plan]\nhi there" },
+        ],
+      }),
+    ).toBe("hi there");
+  });
+
   it("strips the prefix from a user message's text part too", () => {
     expect(
       messageToMarkdown({
@@ -37,7 +60,7 @@ describe("messageToMarkdown — user messages", () => {
   it("returns the user content as-is when the mode prefix disagrees with the message mode", () => {
     // Server is the source of truth — leave the prefix alone if
     // it doesn't match the explicit `mode` field. See
-    // `stripModePrefix` for the rationale.
+    // `stripHeader` for the rationale.
     expect(
       messageToMarkdown({
         role: "user",
@@ -66,7 +89,7 @@ describe("messageToMarkdown — user messages", () => {
 
   it("strips the `[nest notice]` marker from a runtime notice row", () => {
     // A notice lands as a user row (the `:agent_user` shape, and the drain's
-    // `:notice` path) with the marker after the mode prefix, or fused into an
+    // `:runtime` path) with the marker after the mode prefix, or fused into an
     // assistant row with the ack (the `:user_agent` shape, where the marker is
     // at the head of the whole row). The clipboard shows what the bubble shows,
     // so the marker goes either way.

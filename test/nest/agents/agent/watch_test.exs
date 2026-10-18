@@ -142,8 +142,16 @@ defmodule Nest.Agents.Agent.WatchTest do
     # reads, not waits.
     assert_receive {:chat_message, {:user, _}}, 1_000
 
-    assert Enum.any?(notices(pid), &(&1 =~ "Agents now idle"))
-    assert Enum.any?(notices(pid), &(&1 =~ "bob"))
+    # The wake's *kind* is pinned through its render, because the render is
+    # the only thing the kind decides: a `:runtime` body carries the
+    # `[nest notice]` marker and no `[Message from agent …]` label. The
+    # wording alone pins nothing — a peer-labelled delivery says "Agents now
+    # idle" too — so a `Watch.fired/3` that passed any other kind would slip
+    # through a text-containment assertion.
+    assert [delivered] = Enum.filter(notices(pid), &(&1 =~ "Agents now idle"))
+    assert delivered =~ "bob"
+    assert delivered =~ "[From nest runtime"
+    refute delivered =~ "Message from agent"
     assert watchers(pid) == %{}
     await_idle(pid)
   end
@@ -162,7 +170,12 @@ defmodule Nest.Agents.Agent.WatchTest do
     # The notice drains into a turn; that turn's own user-message broadcast is
     # the event that says the notice landed.
     assert_receive {:chat_message, {:user, _}}, 1_000
-    assert Enum.any?(notices(pid), &(&1 =~ "Timed out after 50ms"))
+
+    # The same kind pin as the fire above: an expired watch is the runtime
+    # speaking, so its body is marker-tagged and carries no peer label.
+    assert [delivered] = Enum.filter(notices(pid), &(&1 =~ "Timed out after 50ms"))
+    assert delivered =~ "[From nest runtime"
+    refute delivered =~ "Message from agent"
 
     await_idle(pid)
   end
@@ -178,7 +191,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     assert [{_ref, %{satisfied: false}}] = Map.to_list(watchers(pid))
 
     MockClient.set_response("acknowledged")
-    assert {:ok, :delivered} = Agent.deliver_message(pid, "bob", "the report", :agent)
+    assert {:ok, :delivered} = Agent.deliver_note(pid, "bob", "the report", :agent)
 
     assert [{_ref, %{satisfied: true}}] = Map.to_list(watchers(pid))
     await_idle(pid)
@@ -319,14 +332,6 @@ defmodule Nest.Agents.Agent.WatchTest do
     assert length(texts) == 1
     assert Enum.count(texts, &(&1 =~ "the report")) == 1
     refute Enum.any?(texts, &(&1 =~ "Agents now idle"))
-
-    # Access, not a `match?`: a malformed entry raises loudly here, where a
-    # pattern would silently mismatch and leave the `refute` vacuous (the
-    # serialized key itself is pinned by `inbox_serialization_test`'s patterns).
-    refute Enum.any?(
-             Agent.get_public_info(pid, 1_000).pending_messages,
-             &(&1["kind"] == "notice")
-           )
   end
 
   test "shell-wait registers and the notice carries the job output", %{

@@ -78,7 +78,7 @@ defmodule Nest.Agents.Agent.IdleFenceTest do
     assert_receive {:agent_status, %{name: ^name, status: "idle"}}, 1_000
 
     MockClient.set_response("two")
-    assert {:ok, :delivered} = Agent.deliver_internal(pid, "peer", "second", :notice)
+    assert {:ok, :delivered} = Agent.deliver_internal(pid, "peer", "second", :runtime)
     assert_receive {:agent_status, %{name: ^name, status: "idle"}}, 1_000
 
     # Both turns are over, so both of this agent's `idle` frames are queued: the
@@ -87,7 +87,7 @@ defmodule Nest.Agents.Agent.IdleFenceTest do
     notice = await_delivery("second")
     assert_receive {:chat_status, %{name: ^name, status: "idle"}}, 1_000
 
-    # The frame the wait consumed is the delivery: a `:notice` renders bare (the
+    # The frame the wait consumed is the delivery: a `:runtime` entry renders bare (the
     # runtime speaking, not the peer), unlike the test's own chat above it.
     refute notice =~ "Message from agent"
 

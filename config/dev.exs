@@ -1,14 +1,13 @@
 import Config
 
-# Pick a port + dev-database based on which checkout we're running in.
-# The primary checkout is /home/nat/Code/nest (port 4000, db nest_dev).
-# Any other checkout (e.g. nest-edit) lands on 4002 + nest_dev2 so two
-# instances can run side-by-side without colliding.
-dev_inst =
-  case File.cwd!() |> Path.basename() do
-    "nest" -> %{port: 4040, database: "nest_dev"}
-    _ -> %{port: 4042, database: "nest_dev2"}
-  end
+Code.require_file("checkout.exs", __DIR__)
+
+# Which checkout this is decides the dev database and port — see
+# `Nest.Config.Checkout`. The two named checkouts keep fixed identities;
+# everything else gets the scratch slot, so no worktree can reach `nest_dev2`
+# (it could, and did: a migration run from a worktree changed the schema under a
+# running `nest2` and renamed rows in it).
+dev_inst = Nest.Config.Checkout.dev()
 
 # Configure Phoenix.Copy for static assets
 config :phoenix_copy,

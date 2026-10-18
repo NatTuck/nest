@@ -123,7 +123,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       peer = start_peer("peer", "peer ack")
 
       assert {:ok, :delivered} =
-               Agents.send_message(current_space_id(), "peer", name, "please summarize", :query)
+               Agents.send_note(current_space_id(), "peer", name, "please summarize", :query)
 
       assert Nest.Agents.Agent.get_public_info(pid, 1_000).owed_replies == ["peer"]
 
@@ -173,7 +173,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       log =
         capture_log(fn ->
           assert {:ok, :delivered} =
-                   Agents.send_message(
+                   Agents.send_note(
                      current_space_id(),
                      "peer",
                      name,
@@ -224,11 +224,11 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       spy_on_requests(pid)
 
       assert {:ok, :delivered} =
-               Agents.send_message(current_space_id(), "peer", name, "please summarize", :query)
+               Agents.send_note(current_space_id(), "peer", name, "please summarize", :query)
 
       # The debt is set at delivery and rides the status broadcast (decision 15).
-      # The delivery is a `GenServer.call` (`Agents.send_message/5` →
-      # `Agent.deliver_message/4`), so the frame is already in the mailbox here
+      # The delivery is a `GenServer.call` (`Agents.send_note/5` →
+      # `Agent.deliver_note/4`), so the frame is already in the mailbox here
       # and there is nothing to wait for.
       assert Nest.Agents.Agent.get_public_info(pid, 1_000).owed_replies == ["peer"]
       assert_received {:chat_status, %{name: ^name, status: "streaming", owedReplies: ["peer"]}}
@@ -247,7 +247,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
 
       assert Enum.any?(
                user_texts(second),
-               &(&1 =~ "have not answered" and &1 =~ "peer" and &1 =~ "[nest notice]")
+               &(&1 =~ "have not answered" and &1 =~ "peer" and &1 =~ "[From nest runtime")
              )
 
       # The reminder itself caused no status frame (the phase never left

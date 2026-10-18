@@ -8,10 +8,12 @@ defmodule Nest.Agents do
   public function — it never lives in `opts`.
   """
 
+  alias Nest.Address
   alias Nest.Agents.{Agent, Registry, Supervisor}
   alias Nest.Agents.PersistedAgent
   alias Nest.Agents.Visibility
   alias Nest.DotConfig
+  alias Nest.Notes
   alias Nest.Persistence
   alias Nest.Vocations
 
@@ -337,26 +339,152 @@ defmodule Nest.Agents do
   end
 
   @doc """
-  Asynchronously deliver `content` from `from_name` to the agent
-  `{space_id, name}` (`agents-send`, `agents-query`, and the runtime's
-  own `:notice`).
+  Asynchronously deliver `content` from `from_name` to the addressee `target`
+  (`agents-send` and `agents-query`, and the space page's composer).
 
-  `kind` is the entry's provenance (`Nest.Agents.Agent.Inbox.t:kind/0`)
-  and decides only how the target renders the entry — a `:query` also
-  obliges the target to answer it. It is carried positionally, like the
-  identity tuple.
+  `target` is an **address** (`Nest.Address`): a bare name is an agent's, and
+  `@<username>` is a human's. The two take different paths because they are
+  different things:
 
-  Returns `{:ok, :delivered}` when the target was idle and a turn
-  started, `{:ok, :queued}` when it was busy, or `{:error, reason}` when
-  the target is missing or in a broken state.
+    * an **agent** has a process — `Supervisor.get_agent/2` loads it and
+      `Agent.deliver_note/5` hands the note to its inbox, exactly as before;
+    * a **human** has none. A note to one is a row in `user_notes` and a frame
+      (`Nest.Notes.deliver/5`); there is no process to call, no inbox to drain
+      and no transcript to append to, so the disposition is `:delivered` — a
+      human is never busy.
+
+  `from_name` is an address too, and the sigil is what says a *human* sent it:
+  `"@nat"` persists `from_kind: :user` and rides the delivered entry's sender as
+  `"@nat"`, which is what the recipient's reply obligation is keyed on and what
+  its header states. A human's note to an agent is written **twice**, for two
+  readers: the row the human's feed reads, and the message the model reads.
+
+  `kind` is the entry's provenance (`Nest.Agents.Agent.Inbox.t:kind/0`) and
+  decides only how the target renders the entry — a `:query` also obliges the
+  target to answer it. It is carried positionally, like the identity tuple.
+
+  Returns `{:ok, :delivered}` when the target was idle and a turn started (or
+  the target was a human, who has no turn to start), `{:ok, :queued}` when an
+  agent was busy, or `{:error, reason}` when the target is missing or in a
+  broken state.
   """
-  @spec send_message(integer(), String.t(), String.t(), String.t(), Agent.Inbox.kind()) ::
+  @spec send_note(
+          integer(),
+          String.t(),
+          String.t(),
+          String.t(),
+          Agent.Inbox.kind(),
+          String.t() | nil
+        ) ::
           {:ok, :delivered | :queued} | {:error, term()}
-  def send_message(space_id, from_name, name, content, kind \\ :agent, mode \\ nil) do
-    case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> Agent.deliver_message(pid, from_name, content, kind, mode)
-      {:error, _} = err -> err
+  def send_note(space_id, from_name, target, content, kind \\ :agent, mode \\ nil) do
+    from = Address.parse(from_name)
+
+    case Address.parse(target) do
+      {:user, _username} = to -> note_to_user(space_id, from, to, content, kind)
+      {:agent, name} -> deliver_to_agent(space_id, from, name, content, kind, mode)
     end
+  end
+
+  # A human target: one row and one frame. `:delivered` is the honest
+  # disposition — there is no process that could be busy and no queue to wait
+  # in.
+  defp note_to_user(space_id, from, to, content, kind) do
+    case Notes.deliver(space_id, from, to, content, note_kind(kind)) do
+      {:ok, _note} -> {:ok, :delivered}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # An agent target. The note is recorded and then delivered, so a target that
+  # does not exist writes nothing — nothing was sent, so there is nothing to
+  # remember. `answered_at` is marked only after a delivery that actually
+  # happened, because a note that never arrived answered nothing.
+  defp deliver_to_agent(space_id, from, name, content, kind, mode) do
+    with {:ok, pid} <- Supervisor.get_agent(space_id, name),
+         :ok <- record_human_note(space_id, from, name, content, kind),
+         {:ok, disposition} <- Agent.deliver_note(pid, Address.format(from), content, kind, mode) do
+      mark_answered(space_id, from, name)
+      {:ok, disposition}
+    end
+  end
+
+  # The human's side of a note to an agent: the row the feed reads. Nothing to
+  # do for an agent sender — an agent-to-agent note is the inbox's, and a copy
+  # in `user_notes` would be a second spelling of what an agent was told.
+  defp record_human_note(space_id, {:user, username}, name, content, kind) do
+    case Notes.deliver(space_id, {:user, username}, {:agent, name}, content, note_kind(kind)) do
+      {:ok, _note} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp record_human_note(_space_id, _from, _name, _content, _kind), do: :ok
+
+  defp mark_answered(space_id, {:user, username}, name) do
+    Notes.mark_answered(space_id, username, name)
+  end
+
+  defp mark_answered(_space_id, _from, _name), do: :ok
+
+  # The note kind a delivery's inbox kind becomes. The two vocabularies answer
+  # different questions: an inbox kind says how a *process* renders an entry
+  # (`:user` is a human's own words, `:agent` a peer's), while a note's kind says
+  # what kind of note it is — `:query` obliges an answer, `:agent` is a plain
+  # note, `:runtime` is the runtime speaking. A human's words are a plain note;
+  # `from_kind` already says a human said them.
+  defp note_kind(:query), do: :query
+  defp note_kind(:runtime), do: :runtime
+  defp note_kind(_plain), do: :agent
+
+  @doc """
+  The sentence a tool reports for a `target` that resolved to nobody.
+
+  Two possibilities, and the sentence names both: a bare name is an agent's and
+  an address is a human's, and the sigil is the only thing that tells them
+  apart. So a bare name that matches no agent says so **and**, when a human of
+  that name exists, points at `@name`; an address that names no user does the
+  mirror image.
+
+  The hint appears only when the other end actually exists, and it is resolved
+  the way an address is: a human is any user with that username
+  (`Nest.Accounts.get_user_by_username/1`), an agent is a row in **this** space.
+  A suggestion that named somebody the address could not reach would be a second
+  wrong answer.
+  """
+  @spec target_error(integer(), String.t()) :: String.t()
+  def target_error(space_id, target) do
+    case Address.parse(target) do
+      {:user, username} -> human_error(space_id, username)
+      {:agent, name} -> agent_error(space_id, name)
+    end
+  end
+
+  defp agent_error(_space_id, name) do
+    base = "Agent #{name} not found in this space."
+
+    if Notes.human?(name),
+      do: base <> " Did you mean the human #{Address.format({:user, name})}?",
+      else: base
+  end
+
+  defp human_error(_space_id, "") do
+    "An address is `@` followed by a username; `@` alone names nobody."
+  end
+
+  defp human_error(space_id, username) do
+    base = "No human #{Address.format({:user, username})}."
+
+    if agent_exists?(space_id, username),
+      do: base <> " Did you mean the agent #{username}?",
+      else: base
+  end
+
+  # A row read, not `Supervisor.get_agent/2`: this only decides whether to
+  # suggest the other address, and a refusal must never load (and start) the
+  # agent it is refusing about.
+  defp agent_exists?(space_id, name) do
+    match?({:ok, _row}, Persistence.fetch_agent(space_id, name))
   end
 
   @doc """

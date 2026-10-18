@@ -162,7 +162,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     # The answer itself is delivered into the parent's own transcript as the
     # child's words, labelled with the child it came from, in the same turn.
     assert [delivered] = delivered_texts(mid, "the answer is 4")
-    assert delivered =~ ~s([Message from agent "#{child_name}" | mode: act])
+    assert delivered =~ ~s([From agent #{child_name} | mode: act])
     assert Enum.any?(user_texts(second), &(&1 =~ "the answer is 4"))
 
     # The batch returns: its real result has no live worker to settle it, so it
@@ -315,7 +315,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     Mimic.copy(Nest.Agents)
 
-    Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content ->
+    Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content, _mode, _sender ->
       send(test_pid, {:child_chat_blocked, self()})
 
       receive do

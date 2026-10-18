@@ -7,18 +7,19 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   the drain delivers it to the model. A batch is its entries joined by a blank
   line (`combine/1`), and each entry contributes its own body:
 
-    * a `:user` entry (a human's words) and a `:notice` (the runtime speaking
-      for itself) render with **no agent label** — no agent said either, and a
-      `[Message from agent "X"]` label on a notice would impersonate `X`
-      (issue #31 decision 9) — and the notice additionally carries the
-      `[nest notice]` marker at the head of its text (`NoticeTag.tag/1`), the
-      wire-level signal that this body is the runtime's own (the client strips
-      it on render, so only the model reads it);
-    * every other kind keeps its `[Message from agent "X"]` label, which is
-      what disambiguates a batch of peer messages from each other and from a
-      human's (issue #31 decision 7 for a `:query`, whose requester really is
-      that agent). A missing or blank sender drops the quoted name rather than
-      putting `nil` in the prompt.
+    * **every body carries its own header** (`Nest.Messages.Header`), stating
+      who sent it and the mode the recipient's turn will run in. That is what
+      disambiguates a batch of peer messages from each other and from a human's
+      (issue #31 decision 7 for a `:query`, whose requester really is that
+      agent), and it is why a batch row has no header of its own;
+    * a `:runtime` entry says `nest runtime` whatever agent it is *about*, so
+      the runtime's own words can never be framed as an agent's (issue #31
+      decision 9) — the impersonation the retired `[nest notice]` marker
+      existed to prevent;
+    * a `:query` adds `, agents-send reply required`: it is the one kind that
+      obliges an answer;
+    * a missing or blank sender still says `agent` — the body must not read as
+      a human's, and printing `nil` would be worse.
 
   The same text is what the over-cap offload measures: a batch over
   `Nest.Agents.Agent.Config.configured_async_message_max_tokens/0` is written
@@ -49,8 +50,8 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Inbox.Delivery
   alias Nest.Agents.Agent.Turn.Dispatch
+  alias Nest.Messages.Header
   alias Nest.Messages.MessageList
-  alias Nest.Messages.NoticeTag
   alias Nest.Messages.User
   alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Estimator
@@ -86,52 +87,37 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   """
   @spec build_drained_message([map()], String.t(), String.t()) :: {:user, User.t()}
   def build_drained_message(entries, content, mode) do
-    Dispatch.build_user_message(content, mode, MessageList.drained_metadata(entries))
+    # No `:sender`: a batch is one row holding several bodies, and each body
+    # already carries its own header (`combine/2`).
+    Dispatch.build_user_message(content, mode, metadata: MessageList.drained_metadata(entries))
   end
 
   # ---- private ----
 
-  # The LLM-facing rendering of one drain batch. A human entry is rendered as
-  # its bare content — plus, later, the `[mode: X]\n` prefix
-  # `Dispatch.build_user_message/2` adds — because a queued human message must
-  # read exactly like one that arrived while the agent was idle (issue #31
-  # decision 8): the model never has to reason about whether it was queued.
-  # A `:notice` keeps no `[Message from agent "X"]` label either — it is the
-  # runtime speaking, and the label would impersonate X (decision 9) — but it
-  # does carry the `[nest notice]` marker at the head of its own text, which is
-  # what tells the model (and, once the client strips it, only the model) that
-  # this body is the runtime's own. Every other kind keeps its
-  # `[Message from agent "X"]` label, which is what disambiguates a batch of
-  # peer messages (from each other and from a human's) — including a `:query`,
-  # whose requester really is that agent (decision 7).
+  # The LLM-facing rendering of one drain batch. Each body opens with its own
+  # header, so a queued human message reads exactly like one that arrived while
+  # the agent was idle (issue #31 decision 8): the model never has to reason
+  # about whether it was queued. The batch row itself carries no header — there
+  # is no single sender to state.
   defp combine(entries, mode) do
     Enum.map_join(entries, "\n\n", &render_entry(&1, mode))
   end
 
-  defp render_entry(%{kind: :notice, content: content}, _mode), do: NoticeTag.tag(content)
-
-  defp render_entry(%{kind: :user, content: content}, _mode), do: content
-
-  defp render_entry(%{content: content} = entry, mode),
-    do: "#{agent_label(entry, mode)}\n#{content}"
-
-  # The LLM-facing label for one `:agent` entry: who sent it, and the mode the
-  # *recipient* will run the delivered turn in. The mode is the recipient's
-  # because that is what the agent needs to know about itself — a peer's message
-  # is the only place an agent whose inbox is all peer traffic ever sees its own
-  # mode — and it is not a request to change anything (a request rides
-  # `set_mode`, and arrives as an entry of its own).
+  # Every body states its sender and the mode the recipient will run the
+  # delivered turn in, which is what `Nest.Messages.Header` is for. The mode is
+  # the recipient's because that is what the agent needs to know about itself —
+  # a peer's message is the only place an agent whose inbox is all peer traffic
+  # ever sees its own mode — and it is not a request to change anything (a
+  # request rides `set_mode`, and arrives as an entry of its own).
   #
-  # A missing or blank sender drops the quoted name rather than putting
-  # `nil`/`""` in the prompt, and a mode-less render (an entry that predates the
-  # clause, or a caller with no mode to state) keeps the older bare label.
-  defp agent_label(%{from: from}, mode) when is_binary(mode),
-    do: "[Message from agent#{quoted(from)} | mode: #{mode}]"
+  # The kind decides two of the three facts: `:query` is the one kind that
+  # obliges an answer, and `:runtime` is the runtime speaking whatever agent it
+  # is about.
+  defp render_entry(entry, mode) do
+    sender = Header.sender(Map.get(entry, :from), Map.get(entry, :human?, false), entry.kind)
 
-  defp agent_label(%{from: from}, _mode), do: "[Message from agent#{quoted(from)}]"
-
-  defp quoted(from) when is_binary(from) and from != "", do: " \"#{from}\""
-  defp quoted(_from), do: ""
+    Header.put(entry.content, sender, mode, entry.kind == :query)
+  end
 
   # Over the configured cap, write the full combined text to the agent's
   # scratch dir and return a pointer. If the write fails, fall back to

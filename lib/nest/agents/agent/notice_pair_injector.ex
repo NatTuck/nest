@@ -16,8 +16,13 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
   actions for the turn executor. The two injection shapes:
 
       :agent_user    → [assistant(attention), user(notice)]
-      :user_agent    → [assistant(notice+ack)]  (trailing user/tool)
-                     | [user(notice), assistant(ack)]  (trailing assistant)
+      :user_agent    → [assistant(bridge), user(notice), assistant(ack)]  (user/tool tail)
+                     | [user(notice), assistant(ack)]  (assistant tail)
+
+  The notice is a **user** row in every shape: the runtime's words are never the
+  agent's. When the tail is already wire-`user` (a user message, or a tool
+  result) the notice row needs an assistant in front of it, so the shape opens
+  with the canonical alternation bridge (`MessageList.pairing_bridge/2`).
 
   `:agent_user` is used at LLM-response construction time (the
   response's trailing role is `:user` or `:tool` from the tool
@@ -39,25 +44,25 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
 
   ## Tagging
 
-  Every notice row the builders produce carries the `[nest notice]` marker at
-  the head of its text (`NoticeTag.tag/1`), in all four shapes — including the
-  fused `[assistant(notice + ack)]`, where the tag is at the head of the fused
-  row. The synthetic attention line and the acknowledgement are untagged: they
-  frame the notice, they are not the notice. So the tag is always at the head
+  Every notice row the builders produce carries the runtime's header
+  (`Nest.Messages.Header`) in `spec.mode`, in every shape — the notice row is
+  the one headered row in all of them. The synthetic attention line, the
+  alternation bridge and the acknowledgement carry no header: they frame the
+  notice, they are not messages from anyone. So the header is always at the head
   of a row's text and never mid-text, which is what keeps the client's strip a
-  simple leading-prefix removal.
+  simple line-at-a-body-head removal.
   """
 
   alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
-  alias Nest.Messages.NoticeTag
   alias Nest.Messages.Part
 
   @type spec :: %{
           required(:kind) => atom(),
           optional(:attention) => String.t(),
           required(:notice) => String.t(),
+          required(:mode) => String.t(),
           optional(:threshold) => atom(),
           optional(:ack) => String.t()
         }
@@ -86,8 +91,8 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
        [
          build_attention_assistant(spec.attention),
          ContextReminder.build_user_notice(
-           NoticeTag.tag(spec.notice),
-           nil,
+           spec.notice,
+           spec.mode,
            ContextReminder.context_metadata(spec)
          )
        ]}
@@ -106,21 +111,24 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
 
       # Trailing source `:user` OR `:tool` — both wire-equivalent to
       # `:user` (Anthropic sends tool results as user-role messages
-      # per `MessageList.last_wire_role/1`). The new user message
-      # follows naturally. A single `[assistant(notice+ack)]` is
-      # enough to signal the LLM; the new user message completes
-      # the alternation `user → assistant → user`.
+      # per `MessageList.last_wire_role/1`). The notice is a user row, so
+      # the alternation has to be repaired explicitly rather than by
+      # fusing the notice into an assistant row: the canonical bridge
+      # lands first, then the notice and its ack —
+      # `user → assistant(bridge) → user(notice) → assistant(ack)`.
       last_source_role in [:user, :tool] ->
-        notice_text = spec.notice
+        notice_row =
+          ContextReminder.build_user_notice(
+            spec.notice,
+            spec.mode,
+            ContextReminder.context_metadata(spec)
+          )
+
         ack_text = Map.get(spec, :ack, ack_for_kind(spec.kind))
 
         {:ok,
-         [
-           build_single_assistant(
-             NoticeTag.tag(notice_text <> " " <> ack_text),
-             ContextReminder.context_metadata(spec)
-           )
-         ]}
+         MessageList.pairing_bridge(messages, notice_row) ++
+           [notice_row, build_single_assistant(ack_text)]}
 
       # Trailing source `:assistant` (no trailing tool_use). The
       # full `[user(notice), assistant(ack)]` pair lands before
@@ -133,8 +141,8 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
         {:ok,
          [
            ContextReminder.build_user_notice(
-             NoticeTag.tag(spec.notice),
-             nil,
+             spec.notice,
+             spec.mode,
              ContextReminder.context_metadata(spec)
            ),
            build_single_assistant(ack_text)
@@ -148,21 +156,34 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
   This is `build_pair/3`'s `:user_agent` shape for a notice with no next safe
   boundary — the Stop cancellation record (issue #36, step 4), whose promise to
   the model has to be answered in the same breath. Where `build_pair/3` answers
-  `:deferred` (a tail carrying an unpaired `tool_use`), this collapses to the
-  single assistant message: the appender's terminal bridge then answers the
-  unpaired ids with the canonical interrupted result *before* it lands, and
-  fabricates no acknowledgement of its own (its incoming message is an
-  assistant). So the record closes with exactly one.
+  `:deferred` (a tail carrying an unpaired `tool_use`), this lands the bridge
+  shape anyway: `assistant(bridge) → user(notice) → assistant(ack)`.
+
+  That shape is valid on a deferred tail because the appender's terminal bridge
+  answers the unpaired ids with the canonical interrupted result *before* the
+  first row lands, so the effective tail when they do is `tool` — a wire-`user`
+  role the bridge can follow. And the terminal bridge fabricates no
+  acknowledgement of its own, because its incoming message is now an assistant
+  (`MessageList.repair_messages/2` adds the ack only for a user incoming), which
+  is what keeps the record from closing with two acknowledgements.
 
   Pure, and total on an empty message list (the shape a hand-built fixture has).
   """
-  @spec notice_record([term()], String.t(), String.t()) :: [term()]
-  def notice_record(messages, notice, ack) do
-    spec = %{kind: :stop_cancellation, notice: notice, ack: ack}
+  @spec notice_record([term()], String.t(), String.t(), String.t()) :: [term()]
+  def notice_record(messages, notice, ack, mode) do
+    spec = %{kind: :stop_cancellation, notice: notice, ack: ack, mode: mode}
 
     case build_pair(messages, spec, :user_agent) do
-      {:ok, pair} -> pair
-      :deferred -> [build_single_assistant(NoticeTag.tag(notice <> " " <> ack))]
+      {:ok, pair} ->
+        pair
+
+      :deferred ->
+        # Hand-built rather than `MessageList.pairing_bridge/2`: on this tail that
+        # call takes its `{:assistant, …}` clause and returns `[tool,
+        # repair_ack()]`, which would pre-empt the appender's own repair *and*
+        # add the second acknowledgement this record must not have.
+        notice_row = ContextReminder.build_user_notice(notice, mode)
+        [MessageList.idle_bridge_ack(:live), notice_row, build_single_assistant(ack)]
     end
   end
 

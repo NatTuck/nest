@@ -1,29 +1,26 @@
 /**
- * The `[Message from agent "NAME" | mode: <mode>]` header: the clause the
- * server adds to it, and removing it for display.
+ * The retired `[Message from agent "NAME" | mode: <mode>]` label: the mode
+ * clause it carried, and removing that clause for display.
  *
- * Every message an agent receives states **the recipient's** mode: a user
- * message as a `[mode: <mode>]\n` prefix (`utils/stripModePrefix.js`), and a
- * peer delivery in the header of the body it wraps. That is the only mechanism
- * by which an agent whose inbox is all peer traffic learns its own mode — the
- * mode is a per-agent runtime property (`Nest.Modes`) and nothing else in a
- * peer's message carries it.
+ * **Legacy only.** The label was replaced by the `[From … | mode: …]` header
+ * (`utils/stripHeader.js`), which is a whole line rather than a wrapper around
+ * a body, so nothing writes this shape any more. Transcripts recorded before
+ * the header still carry it, and there the label is the only thing that says
+ * who spoke — so the label itself stays on screen and only its ` | mode: X`
+ * clause goes, because the row's badge already shows the mode.
  *
- * The chat UI already renders the same value as the row's mode badge, so the
- * header's copy is a duplicate on screen. `stripAgentHeaderMode` removes it,
- * exactly as `stripModePrefix` removes the prefix the badge also shows.
- *
- * The guard is the same one `stripModePrefix` uses, and for the same reason:
- * `mode` is untrusted. Only the clause that *agrees* with the message's own
- * `mode` is removed, so a header that disagrees — a bug, or a row written by an
- * older build — keeps its text and the disagreement stays visible rather than
- * being hidden.
+ * The guard is the one `stripHeader` uses, and for the same reason: `mode` is
+ * untrusted. Only the clause that *agrees* with the message's own `mode` is
+ * removed, so a label that disagrees — a bug, or a row written by an older
+ * build — keeps its text and the disagreement stays visible rather than being
+ * hidden.
  */
 
-// The header's opening. A peer delivery is labelled with this; a human's own
-// message (`[Message from the user "…"]`) and a runtime notice carry different
-// markers and are left alone.
-const AGENT_HEADER_PREFIX = "[Message from agent";
+import { AGENT_LABEL_OPEN } from "./stripHeader.js";
+
+// The label's opening. A human's own message and a runtime notice never carried
+// it, so they are left alone.
+const AGENT_HEADER_PREFIX = AGENT_LABEL_OPEN;
 
 /**
  * Remove the ` | mode: <mode>` clause from an agent message's header line.

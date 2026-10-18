@@ -457,7 +457,7 @@ defmodule Nest.Persistence do
         Messages.load_slice_for(row, cap: :all, limit: :all, floor: boundary)
 
       archived = Messages.archived_summary_for(row, boundary)
-      {violations, load_heal} = classify_sequence(preloaded, boundary)
+      {violations, load_heal} = classify_sequence(preloaded, boundary, row.mode)
 
       attrs =
         start_attrs(
@@ -547,16 +547,16 @@ defmodule Nest.Persistence do
   # repair tool. Returns `{violations, heal | nil}`, where `heal` is a list of
   # `%Part.ToolUse{}` to answer, `{:bridge, messages}` to append, or
   # `{:lost_promises, messages}` to append.
-  @spec classify_sequence([Message.t()], integer()) ::
+  @spec classify_sequence([Message.t()], integer(), String.t()) ::
           {[Preflight.violation()],
            [Nest.Messages.Part.ToolUse.t()]
            | {:bridge, [term()]}
            | {:lost_promises, [term()]}
            | nil}
-  defp classify_sequence(preloaded, boundary) do
+  defp classify_sequence(preloaded, boundary, mode) do
     active = Enum.filter(preloaded, fn {_role, %{index: idx}} -> idx > boundary end)
 
-    case Repair.decide(:load, active, nil) do
+    case Repair.decide(:load, active, %{mode: mode}) do
       :ok -> {[], nil}
       {:interrupted, tool_uses} -> {[], tool_uses}
       {:bridge, messages} -> {[], {:bridge, messages}}

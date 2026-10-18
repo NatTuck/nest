@@ -73,7 +73,7 @@ defmodule Nest.Agents.Agent.Machine.Boundary do
   #     `user` row, but not a turn waiting for an answer: it is the seed of the
   #     new context;
   #   * the failure path (`Compaction.compaction_failed/3`'s non-nil carried
-  #     arm), where the segment still ends on the `[mode: compact]` request row
+  #     arm), where the segment still ends on the compaction request row
   #     and the resumed turn is about to generate over it.
   #
   # In both, a queued message is delivered onto the segment rather than waiting

@@ -144,7 +144,7 @@ defmodule Nest.Agents.Agent.Callbacks do
         {:noreply, state}
 
       status == :idle ->
-        ChatPipeline.handle_chat(state, content, mode, human?)
+        ChatPipeline.handle_chat(state, content, mode, sender, human?)
 
       Inbox.busy_status?(status) ->
         {state, _disposition} = Inbox.deliver_user_message(state, sender, content, mode, human?)
@@ -222,7 +222,7 @@ defmodule Nest.Agents.Agent.Callbacks do
   end
 
   # Async agent-to-agent delivery (`agents-send`, `agents-query`, and the
-  # runtime's own `:notice`). The caller (a tool worker in another agent)
+  # runtime's own `:runtime` entries). The caller (a tool worker in another agent)
   # hands us a message; we either start a turn (idle), queue it (busy), or
   # refuse (broken state). `kind` is the entry's provenance and only decides
   # how it renders (a `:query` additionally owes a reply). See

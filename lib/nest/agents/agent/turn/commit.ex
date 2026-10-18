@@ -12,11 +12,11 @@ defmodule Nest.Agents.Agent.Turn.Commit do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Compaction.Marker
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
   alias Nest.Messages.Part
   alias Nest.Messages.System, as: MsgSystem
-  alias Nest.Messages.User
   alias Nest.Tokens.Estimator
 
   require Logger
@@ -53,17 +53,17 @@ defmodule Nest.Agents.Agent.Turn.Commit do
     # report two numbers.
     tokens_compacted = Estimator.estimate_messages(archived_messages)
 
+    # A single-sender row states its sender: the summary is the runtime's own
+    # record of the compaction, so it carries the runtime's header in the mode
+    # the agent is working under. Without one it would be the only user row in
+    # the transcript that states neither — the batch shape, which says nothing.
     summary_user =
-      {:user,
-       %User{
-         parts: [
-           %Part.Text{
-             text: summary_body(summary_text, preserve, tokens_compacted, marker_index)
-           }
-         ],
-         timestamp: now,
-         api_logs: []
-       }}
+      Dispatch.build_user_message(
+        summary_body(summary_text, preserve, tokens_compacted, marker_index),
+        state.live.mode,
+        sender: :runtime
+      )
+      |> stamp(now)
 
     rebuilt_system = build_rebuilt_system(system_prompt, state.llm_metrics.context_limit, now)
 
@@ -86,6 +86,10 @@ defmodule Nest.Agents.Agent.Turn.Commit do
 
     {new_messages, marker}
   end
+
+  # `Dispatch.build_user_message/3` stamps `DateTime.utc_now/0`; the segment's
+  # rows share one timestamp, so it is replaced here.
+  defp stamp({:user, user}, now), do: {:user, %{user | timestamp: now}}
 
   # The summary message's body: what this compaction replaced, the agent's own
   # `preserve` text verbatim, the compactor's summary, and where the archived

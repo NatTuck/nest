@@ -68,7 +68,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           from: nil,
           content: "a notice",
           timestamp: at,
-          kind: :notice,
+          kind: :runtime,
           mode: nil,
           human?: false
         }
@@ -116,7 +116,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
                  "from" => nil,
                  "content" => "a notice",
                  "timestamp" => "2026-01-02T03:04:05Z",
-                 "kind" => "notice",
+                 "kind" => "runtime",
                  "mode" => nil,
                  "human" => false
                }
@@ -143,12 +143,22 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       # selection is total on purpose, so a new entry kind cannot crash the
       # drain inside the Agent process.
       query = %{entry(:agent, "peer", "query note") | kind: :query}
-      notice = %{entry(:agent, nil, "runtime note") | kind: :notice}
+      notice = %{entry(:agent, nil, "runtime note") | kind: :runtime}
 
       assert Inbox.batch([query, bob]) == [query, bob]
       assert Inbox.batch([peer, query, alice]) == [peer, query]
       assert Inbox.batch([notice, bob]) == [notice, bob]
       assert Inbox.batch([peer, notice, alice]) == [peer, notice]
+
+      # The rule is about *human words*, not about the kind: a human's query is a
+      # `:query` entry whose sender is an address (`Nest.Address`), and merging
+      # it into a batch of peer traffic would lose the one thing the rule exists
+      # to preserve — its own turn boundary and its own mode.
+      from_human = %{entry(:query, "@nat", "a human's question") | kind: :query}
+
+      assert Inbox.batch([from_human, peer, bob]) == [from_human]
+      assert Inbox.batch([peer, from_human, alice]) == [peer]
+      assert Inbox.batch([peer, bob, from_human]) == [peer, bob]
 
       # The invariant the removed `prune_retrieved/1` used to mop up after: a
       # non-empty queue always selects a non-empty batch, so the drain can never
@@ -188,7 +198,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       state = %{state | live: %{state.live | inbox: full}}
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
 
-      Enum.reduce(Enum.with_index([:agent, :query, :notice], 101), state, fn {kind, n}, state ->
+      Enum.reduce(Enum.with_index([:agent, :query, :runtime], 101), state, fn {kind, n}, state ->
         content = "runtime says #{n}"
         state = Inbox.enqueue_internal(state, "runtime", content, kind)
 
@@ -216,7 +226,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
         entry(:query, "alice", "ask alice"),
         entry(:query, nil, "no sender"),
         entry(:query, "", "blank sender"),
-        entry(:notice, "peer", "runtime notice")
+        entry(:runtime, "peer", "runtime notice")
       ]
 
       assert Inbox.query_senders(entries) == ["alice"]

@@ -34,6 +34,16 @@ describe("agentHeaderMode", () => {
 });
 
 describe("stripAgentHeaderMode", () => {
+  it("leaves the current header alone — that is the other stripper's job", () => {
+    // `[From … | mode: …]` is a whole line headed by `utils/stripHeader.js`.
+    // This function only removes a mode *clause* from the retired
+    // `[Message from agent …]` label, so it must not touch the new shape.
+    const text = "[From agent peer | mode: act]\nbody";
+
+    expect(stripAgentHeaderMode(text, "act")).toBe(text);
+    expect(agentHeaderMode(text)).toBeNull();
+  });
+
   it("removes the clause the mode badge already shows", () => {
     expect(
       stripAgentHeaderMode(

@@ -6,6 +6,7 @@
  *   - `./channels/agent`  — agent-channel join + chat actions
  *   - `./channels/shellJobs` — background shell-job kill / list / log
  *   - `./channels/lobby`  — lobby join + space/model/invite pushes
+ *   - `./channels/spaceNotes` — the space feed's read and its composer's send
  *
  * `initChannels` lives here (it owns the socket lifecycle hookup).
  */
@@ -17,6 +18,7 @@ export * from "./channels/state";
 export * from "./channels/agent";
 export * from "./channels/shellJobs";
 export * from "./channels/lobby";
+export * from "./channels/spaceNotes";
 
 // Refs for the socket lifecycle registrations, so a repeated `initChannels()`
 // REPLACES them rather than adding another set. Phoenix's client does not

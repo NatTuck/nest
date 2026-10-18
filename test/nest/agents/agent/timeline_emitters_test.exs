@@ -151,12 +151,12 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     # --- the same agent's inbox: each disposition, the drain, and an enqueue ---
 
     # Idle target: delivered, and the drain that follows it.
-    assert {:ok, :delivered} = Agents.send_message(space_id, "peer", name, "hello", :agent)
+    assert {:ok, :delivered} = Agents.send_note(space_id, "peer", name, "hello", :agent)
     assert statuses_until_idle(name) == ["streaming", "idle"]
 
     # Busy target: queued.
     set_status(pid, :streaming)
-    assert {:ok, :queued} = Agents.send_message(space_id, "peer", name, "while busy", :agent)
+    assert {:ok, :queued} = Agents.send_note(space_id, "peer", name, "while busy", :agent)
 
     # A human message while busy takes the other enqueue path, which never
     # refuses.
@@ -166,11 +166,11 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     set_status(pid, :needs_repair)
 
     assert {:error, {:status, :needs_repair}} =
-             Agents.send_message(space_id, "peer", name, "nope", :agent)
+             Agents.send_note(space_id, "peer", name, "nope", :agent)
 
     # Full inbox: refused by the cap.
     fill_inbox(pid, 100)
-    assert {:error, :inbox_full} = Agents.send_message(space_id, "peer", name, "nope", :agent)
+    assert {:error, :inbox_full} = Agents.send_note(space_id, "peer", name, "nope", :agent)
 
     # The fabricated state is test-only: leave the agent idle and the queue empty
     # so the teardown's zero-in-flight assertion holds.
@@ -350,7 +350,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     parent_vocation = programmer_vocation_id_for_test()
     specialist_slug = specialist_vocation_slug()
 
-    Mimic.stub(Agents, :chat, fn _space_id, _name, _content -> :ok end)
+    Mimic.stub(Agents, :chat, fn _space_id, _name, _content, _mode, _sender -> :ok end)
 
     child_name = "kid-#{System.unique_integer([:positive])}"
 
@@ -456,7 +456,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     log =
       capture_log(fn ->
         assert {:ok, :delivered} =
-                 Agents.send_message(space_id, "ghost", name, "question?", :query)
+                 Agents.send_note(space_id, "ghost", name, "question?", :query)
 
         assert statuses_until_idle(name) == ["streaming", "idle"]
 

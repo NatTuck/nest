@@ -53,8 +53,7 @@ import {
   mediaFromParts,
 } from "../utils/messageParts.js";
 import { stripAgentHeaderMode } from "../utils/agentHeader.js";
-import { stripModePrefix } from "../utils/stripModePrefix.js";
-import { stripNoticePrefix } from "../utils/stripNoticePrefix.js";
+import { stripHeader } from "../utils/stripHeader.js";
 
 function Message({ message, agentName }) {
   const isUser = message.role === "user";
@@ -145,9 +144,7 @@ function Message({ message, agentName }) {
                     {
                       kind: "text",
                       text: stripAgentHeaderMode(
-                        stripNoticePrefix(
-                          stripModePrefix(messageText(message), message.mode),
-                        ),
+                        stripHeader(messageText(message), message.mode),
                         message.mode,
                       ),
                     },

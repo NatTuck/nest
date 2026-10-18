@@ -44,6 +44,7 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
   use ExUnit.Case, async: true
 
   alias Nest.Agents.Agent.NoticePairInjector
+  alias Nest.LLM.Preflight
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
   alias Nest.Messages.Part
@@ -51,38 +52,49 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
   alias Nest.Messages.User
 
   describe "Case A (user-message path) — inject before user message" do
-    test "trailing :user (post-compaction): single assistant → tail user after append" do
+    test "trailing :user (post-compaction): bridge, notice, ack → tail user after append" do
       # After compaction, the messages list ends with
       # `summary_user`. The pending real user message follows.
-      # Injection: `[assistant(notice+ack)]` (single) so the
-      # wire is `[user, assistant, user]` after appending the
-      # real user message.
+      # The notice is a user row, so the injection opens with the
+      # alternation bridge: `[assistant(bridge), user(notice),
+      # assistant(ack)]`, making the wire
+      # `[user, assistant, user, assistant, user]` after appending
+      # the real user message.
       messages = [user_struct(0, "summary")]
 
       assert {:ok, pair} = NoticePairInjector.build_pair(messages, spec(), :user_agent)
-      assert [{:assistant, _}] = pair
+      assert [{:assistant, _}, {:user, _}, {:assistant, _}] = pair
 
       real_user = user_struct(length(messages) + length(pair), "hello")
       new_messages = messages ++ pair ++ [real_user]
 
       assert MessageList.last_wire_role(new_messages) == :user
+      assert Preflight.validate(new_messages) == :ok
     end
 
-    test "trailing :tool: single assistant → tail tool after append (wire :user)" do
+    test "trailing :tool: bridge, notice, ack → tail tool after append (wire :user)" do
       # Trailing source `:tool` is wire-equivalent to `:user`
       # (Anthropic sends tool results as user-role messages,
-      # per `MessageList.last_wire_role/1`). A single
-      # `[assistant(notice+ack)]` keeps the wire valid; a
-      # full pair would create back-to-back users.
-      messages = [user_struct(0, "hello"), tool_struct(1, "result")]
+      # per `MessageList.last_wire_role/1`), so it takes the same
+      # bridge as a `:user` tail: a user-role notice on a wire-user
+      # tail would be two consecutive user roles.
+      #
+      # The fixture pairs its tool result with a real `tool_use` so the
+      # composed list is one `Preflight.validate/1` can actually judge.
+      messages = [
+        user_struct(0, "hello"),
+        assistant_struct_with_tool_use(1),
+        tool_struct(2, "result")
+      ]
 
       assert {:ok, pair} = NoticePairInjector.build_pair(messages, spec(), :user_agent)
-      assert [{:assistant, _}] = pair
+      assert [{:assistant, _}, {:user, _}, {:assistant, _}] = pair
 
       real_user = user_struct(length(messages) + length(pair), "again")
       new_messages = messages ++ pair ++ [real_user]
 
       assert MessageList.last_wire_role(new_messages) == :user
+      assert Preflight.validate(new_messages) == :ok
     end
 
     test "trailing :assistant (no tool_use): full pair → tail user after append" do
@@ -100,6 +112,7 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
       new_messages = messages ++ pair ++ [real_user]
 
       assert MessageList.last_wire_role(new_messages) == :user
+      assert Preflight.validate(new_messages) == :ok
     end
 
     test "trailing :assistant + tool_use: :deferred (no injection, preserves in-flight pairing)" do
@@ -228,7 +241,13 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
   # --- helpers ---
 
   defp spec do
-    %{kind: :context, attention: "Context?", notice: "token budget", ack: "Okay, context noted."}
+    %{
+      kind: :context,
+      attention: "Context?",
+      notice: "token budget",
+      ack: "Okay, context noted.",
+      mode: "act"
+    }
   end
 
   defp user_struct(index, text) do

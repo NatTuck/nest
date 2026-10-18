@@ -156,6 +156,18 @@ export function joinLobby(onOk, onError) {
     }
   });
 
+  // One note with a human at one end (`Nest.Notes`), which every `user_notes`
+  // insert broadcasts on its space's topic — the topic this channel subscribed
+  // to for every space the user can see, so a frame for another space never
+  // arrives. The server has already dropped a note between two other humans
+  // (`Nest.Notes.for_user?/2`); the feed's store keeps it if that space's feed
+  // is open, and drops it otherwise (its next read fetches the whole list).
+  lobbyChannel.on("user_note:created", (payload) => {
+    if (payload?.note) {
+      getStore().appendSpaceNote(payload.note);
+    }
+  });
+
   lobbyChannel.on("models_updated", (payload) => {
     getStore().setModels(payload.models || []);
   });
@@ -174,6 +186,9 @@ export function joinLobby(onOk, onError) {
   lobbyChannel
     .join()
     .receive("ok", () => {
+      // The server answers lobby pushes only from here on: a page whose first
+      // read is one of them waits for this flag (`SpaceFeed`).
+      getStore().setLobbyJoined(true);
       if (onOk) onOk();
     })
     .receive("error", (err) => {
@@ -189,6 +204,7 @@ export function leaveLobby() {
   if (lobbyChannel) {
     lobbyChannel.leave();
     clearLobbyChannel();
+    getStore().setLobbyJoined(false);
   }
 }
 

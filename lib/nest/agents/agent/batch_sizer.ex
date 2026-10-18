@@ -418,15 +418,24 @@ defmodule Nest.Agents.Agent.BatchSizer do
   # Decision tree:
   #   1. Compute `full_size` for the actual content.
   #   2. If the cap (`effective_max_result_tokens/2`) is set and
-  #      `full_size > cap`, route per-tool:
-  #        * `shell-cmd` → write-to-tmp + path-and-head summary.
-  #        * `file-read`  → return error result with size hint.
-  #        * other tools  → log warning, keep full.
+  #      `full_size > cap`, route per-tool (`handle_over_cap/5`):
+  #        * `file-read`  → return an error result with a size hint. The cap
+  #          is an upper bound on what the preflight projects rather than a
+  #          matched number: `ProjectedSize.read_file_projection/2` clamps its
+  #          projection to this cap, so the preflight is never *below* what
+  #          this pass enforces.
+  #        * every other tool → `offload/5`: write the full output to scratch
+  #          and keep a bounded pointer + head inline.
+  #      Note what does NOT bound that substitute: `offload/5` sizes it against
+  #      `acc.limit - acc.running`, and `acc.limit` is the *context limit*, not
+  #      the cap. So "nothing over the cap goes inline" holds for `file-read`
+  #      and media only — it is not a property of every tool, and code that
+  #      wants a cap bound must not assume it.
   #   3. Otherwise, decide keep-full vs. summarize against the
   #      running batch budget (`keep_full?/3`). The batch budget
   #      should always accommodate `full_size` post-preflight, but
-  #      we fall back to the existing summary path for
-  #      `shell-cmd` if it doesn't.
+  #      every tool falls back to the substitute path (`offload/5`)
+  #      when it does not.
   #
   # A tool result that isn't storable text (invalid UTF-8, or valid
   # UTF-8 containing NUL — e.g. `curl` dumping a download to stdout, or
@@ -444,7 +453,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   # a scratch file and hand the model a pointer to something it cannot see.
   defp apply_one_with_acc({tc, :ok, {:media, part}}, _ctx, acc) do
     price = Estimator.estimate_media(part) + per_message_overhead()
-    cap = effective_max_result_tokens(tc, acc.usable)
+    cap = cap_for(tc, acc)
 
     if cap && price > cap do
       error = media_over_cap_error(part, price, cap)
@@ -482,7 +491,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   # The original post-execution sizing path for text tool results.
   defp size_text_result({tc, :ok, content}, ctx, acc) do
     full_size = Estimator.estimate(content) + per_message_overhead()
-    cap = effective_max_result_tokens(tc, acc.usable)
+    cap = cap_for(tc, acc)
 
     if cap && full_size > cap do
       handle_over_cap(tc, content, full_size, ctx, acc)
@@ -490,6 +499,20 @@ defmodule Nest.Agents.Agent.BatchSizer do
       fit_in_batch_budget(tc, content, full_size, ctx, acc)
     end
   end
+
+  # The cap for this call, or `nil` when the batch has no usable window left.
+  #
+  # `effective_max_result_tokens/2` requires a positive window, and a spent one
+  # is reachable here: `cook/2` runs on its own for a merged regular +
+  # sub-agent batch, without the preflight that would have refused it, and
+  # `reduce_entries/2` sets `usable: 0` when the conversation has already
+  # consumed the content budget. Treating that as "no cap" falls through to the
+  # batch-budget pass, which substitutes an over-budget result — the right
+  # answer, where raising would crash the turn.
+  defp cap_for(tc, %{usable: usable}) when is_integer(usable) and usable > 0,
+    do: effective_max_result_tokens(tc, usable)
+
+  defp cap_for(_tc, _acc), do: nil
 
   # A non-text tool result: always write the raw bytes to the scratch
   # file and return a `saved to <path>` pointer inline that tells the

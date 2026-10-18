@@ -55,7 +55,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       assert ack_text =~ "running in the background"
 
       assert {:user, %User{parts: [%Part.Text{text: text}]}} = user
-      assert text == "[mode: chat]\npeer note"
+      assert text == "peer note"
 
       # The batch moved out of the worker fields — which `Phase.enter/4` nulls —
       # into the entry its late result is routed on, ids and all: the ids are
@@ -86,7 +86,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       assert Preflight.validate_tool_call_pairing(transcript) == :ok
     end
 
-    test "a notice delivered by the backgrounding path keeps its fulfilled ids" do
+    test "a :runtime entry delivered by the backgrounding path keeps its fulfilled ids" do
       # The delivery a restart would otherwise misread: batch A was backgrounded,
       # A's result arrived while batch B was executing (so the notice queued),
       # and the next message arrives while B still executes — `Inbox.batch/1`
@@ -116,7 +116,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
 
       assert Enum.map(MessageList.backgrounded_results(loaded), & &1.tool_call_id) == ["call_2"]
 
-      assert {:lost_promises, record} = Repair.classify_load(loaded)
+      assert {:lost_promises, record} = Repair.classify_load(loaded, "act")
 
       assert Enum.any?(
                record,
@@ -178,7 +178,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       assert ack_text == "Okay, context noted."
 
       assert {:user, %User{parts: [%Part.Text{text: text}]}} = delivered
-      assert text == "[mode: chat]\nthe question"
+      assert text == "the question"
 
       # The threshold is recorded on the machine, so it does not fire again for
       # this segment, and the turn continues in `:generating`.
@@ -442,14 +442,14 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
     {:tool, %Tool{index: index, parts: parts, api_logs: []}}
   end
 
-  # A runtime notice for a backgrounded batch's result, as the delivery queued it
-  # (`Inbox.deliver_notice/3`): the ids it answers ride the entry.
+  # A `:runtime` entry for a backgrounded batch's result, as the delivery queued
+  # it (`Inbox.enqueue_runtime/3`): the ids it answers ride the entry.
   defp notice_entry(fulfilled_ids) do
     %{
       from: nil,
       content: "Your backgrounded command (shell-cmd) finished.",
       timestamp: DateTime.utc_now(),
-      kind: :notice,
+      kind: :runtime,
       mode: nil,
       fulfilled_ids: fulfilled_ids
     }

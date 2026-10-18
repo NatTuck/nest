@@ -35,27 +35,27 @@ defmodule Nest.Agents.PersistedAgent do
   import Ecto.Changeset
 
   # An agent's `name` doubles as its scratch-directory segment:
-  # `Nest.Agents.Agent.TmpSpace.agent_dir/2` joins it onto the space
-  # directory, and `cleanup/2` `rm_rf`s that join. A name must therefore
-  # be usable verbatim as a single filename component, which is what these
-  # two rules enforce at the DB boundary:
+  # `Nest.Agents.Agent.TmpSpace.agent_dir/3` joins it onto the space
+  # directory, and `cleanup/3` `rm_rf`s that join. The rule is therefore a
+  # filesystem one as well as a naming one, and it lives in `Nest.Name` — the
+  # same rule `Nest.Accounts.User` applies to a human's username, so the two
+  # cannot diverge:
   #
-  #   * `@name_format` — letters, digits, `_` and `-` only. No `/` (would
-  #     nest), no `.` (a `..` component escapes the space dir), no
-  #     whitespace and no control characters.
-  #   * `@max_name_bytes` — the filesystem component limit (`NAME_MAX`).
-  #     The scratch segment is the bare name, so 255 B is exact; the
-  #     character class is ASCII-only, so bytes == characters and this
-  #     agrees with the column's own 255-character limit. A future
-  #     directory-name prefix or suffix would have to lower this.
+  #   * the pattern is `[a-z0-9_-]+`: no `/` (would nest), no `.` (a `..`
+  #     component escapes the space dir), no whitespace, no control characters,
+  #     and **no capitals** (`@Nat` and `@nat` are one address);
+  #   * the cap is the filesystem component limit (`NAME_MAX`), 255 B, which is
+  #     exact because the scratch segment is the bare name and the character
+  #     class is ASCII-only.
   #
   # Enforced on insert and on any name change (a rename goes through this
   # changeset, so a name can never become unsafe). Existing rows that
-  # predate the rule are rewritten by
-  # `priv/repo/migrations/20261011000000_sanitize_agent_names.exs`; the
-  # changeset never rewrites a name itself.
-  @name_format ~r/\A[A-Za-z0-9_-]+\z/
-  @max_name_bytes 255
+  # predate the rule are rewritten by the name migrations
+  # (`priv/repo/migrations/20261011000000_sanitize_agent_names.exs` and
+  # `20261022000000_lowercase_names.exs`); the changeset never rewrites a name
+  # itself.
+  @name_format Nest.Name.pattern()
+  @max_name_bytes Nest.Name.max_bytes()
 
   @type t :: %__MODULE__{
           id: integer() | nil,
@@ -194,7 +194,7 @@ defmodule Nest.Agents.PersistedAgent do
     # limits coincide.
     |> validate_length(:name, min: 1, max: @max_name_bytes, count: :bytes)
     |> validate_format(:name, @name_format,
-      message: "must contain only letters, digits, `_` and `-`"
+      message: "must contain only lowercase letters, digits, `_` and `-`"
     )
     |> unique_constraint([:space_id, :name])
     # Defensive: depth must be non-negative. The DB-side
@@ -218,23 +218,22 @@ defmodule Nest.Agents.PersistedAgent do
   end
 
   @doc """
-  Whether `name` may be used verbatim as a scratch-directory segment: letters,
-  digits, `_` and `-` only (`#{@name_format.source}`), at most
-  `#{@max_name_bytes}` bytes.
+  Whether `name` may be used verbatim as a scratch-directory segment:
+  `#{@name_format.source}` — lowercase letters, digits, `_` and `-` only — at
+  most `#{@max_name_bytes}` bytes.
 
-  The rule is defined on this schema because an agent's `name` *is* the
-  directory segment (`Nest.Agents.Agent.TmpSpace`), and this is where it is
-  enforced at the DB boundary. It is exposed so a caller that *derives* a name
-  from another field can apply the same rule at its own boundary instead of
-  copying it: `Nest.Spaces.Space.changeset/2` refuses a client-supplied
-  `:slug` whose `<slug>-root` root-agent name would fail it — otherwise the
-  client gets an `invalid_agent_name` error naming a field it never sent (see
+  The rule is `Nest.Name.valid?/1`; this is the agent-side name for it, kept
+  because an agent's `name` *is* the directory segment
+  (`Nest.Agents.Agent.TmpSpace`) and this is where it is enforced at the DB
+  boundary. It is exposed so a caller that *derives* a name from another field
+  can apply the same rule at its own boundary instead of copying it:
+  `Nest.Spaces.Space.changeset/2` refuses a client-supplied `:slug` whose
+  `<slug>-root` root-agent name would fail it — otherwise the client gets an
+  `invalid_agent_name` error naming a field it never sent (see
   `NestWeb.LobbyChannel.AgentErrors.create_payload/1`).
   """
   @spec valid_name?(term()) :: boolean()
-  def valid_name?(name) do
-    is_binary(name) and byte_size(name) <= @max_name_bytes and Regex.match?(@name_format, name)
-  end
+  defdelegate valid_name?(name), to: Nest.Name, as: :valid?
 
   defp atomize_keys(params) when is_map(params) and not is_struct(params) do
     Map.new(params, fn {k, v} -> {if(is_binary(k), do: safe_atom(k), else: k), v} end)

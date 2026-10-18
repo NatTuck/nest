@@ -168,7 +168,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
       assert [%ToolResult{name: "agents-spawn", is_error: true, content: content}] = results
 
       assert content =~ "letters, digits"
-      assert content =~ "no spaces or slashes"
+      assert content =~ "no capitals, spaces or slashes"
       refute content =~ "Ecto.Changeset"
       assert log =~ "is_error=true tool result"
     end
@@ -184,7 +184,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
 
       # The child's own chat cycle is short-circuited; the test drives its
       # completion below, and the parent's delivery turn is scripted.
-      Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _prompt -> :ok end)
+      Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _prompt, _mode, _sender -> :ok end)
       Mimic.allow(Nest.Agents, self(), parent_pid)
       MockClient.set_response("noted")
 
@@ -206,7 +206,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
       # states the mode the parent's delivered turn runs in — the child
       # inherited the parent's `act`.
       assert [delivered] = await_delivery(parent_pid, "the answer")
-      assert delivered =~ ~s([Message from agent "#{child_name}" | mode: act])
+      assert delivered =~ ~s([From agent #{child_name} | mode: act])
       assert delivered =~ "the answer"
 
       # The child's usage merged into the parent's descendant totals.
@@ -218,7 +218,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
       {parent_pid, parent_name} = start_agent(vid)
       child_name = "stopped-child-#{System.unique_integer([:positive])}"
 
-      Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _prompt -> :ok end)
+      Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _prompt, _mode, _sender -> :ok end)
       Mimic.allow(Nest.Agents, self(), parent_pid)
       MockClient.set_response("noted")
 
@@ -279,7 +279,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
       {parent_pid, parent_name} = start_agent(vid)
       test_pid = self()
 
-      Mimic.stub(Nest.Agents, :send_message, fn _space_id, from, name, content, kind, _mode ->
+      Mimic.stub(Nest.Agents, :send_note, fn _space_id, from, name, content, kind, _mode ->
         send(test_pid, {:delivered_query, from, name, content, kind})
         {:ok, :delivered}
       end)
@@ -297,7 +297,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
     test "reports a queued delivery and every refusal", %{vid: vid} do
       {parent_pid, parent_name} = start_agent(vid)
 
-      Mimic.stub(Nest.Agents, :send_message, fn _space_id, _from, _name, _content, _kind, _mode ->
+      Mimic.stub(Nest.Agents, :send_note, fn _space_id, _from, _name, _content, _kind, _mode ->
         {:ok, :queued}
       end)
 
@@ -319,7 +319,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
           ]
 
           for {reply, expected} <- cases do
-            Mimic.stub(Nest.Agents, :send_message, fn _s, _f, _n, _c, _k, _m -> reply end)
+            Mimic.stub(Nest.Agents, :send_note, fn _s, _f, _n, _c, _k, _m -> reply end)
 
             [result] =
               run_query(parent_pid, parent_name, %{"name" => "peer", "prompt" => "hi"})

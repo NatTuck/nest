@@ -8,12 +8,12 @@ defmodule Nest.Agents.Agent.Turn.Backgrounded do
   result — or its worker's death — has no live worker to settle, so the
   machine clears the entry and emits
   `{:deliver_backgrounded, ref, outcome, fulfilled_ids}` (the ref answers
-  exactly once), and the executor runs it: `Inbox.deliver_notice/3` renders
-  the outcome here as a runtime `:notice`, and the fulfilled ids ride the
+  exactly once), and the executor runs it: `Inbox.enqueue_runtime/3` renders
+  the outcome here as a `:runtime` entry, and the fulfilled ids ride the
   entry onto the message the drain appends, so a later load can tell a promise
   that was kept from one the process died with.
 
-  `:notice` is the only honest kind (no agent said this), and it renders
+  `:runtime` is the only honest kind (no agent said this), and it renders
   bare — no `[Message from agent …]` label would be truthful (issue #31
   decision 9).
 
@@ -32,7 +32,7 @@ defmodule Nest.Agents.Agent.Turn.Backgrounded do
   And the **loss** wording (`lost/1`): a promise the process died with. The
   batch's entry lives in the machine, so a restart or an archive drops it, and
   a restored transcript would keep promising a result that can never come. The
-  load heal (`Repair.classify_load/1`) appends the record instead.
+  load heal (`Repair.classify_load/2`) appends the record instead.
   """
 
   # `ShellCmd.handle_timeout/3` appends this to stderr, which the combined

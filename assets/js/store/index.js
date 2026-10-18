@@ -4,8 +4,9 @@
  * The store now contains ONLY immutable data. Mutable channel refs are in
  * channels.js. Channel callbacks call these store methods.
  *
- * The store is composed from slice modules (catalog, agent-cache, auth)
- * plus the shared helpers, so this file stays under the source-line cap.
+ * The store is composed from slice modules (catalog, agent-cache, agent-inbox,
+ * the space feed, auth) plus the shared helpers, so this file stays under the
+ * source-line cap.
  */
 
 import { create } from "zustand";
@@ -16,6 +17,7 @@ import { authSetters } from "./slices/auth";
 import { agentCacheSetters } from "./slices/agentCache";
 import { agentCacheStreamingSetters } from "./slices/agentCacheStreaming";
 import { agentInboxSetters, applyAgentInboxDelta } from "./slices/agentInbox";
+import { spaceFeedSetters } from "./slices/spaceFeed";
 import { addChatDelta } from "./slices/agentCacheDeltas";
 import {
   addChatMessage,
@@ -33,6 +35,7 @@ export const useStore = create(
       ...agentCacheSetters(set),
       ...agentCacheStreamingSetters(set, get),
       ...agentInboxSetters(set),
+      ...spaceFeedSetters(set),
       addChatDelta: (id, payload) => addChatDelta(set, get, id, payload),
       applyAgentInboxDelta: (id, payload) =>
         applyAgentInboxDelta(set, get, id, payload),

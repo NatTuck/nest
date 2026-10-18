@@ -160,6 +160,35 @@ describe("buildChatHistory", () => {
     expect(result).toEqual([{ content: "no mode", mode: null }]);
   });
 
+  it("strips the header, matching what the bubble showed", () => {
+    // A human entry is a single-sender row, so the server states its sender and
+    // mode in a header. The bubble drops it, so the recall list must too — and
+    // only when the clause agrees with the row's own `mode`.
+    expect(
+      buildChatHistory([
+        {
+          role: "user",
+          origin: "human",
+          content: "[From user | mode: act]\ntyped by the human",
+          mode: "act",
+        },
+      ]),
+    ).toEqual([{ content: "typed by the human", mode: "act" }]);
+
+    expect(
+      buildChatHistory([
+        {
+          role: "user",
+          origin: "human",
+          content: "[From user | mode: act]\ntyped by the human",
+          mode: "plan",
+        },
+      ]),
+    ).toEqual([
+      { content: "[From user | mode: act]\ntyped by the human", mode: "plan" },
+    ]);
+  });
+
   it("strips the `[nest notice]` marker, matching what the bubble showed", () => {
     // A notice row is never `origin: "human"`, so the server's marker never
     // reaches a human entry — but the bubble strips a leading marker

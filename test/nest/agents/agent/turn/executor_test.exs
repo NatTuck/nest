@@ -55,7 +55,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
     %{base | live: %{base.live | inbox: entries, mode: mode}}
   end
 
-  defp entry(kind, from, content, mode \\ nil) do
+  defp entry(kind, from, content, mode \\ nil, human? \\ false) do
     # The whole documented entry shape (`Inbox.@type entry`): the removal
     # delta names an entry by its `id` (issue #27), so a fixture without one
     # is not an entry the queue could hold.
@@ -66,7 +66,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       timestamp: DateTime.utc_now(),
       kind: kind,
       mode: mode,
-      human?: false,
+      human?: human?,
       fulfilled_ids: []
     }
   end
@@ -333,7 +333,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
 
       {state, {:inbox_drain, [^peer], content}} = run({:drain_inbox}, state)
 
-      assert content == "[Message from agent \"peer\" | mode: act]\npeer note"
+      assert content == "[From agent peer | mode: act]\npeer note"
       assert state.live.inbox == [peer]
       refute_received {:chat_inbox, _}
     end
@@ -392,7 +392,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
                 %User{
                   parts: [
                     %Part.Text{
-                      text: "[mode: act]\n[Message from agent \"peer\" | mode: act]\npeer note"
+                      text: "[From agent peer | mode: act]\npeer note"
                     }
                   ]
                 }}
@@ -416,7 +416,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       # queue's head — an agent run, or a lone human message — so a human entry
       # behind an agent run is not part of this delivery at all.
       peer = entry(:agent, "peer", "peer note")
-      human = entry(:user, "alice", "human note", "plan")
+      human = entry(:user, "alice", "human note", "plan", true)
 
       # An agent-run head is delivered under the agent's current mode; the peek
       # consumes nothing, so the queue is untouched (including the human entry
@@ -426,17 +426,17 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
 
       assert state.live.inbox == [peer, human]
       assert state.live.mode == "act"
-      assert content == "[Message from agent \"peer\" | mode: act]\npeer note"
+      assert content == "[From agent peer | mode: act]\npeer note"
 
-      # A lone human message runs in its own mode, and its text is bare: a
-      # queued human message must read like one typed while the agent was idle
-      # (issue #31 decision 8).
+      # A lone human message runs in its own mode, and it carries its own
+      # header: a queued human message must read like one typed while the agent
+      # was idle (issue #31 decision 8).
       {state, {:inbox_drain, [^human], content}} =
         run({:drain_inbox}, inbox_state([human], "act"))
 
       assert state.live.inbox == [human]
       assert state.live.mode == "plan"
-      assert content == "human note"
+      assert content == "[From user @alice | mode: plan]\nhuman note"
 
       # A mode this build does not know resolves to `Nest.Modes.default/0`,
       # exactly as an idle chat's request would, so `currentMode` never holds a
@@ -607,7 +607,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
         base.live.machine
         | phase: :idle,
           pending_user_message:
-            {:user_message, Dispatch.build_user_message("held message", "act")}
+            {:user_message, Dispatch.build_user_message("held message", "act", sender: :user)}
       }
 
       state = %{base | live: %{base.live | machine: machine}}
@@ -646,7 +646,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
              ] = settled.chat_state.messages
 
       assert notice =~ "Compaction did not start"
-      assert text == "[mode: act]\nheld message"
+      assert text == "[From user | mode: act]\nheld message"
     end
   end
 

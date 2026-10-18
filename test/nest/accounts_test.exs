@@ -80,6 +80,21 @@ defmodule Nest.AccountsTest do
       assert user.username == "alice"
     end
 
+    test "caps the username at the shared byte limit, not a character count" do
+      # `Nest.Name` says 255 bytes for an agent's name and a human's username
+      # alike; the changeset reads the cap from there rather than keeping a
+      # second, character-based limit that a migrated name could fall outside.
+      at_cap = String.duplicate("a", Nest.Name.max_bytes())
+      over = String.duplicate("a", Nest.Name.max_bytes() + 1)
+
+      assert UserSchema.registration_changeset(%UserSchema{}, %{username: at_cap}).valid?
+
+      changeset = UserSchema.registration_changeset(%UserSchema{}, %{username: over})
+
+      refute changeset.valid?
+      assert %{username: ["should be at most 255 byte(s)"]} = errors_on(changeset)
+    end
+
     test "rejects duplicate usernames (case-insensitive)" do
       {:ok, alice, _} =
         Accounts.create_user(
@@ -150,6 +165,28 @@ defmodule Nest.AccountsTest do
       assert id == user.id
     end
 
+    test "matches the shared fold, not just case", %{user: alice} do
+      # `registration_changeset/2` stores `Nest.Name.sanitize/1`, which folds
+      # punctuation as well as case. Reading with a plain trim+downcase would
+      # look up `"jane doe"` for a stored `"jane-doe"` and lock this user out —
+      # and the migration would have rewritten a `"Jane Doe"` login that worked
+      # before it ran.
+      {:ok, _invite, token} = Accounts.create_invite(alice.id)
+
+      {:ok, %UserSchema{} = jane} =
+        Accounts.redeem_invite(
+          token,
+          Map.put(registration_attrs(""), :username, "Jane Doe")
+        )
+
+      assert jane.username == "jane-doe"
+
+      for username <- ["Jane Doe", "jane-doe", "Jane.Doe", "JANE-DOE"] do
+        assert {:ok, %UserSchema{id: id}} = Accounts.authenticate(username, "password123")
+        assert id == jane.id
+      end
+    end
+
     test "returns :invalid_credentials on a wrong password", %{user: _user} do
       assert {:error, :invalid_credentials} =
                Accounts.authenticate("alice", "wrong-password")
@@ -191,6 +228,28 @@ defmodule Nest.AccountsTest do
              "missing-user path took #{missing_ms}ms — the compensating hash may be missing"
 
       assert wrong_ms > 0.25
+    end
+  end
+
+  describe "get_user_by_username/1" do
+    test "resolves a username the way an address writes it" do
+      # The resolution behind `Nest.Notes.deliver/5`'s `:user` addressee: an
+      # address names a user, and this is the one place that decides whether it
+      # names one. The fold is `Nest.Name`'s — the rule a username is *stored*
+      # by — so `@Nat` and `@nat` are one lookup and a caller never has to know.
+      {:ok, alice, :admin} = Accounts.create_user(registration_attrs("Jane Doe"), "first-user")
+
+      assert %UserSchema{id: id} = Accounts.get_user_by_username("jane-doe")
+      assert id == alice.id
+      assert %UserSchema{id: ^id} = Accounts.get_user_by_username("Jane Doe")
+      assert %UserSchema{id: ^id} = Accounts.get_user_by_username("JANE-DOE")
+
+      # Nothing, for a name nobody has — including the two shapes that fold to
+      # no name at all.
+      assert Accounts.get_user_by_username("bob") == nil
+      assert Accounts.get_user_by_username("") == nil
+      assert Accounts.get_user_by_username("...") == nil
+      assert Accounts.get_user_by_username(nil) == nil
     end
   end
 

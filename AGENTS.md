@@ -159,13 +159,9 @@ modes are code constants — `Nest.Modes` — so the catalog's bytes are the sam
 every agent in a space) and a project root (and thus an AGENTS.md if present).
 The agent's own *mode* is deliberately not in it: it is a per-agent runtime
 property that can change while the agent works, so it travels on the messages
-instead (see "Modes" below).
-- User messages are tagged with a `[mode: $MODE]\n` prefix, and a message from
-another agent carries the recipient's mode in its header
-(`[Message from agent "$NAME" | mode: $MODE]\n`). Both state the **recipient's**
-mode — the mode the turn will run in — which is the only mechanism by which an
-agent whose inbox is all peer traffic learns its own mode.
-- System notices should be tagged with a `[Nest notice]\n` prefix.
+instead.
+- All role: user messages are tagged with the sender name and the recipient's
+mode.
 
 ### Modes
 
