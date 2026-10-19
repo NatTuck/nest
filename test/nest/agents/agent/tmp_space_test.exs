@@ -59,6 +59,28 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
     %{space_id: space_id, space_dir: space_dir}
   end
 
+  describe "the layout" do
+    test "a binding backend's space dir is under this BEAM's root; none and docker are unchanged" do
+      # The three segments of the bwrap spelling, each with its own function.
+      assert TmpSpace.root_parent() == "/tmp/nest"
+      assert TmpSpace.own_root() == Path.join("/tmp/nest", System.pid())
+
+      assert TmpSpace.space_dir(7, "bwrap") == Path.join(TmpSpace.own_root(), "space-7")
+
+      assert TmpSpace.agent_dir(7, "agent-a", "bwrap") ==
+               Path.join(TmpSpace.space_dir(7, "bwrap"), "agent-a")
+
+      # The two backends whose `/tmp` *is* the scratch root keep the bare
+      # `/tmp/<agent-name>` spelling byte for byte: one binds nothing (so the
+      # host path is the agent's `/tmp`), the other's root is inside the
+      # container.
+      for backend <- ["none", "docker"] do
+        assert TmpSpace.space_dir(7, backend) == "/tmp"
+        assert TmpSpace.agent_dir(7, "agent-a", backend) == "/tmp/agent-a"
+      end
+    end
+  end
+
   describe "create/2" do
     test "creates a per-agent dir under one shared space dir", %{
       space_id: space_id,

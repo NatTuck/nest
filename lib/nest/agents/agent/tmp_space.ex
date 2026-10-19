@@ -7,9 +7,17 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # root depends on the space's sandbox backend, because the backend decides
   # what the agent's `/tmp` is (see `Nest.Sandbox.Backend`):
   #
-  #     bwrap:   /tmp/nest-<BEAM ospid>/space-<space_id>/<agent-name>
+  #     bwrap:   /tmp/nest/<BEAM ospid>/space-<space_id>/<agent-name>
   #     docker:  /tmp/<agent-name>       (a path inside the container)
   #     none:    /tmp/<agent-name>       (the host's real /tmp)
+  #
+  # The first three segments of the `bwrap` spelling have a name each:
+  #
+  #     /tmp/nest                root_parent/0    — the parent of every BEAM's root
+  #     /tmp/nest/<BEAM ospid>   own_root/0       — *this* BEAM's root, marked
+  #                                                 alive by `alive_path/1`
+  #     …/space-<space_id>       space_dir/2      — bound at `/tmp` in the sandbox
+  #     …/<agent-name>           agent_dir/3      — this agent's own directory
   #
   # The **space** directory (`space-<space_id>`) is what `Nest.Sandbox` binds at
   # `/tmp` under bwrap, so every agent in a space sees the same `/tmp` and can
@@ -61,23 +69,42 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # marker and is therefore never removed (and its name cannot be reused, because
   # `create/3` will not adopt it) — clear it by hand; and an agent that deletes
   # its own marker leaves a directory in the same state. Only `"none"` needs the
-  # marker — a bwrap scratch is under `nest-<BEAM pid>/space-<id>/`, which
+  # marker — a bwrap scratch is under `nest/<BEAM pid>/space-<id>/`, which
   # already says whose it is, and a docker scratch is not on the host at all.
   #
-  # ## Space-directory lifecycle
+  # ## Root and space-directory lifecycle
   #
-  # The space directory is created on demand (`mkdir_p!`) and never
-  # removed by an agent: an agent's `terminate/2` deletes only its own
-  # subdirectory (see `cleanup/3`). There is no clean space-lifecycle hook
-  # to hang its removal off: `Nest.Spaces.archive_space/1` is reversible
-  # (so deleting would be wrong) and both it and `delete_space/1` run in
-  # whichever BEAM pid happens to serve the request — not necessarily the
-  # pid that created the directory, since the path embeds the BEAM's
-  # OS pid. The space directory is therefore left to OS `/tmp` cleanup.
+  # This BEAM's root (`own_root/0`) is made at boot by `prepare_own_root/0`,
+  # which first removes whatever is already at that path — we are the process
+  # with that pid, so anything there is a corpse from a recycled pid — and then
+  # writes `alive_path/1`, the timestamp file that says the root's owner is
+  # alive. `remove_own_root/0` removes the root at exit.
+  #
+  # The space directory is created on demand (`mkdir_p!`) and never removed by an
+  # agent: an agent's `terminate/2` deletes only its own subdirectory (see
+  # `cleanup/3`). There is no clean space-lifecycle hook to hang its removal off:
+  # `Nest.Spaces.archive_space/1` is reversible (so deleting would be wrong) and
+  # both it and `delete_space/1` run in whichever BEAM pid happens to serve the
+  # request — not necessarily the pid that created the directory.
+  #
+  # `Nest.Agents.TmpSweeper` owns them instead, and it is the only thing that
+  # removes a space directory or another BEAM's root: a BEAM can answer "is this
+  # still live?" exactly for its own root (through the agent registry) and only
+  # by timestamp for a peer's, so each BEAM sweeps its own tree and peers sweep
+  # each other by `.alive` age. Nothing here relies on OS `/tmp` cleanup.
 
   alias Nest.Sandbox.{Mounts, Paths}
 
-  @tmp_prefix "/tmp/nest-"
+  # The parent of every BEAM's scratch root. A *process root* is a child of it
+  # whose name is all digits **and** which contains `.alive` — identified by
+  # content, not by name, so a `"none"` space's suggested `/tmp/nest/<name>`
+  # directory (see `Nest.Agents.Agent.SystemPrompt`) can never look like one.
+  @root_parent "/tmp/nest"
+
+  # How many times `prepare_own_root/0` retries a create+write that a peer's
+  # sweeper interrupted by removing the directory in between. A handful is
+  # plenty: each attempt loses only to a concurrent `rm_rf` of the same path.
+  @create_attempts 3
 
   # The `/tmp` spelling inside the sandbox. It is also the directory itself for
   # the two backends whose `/tmp` *is* their scratch root — the host's own under
@@ -99,7 +126,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # re-checked here because this module is what turns a name into a path it
   # later `rm_rf`s. It is the local backstop for a row that predates the
   # changeset rule (see the name migrations): without it, `cleanup/3` on a name
-  # of `..` would build `<space>/..` and wipe the whole shared `nest-<ospid>`
+  # of `..` would build `<space>/..` and wipe the whole shared `nest/<ospid>`
   # root — every space, every agent's scratch.
 
   # What a `"none"` agent's scratch directory carries to say it is Nest's. See
@@ -107,6 +134,128 @@ defmodule Nest.Agents.Agent.TmpSpace do
   @marker ".nest-scratch"
 
   require Logger
+
+  @doc """
+  The parent of every BEAM's scratch root: `/tmp/nest`.
+  """
+  @spec root_parent() :: String.t()
+  def root_parent, do: @root_parent
+
+  @doc """
+  *This* BEAM's scratch root, `#{@root_parent}/<BEAM ospid>`.
+
+  Everything this BEAM owns on the host is under it — every space directory and
+  every agent's scratch — and nothing else is: another BEAM's root is a sibling.
+  """
+  @spec own_root() :: String.t()
+  def own_root, do: Path.join(root_parent(), System.pid())
+
+  @doc """
+  The liveness timestamp inside a process root, `alive_path(root)`.
+
+  Only a process root has one — never a space directory and never an agent's
+  scratch — which is what makes "is this a process root?" a question about
+  *content* rather than about a name (`Nest.Agents.TmpSweeper`).
+  """
+  @spec alive_path(String.t()) :: String.t()
+  def alive_path(root), do: Path.join(root, ".alive")
+
+  @doc """
+  Record `now` in `root`'s `alive_path/1`: the timestamp a peer's sweeper reads
+  to decide whether the root's owner is still alive.
+
+  `now` is a `DateTime` or a Unix time in **milliseconds**. The stored form is
+  ISO 8601 UTC, which is what `Nest.Agents.TmpSweeper` parses back.
+  """
+  @spec write_alive(String.t(), DateTime.t() | integer()) :: :ok | {:error, term()}
+  def write_alive(root, now \\ DateTime.utc_now()) do
+    File.write(alive_path(root), stamp(now))
+  end
+
+  defp stamp(%DateTime{} = now), do: DateTime.to_iso8601(now)
+
+  defp stamp(unix_ms) when is_integer(unix_ms),
+    do: unix_ms |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()
+
+  @doc """
+  Make this BEAM's root, marked alive: remove whatever is already at
+  `own_root/0`, `mkdir_p` it, and write `alive_path/1`.
+
+  Removing first is exact, not a heuristic: we are the process with that pid, so
+  a root already at that path is a corpse left by a recycled pid, never a live
+  one.
+
+  The create and the write are retried a bounded number of times on `:enoent`,
+  because a *peer's* sweeper can remove the directory between them (it sees a
+  root with no `.alive`, or a stale one, and it has no way to know we are
+  between two calls). Giving up rather than raising is deliberate: this runs in
+  `Nest.Agents.TmpSweeper.init/1`, and a boot that cannot make a scratch root
+  must not take the application down with it.
+  """
+  @spec prepare_own_root() :: :ok
+  def prepare_own_root do
+    remove_own_root()
+    create_root(own_root(), @create_attempts, fn -> :ok end)
+  end
+
+  @doc false
+  # `prepare_own_root/0` for a caller-supplied root, with a hook between the
+  # `mkdir_p` and the write.
+  #
+  # `interleave` exists for the test that has to exercise the `:enoent` retry:
+  # the window it covers is "a peer's sweeper removed the directory after we
+  # made it and before we wrote `.alive`", and there is no way to land in that
+  # window from outside without a seam. Production passes a no-op
+  # (`prepare_own_root/0`).
+  @spec prepare_root(String.t(), (-> any())) :: :ok
+  def prepare_root(root, interleave \\ fn -> :ok end),
+    do: create_root(root, @create_attempts, interleave)
+
+  # One attempt is `mkdir_p`, then the hook, then the write. `:enoent` means the
+  # directory went away between the first and the last, so the whole attempt is
+  # worth repeating; anything else is a real failure and is reported once.
+  defp create_root(root, attempts, interleave) do
+    with :ok <- File.mkdir_p(root),
+         :ok <- run_hook(interleave),
+         :ok <- write_alive(root) do
+      :ok
+    else
+      {:error, :enoent} when attempts > 1 -> create_root(root, attempts - 1, interleave)
+      {:error, reason} -> log_create_failure(root, reason)
+    end
+  end
+
+  defp run_hook(interleave) do
+    interleave.()
+    :ok
+  end
+
+  defp log_create_failure(root, reason) do
+    Logger.error("TmpSpace: could not prepare the scratch root #{root}: #{inspect(reason)}")
+    :ok
+  end
+
+  @doc """
+  Remove this BEAM's root, `own_root/0`.
+
+  The path is asserted to be exactly the one `root_parent/0` and our own pid
+  compose before anything is removed. That check is a tautology against today's
+  `own_root/0` — it is here so that a future change to how the root is named
+  cannot turn this into an `rm_rf` of a path that is not ours.
+  """
+  @spec remove_own_root() :: :ok
+  def remove_own_root do
+    path = own_root()
+    expected = Path.join(root_parent(), System.pid())
+
+    if path == expected do
+      File.rm_rf(path)
+      :ok
+    else
+      Logger.error("TmpSpace: refusing to remove #{inspect(path)}: it is not this BEAM's root")
+      :ok
+    end
+  end
 
   @doc """
   Create (on demand, idempotently) and return the agent's own scratch
@@ -132,7 +281,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
 
     # A `"none"` scratch is the host's own `/tmp/<name>`, so `mkdir_p!` would
     # silently *adopt* whatever is already there — including exactly the
-    # directories the marker exists to protect (another BEAM's `nest-<pid>`, a
+    # directories the marker exists to protect (another BEAM's `nest/<pid>` root, a
     # host `snap-private-tmp`). Stamping the marker into one would hand the next
     # `cleanup/3` a licence to delete it, so refuse instead. A directory Nest
     # marked earlier still re-opens idempotently, which is what re-creating a
@@ -163,7 +312,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
 
   # A `"none"` scratch is the host's own `/tmp/<name>`, so it has to say it is
   # Nest's before anything will remove it (see the moduledoc). The other backends
-  # need nothing: their paths carry `nest-<BEAM pid>/space-<id>`.
+  # need nothing: their paths carry `nest/<BEAM pid>/space-<id>`.
   defp write_marker(path, "none"), do: File.write!(Path.join(path, @marker), "")
   defp write_marker(_path, _backend), do: :ok
 
@@ -207,14 +356,15 @@ defmodule Nest.Agents.Agent.TmpSpace do
 
     # NOTE: do NOT `rmdir` the space directory (or any shared parent).
     # Every Agent in a space shares one space directory, and every Agent
-    # in the same BEAM shares the `nest-<OS_PID>` root. Calling `rmdir`
+    # in the same BEAM shares the `nest/<OS_PID>` root. Calling `rmdir`
     # here races with a sibling agent's `mkdir_p!` during a parallel
     # `mix test`: one agent's `terminate/2` removes a parent another
     # agent's `init/1` is about to nest under, producing
     # `File.Error{reason: :enoent}` in `start_agent/1`. The parent is
     # recreated on demand by `mkdir_p!` anyway, so the cleanup gains
     # nothing and the race was a real bug. The space directory is left to
-    # OS `/tmp` cleanup (see the moduledoc).
+    # `Nest.Agents.TmpSweeper`, which removes it once the registry holds no agent
+    # in it and no shell job is live there (see the moduledoc).
     :ok
   end
 
@@ -311,7 +461,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
 
   # A `"none"` scratch is the host's own `/tmp/<name>`, so the marker is the only
   # thing that says Nest owns it. Every other backend's scratch sits under
-  # `nest-<BEAM pid>/space-<id>/`, which already says so.
+  # `nest/<BEAM pid>/space-<id>/`, which already says so.
   defp marked?(_path, backend) when backend != "none", do: true
   defp marked?(path, "none"), do: File.exists?(Path.join(path, @marker))
 
@@ -398,13 +548,13 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # `/tmp` spelling, which is what every agent is told it has.
   def space_dir(_space_id, backend) when backend in ["none", "docker"], do: @sandbox_tmp
 
-  # Every other backend gets its own per-space root on the host, under a
-  # per-BEAM parent. The clause is open rather than naming `bwrap`, because a
+  # Every other backend gets its own per-space root on the host, under this
+  # BEAM's root. The clause is open rather than naming `bwrap`, because a
   # backend string this build does not know is refused when a command runs
   # (`Nest.Sandbox.Backend.resolve/1`) and this module is also reached from
   # `terminate/2`, where raising would lose the cleanup.
   def space_dir(space_id, _backend) do
-    Path.join([@tmp_prefix <> Elixir.System.pid(), "space-#{space_id}"])
+    Path.join([root_parent(), System.pid(), "space-#{space_id}"])
   end
 
   @doc """
