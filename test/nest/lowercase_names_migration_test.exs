@@ -290,7 +290,7 @@ defmodule Nest.LowercaseNamesMigrationTest do
       space_id = space()
       name = scratch_name()
       id = insert_agent(space_id, name)
-      # A bwrap scratch is `/tmp/nest-<BEAM pid>/space-<id>/<name>`, which the
+      # A bwrap scratch is `/tmp/nest/<BEAM pid>/space-<id>/<name>`, which the
       # migration cannot compute (the pid belongs to the creating BEAM). Even a
       # marked directory at the `none` spelling is not this agent's scratch.
       marked_scratch(name)

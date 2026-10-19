@@ -266,7 +266,7 @@ pass-one version of this guard had exactly that hole.
 Two honest residuals: a `"none"` scratch created before this change has no marker,
 so it is neither removed nor reusable (clear it by hand); and an agent that
 deletes its own marker leaves a directory in the same state. Only `"none"` needs
-the marker — a bwrap scratch sits under `nest-<BEAM pid>/space-<id>/`, and a
+the marker — a bwrap scratch sits under `/tmp/nest/<BEAM pid>/space-<id>/`, and a
 docker scratch is not on the host at all.
 
 A scratch directory has exactly two creators, and both mark what they make:

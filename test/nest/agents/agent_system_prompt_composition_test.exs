@@ -289,21 +289,71 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
     end
   end
 
+  describe "a `\"none\"` space's scratch" do
+    # A `"none"` space has no sandbox, so the agent's `/tmp` is the host's own and
+    # nothing Nest does isolates or sweeps it. Its prompt says so and suggests a
+    # directory named after the space. Every other backend's prompt is unchanged:
+    # the system message is prefix-cache-visible, so its bytes must not move.
+    test "states the caveat and the space-named suggestion" do
+      mounts = Mounts.new(nil, nil, "none", 7, true, "clever-otter")
+
+      prompt = compose_with(tool_vocation("NoneScratch"), mounts)
+
+      assert prompt =~ "no sandbox, so `/tmp` is this host's own"
+      assert prompt =~ "only your own scratch directory is cleaned up"
+      assert prompt =~ "use `/tmp/nest/clever-otter/`"
+    end
+
+    test "states the caveat without inventing a path when the space name is unknown" do
+      mounts = Mounts.new(nil, nil, "none", nil, true, nil)
+
+      prompt = compose_with(tool_vocation("NoneNoName"), mounts)
+
+      assert prompt =~ "no sandbox, so `/tmp` is this host's own"
+      refute prompt =~ "/tmp/nest/"
+    end
+
+    test "leaves a bwrap agent's scratch section byte-identical" do
+      mounts = Mounts.new(nil, nil, "bwrap", 7, true, nil)
+
+      prompt = compose_with(tool_vocation("BwrapScratch"), mounts)
+
+      assert prompt =~ "Your own scratch directory is `/tmp/agent/`"
+      # The bytes right after the scratch sentence belong to the next section, so
+      # anything appended to this one would break the adjacency.
+      assert prompt =~ "under your own directory.\n\n\nNetwork access is enabled for this space"
+      refute prompt =~ "no sandbox, so `/tmp` is this host's own"
+      refute prompt =~ "/tmp/nest/"
+    end
+  end
+
   # Compose the prompt for a tool-capable vocation on `backend`, with the
   # space's network setting: no workspace and no scratch, so no section here
   # reads a file and the mounts only decide the network and enforcement
   # sentences.
   defp compose_for(vocation, backend, network_access) do
+    compose_with(vocation, Mounts.new(nil, nil, backend, nil, network_access))
+  end
+
+  defp compose_with(vocation, mounts) do
     {prompt, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(
-        vocation,
-        Mounts.new(nil, nil, backend, nil, network_access),
-        {nil, nil},
-        "agent",
-        0
-      )
+      SystemPrompt.compose_vocation_config(vocation, mounts, {nil, nil}, "agent", 0)
 
     prompt
+  end
+
+  # A tool-capable vocation, so the tool-gated sections (the scratch sentence
+  # among them) are rendered at all.
+  defp tool_vocation(label) do
+    {:ok, vocation} =
+      Vocations.create_vocation(%{
+        name: "#{label}-#{System.unique_integer([:positive])}",
+        description: "Scratch caveat test",
+        system_prompt: "Base.",
+        tools: ["shell"]
+      })
+
+    vocation
   end
 
   # A real workspace directory outside /tmp: the scratch dir is bound at /tmp,

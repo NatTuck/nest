@@ -37,7 +37,7 @@ defmodule Nest.Agents.SupervisorTest do
     # belongs in the test that owns the agent, not in a shared
     # setup block.
     #
-    # We also don't wipe /tmp/nest-VMPID/ because the path is
+    # We also don't wipe /tmp/nest/<VMPID>/ because the path is
     # shared across all tests in this BEAM VM and wiping in setup
     # races with concurrent async tests' agents. Per-agent cleanup
     # is the agent's own responsibility in `terminate/2`.

@@ -140,16 +140,22 @@ defmodule Nest.Persistence.AgentCompaction do
   defp render_system(_agent, nil, _limit, _source), do: nil
 
   defp render_system(agent, vocation, limit, source) do
+    # `agent` is the *row*, not a running agent, so the space's environment is
+    # read rather than taken from mounts. One read for all four values: the
+    # workspace is the space's (there is no per-agent column), and the name is
+    # what a `"none"` space's prompt suggests a scratch directory from.
+    environment = Nest.Spaces.environment(agent.space_id)
+
     {system_prompt, _tools, _vocation} =
       SystemPrompt.compose_vocation_config(
         vocation,
         TmpSpace.prompt_mounts(
-          # The workspace is the *space's*; there is no per-agent column.
-          Nest.Spaces.workspace_path(agent.space_id),
+          environment.workspace_path,
           agent.space_id,
           agent.name,
-          Nest.Spaces.sandbox_backend(agent.space_id),
-          Nest.Spaces.network_access(agent.space_id)
+          environment.sandbox_backend,
+          environment.network_access,
+          Nest.Persistence.prompt_space_name(agent.space_id, environment.sandbox_backend)
         ),
         {limit, source},
         agent.name,

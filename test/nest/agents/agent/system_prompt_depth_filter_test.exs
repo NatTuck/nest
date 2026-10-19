@@ -16,6 +16,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
 
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.Sandbox.Mounts
   alias Nest.Vocations
 
@@ -91,9 +92,10 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
     assert prompt =~ "Your own scratch directory is `/tmp/clever-raven/`"
     assert prompt =~ "shared with your siblings"
 
-    # The host backing path (`/tmp/nest-<ospid>/space-<id>/...`) must never
-    # appear in the prompt.
-    refute prompt =~ "nest-"
+    # The host backing path (`/tmp/nest/<ospid>/space-<id>/...`) must never
+    # appear in the prompt. The root itself is the thing to look for: `"nest-"`
+    # would pass vacuously, because the new host root is `/tmp/nest/<pid>`.
+    refute prompt =~ TmpSpace.own_root()
   end
 
   test "omits the scratch section when there is no name", %{vocation: vocation} do

@@ -431,3 +431,10 @@ _ =
     Nest.Tools.Groups.expand(Nest.Tools.Groups.all()),
     Nest.Sandbox.Mounts.new(nil, nil)
   )
+
+# Remove this BEAM's scratch root, and with it every space directory and agent
+# scratch the suite left behind — including the `space-0/warmup` the block above
+# creates. The suite exits normally (production is killed instead), so unlike
+# production it can clean up after itself; without this, one root per run
+# accumulates under `/tmp/nest`, which is exactly what issue #92 was about.
+ExUnit.after_suite(fn _result -> Nest.Agents.Agent.TmpSpace.remove_own_root() end)

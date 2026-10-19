@@ -70,7 +70,7 @@ defmodule Nest.Sandbox.ShellJobs do
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.PubSub
   alias Nest.Sandbox.{Backend, Mounts}
-  alias Nest.Sandbox.ShellJobs.{JobLog, Launcher}
+  alias Nest.Sandbox.ShellJobs.{Info, JobLog, Launcher}
   alias Nest.Sandbox.ShellJobs.Waiters
   alias Nest.Tools.ShellCmd
 
@@ -232,6 +232,17 @@ defmodule Nest.Sandbox.ShellJobs do
   def stop_all_async(agent_key, owner), do: GenServer.cast(@name, {:stop_all, agent_key, owner})
 
   @doc """
+  Whether any *running* job belongs to space `space_id` — the question
+  `Nest.Agents.TmpSweeper` asks before removing a space's scratch directory.
+
+  Finished jobs are kept for `shell-wait`/`shell-list`, so they are not live and
+  do not count; `false` when nothing is tracked. A foreground `shell-cmd` is not
+  a job at all — its agent is registered while it runs.
+  """
+  @spec live_in_space?(integer()) :: boolean()
+  def live_in_space?(space_id), do: GenServer.call(@name, {:live_in_space?, space_id})
+
+  @doc """
   The result text for a finished job, shared by `shell-wait`'s inline answer
   (issue #54: a job that had already exited) and the watcher that delivers the
   exit as a message, so the two wordings cannot drift.
@@ -285,14 +296,14 @@ defmodule Nest.Sandbox.ShellJobs do
       # is not a timestamp. `trim/2` sorts the other way on purpose — it deletes
       # the oldest — so the two orders are not a shared helper.
       |> Enum.sort_by(& &1.started_at, {:desc, DateTime})
-      |> Enum.map(&to_info/1)
+      |> Enum.map(&Info.to_info/1)
 
     {:reply, jobs, state}
   end
 
   def handle_call({:status, agent_key, job_id}, _from, state) do
     case fetch_job(state, agent_key, job_id) do
-      {:ok, job} -> {:reply, {:ok, job_status(job)}, state}
+      {:ok, job} -> {:reply, {:ok, Info.status(job)}, state}
       :error -> {:reply, {:error, :not_found}, state}
     end
   end
@@ -324,6 +335,13 @@ defmodule Nest.Sandbox.ShellJobs do
 
   def handle_call({:waiters, job_id}, _from, state) do
     {:reply, Waiters.get(state.waiters, job_id), state}
+  end
+
+  def handle_call({:live_in_space?, space_id}, _from, state) do
+    live? =
+      Enum.any?(state.jobs, &match?({_id, %{status: :running, agent_key: {^space_id, _}}}, &1))
+
+    {:reply, live?, state}
   end
 
   def handle_call({:kill, agent_key, job_id}, _from, state) do
@@ -650,25 +668,6 @@ defmodule Nest.Sandbox.ShellJobs do
     |> Enum.count(&(&1.agent_key == agent_key and &1.status == :running))
   end
 
-  defp job_status(%{status: :running}), do: :running
-  defp job_status(%{status: {:exited, code}}), do: {:exited, code}
-
-  defp to_info(job) do
-    %{
-      id: job.id,
-      command: job.command,
-      status: if(job.status == :running, do: :running, else: :exited),
-      exit_code: job.exit_code,
-      killed: job.killed,
-      # The path the sandbox sees, not the log file the manager writes: it
-      # is what `shell-list` shows the agent and what the UI receives.
-      # `Map.get` (not `job.sandbox_log_path`) so jobs already in a live
-      # manager's state from before this field existed still render.
-      log_path: Map.get(job, :sandbox_log_path, job.log_path),
-      started_at: job.started_at
-    }
-  end
-
   # ---- Broadcast ----
 
   defp broadcast(state, {space_id, name} = agent_key)
@@ -677,7 +676,7 @@ defmodule Nest.Sandbox.ShellJobs do
       state.jobs
       |> Map.values()
       |> Enum.filter(&(&1.agent_key == agent_key))
-      |> Enum.map(&to_info/1)
+      |> Enum.map(&Info.to_info/1)
 
     Phoenix.PubSub.broadcast(PubSub, "agent:#{space_id}:#{name}", {:shell_jobs, %{jobs: jobs}})
     state

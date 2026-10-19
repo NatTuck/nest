@@ -223,7 +223,7 @@ defmodule Nest.Agents.NoneScratchNameTest do
     # not see it. What remains worth pinning is that the mounts name the right
     # scratch, which the next test does directly.
     test "the prompt's mounts and the agent's are the same value" do
-      # `Init` builds the prompt's mounts with `TmpSpace.prompt_mounts/5` and the
+      # `Init` builds the prompt's mounts with `TmpSpace.prompt_mounts/6` and the
       # agent's with `agent_mounts/6` — two independent constructions. Their
       # agreement is what makes "the prompt states the environment its tools will
       # use" true, and nothing else asserts it: the old `.cmds` guard observed it
@@ -247,8 +247,29 @@ defmodule Nest.Agents.NoneScratchNameTest do
                  space_id,
                  name,
                  Mounts.backend(agent_mounts),
-                 Mounts.network_access(agent_mounts)
+                 Mounts.network_access(agent_mounts),
+                 Mounts.space_name(agent_mounts)
                )
+    end
+
+    test "carry the space's name, and the prompt suggests /tmp/nest/<space-name>/" do
+      # A `"none"` space has no enforced scratch directory, so its prompt suggests
+      # one named after the space. The name travels on the mounts
+      # (`Mounts.space_name/1`) from the space row `PreSpawn` reads, for this
+      # backend alone.
+      {:ok, space_id} = AgentTestHelpers.create_test_space(%{sandbox_backend: "none"})
+      name = start_named(space_id, unique("none-prompt"))
+      space_name = Spaces.get_space(space_id).name
+      {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
+
+      # allowlist: snapshot — the mounts the *start path* built (see above).
+      mounts = Mounts.from_agent(:sys.get_state(pid))
+      assert Mounts.space_name(mounts) == space_name
+
+      prompt = AgentTestHelpers.get_system_prompt(pid)
+
+      assert prompt =~ "no sandbox, so `/tmp` is this host's own"
+      assert prompt =~ "use `/tmp/nest/#{space_name}/`"
     end
 
     test "carry the agent's real scratch, so a command can be staged" do

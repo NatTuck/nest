@@ -197,7 +197,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
   defp tool_sections(_tools, mounts, name),
     do:
-      scratch_section(name) <>
+      scratch_section(name, mounts) <>
         workspace_section(Mounts.workspace(mounts)) <>
         network_section(mounts) <>
         tool_call_limit_section()
@@ -232,13 +232,41 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   # bought nothing. A clone inherits its ancestor's system message
   # verbatim (see `identity_section/2`), so `MessageList.clone_notice/2`
   # states the clone's own directory — its tools no longer do.
-  defp scratch_section(name) when is_binary(name) and name != "" do
+  defp scratch_section(name, mounts) when is_binary(name) and name != "" do
     "\n\nYour own scratch directory is `#{Sandbox.scratch_dir(name)}/`; the `/tmp` root is shared " <>
       "with your siblings in this space, so put anything that must not be clobbered " <>
-      "under your own directory.\n"
+      "under your own directory.\n" <> none_scratch_caveat(mounts)
   end
 
-  defp scratch_section(_name), do: ""
+  defp scratch_section(_name, _mounts), do: ""
+
+  # A `"none"` space has no sandbox, so its scratch is the host's own `/tmp` and
+  # nothing else there is Nest's to clean up: `Nest.Agents.TmpSweeper` never
+  # sweeps a `"none"` scratch (there is no ownership record it could ask about),
+  # and the only directory Nest removes is the agent's own, at `terminate/2`. So
+  # the prompt says what `/tmp` is in such a space, and suggests a directory Nest
+  # will leave alone.
+  #
+  # Appended *after* the shared sentence and emitted for no other backend, so a
+  # `bwrap` or `docker` agent's prompt stays byte-identical: the system message
+  # is prefix-cache-visible, so its bytes must not move.
+  defp none_scratch_caveat(%Mounts{backend: "none", space_name: space_name})
+       when is_binary(space_name) do
+    none_scratch_text() <>
+      "For files you want to keep, use `/tmp/nest/#{space_name}/`.\n"
+  end
+
+  # A space name that is `nil` (a fixture, or a caller that had no row) still
+  # gets the caveat — it is true either way — but no path is invented: the
+  # suggested directory is named after the space, and this does not know the name.
+  defp none_scratch_caveat(%Mounts{backend: "none"}), do: none_scratch_text()
+
+  defp none_scratch_caveat(%Mounts{}), do: ""
+
+  defp none_scratch_text do
+    "\n\nThis space has no sandbox, so `/tmp` is this host's own: nothing isolates it from " <>
+      "the rest of the machine, and only your own scratch directory is cleaned up. "
+  end
 
   defp workspace_section(nil), do: ""
 
