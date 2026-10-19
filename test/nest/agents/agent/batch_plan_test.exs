@@ -128,6 +128,12 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
       assert {:ok, "step {index}"} = BatchPlan.template_ok("step {index}")
     end
 
+    test "a template that is not a string is treated as absent, not raised on" do
+      # `Map.get(args, "template", "")` is `nil` for a JSON `null`, and the
+      # template check used to raise on it.
+      assert {:ok, ""} = BatchPlan.template_ok(nil)
+    end
+
     test "a template with no placeholder is rejected" do
       assert {:error, msg} = BatchPlan.template_ok("no placeholder here")
       assert msg =~ "must contain"
@@ -209,15 +215,14 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
       assert BatchPlan.names_for_items(["one", "two"], "", false) == ["item-1", "item-2"]
     end
 
-    test "a long parameter still yields a name, cut short and trimmed" do
-      # The 32-character cap: a path reads, and a cut mid-word does not leave a
-      # trailing dash that `base_name/4` would then double.
-      [name] =
-        BatchPlan.names_for_items(["/very/long/path/to/some/deeply/nested/file.exs"], "", true)
+    test "a long parameter is cut to 32 characters, and the cut is trimmed" do
+      # The fixture's slug is 31 `a`s plus `-b`, so the 32-character cut lands
+      # *on* the separator and leaves a trailing dash unless the post-cut trim
+      # removes it. (A long *path* cannot test this any more: it contributes its
+      # basename, so there is nothing to cut.)
+      [name] = BatchPlan.names_for_items([String.duplicate("a", 31) <> " b"], "", true)
 
-      assert String.length(name) <= 32
-      refute name =~ "--"
-      refute String.ends_with?(name, "-")
+      assert name == String.duplicate("a", 31)
     end
   end
 
@@ -234,7 +239,6 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
       # neither absent nor `""`, and reading it as "a glob" switched the naming
       # rule off for a call that had no glob at all.
       refute BatchPlan.params?(Map.put(items, "glob", nil), "")
-      refute BatchPlan.params?(Map.put(items, "template", nil), "")
     end
   end
 

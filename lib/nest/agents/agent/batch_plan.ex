@@ -20,6 +20,10 @@ defmodule Nest.Agents.Agent.BatchPlan do
     readable regular files). A blank, over-long or otherwise unusable item is a
     whole-call error, not a slot marker: it is
     knowable before the launch.
+  * children's names — from the item when the call has a `template` or a
+    `glob` (the item is a parameter: what fills the template, or a path), and
+    by position (`<prefix>-item-<n>`) otherwise (the item *is* the instruction,
+    and no slug of a sentence is a name). `name_prefix` is prepended either way.
   * `vocation` (slug) / `model` (optional) — per child, inherit parent
     when omitted.
   * `timeout` — PER-ITEM ms (default 5 min). A child still running at
