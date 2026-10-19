@@ -33,6 +33,13 @@ read the *entire* output.
 If the tree is so screwed up that reverting is the only option then stop and report.
 - Do not attempt to change AGENTS.md or .nest.
 
+## Workflow
+
+- When working on a task or batch of tasks, generally produce one single local
+branch that will produce one remote PR to review and merge.
+- If that work can be broken up, use local worktrees and then merge that work
+into our PR branch locally.
+
 ## Project Design
 
 ### LLM Calls
@@ -95,9 +102,11 @@ missing rather than nothing.
 
 ## Project guidelines
 
-### Before Commit
+### Code Reviews
 
 - Read SMELLS.md. Check the proposed changes for code stench.
+- When reviewing a change, check for changes to SMELLS.md. If it was weakened or
+expanded with bloated, redundant prose, the change fails review.
 - There's no such thing as "out of scope" or "pre-existing issue" for this step.
 Either we're 100% clean (no fails, no warnings, no style suggestions, no test
 log prints, etc) or we're not.
@@ -132,6 +141,10 @@ explanation tool.
 errors or warnings. NO EXCEPTIONS, NO EXCUSES.
 - We care about test run speed. Don't significantly slow down the tests,
 especially by adding anti-patterns like long timeouts or wait loops.
+- Never sleep or intentionally delay for a fixed time in tests. Ever. No
+exceptions, no excuses.
+- Absolutely never run tests several times in a loop without an explicit
+user request. Really, do not run the same tests more than once in a row.
 - If something noteworthy and bad happens or an unexpected error occurs, the program
 *should* log a warning or error to the console.
 - Tests must not print to the console except during debugging. If logger output
