@@ -236,4 +236,30 @@ defmodule Nest.Models.MultiModalTest do
       assert MultiModal.effective(model, %{"other" => %DotConfig.Model{name: "other"}}) == nil
     end
   end
+
+  describe "input_support/2 (the verdict both readers use)" do
+    test "answers from the merged catalog, on the model's name alone" do
+      stub_catalog([
+        %{"name" => "vision-model", "provider" => "a", "multi_modal" => @image},
+        # A positive claim from any provider serving the model wins over a
+        # negative one: the caller holds a name and no provider.
+        %{"name" => "vision-model", "provider" => "b", "multi_modal" => @text_only},
+        %{"name" => "text-model", "provider" => "a", "multi_modal" => @text_only},
+        %{"name" => "unknown-model", "provider" => "a", "multi_modal" => nil}
+      ])
+
+      assert MultiModal.input_support("vision-model", :image) == :supported
+      assert MultiModal.input_support("text-model", :image) == :unsupported
+      assert MultiModal.input_support("unknown-model", :image) == :unknown
+
+      # A name no catalog entry has is unknown, not text-only: nothing declared
+      # anything about it. So is a name that is not a usable binary, which is
+      # what a caller with no model at all has.
+      assert MultiModal.input_support("absent-model", :image) == :unknown
+      assert MultiModal.input_support(nil, :image) == :unknown
+      assert MultiModal.input_support("", :image) == :unknown
+    end
+  end
+
+  defp stub_catalog(models), do: Mimic.stub(Nest.Models, :list, fn -> models end)
 end
