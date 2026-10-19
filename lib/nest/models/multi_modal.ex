@@ -150,7 +150,7 @@ defmodule Nest.Models.MultiModal do
     name = Atom.to_string(modality)
 
     declarations =
-      Nest.Models.list()
+      catalog()
       |> Enum.filter(&(&1["name"] == model_name))
       |> Enum.map(&declared_inputs/1)
       |> Enum.reject(&is_nil/1)
@@ -163,6 +163,21 @@ defmodule Nest.Models.MultiModal do
   end
 
   def input_support(_model_name, _modality), do: :unknown
+
+  # The catalog, or nothing when its manager is not running.
+  #
+  # `:unknown` is the honest answer to "the catalog cannot be asked" — it is the
+  # same value as "no entry declares this", and both readers already treat it as
+  # "do not claim support": `FileTools` refuses an image on anything but
+  # `:supported`, and the prompt says nothing declares it. The alternative is
+  # worse for both: prompt composition runs in `Agent.init/1` and in the
+  # compaction path, so an exit here would crash an agent rather than degrade a
+  # sentence, and a `file-read` would raise instead of refusing with a reason.
+  defp catalog do
+    Nest.Models.list()
+  catch
+    :exit, _reason -> []
+  end
 
   # The input modalities one merged catalog entry declares, or `nil` when it
   # declares none. `%{"input" => []}` is a declaration of no input modalities at

@@ -26,6 +26,7 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Turn
+  alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
@@ -219,7 +220,7 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
     assert Reserve.compaction_reserve(limit) == 8_192
     assert limit < 40_960
 
-    set_context_limit(pid, limit)
+    set_context_limit(pid, limit, silence_reminders: true)
 
     # The human's message — in a mode the agent is not in — arrives while the
     # model is still streaming, so it queues: the streaming arm must queue it.
@@ -279,10 +280,29 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
   # The context limit the fixture's two decisions are taken against. Set after
   # the turn opens, so the request that asks for the batch is sized against it
   # too — which is what makes the batch start and the delivery decline.
-  defp set_context_limit(pid, limit) do
+  #
+  # `silence_reminders: true` marks every context threshold already announced.
+  # Lowering the limit mid-turn legitimately puts the agent over the first one,
+  # and the reminder it appends is a `user`/`assistant` pair of its own — which
+  # would change the transcript this fixture asserts on for a reason that has
+  # nothing to do with the fit decision. The thresholds come from
+  # `ContextReminder.threshold_atoms/0`, so adding one there does not silently
+  # re-introduce the pair here.
+  defp set_context_limit(pid, limit, opts) do
+    announced =
+      if Keyword.get(opts, :silence_reminders, false),
+        do: MapSet.new(ContextReminder.threshold_atoms()),
+        else: nil
+
     :sys.replace_state(
       pid,
-      fn state -> %{state | llm_metrics: %{state.llm_metrics | context_limit: limit}} end,
+      fn state ->
+        state = %{state | llm_metrics: %{state.llm_metrics | context_limit: limit}}
+
+        if announced,
+          do: %{state | live: %{state.live | crossed_thresholds: announced}},
+          else: state
+      end,
       1_000
     )
   end
