@@ -12,7 +12,7 @@ defmodule Nest.Agents.AgentOverflowIntegrationTest do
   This test simulates that drift (drops the system from
   `messages[0]` via `:sys.replace_state`) and verifies the
   Overflow message now reports the rendered system size
-  from `compose_vocation_config/5`, not the conversation
+  from `compose_vocation_config/6`, not the conversation
   total.
   """
   use Nest.DataCase, async: true
@@ -37,7 +37,8 @@ defmodule Nest.Agents.AgentOverflowIntegrationTest do
         Mounts.new(Mounts.workspace(state.mounts), nil),
         {state.llm_metrics.context_limit, state.llm_metrics.context_limit_source},
         state.name,
-        state.depth
+        state.depth,
+        nil
       )
 
     {Overflow.system_size(system_prompt), system_prompt}

@@ -101,6 +101,10 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       vocation: vocation,
       vocation_id: vocation.id,
       depth: 0,
+      # A real agent always has one (`Init` resolves it before the prompt is
+      # composed, and the prompt states its model), so a fixture without one is
+      # not a state the runtime can reach.
+      client_config: %Nest.LLM.ClientConfig{client: MockClient, model: "qwen3.5-plus"},
       llm_metrics: %Nest.Agents.Agent.LlmMetrics{
         context_limit: context_limit,
         context_limit_source: :config,
@@ -225,7 +229,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # helper only loads the struct into the attrs when
       # `vocation_id` is a non-zero integer AND the helper
       # wants the struct. Here we override `vocation: nil`
-      # explicitly to exercise the `compose_vocation_config/5`
+      # explicitly to exercise the `compose_vocation_config/6`
       # nil-vocation clause. `Dispatch.compaction_plan/1`'s
       # `system_prompt/2` falls back to extracting the rendered text
       # from `messages[0]` so the compaction can still proceed

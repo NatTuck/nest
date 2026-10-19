@@ -156,7 +156,8 @@ defmodule Nest.Agents.AgentAgentsMdTest do
           Mounts.new(nil, nil),
           {nil, nil},
           "agent",
-          0
+          0,
+          nil
         )
 
       assert is_binary(system_prompt)
@@ -234,7 +235,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
     end
   end
 
-  # `compose_vocation_config/5` is re-run **mid-session** (on compaction), so both
+  # `compose_vocation_config/6` is re-run **mid-session** (on compaction), so both
   # arms below are reachable while an agent is running — no agent can *start* in a
   # workspace the gate refuses, which is why the start-time tests cannot see them.
   describe "an AGENTS.md that is not a regular file" do
@@ -280,7 +281,8 @@ defmodule Nest.Agents.AgentAgentsMdTest do
         Mounts.new(workspace, nil),
         {128_000, :default},
         "agent-under-test",
-        0
+        0,
+        nil
       )
 
     prompt

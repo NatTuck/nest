@@ -159,11 +159,18 @@ defmodule Nest.Persistence.AgentCompaction do
         ),
         {limit, source},
         agent.name,
-        agent.depth || 0
+        agent.depth || 0,
+        model_name(agent.model)
       )
 
     system_prompt
   end
+
+  # The row's model name. Tolerates a nil or atom-keyed map: a row written
+  # before a model was required, and a map read back through Ecto's `:map`
+  # column, both exist.
+  defp model_name(nil), do: nil
+  defp model_name(model) when is_map(model), do: model[:name] || model["name"]
 
   defp summarizer_model(agent, opts) do
     case normalize_model(opts[:model]) do
