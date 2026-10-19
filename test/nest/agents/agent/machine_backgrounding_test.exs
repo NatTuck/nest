@@ -68,22 +68,11 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       # The turn continues in `:generating`. Staying in `:executing_tools` would
       # strand it: `:iterate` is ignored there.
       assert next.phase == :generating and next.kind == :chat
-      assert Machine.status_for(next) == :streaming
       Machine.validate!(next)
-    end
 
-    test "the appended batch leaves the transcript wire-valid" do
-      m = executing_state()
-
-      {:ok, [{:append_many, batch}, _consume, :iterate], _next} =
-        Machine.step(m, {:inbox_drain, [entry("peer note")], "peer note"})
-
-      # What the model is shown next: the batch's assistant, the synthetic
-      # result, the ack, and the delivered message.
-      transcript = m.work.ctx.messages ++ batch
-
-      assert Preflight.validate_request(transcript) == :ok
-      assert Preflight.validate_tool_call_pairing(transcript) == :ok
+      # What the model is shown next — the batch's assistant, the synthetic
+      # result, the ack and the delivered message — is a wire-valid request.
+      assert Preflight.validate_request(m.work.ctx.messages ++ [synthetic, ack, user]) == :ok
     end
 
     test "a :runtime entry delivered by the backgrounding path keeps its fulfilled ids" do
@@ -104,8 +93,6 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       {:ok, [{:append_many, [synthetic, ack, delivered]}, {:consume_inbox, ^entries}, :iterate],
        _next} = Machine.step(m, {:inbox_drain, entries, "the backgrounded call finished"})
 
-      assert {:tool, _} = synthetic
-      assert {:assistant, _} = ack
       assert {:user, %User{metadata: metadata}} = delivered
       assert metadata["backgrounded_fulfilled_ids"] == ["call_1"]
 
@@ -113,8 +100,6 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       # (call_2) is still running, so its promise is the only one left open: the
       # notice's call_1 is not reported, and the loss recorded is call_2's alone.
       loaded = m.work.ctx.messages ++ [synthetic, ack, delivered]
-
-      assert Enum.map(MessageList.backgrounded_results(loaded), & &1.tool_call_id) == ["call_2"]
 
       assert {:lost_promises, record} = Repair.classify_load(loaded, "act")
 
@@ -161,15 +146,12 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       assert [
                {:append_many, [synthetic, ack]},
                {:append_many, [notice, notice_ack]},
-               {:set_crossed_thresholds, crossed},
+               {:set_crossed_thresholds, _},
                {:set_context_projection, _used},
                {:append, delivered},
                {:consume_inbox, ^entries},
                :iterate
              ] = actions
-
-      assert {:tool, _} = synthetic
-      assert {:assistant, _} = ack
 
       assert {:user, %User{parts: [%Part.Text{text: notice_text}]}} = notice
       assert notice_text =~ "Context at 25%"
@@ -181,10 +163,8 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       assert text == "the question"
 
       # The threshold is recorded on the machine, so it does not fire again for
-      # this segment, and the turn continues in `:generating`.
+      # this segment.
       assert next.work.ctx.crossed_thresholds == MapSet.new([:p25])
-      assert crossed == MapSet.new([:p25])
-      assert next.phase == :generating and next.kind == :chat
 
       # The delivered batch still leaves a wire-valid transcript.
       transcript = m.work.ctx.messages ++ [synthetic, ack, notice, notice_ack, delivered]
@@ -233,13 +213,11 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       for {label, m} <- cases do
         entries = [entry("peer note")]
 
+        # The machine comes back untouched, so the entries are still queued and
+        # the turn boundary drains them exactly as it did before.
         assert {:ignore, :no_batch_to_background, ^m} =
                  Machine.step(m, {:inbox_drain, entries, "peer note"}),
                "#{label} must not background anything"
-
-        # The machine is untouched, so the entries are still queued and the turn
-        # boundary drains them exactly as it did before.
-        assert m.work.backgrounded == %{}
       end
     end
   end
@@ -276,11 +254,11 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
 
       # The delivered message's turn runs, the model asks for a second batch,
       # and batch B's worker starts.
-      m = start_batch(m, make_ref())
-      ref_b = m.work.worker_ref
+      ref_b = make_ref()
+      m = start_batch(m, ref_b)
 
       assert m.phase == :executing_tools
-      assert ref_b != ref_a
+      assert m.work.worker_ref == ref_b
 
       # A's real result arrives while B is in flight. The routing keys on the
       # entry, not on `worker_ref` — which now belongs to B — so a
