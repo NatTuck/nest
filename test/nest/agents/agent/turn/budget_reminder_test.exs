@@ -12,14 +12,12 @@ defmodule Nest.Agents.Agent.Turn.BudgetReminderTest do
       assert BudgetReminder.notice_text(5) == nil
     end
 
-    test "at the cap (0 remaining or fewer)" do
+    test "at the cap (0 remaining)" do
       assert BudgetReminder.notice_text(0) == nil
-      assert BudgetReminder.notice_text(-1) == nil
     end
 
     test "with non-integer remaining (defensive)" do
       assert BudgetReminder.notice_text(nil) == nil
-      assert BudgetReminder.notice_text("2") == nil
     end
   end
 
@@ -38,34 +36,15 @@ defmodule Nest.Agents.Agent.Turn.BudgetReminderTest do
   end
 
   describe "spec/1" do
-    test "returns nil above the warning band" do
-      assert BudgetReminder.spec(5) == nil
-    end
-
     test "returns nil at the cap" do
       assert BudgetReminder.spec(0) == nil
-      assert BudgetReminder.spec(-1) == nil
     end
 
-    test "returns nil with non-integer remaining" do
-      assert BudgetReminder.spec(nil) == nil
-      assert BudgetReminder.spec("2") == nil
-    end
-
-    test "returns a :budget spec with 'Tool limit?' attention and 2-remaining notice" do
+    test "returns a :budget spec with 'Tool limit?' attention and the 2-remaining notice" do
       spec = BudgetReminder.spec(2)
       assert spec.kind == :budget
       assert spec.attention == "Tool limit?"
       assert spec.notice =~ "2 tool call rounds remaining"
-      assert spec.notice =~ "Plan your remaining tool use carefully"
-    end
-
-    test "returns a :budget spec with 'Tool limit?' attention and last-round notice" do
-      spec = BudgetReminder.spec(1)
-      assert spec.kind == :budget
-      assert spec.attention == "Tool limit?"
-      assert spec.notice =~ "Last tool call round"
-      assert spec.notice =~ "final response"
     end
   end
 

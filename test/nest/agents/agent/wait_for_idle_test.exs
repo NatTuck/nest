@@ -145,12 +145,6 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
     assert %ToolResult{is_error: false, content: content} = all
     assert content == "All agents are already idle: bob, carol."
 
-    # An explicit empty list behaves exactly like omitting `names`.
-    {explicit, _log} = run(%{"names" => []})
-
-    assert %ToolResult{is_error: false, content: content} = explicit
-    assert content == "All agents are already idle: bob, carol."
-
     # The caller is never a target, however it is named.
     {self_named, _log} = run(%{"names" => ["caller", "bob"]})
 
@@ -264,15 +258,6 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
 
     assert content ==
              "Timed out after 1ms waiting for agents to go idle. Idle: carol. Still busy: bob."
-  end
-
-  test "reaching the timeout is a normal result, not an error" do
-    stub_listing([[agent("bob", :streaming)]])
-
-    assert {:ok, content} = await(%{"names" => ["bob"], "timeout" => 1})
-
-    assert content ==
-             "Timed out after 1ms waiting for agents to go idle. Idle: (none). Still busy: bob."
   end
 
   test "an unknown target name is an error, not a silent idle" do

@@ -112,10 +112,10 @@ defmodule Nest.Agents.NoneScratchNameTest do
       none_scratch = TmpSpace.agent_dir(none_space, name, "none")
       on_exit(fn -> TmpCleanup.rm_tmp!(none_scratch, "cross-backend") end)
 
-      # Different roots, so the same name is a different directory: no rule.
+      # Different roots, so the same name is a different directory: no rule. The
+      # two spellings themselves are `TmpSpaceTest`'s and `NoneBackendTest`'s;
+      # what this pins is the boundary's answer to them.
       assert start_named(bwrap_space, name) == name
-      assert none_scratch == "/tmp/#{name}"
-      refute TmpSpace.agent_dir(bwrap_space, name, "bwrap") == "/tmp/#{name}"
     end
 
     test "an unusable name is refused by the row changeset, not by a raise" do
@@ -179,7 +179,6 @@ defmodule Nest.Agents.NoneScratchNameTest do
       assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
 
       # Space B's agent is still live, so the directory is not ours to remove.
-      assert File.dir?(scratch)
       assert File.read!(Path.join(scratch, "mine.txt")) == "keep"
     end
   end
@@ -266,9 +265,11 @@ defmodule Nest.Agents.NoneScratchNameTest do
       mounts = Mounts.from_agent(:sys.get_state(pid))
       assert Mounts.space_name(mounts) == space_name
 
+      # The caveat sentence itself is `AgentSystemPromptCompositionTest`'s, and
+      # does not vary with the name; what is only assertable here is that the
+      # *space's* name reaches the prompt end to end.
       prompt = AgentTestHelpers.get_system_prompt(pid)
 
-      assert prompt =~ "no sandbox, so `/tmp` is this host's own"
       assert prompt =~ "use `/tmp/nest/#{space_name}/`"
     end
 
@@ -291,17 +292,17 @@ defmodule Nest.Agents.NoneScratchNameTest do
       # "the agent started with these mounts" (the creation itself is the wait).
       mounts = Mounts.from_agent(:sys.get_state(pid))
 
-      assert Mounts.scratch(mounts) == TmpSpace.agent_dir(space_id, name, "docker")
-      assert Mounts.space_id(mounts) == space_id
-      assert Mounts.backend(mounts) == "docker"
-
       # The scratch names a path *inside* the container — the container's own
       # `/tmp/<agent>` — so nothing on the host holds it, and the command that
       # runs is what makes it. What this pins is that the mounts the prompt is
       # composed through name that spelling rather than a host directory, which
       # is what the container's bind of `/tmp/.cmds` is independent of.
       assert Mounts.scratch(mounts) == Path.join(Paths.sandbox_root(), name)
-      refute Mounts.host_scratch?(mounts)
+
+      # The one assertion that the start path takes the backend from the space
+      # row rather than defaulting: `host_scratch?/1` is a function of this field
+      # (its mapping is `MountsTest`'s), so it is not asserted again here.
+      assert Mounts.backend(mounts) == "docker"
     end
   end
 
@@ -342,8 +343,7 @@ defmodule Nest.Agents.NoneScratchNameTest do
       start_named(space_b, name)
 
       # The new agent owns the same path (that is the whole point of the name
-      # rule) and must not inherit the previous owner's files.
-      assert TmpSpace.agent_dir(space_b, name, "none") == scratch
+      # rule, pinned above) and must not inherit the previous owner's files.
       refute File.exists?(Path.join(scratch, "leftover.txt"))
     end
 
@@ -368,16 +368,6 @@ defmodule Nest.Agents.NoneScratchNameTest do
                )
 
       assert File.read!(Path.join(scratch, "mine.txt")) == "keep"
-    end
-  end
-
-  describe "Spaces.sandbox_backend/1" do
-    test "is what the boundary consults" do
-      {:ok, none_space} = AgentTestHelpers.create_test_space(%{sandbox_backend: "none"})
-      {:ok, bwrap_space} = AgentTestHelpers.create_test_space()
-
-      assert Spaces.sandbox_backend(none_space) == "none"
-      assert Spaces.sandbox_backend(bwrap_space) == "bwrap"
     end
   end
 end

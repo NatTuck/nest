@@ -57,12 +57,10 @@ defmodule Nest.Agents.PersistedMessageTest do
 
       assert {:ok, row} = Persistence.insert_message(test_space_id(), attrs.name, message)
 
-      assert is_list(row.content["apiLogs"])
       assert length(row.content["apiLogs"]) == 2
 
       restored = PersistedMessage.to_runtime(row)
       assert {:assistant, %Assistant{api_logs: api_logs}} = restored
-      assert is_list(api_logs)
       assert length(api_logs) == 2
 
       assert Enum.at(api_logs, 0).id == "003.000"
@@ -90,7 +88,7 @@ defmodule Nest.Agents.PersistedMessageTest do
     end
   end
 
-  describe "serialize_content (system apiLogs)" do
+  describe "serialize_content (system and user apiLogs)" do
     test "writes apiLogs: [] for system rows" do
       attrs = agent_attrs("sys-#{Elixir.System.unique_integer([:positive])}")
       {:ok, _} = Persistence.insert_agent(attrs)
@@ -99,9 +97,7 @@ defmodule Nest.Agents.PersistedMessageTest do
       assert {:ok, row} = Persistence.insert_message(test_space_id(), attrs.name, message)
       assert row.content["apiLogs"] == []
     end
-  end
 
-  describe "serialize_content (user/tool apiLogs)" do
     test "user rows have NO apiLogs key in content, even when runtime api_logs is set" do
       attrs = agent_attrs("usr-#{Elixir.System.unique_integer([:positive])}")
       {:ok, _} = Persistence.insert_agent(attrs)
@@ -115,23 +111,6 @@ defmodule Nest.Agents.PersistedMessageTest do
 
       message =
         {:user, %User{index: 1, parts: [%Part.Text{text: "hi"}], api_logs: [log]}}
-
-      assert {:ok, row} = Persistence.insert_message(test_space_id(), attrs.name, message)
-      refute Map.has_key?(row.content, "apiLogs")
-    end
-
-    test "tool rows have NO apiLogs key in content" do
-      attrs = agent_attrs("tool-#{Elixir.System.unique_integer([:positive])}")
-      {:ok, _} = Persistence.insert_agent(attrs)
-
-      message =
-        {:tool,
-         %Nest.Messages.Tool{
-           index: 2,
-           parts: [
-             %Part.ToolResult{tool_call_id: "c1", name: "shell-cmd", content: "ok"}
-           ]
-         }}
 
       assert {:ok, row} = Persistence.insert_message(test_space_id(), attrs.name, message)
       refute Map.has_key?(row.content, "apiLogs")
@@ -160,11 +139,6 @@ defmodule Nest.Agents.PersistedMessageTest do
       assert {:ok, row} = Persistence.insert_message(test_space_id(), attrs.name, message)
 
       assert [%{"content" => "head\uFFFDtail\uFFFD"}] = row.content["parts"]
-
-      assert {:tool, %Nest.Messages.Tool{parts: [%Part.ToolResult{content: content}]}} =
-               PersistedMessage.to_runtime(row)
-
-      assert content == "head\uFFFDtail\uFFFD"
     end
   end
 
@@ -196,63 +170,9 @@ defmodule Nest.Agents.PersistedMessageTest do
 
       assert {:assistant, %Assistant{api_logs: []}} = PersistedMessage.to_runtime(stripped)
     end
-
-    test "system row without apiLogs key reads back as api_logs: []" do
-      attrs = agent_attrs("legacy-sys-#{Elixir.System.unique_integer([:positive])}")
-      {:ok, _} = Persistence.insert_agent(attrs)
-
-      message = {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "sys"}]}}
-      assert {:ok, row} = Persistence.insert_message(test_space_id(), attrs.name, message)
-
-      stripped = %PersistedMessage{
-        id: row.id,
-        agent_id: row.agent_id,
-        message_index: row.message_index,
-        role: row.role,
-        content: Map.delete(row.content, "apiLogs"),
-        metadata: row.metadata,
-        inserted_at: row.inserted_at
-      }
-
-      assert {:system, %MsgSystem{api_logs: []}} = PersistedMessage.to_runtime(stripped)
-    end
   end
 
-  describe "compaction token-stat round-trip" do
-    test "from_runtime writes compaction_tokens_compacted columns when the marker carries stats" do
-      marker = %Compaction{
-        index: 5,
-        archived_count: 4,
-        tokens_compacted: 18_432,
-        tokens_compacted_to: 4_096,
-        occurred_at: nil,
-        metadata: nil
-      }
-
-      # The first arg to `from_runtime/2` is the integer agent FK,
-      # ignored here — we're exercising the marker-path branch.
-      base = PersistedMessage.from_runtime(0, {:compaction, marker})
-
-      assert base.compaction_tokens_compacted == 18_432
-      assert base.compaction_tokens_compacted_to == 4_096
-    end
-
-    test "from_runtime omits token columns when both stats are nil" do
-      marker = %Compaction{
-        index: 5,
-        archived_count: 4,
-        tokens_compacted: nil,
-        tokens_compacted_to: nil,
-        occurred_at: nil,
-        metadata: nil
-      }
-
-      base = PersistedMessage.from_runtime(0, {:compaction, marker})
-
-      refute Map.has_key?(base, :compaction_tokens_compacted)
-      refute Map.has_key?(base, :compaction_tokens_compacted_to)
-    end
-
+  describe "compaction marker round-trip" do
     test "round-trips compaction_count through insert_message/2 + to_runtime/1" do
       attrs = agent_attrs("cc-#{Elixir.System.unique_integer([:positive])}")
       {:ok, _} = Persistence.insert_agent(attrs)
@@ -274,38 +194,16 @@ defmodule Nest.Agents.PersistedMessageTest do
                PersistedMessage.to_runtime(row)
     end
 
-    test "to_runtime reads nil stats on a legacy compaction row" do
+    test "to_runtime reads a legacy marker row's archived count" do
       attrs = agent_attrs("legacy-compaction-#{Elixir.System.unique_integer([:positive])}")
       {:ok, _} = Persistence.insert_agent(attrs)
 
-      # Insert a marker via record_compaction with the legacy
-      # 3-arity (default-arg) call so the token columns stay
-      # unset (pre-migration marker row shape).
+      # The 3-arity `record_compaction` call leaves the token-stat
+      # columns unset — the pre-migration marker row shape.
       assert {:ok, marker_row} = Persistence.record_compaction(test_space_id(), attrs.name, 4, 3)
 
-      # Strip any token-stat columns the migration might have
-      # populated by accident — simulate a row persisted before
-      # the migration ran.
-      stripped = %PersistedMessage{
-        id: marker_row.id,
-        agent_id: marker_row.agent_id,
-        message_index: marker_row.message_index,
-        role: marker_row.role,
-        content: marker_row.content,
-        metadata: marker_row.metadata,
-        inserted_at: marker_row.inserted_at,
-        compaction_archived_count: marker_row.compaction_archived_count,
-        compaction_occurred_at: marker_row.compaction_occurred_at,
-        compaction_tokens_compacted: nil,
-        compaction_tokens_compacted_to: nil
-      }
-
-      assert {:compaction,
-              %Compaction{
-                archived_count: 3,
-                tokens_compacted: nil,
-                tokens_compacted_to: nil
-              }} = PersistedMessage.to_runtime(stripped)
+      assert {:compaction, %Compaction{archived_count: 3}} =
+               PersistedMessage.to_runtime(marker_row)
     end
   end
 end

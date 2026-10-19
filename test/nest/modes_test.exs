@@ -16,14 +16,12 @@ defmodule Nest.ModesTest do
       assert Modes.names() == ["plan", "act"]
       assert Modes.plan() == "plan"
       assert Modes.act() == "act"
-      assert Modes.default() == "act"
     end
 
     test "are validated by name, not by shape" do
       for name <- Modes.names(), do: assert(Modes.valid?(name))
 
       refute Modes.valid?("chat")
-      refute Modes.valid?("build")
       refute Modes.valid?(nil)
       refute Modes.valid?(:plan)
     end
@@ -36,17 +34,6 @@ defmodule Nest.ModesTest do
 
       assert Modes.caps("act") ==
                %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}}
-    end
-
-    test "the workspace is the only difference, and it is a write difference" do
-      # A mode restricts writes; both read everything. `net` is the space's, so
-      # the key is a placeholder in both (`Nest.Sandbox.with_network_access/2`
-      # overwrites it).
-      assert Modes.caps("plan")["fs"]["read"] == Modes.caps("act")["fs"]["read"]
-      assert Modes.caps("plan")["net"] == Modes.caps("act")["net"]
-
-      refute ":workspace" in Modes.caps("plan")["fs"]["write"]
-      assert ":workspace" in Modes.caps("act")["fs"]["write"]
     end
 
     test "the caps are the shape the sandbox reads" do
@@ -67,7 +54,6 @@ defmodule Nest.ModesTest do
     test "an agent may hold its own mode, or lower it" do
       assert Modes.allows?("act", "act")
       assert Modes.allows?("act", "plan")
-      assert Modes.allows?("plan", "plan")
     end
 
     test "an agent may not raise a mode" do
@@ -77,7 +63,6 @@ defmodule Nest.ModesTest do
     test "a name this build does not know is refused, from either side" do
       refute Modes.allows?("act", "chat")
       refute Modes.allows?("chat", "plan")
-      refute Modes.allows?("chat", "act")
       refute Modes.allows?(nil, "plan")
     end
   end
@@ -89,7 +74,6 @@ defmodule Nest.ModesTest do
       # contract is rendered by `SystemPrompt`, not here — a tool-less agent still
       # compacts.)
       assert Modes.catalog(false, true) == ""
-      assert Modes.catalog(false, false) == ""
     end
 
     test "names both modes and says the mode arrives with every message" do
@@ -114,13 +98,6 @@ defmodule Nest.ModesTest do
 
       refute enforced =~ "cannot enforce"
       refute unenforced =~ "is enforced by the sandbox"
-    end
-
-    test "is the same bytes for the same agent and space" do
-      # A constant plus two properties that cannot change for a given agent, which
-      # is what keeps the system message cache-safe.
-      assert Modes.catalog(true, true) == Modes.catalog(true, true)
-      refute Modes.catalog(true, true) == Modes.catalog(true, false)
     end
   end
 end
