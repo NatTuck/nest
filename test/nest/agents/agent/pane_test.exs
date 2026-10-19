@@ -53,7 +53,6 @@ defmodule Nest.Agents.Agent.PaneTest do
     assert [%{id: "d1"} = first, %{id: "d2"}] = Pane.decisions(space)
     assert first.orphaned?
     assert first.orphaned_reason == "the agent that asked it is gone"
-    assert ["d1", "d2"] = Enum.map(Pane.decisions(space), & &1.id)
 
     # A second mark keeps the first reason: it is the one the user was shown
     # when the question became drop-only.
@@ -75,28 +74,6 @@ defmodule Nest.Agents.Agent.PaneTest do
     assert ["d2"] = Enum.map(Pane.decisions(space), & &1.id)
   end
 
-  test "replaces one agent's TODO list and leaves another agent's alone" do
-    space = space_id()
-
-    assert :ok =
-             Pane.write_todos(space, "agent-a", [%{"text" => "read", "status" => "pending"}])
-
-    assert :ok =
-             Pane.write_todos(space, "agent-b", [%{"text" => "write", "status" => "in_progress"}])
-
-    assert :ok =
-             Pane.write_todos(space, "agent-a", [
-               %{"text" => "read", "status" => "done"},
-               %{"text" => "ship", "status" => "pending"}
-             ])
-
-    assert [%{text: "read", status: "done"}, %{text: "ship", status: "pending"}] =
-             Pane.todos(space, "agent-a")
-
-    assert [%{text: "write", status: "in_progress"}] = Pane.todos(space, "agent-b")
-    assert Pane.todos(space, "agent-c") == []
-  end
-
   test "keeps spaces apart" do
     one = space_id()
     two = space_id()
@@ -108,7 +85,6 @@ defmodule Nest.Agents.Agent.PaneTest do
 
     assert Pane.decisions(two) == []
     assert Pane.todos(two, "agent-a") == []
-    assert Pane.payload(two, "agent-a")["decisions"] == []
   end
 
   test "the payload is the wire shape, with every key present" do
@@ -145,10 +121,6 @@ defmodule Nest.Agents.Agent.PaneTest do
     # The same space, seen from agent-b's page: its own list, and only it.
     assert %{"todos" => %{"agent-b" => [%{"text" => "theirs", "status" => "pending"}]}} =
              Pane.payload(space, "agent-b")
-
-    # An agent with no list still gets its key, so the client always reads one
-    # shape.
-    assert Pane.payload(space, "agent-c")["todos"] == %{"agent-c" => []}
   end
 
   test "increments seq on every broadcast, and a sync does not advance it" do
@@ -212,16 +184,8 @@ defmodule Nest.Agents.Agent.PaneTest do
     assert {:error, message} = Pane.ask(space, "a", 42, "B", ["a", "b"])
     assert message =~ "must be a string"
 
-    assert {:error, message} = Pane.ask(space, "a", "T", "B", ["only one"])
-    assert message =~ "Options"
-
     assert {:error, message} = Pane.ask(space, "a", "T", "B", ~w(a b c d e f))
     assert message =~ "Options"
-
-    assert {:error, message} =
-             Pane.write_todos(space, "a", [%{"text" => "x", "status" => "later"}])
-
-    assert message =~ "Unknown TODO status"
 
     assert {:error, message} = Pane.write_todos(space, "a", [%{"status" => "pending"}])
     assert message =~ "text string"

@@ -5,9 +5,12 @@ defmodule Nest.Agents.Agent.ClientAPITest do
   GenServer module stays under the credo 500-line cap.
 
   Each function is a one-line `GenServer.call` that
-  forwards to `IntrospectionHandler.handle/3`. These
-  tests pin each call shape against a live agent so the
-  wrapper is genuinely exercised (not just defined).
+  forwards to `IntrospectionHandler.handle/3`. Those calls
+  are already exercised wherever `Nest.Agents.Agent` and
+  `Nest.Agents` re-export them, so this file holds only the
+  claims those call sites cannot make: the wire shape of a
+  mid-tool-call partial, the `GenServer.call/3` failure
+  bound, and the pre-turn `get_total_usage/1` placeholder.
   """
 
   use Nest.DataCase, async: true
@@ -43,18 +46,6 @@ defmodule Nest.Agents.Agent.ClientAPITest do
   end
 
   describe "get_public_info/1" do
-    test "returns the agent's full public info map" do
-      {pid, name} =
-        AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus", provider: "model-studio"}})
-
-      _ref = Process.monitor(pid)
-
-      info = ClientAPI.get_public_info(pid)
-      assert info.name == name
-      assert model_name(info.model) == "qwen3.5-plus"
-      assert info.status == :idle
-    end
-
     test "a mid-tool-call partial is JSON-serializable on the wire" do
       # Regression for the lobby channel crash: `get_public_info/1`
       # returned a `partial` whose `currentType` was the raw
@@ -104,56 +95,14 @@ defmodule Nest.Agents.Agent.ClientAPITest do
     end
   end
 
-  describe "get_messages/1" do
-    test "returns the system prompt only for a fresh agent" do
-      {pid, _name} =
-        AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus", provider: "model-studio"}})
-
-      messages = ClientAPI.get_messages(pid)
-      # A fresh agent hydrates the immutable initial system
-      # message (position 0). The wrapper just delegates to
-      # the IntrospectionHandler, so this is enough to
-      # cover the wrapper surface.
-      assert length(messages) == 1
-      assert match?({:system, _}, hd(messages))
-    end
-  end
-
-  describe "archived history (derived)" do
-    test "is empty when no compaction has run" do
-      {pid, name} =
-        AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus", provider: "model-studio"}})
-
-      space_id = Nest.Agents.Agent.get_public_info(pid).space_id
-
-      assert Nest.Persistence.load_history(space_id, name) == []
-    end
-  end
-
   describe "get_total_usage/1" do
     test "returns the zero-totals placeholder before any LLM call" do
       {pid, _name} =
         AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus", provider: "model-studio"}})
 
       totals = ClientAPI.get_total_usage(pid)
-      assert is_map(totals)
       assert totals.input_tokens == 0
       assert totals.output_tokens == 0
     end
   end
-
-  describe "terminate/1" do
-    test "stops the agent process" do
-      {pid, _name} =
-        AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus", provider: "model-studio"}})
-
-      ref = Process.monitor(pid)
-      assert Process.alive?(pid)
-
-      :ok = ClientAPI.terminate(pid)
-      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1000
-    end
-  end
-
-  defp model_name(model), do: model[:name] || model["name"]
 end

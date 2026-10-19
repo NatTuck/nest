@@ -1,44 +1,33 @@
 defmodule Nest.Agents.Agent.TurnAcceptanceTest do
   @moduledoc """
-  Acceptance tests for the Agent's in-process turn driver —
-  the iteration state machine that drives each chat turn.
-  These tests are the contract: they drive the turn through
-  every transition (single-iteration, multi-iteration, budget
-  reminder, max-iterations second-chance, user stop, HTTP
-  crash, nil usage, multi-turn) with a real Agent and the
-  existing `MockClient`.
+  Acceptance tests for the Agent's in-process turn driver — the
+  iteration state machine that drives each chat turn — and for the
+  shape of the transcript it produces: one iteration
+  (system, user, assistant), a tool iteration (tool call, tool
+  result, final assistant), and two consecutive turns (strictly
+  monotonic indices).
 
-  They inspect the Agent's state directly — through its public
-  accessors (`Agent.get_messages/2`, `Agent.get_public_info/2`,
-  each taking the read's failure bound) where one reaches the
-  field, and `:sys.get_state/2` in the two cases no accessor
-  covers: the machine internals it does not expose (the active
-  worker, `cancelled`), and a site that reads the transcript and
-  the status from one snapshot, where two accessor calls could
-  observe two different states. That is how they assert against
-  the message index, the status, and the active worker (the
-  externally visible contract the driver must honor). PubSub
-  broadcasts are used to assert the externally visible contract
-  (chat:message, chat:status, chat:error).
+  The other transitions of the same machine are driven by
+  `Nest.Agents.AgentSystemMessagesTest` (budget reminder),
+  `Nest.Agents.AgentToolsMaxIterationsTest` (max-iterations second
+  chance), `Nest.Agents.AgentStopTest` (user stop),
+  `Nest.Agents.ChatTaskCrashTest` (HTTP worker crash) and
+  `Nest.Agents.AgentObservabilityTest` (nil usage). They are not
+  repeated here.
 
-  These tests must pass before the refactor is complete.
-  They cover the regression cases that the old
-  `LLMRunner.run/2`-in-a-Task design broke with the
-  dual-counter bug class.
+  The transcript is read from one atomic snapshot
+  (`:sys.get_state/2`) only where a test needs the message list
+  together with a field no accessor covers (the active worker,
+  `cancelled`); everywhere else the public accessor serves the read.
+  PubSub broadcasts are the externally visible contract
+  (chat:message, chat:status).
   """
   use Nest.DataCase, async: true
-  alias Nest.Agents.Agent.Machine
-
-  import ExUnit.CaptureLog
-  import Mimic
 
   alias Nest.Agents.Agent
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
-  alias Nest.Messages.Part
-
-  setup :verify_on_exit!
 
   setup do
     Process.put(:nest_test_agent_pid, self())
@@ -60,28 +49,6 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
     end)
   end
 
-  # The carried assistant+ToolUse handed to a resumed turn as the
-  # compaction entry `{:tool_call, msg, iter, max}`. The resumed turn
-  # executes it first, then makes its next LLM call with
-  # the carried iteration count — so seeding a turn at the cap makes its
-  # first LLM call the final `tools: nil` one. `context-check` (rather
-  # than `context-compact`) keeps that execution from triggering a
-  # compaction of its own.
-  defp carried_tool_call_msg do
-    {:assistant,
-     %Assistant{
-       index: 0,
-       parts: [
-         %Part.ToolUse{
-           id: "call_cap",
-           name: "context-check",
-           arguments: %{}
-         }
-       ],
-       api_logs: []
-     }}
-  end
-
   describe "single-iteration turn" do
     test "1.1.1 appends user + assistant, transitions to idle" do
       MockClient.set_response("Hello back")
@@ -96,10 +63,9 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      # allowlist: snapshot — status + work + cancelled + messages
+      # allowlist: snapshot — work + cancelled + messages
       state = :sys.get_state(pid, 1_000)
 
-      assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil
       assert state.live.cancelled == false
 
@@ -142,8 +108,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      # allowlist: snapshot — messages + status
-      state = :sys.get_state(pid, 1_000)
+      messages = Agent.get_messages(pid, 1_000)
 
       # Expected base: system(0), user(1), assistant+tools(2),
       # tool(3), final_assistant(4). The context-notice synthetic
@@ -151,257 +116,11 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       # that crosses a threshold, depending on the test model's
       # resolved context_limit. We assert on indices being unique
       # and sequential, not on a fixed count.
-      indices = message_indices(state.chat_state.messages)
+      indices = message_indices(messages)
 
       assert length(indices) >= 5
       assert indices == Enum.sort(indices), "indices must be sorted"
       assert length(Enum.uniq(indices)) == length(indices), "indices must be unique"
-      assert Machine.status_for(state.live.machine) == :idle
-    end
-  end
-
-  describe "budget reminder" do
-    test "1.1.3 reminder is injected on remaining=2, gets distinct index from final response" do
-      for i <- 1..4 do
-        MockClient.set_tool_response(%{
-          text: "loop #{i}",
-          tool_calls: [
-            %{id: "call_#{i}", name: "context-check", arguments: %{}}
-          ]
-        })
-      end
-
-      MockClient.set_response("All done")
-
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: programmer_vocation_id_for_test()
-        })
-
-      :ok = Agent.chat(pid, "Loop until done")
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
-
-      messages = Agent.get_messages(pid, 1_000)
-
-      # The budget reminder is now a synthetic pair injected at
-      # the LLM-response-construction site: a {:user, _} message
-      # carrying the notice text, preceded by a {:assistant, _}
-      # "Context?" attention message.
-      reminders =
-        Enum.filter(messages, fn
-          {:user, %Nest.Messages.User{parts: parts}} when is_list(parts) ->
-            Enum.any?(parts, fn
-              %Part.Text{text: text} ->
-                String.contains?(text, "tool call rounds remaining") or
-                  String.contains?(text, "Last tool call round")
-
-              _ ->
-                false
-            end)
-
-          _ ->
-            false
-        end)
-
-      assert reminders != [], "expected at least one budget reminder in messages"
-
-      reminder_indices = Enum.map(reminders, fn {_, %{index: idx}} -> idx end)
-
-      responses =
-        Enum.filter(messages, fn
-          {:assistant, %Assistant{parts: parts}} when is_list(parts) ->
-            Enum.all?(parts, fn
-              %Nest.Messages.Part.ToolUse{} -> false
-              _ -> true
-            end)
-
-          _ ->
-            false
-        end)
-
-      response_indices = Enum.map(responses, fn {_, %{index: idx}} -> idx end)
-
-      Enum.each(reminder_indices, fn ri ->
-        Enum.each(response_indices, fn si ->
-          assert ri != si,
-                 "reminder index #{ri} collides with response index #{si} — dual-counter bug"
-        end)
-      end)
-
-      AgentTestHelpers.assert_unique_message_indices(messages)
-    end
-  end
-
-  describe "max iterations second-chance" do
-    test "1.1.4 max_iterations: final call uses tools: nil, iteration produces a final response" do
-      # The cap is 5 (test/data/config.toml). Rather than burn five real
-      # tool rounds to walk the iteration counter up to it, resume a turn
-      # that is already at the cap: the carried
-      # `{:tool_call, msg, iter, max}` continuation preserves both
-      # counters (the machine entry), so the resumed turn's next LLM
-      # call is the final `tools: nil` call. One LLM round instead of six,
-      # same contract.
-      #
-      # The `tools: nil` decision itself is asserted directly in
-      # `machine/turn_test.exs`. What this test pins is the
-      # observable end of it: the final call's text lands as the final
-      # assistant message and the turn ends idle.
-      MockClient.set_response("Final answer at the cap")
-
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: programmer_vocation_id_for_test()
-        })
-
-      capture_log(fn ->
-        send_compaction_done(pid, "Summary", {:tool_call, carried_tool_call_msg(), 5, 5})
-
-        # Fires only once the iteration counter is past the cap, so this
-        # is what proves the carried count took effect and the call that
-        # follows really is the final one.
-        assert_receive {:chat_notification, %{type: "max_iterations"}}, 750
-
-        assert_receive {:chat_status, %{status: "idle"}}, 750
-      end)
-
-      # allowlist: snapshot — status + work + messages
-      state = :sys.get_state(pid, 1_000)
-
-      # The agent goes to :idle after the final call.
-      assert Machine.status_for(state.live.machine) == :idle
-      assert state.live.machine.work.active_worker == nil
-
-      assert Enum.any?(state.chat_state.messages, fn
-               {:assistant, %Assistant{parts: parts}} ->
-                 Enum.any?(parts, &match?(%Part.Text{text: "Final answer at the cap"}, &1))
-
-               _ ->
-                 false
-             end),
-             "expected the final call's text to land as the final assistant message"
-    end
-  end
-
-  describe "user-initiated stop" do
-    test "1.1.5 finalizes the partial assistant message and transitions to idle" do
-      events = for _ <- 1..50, do: {:text, "x"}
-      MockClient.set_stream_events(events)
-
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: programmer_vocation_id_for_test()
-        })
-
-      :ok = Agent.chat(pid, "Tell me a long story")
-
-      # The Agent broadcasts `chat:status: streaming` when the
-      # chat turn starts streaming.
-      assert_receive {:chat_status, %{status: "streaming"}}, 1_000
-
-      # Wait for at least one delta to be processed so the
-      # Agent's `streaming_acc` mirror has content to finalize.
-      # The `chat:delta` PubSub broadcast is the event-based
-      # signal that the Agent's `delta_received` handler has
-      # already updated the mirror.
-      assert_receive {:chat_delta, _}, 1_000
-
-      # Use the public stop API instead of reaching into the
-      # Agent's internals. The stop runs entirely in the Agent
-      # process.
-      Agent.stop_chat(pid, self())
-
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
-
-      # allowlist: snapshot — status + work + messages
-      state = :sys.get_state(pid, 1_000)
-
-      assert Machine.status_for(state.live.machine) == :idle
-      assert state.live.machine.work.active_worker == nil
-
-      final_assistants =
-        Enum.filter(state.chat_state.messages, fn
-          {:assistant, %Assistant{parts: parts}} when is_list(parts) ->
-            Enum.any?(parts, fn
-              %Nest.Messages.Part.Text{text: text} when is_binary(text) -> true
-              _ -> false
-            end)
-
-          _ ->
-            false
-        end)
-
-      assert final_assistants != [],
-             "expected a partial assistant message after stop"
-
-      AgentTestHelpers.assert_unique_message_indices(state.chat_state.messages)
-    end
-  end
-
-  describe "HTTP worker crash" do
-    test "1.1.6 Agent receives {:chat_crashed, _}, broadcasts chat:error, transitions to idle" do
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: programmer_vocation_id_for_test()
-        })
-
-      Mimic.stub(MockClient, :run, fn _request, _opts ->
-        raise FunctionClauseError,
-          module: Nest.LLM.OpenAIClient,
-          function: :finish_event,
-          arity: 1,
-          args: [%{"delta" => %{"role" => "assistant"}}]
-      end)
-
-      Mimic.allow(MockClient, self(), pid)
-
-      # capture_log swallows the `Logger.error` calls in
-      # `Broadcasts.log_error/4` (the agent logs the error
-      # before broadcasting the structured `chat:error`
-      # event).
-      capture_log(fn ->
-        :ok = Agent.chat(pid, "Hello")
-
-        assert_receive {:chat_status, %{status: "idle"}}, 1_000
-      end)
-
-      # allowlist: snapshot — status + work
-      state = :sys.get_state(pid, 1_000)
-
-      assert Machine.status_for(state.live.machine) == :idle
-      assert state.live.machine.work.active_worker == nil
-    end
-  end
-
-  describe "nil usage is a no-op" do
-    test "1.1.7 second chat with no usage does not zero out accumulated output_tokens" do
-      MockClient.set_response("First response")
-      MockClient.set_response("Second response with no usage event")
-
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: programmer_vocation_id_for_test()
-        })
-
-      :ok = Agent.chat(pid, "First")
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
-
-      first_info = Agent.get_public_info(pid)
-      first_output = first_info.usage.output_tokens || 0
-
-      :ok = Agent.chat(pid, "Second")
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
-
-      second_info = Agent.get_public_info(pid)
-      second_output = second_info.usage.output_tokens || 0
-
-      assert second_output >= first_output,
-             "second chat's output_tokens (#{second_output}) " <>
-               "should not be less than first chat's (#{first_output}) — nil usage should be a no-op"
     end
   end
 
