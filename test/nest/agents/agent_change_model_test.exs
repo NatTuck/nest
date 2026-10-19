@@ -24,7 +24,6 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
   alias Nest.Messages.Part
   alias Nest.Persistence
   alias Nest.Repo
-  alias Nest.Tokens.Reserve
 
   setup :verify_on_exit!
 
@@ -51,15 +50,6 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
   # The text of a delivered user row. The notice pair is one text part, which is
   # what the header and the body are joined into.
   defp user_text({:user, %{parts: [%Part.Text{text: text}]}}), do: text
-
-  defp user_row(index, text) do
-    {:user, %Nest.Messages.User{index: index, parts: [%Part.Text{text: text}], api_logs: []}}
-  end
-
-  defp assistant_row(index, text) do
-    {:assistant,
-     %Nest.Messages.Assistant{index: index, parts: [%Part.Text{text: text}], api_logs: []}}
-  end
 
   # Spawn an agent via the supervisor path. We can't use
   # `AgentTestHelpers.start_agent/1` here because it swaps
@@ -144,138 +134,6 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
                "name" => "claude-3-opus-20240229",
                "provider" => "anthropic-provider"
              }
-    end
-  end
-
-  describe "the model-change notice" do
-    # The system message states the model's name, whether the catalog says it
-    # accepts image input, and the context limit it budgets against — and it is
-    # never rebuilt (prefix cache). So a change to any of the three is announced
-    # instead, and a change to none of them says nothing.
-    test "a model change appends one pair naming the new model, its verdict and its limit" do
-      {pid, _name} =
-        persist_and_start!(%{
-          name: "notice-agent",
-          model: %{name: "qwen3.5-plus", provider: "model-studio"},
-          vocation_id: vid()
-        })
-
-      before = Agent.get_messages(pid)
-
-      # qwen3.5-plus declares image input; MiniMax-M2.5 declares nothing, and its
-      # window is the 128k default.
-      :ok = Agent.set_model(pid, %{name: "MiniMax-M2.5", provider: "model-studio"})
-
-      messages = Agent.get_messages(pid)
-      assert length(messages) == length(before) + 2
-
-      [notice_row, ack_row] = Enum.take(messages, -2)
-      notice = user_text(notice_row)
-
-      # The runtime is speaking, so the row carries the runtime's header and the
-      # recipient's mode, exactly as every other delivered row states it.
-      assert String.starts_with?(notice, "[From nest runtime | mode: ")
-
-      assert notice =~ ~s(Your model changed. It is now "MiniMax-M2.5".)
-      assert notice =~ "Nothing declares whether it accepts image input"
-
-      # The limit is the number the agent budgets against, and it was stale before
-      # this notice existed: state it with the same arithmetic the prompt uses.
-      reserve = Reserve.compaction_reserve(128_000)
-
-      assert notice =~ "Its context limit is 128000 tokens"
-      assert notice =~ "~#{reserve} tokens are reserved for compaction"
-      assert notice =~ "working token budget of ~#{128_000 - reserve}"
-
-      assert {:assistant, %{parts: [%Part.Text{text: "Model change confirmed."}]}} = ack_row
-    end
-
-    test "a notice that cannot be delivered is logged, and the change still succeeds" do
-      {pid, name} =
-        persist_and_start!(%{
-          name: "crowded-agent",
-          model: %{name: "qwen3.5-plus", provider: "model-studio"},
-          vocation_id: vid()
-        })
-
-      Phoenix.PubSub.subscribe(
-        Nest.PubSub,
-        "agent:#{AgentTestHelpers.current_space_id()}:#{name}"
-      )
-
-      # A conversation with no room left for the pair: `pegasus-per-model-test`
-      # has a 32k window in the test config, and this is far past it, so the
-      # notice needs a compaction — and the compaction it would need cannot be
-      # planned either, because there is nothing the summary could be fitted
-      # into. A real exchange ahead of the big row, so the preflight asks for a
-      # compaction rather than refusing one as a no-op.
-      crowded = [
-        user_row(1, "hi"),
-        assistant_row(2, "hello"),
-        user_row(3, String.duplicate("word ", 40_000))
-      ]
-
-      :sys.replace_state(
-        pid,
-        fn state ->
-          %{
-            state
-            | chat_state: %{
-                state.chat_state
-                | messages: state.chat_state.messages ++ crowded,
-                  next_message_index: 4
-              }
-          }
-        end,
-        1_000
-      )
-
-      log =
-        ExUnit.CaptureLog.capture_log(fn ->
-          assert :ok =
-                   Agent.set_model(pid, %{name: "pegasus-per-model-test", provider: "pegasus"})
-        end)
-
-      # The agent is told it was not told, and the operator gets the overflow
-      # banner instead of a pair appended into a request that cannot hold it.
-      assert log =~ "model change not announced on agent #{inspect(name)}"
-      assert_receive {:chat_error, %{content: content}}, 1_000
-      assert content =~ "Cannot compact"
-
-      # The change itself is not failed: the row is persisted and the agent holds
-      # the new model, which is what the operator asked for.
-      {:ok, row} = Persistence.fetch_agent(AgentTestHelpers.current_space_id(), name)
-
-      assert row.model == %{"name" => "pegasus-per-model-test", "provider" => "pegasus"}
-      assert Agent.get_client_config(pid, 1_000).model == "pegasus-per-model-test"
-
-      refute Enum.any?(Agent.get_messages(pid), fn
-               {:user, %{parts: [%Part.Text{text: text}]}} -> text =~ "Your model changed."
-               _other -> false
-             end)
-    end
-
-    test "a thinking-only edit appends nothing, and is still a real edit" do
-      {pid, _name} =
-        persist_and_start!(%{
-          name: "thinking-agent",
-          model: %{name: "qwen3.5-plus", provider: "model-studio"},
-          vocation_id: vid()
-        })
-
-      before = Agent.get_messages(pid)
-
-      :ok =
-        Agent.edit_agent(pid, %{
-          name: "qwen3.5-plus",
-          provider: "model-studio",
-          thinking_level: "high"
-        })
-
-      # The edit landed — only the notice is skipped, because the prompt says
-      # nothing about thinking.
-      assert Agent.get_client_config(pid, 1_000).thinking_effort == :high
-      assert length(Agent.get_messages(pid)) == length(before)
     end
   end
 

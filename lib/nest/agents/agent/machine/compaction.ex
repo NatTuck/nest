@@ -520,7 +520,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   # was in flight has already marked the row again, and erasing that mark would
   # leave the agent with the new mounts and a transcript describing the old ones —
   # the notice it is owed would be lost until some later edit.
-  defp resume_notice(m, notice) do
+  defp resume_notice(m, %{kind: :workspace} = notice) do
     pair = WorkspaceHandler.notice_pair(notice, m.work.ctx.mode)
 
     Phase.rest(
@@ -529,6 +529,16 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
       :workspace_notice,
       [{:append_many, pair}, {:clear_space_notice, notice}, {:drain_inbox}]
     )
+  end
+
+  # A staged notice this build cannot render. The workspace clause used to be the
+  # catch-all, so an untagged or mis-tagged map either rendered a pair describing
+  # the wrong thing or raised `KeyError` inside `WorkspaceHandler.body/1` — inside
+  # a settle, taking the agent with it. Neither is a fallback worth having: the
+  # raise costs nothing here (there is no funnel call in this clause) and names the
+  # notice at the dispatch point.
+  defp resume_notice(_m, notice) do
+    raise ArgumentError, "unknown staged notice: #{inspect(notice)}"
   end
 
   defp resume_machine(m, entry) do

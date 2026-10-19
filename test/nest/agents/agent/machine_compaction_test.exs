@@ -123,6 +123,18 @@ defmodule MachineCompactionTest do
                Enum.find_index(actions, &match?({:clear_space_notice, _}, &1))
     end
 
+    # A staged notice this build cannot render is a named error at the dispatch
+    # point. The workspace clause used to be the catch-all, so an untagged or
+    # mis-tagged map rendered a pair describing the wrong thing — or raised
+    # `KeyError` inside `WorkspaceHandler.body/1`, inside a settle.
+    test "a staged notice of no known kind raises instead of rendering a pair" do
+      m = %{state_at(:committing) | entry: {:compaction, nil, %{kind: :something_else}}}
+
+      assert_raise ArgumentError, ~r/unknown staged notice/, fn ->
+        Machine.Compaction.resume(m)
+      end
+    end
+
     # A space-environment notice lives on the compaction entry that will append
     # it — `{:compaction, carried, values}` — and nowhere else. So the only shape
     # that carries it forward is a compaction that actually started; the

@@ -28,7 +28,7 @@ defmodule Nest.Agents.Agent.Config do
   """
   @spec create_client_config(map()) :: {:ok, ClientConfig.t()} | {:error, :no_model_name}
   def create_client_config(model) do
-    model_name = model[:name] || model["name"]
+    model_name = ChatModel.model_name(model)
 
     if model_name do
       case ChatModel.new(model: model_name) do
@@ -67,7 +67,7 @@ defmodule Nest.Agents.Agent.Config do
     else
       case DotConfig.load() do
         {:ok, config} ->
-          model_effort(config, model_name(model)) ||
+          model_effort(config, ChatModel.model_name(model)) ||
             provider_effort(config, model_provider(model)) ||
             DotConfig.default_thinking_effort(config) ||
             DotConfig.default_thinking_effort()
@@ -96,7 +96,6 @@ defmodule Nest.Agents.Agent.Config do
     end
   end
 
-  defp model_name(model), do: model[:name] || model["name"]
   defp model_provider(model), do: model[:provider] || model["provider"]
 
   @doc """

@@ -291,8 +291,8 @@ defmodule Nest.Models.MultiModalTest do
          "It declares text-only input, so `file-read` refuses an image.",
          "declares text-only input"},
         {"unknown-model", nil,
-         "Nothing declares whether it accepts image input; `file-read` refuses an image " <>
-           "with the reason if it cannot.", "no modality metadata"}
+         "Nothing declares whether it accepts image input, so `file-read` refuses an image " <>
+           "and says how to declare it.", "no modality metadata"}
       ]
 
       for {name, declared, sentence, outcome} <- cases do

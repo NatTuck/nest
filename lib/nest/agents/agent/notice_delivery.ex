@@ -47,6 +47,14 @@ defmodule Nest.Agents.Agent.NoticeDelivery do
   change cannot be mistaken for this one. `text` must be built with the mode the
   *transition* saw (`before.live.mode`) — that is the mode the pair's header
   carries, and a drain inside the settle may change the mode after the append.
+
+  A caveat worth stating, because it decides what the call sites' tests can pin:
+  at those call sites the *only* observable that separates `:appended` from a
+  failed delivery is the absence of the caller's `Logger.warning`, and
+  `SMELLS.md` forbids asserting the absence of a log line (a capture is global,
+  so the assertion flakes while testing nothing). The append itself is what the
+  tests assert — the pair's text in the transcript — and this arm is pinned on its
+  inputs instead (`test/nest/agents/agent/notice_delivery_test.exs`).
   """
   @spec outcome(Agent.t(), Agent.t(), String.t()) :: outcome()
   def outcome(before, settled, text) do

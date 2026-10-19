@@ -201,7 +201,8 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   end
 
   # The pair's user row, in one place: `notice_pair/2` builds it and
-  # `appended_notice?/3` looks for exactly this text in the rows a settle added.
+  # `Nest.Agents.Agent.NoticeDelivery.appended?/3` looks for exactly this text in
+  # the rows a settle added.
   defp notice_text(values, mode), do: Header.put(body(values), :runtime, mode)
 
   # One sentence per property, naming the values now in force. A single line

@@ -350,9 +350,11 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       assert compose_with(vocation, mounts, "text-model") =~
                ~s(Your model is "text-model". It declares text-only input, so `file-read` refuses an image.)
 
+      # `:unknown` refuses *unconditionally*, so the sentence must not imply the
+      # attempt might succeed — it would burn a call to learn otherwise.
       assert compose_with(vocation, mounts, "unknown-model") =~
-               ~s(Your model is "unknown-model". Nothing declares whether it accepts image input; ) <>
-                 "`file-read` refuses an image with the reason if it cannot."
+               ~s(Your model is "unknown-model". Nothing declares whether it accepts image ) <>
+                 "input, so `file-read` refuses an image and says how to declare it."
 
       # No model name → no section at all, rather than one naming nothing. The
       # callers that pass `nil` are the ones with no model to state (a vocation

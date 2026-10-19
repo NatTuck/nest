@@ -233,8 +233,22 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   end
 
   def model_verdict_sentence(:unknown) do
-    "Nothing declares whether it accepts image input; `file-read` refuses an image " <>
-      "with the reason if it cannot."
+    "Nothing declares whether it accepts image input, so `file-read` refuses an image " <>
+      "and says how to declare it."
+  end
+
+  @doc """
+  The compaction reserve and the working budget it leaves, for a context `limit`.
+
+  Public because two places state the same arithmetic and must not drift: the
+  context-limit section above, and the notice a model change appends
+  (`Nest.Agents.Agent.ModelHandler`), which restates the numbers because the
+  prompt's own line is never rebuilt.
+  """
+  @spec working_budget(pos_integer()) :: {non_neg_integer(), pos_integer()}
+  def working_budget(limit) do
+    reserve = Reserve.compaction_reserve(limit)
+    {reserve, max(1, limit - reserve)}
   end
 
   # Every prompt section that only makes sense when the agent can call
@@ -381,8 +395,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   defp context_limit_section({nil, _}), do: ""
 
   defp context_limit_section({limit, source}) do
-    reserve = Reserve.compaction_reserve(limit)
-    effective = max(1, limit - reserve)
+    {reserve, effective} = working_budget(limit)
 
     "\n\nContext limit: #{limit} tokens (resolved from #{source}). " <>
       "Of this, ~#{reserve} tokens are reserved for compaction, " <>

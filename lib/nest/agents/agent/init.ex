@@ -34,6 +34,7 @@ defmodule Nest.Agents.Agent.Init do
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.Agent.TreePosition
   alias Nest.Agents.Agent.Turn.ContextReminder
+  alias Nest.ChatModel
   alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Sandbox.Mounts
@@ -239,7 +240,7 @@ defmodule Nest.Agents.Agent.Init do
         {context_limit, context_limit_source},
         Map.get(attrs, :name, ""),
         Map.get(attrs, :depth, 0),
-        model_name(model)
+        ChatModel.model_name(model)
       )
 
     tool_names = maybe_exclude_spawn(tool_names, attrs)
@@ -597,7 +598,7 @@ defmodule Nest.Agents.Agent.Init do
         ) :: {non_neg_integer(), atom()}
   def initial_context_limit(model, cache_lookup \\ &Nest.Models.context_limit/2) do
     provider = model[:provider] || model["provider"]
-    model_name = model_name(model)
+    model_name = ChatModel.model_name(model)
 
     context_limit_layer(
       fn -> Config.configured_context_limit(model_name) end,
@@ -628,8 +629,6 @@ defmodule Nest.Agents.Agent.Init do
         end
     end
   end
-
-  defp model_name(model), do: model[:name] || model["name"]
 
   defp initial_messages_with_system(system_prompt) do
     message =

@@ -26,6 +26,16 @@ defmodule Nest.Agents.Agent.ModelHandler do
   so two edits in a row cannot leave the agent holding a partial picture — and it
   is emitted only when one of them actually moved: `edit_agent` also carries the
   thinking level, which the prompt says nothing about.
+
+  ## The give-up it performs
+
+  The notice rests the machine (`Phase.rest/4`), and the resting funnel prepends
+  the reply give-up (`Machine.GiveUp`). So changing the model of an **idle agent
+  that still owes a peer an answer** tells that peer the runtime gave up waiting
+  for it — which is surprising for what looks like a settings change, but is the
+  same rule every resting transition follows (the workspace notice included): a
+  rest ends the turn, and a turn that ends owing a reply cannot keep working.
+  `MachineDebtTest` asserts it for this site like the others.
   """
 
   require Logger
@@ -44,12 +54,18 @@ defmodule Nest.Agents.Agent.ModelHandler do
   alias Nest.Messages.User
   alias Nest.Models.MultiModal
   alias Nest.Persistence
-  alias Nest.Tokens.Reserve
 
   @typedoc """
   The facts about the agent's model that its prompt states, and that a model
   change therefore has to announce: the model's name, whether the merged catalog
   says it accepts image input, and the context limit it budgets against.
+
+  The context limit's **source** is deliberately not one of them, although the
+  prompt names it ("resolved from config"): the number is what the agent budgets
+  against and what a stale line gets wrong, whereas the provenance is not
+  actionable and would be one more sentence in every notice. A change that keeps
+  the limit and moves only the source therefore announces nothing, and the
+  parenthetical stays as it was.
 
   `:kind` tags the map for the one place that has to tell two staged notices
   apart (`Nest.Agents.Agent.Machine.Compaction.resume_notice/2`); a
@@ -117,15 +133,13 @@ defmodule Nest.Agents.Agent.ModelHandler do
   def notice_text(facts, mode), do: Header.put(body(facts), :runtime, mode)
 
   # Current facts, no meta-commentary — the same voice as the space-environment
-  # notice. The verdict sentence is the prompt's own
-  # (`SystemPrompt.model_verdict_sentence/1`), so a notice and a prompt can never
-  # state different things about the same model, and the context arithmetic is the
-  # prompt's too (`SystemPrompt.context_limit_section/1`): the limit is the number
-  # the agent budgets against, so a stale one is the whole reason this sentence
-  # exists.
+  # notice. The verdict sentence and the budget arithmetic are the prompt's own
+  # (`SystemPrompt.model_verdict_sentence/1`, `SystemPrompt.working_budget/1`), so
+  # a notice and a prompt can never state different things about the same model:
+  # the limit is the number the agent budgets against, so a stale one is the whole
+  # reason this sentence exists.
   defp body(%{model: name, verdict: verdict, context_limit: limit}) do
-    reserve = Reserve.compaction_reserve(limit)
-    effective = max(1, limit - reserve)
+    {reserve, effective} = SystemPrompt.working_budget(limit)
 
     "Your model changed. It is now \"#{name}\". " <>
       SystemPrompt.model_verdict_sentence(verdict) <>

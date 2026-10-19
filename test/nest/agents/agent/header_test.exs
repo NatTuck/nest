@@ -148,7 +148,12 @@ defmodule Nest.Agents.Agent.HeaderTest do
                {:assistant, %Assistant{parts: [%Part.Text{text: ack}]}}
              ] =
                WorkspaceHandler.notice_pair(
-                 %{workspace: "/tmp/ws", network_access: true, backend: "bwrap"},
+                 %{
+                   kind: :workspace,
+                   workspace: "/tmp/ws",
+                   network_access: true,
+                   backend: "bwrap"
+                 },
                  "act"
                )
 

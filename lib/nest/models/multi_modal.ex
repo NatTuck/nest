@@ -164,7 +164,9 @@ defmodule Nest.Models.MultiModal do
 
   def input_support(_model_name, _modality), do: :unknown
 
-  # The catalog, or nothing when its manager is not running.
+  # The catalog, or nothing when its manager cannot be asked: not running, or not
+  # answering (a `GenServer.call` that times out exits the caller, and this catch
+  # covers that too).
   #
   # `:unknown` is the honest answer to "the catalog cannot be asked" — it is the
   # same value as "no entry declares this", and both readers already treat it as
