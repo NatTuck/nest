@@ -16,6 +16,7 @@ import { getStore, socket } from "./channels/state";
 
 export * from "./channels/state";
 export * from "./channels/agent";
+export * from "./channels/pane";
 export * from "./channels/shellJobs";
 export * from "./channels/lobby";
 export * from "./channels/spaceNotes";

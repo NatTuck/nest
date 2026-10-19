@@ -41,6 +41,12 @@ export const initialState = {
   // `slices/spaceFeed.js`), so this is empty until then rather than one entry
   // per space.
   spaceFeeds: {},
+  // The right-hand pane's state, by space id: the space's questions for the
+  // user (#119) and the TODO lists (#120), plus the pane's browser-owned state
+  // (collapsed, the open accordion row, the drafts and the save/drop marks). An
+  // entry exists only once the first `pane:state` frame has arrived for that
+  // space, so this is empty until then rather than one entry per space.
+  panes: {},
   agentsCache: {},
   currentUser: null,
   invites: [],
