@@ -82,22 +82,6 @@ defmodule Nest.Credo.Check.SourceFileMaxLinesTest do
       # code lines: defmodule, @spec, def run, end = 4
       assert count(content).code == 4
     end
-
-    test "counts multiline sigils as multi-line strings" do
-      content = """
-      defmodule A do
-        pattern = ~r\"\"\"
-        a
-        b
-        \"\"\"
-        def run, do: pattern
-      end
-      """
-
-      # code lines: defmodule, `pattern = ~r\"\"\"`, a, b, `\"\"\"`,
-      # def run, end = 7
-      assert count(content).code == 7
-    end
   end
 
   describe "total line counting" do

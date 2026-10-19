@@ -168,19 +168,9 @@ end
 # the suite is contention-bound above its real core count and over-subscribing the
 # schedulers is what produces fence misses. There is deliberately no ceiling: on a
 # 32-core/64-thread host this sets 32.
-# `NEST_TEST_DURATIONS=1` adds the suite-time instrument (#94): per-module
-# totals in the *real* parallel run, which `--slowest` cannot give because it
-# implies `--trace`. Off by default, so a normal run pays nothing for it.
-duration_formatters =
-  case System.get_env("NEST_TEST_DURATIONS") do
-    value when value in [nil, ""] -> []
-    _set -> [Nest.Test.DurationSummary]
-  end
-
 ExUnit.configure(
   timeout: 3_000,
-  max_cases: Nest.Test.MaxCases.real_cpus(),
-  formatters: [ExUnit.CLIFormatter | duration_formatters]
+  max_cases: Nest.Test.MaxCases.real_cpus()
 )
 
 ExUnit.start()

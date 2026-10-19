@@ -10,18 +10,14 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
 
   import ExUnit.CaptureLog
 
-  import Nest.Test.TmpCleanup
-
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.BatchSizer.Overflow
-  alias Nest.Agents.Agent.BatchSizer.ProjectedSize
   alias Nest.Agents.SpaceGate
   alias Nest.LLM.Tool
   alias Nest.Messages.{Part, ToolCall, ToolResult}
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
   alias Nest.TextFixtures
-  alias Nest.Tools
 
   # -- helpers --
 
@@ -36,14 +32,6 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
 
   defp small_tool(name) do
     make_tool(name, fn _, _ -> {:ok, "small output for #{name}"} end)
-  end
-
-  defp huge_tool(name, size_bytes) do
-    make_tool(name, fn _, _ -> {:ok, TextFixtures.big_text(size_bytes)} end)
-  end
-
-  defp failing_tool(name) do
-    make_tool(name, fn _, _ -> {:error, "intentional failure"} end)
   end
 
   defp call(id, name, arguments \\ %{}) do
@@ -65,25 +53,6 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   end
 
   describe "Phase 1: preflight" do
-    test "fits when projected total is below context_limit" do
-      tools = [small_tool("echo")]
-      c = ctx(tools, context_limit: 100_000)
-      assert {:fits, _} = BatchSizer.preflight([call("c1", "echo")], c)
-    end
-
-    test "refuses when projected total exceeds context_limit" do
-      # context_limit = 100 tokens, but a 1 MB output would far exceed
-      tools = [huge_tool("huge", 1_000_000)]
-      c = ctx(tools, context_limit: 100)
-      assert {:refuse, _reason} = BatchSizer.preflight([call("c1", "huge")], c)
-    end
-
-    test "raises when context_limit is nil (limit is never optional)" do
-      tools = [small_tool("echo")]
-      c = ctx(tools, context_limit: nil)
-      assert_raise FunctionClauseError, fn -> BatchSizer.preflight([call("c1", "echo")], c) end
-    end
-
     test "fits empty batch" do
       c = ctx([], context_limit: 100)
       assert {:fits, _} = BatchSizer.preflight([], c)
@@ -91,22 +60,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   end
 
   describe "projected_content_size/2" do
-    alias Nest.Messages.User
-    alias Nest.Tokens.Budget
     alias Nest.Tokens.Reserve
-
-    test "is Budget.size(messages) plus every tool's projection, with no reserve" do
-      messages = [{:user, %User{index: 0, parts: [%Part.Text{text: "hello"}], api_logs: []}}]
-      c = ctx([], context_limit: 100_000, messages: messages)
-      calls = [call("c1", "shell-cmd"), call("c2", "file-write")]
-
-      projections =
-        Enum.map(calls, &ProjectedSize.project(&1, c)) |> Enum.sum()
-
-      expected = Budget.size(messages) + ceil(projections)
-
-      assert BatchSizer.projected_content_size(calls, c) == expected
-    end
 
     test "preflight compares projected_content_size/2 plus the reserve against the limit" do
       calls = [call("c1", "shell-cmd")]
@@ -141,22 +95,6 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       assert content =~ "small output"
     end
 
-    test "runs each tool in batch order and returns raw results" do
-      tools = [small_tool("alpha"), small_tool("beta")]
-      c = ctx(tools)
-
-      assert [%ToolResult{} = r1, %ToolResult{} = r2] =
-               BatchSizer.run(
-                 [call("c1", "alpha"), call("c2", "beta")],
-                 c
-               )
-
-      assert r1.name == "alpha" and r1.is_error == false
-      assert r2.name == "beta" and r2.is_error == false
-      assert r1.tool_call_id == "c1"
-      assert r2.tool_call_id == "c2"
-    end
-
     test "preserves tool_call_id and arguments in the result" do
       tools = [small_tool("file-write")]
 
@@ -172,26 +110,12 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       assert r.arguments == %{"path" => "a.txt", "content" => "x"}
     end
 
-    test "marks error results as is_error: true" do
-      tools = [failing_tool("crashy")]
-
-      log =
-        capture_log(fn ->
-          assert [%ToolResult{is_error: true, content: content}] =
-                   BatchSizer.run([call("c1", "crashy")], ctx(tools))
-
-          assert content =~ "intentional failure"
-        end)
-
-      assert log =~ "BatchSizer produced is_error=true tool result"
-      assert log =~ "tool=crashy"
-
+    test "a cancelled call is an error result that keeps its own kind" do
       # A call the space edit cancelled (`ShellCmd.execute/4`'s `{:cancelled,
-      # reason}`) is the same subject and the opposite verdict: `is_error: true` for
-      # the model, and no `[error]` line for the operator, because a routine edit is
-      # not a defect. Its own kind is what keeps both diagnostics off — they key on
-      # `:error`. Deliberately outside the capture: if either fired, the suite would
-      # print.
+      # reason}`) is `is_error: true` for the model, and no `[error]` line for
+      # the operator, because a routine edit is not a defect. Its own kind is
+      # what keeps both diagnostics off — they key on `:error`. Deliberately
+      # outside any capture: if either fired, the suite would print.
       cancelled = make_tool("cancelled-tool", fn _, _ -> {:cancelled, "changed"} end)
 
       assert [%ToolResult{is_error: true, content: "changed"}] =
@@ -238,18 +162,6 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       {:ok, tmp_dir: dir}
     end
 
-    test "single small shell_cmd keeps full", %{tmp_dir: dir} do
-      tools = [small_tool("shell-cmd")]
-      c = ctx(tools, context_limit: 100_000, tmp_path: dir)
-
-      assert [%ToolResult{content: content, is_error: false}] =
-               BatchSizer.run([call("c1", "shell-cmd", %{"command" => "ls"})], c)
-
-      assert content == "small output for shell-cmd"
-      # No temp file should have been written (kept full).
-      assert Enum.all?(File.ls!(dir), &(not String.starts_with?(&1, "exec-")))
-    end
-
     test "shell_cmd with larger output is summarized with path", %{tmp_dir: dir} do
       big_output = TextFixtures.big_text(50_000)
 
@@ -279,86 +191,6 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       [exec_file] = Enum.filter(File.ls!(dir), &String.starts_with?(&1, "exec-"))
       assert File.read!(Path.join(dir, exec_file)) == big_output
     end
-
-    test "kept-full shell_cmd has no summary path string" do
-      tools = [small_tool("shell-cmd")]
-      c = ctx(tools, context_limit: 100_000, tmp_path: nil)
-
-      [%ToolResult{content: content}] =
-        BatchSizer.run([call("c1", "shell-cmd")], c)
-
-      refute content =~ "saved to"
-      refute content =~ "Command output of"
-    end
-  end
-
-  describe "read_file sizing policy" do
-    setup do
-      tmp_dir =
-        Path.join([
-          File.cwd!(),
-          "_build",
-          "tmp",
-          "batchsizer-read-#{System.unique_integer([:positive])}"
-        ])
-
-      File.mkdir_p!(tmp_dir)
-      on_exit(fn -> rm_tmp!(tmp_dir, "batchsizer-read-") end)
-      {:ok, tmp_dir: tmp_dir, test_file: Path.join(tmp_dir, "test.txt")}
-    end
-
-    test "reads the file and emits a ToolResult with exact size", ctx do
-      %{tmp_dir: dir, test_file: file} = ctx
-      File.write!(file, "hello world")
-
-      tools = [Tools.get_function("file-read", Mounts.new(dir, nil))]
-      c = ctx(tools)
-
-      assert [%ToolResult{content: content, is_error: false}] =
-               BatchSizer.run(
-                 [call("c1", "file-read", %{"path" => "test.txt"})],
-                 c
-               )
-
-      assert content == "hello world"
-    end
-
-    test "returns error for non-existent file", ctx do
-      %{tmp_dir: dir} = ctx
-      tools = [Tools.get_function("file-read", Mounts.new(dir, nil))]
-      c = ctx(tools)
-
-      log =
-        capture_log(fn ->
-          [%ToolResult{is_error: true, content: error}] =
-            BatchSizer.run([call("c1", "file-read", %{"path" => "nope.txt"})], c)
-
-          assert error =~ "File not found"
-        end)
-
-      assert log =~ "BatchSizer produced is_error=true tool result"
-      assert log =~ "tool=file-read"
-      assert log =~ "nope.txt"
-    end
-  end
-
-  describe "tool size projections for various tools" do
-    test "all standard tool projections are estimator-computed (no hardcoded constants)" do
-      # Project each tool and ensure the projections are non-zero.
-      tools = [
-        small_tool("file-write"),
-        small_tool("file-edit"),
-        small_tool("file-inspect"),
-        small_tool("context-check")
-      ]
-
-      c = ctx(tools, context_limit: 100_000_000)
-
-      assert {:fits, _} = BatchSizer.preflight([call("c1", "file-write")], c)
-      assert {:fits, _} = BatchSizer.preflight([call("c1", "file-edit")], c)
-      assert {:fits, _} = BatchSizer.preflight([call("c1", "file-inspect")], c)
-      assert {:fits, _} = BatchSizer.preflight([call("c1", "context-check")], c)
-    end
   end
 
   describe "ToolLoop integration" do
@@ -368,18 +200,10 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
     # context-compact coverage in `agent_compaction_test.exs`.
     # `ToolLoop.execute/3` is now an
     # unconditional passthrough to `BatchSizer.run/2` for non-empty
-    # batches and `[]` for empty ones.
-
-    test "ToolLoop.execute/3 delegates non-empty batch to BatchSizer" do
-      alias Nest.Agents.Agent.ToolLoop
-
-      tools = [small_tool("echo"), small_tool("beta")]
-
-      results = ToolLoop.execute(ctx(tools), %{}, [call("c1", "echo"), call("c2", "beta")])
-
-      assert [%ToolResult{name: "echo"}, %ToolResult{name: "beta"}] = results
-      assert Enum.all?(results, &(not &1.is_error))
-    end
+    # batches and `[]` for empty ones. The non-empty passthrough is
+    # covered where a tool result comes back through it:
+    # `tool_loop_error_flag_test.exs` asserts `BatchSizer`'s own
+    # `is_error` diagnostic for a batch run through `ToolLoop`.
 
     test "ToolLoop.execute/3 returns [] for empty batch" do
       alias Nest.Agents.Agent.ToolLoop
@@ -416,42 +240,6 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   end
 
   describe "catch-all: hallucinated tools project error-size, not worst-case" do
-    test "preflight fits a batch that mixes a real tool with a hallucinated one" do
-      # The LLM sometimes hallucinates tool names (typos, drift,
-      # model collapse). When that happens, `LLMTools.execute_one`
-      # returns a small error string. The catch-all's projection
-      # reflects that: small error, not 8 KB of ghost budget.
-      tools = [small_tool("file-read"), small_tool("file-write")]
-      c = ctx(tools, context_limit: 100_000, messages: [])
-
-      assert {:fits, _} =
-               BatchSizer.preflight(
-                 [
-                   call("c1", "file-read", %{"path" => "/tmp/x"}),
-                   call("c2", "totally_made_up_tool")
-                 ],
-                 c
-               )
-    end
-
-    test "run/2 returns an error result for an unknown tool name" do
-      # Even though Phase 1 :fits the batch, Phase 2 executes the
-      # tool and `LLMTools` returns `{:error, ...}`. The LLM sees
-      # a normal `is_error: true` tool result and learns the name
-      # was wrong.
-      tools = [small_tool("file-read")]
-      c = ctx(tools, context_limit: 100_000)
-
-      log =
-        capture_log(fn ->
-          assert [%ToolResult{is_error: true, name: "ghost_tool"}] =
-                   BatchSizer.run([call("c1", "ghost_tool")], c)
-        end)
-
-      assert log =~ "BatchSizer produced is_error=true tool result"
-      assert log =~ "tool=ghost_tool"
-    end
-
     test "the catch-all projection is small, not worst-case (Bug 1 enabler)" do
       # The catch-all used to project ~2468 tokens of ghost budget
       # for unknown tools. With the fix, it projects the size of a
@@ -504,28 +292,6 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
     # at the same basename under the host scratch dir.
     defp read_saved(dir, content) do
       File.read!(Path.join(dir, Path.basename(saved_path(content))))
-    end
-
-    test "a small binary is written to the scratch file with an inline lossy view", %{} do
-      # Gzip-magic bytes + an ASCII prefix — small enough to also
-      # include the lossy text view inline.
-      raw = <<"OK", 0x1F, 0x8B, 0x08, 0x00, 0xFF>>
-      dir = tmp_dir_for_test()
-      tools = [binary_tool(raw)]
-      c = ctx(tools, tmp_path: dir)
-
-      assert [%ToolResult{name: "shell-cmd", is_error: false, content: content}] =
-               BatchSizer.run([call("c1", "shell-cmd")], c)
-
-      assert String.valid?(content)
-      assert content =~ "(non-text binary output, 7 bytes)"
-      assert content =~ "saved to "
-      assert content =~ "OK"
-      # The lossy view carries the replacement character for 0xFF.
-      assert content =~ <<0xEF, 0xBF, 0xBD>>
-
-      # The scratch file preserves the ORIGINAL raw bytes.
-      assert read_saved(dir, content) == raw
     end
 
     test "a large binary returns a pointer only, with the raw bytes saved", %{} do

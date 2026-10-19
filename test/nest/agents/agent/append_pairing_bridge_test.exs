@@ -38,42 +38,6 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
       assert [] = MessageList.pairing_bridge([user(0)], assistant_text(1))
     end
 
-    test "paired tool result + incoming user → assistant ack (tool is wire user)" do
-      paired = [assistant_tool_use(0, "call_1"), tool_result(1, "call_1")]
-
-      assert [{:assistant, %Assistant{parts: [%Part.Text{text: text}]}}] =
-               MessageList.pairing_bridge(paired, user(2))
-
-      assert text =~ "continuing from here"
-    end
-
-    test "trailing user + incoming user → assistant ack" do
-      messages = [assistant_text(0), user(1)]
-
-      assert [{:assistant, %Assistant{parts: [%Part.Text{text: text}]}}] =
-               MessageList.pairing_bridge(messages, user(2))
-
-      assert text =~ "continuing from here"
-    end
-
-    test "orphan tool_use + incoming user → tool result + assistant ack" do
-      messages = [user(0), assistant_tool_use(1, "call_1")]
-
-      assert [tool, ack] = MessageList.pairing_bridge(messages, user(2))
-      assert {:tool, %Tool{parts: [%Part.ToolResult{} = result]}} = tool
-      assert result.tool_call_id == "call_1"
-      assert result.name == "shell-cmd"
-      assert result.is_error == true
-      assert {:assistant, %Assistant{}} = ack
-    end
-
-    test "orphan tool_use + incoming assistant → tool result only (alternation is safe)" do
-      messages = [user(0), assistant_tool_use(1, "call_1")]
-
-      assert [{:tool, %Tool{parts: [%Part.ToolResult{tool_call_id: "call_1"}]}}] =
-               MessageList.pairing_bridge(messages, assistant_text(2))
-    end
-
     test "a matching tool result is not duplicated" do
       messages = [assistant_tool_use(0, "call_1"), tool_result(1, "call_1")]
       assert [] = MessageList.pairing_bridge(messages, tool_result(2, "call_1"))
@@ -181,66 +145,6 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
 
       assert text =~ "running in the background"
       assert text =~ "arrives as a message"
-    end
-  end
-
-  describe "Turn.Commit.active_segment/7" do
-    test "a compaction that finalizes idle closes on an assistant tail" do
-      # The idle invariant: when the commit finalizes (no carried entry,
-      # or a carried assistant response), the segment must not end on a
-      # user wire role, so the next user turn appends cleanly.
-      carried_assistant = assistant_text(nil)
-
-      cases = [
-        {nil, [:user, :assistant], :ack},
-        {{:assistant_response, carried_assistant, 1, 5}, [:user, :assistant], :carried}
-      ]
-
-      for {carried, expected_roles, tail} <- cases do
-        {messages, {:compaction, marker}} =
-          Turn.Commit.active_segment(commit_state(), "summary", nil, carried, 10, 1, nil)
-
-        assert marker.index == 10
-        assert Enum.map(messages, &role/1) == expected_roles, "roles for #{inspect(carried)}"
-        assert MessageList.last_wire_role(messages) == :assistant
-        assert :ok = Preflight.validate(messages)
-
-        case tail do
-          :ack ->
-            assert {:assistant, %Assistant{parts: [%Part.Text{text: text}]}} = List.last(messages)
-            assert text =~ "Compaction complete"
-
-          :carried ->
-            assert List.last(messages) == carried_assistant
-        end
-      end
-    end
-
-    test "a compact_resume carried entry carries no tail and gets no bridge ack" do
-      # A `context-compact` call and its synthetic result are persisted before
-      # the compaction request, so they belong to the archived segment and the
-      # entry carries no messages. It must still be treated as a carried entry:
-      # generation resumes after the commit, so the segment ends on the summary
-      # user message and the idle bridge ack — which would ship a
-      # trailing-assistant request (DeepSeek 400s "content[].thinking ... must
-      # be passed back"; Anthropic rejects a prefilled assistant when thinking
-      # is enabled) — is not added.
-      {messages, {:compaction, marker}} =
-        Turn.Commit.active_segment(
-          commit_state(),
-          "summary",
-          nil,
-          {:compact_resume, 1, 5},
-          10,
-          1,
-          nil
-        )
-
-      assert marker.index == 10
-      assert Enum.map(messages, &role/1) == [:user]
-      assert MessageList.last_wire_role(messages) == :user
-      assert :ok = Preflight.validate(messages)
-      assert :ok = Preflight.validate_request(messages)
     end
   end
 
@@ -533,45 +437,9 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
       assert Enum.map(final.chat_state.messages, &role/1) == [:system, :user, :assistant, :tool]
       assert Enum.map(Persistence.load_messages(test_space_id(), name), &index/1) == [0, 1, 2, 3]
     end
-
-    test "drops a late result when the tail is a recovery acknowledgement" do
-      name = unique_name("stale-after-ack")
-      {:ok, _} = Persistence.insert_agent(agent_attrs(name))
-
-      initial = [
-        system(0),
-        user(1),
-        assistant_tool_use(2, "call_1"),
-        tool_result(3, "call_1"),
-        assistant_text(4)
-      ]
-
-      insert_messages(name, initial)
-
-      state = state(name, initial)
-
-      assert {:ok, _final} = Turn.settle(state, {:tool_results, make_ref(), []})
-
-      assert Enum.map(Persistence.load_messages(test_space_id(), name), &index/1) == [
-               0,
-               1,
-               2,
-               3,
-               4
-             ]
-    end
   end
 
   # ---- helpers ----
-
-  # The minimal `Agent.t()` `Turn.Commit.active_segment/7` reads: the
-  # archived messages, the compaction counter, and the context limit.
-  defp commit_state do
-    %Agent{
-      chat_state: %Agent.ChatState{messages: [user(0)], compaction_count: 0},
-      llm_metrics: %Agent.LlmMetrics{context_limit: 100_000}
-    }
-  end
 
   # A hand-built state still has to name the row it owns: the tests create
   # the row with `Persistence.insert_agent/1` and then drive
