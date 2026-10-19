@@ -485,7 +485,12 @@ defmodule Nest.Agents.Agent.GuardTest do
   defp sample_event(:unblocked), do: {:unblocked}
 
   defp sample_event(:workspace_notice),
-    do: {:workspace_notice, %{workspace: nil, network_access: false, backend: "bwrap"}}
+    do:
+      {:workspace_notice,
+       %{kind: :workspace, workspace: nil, network_access: false, backend: "bwrap"}}
+
+  defp sample_event(:model_notice),
+    do: {:model_notice, %{kind: :model, model: "m", verdict: :unknown, context_limit: 100_000}}
 
   defp sample_event(:tool_results), do: {:tool_results, make_ref(), []}
   defp sample_event(:reply_sent), do: {:reply_sent, "peer"}

@@ -38,6 +38,7 @@ defmodule Nest.Agents.Agent.Machine.GiveUp do
   | `:unblocked` | 1 | the operator unstuck a blocked agent |
   | `:stopped` | 2 | a stop finished, or its worker was killed |
   | `:workspace_notice` | 3 | a workspace notice landed but could not be delivered into a turn |
+  | `:model_notice` | 3 | a model change landed but could not be delivered into a turn |
   | `:llm_error` | 1 | the stream errored |
   | `:interrupted_tool` | 1 | a tool worker died with nothing to repair |
   | `:turn_failed` | 1 | the turn crashed |
@@ -80,6 +81,11 @@ defmodule Nest.Agents.Agent.Machine.GiveUp do
       reason: :workspace_notice,
       sites: 3,
       why: "a workspace notice landed but could not be delivered into a turn"
+    },
+    %{
+      reason: :model_notice,
+      sites: 3,
+      why: "a model change landed but could not be delivered into a turn"
     },
     %{reason: :llm_error, sites: 1, why: "the stream errored"},
     %{reason: :interrupted_tool, sites: 1, why: "a tool worker died with nothing to repair"},

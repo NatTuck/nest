@@ -50,7 +50,7 @@ defmodule MachineCompactionTest do
   end
 
   defp notice_values do
-    %{workspace: "/tmp/x", network_access: true, backend: "bwrap"}
+    %{kind: :workspace, workspace: "/tmp/x", network_access: true, backend: "bwrap"}
   end
 
   describe "compaction decisions" do

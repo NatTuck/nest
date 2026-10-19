@@ -27,6 +27,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   alias Nest.Agents.Agent.Machine.Phase
   alias Nest.Agents.Agent.Machine.Response
   alias Nest.Agents.Agent.Machine.Stopping
+  alias Nest.Agents.Agent.ModelHandler
   alias Nest.Agents.Agent.Turn.BudgetReminder
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.Agent.Turn.Messages, as: TurnMessages
@@ -274,25 +275,26 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   def do_step(%{phase: :idle} = m, {:append_result, :stale, _}), do: {:ignore, :stale_append, m}
 
-  # --- workspace notice ---
+  # --- notices (a space-environment change, or a model change) ---
 
-  # The values ride the *event*, not the machine: a notice's lifetime is one
-  # settle (or the compaction that settle stages — see `Compaction.stage/3`), so
-  # there is no slot for it to outlive. `pending_notice` is the iteration-budget
-  # reminder's alone.
+  # Both notices have the same shape: a runtime pair appended when the
+  # conversation can hold it, carried on a compaction's entry when it needs one,
+  # and refused with the overflow banner when nothing can help. They differ only
+  # in the pair's body and in the reason the resting funnel records, so the
+  # decision is written out once per event — the funnel calls have to spell their
+  # reason anyway (`Machine.GiveUp.audit/0`).
+  #
+  # The notice rides the *event*, not the machine: its lifetime is one settle (or
+  # the compaction that settle stages — see `Compaction.stage/3`), so there is no
+  # slot for it to outlive. `pending_notice` is the iteration-budget reminder's
+  # alone, and `Phase.rest/4` is the whole rest, so no field of another feature's
+  # is cleared on the way out.
   def do_step(%{phase: :idle} = m, {:workspace_notice, values}) when is_map(values) do
     pair = WorkspaceHandler.notice_pair(values, m.work.ctx.mode)
-    projected = messages(m) ++ pair
-    limit = m.work.ctx.context_limit
 
-    case Dispatch.preflight_decision(projected, limit) do
+    case Dispatch.preflight_decision(messages(m) ++ pair, m.work.ctx.context_limit) do
       :fits ->
-        actions = [{:append_many, pair}, {:drain_inbox}]
-
-        # `pending_notice` is the budget reminder's slot and this transition has
-        # nothing to do with it — `Phase.rest/4` is the whole rest, so no field
-        # of another feature's is cleared on the way out.
-        Phase.rest(m, :chat, :workspace_notice, actions)
+        Phase.rest(m, :chat, :workspace_notice, [{:append_many, pair}, {:drain_inbox}])
 
       :needs_compaction ->
         # The notice rides the compaction's entry, so only the compaction that
@@ -300,9 +302,25 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
         Compaction.stage(m, nil, values)
 
       :cannot_compact ->
-        actions = [{:broadcast, {:overflow, :reserve_exhausted, "start a conversation"}, nil}]
+        Phase.block(m, :context_overflow, :workspace_notice, [notice_overflow()])
+    end
+  end
 
-        Phase.block(m, :context_overflow, :workspace_notice, actions)
+  # The agent's model changed. Its prompt states the model's name, its
+  # image-input verdict and the context limit it budgets against, and is never
+  # rebuilt (prefix cache), so this pair is the only place that can correct them.
+  def do_step(%{phase: :idle} = m, {:model_notice, facts}) when is_map(facts) do
+    pair = ModelHandler.notice_pair(facts, m.work.ctx.mode)
+
+    case Dispatch.preflight_decision(messages(m) ++ pair, m.work.ctx.context_limit) do
+      :fits ->
+        Phase.rest(m, :chat, :model_notice, [{:append_many, pair}, {:drain_inbox}])
+
+      :needs_compaction ->
+        Compaction.stage(m, nil, facts)
+
+      :cannot_compact ->
+        Phase.block(m, :context_overflow, :model_notice, [notice_overflow()])
     end
   end
 
@@ -659,4 +677,9 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   defp unowned_worker_down(m, pid, reason), do: worker_down(m, pid, reason)
 
   defp messages(m), do: m.work.ctx.messages
+
+  # A notice that cannot fit and cannot be compacted for blocks instead of being
+  # appended into an oversized request. The same banner for both notices.
+  defp notice_overflow,
+    do: {:broadcast, {:overflow, :reserve_exhausted, "start a conversation"}, nil}
 end

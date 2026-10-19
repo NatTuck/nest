@@ -81,6 +81,7 @@ defmodule Nest.Agents.Agent.Machine do
     :blocked,
     :unblocked,
     :workspace_notice,
+    :model_notice,
     :tool_results,
     :reply_sent,
     :child_spawned,

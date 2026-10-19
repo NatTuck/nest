@@ -35,6 +35,7 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.NoticeDelivery
   alias Nest.Agents.Agent.ToolFilter
   alias Nest.Agents.Agent.Turn
   alias Nest.Messages.Assistant
@@ -49,8 +50,14 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   The space properties an agent's mounts carry, and that its prompt states: the
   workspace it binds, whether it may reach the network, and the backend that runs
   its commands.
+
+  `:kind` tags the map for the one place that has to tell two staged notices
+  apart — a compaction carries either these values or a model change
+  (`Nest.Agents.Agent.ModelHandler.facts/2`), and
+  `Nest.Agents.Agent.Machine.Compaction.resume_notice/2` dispatches on the tag.
   """
   @type values :: %{
+          required(:kind) => :workspace,
           required(:workspace) => String.t() | nil,
           required(:network_access) => boolean(),
           required(:backend) => String.t()
@@ -135,7 +142,7 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   # cannot be compacted. Three different things can be true afterwards, and none
   # of them is readable from the machine's status alone — so the transcript says
   # whether the pair landed, and the machine's *entry* says whether a compaction
-  # has it.
+  # has it (`Nest.Agents.Agent.NoticeDelivery`).
   #
   # The values ride the event: a notice's lifetime is this settle, or the
   # compaction this settle stages (`Compaction.stage/3` puts it on that turn's
@@ -144,43 +151,7 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   defp settle_notice(state, values) do
     {:ok, settled} = Turn.settle(state, {:workspace_notice, values})
 
-    cond do
-      # The transcript is the record of what happened to the *pair*, and the
-      # status is not: the `:fits` arm appends it and then runs
-      # `{:drain_inbox}`, and a drain can block *after* the pair is in. Asking
-      # the status alone would report a failure for a notice the agent has, and
-      # the caller would keep the flag and announce the same pair again at the
-      # next start.
-      appended_notice?(state, settled, values) ->
-        {settled, :appended}
-
-      # A compaction is carrying it and will append it on commit. Nothing else
-      # can be holding the notice: `Compaction.stage/3` is the only writer, and
-      # it only ever writes a compaction that started.
-      staged_notice?(settled.live.machine) ->
-        {settled, :deferred}
-
-      true ->
-        {settled, {:error, Machine.status_for(settled.live.machine)}}
-    end
-  end
-
-  # The values a compaction staged for itself: on its entry, which is the only
-  # place a notice can be in flight from.
-  defp staged_notice?(%Machine{entry: {:compaction, _carried, notice}}), do: is_map(notice)
-  defp staged_notice?(%Machine{}), do: false
-
-  # Did *this* settle append the pair? Only the rows it added are considered, so
-  # a pair from an earlier edit cannot be mistaken for this one.
-  defp appended_notice?(before, settled, values) do
-    text = notice_text(values, settled.live.mode)
-
-    settled.chat_state.messages
-    |> Enum.drop(length(before.chat_state.messages))
-    |> Enum.any?(fn
-      {:user, %{parts: parts}} -> Enum.any?(parts, &match?(%Part.Text{text: ^text}, &1))
-      _other -> false
-    end)
+    {settled, NoticeDelivery.outcome(state, settled, notice_text(values, state.live.mode))}
   end
 
   @doc """
@@ -222,6 +193,7 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   @spec values_from_mounts(Agent.t()) :: values()
   def values_from_mounts(state) do
     %{
+      kind: :workspace,
       workspace: Mounts.workspace(state.mounts),
       network_access: Mounts.network_access(state.mounts),
       backend: Mounts.backend(state.mounts)

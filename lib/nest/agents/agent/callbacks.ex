@@ -409,6 +409,7 @@ defmodule Nest.Agents.Agent.Callbacks do
   # The cast carries the space's own names; the handler works in mount names.
   defp to_mounts_values(values) do
     %{
+      kind: :workspace,
       workspace: values.workspace_path,
       network_access: values.network_access,
       backend: values.sandbox_backend

@@ -31,6 +31,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   alias Nest.Agents.Agent.Machine.Phase
   alias Nest.Agents.Agent.Machine.ReplyReminder
   alias Nest.Agents.Agent.Machine.Response
+  alias Nest.Agents.Agent.ModelHandler
   alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.Agent.WorkspaceHandler
@@ -50,14 +51,20 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   drain path under peek-then-consume (#26) never parks one at all, so a
   parameter for it was always `nil` at every call site.
 
-  `notice` is the space-environment change this compaction was staged to
-  deliver (`WorkspaceHandler.values/0`), or `nil` for a compaction nobody asked
-  for. It is stored **on the entry**, not in a slot of its own, so that only the
-  compaction that staged it can append it: a failed staging, a failed commit or
-  any route out of the turn drops the entry and the notice with it, and no later
-  compaction can find a stale one.
+  `notice` is the change this compaction was staged to deliver: a
+  space-environment change (`WorkspaceHandler.values/0`) or a model change
+  (`Nest.Agents.Agent.ModelHandler.facts/2`), or `nil` for a compaction nobody
+  asked for. It is stored **on the entry**, not in a slot of its own, so that only
+  the compaction that staged it can append it: a failed staging, a failed commit
+  or any route out of the turn drops the entry and the notice with it, and no
+  later compaction can find a stale one. The map's `:kind` says which of the two
+  it is — `resume_notice/2` is the one reader that has to tell them apart.
   """
-  @spec stage(Machine.t(), Machine.entry() | nil, WorkspaceHandler.values() | nil) ::
+  @spec stage(
+          Machine.t(),
+          Machine.entry() | nil,
+          WorkspaceHandler.values() | ModelHandler.facts() | nil
+        ) ::
           {:ok, [term()], Machine.t()}
   def stage(m, carried_entry, notice \\ nil) do
     count = m.loop_count + 1
@@ -491,6 +498,15 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
 
         {:ok, [{:append, user}, :iterate], machine}
     end
+  end
+
+  # A model change is the same delivery with nothing to clear: the model is a
+  # per-agent property the row already holds, so no flag records "not told yet" —
+  # the notice either lands here or is lost with the entry.
+  defp resume_notice(m, %{kind: :model} = facts) do
+    pair = ModelHandler.notice_pair(facts, m.work.ctx.mode)
+
+    Phase.rest(%{m | entry: nil}, :chat, :model_notice, [{:append_many, pair}, {:drain_inbox}])
   end
 
   # The deferred notice lands here, after the commit. The space's
