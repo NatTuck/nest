@@ -301,7 +301,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     assert %ToolResult{is_error: false} = wait(pid, name, space_id, %{"names" => ["bob"]})
 
     # The target's completion, delivered the way the runtime delivers a child's
-    # (`Inbox.enqueue_internal/5`, kind `:agent`). The caller is idle, so this
+    # (`Inbox.enqueue_internal/6`, kind `:agent`). The caller is idle, so this
     # starts its turn.
     assert {:ok, :delivered} = Agent.deliver_internal(pid, "bob", "the report", :agent)
 

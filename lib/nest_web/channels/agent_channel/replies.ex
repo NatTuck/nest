@@ -17,7 +17,7 @@ defmodule NestWeb.AgentChannel.Replies do
   def optional_focus(_payload), do: nil
 
   # A non-binary mode is "no mode requested" rather than a value on the wire (the
-  # browser contract is string-or-null; `Inbox.put_entry/5` also guards).
+  # browser contract is string-or-null; `Inbox.put_entry/8` also guards).
   def requested_mode(payload) do
     case Map.get(payload, "mode") do
       mode when is_binary(mode) -> mode

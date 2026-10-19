@@ -4,6 +4,12 @@
  * back into the flat legacy fields some components still
  * read (thinking, toolCalls, toolResults, textParts).
  *
+ * `userPartsFor/1` is the user-row counterpart (issue #139): it splits a user
+ * row's text parts into prose and a backgrounded command's own output, which
+ * the wire marks with `commandOutputParts` — indexes into `parts`, so the
+ * original index is what the blocks carry. A malformed value there is a server
+ * bug and throws rather than being ignored.
+ *
  * `toolCallsFromParts/1` passes `arguments` through unchanged
  * so the renderer (`formatToolCall` + `ToolCalls.jsx`) can
  * decide between streaming-monospace and final-JSON based
@@ -17,6 +23,7 @@ import {
   thinkingFor,
   textPartsFor,
   messageContentPartsFor,
+  userPartsFor,
   toolCallsFromParts,
   toolResultsFromParts,
   mediaFromParts,
@@ -175,6 +182,157 @@ describe("messageContentPartsFor", () => {
   it("tolerates a missing message or parts", () => {
     expect(messageContentPartsFor(null)).toEqual([]);
     expect(messageContentPartsFor({})).toEqual([]);
+  });
+});
+
+describe("userPartsFor", () => {
+  it("returns one text block per text part, with the framing stripped from each", () => {
+    // A drained batch is one user row holding one body per entry, and each body
+    // carries its own header. Per part is the same removal the joined renderer
+    // performed: a header heads a body and every part starts a body.
+    expect(
+      userPartsFor({
+        role: "user",
+        mode: "act",
+        parts: [
+          { kind: "text", text: "[From agent peer | mode: act]\nfirst body" },
+          {
+            kind: "text",
+            text: "\n\n[From agent other | mode: act]\nsecond body",
+          },
+        ],
+      }),
+    ).toEqual([
+      { kind: "text", text: "first body", index: 0 },
+      { kind: "text", text: "\n\nsecond body", index: 1 },
+    ]);
+
+    // The retired label's mode clause goes too (the row's badge shows the mode).
+    expect(
+      userPartsFor({
+        role: "user",
+        mode: "act",
+        parts: [
+          {
+            kind: "text",
+            text: '[Message from agent "peer" | mode: act]\nmay I ask?',
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        kind: "text",
+        text: '[Message from agent "peer"]\nmay I ask?',
+        index: 0,
+      },
+    ]);
+  });
+
+  it("marks the part `commandOutputParts` names by its index in `parts`", () => {
+    // The indexes are into `message.parts`, not into the returned blocks, so a
+    // `media` part ahead of the text shifts nothing: the output is part 2 here
+    // and block 1.
+    expect(
+      userPartsFor({
+        role: "user",
+        mode: "act",
+        parts: [
+          { kind: "media", toolCallId: "c1", modality: "image", data: "AAAA" },
+          { kind: "text", text: "[From nest runtime | mode: act]\nfinished:" },
+          { kind: "text", text: "# output" },
+        ],
+        commandOutputParts: [2],
+      }),
+    ).toEqual([
+      // `index` is the part's index in `parts` (2), not its index among the
+      // blocks (1) — that is the mapping the wire's `commandOutputParts` uses.
+      { kind: "text", text: "finished:", index: 1 },
+      { kind: "output", text: "# output", index: 2 },
+    ]);
+  });
+
+  it("does not assume the output part is last", () => {
+    // A drained batch can hold several bodies, so a later body may follow the
+    // command's output.
+    expect(
+      userPartsFor({
+        role: "user",
+        mode: "act",
+        parts: [
+          { kind: "text", text: "[From nest runtime | mode: act]\nfinished:" },
+          { kind: "text", text: "out" },
+          { kind: "text", text: "\n\n[From agent peer | mode: act]\nhi" },
+        ],
+        commandOutputParts: [1],
+      }),
+    ).toEqual([
+      { kind: "text", text: "finished:", index: 0 },
+      { kind: "output", text: "out", index: 1 },
+      { kind: "text", text: "\n\nhi", index: 2 },
+    ]);
+  });
+
+  it("falls back to one text block for a row persisted before the parts model", () => {
+    expect(
+      userPartsFor({
+        role: "user",
+        mode: "act",
+        content: "[From user | mode: act]\nlegacy body",
+      }),
+    ).toEqual([{ kind: "text", text: "legacy body", index: 0 }]);
+
+    // `parts` without a text part reads `content` too — that fallback lives in
+    // `messageText`, and the row must not render blank.
+    expect(
+      userPartsFor({ role: "user", parts: [], content: "only content" }),
+    ).toEqual([{ kind: "text", text: "only content", index: 0 }]);
+
+    expect(userPartsFor(null)).toEqual([{ kind: "text", text: "", index: 0 }]);
+  });
+
+  it("throws when commandOutputParts is not an array of non-negative integers", () => {
+    // A malformed value is a server bug. Ignoring it would silently render a
+    // command's output as prose, which is the bug this helper exists to fix, so
+    // it is reported instead (AGENTS.md, "UI Transparency").
+    const base = { role: "user", parts: [{ kind: "text", text: "x" }] };
+
+    expect(() => userPartsFor({ ...base, commandOutputParts: "1" })).toThrow(
+      /commandOutputParts must be an array of parts indexes, got "1"/,
+    );
+    // `null` is not "absent": the wire contract omits the key when there is no
+    // command output.
+    expect(() => userPartsFor({ ...base, commandOutputParts: null })).toThrow(
+      /commandOutputParts must be an array of parts indexes, got null/,
+    );
+    expect(() => userPartsFor({ ...base, commandOutputParts: [-1] })).toThrow(
+      /must name non-negative integer indexes into parts, got -1/,
+    );
+    expect(() => userPartsFor({ ...base, commandOutputParts: ["0"] })).toThrow(
+      /must name non-negative integer indexes into parts, got "0"/,
+    );
+  });
+
+  it("throws when commandOutputParts names a part that is not text", () => {
+    expect(() =>
+      userPartsFor({
+        role: "user",
+        parts: [
+          { kind: "text", text: "prose" },
+          { kind: "media", toolCallId: "c1", modality: "image", data: "AAAA" },
+        ],
+        commandOutputParts: [1],
+      }),
+    ).toThrow(/commandOutputParts names parts\[1\], which is not a text part/);
+
+    // An index past the end of `parts` names nothing at all, which is equally
+    // wrong.
+    expect(() =>
+      userPartsFor({
+        role: "user",
+        parts: [{ kind: "text", text: "prose" }],
+        commandOutputParts: [7],
+      }),
+    ).toThrow(/commandOutputParts names parts\[7\], which is not a text part/);
   });
 });
 

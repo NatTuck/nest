@@ -14,6 +14,8 @@
  * - User messages read from `parts` (the wire format), not
  *   from a flat `content` field, and strip the `[mode: X]\n`
  *   prefix
+ * - A user message's backgrounded command output renders as command
+ *   output, not as markdown (issue #139)
  * - Assistant messages extract thinking from `parts` and
  *   render a ThinkingBlock; tool_use parts render via
  *   ToolCalls; apiLogs render via ApiLogsBlock
@@ -266,6 +268,34 @@ describe("CollapsedHistory", () => {
       const bubble = screen.getByTestId("history-message");
       expect(bubble.textContent).toContain("Hello there");
       expect(bubble.textContent).not.toContain("[mode: act]");
+    });
+    it("renders a backgrounded command's output as command output", () => {
+      // Issue #139: the archived row carries the same parts as the live one, so
+      // the history pane must render the command's output verbatim rather than
+      // as markdown.
+      const history = buildHistory([
+        {
+          role: "user",
+          mode: "act",
+          parts: [
+            {
+              kind: "text",
+              text: "[From nest runtime | mode: act]\nYour backgrounded command (shell-cmd) finished. Its result:\n\n",
+            },
+            { kind: "text", text: "# a shell comment\n\n**not bold**" },
+          ],
+          commandOutputParts: [1],
+        },
+      ]);
+      render(<CollapsedHistory history={history} />);
+
+      const bubble = screen.getByTestId("history-message");
+      expect(bubble.querySelector("pre").textContent).toBe(
+        "# a shell comment\n\n**not bold**",
+      );
+      expect(bubble.querySelector("h1")).toBeNull();
+      expect(bubble.querySelector("strong")).toBeNull();
+      expect(bubble.textContent).not.toContain("[From nest runtime");
     });
   });
 

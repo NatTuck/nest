@@ -8,6 +8,8 @@
 
 import { splitThinkFromParts } from "./thinkTags.js";
 import { stripHeader } from "./stripHeader.js";
+import { stripAgentHeaderMode } from "./agentHeader.js";
+import { messageText } from "./messageText.js";
 
 // Concatenate the thinking content for an assistant message:
 // both `Part.Thinking` entries AND any `<!--think...-->` blocks buried
@@ -27,9 +29,9 @@ export function thinkingFor(message) {
 // out (their content was routed into the ThinkingBlock above). NOT
 // text-only: every non-text part passes through in place, `media`
 // included, so a caller that renders the media itself must use
-// `messageContentPartsFor` instead (issue #115). For user messages, the
-// caller wraps the text in a single Part.Text (with the mode prefix
-// stripped), so this is only used for non-user rows.
+// `messageContentPartsFor` instead (issue #115). A user row does not come
+// through here at all — `userPartsFor` renders it segment by segment — so this
+// is only used for non-user rows.
 //
 // A non-user row can still carry wire framing: a transcript recorded before
 // the `[From … | mode: …]` header has the retired `[nest notice]` marker at the
@@ -70,10 +72,127 @@ function stripHeaderFromParts(parts, message) {
 // `toolCallsFromParts` / `toolResultsFromParts` derive their shapes from the
 // message's own parts, not from what this returns.
 //
-// A `user` row does not come through here — that branch synthesises its own
-// parts array and hands its media to `MessageContent` to render.
+// A `user` row does not come through here — `userPartsFor` renders it segment
+// by segment, media included, because its text parts are not uniformly prose.
 export function messageContentPartsFor(message) {
   return textPartsFor(message).filter((p) => p?.kind !== "media");
+}
+
+// A user-role row's renderable blocks, in wire order, as
+// `{kind: "text" | "output", text, index}`.
+//
+// A user row's `parts` can hold more than one `text` part. A backgrounded
+// command's result is the prose that announces it plus the command's own
+// output (issue #139), and a drained batch holds one body per entry. The two
+// are rendered differently — prose as markdown, a command's output as command
+// output — so the caller needs them as separate segments rather than as one
+// joined string.
+//
+// The `[From … | mode: …]` header (and the retired `[Message from agent …]`
+// label's mode clause) is stripped from a prose part rather than once from the
+// joined text, which is what the joined renderer did before. Per part is the
+// same removal for prose: a header heads a body and a `:text` part starts one,
+// so no header can sit mid-part at a boundary the join would have seen.
+//
+// An `:output` part is the exception, and it is why the kind has to be decided
+// before the text is touched: a command's output is the **tail** of a body, not
+// a head — the header is on the part before it — so its text is exactly the
+// bytes the command printed. `stripHeader` treats the first line of whatever
+// string it is given as a body head (`kept` starts empty), so stripping an
+// output part would delete a first line that merely looks like wire framing: a
+// command that prints `[nest notice]`, or a line that happens to match this
+// row's own header. That is the one place the operator is meant to see the
+// command's own bytes, so an output part's text is passed through untouched.
+//
+// `commandOutputParts` names indexes into `message.parts` — not into this
+// array — so each part's original index is what marks its block. That is what
+// keeps a `media` part before the text from shifting the output's position,
+// and it is why the output part is not assumed to be last (a drained batch can
+// hold several bodies). `index` is that same original index, carried on the
+// block so the renderer has a stable identity to key on; a legacy row's single
+// block reports `0`.
+export function userPartsFor(message) {
+  const parts = Array.isArray(message?.parts) ? message.parts : [];
+  const outputIndexes = commandOutputIndexes(message, parts);
+
+  const blocks = [];
+  for (const [index, part] of parts.entries()) {
+    if (!part || part.kind !== "text") continue;
+    const isOutput = outputIndexes.has(index);
+    blocks.push({
+      kind: isOutput ? "output" : "text",
+      text: isOutput ? part.text : stripFraming(part.text, message?.mode),
+      index,
+    });
+  }
+
+  if (blocks.length > 0) return blocks;
+
+  // Rows persisted before the parts model carry their text in `content` only
+  // (`messageText` is the one place that fallback lives).
+  return [
+    {
+      kind: "text",
+      text: stripFraming(messageText(message), message?.mode),
+      index: 0,
+    },
+  ];
+}
+
+// The wire framing a user row's body carries and the operator must not see:
+// the `[From … | mode: …]` header, and the retired label's mode clause (the
+// row's badge already shows the mode).
+function stripFraming(text, mode) {
+  return stripAgentHeaderMode(stripHeader(text, mode), mode);
+}
+
+// The set of `message.parts` indexes `commandOutputParts` names.
+//
+// The value decides how text is rendered, so a malformed one is a server bug
+// that has to be loud rather than silently ignored — this project does not
+// hide what it cannot render (AGENTS.md, "UI Transparency"). Anything other
+// than an array of non-negative integers, or an index that is not a `text`
+// part, throws naming the offending value. `null` is not "absent": the wire
+// contract omits the key when there is no command output, so a `null` is a
+// disagreement with it and is reported like any other wrong value.
+//
+// Exported because the clipboard needs the same rule: a command's output is
+// copied byte for byte (issue #139), and `formatMessage.js` may not strip wire
+// framing from a part this set names.
+export function commandOutputIndexes(message, parts) {
+  const raw = message?.commandOutputParts;
+  if (raw === undefined) return new Set();
+
+  if (!Array.isArray(raw)) {
+    throw new Error(
+      `commandOutputParts must be an array of parts indexes, got ${JSON.stringify(raw)}`,
+    );
+  }
+
+  const indexes = new Set();
+  for (const value of raw) {
+    if (!Number.isInteger(value) || value < 0) {
+      throw new Error(
+        `commandOutputParts must name non-negative integer indexes into parts, got ${JSON.stringify(value)}`,
+      );
+    }
+
+    const part = parts[value];
+    if (!part || part.kind !== "text") {
+      // Name what was found rather than the whole part: a `media` part carries
+      // its base64 payload, which does not belong in an error message.
+      const found = part
+        ? `a part whose kind is ${JSON.stringify(part.kind ?? null)}`
+        : `no part at all (parts has ${parts.length} entries)`;
+      throw new Error(
+        `commandOutputParts names parts[${value}], which is not a text part: found ${found}`,
+      );
+    }
+
+    indexes.add(value);
+  }
+
+  return indexes;
 }
 
 // Derive the legacy `toolCalls` shape from a message's `parts`

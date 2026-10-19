@@ -5,7 +5,7 @@ defmodule Nest.Agents.Agent.Inbox.Render do
 
   This module owns one responsibility: **what one inbox entry reads as** when
   the drain delivers it to the model. A batch is its entries joined by a blank
-  line (`combine/1`), and each entry contributes its own body:
+  line (`combine/2`), and each entry contributes its own body:
 
     * **every body carries its own header** (`Nest.Messages.Header`), stating
       who sent it and the mode the recipient's turn will run in. That is what
@@ -27,15 +27,44 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   so the model reads it back there instead of the whole batch riding the
   prompt.
 
+  ## Segments: the batch row is more than one text part (issue #139)
+
+  `parts/2` is the rendering in segments — `{:text, String.t()}` for prose and
+  `{:output, String.t()}` for a backgrounded command's own output — and
+  `combine/2` is exactly the join of those segments' texts. That is the
+  invariant that makes the split a *display* change: everything that reads a
+  batch as a string (the offload's size measurement, the pointer, the message's
+  joined text, the model's prompt) sees the same bytes it always did.
+
+  So the delivered row carries **one `%Part.Text{}` per rendered segment**:
+  one per body, plus one per command output inside a backgrounded notice. Every
+  consumer joins text parts with `""` (`Nest.LLM.Client.text_from_parts/1`), so
+  the model-facing text is unchanged; the split exists so the browser can render
+  a command's output as output instead of as markdown, which mangles `#`, `*`,
+  `_`, backticks and indented lines. Which parts those are is stated on the row
+  by `Nest.Messages.User.command_output_metadata/1` — the wire's
+  `"commandOutputParts"`, a list of indexes into `"parts"`.
+
+  **The header goes on the first segment only.** A body's header is a prefix
+  (`Header.put(a <> rest) == Header.put(a) <> rest`), so applying it to the
+  first segment puts it at the head of the body exactly as before — and keeps it
+  off the command output, which is the whole point.
+
   ## Where the marker sits
 
-  The marker heads the notice **body**, not the delivered message: a batch is
-  its bodies joined by a blank line, so a notice behind a peer's entry puts
-  the marker at the head of the second body. The client's strip is therefore a
-  marker-at-the-head-of-any-body removal rather than a single leading-prefix
-  removal (`assets/js/utils/stripNoticePrefix.js`); this module's contract is
-  only that a notice's own body starts with it, which `render_entry/1`
-  guarantees by tagging the entry's content.
+  A body's header heads the **body**, not the delivered message: a batch is its
+  bodies joined by a blank line, so a notice behind a peer's entry puts the
+  header at the head of the second body. The client's strip is therefore a
+  whole-line-at-the-head-of-any-body removal rather than a single leading-prefix
+  removal (`assets/js/utils/stripHeader.js`); this module's contract is only
+  that a body starts with its own header — which `parts/2` guarantees by
+  headering the first segment of every entry, and which the segments cannot
+  break, because the first segment's first line is the body's first line.
+
+  The **offload** is the one case with no marker: the pointer replaced the
+  whole text, so the row is one text part and carries no `"commandOutputParts"`
+  at all (`delivered_parts/3` detects it by the delivered content no longer
+  being the batch's rendering).
 
   `build_drained_message/3` is the seam's other half: the one place a drained
   batch becomes the message the transcript carries, so the batch's metadata —
@@ -52,6 +81,8 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Messages.Header
   alias Nest.Messages.MessageList
+  alias Nest.Messages.Part
+  alias Nest.Messages.Segment
   alias Nest.Messages.User
   alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Estimator
@@ -76,10 +107,16 @@ defmodule Nest.Agents.Agent.Inbox.Render do
 
   `content` is the batch's combined text (`combine_and_offload/2`) and `mode`
   the drain's winning mode; `Dispatch.build_user_message/3` builds the message
-  itself. The batch's `fulfilled_ids` also ride it as message metadata
-  (`MessageList.fulfilled_metadata/1`): a backgrounded batch's notice answers or
-  closes those calls, so a later load can tell a promise that was kept from one
-  the process died with (`MessageList.backgrounded_results/1`).
+  itself, given the batch's segments as its parts. The batch's `fulfilled_ids`
+  also ride it as message metadata (`MessageList.fulfilled_metadata/1`): a
+  backgrounded batch's notice answers or closes those calls, so a later load can
+  tell a promise that was kept from one the process died with
+  (`MessageList.backgrounded_results/1`).
+
+  The row's text is `content` — the caller has already used it for the fit
+  check and the offload — and the parts are `delivered_parts/3`'s, whose join is
+  `content` in every case. Which of them are command output is stated by
+  `User.command_output_metadata/1`, the only writer of that key.
 
   The single writer of that marker, so every drain shape builds its message here
   — including the backgrounding path, which delivers a *notice* entry when one
@@ -87,9 +124,43 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   """
   @spec build_drained_message([map()], String.t(), String.t()) :: {:user, User.t()}
   def build_drained_message(entries, content, mode) do
+    parts = delivered_parts(entries, content, mode)
+
+    metadata =
+      entries
+      |> MessageList.drained_metadata()
+      |> Map.merge(User.command_output_metadata(parts))
+
     # No `:sender`: a batch is one row holding several bodies, and each body
-    # already carries its own header (`combine/2`).
-    Dispatch.build_user_message(content, mode, metadata: MessageList.drained_metadata(entries))
+    # already carries its own header (`combine/2`) — which `parts/2` has already
+    # applied, so the parts passed here are final.
+    Dispatch.build_user_message(content, mode,
+      parts: Enum.map(parts, fn {_kind, text} -> %Part.Text{text: text} end),
+      metadata: metadata
+    )
+  end
+
+  @doc """
+  The batch's rendering as ordered segments: `:text` for prose, `:output` for a
+  backgrounded command's own output.
+
+  `combine/2` is this list's texts joined with no separator, and that equality
+  is the module's contract — every string consumer of a batch (the offload's
+  measurement, the pointer, the delivered row's text) goes through the join, so
+  the segment split can never change what the model reads.
+
+  An entry with no segments of its own contributes its body as one `:text`
+  segment, headered exactly as it always was. An entry that carries segments (a
+  backgrounded notice, `Inbox.enqueue_runtime/3`) contributes them, with the
+  header applied to the **first** one only: the header is a prefix, so it still
+  heads the body, and it stays off the command output. Entries are separated by
+  a blank line, carried by the last segment of every entry but the last.
+  """
+  @spec parts([map()], String.t()) :: [Segment.t()]
+  def parts(entries, mode) do
+    entries
+    |> Enum.map(&entry_parts(&1, mode))
+    |> Segment.separate()
   end
 
   # ---- private ----
@@ -100,23 +171,49 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   # about whether it was queued. The batch row itself carries no header — there
   # is no single sender to state.
   defp combine(entries, mode) do
-    Enum.map_join(entries, "\n\n", &render_entry(&1, mode))
+    entries
+    |> parts(mode)
+    |> Enum.map_join("", &elem(&1, 1))
   end
 
-  # Every body states its sender and the mode the recipient will run the
-  # delivered turn in, which is what `Nest.Messages.Header` is for. The mode is
-  # the recipient's because that is what the agent needs to know about itself —
-  # a peer's message is the only place an agent whose inbox is all peer traffic
-  # ever sees its own mode — and it is not a request to change anything (a
-  # request rides `set_mode`, and arrives as an entry of its own).
-  #
-  # The kind decides two of the three facts: `:query` is the one kind that
-  # obliges an answer, and `:runtime` is the runtime speaking whatever agent it
-  # is about.
-  defp render_entry(entry, mode) do
+  # One entry's segments. A producer-supplied segment list is the backgrounded
+  # notice's (issue #139): its own split of `content`, so the command output in
+  # it is marked rather than re-derived from the text.
+  defp entry_parts(entry, mode) do
     sender = Header.sender(Map.get(entry, :from), Map.get(entry, :human?, false), entry.kind)
+    reply? = entry.kind == :query
 
-    Header.put(entry.content, sender, mode, entry.kind == :query)
+    case Map.get(entry, :parts) do
+      [_ | _] = segments -> header_first(segments, sender, mode, reply?)
+      _plain -> [{:text, Header.put(entry.content, sender, mode, reply?)}]
+    end
+  end
+
+  # The header heads the *body*, and the body is the first segment: `Header.put`
+  # is a prefix, so `put(a <> rest) == put(a) <> rest`. Applying it here — rather
+  # than to the joined text and then splitting — is what keeps it off a notice's
+  # command output.
+  defp header_first([{kind, text} | rest], sender, mode, reply?) do
+    [{kind, Header.put(text, sender, mode, reply?)} | rest]
+  end
+
+  # The blank line between entries is `Nest.Messages.Segment.separate/1`'s: it
+  # rides each entry's last segment, keeping that segment's kind, so an entry
+  # that ends in command output still ends in command output — otherwise the
+  # client would render its last line as markdown.
+  # The delivered row's segments: the batch's own rendering, unless the delivered
+  # content is not that rendering — which happens exactly when the batch was
+  # offloaded. The pointer replaced the whole text, so there is no command output
+  # in it to mark, and the row is one text part with no `"commandOutputParts"`.
+  #
+  # The mode matters here because it is what the headers state: the comparison is
+  # against the same rendering `combine_and_offload/2` produced, headers and all.
+  defp delivered_parts(entries, content, mode) do
+    rendered = parts(entries, mode)
+
+    if Enum.map_join(rendered, "", &elem(&1, 1)) == content,
+      do: rendered,
+      else: [{:text, content}]
   end
 
   # Over the configured cap, write the full combined text to the agent's

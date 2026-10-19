@@ -75,10 +75,10 @@ describe("messageToMarkdown — user messages", () => {
   });
 
   it("copies a user's own text verbatim, including a <think> they typed", () => {
-    // A user message's body renders as-is (`Message.jsx` wraps its text
-    // in a single Part.Text with the mode prefix stripped; it is not
-    // routed through the think-splitting path), so the clipboard must
-    // not silently drop a `<think>` the user typed.
+    // A user message's body renders as-is (`Message.jsx` renders it through
+    // `UserMessageParts` / `userPartsFor`: the text parts with the wire framing
+    // stripped and nothing else; it is not routed through the think-splitting
+    // path), so the clipboard must not silently drop a `<think>` the user typed.
     expect(
       messageToMarkdown({
         role: "user",
@@ -134,6 +134,34 @@ describe("messageToMarkdown — user messages", () => {
         ],
       }),
     ).toBe('[Message from agent "peer"]\nmay I ask?\n\nContext at 50%.');
+  });
+
+  it("copies a backgrounded command's output byte for byte", () => {
+    // Issue #139. The bubble shows the output as a collapsed fixed-font block;
+    // the clipboard carries the row's whole text uncollapsed, because a copy is
+    // taken somewhere else to be read and pasted. What it must not do is treat
+    // the output as prose: an output part is the *tail* of a body, not a head, so
+    // a first line that merely looks like wire framing is a line the command
+    // printed and stays.
+    expect(
+      messageToMarkdown({
+        role: "user",
+        mode: "act",
+        parts: [
+          {
+            kind: "text",
+            text: "[From nest runtime | mode: act]\nYour backgrounded command (shell-cmd) finished. Its result:\n\n",
+          },
+          {
+            kind: "text",
+            text: "[nest notice]\n[From nest runtime | mode: act]\nthe command's own bytes",
+          },
+        ],
+        commandOutputParts: [1],
+      }),
+    ).toBe(
+      "Your backgrounded command (shell-cmd) finished. Its result:\n\n\n\n[nest notice]\n[From nest runtime | mode: act]\nthe command's own bytes",
+    );
   });
 });
 

@@ -299,10 +299,22 @@ defmodule Nest.LLM.AnthropicClient do
   # `text` content block; tool results on the user role are
   # not produced by the agent (the tool role carries them),
   # so this path emits a list of text blocks.
+  #
+  # Adjacent text parts are coalesced into one block first. A user row can hold
+  # more than one `Part.Text` — a drained batch is one part per body, and a
+  # backgrounded command's notice splits its prose from the command's output
+  # (`Nest.Messages.Segment`, issue #139) — and that split exists for the
+  # browser, not for the model. Coalescing keeps the request bytes exactly what
+  # they were before the split, so a conversation carrying a notice does not
+  # lose its prefix cache on the deploy that introduced it.
   defp message_to_wire({:user, %User{parts: parts}}, _thinking?) do
     %{
       "role" => "user",
-      "content" => ensure_content_blocks(Enum.map(parts || [], &user_part_to_wire/1))
+      "content" =>
+        parts
+        |> coalesce_text_parts()
+        |> Enum.map(&user_part_to_wire/1)
+        |> ensure_content_blocks()
     }
   end
 
@@ -379,6 +391,18 @@ defmodule Nest.LLM.AnthropicClient do
   # Insert a neutral text block so the payload stays valid.
   defp ensure_content_blocks([]), do: [%{"type" => "text", "text" => " "}]
   defp ensure_content_blocks(blocks), do: blocks
+
+  # Consecutive `Part.Text` parts become one, in place; every other part keeps
+  # its position, so a media part between two texts still separates them.
+  defp coalesce_text_parts(parts) do
+    parts
+    |> List.wrap()
+    |> Enum.chunk_by(&match?(%Part.Text{}, &1))
+    |> Enum.flat_map(fn
+      [%Part.Text{} | _] = run -> [%Part.Text{text: Enum.map_join(run, "", & &1.text)}]
+      others -> others
+    end)
+  end
 
   defp user_part_to_wire(%Part.Text{text: text}),
     do: %{"type" => "text", "text" => text}

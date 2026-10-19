@@ -224,7 +224,7 @@ defmodule Nest.Agents.Agent do
 
   Unlike `deliver_note/4` this is never refused by the peer-inbox cap: the cap
   bounds a runaway *peer* producer, and this is the agent's own result (the same
-  guarantee `Inbox.enqueue_internal/4` gives an in-process caller). Returns
+  guarantee `Inbox.enqueue_internal/6` gives an in-process caller). Returns
   `{:ok, :delivered}` for an idle target, `{:ok, :queued}` otherwise.
   """
   @spec deliver_internal(pid(), String.t() | nil, String.t(), Inbox.kind()) ::

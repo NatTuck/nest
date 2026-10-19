@@ -524,6 +524,14 @@ defmodule Nest.Messages.MessageList do
   origin marker (`origin_metadata/1`). Both halves are built here, beside each
   other, so a delivered message's marker has one definition —
   `Inbox.build_drained_message/3` is the only caller.
+
+  The row's other marker — which of its parts are a backgrounded command's
+  output (`User.command_output_metadata/1`, issue #139) — is deliberately
+  **not** here. It is a fact about the row's *rendering*, not about the batch,
+  so its key belongs to `Nest.Messages.User` and its indexes are computed by the
+  renderer that produced the parts; `build_drained_message/3` merges the two
+  maps. Keeping it out is what leaves exactly one place that writes
+  `"command_output_parts"`.
   """
   @spec drained_metadata([map()]) :: map()
   def drained_metadata(entries) do
@@ -534,7 +542,7 @@ defmodule Nest.Messages.MessageList do
   end
 
   # The entry's `fulfilled_ids` is its only producer-supplied metadata (see
-  # `Inbox.enqueue_internal/5`); every other producer leaves it empty. Total,
+  # `Inbox.enqueue_internal/6`); every other producer leaves it empty. Total,
   # like the rest of the inbox helpers, so a hand-built entry cannot crash a
   # drain.
   defp fulfilled_ids(entries), do: Enum.flat_map(entries, &Map.get(&1, :fulfilled_ids, []))

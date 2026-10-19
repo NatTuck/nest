@@ -242,22 +242,29 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # see the invariant on `AgentTurnTestHelpers.park/3`.
     send(batch, :release_result)
 
-    # Every runtime notice is tagged at the head of its own body (issue #102,
-    # `Nest.Messages.NoticeTag`), and the drain's `[mode: act]` prefix is added
-    # in front of the whole message when it is built — so the wire text is the
-    # mode prefix, then the marker, then the notice. The client strips them in
-    # that order (`stripNoticePrefix(stripModePrefix(…))`), so neither reaches
-    # the operator.
+    # The delivered row states the recipient's mode in the header that heads its
+    # body, so the wire text is that header and then the notice; the client
+    # strips the header at render time (`assets/js/utils/stripHeader.js`), so it
+    # never reaches the operator.
+    #
+    # The notice is two parts since issue #139: the prose that announces the
+    # command, then the command's own output, which the wire marks with
+    # `commandOutputParts` so the browser renders it as output rather than as
+    # markdown. The confirmation this test is about is in the output.
     assert_receive {:chat_message,
                     {:user,
                      %{
                        parts: [
                          %Part.Text{
                            text: "[From nest runtime | mode: act]\nYour backgrounded command" <> _
-                         }
-                       ]
+                         },
+                         %Part.Text{text: output}
+                       ],
+                       metadata: %{"command_output_parts" => [1]}
                      }}},
                    1_000
+
+    assert output =~ "Query delivered to #{specialist_name}"
 
     assert Enum.any?(
              agent_texts(coordinator_pid),

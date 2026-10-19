@@ -103,6 +103,47 @@ defmodule Nest.LLM.AnthropicClientTest do
              ]
     end
 
+    test "coalesces adjacent user text parts into one block, and only adjacent ones" do
+      # Issue #139: a drained batch's row is one text part per body and a
+      # backgrounded notice splits its prose from the command's output, so a
+      # user row can now hold several `Part.Text`s. The split is for the
+      # browser; the model must see exactly the request it saw before, which is
+      # one block per body — so consecutive text parts are joined, and a
+      # non-text part between two of them still separates them.
+      image =
+        %Part.Media{
+          tool_call_id: "call_1",
+          modality: :image,
+          media_type: "image/png",
+          data: "aGk=",
+          bytes: 2
+        }
+
+      req = %RunRequest{
+        messages: [
+          {:user,
+           %User{
+             index: 1,
+             parts: [
+               %Part.Text{text: "prose\n\n"},
+               %Part.Text{text: "command output"},
+               image,
+               %Part.Text{text: "after the image"}
+             ]
+           }}
+        ]
+      }
+
+      assert %{"messages" => [%{"role" => "user", "content" => blocks}]} =
+               AnthropicClient.format_request_payload(req, [])
+
+      assert [
+               %{"type" => "text", "text" => "prose\n\ncommand output"},
+               %{"type" => "image"},
+               %{"type" => "text", "text" => "after the image"}
+             ] = blocks
+    end
+
     test "emits tools in the Anthropic shape" do
       tool = %LLMTool{
         name: "shell-cmd",
