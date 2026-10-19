@@ -326,7 +326,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
   have to ask it without going through the boundary.
   """
   @spec claimable?(String.t(), String.t()) :: boolean()
-  def claimable?(path, backend), do: not File.exists?(path) or marked?(path, backend)
+  def claimable?(path, backend), do: not File.exists?(path) or marked?(path, backend == "none")
 
   @doc """
   Remove the agent's own scratch directory, leaving the space directory
@@ -431,29 +431,43 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # one.
   #
   # `reason` only shapes the log line: `:cleanup` is an agent stopping,
-  # `:stale` is a new agent taking a name a stopped one held.
+  # `:stale` is a new agent taking a name a stopped one held, `:swept` is
+  # `Nest.Agents.TmpSweeper` finding a directory nobody owns.
   defp remove(space_id, agent_name, backend, reason) do
-    path = agent_dir(space_id, agent_name, backend)
+    remove_at(
+      agent_dir(space_id, agent_name, backend),
+      {space_id, agent_name},
+      backend == "none",
+      reason
+    )
+  end
 
+  # The same guarded remover, for a caller that already has the path.
+  #
+  # `none_scratch?` is the one backend-dependent question the guard asks: only a
+  # `"none"` scratch has to prove it is Nest's with the marker. It travels as a
+  # boolean rather than as a backend string because a caller holding the path
+  # (`remove_swept/2`) has no backend to name — and must not invent one.
+  defp remove_at(path, {space_id, name}, none_scratch?, reason) do
     cond do
       # Nothing there: the agent never created one, or something already took it.
       # Not notable, and not something to report.
       not File.dir?(path) ->
         :ok
 
-      not marked?(path, backend) ->
+      not marked?(path, none_scratch?) ->
         Logger.error(
           "TmpSpace.#{reason}: refusing to rm_rf #{path}: it is not a Nest scratch directory"
         )
 
-      held_by_another_none_space?(space_id, agent_name, backend) ->
+      held_by_another_none_space?(space_id, name, none_scratch?) ->
         Logger.info(
           "TmpSpace.#{reason}: leaving #{path}: a live agent in another space uses the same name"
         )
 
       true ->
         File.rm_rf(path)
-        Logger.info("Cleaned up tmp space for agent #{space_id}/#{agent_name}: #{path}")
+        Logger.info("Cleaned up tmp space for agent #{space_id}/#{name}: #{path}")
     end
 
     :ok
@@ -462,8 +476,8 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # A `"none"` scratch is the host's own `/tmp/<name>`, so the marker is the only
   # thing that says Nest owns it. Every other backend's scratch sits under
   # `nest/<BEAM pid>/space-<id>/`, which already says so.
-  defp marked?(_path, backend) when backend != "none", do: true
-  defp marked?(path, "none"), do: File.exists?(Path.join(path, @marker))
+  defp marked?(_path, false), do: true
+  defp marked?(path, true), do: File.exists?(Path.join(path, @marker))
 
   # Two `"none"` spaces share one `/tmp`, so the same name can be live in both:
   # a space's `x` can stop, another space take the name, and the first be
@@ -471,9 +485,9 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # creation boundary. Removing the directory then would delete a live agent's
   # scratch. Registry-only, because this runs from `terminate/2`, where a DB read
   # is not available; over-refusing leaves a stale directory, which is harmless.
-  defp held_by_another_none_space?(_space_id, _name, backend) when backend != "none", do: false
+  defp held_by_another_none_space?(_space_id, _name, false), do: false
 
-  defp held_by_another_none_space?(space_id, name, "none") do
+  defp held_by_another_none_space?(space_id, name, true) do
     Enum.any?(Nest.Agents.Registry.list_all(), fn {other_space_id, other_name} ->
       other_name == name and other_space_id != space_id
     end)
@@ -530,6 +544,33 @@ defmodule Nest.Agents.Agent.TmpSpace do
     case Nest.Agents.Registry.lookup(space_id, name) do
       {:ok, pid} -> pid != owner and Process.alive?(pid)
       _ -> false
+    end
+  end
+
+  @doc """
+  Remove a scratch directory that `Nest.Agents.TmpSweeper` found, `path`, for the
+  agent key `{space_id, name}` it belongs to.
+
+  This is `cleanup_agent_key/3` with `owner: nil` — the same ownership guard —
+  for a caller that already holds the path: the sweeper walks the tree under
+  this BEAM's root, so it must not pass a backend string to derive the path
+  again. It goes through the one guarded remover (`remove/4`'s `remove_at/4`), so
+  "is it a directory, is it Nest's" is asked in exactly one place.
+
+  A sweeper path is always under this BEAM's root, so it is never a `"none"`
+  scratch: the marker question does not apply (the path already says whose it
+  is), and this passes `false` for it rather than inventing a backend string to
+  derive it from.
+
+  The guard is check-then-act, like `cleanup_agent_key/3`'s; see the residual
+  window documented there.
+  """
+  @spec remove_swept(String.t(), {integer(), String.t()}) :: :ok
+  def remove_swept(path, {space_id, name} = key) when is_binary(path) do
+    if live_other_owner?(key, nil) do
+      :ok
+    else
+      remove_at(path, {space_id, name}, false, :swept)
     end
   end
 
