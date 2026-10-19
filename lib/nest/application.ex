@@ -72,6 +72,12 @@ defmodule Nest.Application do
       # Start agent supervision tree
       Nest.Agents.Registry.child_spec(),
       ChildRegistry.child_spec(),
+      # The scratch sweeper. It goes *after* the registry (it asks it which
+      # agents are live) and *before* `Nest.Agents.Supervisor`, because its
+      # `init/1` removes this BEAM's scratch root to clear a recycled pid's
+      # corpse: an agent that had already created a scratch directory under that
+      # root would lose it. Children start in this order, so no agent exists yet.
+      Nest.Agents.TmpSweeper.child_spec(),
       Nest.Agents.Supervisor.child_spec(),
       {Task.Supervisor, name: Nest.Agents.TaskSupervisor},
       {Task.Supervisor, name: Nest.Models.TaskSupervisor},
