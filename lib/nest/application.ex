@@ -5,7 +5,7 @@ defmodule Nest.Application do
 
   use Application
 
-  alias Nest.Agents.ChildRegistry
+  alias Nest.Agents.{ChildRegistry, TmpSweeper}
   alias Nest.Sandbox.ShellJobs
   alias Nest.Tokens.Tokenizer
 
@@ -77,7 +77,7 @@ defmodule Nest.Application do
       # `init/1` removes this BEAM's scratch root to clear a recycled pid's
       # corpse: an agent that had already created a scratch directory under that
       # root would lose it. Children start in this order, so no agent exists yet.
-      Nest.Agents.TmpSweeper.child_spec(),
+      TmpSweeper.child_spec(),
       Nest.Agents.Supervisor.child_spec(),
       {Task.Supervisor, name: Nest.Agents.TaskSupervisor},
       {Task.Supervisor, name: Nest.Models.TaskSupervisor},

@@ -24,8 +24,8 @@ defmodule Nest.Agents.AgentTmpPathTest do
 
   alias Nest.Agents
   alias Nest.Agents.Agent
-  alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Agent.TmpSpace
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
   alias Nest.Sandbox.Mounts
 

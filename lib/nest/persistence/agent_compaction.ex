@@ -155,7 +155,7 @@ defmodule Nest.Persistence.AgentCompaction do
           agent.name,
           environment.sandbox_backend,
           environment.network_access,
-          Nest.Spaces.prompt_space_name(environment)
+          Nest.Persistence.prompt_space_name(agent.space_id, environment.sandbox_backend)
         ),
         {limit, source},
         agent.name,

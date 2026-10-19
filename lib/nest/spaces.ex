@@ -205,29 +205,19 @@ defmodule Nest.Spaces do
   def environment(space_id) when is_integer(space_id) do
     from(s in Space,
       where: s.id == ^space_id,
-      select: {s.workspace_path, s.sandbox_backend, s.network_access, s.name}
+      select: {s.workspace_path, s.sandbox_backend, s.network_access}
     )
     |> Repo.one()
     |> case do
-      {workspace, backend, network, name} ->
+      {workspace, backend, network} ->
         %{
           workspace_path: workspace,
           sandbox_backend: backend_or_default(backend),
-          network_access: network_or_default(network),
-          # The space's name, which only a `"none"` space's prompt uses: with no
-          # enforced scratch directory it suggests `/tmp/nest/<name>/`
-          # (`Nest.Agents.Agent.SystemPrompt`). It comes free with the row this
-          # call already reads.
-          space_name: name
+          network_access: network_or_default(network)
         }
 
       nil ->
-        %{
-          workspace_path: nil,
-          sandbox_backend: Backend.default(),
-          network_access: true,
-          space_name: nil
-        }
+        %{workspace_path: nil, sandbox_backend: Backend.default(), network_access: true}
     end
   end
 
@@ -430,21 +420,6 @@ defmodule Nest.Spaces do
     |> Repo.all()
     |> MapSet.new()
   end
-
-  @doc """
-  The space's name when its system prompt can use one, `nil` otherwise.
-
-  A `"none"` space has no enforced scratch directory, so its prompt suggests
-  `/tmp/nest/<space-name>/` (`Nest.Agents.Agent.SystemPrompt`), and the suggestion
-  needs the name. Every other backend gets `nil`: its prompt must stay
-  byte-identical, and this gate is what guarantees it.
-
-  Takes the map `environment/1` returns, so a caller that already read the space
-  does not read it again.
-  """
-  @spec prompt_space_name(map()) :: String.t() | nil
-  def prompt_space_name(%{sandbox_backend: "none", space_name: name}), do: name
-  def prompt_space_name(_environment), do: nil
 
   @doc """
   Get a space by its ID.
