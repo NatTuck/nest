@@ -12,74 +12,107 @@
  * carries it below its play interface, so a space's environment is reachable
  * from every page of it.
  *
- * Missing data is stated rather than rendered blank: a space with no workspace
- * recorded is a space no agent in it can start in, and a backend this build does
- * not know is a value the reader has to see.
+ * **Collapsed by default.** It is reference information, not something a reader
+ * acts on every visit, and expanded it pushed the feed's notes down the page.
+ *
+ * Collapsing must not hide the one fact that makes a space unusable: a space
+ * with no workspace recorded is a space no agent in it can start in, so the
+ * summary row carries the workspace path — or its warning, in red — and only the
+ * rest is behind the disclosure. That is the project's rule that missing data is
+ * stated rather than left blank, applied to a control that hides things.
+ *
+ * Missing data elsewhere is stated the same way: a backend this build does not
+ * know is a value the reader has to see.
  */
 
 import { useState } from "react";
+import { ChevronDown } from "./ChevronDown";
 import { EditSpaceDialog } from "./EditSpaceDialog";
 import { SANDBOX_BACKENDS, sandboxBackendHelp } from "../utils/newSpaceForm";
 
 export function SpaceEnvironmentCard({ space }) {
   const [editing, setEditing] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   return (
     <section
       aria-labelledby="space-environment-heading"
-      className="rounded-lg border border-gray-200 bg-white p-4"
+      className="rounded-lg border border-gray-200 bg-white"
     >
-      <h2
-        id="space-environment-heading"
-        className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3"
-      >
-        Environment
+      <h2 id="space-environment-heading">
+        <button
+          type="button"
+          onClick={() => setExpanded((open) => !open)}
+          aria-expanded={expanded}
+          aria-controls="space-environment-body"
+          className="w-full flex items-center justify-between gap-3 p-4 text-left rounded-lg hover:bg-gray-50 transition-colors"
+        >
+          <span className="flex items-baseline gap-2 min-w-0">
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+              Environment
+            </span>
+            <span className="text-sm font-mono text-gray-600 truncate">
+              {space.workspace_path || (
+                <span className="text-red-600 font-sans">
+                  no workspace recorded for this space
+                </span>
+              )}
+            </span>
+          </span>
+          <ChevronDown rotated={expanded} />
+        </button>
       </h2>
 
-      <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-        <dt className="font-medium text-gray-700">Workspace</dt>
-        <dd className="text-gray-600 font-mono break-all">
-          {space.workspace_path || (
-            <span className="text-red-600 font-sans">
-              no workspace recorded for this space
-            </span>
-          )}
-        </dd>
-        <dt className="font-medium text-gray-700">Network access</dt>
-        <dd className="text-gray-600">
-          {space.network_access === true
-            ? "Agents in this space can reach the network."
-            : "Agents in this space cannot reach the network."}
-          {space.sandbox_backend === "none" &&
-            " This space has no sandbox, so nothing enforces that."}
-        </dd>
-        <dt className="font-medium text-gray-700">Sandbox</dt>
-        <dd className="text-gray-600">
-          {space.sandbox_backend || (
-            <span className="text-red-600">
-              no sandbox backend recorded for this space
-            </span>
-          )}
-        </dd>
-      </dl>
+      {expanded && (
+        <div id="space-environment-body" className="px-4 pb-4">
+          <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+            <dt className="font-medium text-gray-700">Workspace</dt>
+            <dd className="text-gray-600 font-mono break-all">
+              {space.workspace_path || (
+                <span className="text-red-600 font-sans">
+                  no workspace recorded for this space
+                </span>
+              )}
+            </dd>
+            <dt className="font-medium text-gray-700">Network access</dt>
+            <dd className="text-gray-600">
+              {space.network_access === true
+                ? "Agents in this space can reach the network."
+                : "Agents in this space cannot reach the network."}
+              {space.sandbox_backend === "none" &&
+                " This space has no sandbox, so nothing enforces that."}
+            </dd>
+            <dt className="font-medium text-gray-700">Sandbox</dt>
+            <dd className="text-gray-600">
+              {space.sandbox_backend || (
+                <span className="text-red-600">
+                  no sandbox backend recorded for this space
+                </span>
+              )}
+            </dd>
+          </dl>
 
-      {/* Only a backend this build knows gets its help line: the value itself is
-          above, and `sandboxBackendHelp/1`'s fallback is worded for a *form*
-          that offered a choice, which this is not. */}
-      {SANDBOX_BACKENDS.includes(space.sandbox_backend) && (
-        <p className="mt-3 text-sm text-gray-500">
-          {sandboxBackendHelp(space.sandbox_backend)}
-        </p>
+          {/* Only a backend this build knows gets its help line: the value itself
+              is above, and `sandboxBackendHelp/1`'s fallback is worded for a
+              *form* that offered a choice, which this is not. */}
+          {SANDBOX_BACKENDS.includes(space.sandbox_backend) && (
+            <p className="mt-3 text-sm text-gray-500">
+              {sandboxBackendHelp(space.sandbox_backend)}
+            </p>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            className="mt-4 px-4 py-2 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors"
+          >
+            Edit space
+          </button>
+        </div>
       )}
 
-      <button
-        type="button"
-        onClick={() => setEditing(true)}
-        className="mt-4 px-4 py-2 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors"
-      >
-        Edit space
-      </button>
-
+      {/* Outside the disclosure, so collapsing the card cannot hide an open
+          dialog mid-edit. */}
       <EditSpaceDialog
         open={editing}
         space={space}

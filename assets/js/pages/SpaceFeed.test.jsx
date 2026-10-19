@@ -32,6 +32,16 @@ vi.mock("../store", () => ({
   useStore: (selector) => selector(mockState),
 }));
 
+// The hook is covered directly by `useScrollToBottom.test.js` (23 tests over
+// fabricated element metrics). Mocking it here is about the *wiring*: that the
+// feed hands it the right container, anchor, reset key and trigger, and that
+// what it reports reaches the button.
+const scroll = vi.hoisted(() => ({ useScrollToBottom: vi.fn() }));
+
+vi.mock("../hooks/useScrollToBottom", () => ({
+  useScrollToBottom: scroll.useScrollToBottom,
+}));
+
 import { SpaceFeed } from "./SpaceFeed";
 
 const SPACE = {
@@ -89,6 +99,12 @@ function readyFeed(notes, overrides = {}) {
   };
 }
 
+// The environment card is collapsed by default; its contents are behind a
+// disclosure whose accessible name is the summary row's text.
+function expandEnvironment() {
+  fireEvent.click(screen.getByRole("button", { name: /Environment/ }));
+}
+
 function renderFeed(props = {}) {
   return render(
     <SpaceFeed
@@ -105,7 +121,62 @@ beforeEach(() => {
   mocks.sendSpaceNote.mockReset();
   mocks.editSpace.mockReset();
   mocks.cancelEditSpace.mockReset();
+  scroll.useScrollToBottom.mockReset();
+  scroll.useScrollToBottom.mockReturnValue({
+    isAtBottom: true,
+    hasNewContent: false,
+    jumpToBottom: vi.fn(),
+  });
   withFeed(readyFeed([]));
+});
+
+describe("following new notes", () => {
+  it("hands the hook the feed's container, anchor, space and notes", () => {
+    const jumpToBottom = vi.fn();
+    scroll.useScrollToBottom.mockReturnValue({
+      isAtBottom: false,
+      hasNewContent: true,
+      jumpToBottom,
+    });
+
+    renderFeed();
+
+    const [container, anchorEl, id, trigger] =
+      scroll.useScrollToBottom.mock.calls.at(-1);
+
+    // Real elements, not refs: the notes area mounts after the first render
+    // (the feed starts loading), and the hook re-runs its effects when they
+    // appear.
+    expect(container).toBeInstanceOf(HTMLElement);
+    expect(anchorEl).toBeInstanceOf(HTMLElement);
+    // `space.id` is the reset key, so navigating to another space starts at its
+    // latest note instead of inheriting this one's scroll position.
+    expect(id).toBe(SPACE.id);
+    // The notes array is the trigger: the store replaces it on every push.
+    expect(trigger).toEqual([]);
+
+    // Scrolled up with unseen notes: the jump is offered, and it jumps.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Jump to latest messages" }),
+    );
+    expect(jumpToBottom).toHaveBeenCalled();
+  });
+
+  it("offers no jump when the reader is already at the bottom", () => {
+    // Content arriving while pinned has already been followed, so there is
+    // nothing to jump to.
+    scroll.useScrollToBottom.mockReturnValue({
+      isAtBottom: true,
+      hasNewContent: true,
+      jumpToBottom: vi.fn(),
+    });
+
+    renderFeed();
+
+    expect(
+      screen.queryByRole("button", { name: "Jump to latest messages" }),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe("SpaceFeed", () => {
@@ -390,7 +461,19 @@ describe("SpaceFeed", () => {
   it("shows the space's environment, and edits it through the dialog", () => {
     renderFeed();
 
+    // Collapsed, the summary row still states the workspace: that is the fact
+    // that makes a space unusable when it is missing, so it is not behind the
+    // disclosure. Everything else is.
     expect(screen.getByText("/home/nat/ws")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Agents in this space can reach the network."),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Edit space" }),
+    ).not.toBeInTheDocument();
+
+    expandEnvironment();
+
     expect(
       screen.getByText("Agents in this space can reach the network."),
     ).toBeInTheDocument();
@@ -426,6 +509,8 @@ describe("SpaceFeed", () => {
 
   it("says a space with no sandbox cannot enforce network access", () => {
     renderFeed({ space: { ...SPACE, sandbox_backend: "none" } });
+
+    expandEnvironment();
 
     expect(screen.getByText(/nothing enforces that/i)).toBeInTheDocument();
   });

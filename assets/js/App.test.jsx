@@ -210,7 +210,8 @@ describe("App routes", () => {
     // The route the space's name links to, through the real route table: the
     // feed, not a redirect to the root agent's chat (#96) and not the retired
     // `/overview` page. The feed carries the environment and the composer's
-    // recipient, so both are on the space's own page.
+    // recipient, so both are on the space's own page — the environment card
+    // collapsed, so its presence here is its disclosure.
     window.history.pushState({}, "", "/space/my-space");
 
     const { default: App } = await import("./App");
@@ -220,7 +221,7 @@ describe("App routes", () => {
       screen.getByRole("heading", { name: "My Space" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Edit space" }),
+      screen.getByRole("button", { name: /Environment/ }),
     ).toBeInTheDocument();
     // The picker is the feed's, defaulted to the space's root agent.
     expect(screen.getByLabelText("Send to")).toHaveValue("boss");

@@ -33,10 +33,12 @@ import { useEffect, useState } from "react";
 import { useStore } from "../store";
 import { requestSpaceFeed, sendSpaceNote } from "../channels";
 import { ChatInput } from "../components/ChatInput";
+import { JumpToBottomButton } from "../components/JumpToBottomButton";
 import { SendErrorBanner } from "../components/SendErrorBanner";
 import { SpaceEnvironmentCard } from "../components/SpaceEnvironmentCard";
 import { SpacePausedBanner } from "../components/SpacePausedBanner";
 import { useAgentMode } from "../hooks/useAgentMode";
+import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { errorText } from "../utils/errorText";
 import { formatTimestamp } from "../utils/formatTimestamp";
 import { isIncoming, noteDirection, owedAgents } from "../utils/spaceNote";
@@ -73,6 +75,12 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
   const [sendError, setSendError] = useState(null);
   const [chosenRecipient, setChosenRecipient] = useState(null);
 
+  // Real DOM nodes, not refs, because the notes area is mounted after the first
+  // render — the feed starts in `loading` and only later renders its notes — and
+  // `useScrollToBottom`'s effects have to re-run when they appear.
+  const [scrollContainerEl, setScrollContainerEl] = useState(null);
+  const [notesEndEl, setNotesEndEl] = useState(null);
+
   // The read is one lobby push per visit, so it waits for the lobby to be
   // joined: a push sent before that is refused and would show as a failed read
   // on a page that is only still connecting. Until then the feed says it is
@@ -97,6 +105,18 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
 
   const owed = owedAgents(feed?.notes, me);
   const mode = currentMode ?? feed?.defaultMode ?? null;
+
+  // The same follow/pin behaviour the agent page has, over the feed's notes.
+  // `feed.notes` is the trigger: the store replaces the array on every push, and
+  // the hook keys on that identity change. `space.id` is the reset key, so
+  // navigating to another space starts at the latest note instead of inheriting
+  // this one's scroll position.
+  const { isAtBottom, hasNewContent, jumpToBottom } = useScrollToBottom(
+    scrollContainerEl,
+    notesEndEl,
+    space.id,
+    feed?.notes,
+  );
 
   const handleSend = () => {
     const content = inputValue.trim();
@@ -129,11 +149,20 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
 
       <OwedRepliesBanner agents={owed} onPick={setChosenRecipient} />
 
-      <FeedNotes
-        feed={feed}
-        me={me}
-        onRetry={() => requestSpaceFeed(space.id)}
-      />
+      {/* One scroll container for every state — notes, loading, failed, empty —
+          so the follow/pin behaviour has a single element to track however the
+          read is going, and the end anchor is always inside it. */}
+      <div
+        ref={setScrollContainerEl}
+        className="flex-1 overflow-y-auto mb-4 pr-2"
+      >
+        <FeedNotes
+          feed={feed}
+          me={me}
+          onRetry={() => requestSpaceFeed(space.id)}
+        />
+        <div ref={setNotesEndEl} />
+      </div>
 
       <SendErrorBanner message={sendError} />
 
@@ -143,23 +172,31 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
         onChange={setChosenRecipient}
       />
 
-      <ChatInput
-        value={inputValue}
-        onChange={setInputValue}
-        onSend={handleSend}
-        disabled={!lobbyJoined || !recipient}
-        placeholder={
-          recipient
-            ? `Send a note to ${recipient}...`
-            : "This space has no agent to send to..."
-        }
-        modes={feed?.modes ?? NO_MODES}
-        mode={mode}
-        onModeChange={handleModeChange}
-        onModeRestore={setCurrentMode}
-        history={NO_HISTORY}
-        commands={NO_COMMANDS}
-      />
+      <div className="relative">
+        <JumpToBottomButton
+          hasNewContent={hasNewContent}
+          isAtBottom={isAtBottom}
+          jumpToBottom={jumpToBottom}
+        />
+
+        <ChatInput
+          value={inputValue}
+          onChange={setInputValue}
+          onSend={handleSend}
+          disabled={!lobbyJoined || !recipient}
+          placeholder={
+            recipient
+              ? `Send a note to ${recipient}...`
+              : "This space has no agent to send to..."
+          }
+          modes={feed?.modes ?? NO_MODES}
+          mode={mode}
+          onModeChange={handleModeChange}
+          onModeRestore={setCurrentMode}
+          history={NO_HISTORY}
+          commands={NO_COMMANDS}
+        />
+      </div>
     </div>
   );
 }
@@ -173,7 +210,7 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
 function FeedNotes({ feed, me, onRetry }) {
   if (!feed || feed.status === "loading") {
     return (
-      <p className="flex-1 overflow-y-auto py-12 text-center text-sm text-gray-500">
+      <p className="py-12 text-center text-sm text-gray-500">
         Loading this space&rsquo;s notes…
       </p>
     );
@@ -181,7 +218,7 @@ function FeedNotes({ feed, me, onRetry }) {
 
   if (feed.status === "error") {
     return (
-      <div className="flex-1 overflow-y-auto">
+      <div>
         <div
           role="alert"
           className="rounded-lg border border-red-200 bg-red-50 p-4"
@@ -208,14 +245,14 @@ function FeedNotes({ feed, me, onRetry }) {
 
   if (feed.notes.length === 0) {
     return (
-      <p className="flex-1 overflow-y-auto py-12 text-center text-sm text-gray-400">
+      <p className="py-12 text-center text-sm text-gray-400">
         Nothing has been said in this space yet. Send a note below to start.
       </p>
     );
   }
 
   return (
-    <ul aria-label="Notes" className="flex-1 overflow-y-auto space-y-2 mb-4">
+    <ul aria-label="Notes" className="space-y-2">
       {feed.notes.map((note) => (
         <NoteCard key={note.id} note={note} me={me} />
       ))}
