@@ -174,14 +174,14 @@ describe("PanePanel", () => {
     expect(screen.getByLabelText("Questions and TODO")).toBeInTheDocument();
   });
 
-  it("counts only the questions still waiting, and leaves no indicator when none are", () => {
+  it("counts only the questions still waiting, and keeps a way back in when none are", () => {
     seedPane({
       decisions: [first, second],
       collapsed: true,
       marks: { d1: "save" },
     });
 
-    const { container } = renderPane();
+    renderPane();
 
     expect(
       screen.getByRole("button", { name: "1 question" }),
@@ -191,7 +191,17 @@ describe("PanePanel", () => {
       useStore.getState().markPaneDecision(SPACE, "d2", "drop");
     });
 
-    // Nothing is waiting for the user any more, so there is nothing to point at.
-    expect(container.firstChild).toBeNull();
+    // Nothing is waiting for the user any more, so the notification stops — but
+    // the toggle must not: it is the only control that can reopen a closed pane,
+    // and a pane that cannot be reopened hides every TODO list written after it.
+    expect(
+      screen.queryByRole("button", { name: /question/ }),
+    ).not.toBeInTheDocument();
+
+    const toggle = screen.getByRole("button", { name: "Pane" });
+
+    fireEvent.click(toggle);
+
+    expect(screen.getByLabelText("Questions and TODO")).toBeInTheDocument();
   });
 });

@@ -11,9 +11,14 @@
  *
  * Closing the pane is the user's state and lives in the store, so it survives a
  * navigation. While it is closed, a frame that brings a new question must not
- * reopen it — the count on the indicator changes instead. The indicator is the
- * only thing left on screen when the pane is closed, and only while questions
- * are waiting for the user.
+ * reopen it — the count on the indicator changes instead.
+ *
+ * The toggle is on screen whenever the pane is closed, whether or not anything
+ * is waiting. Hiding it when nothing is waiting made closing a one-way door:
+ * with no questions outstanding there was no control left that could reopen it,
+ * and a TODO list written afterwards was invisible and unreachable. What the
+ * waiting count buys is the *notification* — the amber pill and the dot — so a
+ * closed pane with nothing outstanding is a quiet grey control instead.
  *
  * With no frame for this space there is nothing to show yet, and rendering an
  * empty column would shove the chat sideways the moment the first frame landed.
@@ -32,20 +37,29 @@ export function PanePanel({ name, spaceId }) {
   const outstanding = outstandingCount(pane);
 
   if (pane.collapsed) {
-    if (outstanding === 0) return null;
+    const waiting = outstanding > 0;
 
     return (
       <button
         type="button"
         title="Show the pane"
         onClick={() => useStore.getState().setPaneCollapsed(spaceId, false)}
-        className="absolute right-3 top-3 z-30 flex items-center gap-2 rounded-full border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-900 shadow-md transition-colors hover:bg-amber-100 lg:static lg:mr-2 lg:mt-2 lg:self-start"
+        className={[
+          "absolute right-3 top-3 z-30 flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold shadow-md transition-colors lg:static lg:mr-2 lg:mt-2 lg:self-start",
+          waiting
+            ? "border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
+            : "border-gray-300 bg-white text-gray-600 hover:bg-gray-50",
+        ].join(" ")}
       >
-        <span
-          className="h-2 w-2 rounded-full bg-amber-500"
-          aria-hidden="true"
-        />
-        {outstanding} question{outstanding === 1 ? "" : "s"}
+        {waiting && (
+          <span
+            className="h-2 w-2 rounded-full bg-amber-500"
+            aria-hidden="true"
+          />
+        )}
+        {waiting
+          ? `${outstanding} question${outstanding === 1 ? "" : "s"}`
+          : "Pane"}
       </button>
     );
   }
