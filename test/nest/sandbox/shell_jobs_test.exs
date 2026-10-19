@@ -173,8 +173,48 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert ShellJobs.list(key) == []
   end
 
+  test "live_in_space?/1 is true only while a job in that space is running" do
+    # Its own space id, not the fixture's shared `1`: this module is `async`, so
+    # a concurrent test's job in space 1 would make the assertion pass whether or
+    # not this test's job is live.
+    space_id = System.unique_integer([:positive])
+    key = {space_id, "agent-#{System.unique_integer([:positive])}"}
+    root = Path.join(System.tmp_dir!(), "nest_jobs_#{System.unique_integer([:positive])}")
+    tmp = Path.join([root, "space-#{space_id}", elem(key, 1)])
+    File.mkdir_p!(tmp)
+
+    on_exit(fn ->
+      ShellJobs.stop_all(key)
+      rm_tmp!(root, "nest_jobs_")
+    end)
+
+    # Nothing tracked at all.
+    refute ShellJobs.live_in_space?(space_id)
+
+    id = start_running!("sleep 30", tmp, key)
+    assert ShellJobs.live_in_space?(space_id)
+    # The answer is the *space's*, not "any job anywhere".
+    refute ShellJobs.live_in_space?(space_id + 1)
+
+    # A finished job is retained for `shell-list`/`shell-wait`, so it is not
+    # live: the exit message is sent before the status flips, and the call below
+    # is queued behind that same callback.
+    assert :ok = ShellJobs.subscribe(key, id, self())
+    assert :ok = ShellJobs.kill(key, id)
+    assert_receive {:shell_job_exit, ^id, _code}, 1_000
+    refute ShellJobs.live_in_space?(space_id)
+
+    # ... and `stop_all/1` drops the agent's jobs, so nothing is live after it.
+    assert {:ok, message} = start_background("sleep 30", tmp, key)
+    assert message =~ "Started background job"
+    assert ShellJobs.live_in_space?(space_id)
+
+    assert :ok = ShellJobs.stop_all(key)
+    refute ShellJobs.live_in_space?(space_id)
+  end
+
   test "keeps the scratch while a live agent owns the key, then removes it" do
-    # `TmpSpace.create` builds the real scratch path (`/tmp/nest-<pid>/space-<id>/<name>`),
+    # `TmpSpace.create` builds the real scratch path (`/tmp/nest/<pid>/space-<id>/<name>`),
     # which is the path `cleanup_agent_key/2` derives from the key — unlike the
     # fixture `tmp`, so the manager's removal is observable here.
     space_id = System.unique_integer([:positive])

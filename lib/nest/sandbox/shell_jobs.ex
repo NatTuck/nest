@@ -232,6 +232,21 @@ defmodule Nest.Sandbox.ShellJobs do
   def stop_all_async(agent_key, owner), do: GenServer.cast(@name, {:stop_all, agent_key, owner})
 
   @doc """
+  Whether any *running* job belongs to space `space_id`.
+
+  Jobs are keyed by `{space_id, agent_name}`, so this is the manager's own
+  answer to "is there work in flight in this space?" — the question a caller
+  asks before removing a space's scratch directory
+  (`Nest.Agents.TmpSweeper`).
+
+  Finished jobs are kept (bounded) for `shell-wait`/`shell-list`, so they are
+  not live and do not count. `false` when nothing is tracked. A foreground
+  `shell-cmd` is not a job at all — its agent is registered while it runs.
+  """
+  @spec live_in_space?(integer()) :: boolean()
+  def live_in_space?(space_id), do: GenServer.call(@name, {:live_in_space?, space_id})
+
+  @doc """
   The result text for a finished job, shared by `shell-wait`'s inline answer
   (issue #54: a job that had already exited) and the watcher that delivers the
   exit as a message, so the two wordings cannot drift.
@@ -324,6 +339,15 @@ defmodule Nest.Sandbox.ShellJobs do
 
   def handle_call({:waiters, job_id}, _from, state) do
     {:reply, Waiters.get(state.waiters, job_id), state}
+  end
+
+  def handle_call({:live_in_space?, space_id}, _from, state) do
+    live? =
+      Enum.any?(state.jobs, fn {_id, job} ->
+        job.status == :running and match?({^space_id, _name}, job.agent_key)
+      end)
+
+    {:reply, live?, state}
   end
 
   def handle_call({:kill, agent_key, job_id}, _from, state) do
