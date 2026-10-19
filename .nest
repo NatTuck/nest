@@ -8,12 +8,9 @@ path   = "~/.hex"
 mode   = "rw"
 create = true
 
+# The sandbox not intended to be
+# a hard security boundary.
 [[mount]]
-path   = "~/.local/share/pnpm/store"
-mode   = "rw"
-create = true
-
-[[mount]]
-path   = "~/.local/share/pnpm/package-manager-store"
+path   = "~/.local/share/pnpm"
 mode   = "rw"
 create = true
