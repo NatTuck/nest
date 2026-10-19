@@ -1,25 +1,20 @@
 defmodule Nest.Tools.ExecTest do
   use ExUnit.Case, async: true
 
-  alias Nest.Tools.Exec
-
-  test "erlexec is not auto-started in test, and ensure_started/0 starts it" do
-    # `:erlexec` sleeps a hardcoded 350ms in its `init/1`, so the test env
-    # keeps it out of `nest`'s `applications` (see `mix.exs`) and starts it
-    # lazily on the first shell command instead.
+  test ":erlexec is a declared runtime application, started at boot" do
+    # It used to be started lazily, on the first shell command, to keep a boot
+    # that never runs one from paying its hardcoded 350ms. That made every
+    # command call `Application.ensure_all_started/1` — a global gen_server
+    # call on a hot path — and under `--cover` with `max_cases: 16` the
+    # controller started exiting callers with `:terminating`, which is why
+    # `mix precommit` failed on a busy host with timeouts and exits instead of
+    # assertion failures (#145).
     #
-    # The `.app` spec is read statically, unlike `started_applications/0`:
-    # it is what `mix.exs` decided, and another test having already run a
-    # shell command cannot perturb it. The `started_applications/0`
-    # assertion below is a postcondition, so it only carries weight when
-    # this test runs before any shell command in the same VM.
-    refute :erlexec in Application.spec(:nest, :applications)
-
-    assert :ok = Exec.ensure_started()
+    # Both halves are asserted: the `.app` spec says what `mix.exs` decided,
+    # and `started_applications/0` says the runtime honoured it. The first is
+    # static, so it cannot be perturbed by another test; the second is a
+    # postcondition, so it only carries weight when nothing has stopped it.
+    assert :erlexec in Application.spec(:nest, :applications)
     assert :erlexec in Enum.map(Application.started_applications(), &elem(&1, 0))
-
-    # Documented as idempotent and cheap once running, so a second call
-    # must neither raise nor restart anything.
-    assert :ok = Exec.ensure_started()
   end
 end

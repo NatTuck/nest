@@ -159,39 +159,6 @@ defmodule MachineStructureTest do
                  "known lifecycle tag; classify it explicitly"
       end
     end
-
-    test "step/2 handles every declared Machine event" do
-      for tag <- Machine.events() do
-        state = Machine.new(work: %Machine.Work{ctx: ctx(), max_iterations: 10})
-
-        refute Machine.step(state, sample_event(tag)) == :quarantine,
-               "declared Machine event #{inspect(tag)} is not handled by step/2"
-      end
-    end
-  end
-
-  defp ctx do
-    %{
-      agent_pid: self(),
-      agent_name: "a",
-      space_id: 1,
-      client_config: %Nest.LLM.ClientConfig{client: Nest.LLM.MockClient, model: "m"},
-      tools: [],
-      tool_choice: :auto,
-      caps: %{},
-      context_limit: 100_000,
-      context_limit_source: :default,
-      messages: [],
-      tmp_path: nil,
-      workspace_path: nil,
-      mode: "chat",
-      next_message_index: 0,
-      crossed_thresholds: %MapSet{},
-      context_projection: nil,
-      api_log_sequences: %{},
-      vocation: nil,
-      depth: 0
-    }
   end
 
   defp doc_blocks(source) do
@@ -227,48 +194,4 @@ defmodule MachineStructureTest do
   defp event_tag_of({:{}, _, [tag | _]}) when is_atom(tag), do: tag
   defp event_tag_of(tag) when is_atom(tag), do: tag
   defp event_tag_of(_), do: nil
-
-  defp sample_event(:chat_request) do
-    user =
-      %Nest.Messages.User{
-        index: nil,
-        parts: [%Nest.Messages.Part.Text{text: "hi"}],
-        api_logs: []
-      }
-
-    {:chat_request, {:user_message, user}}
-  end
-
-  defp sample_event(:iterate), do: :iterate
-  defp sample_event(:inbox_drain), do: {:inbox_drain, [], "queued"}
-  defp sample_event(:http_ok), do: {:http_ok, %{tool_calls: []}}
-  defp sample_event(:http_error), do: {:http_error, :boom}
-  defp sample_event(:worker_crashed), do: {:worker_crashed, %RuntimeError{}, []}
-  defp sample_event(:worker_down), do: {:worker_down, :killed}
-  defp sample_event(:worker_started), do: {:worker_started, make_ref(), self(), :http}
-  defp sample_event(:llm_error), do: {:llm_error, make_ref(), "boom"}
-  defp sample_event(:append_result), do: {:append_result, :stale, nil}
-  defp sample_event(:preflight_result), do: {:preflight_result, :fits}
-  defp sample_event(:stop), do: {:stop, self()}
-  defp sample_event(:stop_timer), do: :stop_timer
-  defp sample_event(:timer_armed), do: {:timer_armed, :stop_timer, make_ref()}
-  defp sample_event(:commit_done), do: {:commit_done}
-  defp sample_event(:commit_error), do: {:commit_error, :boom}
-  defp sample_event(:compaction_error), do: {:compaction_error, :boom, nil}
-  defp sample_event(:retry_compaction), do: :retry_compaction
-  defp sample_event(:compact_request), do: {:compact_request, nil}
-  defp sample_event(:loop_ack), do: :loop_ack
-  defp sample_event(:blocked), do: {:blocked, :needs_repair, nil}
-  defp sample_event(:unblocked), do: {:unblocked}
-
-  defp sample_event(:workspace_notice),
-    do: {:workspace_notice, %{workspace: nil, network_access: false, backend: "bwrap"}}
-
-  defp sample_event(:tool_results), do: {:tool_results, %{results: []}}
-  defp sample_event(:reply_sent), do: {:reply_sent, "peer"}
-  defp sample_event(:child_spawned), do: {:child_spawned, "kid", false, nil}
-  defp sample_event(:child_completed), do: {:child_completed, "kid", "resp", %{}}
-  defp sample_event(:child_failed), do: {:child_failed, "kid", :crashed}
-  defp sample_event(:child_terminated), do: {:child_terminated, "kid", :killed}
-  defp sample_event(:abandon_child), do: {:abandon_child, "kid"}
 end

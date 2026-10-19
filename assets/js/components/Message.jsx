@@ -36,6 +36,7 @@ import { memo } from "react";
 import { CopyButton } from "./CopyButton";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { MessageContent } from "./MessageContent";
+import { UserMessageParts } from "./UserMessageParts.jsx";
 import { ToolCalls } from "./ToolCalls";
 import { ToolResults } from "./ToolResults";
 import { ToolMedia } from "./ToolMedia.jsx";
@@ -52,8 +53,6 @@ import {
   toolCallsFromParts,
   mediaFromParts,
 } from "../utils/messageParts.js";
-import { stripAgentHeaderMode } from "../utils/agentHeader.js";
-import { stripHeader } from "../utils/stripHeader.js";
 
 function Message({ message, agentName }) {
   const isUser = message.role === "user";
@@ -136,28 +135,14 @@ function Message({ message, agentName }) {
         />
         {isSystem ? (
           <SystemMessageContent parts={message.parts} isPartial={isPartial} />
+        ) : isUser ? (
+          // A user row is rendered segment by segment: its text parts are not
+          // uniformly prose (a backgrounded command's output is one of them),
+          // and it renders its own media. `UserMessageParts` owns both.
+          <UserMessageParts message={message} className="text-gray-800" />
         ) : (
           <MessageContent
-            parts={
-              isUser
-                ? [
-                    {
-                      kind: "text",
-                      text: stripAgentHeaderMode(
-                        stripHeader(messageText(message), message.mode),
-                        message.mode,
-                      ),
-                    },
-                    // Media parts are appended, not replaced. This branch
-                    // synthesises its text part from `messageText`, which is
-                    // text-only, so without this a user-side attachment would
-                    // be unrepresentable rather than merely unrendered.
-                    ...(message.parts ?? []).filter(
-                      (p) => p && p.kind === "media",
-                    ),
-                  ]
-                : messageContentPartsFor(message)
-            }
+            parts={messageContentPartsFor(message)}
             isPartial={isPartial}
             className="text-gray-800"
           />
@@ -165,8 +150,8 @@ function Message({ message, agentName }) {
         <ToolCalls toolCalls={toolCalls} />
         <DelegatedTask message={message} agentName={agentName} />
         <ToolResults toolResults={message.toolResults} />
-        {/* The media for a row that is not the user's own: the user branch
-            above hands its media to `MessageContent`, and every other role
+        {/* The media for a row that is not the user's own: `UserMessageParts`
+            renders a user row's attachments itself, and every other role
             either gets parts with the media filtered out
             (`messageContentPartsFor`) or, for `system`, goes through
             `SystemMessageContent` — so this is the one render.

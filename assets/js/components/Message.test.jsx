@@ -3,8 +3,9 @@
  *
  * Covers the API-logs affordance (a missing response log must render a visible
  * error indicator rather than silently vanishing), the `[nest notice]` marker's
- * render-time removal, and that an attached image renders exactly once
- * (issue #115).
+ * render-time removal, that an attached image renders exactly once
+ * (issue #115), and that a backgrounded command's output is rendered as command
+ * output rather than as markdown (issue #139).
  */
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
@@ -246,6 +247,44 @@ describe("attached media renders exactly once", () => {
       expect(screen.getAllByTestId("tool-media-image")).toHaveLength(1);
     });
   }
+});
+
+describe("Message backgrounded command output", () => {
+  it("renders the command's output as command output, not as markdown", () => {
+    // Issue #139: a backgrounded command's result is one user row whose parts
+    // are the announcing prose plus the command's own output, which
+    // `commandOutputParts` marks. The live list must render that part as
+    // command output — markdown would turn the command's `# ` and `**…**` into
+    // formatting.
+    const { container } = render(
+      <MessageBubble
+        agentName="test-agent"
+        message={{
+          index: 4,
+          role: "user",
+          mode: "act",
+          parts: [
+            {
+              kind: "text",
+              text: "[From nest runtime | mode: act]\nYour backgrounded command (shell-cmd) finished. Its result:\n\n",
+            },
+            { kind: "text", text: "# a shell comment\n\n**not bold**" },
+          ],
+          commandOutputParts: [1],
+        }}
+      />,
+    );
+
+    expect(container.querySelector("pre").textContent).toBe(
+      "# a shell comment\n\n**not bold**",
+    );
+    expect(container.querySelector("h1")).toBeNull();
+    expect(container.querySelector("strong")).toBeNull();
+    expect(
+      screen.getByText(/Your backgrounded command \(shell-cmd\) finished\./),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/\[From nest runtime/)).toBeNull();
+  });
 });
 
 describe("Message peer deliveries", () => {

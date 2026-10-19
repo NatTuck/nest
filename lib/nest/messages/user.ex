@@ -17,10 +17,29 @@ defmodule Nest.Messages.User do
   provider's wire format can carry, but it is **not** progress and must not
   reset the consecutive-compaction counter — see
   `Nest.Agents.Agent.MessageAppender.progress_message?/1`.
+
+  ## `commandOutputParts`: which parts are command output
+
+  A row may hold more than one `Part.Text` (issue #139): a drained batch is one
+  row holding several bodies, and a backgrounded command's notice splits into
+  the prose around its output and the output itself. The text is unchanged —
+  every consumer joins the parts with `""` — but the *browser* needs to know
+  which of them to render as command output (fixed font, collapsed when long)
+  rather than as markdown, which mangles `#`, `*`, `_`, backticks and indented
+  lines.
+
+  `command_output_metadata/1` names them: a list of **indexes into the row's
+  `parts`**, carried in metadata as `"command_output_parts"` and exposed on the
+  wire as `"commandOutputParts"`. It is a *rendering* fact about the row, and it
+  rides metadata for one plain reason — `Part.Text` has no metadata field of its
+  own, so there is nowhere on the part to put it. The key is omitted entirely
+  when the list is empty, so every row that is not a backgrounded notice keeps
+  exactly the payload shape it had.
   """
 
   alias Nest.Messages.Message
   alias Nest.Messages.Part
+  alias Nest.Messages.Segment
 
   # The metadata key/value marking a user message as the human's own words.
   @origin_key "origin"
@@ -33,6 +52,10 @@ defmodule Nest.Messages.User do
   # the client matches against to strip the header and render a badge instead.
   # The user sees what the row is rather than raw wire text.
   @compaction_mode "compact"
+
+  # The metadata key naming the row's command-output parts (issue #139). The
+  # wire spelling is this module's too (`to_json/1`), exactly as `origin` is.
+  @command_output_key "command_output_parts"
 
   defstruct [:index, :parts, :timestamp, :metadata, :api_logs, :tokens]
 
@@ -92,6 +115,28 @@ defmodule Nest.Messages.User do
   def compaction_origin, do: @compaction_origin
 
   @doc """
+  The metadata naming the row's command-output parts: the indexes into its
+  `parts` whose text is a backgrounded shell command's output, to be rendered as
+  output rather than as markdown (issue #139).
+
+  The producer passes the row's segments in order — `{:text, …}` for prose,
+  `{:output, …}` for command output (`Nest.Agents.Agent.Inbox.Render.parts/2`)
+  — and only the indexes of the output ones are kept. Empty for a row with no
+  command output, so an ordinary delivery carries no marker at all.
+
+  `Nest.Agents.Agent.Inbox.Render.build_drained_message/3` is the only caller:
+  it is the row's one writer, and this is that row's only statement of which
+  parts are output.
+  """
+  @spec command_output_metadata([Segment.t()]) :: map()
+  def command_output_metadata(parts) do
+    case for {{:output, _text}, index} <- Enum.with_index(parts), do: index do
+      [] -> %{}
+      indexes -> %{@command_output_key => indexes}
+    end
+  end
+
+  @doc """
   Convert to JSON-compatible map for wire format.
   """
   @spec to_json(t()) :: map()
@@ -104,6 +149,7 @@ defmodule Nest.Messages.User do
       "apiLogs" => Message.format_api_logs(msg.api_logs)
     }
     |> maybe_put_origin(msg.metadata)
+    |> maybe_put_command_output_parts(msg.metadata)
     |> Message.maybe_put_tokens(msg.tokens)
   end
 
@@ -113,4 +159,12 @@ defmodule Nest.Messages.User do
     do: Map.put(json, @origin_key, origin)
 
   defp maybe_put_origin(json, _metadata), do: json
+
+  # The command-output indexes ride the wire only when there are some: an empty
+  # list is the same fact as no marker, so a row with no command output omits the
+  # key entirely rather than sending an empty one (issue #139).
+  defp maybe_put_command_output_parts(json, %{@command_output_key => [_ | _] = indexes}),
+    do: Map.put(json, "commandOutputParts", indexes)
+
+  defp maybe_put_command_output_parts(json, _metadata), do: json
 end

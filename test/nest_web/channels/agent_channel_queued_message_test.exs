@@ -295,17 +295,26 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       {_third, llm3} = next_request()
       release_llm(llm3)
 
+      # The delivered row is the batch: the peer's entry (which keeps the agent
+      # label that disambiguates it) and the notice reporting the batch's real
+      # result. Each body is its own text part, and the notice's command output
+      # is marked as output for the browser (`commandOutputParts`), so the
+      # assertions below read the joined text — the wire text is the same as it
+      # has always been.
       assert_push "chat:message",
                   %{
                     "role" => "user",
-                    "parts" => [%{"text" => "[From agent " <> rest}]
+                    "commandOutputParts" => [2],
+                    "parts" => [%{"text" => "[From agent " <> _} | _] = parts
                   },
                   500
 
+      text = Enum.map_join(parts, "", & &1["text"])
+
       # The peer's entry's header states the mode the drain applies — the human's
       # `plan`, since no entry in this batch asks for a change.
-      assert rest =~ "#{name} | mode: plan]\npeer note"
-      assert rest =~ "Message queued for #{name} (busy)"
+      assert text =~ "#{name} | mode: plan]\npeer note"
+      assert text =~ "Message queued for #{name} (busy)"
 
       assert_push "chat:status", %{status: "idle"}, 1_000
 

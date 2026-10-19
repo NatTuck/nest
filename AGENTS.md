@@ -24,6 +24,8 @@ human request to do exactly that.
 - Performance on `mix test` isn't optional. It should be 4 seconds on vampire.
 If it's slower than that after your work, then it's time to put in some serious
 optimization effort.
+- *ABSOLUTELY NEVER* pipe or redirect the result of any test command. Directly
+read the *entire* output.
 
 ## Important: Core Process Rules
 

@@ -22,7 +22,13 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 
 import { RootGate, Layout } from "./App";
 import { useStore } from "./store";
@@ -220,8 +226,12 @@ describe("App routes", () => {
     expect(
       screen.getByRole("heading", { name: "My Space" }),
     ).toBeInTheDocument();
+    // The environment card is collapsed, so its presence is its disclosure —
+    // and expanding it is what proves the contents are reachable from this
+    // route rather than merely that a button exists.
+    fireEvent.click(screen.getByRole("button", { name: /Environment/ }));
     expect(
-      screen.getByRole("button", { name: /Environment/ }),
+      screen.getByRole("button", { name: "Edit space" }),
     ).toBeInTheDocument();
     // The picker is the feed's, defaulted to the space's root agent.
     expect(screen.getByLabelText("Send to")).toHaveValue("boss");

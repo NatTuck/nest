@@ -45,7 +45,10 @@ defmodule Nest.Tools.FileTools do
       name: "file-read",
       description:
         "Read the contents of a file from the workspace. The read resolves " <>
-          "inside the sandbox, so only files the sandbox exposes are visible.",
+          "inside the sandbox, so only files the sandbox exposes are visible. " <>
+          "Images (png, jpeg, gif, webp) are attached for a model that accepts " <>
+          "image input, and refused with the reason when it does not; a binary " <>
+          "file that is not one of those is refused as non-text.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{

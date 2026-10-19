@@ -20,15 +20,20 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
 
   use Nest.DataCase, async: true
 
-  import Nest.Agents.AgentStateHelpers, only: [set_status: 2, wait_idle: 1]
+  import Nest.Agents.AgentStateHelpers, only: [replace_state: 2, set_status: 2, wait_idle: 1]
   import Nest.Agents.AgentTurnTestHelpers, only: [user_texts: 1]
   import Nest.Test.TmpCleanup
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Inbox.Render
+  alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Turn.Backgrounded
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Messages.Header
   alias Nest.Messages.MessageList
+  alias Nest.Messages.Part
+  alias Nest.Messages.User
   alias Nest.Sandbox.Mounts
 
   # A big-enough body to exceed the default 8000-token cap.
@@ -121,6 +126,118 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
 
         assert metadata == expected, label
       end
+    end
+
+    test "a notice becomes two text parts whose join is the delivered content, output marked" do
+      # issue #139: the row the browser renders is one text part per segment, so
+      # the command's output is its own part and `commandOutputParts` names it.
+      # The join is the content the drain delivered — and the content the model
+      # reads — byte for byte, which is what makes this a display change.
+      notice = notice_entry({:results, [%{name: "shell-cmd", content: "# output\n"}]})
+      content = Render.combine_and_offload([notice], render_state("act"))
+
+      assert {:user, %User{parts: parts, metadata: metadata}} =
+               Render.build_drained_message([notice], content, "act")
+
+      assert [
+               %Part.Text{text: "[From nest runtime | mode: act]\n" <> prose},
+               %Part.Text{text: "# output\n"}
+             ] = parts
+
+      assert prose == "Your backgrounded command (shell-cmd) finished. Its result:\n\n"
+      assert Enum.map_join(parts, "", & &1.text) == content
+      assert metadata["command_output_parts"] == [1]
+    end
+
+    test "a peer note before a notice puts the output index at the note's position, not last" do
+      # The index is a position in the row's parts, so a note delivered in front
+      # of the notice moves it. This is the case that rules out "the last part is
+      # the output", which would be right only for a notice delivered alone.
+      note = entry(:agent, "peer", "a note")
+      notice = notice_entry({:results, [%{name: "shell-cmd", content: "out"}]})
+      content = Render.combine_and_offload([note, notice], render_state("act"))
+
+      assert {:user, %User{parts: parts, metadata: metadata}} =
+               Render.build_drained_message([note, notice], content, "act")
+
+      assert Enum.map(parts, & &1.text) == [
+               "[From agent peer | mode: act]\na note\n\n",
+               "[From nest runtime | mode: act]\n" <>
+                 "Your backgrounded command (shell-cmd) finished. Its result:\n\n",
+               "out"
+             ]
+
+      assert Enum.map_join(parts, "", & &1.text) == content
+      assert metadata["command_output_parts"] == [2]
+    end
+
+    test "a worker's death is one text part and carries no marker" do
+      # There is no output to show, so there is nothing to render verbatim: one
+      # part, and the key is omitted entirely rather than sent empty.
+      notice = notice_entry({:worker_down, :killed})
+      content = Render.combine_and_offload([notice], render_state("act"))
+
+      assert {:user, %User{parts: [%Part.Text{}], metadata: metadata}} =
+               Render.build_drained_message([notice], content, "act")
+
+      refute Map.has_key?(metadata, "command_output_parts")
+    end
+
+    test "an offloaded batch is the pointer alone, with no marker" do
+      # The pointer replaced the whole text, so the command output is in the
+      # scratch file rather than in the row: one text part, and no
+      # `commandOutputParts` — there is no output part for it to name.
+      dir = Path.join(System.tmp_dir!(), "inbox-notice-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> rm_tmp!(dir, "inbox-notice-") end)
+
+      state = %Agent{name: "offload-notice", space_id: 1, mounts: Mounts.new(nil, dir)}
+      notice = notice_entry({:results, [%{name: "shell-cmd", content: @oversized}]})
+
+      content = Render.combine_and_offload([notice], state)
+      assert content =~ "You have 1 queued message"
+      assert content =~ "saved to"
+
+      assert {:user, %User{parts: [%Part.Text{text: pointer}], metadata: metadata}} =
+               Render.build_drained_message([notice], content, "act")
+
+      assert pointer == content
+      refute Map.has_key?(metadata, "command_output_parts")
+    end
+  end
+
+  describe "parts/2" do
+    test "a notice entry's header heads its first segment, and the text is unchanged" do
+      # issue #139: the header is a prefix, so applying it to the first segment
+      # puts it at the head of the body exactly as before — and keeps it off the
+      # command output, which is the point of splitting at all. The joined
+      # segments are still byte-identical to the single-body rendering.
+      notice = notice_entry({:results, [%{name: "shell-cmd", content: "# output\n"}]})
+
+      assert [
+               {:text, "[From nest runtime | mode: act]\n" <> prose},
+               {:output, "# output\n"}
+             ] = Render.parts([notice], "act")
+
+      assert prose == "Your backgrounded command (shell-cmd) finished. Its result:\n\n"
+
+      assert Render.combine_and_offload([notice], render_state("act")) ==
+               Header.put(notice.content, :runtime, "act")
+
+      # An entry with no segments of its own renders exactly as it always did,
+      # and the blank line between entries rides the *last* segment of the
+      # earlier one, keeping its kind.
+      peer = entry(:agent, "peer", "hi")
+
+      assert Render.parts([peer, notice], "act") == [
+               {:text, "[From agent peer | mode: act]\nhi\n\n"},
+               {:text, "[From nest runtime | mode: act]\n" <> prose},
+               {:output, "# output\n"}
+             ]
+
+      assert Render.combine_and_offload([peer, notice], render_state("act")) ==
+               "[From agent peer | mode: act]\nhi\n\n" <>
+                 Header.put(notice.content, :runtime, "act")
     end
   end
 
@@ -227,6 +344,48 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
 
       wait_idle(pid)
     end
+
+    test "a backgrounded notice reaches the transcript as two parts, the output marked", %{
+      pid: pid
+    } do
+      # issue #139, end to end: the row the drain appends is the notice split
+      # into its prose and its command output, and its metadata names the output
+      # part — which is what the browser needs to stop rendering the output as
+      # markdown. The row's text behind its header is still the notice exactly.
+      before = Agent.get_public_info(pid, 1_000).message_count
+      notice = notice_entry({:results, [%{name: "shell-cmd", content: "# output\n"}]})
+
+      # A live turn carrying the notice, so `stop_chat` reaches the idle
+      # transition that drains — the shape a backgrounded result is queued in.
+      replace_state(pid, fn state ->
+        %{
+          state
+          | live: %{
+              state.live
+              | inbox: [notice],
+                machine: Machine.status_to_machine(state.live.machine, :streaming)
+            }
+        }
+      end)
+
+      Agent.stop_chat(pid, self())
+
+      # The drain appends the message before it consumes the entry, so the
+      # consume frame is the fence for it being in the transcript.
+      assert_receive {:chat_inbox, %{count: 0}}, 1_000
+
+      assert [{:user, %User{parts: parts, metadata: metadata}}] =
+               Agent.get_messages(pid, 1_000)
+               |> Enum.drop(before)
+               |> Enum.filter(&match?({:user, _}, &1))
+
+      assert [%Part.Text{text: first}, %Part.Text{text: "# output\n"}] = parts
+      assert String.starts_with?(first, "[From nest runtime | mode: ")
+      assert Header.body(Enum.map_join(parts, "", & &1.text)) == notice.content
+      assert metadata["command_output_parts"] == [1]
+
+      wait_idle(pid)
+    end
   end
 
   defp entry(kind, from, content, mode \\ nil, id \\ nil, human? \\ false) do
@@ -241,4 +400,20 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       fulfilled_ids: []
     }
   end
+
+  # A `:runtime` entry as `Inbox.enqueue_runtime/3` builds it: the outcome's
+  # segments, and a content that is their join. The two are derived from one
+  # source here for the same reason the producer derives them from one source —
+  # so a test cannot accidentally assert a split that disagrees with the text.
+  defp notice_entry(outcome) do
+    parts = Backgrounded.parts(outcome)
+
+    :runtime
+    |> entry(nil, Enum.map_join(parts, "", &elem(&1, 1)))
+    |> Map.put(:parts, parts)
+  end
+
+  # The state `combine_and_offload/2` needs for a batch that is not over the cap:
+  # only the mode, which is what the headers state.
+  defp render_state(mode), do: %Agent{live: %Agent.ChatState.Live{mode: mode}}
 end

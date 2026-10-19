@@ -72,7 +72,6 @@ defmodule Nest.Sandbox.ShellJobs do
   alias Nest.Sandbox.{Backend, Mounts}
   alias Nest.Sandbox.ShellJobs.{JobLog, Launcher}
   alias Nest.Sandbox.ShellJobs.Waiters
-  alias Nest.Tools.Exec
   alias Nest.Tools.ShellCmd
 
   @name __MODULE__
@@ -137,10 +136,6 @@ defmodule Nest.Sandbox.ShellJobs do
   """
   @spec start_job(map()) :: {:ok, job_id(), String.t()} | {:error, String.t()}
   def start_job(attrs) do
-    # `:erlexec` is started lazily outside prod (see `Nest.Tools.Exec`).
-    # Start it in the caller so the one-off 350ms never blocks this
-    # server's mailbox.
-    Exec.ensure_started()
     GenServer.call(@name, {:start_job, attrs}, 30_000)
   end
 
@@ -286,7 +281,10 @@ defmodule Nest.Sandbox.ShellJobs do
       state.jobs
       |> Map.values()
       |> Enum.filter(&(&1.agent_key == agent_key))
-      |> Enum.sort_by(& &1.started_at, DateTime)
+      # Most recent first: a listing is read to find what just ran, and a job id
+      # is not a timestamp. `trim/2` sorts the other way on purpose — it deletes
+      # the oldest — so the two orders are not a shared helper.
+      |> Enum.sort_by(& &1.started_at, {:desc, DateTime})
       |> Enum.map(&to_info/1)
 
     {:reply, jobs, state}

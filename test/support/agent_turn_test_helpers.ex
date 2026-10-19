@@ -336,7 +336,7 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
 
   @doc """
   Consume this test pid's frames up to the `{:chat_message, {:user, …}}` frame
-  whose text carries `needle`, and return that text.
+  whose text carries `needle`, and return that message's whole text.
 
   The frames broadcast *before* a delivery — the turn that caused it, and the
   `{:broadcast, :status, nil}` every child event emits while the agent is idle —
@@ -350,15 +350,22 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   broadcast it** — a frame carries its own agent's name, but the collector has no
   name to filter on, so it is for a test that waits on one agent's deliveries.
   Every other frame is left where it is.
+
+  The needle is matched against **each** text part and the whole message's text
+  is returned, because a delivered row may hold more than one text part (issue
+  #139: a backgrounded notice is its prose and its command output). Returning
+  only the matching part would hand a caller a fragment of the message, and the
+  needle is usually in the prose while what a caller asserts on is the output.
   """
   @spec await_delivery(String.t()) :: String.t()
   def await_delivery(needle) do
     receive do
       {:chat_message, {:user, %{parts: parts}}} ->
-        case for %Part.Text{text: text} <- parts || [], is_binary(text), text =~ needle, do: text do
-          [] -> await_delivery(needle)
-          [text | _] -> text
-        end
+        texts = for %Part.Text{text: text} <- parts || [], is_binary(text), do: text
+
+        if Enum.any?(texts, &(&1 =~ needle)),
+          do: Enum.join(texts, ""),
+          else: await_delivery(needle)
 
       {:chat_status, %{status: "idle"}} ->
         await_delivery(needle)

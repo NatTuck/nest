@@ -136,6 +136,14 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
       **Omitted means no header**, which is the drained-batch case: a batch is
       one row holding several bodies, each of which carries its own header.
     * `:reply_required?` — the note obliges an answer (`kind: :query`).
+    * `:parts` — the row's `%Part.Text{}` structs, in order, for a caller that
+      has already split the body into segments (issue #139: a drained batch's
+      row is one part per rendered body plus one per backgrounded command's
+      output). **Such a caller has already applied each body's header** — that
+      is what makes the parts final — so `:sender`/`:reply_required?` do not
+      apply to it. `content` is still the joined text: it is what the row's
+      `text` is when no parts are given, and what the drain's offload pointer
+      is.
     * `:metadata` — merged over the mode. The drain's `fulfilled_ids` ride there
       (`Inbox.build_drained_message/3`), which is how a restored transcript
       tells a backgrounded promise that was kept from one that was lost.
@@ -146,10 +154,17 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
      %User{
        index: nil,
        timestamp: DateTime.utc_now(),
-       parts: [%Part.Text{text: headered(content, mode, opts)}],
+       parts: row_parts(content, mode, opts),
        metadata: Map.merge(%{"mode" => mode}, Keyword.get(opts, :metadata, %{})),
        api_logs: []
      }}
+  end
+
+  # A caller that split the body supplies its own parts (`:parts`, already
+  # headered); otherwise the row is the whole content behind one text part,
+  # headered when the caller named a sender.
+  defp row_parts(content, mode, opts) do
+    Keyword.get_lazy(opts, :parts, fn -> [%Part.Text{text: headered(content, mode, opts)}] end)
   end
 
   # A header when the caller names a sender; the content alone when it does not

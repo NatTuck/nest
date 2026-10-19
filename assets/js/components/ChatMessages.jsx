@@ -33,7 +33,7 @@ export function ChatMessages({
   return (
     <div
       ref={setScrollContainerEl}
-      className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2"
+      className="flex-1 min-h-0 overflow-y-auto space-y-4 mb-4 pr-2"
     >
       {hasActive && hasArchive && (
         <CompactionMarker

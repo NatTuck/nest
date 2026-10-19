@@ -131,30 +131,46 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
   };
 
   return (
-    <div className="flex flex-col h-full max-w-4xl mx-auto">
-      <SpacePausedBanner spaceId={space.id} spaceName={space.name} />
+    <div className="flex flex-col h-full max-w-4xl mx-auto overflow-hidden">
+      {/* Issue #86, the same defect and the same fix as `ChatPage`: `main` in
+          `Layout` scrolls for every page, and on this one that made it a second
+          scroll container — chrome taller than the viewport pushed the column
+          past it, and scrolling anywhere over the page then took the space's
+          name, its environment card and the composer with it. `overflow-hidden`
+          keeps the column the page's whole height, so only the regions below
+          scroll. This one is the chrome: it fits its content normally, and when
+          the banners and the environment card alone are taller than the viewport
+          it scrolls on its own rather than being clipped or pushing the composer
+          off screen. */}
+      <div className="min-h-0 overflow-y-auto">
+        <SpacePausedBanner spaceId={space.id} spaceName={space.name} />
 
-      <header className="mb-4">
-        <h1 className="text-3xl font-bold text-gray-900">{space.name}</h1>
-        {blueprint && (
-          <p className="text-sm text-gray-500 mt-1">
-            Blueprint: {blueprint.name}
-          </p>
-        )}
-      </header>
+        <header className="mb-4">
+          <h1 className="text-3xl font-bold text-gray-900">{space.name}</h1>
+          {blueprint && (
+            <p className="text-sm text-gray-500 mt-1">
+              Blueprint: {blueprint.name}
+            </p>
+          )}
+        </header>
 
-      <div className="mb-4">
-        <SpaceEnvironmentCard space={space} />
+        <div className="mb-4">
+          <SpaceEnvironmentCard space={space} />
+        </div>
+
+        <OwedRepliesBanner agents={owed} onPick={setChosenRecipient} />
       </div>
-
-      <OwedRepliesBanner agents={owed} onPick={setChosenRecipient} />
 
       {/* One scroll container for every state — notes, loading, failed, empty —
           so the follow/pin behaviour has a single element to track however the
-          read is going, and the end anchor is always inside it. */}
+          read is going, and the end anchor is always inside it. `min-h-0` is
+          what lets it shrink to the space the chrome and the composer leave: at
+          `min-height: auto` it would stay at content height, its own
+          `overflow-y-auto` would never engage, and the column's clip would put
+          the newest notes out of reach. */}
       <div
         ref={setScrollContainerEl}
-        className="flex-1 overflow-y-auto mb-4 pr-2"
+        className="flex-1 min-h-0 overflow-y-auto mb-4 pr-2"
       >
         <FeedNotes
           feed={feed}
@@ -164,6 +180,14 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
         <div ref={setNotesEndEl} />
       </div>
 
+      {/* The composer's half of the page, outside both scroll regions: the
+          error a send just failed with, the recipient that send will go to, and
+          the input itself. None of it may be scrolled or squeezed away — they
+          are what the reader acts on next, and the picker is the only control
+          that says who the note is for. The input's wrapper is `shrink-0`; the
+          banner and the picker are plain blocks, so `min-height: auto` already
+          holds them at their content height and the chrome region above is what
+          gives up height (and scrolls) when the viewport is short. */}
       <SendErrorBanner message={sendError} />
 
       <RecipientPicker
@@ -172,7 +196,7 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
         onChange={setChosenRecipient}
       />
 
-      <div className="relative">
+      <div className="relative shrink-0">
         <JumpToBottomButton
           hasNewContent={hasNewContent}
           isAtBottom={isAtBottom}

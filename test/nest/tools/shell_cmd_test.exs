@@ -85,9 +85,11 @@ defmodule Nest.Tools.ShellCmdTest do
     # pinned by the test below). So the command proves it started by touching a
     # marker and only then is it cancelled: a barrier, not a sleep.
     #
-    # 1s on the marker: bwrap start is ~100ms and erlexec's one-off boot is the
-    # ~350ms this module's `Exec.ensure_started/0` comment documents, so this is
-    # that first-call worst case plus margin rather than a guess.
+    # 1s on the marker: bwrap start is ~100ms and erlexec's own boot is the
+    # hardcoded ~350ms `mix.exs` documents, so this is that first-call worst
+    # case plus margin rather than a guess. (Erlexec is started at boot now, so
+    # the 350ms is normally already paid — the margin is kept because this is a
+    # timeout, not a synchronisation.)
     reason = "The space's environment changed; this call did not run."
     marker = Path.join(ws, "started")
 

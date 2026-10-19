@@ -188,7 +188,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       assert is_binary(serialized["timestamp"])
     end
 
-    test "enqueue_internal/4 queues the runtime's own result for any kind, even at the cap" do
+    test "enqueue_internal/6 queues the runtime's own result for any kind, even at the cap" do
       # intentional: the cap exists to bound a runaway *peer* producer, so the
       # runtime enqueuing its own result (W2's async spawn/batch completion,
       # and the give-up notice) must never be refused by its own cap — it

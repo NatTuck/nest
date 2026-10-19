@@ -22,6 +22,7 @@
  */
 
 import { MessageContent } from "./MessageContent.jsx";
+import { UserMessageParts } from "./UserMessageParts.jsx";
 import { ThinkingBlock } from "./ThinkingBlock.jsx";
 import { ToolCalls } from "./ToolCalls.jsx";
 import { ToolResults } from "./ToolResults.jsx";
@@ -29,8 +30,6 @@ import { ToolMedia } from "./ToolMedia.jsx";
 import { ApiLogsBlock } from "./ApiLogsBlock.jsx";
 import { SystemMessageContent } from "./SystemMessageContent.jsx";
 import { CompactionMarkerBox } from "./CompactionMarker.jsx";
-import { stripHeader } from "../utils/stripHeader.js";
-import { textFromParts } from "../utils/messageText.js";
 import {
   thinkingFor,
   messageContentPartsFor,
@@ -105,19 +104,11 @@ function MessageBubble({ message }) {
         {role === "system" ? (
           <SystemMessageContent parts={message.parts} isPartial={false} />
         ) : role === "user" ? (
-          <MessageContent
-            parts={[
-              {
-                kind: "text",
-                text: stripHeader(textFromParts(message.parts), message.mode),
-              },
-              // Media is appended rather than replaced: the text part above is
-              // synthesised from `textFromParts`, which is text-only, so
-              // without this a user-side attachment would be unrepresentable
-              // rather than merely unrendered.
-              ...(message.parts ?? []).filter((p) => p && p.kind === "media"),
-            ]}
-            isPartial={false}
+          // Same component the live list uses, so an archived row reads
+          // exactly as it did before compaction — including a backgrounded
+          // command's output, which is command output rather than prose.
+          <UserMessageParts
+            message={message}
             className="text-xs text-gray-700"
           />
         ) : (
@@ -130,8 +121,8 @@ function MessageBubble({ message }) {
             />
             <ToolCalls toolCalls={toolCallsFromParts(message.parts)} />
             <ToolResults toolResults={toolResultsFromParts(message.parts)} />
-            {/* The user branch above renders its media through
-                `MessageContent`; this branch's parts are filtered by
+            {/* The user branch above renders its own media
+                (`UserMessageParts`); this branch's parts are filtered by
                 `messageContentPartsFor`, so the media is rendered here —
                 exactly once. */}
             <ToolMedia media={mediaFromParts(message.parts)} />

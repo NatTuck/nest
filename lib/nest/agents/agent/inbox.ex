@@ -11,15 +11,18 @@ defmodule Nest.Agents.Agent.Inbox do
       (`Agent.chat/5` → `Callbacks.chat_or_queue/5` →
       `deliver_user_message/5`), recorded with `kind: :user`, and
     * the runtime's own result for this agent
-      (`enqueue_internal/4`, W2's async spawn/batch completion).
+      (`enqueue_internal/6`, W2's async spawn/batch completion).
 
-  An entry is `%{id, from, content, timestamp, kind, mode, human?, fulfilled_ids}`.
+  An entry is
+  `%{id, from, content, timestamp, kind, mode, human?, fulfilled_ids, parts}`.
   `content` is stored **verbatim** (no header — that is added when the entry
   is delivered), `mode` is the mode the entry asks the
   recipient to run under — a human's own, or a peer's `set_mode` — and is `nil`
   for an entry that asks for no change, and the producer-supplied fields are
-  `human?` (the human's own words) and `fulfilled_ids` (the tool-call ids a
-  backgrounded batch's result answers, issue #36), empty for other producers.
+  `human?` (the human's own words), `fulfilled_ids` (the tool-call ids a
+  backgrounded batch's result answers, issue #36), empty for other producers,
+  and `parts` (the segment split of `content` a backgrounded batch's notice
+  carries, `nil` for every other producer — see `enqueue_runtime/3`).
 
   ## Kinds
 
@@ -111,7 +114,7 @@ defmodule Nest.Agents.Agent.Inbox do
   undrained messages. `@max_inbox_size` bounds a runaway *peer* producer
   (`handle_delivery/4`); the two self-produced paths — a human message
   (`deliver_user_message/4`) and the runtime's own result
-  (`enqueue_internal/4`) — always queue rather than silently dropping.
+  (`enqueue_internal/6`) — always queue rather than silently dropping.
 
   ## The wire is incremental (issue #27)
 
@@ -140,6 +143,7 @@ defmodule Nest.Agents.Agent.Inbox do
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Turn.Backgrounded
   alias Nest.Agents.Agent.Watch
+  alias Nest.Messages.Segment
   alias Nest.Messages.User
 
   require Logger
@@ -174,7 +178,8 @@ defmodule Nest.Agents.Agent.Inbox do
           kind: kind(),
           mode: String.t() | nil,
           human?: boolean(),
-          fulfilled_ids: [String.t()]
+          fulfilled_ids: [String.t()],
+          parts: [Segment.t()] | nil
         }
 
   @doc """
@@ -238,7 +243,7 @@ defmodule Nest.Agents.Agent.Inbox do
   `handle_call/3` body for `Agent.deliver_internal/4`: the runtime's own result
   for this agent, delivered from the process that produced it.
 
-  This is `enqueue_internal/4`'s guarantee (the runtime's own result must never
+  This is `enqueue_internal/6`'s guarantee (the runtime's own result must never
   be refused by the peer cap) for a caller in *another* process — a batch
   coordinator delivering its aggregate — which cannot enqueue into this agent's
   state itself. Like `handle_delivery/4`'s idle arm it queues and, when the
@@ -383,17 +388,29 @@ defmodule Nest.Agents.Agent.Inbox do
   the drain appends (`build_drained_message/3`), which is what lets a later load
   tell a promise that was kept from one the process died with
   (`MessageList.backgrounded_results/1`). Empty for every other producer.
+
+  `parts` is the second, and it is `nil` for every producer but
+  `enqueue_runtime/3`: a backgrounded notice's segment split, which the drain
+  renders so the command's output can be marked as output rather than
+  markdown. `content` stays the entry's one text — the same string, always —
+  so a reader that only wants the text needs nothing else.
   """
-  @spec enqueue_internal(Agent.t(), String.t() | nil, String.t(), kind(), [String.t()]) ::
-          Agent.t()
+  @spec enqueue_internal(
+          Agent.t(),
+          String.t() | nil,
+          String.t(),
+          kind(),
+          [String.t()],
+          [Segment.t()] | nil
+        ) :: Agent.t()
   # Guards `enqueue_internal`'s producers only: `handle_delivery/5` and
   # `deliver_internal/4` take a `kind()` and validate nothing.
-  def enqueue_internal(state, from, content, kind, fulfilled_ids \\ [])
+  def enqueue_internal(state, from, content, kind, fulfilled_ids \\ [], parts \\ nil)
       when kind in [:agent, :user, :query, :runtime] do
     {state, entry} =
       state
       |> satisfy_watch(from, kind)
-      |> put_entry(from, content, kind, nil, false, fulfilled_ids)
+      |> put_entry(from, content, kind, nil, false, fulfilled_ids, parts)
 
     state = broadcast_append(state, [entry])
 
@@ -416,10 +433,27 @@ defmodule Nest.Agents.Agent.Inbox do
   or closes (`Backgrounding.fulfilled_ids/1` for a result,
   `Backgrounding.ids_for/2` for a worker's death). It rides the entry onto the
   message the drain appends (`build_drained_message/3`).
+
+  The entry carries `Backgrounded.parts/1`'s segments as well as the notice
+  text, and the text is **derived from** them, so the two can never disagree:
+  `content` is what every string reader has always seen, and `parts` is what
+  lets the drain split the row so the command's output is rendered as output
+  rather than markdown (issue #139). `parts` is `nil` for every other producer,
+  and `serialize/1` does not emit it — it is a rendering fact about the
+  delivered row, not something the inbox wire carries.
   """
   @spec enqueue_runtime(Agent.t(), term(), [String.t()]) :: Agent.t()
   def enqueue_runtime(state, outcome, fulfilled_ids) do
-    enqueue_internal(state, nil, Backgrounded.notice(outcome), :runtime, fulfilled_ids)
+    parts = Backgrounded.parts(outcome)
+
+    enqueue_internal(
+      state,
+      nil,
+      Enum.map_join(parts, "", &elem(&1, 1)),
+      :runtime,
+      fulfilled_ids,
+      parts
+    )
   end
 
   @doc """
@@ -533,7 +567,7 @@ defmodule Nest.Agents.Agent.Inbox do
   crash the drain inside the Agent process, so anything that is not a human's
   batches exactly like a peer message does today — `:agent`, `:query` and
   `:runtime` entries all take the run clause. An entry map with no `:kind` key
-  raises rather than batching: that is the entry contract (`put_entry/7` always
+  raises rather than batching: that is the entry contract (`put_entry/8` always
   sets it), not a shape the drain has to tolerate.
   """
   @spec batch([entry()]) :: [entry()]
@@ -589,7 +623,16 @@ defmodule Nest.Agents.Agent.Inbox do
   # string-or-null for both). Returns the entry as well as the state: the
   # caller broadcasts it as an append delta, and only the entry — not the whole
   # queue — is what that frame may carry (issue #27).
-  defp put_entry(state, from, content, kind, mode, human? \\ false, fulfilled_ids \\ []) do
+  defp put_entry(
+         state,
+         from,
+         content,
+         kind,
+         mode,
+         human? \\ false,
+         fulfilled_ids \\ [],
+         parts \\ nil
+       ) do
     entry = %{
       id: Delivery.new_id(),
       from: if(is_binary(from), do: from, else: nil),
@@ -598,14 +641,15 @@ defmodule Nest.Agents.Agent.Inbox do
       kind: kind,
       mode: if(is_binary(mode), do: mode, else: nil),
       human?: human? == true,
-      fulfilled_ids: fulfilled_ids
+      fulfilled_ids: fulfilled_ids,
+      parts: parts
     }
 
     {%{state | live: %{state.live | inbox: state.live.inbox ++ [entry]}}, entry}
   end
 
   # The append half of the delta protocol (issue #27): the three enqueue paths
-  # — the busy and idle delivery arms and `enqueue_internal/4` — each publish
+  # — the busy and idle delivery arms and `enqueue_internal/6` — each publish
   # exactly the entry they added, never the queue they added it to.
   defp broadcast_append(state, entries), do: Broadcasts.inbox_append(state, serialize(entries))
 

@@ -6,7 +6,7 @@
  * just the name when only name is available.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 
 // Mock zustand store — set the cache directly per test.
@@ -2442,6 +2442,90 @@ describe("ChatPage jump to latest button", () => {
     );
 
     expect(scroll.jumpToBottom).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ChatPage scroll containers (issue #86)", () => {
+  // `main` in `Layout` is `overflow-auto`, and on this page that made it a
+  // second scroll container: tall chrome (a stack of banners at 360×640) pushed
+  // the column past the viewport, and scrolling anywhere over the page then
+  // took the header and the composer with it.
+  //
+  // jsdom has no layout engine, so the overflow itself cannot be measured here;
+  // what is pinned is the class contract the fix rests on, because dropping any
+  // one clause puts `main` back in the scrolling business: the column clips, the
+  // chrome region may shrink and scroll on its own, and the pane is the one
+  // `flex-1` scroll region in either tab. The real-DOM measurement that found
+  // the defect is described in the issue.
+  beforeEach(() => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+  });
+
+  // The column's `flex-1` children are its panes: exactly one per tab.
+  const panes = (column) =>
+    [...column.children].filter((el) =>
+      String(el.className).includes("flex-1"),
+    );
+
+  it("clips the column, scrolls only the chrome when it must, and never squeezes the composer", () => {
+    const { container } = renderChat();
+
+    const column = container.firstElementChild;
+    expect(column.className).toContain("overflow-hidden");
+
+    // The chrome region: header + banners. It fits its content in the normal
+    // case, and scrolls on its own when it cannot. Identified positively as well
+    // as positionally — it holds the header's agent name and does not hold the
+    // composer — so an element added above the header fails here loudly instead
+    // of quietly making every assertion below about the wrong node.
+    const chrome = column.firstElementChild;
+    expect(
+      within(chrome).getByRole("heading", { name: /test-agent/ }),
+    ).toBeInTheDocument();
+    expect(chrome.className).toContain("overflow-y-auto");
+    expect(chrome.className).toContain("min-h-0");
+    // It scrolls; it never truncates what it holds.
+    expect(chrome.className).not.toContain("overflow-hidden");
+
+    // One scroll region in the chat tab, and it is the conversation. `min-h-0`
+    // is load-bearing: without it the pane keeps `min-height: auto`, stays at
+    // content height, its own `overflow-y-auto` never engages, and the column's
+    // `overflow-hidden` clips the newest messages out of reach.
+    expect(panes(column)).toHaveLength(1);
+    expect(panes(column)[0].className).toContain("overflow-y-auto");
+    expect(panes(column)[0].className).toContain("min-h-0");
+
+    // The composer is outside every scroll region and cannot be squeezed.
+    const composer = screen
+      .getByPlaceholderText("Type a message...")
+      .closest(".shrink-0");
+    expect(composer).not.toBeNull();
+    expect(chrome.contains(composer)).toBe(false);
+    expect(panes(column)[0].contains(composer)).toBe(false);
+
+    // The tab bar is chrome the conversation must not squeeze: it is the
+    // `shrink-0` block the chrome region above shrinks against.
+    const tabBar = screen
+      .getByRole("tab", { name: /Background jobs/ })
+      .closest(".shrink-0");
+    expect(tabBar).not.toBeNull();
+    expect(column.contains(tabBar)).toBe(true);
+    expect(chrome.contains(tabBar)).toBe(false);
+
+    // The jobs tab is a pane too — same rule, one scroll region, still no
+    // second one on the page.
+    fireEvent.click(screen.getByRole("tab", { name: /Background jobs/ }));
+
+    expect(panes(column)).toHaveLength(1);
+    expect(panes(column)[0].className).toContain("overflow-y-auto");
+    expect(panes(column)[0].className).toContain("min-h-0");
   });
 });
 

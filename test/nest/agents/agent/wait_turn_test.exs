@@ -351,7 +351,7 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
       # while the batch executes. A peer's or a human's message arriving here is
       # backgrounded by the arrival path (issue #36), and one queued before the
       # batch by the batch-start deferral (issue #103) — neither reaches the
-      # wait rest. `Inbox.enqueue_internal/5` (a backgrounded batch's outcome)
+      # wait rest. `Inbox.enqueue_internal/6` (a backgrounded batch's outcome)
       # asks neither, so its entry is still queued when the wait's result lands.
       #
       # The batch's worker is parked inside the wait tool's own listing read, so
@@ -413,8 +413,16 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
 
       assert {:assistant, _ack} = Enum.at(msgs, waiting + 1)
 
-      assert {:user, %{parts: [%Part.Text{text: drained}]}} = Enum.at(msgs, waiting + 2)
-      assert drained =~ "backgrounded output"
+      # The drained notice is the row issue #139 splits: its prose, then the
+      # command's output as a part of its own — which is what lets the client
+      # render the output verbatim instead of as markdown — and the metadata
+      # names that part.
+      assert {:user, %{parts: [%Part.Text{text: prose}, %Part.Text{text: output}]} = notice} =
+               Enum.at(msgs, waiting + 2)
+
+      assert prose =~ "Your backgrounded command (shell-cmd) finished."
+      assert output =~ "backgrounded output"
+      assert notice.metadata["command_output_parts"] == [1]
 
       assert Agent.get_public_info(pid, 1_000).pending_messages == []
     end

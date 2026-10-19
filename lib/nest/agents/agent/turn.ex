@@ -199,13 +199,13 @@ defmodule Nest.Agents.Agent.Turn do
   # list can have made longer (see `run/6`). The two agree wherever this
   # decision reads them, and these are the properties that make it so:
   #
-  #   * an action appends its entry (`Inbox.put_entry/7` appends to the queue),
+  #   * an action appends its entry (`Inbox.put_entry/8` appends to the queue),
   #     so an earlier action can only ever put entries *behind* what was queued;
   #   * a batch is a head prefix of the queue — a lone human message, or the run
   #     of leading non-human entries (`Inbox.batch/1`);
   #   * the only entries an action earlier in the list adds today are mode-less
   #     ones — `{:deliver_backgrounded, …}`'s outcome and `{:child_message, …}`'s
-  #     delivery both go through `Inbox.enqueue_internal/5`, which passes
+  #     delivery both go through `Inbox.enqueue_internal/6`, which passes
   #     `mode: nil` — so they cannot change the mode a drain applies.
   #
   # An append can therefore only *extend* a batch, and a batch that applies a
@@ -218,7 +218,7 @@ defmodule Nest.Agents.Agent.Turn do
   #
   # What would break it: a new action that enqueued a *mode-carrying* entry
   # before a drain in the same list (every action's enqueue goes through
-  # `Inbox.enqueue_internal/5`, which passes `mode: nil`, so a mode arrives only
+  # `Inbox.enqueue_internal/6`, which passes `mode: nil`, so a mode arrives only
   # from a *delivery* — the human's chat, or a peer's `set_mode` — and never from
   # inside the list), or one that inserted at the head instead of appending. Either would make the peek's
   # batch differ from `Inbox.batch(pre_inbox)` — and the restore would then be

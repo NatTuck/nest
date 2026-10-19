@@ -108,6 +108,22 @@ describe("space feed slice", () => {
     expect(feed().notes[2].content).toBe("third, again");
   });
 
+  it("appendSpaceNote replaces the notes array, which is what the feed follows on", () => {
+    // The feed hands `notes` to `useScrollToBottom` as its trigger, and the hook
+    // keys on reference identity: a push that mutated the array in place would
+    // stop the feed following new notes, silently, because the wiring test mocks
+    // the hook and could not see it.
+    useStore
+      .getState()
+      .setSpaceFeed(1, { notes: [note({ id: 1 })], modes: [] });
+    const before = feed().notes;
+
+    useStore.getState().appendSpaceNote(note({ id: 2 }));
+
+    expect(feed().notes).not.toBe(before);
+    expect(feed().notes.map((held) => held.id)).toEqual([1, 2]);
+  });
+
   it("appendSpaceNote drops a frame for a space whose feed was never opened", () => {
     // Nothing is showing it, and the first read of that space fetches the whole
     // list — including this note. Caching it would grow without a bound.

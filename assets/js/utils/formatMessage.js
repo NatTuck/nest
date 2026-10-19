@@ -25,12 +25,26 @@
  *     JSON.stringify of each log entry's payload, in original order.
  *     This is the format a developer would want to paste into a ticket
  *     or a JSON pretty-printer.
+ *
+ * ## One deliberate divergence from the bubble
+ *
+ * A user row whose parts include a backgrounded command's output (issue #139,
+ * the wire's `commandOutputParts`) renders that output as a collapsed
+ * fixed-font block, because on screen it is command output. The clipboard
+ * carries the row's whole text instead: the prose and the command's own bytes,
+ * in part order, with nothing collapsed. That is the right behaviour for a copy
+ * — it is taken somewhere else to be read and pasted, so it must not inherit a
+ * display-only truncation, and a command's output is exactly the bytes someone
+ * copying it wants. What is stripped is the wire framing, and only where it is
+ * framing: a command's output is the tail of a body rather than a head, so it is
+ * copied untouched (`commandOutputIndexes` is what tells the two apart).
  */
 
 import { stripAgentHeaderMode } from "./agentHeader.js";
 import { stripHeader } from "./stripHeader.js";
 import { splitThinkFromParts } from "./thinkTags.js";
 import { mediaSummary } from "./media.js";
+import { commandOutputIndexes } from "./messageParts.js";
 
 // The clipboard omits reasoning on purpose (issue #51). When a message
 // carries *only* reasoning, the copy would otherwise be empty — which reads
@@ -61,10 +75,16 @@ export function messageToMarkdown(message) {
   const mode = message.mode ?? "";
 
   if (Array.isArray(message.parts) && message.parts.length > 0) {
+    // Which parts the wire marks as a backgrounded command's output (issue
+    // #139). They are copied byte for byte: an output part is the tail of a
+    // body, not a head, so there is no framing in it to strip — see the module
+    // doc's "One deliberate divergence from the bubble".
+    const outputIndexes = commandOutputIndexes(message, message.parts);
+
     const blocks = [];
     let droppedReasoning = false;
-    for (const part of message.parts) {
-      const block = partToMarkdown(part, role, mode);
+    for (const [index, part] of message.parts.entries()) {
+      const block = partToMarkdown(part, role, mode, outputIndexes.has(index));
       if (block !== "") {
         blocks.push(block);
       } else if (partIsReasoning(part, role)) {
@@ -91,8 +111,11 @@ export function messageToMarkdown(message) {
 /**
  * Serialise a single part to markdown, or `""` for a part that
  * contributes nothing (reasoning, or a malformed entry).
+ *
+ * `isCommandOutput` marks a part the wire named in `commandOutputParts`: its
+ * text is a command's own bytes and nothing in it is wire framing.
  */
-function partToMarkdown(part, role, mode) {
+function partToMarkdown(part, role, mode, isCommandOutput = false) {
   if (!part || typeof part !== "object") return "";
 
   switch (part.kind) {
@@ -101,6 +124,7 @@ function partToMarkdown(part, role, mode) {
         typeof part.text === "string" ? part.text : "",
         role,
         mode,
+        isCommandOutput,
       );
     case "thinking":
       // Deliberately excluded from the clipboard (issue #51). The UI
@@ -153,10 +177,11 @@ function partIsReasoning(part, role) {
 
 /**
  * Whether this role's *body* renderer splits `<think>` blocks out of its
- * text. `Message.jsx` sends a `user` message's own text through
- * `stripHeader(messageText(…))` and a `system` message through
- * `SystemMessageContent` (both raw), while every other role (assistant,
- * tool, …) goes through `textPartsFor` / `splitThinkFromParts`.
+ * text. `Message.jsx` renders a `user` row through `UserMessageParts` /
+ * `userPartsFor` (raw text, with the wire framing stripped per text part) and a
+ * `system` message through `SystemMessageContent` (raw too), while every other
+ * role (assistant, tool, …) goes through `textPartsFor` /
+ * `splitThinkFromParts`.
  *
  * This concerns the body only. `Message.jsx` also renders a `ThinkingBlock`
  * for every role via `thinkingFor`, but the copy does not consult it —
@@ -174,9 +199,19 @@ function stripsThinkTags(role) {
  * runtime notice carries the `[nest notice]` marker at the head of its text
  * (on its user row, or on the fused `assistant(notice + ack)` row a transcript
  * recorded before the alternation bridge still carries), which is stripped
- * here too — the clipboard shows what the renderer shows.
+ * here too — the clipboard shows what the renderer shows. The one exception is
+ * a part the wire marks as a command's output, which is copied byte for byte
+ * (`isCommandOutput`): it is a body's tail, not its head, so nothing in it is
+ * framing.
  */
-function visibleForRole(text, role, mode) {
+function visibleForRole(text, role, mode, isCommandOutput = false) {
+  // A command's output is copied exactly as the bubble shows it. The framing
+  // strips below treat the first line of whatever they are handed as a body
+  // head, which is true of a prose part and false of an output part — the header
+  // is on the part before it — so stripping here would delete a line the command
+  // printed (issue #139).
+  if (isCommandOutput) return text;
+
   if (role === "user") {
     return stripAgentHeaderMode(stripHeader(text, mode), mode);
   }
