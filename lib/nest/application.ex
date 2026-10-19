@@ -5,6 +5,7 @@ defmodule Nest.Application do
 
   use Application
 
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.{ChildRegistry, TmpSweeper}
   alias Nest.Sandbox.ShellJobs
   alias Nest.Tokens.Tokenizer
@@ -72,16 +73,17 @@ defmodule Nest.Application do
       # Start agent supervision tree
       Nest.Agents.Registry.child_spec(),
       ChildRegistry.child_spec(),
-      # The scratch sweeper. It goes *after* the registry, which it asks which
-      # agents are live on every tick. The root it sweeps is prepared once in
-      # `start/2` above, deliberately not here: a supervisor restart of this
-      # child must not be able to remove a live root.
-      TmpSweeper.child_spec(),
       Nest.Agents.Supervisor.child_spec(),
       {Task.Supervisor, name: Nest.Agents.TaskSupervisor},
       {Task.Supervisor, name: Nest.Models.TaskSupervisor},
       # Background shell-job manager (per-agent `shell-cmd background`)
       ShellJobs.child_spec(),
+      # The scratch sweeper. It goes after everything a tick asks: the agent
+      # registry (which agents are live) and the shell-jobs manager (which jobs
+      # are). The root it sweeps is prepared once in `start/2` above,
+      # deliberately not in this child, so a supervisor restart of it cannot
+      # remove a live root.
+      TmpSweeper.child_spec(),
       # The per-space before-starts latch: holds a space's tool use and agent
       # starts while its environment is being edited
       Nest.Agents.SpaceGate,
@@ -102,7 +104,7 @@ defmodule Nest.Application do
     # *restart* of the sweeper removed a live root and took every agent's
     # scratch with it. Nothing has made a scratch directory yet: this runs
     # before any child starts.
-    :ok = Nest.Agents.Agent.TmpSpace.prepare_own_root()
+    :ok = TmpSpace.prepare_own_root()
 
     # Add surgical reloader in development
     dev_children = if code_reloading?(), do: [NestWeb.SurgicalReloader], else: []
