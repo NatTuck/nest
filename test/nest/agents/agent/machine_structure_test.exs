@@ -241,10 +241,10 @@ defmodule MachineStructureTest do
 
   defp sample_event(:iterate), do: :iterate
   defp sample_event(:inbox_drain), do: {:inbox_drain, [], "queued"}
-  defp sample_event(:http_ok), do: {:http_ok, %{tool_calls: []}}
-  defp sample_event(:http_error), do: {:http_error, :boom}
-  defp sample_event(:worker_crashed), do: {:worker_crashed, %RuntimeError{}, []}
-  defp sample_event(:worker_down), do: {:worker_down, :killed}
+  defp sample_event(:http_ok), do: {:http_ok, make_ref(), %{tool_calls: []}}
+  defp sample_event(:http_error), do: {:http_error, make_ref(), :boom}
+  defp sample_event(:worker_crashed), do: {:worker_crashed, make_ref(), %RuntimeError{}, []}
+  defp sample_event(:worker_down), do: {:worker_down, self(), :killed}
   defp sample_event(:worker_started), do: {:worker_started, make_ref(), self(), :http}
   defp sample_event(:llm_error), do: {:llm_error, make_ref(), "boom"}
   defp sample_event(:append_result), do: {:append_result, :stale, nil}
