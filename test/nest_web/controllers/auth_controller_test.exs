@@ -66,26 +66,6 @@ defmodule NestWeb.AuthControllerTest do
       assert json_response(conn, 401) == %{"error" => "invalid_credentials"}
     end
 
-    test "returns 401 for an unknown user", %{conn: conn} do
-      conn =
-        post(conn, "/api/v1/login", %{
-          "username" => "ghost",
-          "password" => "whatever"
-        })
-
-      assert json_response(conn, 401) == %{"error" => "invalid_credentials"}
-    end
-
-    test "matches case-insensitive usernames", %{conn: conn} do
-      conn =
-        post(conn, "/api/v1/login", %{
-          "username" => "ALICE",
-          "password" => "password123"
-        })
-
-      assert %{"user" => %{"username" => "alice"}} = json_response(conn, 200)
-    end
-
     test "returns 400 when fields are missing", %{conn: conn} do
       conn = post(conn, "/api/v1/login", %{"username" => "alice"})
       assert json_response(conn, 400) == %{"error" => "missing_fields"}

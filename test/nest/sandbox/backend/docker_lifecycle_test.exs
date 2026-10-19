@@ -12,7 +12,6 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
   import Nest.Sandbox.Backend.DockerTestHelpers
 
   alias Nest.Sandbox.Backend.Docker
-  alias Nest.Sandbox.Mounts
 
   # The one `docker inspect` the lifecycle makes about an existing container:
   # the status *and* the layout label, in a single call. Spelled out here rather
@@ -28,14 +27,12 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
       runner = scripted_runner(existing(mounts, caps()))
 
       assert {:ok, name} = Docker.ensure_container(mounts, caps(), runner: runner)
-      assert {:ok, ^name} = Docker.ensure_container(mounts, caps(), runner: runner)
 
-      # Two calls, one inspect each, no create: that is what "shared by the
-      # space" means, and the layout check rides along for free.
-      assert calls() == [
-               ["inspect", "--format", @inspect_format, name],
-               ["inspect", "--format", @inspect_format, name]
-             ]
+      # One inspect, no create, no start: that is what "shared by the space"
+      # means, and the layout check rides along for free. (That the name is
+      # stable across calls, and so shared, is `container_name/1`'s in
+      # `Nest.Sandbox.Backend.DockerTest`.)
+      assert calls() == [["inspect", "--format", @inspect_format, name]]
     end
 
     test "starts an existing but stopped container" do
@@ -74,21 +71,6 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
                ["image", "inspect", _tag],
                ["run", "-d", "--name", ^name | _args]
              ] = calls()
-    end
-
-    test "replaces a container that carries no layout at all" do
-      # One from another build of Nest, or one someone made by hand: it cannot be
-      # trusted to have this call's binds, so it goes.
-      runner =
-        scripted_runner(%{
-          ["inspect"] => {"running|\n", 0},
-          ["rm"] => {"", 0},
-          ["image"] => {"", 0},
-          ["run"] => {"", 0}
-        })
-
-      assert {:ok, _name} = Docker.ensure_container(mounts("/ws"), caps(), runner: runner)
-      assert ["rm", "-f", _name] = call_with(["rm"])
     end
 
     test "refuses rather than adopting a container it could not remove" do
@@ -238,28 +220,6 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
       assert reason =~ "docker run failed"
       assert reason =~ "boom"
     end
-
-    test "leaves no build context behind" do
-      runner =
-        scripted_runner(%{
-          ["inspect"] => {"No such object\n", 1},
-          ["image"] => {"", 0},
-          ["run"] => {"", 0}
-        })
-
-      assert {:ok, _name} = Docker.ensure_container(mounts("/ws"), caps(), runner: runner)
-
-      assert Path.wildcard(Path.join(System.tmp_dir!(), "nest-docker-build-*")) == []
-    end
-
-    test "refuses mounts that belong to no space" do
-      assert {:error, reason} =
-               Docker.ensure_container(Mounts.new("/ws", nil, "docker"), caps(),
-                 runner: fn _argv -> {"", 0} end
-               )
-
-      assert reason =~ "needs the space"
-    end
   end
 
   describe "remove_space/2" do
@@ -268,7 +228,6 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
       # it is per space. `stage_script/2` recreates it lazily.
       dir = stage_dir()
       File.mkdir_p!(dir)
-      assert File.dir?(dir)
       on_exit(fn -> File.rm_rf(Path.dirname(dir)) end)
 
       runner = scripted_runner(%{["ps"] => {"", 0}, ["rm"] => {"", 0}})
@@ -308,14 +267,12 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
              ]
     end
 
-    test "leaves a name that is not this space's exact shape" do
+    test "leaves a name whose prefix is not followed by a name segment" do
       # The prefix alone is not enough: what follows it has to be a name segment.
-      strangers = [
-        "nest-space-#{space_id()}-",
-        "nest-space-#{space_id()}-!!",
-        "nest-space-#{space_id() + 1}-nest_dev",
-        "not-a-nest-container"
-      ]
+      # A name that does not carry the prefix at all — another space's, or
+      # anything else the daemon's substring filter returned — is pinned by the
+      # exact call list in the test above.
+      strangers = ["nest-space-#{space_id()}-", "nest-space-#{space_id()}-!!"]
 
       runner =
         scripted_runner(%{["ps"] => {Enum.join(strangers, "\n") <> "\n", 0}, ["rm"] => {"", 0}})

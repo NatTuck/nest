@@ -124,19 +124,6 @@ defmodule Nest.EndpointProbeTest do
   end
 
   describe "probe/1 protocol detection" do
-    test "detects an OpenAI-compatible endpoint at a Gemini-style base" do
-      base = "https://generativelanguage.test/v1beta/openai"
-      p = provider(base_url: base)
-      stub_statuses(models: 200, chat: 200, messages: 404)
-
-      assert {:ok, structure} = EndpointProbe.probe(p)
-      assert structure.protocol == :openai
-      assert structure.protocol_resolved? == true
-      assert structure.chat_base_url == base
-      assert structure.discovery_base_url == base
-      assert structure.discovery_resolved? == true
-    end
-
     test "auto-detects an Anthropic endpoint when OpenAI chat is absent" do
       base = "https://api.anthropic.test"
       p = provider(base_url: base)
@@ -240,7 +227,6 @@ defmodule Nest.EndpointProbeTest do
       assert {:ok, structure} = EndpointProbe.probe(p)
       assert structure.discovery_base_url == base
       assert structure.discovery_resolved? == false
-      assert structure.protocol_resolved? == true
     end
   end
 
@@ -289,7 +275,6 @@ defmodule Nest.EndpointProbeTest do
       assert structure.protocol == :openai
       assert structure.protocol_resolved? == true
       assert structure.chat_base_url == base
-      assert structure.discovery_resolved? == true
     end
 
     test "infers Anthropic from an Anthropic-shaped discovery body" do

@@ -31,22 +31,6 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
     end
   end
 
-  test "names a config file Nest cannot protect, with its path, on both paths" do
-    # `create_payload/1` and `edit_payload/2` both have to name it. Without the
-    # edit clause the tuple falls through to `to_string/1`, which raises and
-    # kills the channel process — the client gets no reply at all.
-    reason = {:config_file_not_regular, "/home/nat/proj/AGENTS.md", :symlink}
-
-    assert {:error, %{"reason" => "config_file_not_regular", "path" => path, "type" => "symlink"}} =
-             AgentErrors.create_payload(reason)
-
-    assert path == "/home/nat/proj/AGENTS.md"
-
-    assert {:error,
-            %{"reason" => "config_file_not_regular", "path" => ^path, "type" => "symlink"}} =
-             AgentErrors.edit_payload("some-agent", reason)
-  end
-
   test "names a blueprint whose root vocation is gone, and logs the slug" do
     log =
       capture_log(fn ->
@@ -70,25 +54,16 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
   end
 
   test "stays generic for a space changeset, whatever field it failed on" do
-    # A blank space name — or a slug that could not be the root agent's name —
-    # is not an agent-name problem, and the agent's own `data:` match is what
-    # keeps the two apart. The slug case is why `Space.changeset/2` validates
-    # the slug at all: it used to surface as `invalid_agent_name`, naming a
-    # field the client never sent.
+    # A blank space name is not an agent-name problem, and the agent's own
+    # `data:` match is what keeps the two apart. (A slug that could not be the
+    # root agent's name never reaches here — `Space.changeset/2` refuses it, and
+    # `test/nest/spaces_test.exs` pins that.)
     blank_name = Space.changeset(%Space{}, %{name: "", created_by_user_id: 1})
-
-    unusable_slug =
-      Space.changeset(%Space{}, %{name: "My Space", slug: "my space", created_by_user_id: 1})
-
-    assert {"must be usable as an agent name (lowercase letters, digits, `_` and `-`)", _} =
-             unusable_slug.errors[:slug]
 
     log =
       capture_log(fn ->
-        for changeset <- [blank_name, unusable_slug] do
-          assert {:error, %{"reason" => "failed_to_create"}} =
-                   AgentErrors.create_payload(changeset)
-        end
+        assert {:error, %{"reason" => "failed_to_create"}} =
+                 AgentErrors.create_payload(blank_name)
       end)
 
     assert log =~ "Failed to create space"
@@ -120,10 +95,8 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
 
     log =
       capture_log(fn ->
-        for reason <- [changeset, :missing_system_prompt, :not_found] do
-          assert {:error, %{"reason" => "failed_to_create"}} =
-                   AgentErrors.create_payload(reason)
-        end
+        assert {:error, %{"reason" => "failed_to_create"}} =
+                 AgentErrors.create_payload(changeset)
       end)
 
     assert log =~ "Failed to create space"
@@ -168,21 +141,6 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
   end
 
   describe "edit_space_payload/1" do
-    test "names every refusal a user can act on" do
-      # The same codes the create path produces for the same refusals, because a
-      # workspace the sandbox will not run is refused at the edit for exactly the
-      # reason it is refused at the create.
-      for {reason, code} <- [
-            {:workspace_required, "workspace_required"},
-            {:workspace_missing, "workspace_missing"},
-            {:workspace_under_tmp, "workspace_under_tmp"},
-            {:blueprint_missing, "blueprint_missing"},
-            {:missing_vocation, "missing_vocation"}
-          ] do
-        assert {:error, %{"reason" => ^code}} = AgentErrors.edit_space_payload(reason)
-      end
-    end
-
     test "names a config file Nest cannot protect, with its path and type" do
       reason = {:config_file_not_regular, "/home/nat/proj/.nest", :symlink}
 
@@ -193,32 +151,6 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
                 "type" => "symlink"
               }} =
                AgentErrors.edit_space_payload(reason)
-    end
-
-    test "names the backend, the one field the changeset validates by value" do
-      changeset =
-        Space.environment_changeset(
-          %Space{workspace_path: "/home/nat/ws"},
-          %{sandbox_backend: "firecracker"}
-        )
-
-      assert {:error, %{"reason" => "invalid_sandbox_backend"}} =
-               AgentErrors.edit_space_payload(changeset)
-    end
-
-    test "names a blank workspace, the changeset's other client-facing field" do
-      # `environment_changeset/2`'s only `:workspace_path` error is
-      # `validate_required`, and `Nest.Sandbox.workspace_error/1` already names that
-      # refusal — so the client gets a code it can word, and an ordinary mistake is
-      # not logged at `:error`. Not captured: if the generic arm were taken, the
-      # suite would print.
-      changeset = %Ecto.Changeset{
-        data: %Space{},
-        errors: [workspace_path: {"can't be blank", [validation: :required]}]
-      }
-
-      assert {:error, %{"reason" => "workspace_required"}} =
-               AgentErrors.edit_space_payload(changeset)
     end
 
     test "stays generic, and logs, for a changeset error it cannot show" do

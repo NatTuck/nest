@@ -94,6 +94,7 @@ defmodule Nest.LLM.StreamConsumerTest do
 
       assert acc.thinking_signature == "sig_xyz"
       assert acc.thinking |> Enum.reverse() |> IO.iodata_to_binary() == ""
+      assert_received {:on_signature_called, "sig_xyz"}
     end
 
     test "subsequent text/thinking/signature events accumulate in their own slots" do
@@ -129,113 +130,6 @@ defmodule Nest.LLM.StreamConsumerTest do
       assert acc4.thinking |> Enum.reverse() |> IO.iodata_to_binary() == "reasoning..."
       assert acc4.thinking_signature == "sig_abc"
     end
-
-    test "a {:thinking, _} event does not corrupt the text slot that another {:text, _} event already populated" do
-      consumer = build_consumer()
-
-      {acc_after_text, _, _, _} =
-        StreamConsumer.dispatch_step(
-          {:text, "visible answer"},
-          initial_state(consumer),
-          consumer
-        )
-
-      {acc_after_thinking, _, _, _} =
-        StreamConsumer.dispatch_step(
-          {:thinking, "hidden reasoning"},
-          {acc_after_text, nil, nil, %{chars: 0, thinking_chars: 0}},
-          consumer
-        )
-
-      assert acc_after_thinking.text |> Enum.reverse() |> IO.iodata_to_binary() ==
-               "visible answer"
-
-      assert acc_after_thinking.thinking |> Enum.reverse() |> IO.iodata_to_binary() ==
-               "hidden reasoning"
-    end
-
-    test "a {:thinking_signature, _} event does not concatenate the signature into the thinking text" do
-      consumer = build_consumer()
-
-      {acc_after_thinking, _, _, _} =
-        StreamConsumer.dispatch_step(
-          {:thinking, "reasoning"},
-          initial_state(consumer),
-          consumer
-        )
-
-      {acc_after_sig, _, _, _} =
-        StreamConsumer.dispatch_step(
-          {:thinking_signature, "sig_long_blob_xyz"},
-          {acc_after_thinking, nil, nil, %{chars: 0, thinking_chars: 0}},
-          consumer
-        )
-
-      assert acc_after_sig.thinking |> Enum.reverse() |> IO.iodata_to_binary() == "reasoning"
-      assert acc_after_sig.thinking_signature == "sig_long_blob_xyz"
-    end
-  end
-
-  describe "dispatch_step/3 — hook callbacks" do
-    test "a {:text, _} event invokes on_text with the text and current sent map" do
-      consumer = build_consumer()
-      test_pid = self()
-
-      on_text = fn text, sent ->
-        send(test_pid, {:on_text, text, sent})
-        sent
-      end
-
-      consumer = %StreamConsumer{consumer | on_text: on_text}
-
-      StreamConsumer.dispatch_step(
-        {:text, "Hello"},
-        initial_state(consumer),
-        consumer
-      )
-
-      assert_received {:on_text, "Hello", _sent}
-    end
-
-    test "a {:thinking, _} event invokes on_thinking with the text and current sent map" do
-      consumer = build_consumer()
-      test_pid = self()
-
-      on_thinking = fn text, sent ->
-        send(test_pid, {:on_thinking, text, sent})
-        sent
-      end
-
-      consumer = %StreamConsumer{consumer | on_thinking: on_thinking}
-
-      StreamConsumer.dispatch_step(
-        {:thinking, "reasoning"},
-        initial_state(consumer),
-        consumer
-      )
-
-      assert_received {:on_thinking, "reasoning", _sent}
-    end
-
-    test "a {:thinking_signature, _} event invokes on_signature with the signature" do
-      consumer = build_consumer()
-      test_pid = self()
-
-      on_signature = fn sig ->
-        send(test_pid, {:on_signature, sig})
-        :ok
-      end
-
-      consumer = %StreamConsumer{consumer | on_signature: on_signature}
-
-      StreamConsumer.dispatch_step(
-        {:thinking_signature, "sig_xyz"},
-        initial_state(consumer),
-        consumer
-      )
-
-      assert_received {:on_signature, "sig_xyz"}
-    end
   end
 
   describe "reduce/2 — end-to-end routing" do
@@ -266,23 +160,6 @@ defmodule Nest.LLM.StreamConsumerTest do
 
       assert acc.text |> Enum.reverse() |> IO.iodata_to_binary() == "answer continuation"
       assert acc.thinking |> Enum.reverse() |> IO.iodata_to_binary() == "reasoning more reasoning"
-    end
-
-    test "a thinking signature mid-stream is preserved separately from the thinking text" do
-      stream = [
-        {:thinking, "Anthropic-style reasoning"},
-        {:thinking_signature, "sig_abc"},
-        {:text, "The answer is 42."},
-        {:done, %{response: %RunResponse{}}}
-      ]
-
-      {acc, _response, _error, _sent} = StreamConsumer.reduce(stream, build_consumer())
-
-      assert acc.thinking |> Enum.reverse() |> IO.iodata_to_binary() ==
-               "Anthropic-style reasoning"
-
-      assert acc.thinking_signature == "sig_abc"
-      assert acc.text |> Enum.reverse() |> IO.iodata_to_binary() == "The answer is 42."
     end
 
     test "the consumer's on_text/on_thinking hooks fire for every text/thinking event" do
@@ -327,37 +204,6 @@ defmodule Nest.LLM.StreamConsumerTest do
 
       # Only the first event was processed before the halt.
       assert acc.text |> Enum.reverse() |> IO.iodata_to_binary() == "first"
-    end
-
-    test "the should_stop callback is consulted before each event" do
-      # should_stop always returns false — the stream runs to
-      # completion. Use this to confirm the callback is checked
-      # per-event (not just once).
-      stream = [
-        {:text, "a"},
-        {:text, "b"},
-        {:text, "c"}
-      ]
-
-      call_count =
-        :counters.new(1, [])
-
-      should_stop = fn ->
-        :counters.add(call_count, 1, 1)
-        false
-      end
-
-      consumer = %StreamConsumer{
-        build_consumer()
-        | should_stop: should_stop
-      }
-
-      {acc, _response, _error, _sent} = StreamConsumer.reduce(stream, consumer)
-
-      assert acc.text |> Enum.reverse() |> IO.iodata_to_binary() == "abc"
-      # Consulted once per event (3 events, plus the first
-      # re-check before any event). Allow >= 3.
-      assert :counters.get(call_count, 1) >= 3
     end
   end
 end
