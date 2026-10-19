@@ -126,9 +126,12 @@ describe("SpaceView", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Blueprint: Tabletop RPG")).toBeInTheDocument();
     // The feed: a composer with a recipient, and the space's environment.
+    // The environment card is collapsed by default, so what its presence looks
+    // like here is its disclosure — the workspace path and the edit button are
+    // behind it (`SpaceFeed.test.jsx` opens it).
     expect(screen.getByLabelText("Send to")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Edit space" }),
+      screen.getByRole("button", { name: /Environment/ }),
     ).toBeInTheDocument();
     // ...and not the root agent's conversation, which is where this route used
     // to send the user.
@@ -167,8 +170,11 @@ describe("SpaceView", () => {
       screen.getByRole("heading", { name: "RPG Play Interface" }),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("Send to")).not.toBeInTheDocument();
+    // Collapsed by default, so its presence is its disclosure — and the
+    // workspace, the one fact that makes a space unusable when missing, is
+    // still stated without expanding.
     expect(
-      screen.getByRole("button", { name: "Edit space" }),
+      screen.getByRole("button", { name: /Environment/ }),
     ).toBeInTheDocument();
     expect(screen.getByText("/home/nat/ws")).toBeInTheDocument();
   });

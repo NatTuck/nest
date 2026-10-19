@@ -6,6 +6,7 @@
  */
 
 import { ChatInput } from "./ChatInput";
+import { JumpToBottomButton } from "./JumpToBottomButton";
 
 export function ChatComposer({
   inputValue,
@@ -29,30 +30,11 @@ export function ChatComposer({
 }) {
   return (
     <div className="relative">
-      {hasNewContent && !isAtBottom && (
-        <button
-          type="button"
-          onClick={jumpToBottom}
-          aria-label="Jump to latest messages"
-          className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-10 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-full shadow-lg hover:bg-indigo-700 transition-all duration-200 flex items-center gap-1.5"
-        >
-          <svg
-            className="w-4 h-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M19 14l-7 7m0 0l-7-7m7 7V3"
-            />
-          </svg>
-          Jump to latest
-        </button>
-      )}
+      <JumpToBottomButton
+        hasNewContent={hasNewContent}
+        isAtBottom={isAtBottom}
+        jumpToBottom={jumpToBottom}
+      />
 
       <ChatInput
         value={inputValue}
