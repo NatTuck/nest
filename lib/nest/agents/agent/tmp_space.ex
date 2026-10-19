@@ -404,14 +404,28 @@ defmodule Nest.Agents.Agent.TmpSpace do
   `nil` scratch for a name that cannot be a path component: such an agent is
   refused by its own changeset, and nothing composes a prompt for it.
 
+  `space_name` is the space's name, which only a `"none"` space's prompt reads:
+  with no enforced scratch directory, that prompt suggests
+  `/tmp/nest/<space-name>/` (see `Nest.Agents.Agent.SystemPrompt`). It travels
+  as an argument rather than being looked up here for the reason
+  `Nest.Sandbox.Mounts` gives — nothing under `lib/nest/sandbox/` reads the
+  spaces schema — and every caller passes the same value it puts on the agent's
+  own mounts, so the two constructions stay equal.
+
   Naming is not creating. The directory is made by `create/3` when the agent
   starts — that is the only creator on the prompt's path — or by
   `Nest.Sandbox.Mounts.ensure_scratch!/1` when a command is staged. Both mark
   what they make.
   """
-  @spec prompt_mounts(String.t() | nil, integer(), String.t(), String.t(), boolean()) ::
-          Mounts.t()
-  def prompt_mounts(workspace, space_id, name, backend, network_access) do
+  @spec prompt_mounts(
+          String.t() | nil,
+          integer(),
+          String.t(),
+          String.t(),
+          boolean(),
+          String.t() | nil
+        ) :: Mounts.t()
+  def prompt_mounts(workspace, space_id, name, backend, network_access, space_name) do
     # This *names* the directory; it does not make it. The two creators are
     # `create/3` (the start path) and `Nest.Sandbox.Mounts.ensure_scratch!/1`
     # (staging a command, from `Nest.Tools.ShellCmd`), and both mark what they
@@ -423,7 +437,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
     # `init/1` — rather than as a raise out of a caller that is merely
     # composing a prompt.
     scratch = if single_segment?(name), do: agent_dir(space_id, name, backend)
-    Mounts.new(workspace, scratch, backend, space_id, network_access)
+    Mounts.new(workspace, scratch, backend, space_id, network_access, space_name)
   end
 
   # The one place a scratch directory is removed, with both guards a `rm_rf`

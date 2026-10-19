@@ -205,19 +205,29 @@ defmodule Nest.Spaces do
   def environment(space_id) when is_integer(space_id) do
     from(s in Space,
       where: s.id == ^space_id,
-      select: {s.workspace_path, s.sandbox_backend, s.network_access}
+      select: {s.workspace_path, s.sandbox_backend, s.network_access, s.name}
     )
     |> Repo.one()
     |> case do
-      {workspace, backend, network} ->
+      {workspace, backend, network, name} ->
         %{
           workspace_path: workspace,
           sandbox_backend: backend_or_default(backend),
-          network_access: network_or_default(network)
+          network_access: network_or_default(network),
+          # The space's name, which only a `"none"` space's prompt uses: with no
+          # enforced scratch directory it suggests `/tmp/nest/<name>/`
+          # (`Nest.Agents.Agent.SystemPrompt`). It comes free with the row this
+          # call already reads.
+          space_name: name
         }
 
       nil ->
-        %{workspace_path: nil, sandbox_backend: Backend.default(), network_access: true}
+        %{
+          workspace_path: nil,
+          sandbox_backend: Backend.default(),
+          network_access: true,
+          space_name: nil
+        }
     end
   end
 

@@ -27,6 +27,7 @@ defmodule Nest.Persistence.AgentCompaction do
   alias Nest.Persistence.AgentCompaction.Planner
   alias Nest.Persistence.AgentCompaction.Summarizer
   alias Nest.Persistence.AgentCompaction.Writer
+  alias Nest.Sandbox.Mounts
   alias Nest.Spaces
   alias Nest.Vocations
 
@@ -149,7 +150,11 @@ defmodule Nest.Persistence.AgentCompaction do
           agent.space_id,
           agent.name,
           Nest.Spaces.sandbox_backend(agent.space_id),
-          Nest.Spaces.network_access(agent.space_id)
+          Nest.Spaces.network_access(agent.space_id),
+          # From the agent's own mounts, not another space read: this is the
+          # value the prompt stated at start, and only a `"none"` space's prompt
+          # uses it. `nil` for every other backend, which is what they had.
+          Mounts.space_name(agent.mounts)
         ),
         {limit, source},
         agent.name,

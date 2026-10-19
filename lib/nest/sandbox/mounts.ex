@@ -14,6 +14,15 @@ defmodule Nest.Sandbox.Mounts do
       (docker's container is `nest-space-<space_id>-…`), and the space id cannot
       be recovered from either directory: the scratch path embeds the BEAM's pid
       and reading an id back out of it would be a reverse mapping.
+    * `space_name` — the space's *name*, for the one thing a prompt needs it
+      for: a `"none"` space has no enforced scratch directory, so its prompt
+      suggests `/tmp/nest/<space-name>/` (`Nest.Agents.Agent.SystemPrompt`). It
+      is a value carried here rather than a schema read, because nothing under
+      `lib/nest/sandbox/` reads the spaces schema: the caller that already has
+      the row puts it on this struct
+      (`Nest.Persistence.put_space_properties/1` does, and only for a `"none"`
+      space). `nil` everywhere else — a sandboxed space's scratch is real and
+      needs no suggestion, and its prompt must stay byte-identical.
     * `network_access` — whether this call may reach the network. It is the
       *space's* value (`spaces.network_access`), resolved once at agent start
       like the backend, and injected into the resolved caps as `"net"`
@@ -37,7 +46,7 @@ defmodule Nest.Sandbox.Mounts do
   mounts are only *stated* — the workspace path, the network sentence and the
   backend's enforcement sentence all come from this value. They are still the
   agent's real mounts, scratch included
-  (`Nest.Agents.Agent.TmpSpace.prompt_mounts/5` is the one place that builds
+  (`Nest.Agents.Agent.TmpSpace.prompt_mounts/6` is the one place that builds
   them), so what the prompt says about its environment is what its tools will
   do.
 
@@ -96,8 +105,16 @@ defmodule Nest.Sandbox.Mounts do
   # The backend default comes from `Nest.Sandbox.Backend`, the list's one home —
   # a second literal here would be a second source of truth. Only the default is
   # taken; nothing here branches on the value. Network access defaults to
-  # `false`, which is what a value naming no space means (see the moduledoc).
-  defstruct [:workspace, :scratch, :space_id, network_access: false, backend: Backend.default()]
+  # `false`, which is what a value naming no space means (see the moduledoc), and
+  # `space_name` to `nil`, which is what every backend but `"none"` wants.
+  defstruct [
+    :workspace,
+    :scratch,
+    :space_id,
+    :space_name,
+    network_access: false,
+    backend: Backend.default()
+  ]
 
   @typedoc """
   `backend` is the implementation that runs the invocation (a string from
@@ -110,6 +127,7 @@ defmodule Nest.Sandbox.Mounts do
   @type t :: %__MODULE__{
           backend: String.t(),
           space_id: integer() | nil,
+          space_name: String.t() | nil,
           network_access: boolean(),
           workspace: String.t() | nil,
           scratch: String.t() | nil
@@ -173,6 +191,31 @@ defmodule Nest.Sandbox.Mounts do
   end
 
   @doc """
+  The mounts for a call in a space, with everything that space decides — the
+  backend it runs, its network access, the two directories this call binds — and
+  the space's name, which only a `"none"` space's prompt reads (`space_name/1`).
+  """
+  @spec new(
+          String.t() | nil,
+          String.t() | nil,
+          String.t(),
+          integer() | nil,
+          boolean(),
+          String.t() | nil
+        ) ::
+          t()
+  def new(workspace, scratch, backend, space_id, network_access, space_name) do
+    %__MODULE__{
+      backend: backend,
+      space_id: space_id,
+      space_name: space_name,
+      network_access: network_access,
+      workspace: workspace,
+      scratch: scratch
+    }
+  end
+
+  @doc """
   The mounts for an agent's state: the backend its space runs and the two
   directories it owns. This is the one place the value is read out of agent
   state, so every tool, handler and agent module holds the value rather than a
@@ -208,6 +251,17 @@ defmodule Nest.Sandbox.Mounts do
   """
   @spec space_id(t()) :: integer() | nil
   def space_id(%__MODULE__{space_id: space_id}), do: space_id
+
+  @doc """
+  The space's name, or `nil`.
+
+  One reader: a `"none"` space's system prompt, which suggests
+  `/tmp/nest/<space-name>/` because such a space has no enforced scratch
+  directory. `nil` for a call that names no space and for every other backend —
+  see the moduledoc for why the name travels as a value.
+  """
+  @spec space_name(t()) :: String.t() | nil
+  def space_name(%__MODULE__{space_name: space_name}), do: space_name
 
   @doc """
   The directory this call binds at `/tmp`, or `nil` when it binds none.

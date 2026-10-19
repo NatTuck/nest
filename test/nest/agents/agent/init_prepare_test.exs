@@ -15,7 +15,7 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
   the workspace's `AGENTS.md` present in both.
 
   Composition also no longer *creates* the agent's scratch directory. It used to,
-  incidentally: `TmpSpace.prompt_mounts/5` only names the directory, but the
+  incidentally: `TmpSpace.prompt_mounts/6` only names the directory, but the
   `AGENTS.md` read went through `ShellCmd`, which calls
   `Mounts.ensure_scratch!/1`. A scratch path that could not be made therefore
   raised `File.Error` out of whichever caller was composing — the supervisor,

@@ -143,7 +143,7 @@ defmodule Nest.Agents.Agent.Init do
 
   ## The mounts are the prompt's ones
 
-  They come from `TmpSpace.prompt_mounts/5`, the one builder of a prompt's
+  They come from `TmpSpace.prompt_mounts/6`, the one builder of a prompt's
   mounts, and it *names* the scratch directory without creating it: the two
   creators are `TmpSpace.create/3` (the start path) and
   `Mounts.ensure_scratch!/1` (staging a command), so naming the mounts is not
@@ -181,7 +181,8 @@ defmodule Nest.Agents.Agent.Init do
       Map.fetch!(attrs, :space_id),
       Map.fetch!(attrs, :name),
       Map.fetch!(attrs, :sandbox_backend),
-      Map.fetch!(attrs, :network_access)
+      Map.fetch!(attrs, :network_access),
+      Map.get(attrs, :space_name)
     )
   end
 
@@ -200,20 +201,25 @@ defmodule Nest.Agents.Agent.Init do
   # stays under the credo ABC cap.
   #
   # The agent's sandbox: the backend its space runs, its network access, the
-  # workspace it binds, and the scratch directory just created for it.
-  defp agent_mounts(_attrs, name, space_id, workspace, backend, network_access) do
+  # workspace it binds, and the scratch directory just created for it. The space's
+  # name travels too (`:space_name`), but only a `"none"` space's prompt reads it
+  # — `Nest.Persistence.put_space_properties/1` puts it on the attrs for that
+  # backend alone, so every other backend's mounts, and so its prompt, are
+  # unchanged.
+  defp agent_mounts(attrs, name, space_id, workspace, backend, network_access) do
     Mounts.new(
       workspace,
       create_tmp_space(space_id, name, backend),
       backend,
       space_id,
-      network_access
+      network_access,
+      Map.get(attrs, :space_name)
     )
   end
 
   # The prompt is composed through `mounts` because it *states* them: the
   # workspace path, the network sentence and the backend's enforcement sentence
-  # all come from this value (see `Nest.Agents.Agent.TmpSpace.prompt_mounts/5`).
+  # all come from this value (see `Nest.Agents.Agent.TmpSpace.prompt_mounts/6`).
   defp build_vocation_pipeline(attrs, mounts) do
     model = Map.fetch!(attrs, :model)
     # Internal/test-only cache-tier override; see `initial_context_limit/2`.
