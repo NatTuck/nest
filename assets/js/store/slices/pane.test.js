@@ -135,6 +135,32 @@ describe("pane slice", () => {
     expect(pane().expandedId).toBe("d2");
   });
 
+  it("advances past a drop-only question rather than opening it", () => {
+    useStore
+      .getState()
+      .setPaneState(
+        SPACE,
+        frame(1, [
+          decision({ id: "d1" }),
+          decision({ id: "d2", orphaned: true, orphanedReason: "gone" }),
+          decision({ id: "d3" }),
+        ]),
+      );
+
+    useStore.getState().markPaneDecision(SPACE, "d1", "save");
+
+    // d2 carries no mark — nothing can be saved for it — but it is drop-only,
+    // so opening it would put a row with one control where the user's next
+    // answer should go.
+    expect(pane().expandedId).toBe("d3");
+
+    useStore.getState().markPaneDecision(SPACE, "d3", "save");
+
+    // Nothing is answerable any more, so the row below the resolved one
+    // (looping) stays open rather than leaving the accordion closed.
+    expect(pane().expandedId).toBe("d1");
+  });
+
   it("an answer change clears the mark, because the mark described the old answer", () => {
     useStore.getState().setPaneState(SPACE, frame(1, [decision({ id: "d1" })]));
     useStore.getState().setPaneDraft(SPACE, "d1", "Ship");
@@ -156,11 +182,12 @@ describe("pane slice", () => {
           decision({ id: "d1" }),
           decision({ id: "d2" }),
           decision({ id: "d3" }),
+          decision({ id: "d4" }),
         ]),
       );
 
     const store = useStore.getState();
-    for (const id of ["d1", "d2", "d3"]) {
+    for (const id of ["d1", "d2", "d3", "d4"]) {
       store.setPaneDraft(SPACE, id, "yes");
       store.markPaneDecision(SPACE, id, "save");
     }
@@ -169,11 +196,12 @@ describe("pane slice", () => {
       delivered: ["d1"],
       orphaned: [{ id: "d2", reason: "agent boss was archived" }],
       failed: [{ id: "d3", reason: "the agent is busy" }],
+      lost: [{ id: "d4", reason: "agent boss vanished" }],
     });
 
     // The list is the server's: this client did not remove the delivered
     // question, it waits for the frame that no longer carries it.
-    expect(ids()).toEqual(["d1", "d2", "d3"]);
+    expect(ids()).toEqual(["d1", "d2", "d3", "d4"]);
     expect(pane().marks).toEqual({});
     expect(pane().drafts.d1).toBeUndefined();
     // A question that turned out orphaned can only be dropped now; a refused
@@ -187,6 +215,13 @@ describe("pane slice", () => {
       reason: "the agent is busy",
     });
     expect(pane().drafts.d3).toBe("yes");
+    // Lost: the question went with the answer, so neither its mark nor its
+    // draft has anything left to describe.
+    expect(pane().outcomes.d4).toEqual({
+      kind: "lost",
+      reason: "agent boss vanished",
+    });
+    expect(pane().drafts.d4).toBeUndefined();
   });
 
   it("counts only the questions that carry no mark as outstanding", () => {

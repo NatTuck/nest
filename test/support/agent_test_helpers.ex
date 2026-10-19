@@ -139,10 +139,10 @@ defmodule Nest.Agents.AgentTestHelpers do
   end
 
   @doc """
-  Create a fresh space for the test. Returns `{:ok, space_id}`.
-  The row is rolled back by the sandbox on test exit.
+  Create a fresh space for the test, owned by `owner_id` (`nil` for an unowned
+  space). Returns `{:ok, space_id}`; the row is rolled back on test exit.
   """
-  def create_test_space(attrs \\ %{}) do
+  def create_test_space(attrs \\ %{}, owner_id \\ nil) do
     params =
       %{
         name: "test-space-#{System.unique_integer([:positive])}",
@@ -155,7 +155,7 @@ defmodule Nest.Agents.AgentTestHelpers do
       # actually wanted.
       |> Map.put_new_lazy(:workspace_path, &default_test_workspace/0)
 
-    {:ok, space} = Spaces.create_space(nil, params)
+    {:ok, space} = Spaces.create_space(owner_id, params)
 
     Process.put(@space_id_key, space.id)
     {:ok, space.id}
@@ -178,7 +178,7 @@ defmodule Nest.Agents.AgentTestHelpers do
     # Create a fresh space for this agent. The space_id is the
     # first positional arg to `Agents.create_agent/3`; everything
     # else stays in opts.
-    {:ok, space_id} = create_test_space(space_attrs)
+    {:ok, space_id} = create_test_space(space_attrs, Map.get(attrs, :created_by_user_id))
     merged = build_attrs(agent_name, space_id, attrs)
 
     # Use the standard caller interface so the agent is registered

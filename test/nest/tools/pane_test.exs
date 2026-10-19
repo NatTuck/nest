@@ -64,6 +64,10 @@ defmodule Nest.Tools.PaneTest do
     assert {:ok, "d2"} = Pane.ask(space, "ghost", "Orphan?", "Body", ["a", "b"])
     assert :ok = Pane.mark_orphaned(space, ["d2"], "the agent that asked it is gone")
 
+    # Another agent's question is not the caller's to retire.
+    assert {:error, "That question was asked by another agent, not you."} =
+             invoke("decisions-obsolete", %{"id" => "d2", "reason" => "not mine"}, agent)
+
     assert {:ok, list} = invoke("decisions-list", %{}, agent)
     assert list =~ "- d2: Orphan? (asked by ghost) [orphaned: the agent that asked it is gone]"
 
@@ -186,5 +190,22 @@ defmodule Nest.Tools.PaneTest do
     assert items["items"]["properties"]["status"]["enum"] == ~w(pending in_progress done)
     assert todos.parameters_schema["required"] == ["items"]
     assert todos.description =~ "send the whole list"
+
+    # The schema declares the limits the server enforces — the same numbers,
+    # read from `Nest.Agents.Agent.Pane.caps/0` rather than spelled twice.
+    caps = Pane.caps()
+
+    assert props["title"]["maxLength"] == caps.title
+    assert props["body"]["maxLength"] == caps.body
+    assert props["options"]["items"]["maxLength"] == caps.option
+    assert props["options"]["minItems"] == caps.min_options
+    assert props["options"]["maxItems"] == caps.max_options
+
+    assert items["maxItems"] == caps.todos
+    assert items["items"]["properties"]["text"]["maxLength"] == caps.todo_text
+
+    obsolete = Tools.get_function("decisions-obsolete", Mounts.new(nil, nil))
+
+    assert obsolete.parameters_schema["properties"]["reason"]["maxLength"] == caps.reason
   end
 end

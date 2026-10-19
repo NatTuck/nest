@@ -34,6 +34,26 @@ const mockState = {
 };
 
 /**
+ * The reply a real server gives a push the test did not configure.
+ *
+ * Almost every event is answered with an empty map, which is enough for a
+ * helper that reads one key out of a reply. `pane:sync` (#119 / #120) is not:
+ * its reply is the space's whole pane state, so an empty map is a *contract
+ * violation* the store refuses (loudly) rather than "nothing to report". The
+ * fake therefore answers it the way a server with an empty queue does, so a
+ * test that joins a channel and does not care about the pane stays quiet.
+ */
+function defaultPushBehavior(topic, event) {
+  if (event === "pane:sync") {
+    const spaceId = Number(String(topic).split(":")[1]);
+    if (Number.isInteger(spaceId)) {
+      return { ok: { spaceId, decisions: [], todos: {}, seq: 0 } };
+    }
+  }
+  return { ok: {} };
+}
+
+/**
  * Reset all mock state
  * Call this in beforeEach to get fresh state
  */
@@ -211,7 +231,8 @@ function createMockChannel(topic) {
 
     push(event, payload) {
       const key = `${topic}:${event}`;
-      const behavior = mockState.pushBehaviors.get(key) || { ok: {} };
+      const behavior =
+        mockState.pushBehaviors.get(key) || defaultPushBehavior(topic, event);
 
       mockState.pushBehaviors.delete(key);
 

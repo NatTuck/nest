@@ -232,13 +232,17 @@ describe("DecisionsAccordion", () => {
     expect(channels.sendDecisionAnswers).not.toHaveBeenCalled();
   });
 
-  it("keeps a refused answer answerable and says why it did not land", () => {
-    seedPane({ decisions: [decision({})] });
+  it("tells a refused answer apart from one lost with its question", () => {
+    // Two questions, both answered and sent in one click: the server refuses
+    // one and loses the other with the question it removed. Only the refused
+    // one is still there to send again.
+    seedPane({
+      decisions: [first, second],
+      drafts: { d1: "Ship", d2: "Wait" },
+      marks: { d1: "save", d2: "save" },
+    });
 
     renderAccordion();
-
-    fireEvent.click(screen.getByRole("button", { name: "Ship" }));
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     fireEvent.click(screen.getByRole("button", { name: /Send answers/ }));
 
     act(() => {
@@ -246,14 +250,36 @@ describe("DecisionsAccordion", () => {
         delivered: [],
         orphaned: [],
         failed: [{ id: "d1", reason: "the agent is busy" }],
+        lost: [{ id: "d2", reason: "the agent vanished" }],
       });
     });
 
+    // d1 is open by default.
     expect(screen.getByTestId("decision-failed")).toHaveTextContent(
       "the agent is busy",
     );
-    // A transient refusal, so the answer is still there to send again.
+    expect(screen.getByTestId("decision-failed")).toHaveTextContent(
+      "You can send it again",
+    );
+    // Still answerable: the answer is there to send again.
     expect(screen.getByLabelText("Your answer")).toHaveValue("Ship");
+    expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+
+    fireEvent.click(title(/Second/));
+
+    // d2 went with its answer, so its row carries the report and no controls at
+    // all — there is nothing left to answer, save, drop or explain.
+    expect(screen.getByTestId("decision-lost")).toHaveTextContent(
+      "the agent vanished",
+    );
+    expect(screen.getByTestId("decision-lost")).toHaveTextContent(
+      "nothing left to answer",
+    );
+    expect(screen.queryByTestId("decision-failed")).toBeNull();
+    expect(screen.queryByLabelText("Your answer")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Drop" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Explain more" })).toBeNull();
   });
 
   it("asks for more detail on the open question and leaves it open", () => {

@@ -26,7 +26,7 @@ defmodule Nest.Agents.Agent.PaneTest do
 
     assert [%{id: "d1"}, %{id: "d2"}] = Pane.decisions(space)
 
-    assert :ok = Pane.mark_obsolete(space, "d1", "I answered it myself")
+    assert :ok = Pane.mark_obsolete(space, "d1", "I answered it myself", "agent-a")
 
     # Marking never removes and never reorders: `d1` is still first and `d2` is
     # untouched. That is the pane's UI rule on the server side.
@@ -40,7 +40,7 @@ defmodule Nest.Agents.Agent.PaneTest do
     assert {:ok, "d3"} = ask(space, "Third?")
     assert ["d1", "d2", "d3"] = Enum.map(Pane.decisions(space), & &1.id)
 
-    assert {:error, :not_found} = Pane.mark_obsolete(space, "d99", "nothing there")
+    assert {:error, :not_found} = Pane.mark_obsolete(space, "d99", "nothing there", "agent-a")
   end
 
   test "marks a decision orphaned in place, once" do
@@ -108,7 +108,7 @@ defmodule Nest.Agents.Agent.PaneTest do
 
     assert Pane.decisions(two) == []
     assert Pane.todos(two, "agent-a") == []
-    assert Pane.payload(two)["decisions"] == []
+    assert Pane.payload(two, "agent-a")["decisions"] == []
   end
 
   test "the payload is the wire shape, with every key present" do
@@ -118,9 +118,14 @@ defmodule Nest.Agents.Agent.PaneTest do
     assert :ok =
              Pane.write_todos(space, "agent-a", [%{"text" => "step", "status" => "in_progress"}])
 
+    # Another agent's list exists in the space, and must not be in this frame:
+    # the frame is built for one viewer, because the TODO cap is per agent.
+    assert :ok =
+             Pane.write_todos(space, "agent-b", [%{"text" => "theirs", "status" => "pending"}])
+
     assert %{
              "spaceId" => ^space,
-             "seq" => 2,
+             "seq" => 3,
              "decisions" => [
                %{
                  "id" => "d1",
@@ -135,27 +140,49 @@ defmodule Nest.Agents.Agent.PaneTest do
                }
              ],
              "todos" => %{"agent-a" => [%{"text" => "step", "status" => "in_progress"}]}
-           } = Pane.payload(space)
+           } = Pane.payload(space, "agent-a")
+
+    # The same space, seen from agent-b's page: its own list, and only it.
+    assert %{"todos" => %{"agent-b" => [%{"text" => "theirs", "status" => "pending"}]}} =
+             Pane.payload(space, "agent-b")
+
+    # An agent with no list still gets its key, so the client always reads one
+    # shape.
+    assert Pane.payload(space, "agent-c")["todos"] == %{"agent-c" => []}
   end
 
   test "increments seq on every broadcast, and a sync does not advance it" do
     space = space_id()
     :ok = Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.pane_topic(space))
 
+    # The broadcast is a change notification, not a payload: each subscriber
+    # asks for the frame built for its own agent.
     assert {:ok, id} = ask(space)
-
-    assert_receive {:pane_state,
-                    %{"spaceId" => ^space, "seq" => 1, "decisions" => [%{"id" => ^id}]}}
+    assert_receive {:pane_changed, ^space}
+    assert %{"seq" => 1, "decisions" => [%{"id" => ^id}]} = Pane.payload(space, "agent-a")
 
     assert :ok =
              Pane.write_todos(space, "agent-a", [%{"text" => "a", "status" => "pending"}])
 
-    assert_receive {:pane_state, %{"seq" => 2}}
+    assert_receive {:pane_changed, ^space}
 
     # A sync is not a mutation: it reports the frame the client is on and sends
     # nothing, so it can never make a real frame look stale.
-    assert Pane.payload(space)["seq"] == 2
-    refute_received {:pane_state, _}
+    assert Pane.payload(space, "agent-a")["seq"] == 2
+    refute_received {:pane_changed, _}
+  end
+
+  test "refuses to obsolete another agent's question" do
+    space = space_id()
+    assert {:ok, "d1"} = ask(space, "One", "agent-a")
+
+    assert {:error, :not_yours} = Pane.mark_obsolete(space, "d1", "not mine", "agent-b")
+
+    # Nothing was marked, and the question is untouched.
+    assert [%{id: "d1", obsolete?: false}] = Pane.decisions(space)
+
+    assert :ok = Pane.mark_obsolete(space, "d1", "mine after all", "agent-a")
+    assert [%{id: "d1", obsolete?: true}] = Pane.decisions(space)
   end
 
   test "caps the decision queue" do
@@ -203,7 +230,7 @@ defmodule Nest.Agents.Agent.PaneTest do
     assert {:error, message} = Pane.write_todos(space, "a", too_many)
     assert message =~ "at most"
 
-    assert {:error, message} = Pane.mark_obsolete(space, id, "")
+    assert {:error, message} = Pane.mark_obsolete(space, id, "", "agent-a")
     assert message =~ "reason"
 
     # Nothing a refused call carried was written.

@@ -71,9 +71,11 @@ defmodule Nest.Agents.Agent.ProjectedSizeCoverageTest do
 
     test "the pane tools project a positive size" do
       # Same reason as above: membership is not the clause. The two that read a
-      # list answer with text bounded only by the pane's caps, so they project at
-      # the substitute minimum rather than at a fixed sentence.
+      # list project one representative report, so their projection must be
+      # larger than the substitute minimum a tool with no shape projects at —
+      # the minimum is not the contract, a realistic list is.
       c = ctx([])
+      minimum = ProjectedSize.summary_baseline_size()
 
       for name <- ~w(decisions-ask decisions-obsolete todos-write decisions-list todos-list) do
         assert ProjectedSize.project(call("c-#{name}", name, %{}), c) > 0,
@@ -81,9 +83,8 @@ defmodule Nest.Agents.Agent.ProjectedSizeCoverageTest do
       end
 
       for name <- ~w(decisions-list todos-list) do
-        assert ProjectedSize.project(call("c-#{name}", name, %{}), c) ==
-                 ProjectedSize.project(call("c", "agents-wait", %{}), c),
-               "#{name} should project at the bounded-read minimum"
+        assert ProjectedSize.project(call("c-#{name}", name, %{}), c) > minimum,
+               "#{name} projects at the substitute minimum, not at a real list"
       end
     end
   end

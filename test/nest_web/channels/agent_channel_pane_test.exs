@@ -13,6 +13,7 @@ defmodule NestWeb.AgentChannelPaneTest do
   use NestWeb.AgentChannelTestHelpers
 
   import ExUnit.CaptureLog
+  import Mimic
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents
@@ -26,6 +27,8 @@ defmodule NestWeb.AgentChannelPaneTest do
   alias Nest.Messages.System, as: MsgSystem
   alias Nest.Messages.User
   alias Nest.Persistence
+
+  setup :verify_on_exit!
 
   defp ask(space_id, name, title) do
     Pane.ask(space_id, name, title, "The tradeoffs are ...", ["Postgres", "SQLite"])
@@ -53,7 +56,8 @@ defmodule NestWeb.AgentChannelPaneTest do
     assert payload["spaceId"] == space_id
     assert payload["seq"] == 1
     assert [%{"id" => ^id}] = payload["decisions"]
-    assert payload["todos"] == %{}
+    # Only this agent's list — the frame is built per viewer.
+    assert payload["todos"] == %{name => []}
   end
 
   test "answering removes the decision and delivers the answer to the asking agent", %{
@@ -70,7 +74,7 @@ defmodule NestWeb.AgentChannelPaneTest do
         "answers" => [%{"id" => id, "answer" => "Postgres"}]
       })
 
-    assert_reply ref, :ok, %{"delivered" => [^id], "orphaned" => [], "failed" => []}
+    assert_reply ref, :ok, %{"delivered" => [^id], "orphaned" => [], "failed" => [], "lost" => []}
 
     # Removed, in the same handler that delivered it.
     assert_push "pane:state", %{"decisions" => [], "seq" => 2}
@@ -242,17 +246,88 @@ defmodule NestWeb.AgentChannelPaneTest do
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
   end
 
-  test "pane calls are refused once the joined agent is archived", %{
+  test "a guest on a shared agent gets no pane at all", %{
+    socket: _owner_socket,
+    agent_id: name,
+    space_id: space_id,
+    user: user
+  } do
+    assert_push "init", _owner_init
+
+    # A guest may join a *shared* agent in this space. The pane belongs to the
+    # space, though, so the guest must see none of it.
+    shared = start_peer(space_id, shared: true, created_by_user_id: user.id)
+    guest = create_user!("pane-guest")
+
+    {:ok, guest_conn} = connect(NestWeb.UserSocket, %{"token" => AuthToken.sign(guest.id)})
+
+    {:ok, _, guest_socket} =
+      subscribe_and_join(guest_conn, NestWeb.AgentChannel, "agent:#{space_id}:#{shared}")
+
+    assert_push "init", _guest_init
+
+    for {event, payload} <- [
+          {"pane:sync", %{}},
+          {"decisions:answer", %{"answers" => []}},
+          {"decisions:drop", %{"ids" => []}},
+          {"decisions:explain", %{"id" => "d1"}}
+        ] do
+      ref = push(guest_socket, event, payload)
+      assert_reply ref, :error, %{"reason" => "forbidden"}
+    end
+
+    # And the join did not subscribe it: the owner's channel receives the frame,
+    # the guest's never does. The `:sys.get_state` is the barrier — it is queued
+    # behind every message the guest's channel had already been sent, so a push
+    # would already be in this mailbox when it returns.
+    assert {:ok, _id} = ask(space_id, name, "Owner only")
+    assert_push "pane:state", %{"spaceId" => ^space_id}
+
+    # allowlist: barrier — anchor for refute_push "pane:state", 0
+    _ = :sys.get_state(guest_socket.channel_pid, 1_000)
+    refute_push "pane:state", _, 0
+
+    Process.unlink(guest_socket.channel_pid)
+    GenServer.stop(guest_socket.channel_pid, :normal)
+  end
+
+  test "an answer whose delivery fails after the removal is reported lost", %{
     socket: socket,
     agent_id: name,
     space_id: space_id
   } do
-    # Archiving stops the agent, and the test process is linked to it.
-    Process.flag(:trap_exit, true)
-    assert :ok = Supervisor.archive_agent(space_id, name)
+    assert {:ok, id} = ask(space_id, name, "Which database?")
+    assert_push "pane:state", %{"seq" => 1}
 
-    ref = push(socket, "pane:sync", %{})
-    assert_reply ref, :error, %{"reason" => "agent_archived"}
+    # The asking agent resolves during the pre-flight and is gone by the time
+    # the answer is delivered — the one window in which the question has already
+    # been removed and the answer cannot land.
+    Mimic.allow(Nest.Agents, self(), socket.channel_pid)
+
+    Mimic.stub(Nest.Agents, :chat, fn _space, _name, _body, _mode, _sender, _human? ->
+      {:error, :not_found}
+    end)
+
+    log =
+      capture_log(fn ->
+        ref =
+          push(socket, "decisions:answer", %{
+            "answers" => [%{"id" => id, "answer" => "Postgres"}]
+          })
+
+        assert_reply ref, :ok, %{
+          "delivered" => [],
+          "orphaned" => [],
+          "failed" => [],
+          "lost" => [%{"id" => ^id, "reason" => "not_found"}]
+        }
+      end)
+
+    assert log =~ "was not delivered"
+
+    # Removed, because the take ran before the delivery attempt: the client's
+    # next frame prunes the id, which is why this is `lost` and not `failed`.
+    assert_push "pane:state", %{"decisions" => [], "seq" => 2}
   end
 
   test "a malformed pane payload is refused rather than acted on", %{socket: socket} do
@@ -274,7 +349,7 @@ defmodule NestWeb.AgentChannelPaneTest do
   # the two fixtures a spawned test agent needs: the sandbox connection the
   # turn's appends use, and the mock LLM client. `AgentTestHelpers` installs
   # both for the agent *it* starts; a peer in an existing space gets them here.
-  defp start_peer(space_id) do
+  defp start_peer(space_id, opts \\ []) do
     name = "peer#{System.unique_integer([:positive])}"
 
     {:ok, ^name} =
@@ -282,7 +357,9 @@ defmodule NestWeb.AgentChannelPaneTest do
         space_id,
         %{name: "qwen3.5-plus", provider: "model-studio"},
         name: name,
-        vocation_id: AgentTestHelpers.vocation_id_for_test()
+        vocation_id: AgentTestHelpers.vocation_id_for_test(),
+        shared: Keyword.get(opts, :shared, false),
+        created_by_user_id: Keyword.get(opts, :created_by_user_id)
       )
 
     {:ok, pid} = Supervisor.get_agent(space_id, name)
@@ -337,6 +414,17 @@ defmodule NestWeb.AgentChannelPaneTest do
 
     assert log =~ "loaded an invalid active message sequence"
     name
+  end
+
+  # A second, real user: `create_user/2` honours the `first-user` bootstrap only
+  # while the users table is empty, so this is a plain member.
+  defp create_user!(prefix) do
+    username = "#{prefix}-#{System.unique_integer([:positive])}"
+
+    {:ok, user, _role} =
+      Accounts.create_user(%{username: username, password: "password123"}, "member")
+
+    user
   end
 
   # The text of every user row in an agent's transcript.

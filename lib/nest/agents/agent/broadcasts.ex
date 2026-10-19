@@ -60,17 +60,18 @@ defmodule Nest.Agents.Agent.Broadcasts do
   def pane_topic(space_id), do: "space:#{space_id}:pane"
 
   @doc """
-  Broadcast a space's pane payload — the whole decision queue and every agent's
-  TODO list, as `Nest.Agents.Agent.Pane.payload/1` builds it.
+  Announce that a space's pane changed.
 
-  The payload is built by the pane manager, not by callers, so a frame's shape
-  is a property of that one function. It is re-sent in full on every change
-  (with an advancing `seq`): the lists are small and bounded, and the client
-  reconciles rather than appends.
+  Deliberately a **notification, not a payload**. The decision queue is the
+  space's, but a TODO list belongs to one agent, and the per-agent cap means a
+  frame holding every agent's list would grow with the number of agents in the
+  space. Each subscriber therefore builds its own frame with
+  `Nest.Agents.Agent.Pane.payload/2`, naming the agent whose page it is on —
+  one atomic read, so the decisions and the `seq` it carries always agree.
   """
-  @spec pane(integer(), map()) :: :ok
-  def pane(space_id, payload) do
-    Phoenix.PubSub.broadcast(PubSub, pane_topic(space_id), {:pane_state, payload})
+  @spec pane(integer()) :: :ok
+  def pane(space_id) do
+    Phoenix.PubSub.broadcast(PubSub, pane_topic(space_id), {:pane_changed, space_id})
   end
 
   @doc """

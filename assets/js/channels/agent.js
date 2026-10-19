@@ -5,7 +5,7 @@
  */
 
 import { agentChannels, getStore, joinFailedAgents, socket } from "./state";
-import { requestPaneSync } from "./pane";
+import { paneFrameSpace, requestPaneSync } from "./pane";
 import { errorText } from "../utils/errorText";
 
 /**
@@ -412,11 +412,15 @@ export function joinAgent(agentId, spaceId) {
 
   // The right-hand pane (#119 / #120): one frame carries the whole state of
   // the space's questions and the TODO lists. The channel's own space is what
-  // the entry is keyed by — this channel belongs to exactly one space, so the
-  // payload's `spaceId` cannot route it anywhere better. The store drops a
-  // frame whose `seq` is not newer than the last one it applied.
+  // the entry is keyed by — this channel belongs to exactly one space — so a
+  // payload that names a different one is a cross-space broadcast bug, refused
+  // loudly rather than filed under the wrong space. The store drops a frame
+  // whose `seq` is not newer than the last one it applied, and warns about one
+  // it cannot address at all.
   channel.on("pane:state", (payload) => {
-    store.setPaneState(spaceId, payload);
+    const space = paneFrameSpace(agentId, spaceId, payload);
+    if (space == null) return;
+    store.setPaneState(space, payload);
   });
 
   // Async agent-to-agent inbox: the queue is published incrementally

@@ -30,18 +30,22 @@ defmodule Nest.Agents.Agent.Pane do
 
   ## Broadcasts
 
-  Every mutation publishes the **whole** payload on the space's pane topic
-  (`Nest.Agents.Agent.Broadcasts.pane/2`), with a `seq` that increases once per
-  frame so a client can drop a frame that arrives out of order. The payload is
-  small and bounded (see below), so a full list per frame is cheaper than the
-  client-side reconciliation a delta protocol would need. `payload/1` — the
-  `pane:sync` reply — returns the current list at the current `seq` and does
-  **not** advance it: a sync is not a mutation, and advancing the counter
-  without a broadcast would make a client drop the next real frame.
+  Every mutation announces itself on the space's pane topic
+  (`Nest.Agents.Agent.Broadcasts.pane/1`) with a `seq` that increases once per
+  mutation, so a client can drop a frame that arrives out of order. The
+  announcement carries no payload: a TODO list belongs to one agent and is
+  capped per agent, so each subscriber builds its own frame with `payload/2`
+  from **one** read, and the decisions and the `seq` in it always agree. The
+  decision queue itself is small and bounded (see below), so a full list per
+  frame is cheaper than the client-side reconciliation a delta protocol would
+  need. `payload/2` — the `pane:sync` reply — returns the current state at the
+  current `seq` and does **not** advance it: a sync is not a mutation, and
+  advancing the counter without an announcement would make a client drop the
+  next real frame.
 
   ## Append-only
 
-  A decision is only ever **appended**. `mark_obsolete/3` marks it in place and
+  A decision is only ever **appended**. `mark_obsolete/4` marks it in place and
   `mark_orphaned/3` does the same; nothing an agent does removes or reorders
   one. Removal is a *user* action — answering or dropping, both in
   `NestWeb.AgentChannel.Pane` — because the pane's UI rule is that a rendered
@@ -50,11 +54,15 @@ defmodule Nest.Agents.Agent.Pane do
 
   ## Bounds
 
-  A runaway agent must not be able to grow a broadcast without limit, so
-  everything an agent can send is validated here: at most #{@max_decisions}
-  decisions per space, at most #{@max_todos} TODO items per agent, and a length
-  cap on every string (title, body, option, TODO text, reason). A refusal is
-  returned as `{:error, message}` for the caller to hand to the model.
+  A runaway agent must not be able to grow the state or a frame without limit,
+  so everything an agent can send is validated here: at most #{@max_decisions}
+  decisions per space, at most #{@max_todos} TODO items **per agent**, and a
+  length cap on every string (title, body, option, TODO text, reason). A refusal
+  is returned as `{:error, message}` for the caller to hand to the model.
+
+  The per-agent TODO cap is why a frame carries only the *viewer's* list
+  (`payload/2`): the number of agents in a space is not bounded by anything
+  here, so a frame with every agent's list would grow with it.
 
   ## Blocking
 
@@ -93,6 +101,40 @@ defmodule Nest.Agents.Agent.Pane do
 
   # ---- Client API ----
 
+  @doc """
+  The caps this module enforces, in one place.
+
+  The tool schemas declare the same numbers (`maxLength`, `maxItems`), so a
+  model reads the limit it will be refused on; keeping them here means the two
+  cannot drift.
+  """
+  @spec caps() :: %{
+          decisions: pos_integer(),
+          todos: pos_integer(),
+          title: pos_integer(),
+          body: pos_integer(),
+          option: pos_integer(),
+          reason: pos_integer(),
+          todo_text: pos_integer(),
+          min_options: pos_integer(),
+          max_options: pos_integer(),
+          statuses: [String.t()]
+        }
+  def caps do
+    %{
+      decisions: @max_decisions,
+      todos: @max_todos,
+      title: @max_title,
+      body: @max_body,
+      option: @max_option,
+      reason: @max_reason,
+      todo_text: @max_todo_text,
+      min_options: @min_options,
+      max_options: @max_options,
+      statuses: @statuses
+    }
+  end
+
   @doc "The registered name this GenServer runs under."
   @spec name() :: atom()
   def name, do: @name
@@ -106,11 +148,20 @@ defmodule Nest.Agents.Agent.Pane do
   def start_link, do: GenServer.start_link(__MODULE__, %{}, name: @name)
 
   @doc """
-  The space's current pane payload, for a client that joined or reloaded and
-  needs the whole list. Does not broadcast and does not advance `seq`.
+  The pane payload **for one viewer**: the space's decision queue plus the
+  TODO list of the agent named by `agent_name`. Does not broadcast and does not
+  advance `seq`.
+
+  The decision queue is the space's, but a TODO list is one agent's, and the
+  list is capped per agent rather than per space — so a frame carrying every
+  agent's list would grow with the number of agents in the space. The frame is
+  therefore built per viewer, which is why the broadcast is a change
+  notification and each channel asks for its own payload.
   """
-  @spec payload(space_id()) :: map()
-  def payload(space_id), do: GenServer.call(@name, {:payload, space_id})
+  @spec payload(space_id(), String.t()) :: map()
+  def payload(space_id, agent_name) do
+    GenServer.call(@name, {:payload, space_id, agent_name})
+  end
 
   @doc """
   Append a decision asked by `asked_by`. Returns the new decision's id, or a
@@ -136,12 +187,17 @@ defmodule Nest.Agents.Agent.Pane do
   def take(space_id, ids), do: GenServer.call(@name, {:take, space_id, ids})
 
   @doc """
-  Mark a decision obsolete, in place. Never removes and never reorders it —
-  dropping it stays the user's call.
+  Mark a decision obsolete, in place, on behalf of `asked_by`. Never removes and
+  never reorders it — dropping it stays the user's call.
+
+  `asked_by` must be the agent that asked it: an agent may retire its own
+  question, not a peer's. A mismatch is `{:error, :not_yours}`, checked here
+  rather than by the caller so the check and the update are one operation.
   """
-  @spec mark_obsolete(space_id(), String.t(), String.t()) :: :ok | {:error, term()}
-  def mark_obsolete(space_id, id, reason) do
-    GenServer.call(@name, {:mark_obsolete, space_id, id, reason})
+  @spec mark_obsolete(space_id(), String.t(), String.t(), String.t()) ::
+          :ok | {:error, :not_found | :not_yours | String.t()}
+  def mark_obsolete(space_id, id, reason, asked_by) do
+    GenServer.call(@name, {:mark_obsolete, space_id, id, reason, asked_by})
   end
 
   @doc """
@@ -174,8 +230,8 @@ defmodule Nest.Agents.Agent.Pane do
   end
 
   @impl true
-  def handle_call({:payload, space_id}, _from, state) do
-    {:reply, payload(space_id, entry(state, space_id)), state}
+  def handle_call({:payload, space_id, agent_name}, _from, state) do
+    {:reply, payload(space_id, entry(state, space_id), agent_name), state}
   end
 
   def handle_call({:ask, space_id, asked_by, title, body, options}, _from, state) do
@@ -222,9 +278,9 @@ defmodule Nest.Agents.Agent.Pane do
     end
   end
 
-  def handle_call({:mark_obsolete, space_id, id, reason}, _from, state) do
+  def handle_call({:mark_obsolete, space_id, id, reason, asked_by}, _from, state) do
     case text(reason, "reason", @max_reason) do
-      {:ok, reason} -> reply_obsolete(space_id, id, reason, state)
+      {:ok, reason} -> reply_obsolete(space_id, id, reason, asked_by, state)
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
@@ -262,23 +318,23 @@ defmodule Nest.Agents.Agent.Pane do
 
   defp new_entry, do: %{decisions: [], todos: %{}, seq: 0, next_id: 1}
 
-  # One mutation: advance the frame counter, publish the whole payload, and keep
-  # the entry. Every mutation goes through here, so `seq` is the number of
-  # frames this space has emitted.
+  # One mutation: advance the frame counter, announce the change, and keep the
+  # entry. Every mutation goes through here, so `seq` is the number of frames
+  # this space has emitted. The announcement carries no payload: the TODO half
+  # is per viewer (see `payload/2`), so each channel asks for its own.
   defp broadcast(state, space_id, entry) do
     entry = %{entry | seq: entry.seq + 1}
-    Broadcasts.pane(space_id, payload(space_id, entry))
+    Broadcasts.pane(space_id)
     Map.put(state, space_id, entry)
   end
 
-  defp payload(space_id, entry) do
+  defp payload(space_id, entry, agent_name) do
     %{
       "spaceId" => space_id,
       "decisions" => Enum.map(entry.decisions, &decision_payload/1),
-      "todos" =>
-        Map.new(entry.todos, fn {agent_name, items} ->
-          {agent_name, Enum.map(items, &todo_payload/1)}
-        end),
+      # One entry, keyed by the agent whose page this frame is for: the client
+      # reads its list by name, and no other agent's list is on the wire.
+      "todos" => %{agent_name => Enum.map(Map.get(entry.todos, agent_name, []), &todo_payload/1)},
       "seq" => entry.seq
     }
   end
@@ -303,21 +359,27 @@ defmodule Nest.Agents.Agent.Pane do
 
   # ---- Decision updates ----
 
-  defp reply_obsolete(space_id, id, reason, state) do
-    case update_decision(entry(state, space_id), id, &obsolete(&1, reason)) do
+  defp reply_obsolete(space_id, id, reason, asked_by, state) do
+    case update_decision(entry(state, space_id), id, asked_by, &obsolete(&1, reason)) do
       :not_found -> {:reply, {:error, :not_found}, state}
+      :not_yours -> {:reply, {:error, :not_yours}, state}
       {:ok, entry} -> {:reply, :ok, broadcast(state, space_id, entry)}
     end
   end
 
-  defp update_decision(entry, id, fun) do
+  defp update_decision(entry, id, asked_by, fun) do
     case Enum.find_index(entry.decisions, &(&1.id == id)) do
       nil ->
         :not_found
 
       index ->
-        decisions = List.update_at(entry.decisions, index, fun)
-        {:ok, %{entry | decisions: decisions}}
+        decision = Enum.at(entry.decisions, index)
+
+        if decision.asked_by == asked_by do
+          {:ok, %{entry | decisions: List.update_at(entry.decisions, index, fun)}}
+        else
+          :not_yours
+        end
     end
   end
 

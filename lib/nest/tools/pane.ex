@@ -14,23 +14,37 @@ defmodule Nest.Tools.Pane do
   alias Nest.Agents.Agent.Pane, as: PaneStore
   alias Nest.LLM.Tool
 
-  @option_schema %{
-    "type" => "string",
-    "description" => "One suggested answer. The user can also type their own."
-  }
+  # The caps the pane enforces (`PaneStore.caps/0`) are also the schema's
+  # limits: the schema is where a model reads the size it will be refused on, so
+  # the numbers must not be spelled twice.
+  defp caps, do: PaneStore.caps()
 
-  @todo_schema %{
-    "type" => "object",
-    "properties" => %{
-      "text" => %{"type" => "string", "description" => "What the step is."},
-      "status" => %{
-        "type" => "string",
-        "enum" => ~w(pending in_progress done),
-        "description" => "Where the step stands right now."
-      }
-    },
-    "required" => ["text", "status"]
-  }
+  defp option_schema do
+    %{
+      "type" => "string",
+      "maxLength" => caps().option,
+      "description" => "One suggested answer. The user can also type their own."
+    }
+  end
+
+  defp todo_schema do
+    %{
+      "type" => "object",
+      "properties" => %{
+        "text" => %{
+          "type" => "string",
+          "maxLength" => caps().todo_text,
+          "description" => "What the step is."
+        },
+        "status" => %{
+          "type" => "string",
+          "enum" => caps().statuses,
+          "description" => "Where the step stands right now."
+        }
+      },
+      "required" => ["text", "status"]
+    }
+  end
 
   @doc "The `decisions-ask` tool: put a question in the user's pane."
   @spec ask_function() :: Tool.t()
@@ -51,20 +65,23 @@ defmodule Nest.Tools.Pane do
         "properties" => %{
           "title" => %{
             "type" => "string",
+            "maxLength" => caps().title,
             "description" => "The question, in one line. Shown collapsed in the pane."
           },
           "body" => %{
             "type" => "string",
+            "maxLength" => caps().body,
             "description" =>
               "The context and the tradeoffs: what the choice is about and what " <>
                 "each answer would mean."
           },
           "options" => %{
             "type" => "array",
-            "items" => @option_schema,
-            "minItems" => 2,
-            "maxItems" => 5,
-            "description" => "The suggested answers, 2 to 5 of them."
+            "items" => option_schema(),
+            "minItems" => caps().min_options,
+            "maxItems" => caps().max_options,
+            "description" =>
+              "The suggested answers, #{caps().min_options} to #{caps().max_options} of them."
           }
         },
         "required" => ["title", "body", "options"]
@@ -104,6 +121,7 @@ defmodule Nest.Tools.Pane do
           "id" => %{"type" => "string", "description" => "The decision id, e.g. \"d1\"."},
           "reason" => %{
             "type" => "string",
+            "maxLength" => caps().reason,
             "description" => "Why it is no longer needed, shown to the user."
           }
         },
@@ -129,7 +147,8 @@ defmodule Nest.Tools.Pane do
         "properties" => %{
           "items" => %{
             "type" => "array",
-            "items" => @todo_schema,
+            "items" => todo_schema(),
+            "maxItems" => caps().todos,
             "description" => "The whole list, in order."
           }
         },
@@ -190,8 +209,8 @@ defmodule Nest.Tools.Pane do
   end
 
   defp obsolete(args, context) do
-    with_agent(context, fn space_id, _name ->
-      case PaneStore.mark_obsolete(space_id, args["id"], args["reason"]) do
+    with_agent(context, fn space_id, name ->
+      case PaneStore.mark_obsolete(space_id, args["id"], args["reason"], name) do
         :ok ->
           {:ok,
            "Decision #{args["id"]} marked obsolete. It stays in the user's pane; " <>
@@ -199,6 +218,9 @@ defmodule Nest.Tools.Pane do
 
         {:error, :not_found} ->
           {:error, "No such decision: #{args["id"]}"}
+
+        {:error, :not_yours} ->
+          {:error, "That question was asked by another agent, not you."}
 
         {:error, reason} ->
           {:error, reason}

@@ -111,6 +111,13 @@ function QuestionBody({
   const orphanedReason =
     decision.orphanedReason ??
     (outcome?.kind === "orphaned" ? outcome.reason : null);
+  // The question is gone and the answer went with it: nothing here can be
+  // answered, saved, dropped or explained, so the body carries only the report
+  // until the frame that no longer lists it arrives.
+  const lost = outcome?.kind === "lost";
+  // A question the user can still act on. Orphaned and lost rows are rendered
+  // without the answer controls, which is the whole point of saying why.
+  const answerable = !orphaned && !lost;
   const options = Array.isArray(decision.options) ? decision.options : null;
   const answer = typeof draft === "string" ? draft : "";
 
@@ -159,6 +166,18 @@ function QuestionBody({
         </p>
       )}
 
+      {lost && (
+        <p
+          data-testid="decision-lost"
+          className="rounded bg-red-50 px-2 py-1 text-xs font-medium text-red-700"
+        >
+          The answer did not arrive
+          {outcome.reason ? `: ${outcome.reason}` : " (no reason was given)."}{" "}
+          The question has already been removed, so there is nothing left to
+          answer.
+        </p>
+      )}
+
       {outcome?.kind === "explained" && (
         <p
           data-testid="decision-explained"
@@ -168,7 +187,7 @@ function QuestionBody({
         </p>
       )}
 
-      {!orphaned && options === null && (
+      {answerable && options === null && (
         <p
           data-testid="decision-options-missing"
           className="rounded bg-red-50 px-2 py-1 text-xs font-semibold text-red-700"
@@ -177,7 +196,7 @@ function QuestionBody({
         </p>
       )}
 
-      {!orphaned && options !== null && (
+      {answerable && options !== null && (
         <>
           <div className="flex flex-wrap gap-1">
             {options.map((option) => (
@@ -208,23 +227,25 @@ function QuestionBody({
         </>
       )}
 
-      <div className="flex flex-wrap items-center gap-2">
-        <MarkButtons
-          mark={mark}
-          showSave={!orphaned}
-          canSave={answer.trim().length > 0}
-          onMark={onMark}
-        />
-        {!orphaned && (
-          <button
-            type="button"
-            onClick={onExplain}
-            className="rounded px-2 py-1 text-xs font-semibold text-sky-700 transition-colors hover:bg-sky-50"
-          >
-            Explain more
-          </button>
-        )}
-      </div>
+      {!lost && (
+        <div className="flex flex-wrap items-center gap-2">
+          <MarkButtons
+            mark={mark}
+            showSave={answerable}
+            canSave={answer.trim().length > 0}
+            onMark={onMark}
+          />
+          {answerable && (
+            <button
+              type="button"
+              onClick={onExplain}
+              className="rounded px-2 py-1 text-xs font-semibold text-sky-700 transition-colors hover:bg-sky-50"
+            >
+              Explain more
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

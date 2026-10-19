@@ -2,10 +2,11 @@ defmodule NestWeb.AgentChannel.Pane do
   @moduledoc """
   The agent channel's pane handlers (issues #119 and #120).
 
-  The pane is per **space**, not per agent: a client joined to any agent in the
-  space sees the same decision queue and TODO lists, and every pane frame is
-  broadcast on the space's pane topic. The handlers live here, rather than in
-  `NestWeb.AgentChannel`, to keep that module within its file budget.
+  The pane is per **space**, not per agent: its decision queue is the space's,
+  and a client sees that queue plus the TODO list of the agent whose page it is
+  on. Every pane change is announced on the space's pane topic and each
+  subscribed channel builds its own frame. The handlers live here, rather than
+  in `NestWeb.AgentChannel`, to keep that module within its file budget.
 
   ## Only a user action removes a decision
 
@@ -15,15 +16,40 @@ defmodule NestWeb.AgentChannel.Pane do
   agent is gone or archived is marked `orphaned` — drop-only — and that mark
   reaches the client through the broadcast, never through a client-side guess.
 
+  ## Who may use it
+
+  **The space's owner, only.** The pane is the *space's* — its decision queue is
+  read by every client that can see the space — while `AgentChannel`'s join
+  admits the agent's creator *or* anyone at all when the agent is `shared`. A
+  guest holding one shared agent would otherwise read the space's questions and
+  every agent's TODO list, and could answer or drop questions that are not
+  theirs, in the owner's name. The space is the privacy boundary everywhere else
+  (`NestWeb.LobbyChannel.Authz.authorize_space_owner/2` gates the space-level
+  operations), so the pane uses the same rule: a guest's channel never
+  subscribes to the pane topic and every pane handler refuses with the channel's
+  normal error shape.
+
   ## Delivery
 
   An answer is delivered as the human's own words (`Nest.Agents.chat/6` with
   `human?: true` and **no mode**), through the same path `chat:message` uses, so
-  queueing and busy semantics are identical. Removal and delivery happen in this
-  handler, in that order, so the transcript and the list cannot disagree: a
-  decision that could not be delivered stays answerable, and one that was
-  removed has its message on its way. Answers for the same asking agent ride one
-  message; different agents get one message each.
+  queueing and busy semantics are identical. Answers for the same asking agent
+  ride one message; different agents get one message each.
+
+  Removal happens **before** delivery, and the reply spells out what that costs
+  and what it buys:
+
+    * it makes a duplicate answer impossible — a decision another client
+      resolved concurrently is not in what the removal returns, so it is neither
+      delivered nor reported twice;
+    * a decision refused **before** the removal is `orphaned` (its asking agent
+      is gone or archived) or `failed` (it exists but is in a blocked status).
+      Both are still in the queue, so the user can retry;
+    * a decision **removed** whose delivery then fails — the asking agent
+      vanished between the status check and `Nest.Agents.chat/6`, a race rather
+      than a normal path — is `lost`: gone from the list, its answer not
+      delivered. Reporting it `failed` would tell the client to retry an id the
+      next frame prunes.
   """
 
   require Logger
@@ -33,8 +59,8 @@ defmodule NestWeb.AgentChannel.Pane do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Pane, as: Store
   alias Nest.Agents.Supervisor
-  alias NestWeb.AgentChannel.Replies
   alias NestWeb.ErrorPayload
+  alias NestWeb.LobbyChannel.Authz
 
   # The statuses that cannot accept a message at all, shared with
   # `chat:message`'s check. A decision whose asking agent is in one of these is
@@ -56,10 +82,21 @@ defmodule NestWeb.AgentChannel.Pane do
   @spec sync(Phoenix.Socket.t()) :: {:reply, term(), Phoenix.Socket.t()}
   def sync(socket) do
     case authorize(socket) do
-      :ok -> {:reply, {:ok, Store.payload(socket.assigns.space_id)}, socket}
+      :ok -> {:reply, {:ok, state(socket)}, socket}
       {:error, payload} -> {:reply, {:error, payload}, socket}
     end
   end
+
+  @doc """
+  The `pane:state` payload for this socket: the space's queue plus the TODO list
+  of the agent whose page it is on (`Store.payload/2`).
+
+  The push itself belongs to `NestWeb.AgentChannel` (where `push/3` lives); both
+  the mutation push and the `pane:sync` reply are built by this one function, so
+  the two frames cannot have different shapes.
+  """
+  @spec state(Phoenix.Socket.t()) :: map()
+  def state(socket), do: Store.payload(socket.assigns.space_id, socket.assigns.name)
 
   # ---- decisions:answer ----
 
@@ -69,7 +106,8 @@ defmodule NestWeb.AgentChannel.Pane do
 
   A decision whose asking agent is gone or archived is marked orphaned and
   reported, not delivered; one whose agent exists but is in a blocked status is
-  reported `failed` and left answerable, so the user can retry.
+  reported `failed` and left answerable, so the user can retry. A delivery that
+  fails *after* the removal is `lost` — see the moduledoc.
   """
   @spec answer(map(), Phoenix.Socket.t()) :: {:reply, term(), Phoenix.Socket.t()}
   def answer(%{"answers" => answers}, socket) when is_list(answers) do
@@ -262,7 +300,8 @@ defmodule NestWeb.AgentChannel.Pane do
     %{
       "delivered" => for(id <- to_deliver, Map.get(outcomes, id) == :delivered, do: id),
       "orphaned" => orphaned_payload(classified),
-      "failed" => failures(classified, outcomes)
+      "failed" => failed_payload(classified),
+      "lost" => lost_payload(classified, outcomes)
     }
   end
 
@@ -271,13 +310,32 @@ defmodule NestWeb.AgentChannel.Pane do
         do: %{"id" => id, "reason" => reason}
   end
 
+  # Refused before the removal: the decision is still in the queue.
+  defp failed_payload(classified) do
+    for {id, _answer, {:failed, reason}} <- classified, do: %{"id" => id, "reason" => reason}
+  end
+
+  # Removed, and the delivery did not land.
+  defp lost_payload(classified, outcomes) do
+    Enum.flat_map(classified, fn
+      {id, _answer, {:deliver, _decision}} ->
+        case Map.get(outcomes, id) do
+          {:lost, reason} -> [%{"id" => id, "reason" => reason}]
+          _outcome -> []
+        end
+
+      _other ->
+        []
+    end)
+  end
+
   defp deliver(space_id, taken, answers, sender) do
     taken
     |> Enum.group_by(& &1.asked_by)
     |> Enum.flat_map(fn {name, decisions} ->
       case deliver_answers(space_id, name, decisions, answers, sender) do
         :ok -> Enum.map(decisions, &{&1.id, :delivered})
-        {:error, reason} -> Enum.map(decisions, &{&1.id, {:failed, failure_reason(reason)}})
+        {:error, reason} -> Enum.map(decisions, &{&1.id, {:lost, failure_reason(reason)}})
       end
     end)
     |> Map.new()
@@ -316,19 +374,6 @@ defmodule NestWeb.AgentChannel.Pane do
     |> Enum.each(fn {reason, ids} -> Store.mark_orphaned(space_id, ids, reason) end)
   end
 
-  defp failures(classified, outcomes) do
-    Enum.flat_map(classified, fn {id, _answer, verdict} ->
-      case failure(verdict, Map.get(outcomes, id)) do
-        nil -> []
-        reason -> [%{"id" => id, "reason" => reason}]
-      end
-    end)
-  end
-
-  defp failure({:failed, reason}, _outcome), do: reason
-  defp failure(_verdict, {:failed, reason}), do: reason
-  defp failure(_verdict, _outcome), do: nil
-
   # ---- Drop notices ----
 
   # Only a *live* asking agent is told; an orphaned question has nobody to tell.
@@ -355,17 +400,14 @@ defmodule NestWeb.AgentChannel.Pane do
 
   # ---- Authorization ----
 
-  # The join authorized the client for the agent whose topic it is on. Every
-  # pane call re-checks that the agent still resolves, so a pane frame never
-  # outlives its socket's authority; the refusal is the same
-  # `%{"reason" => ...}` map every other handler replies with.
+  # The space's owner, re-checked on every call: the pane is the space's, and a
+  # shared agent's guest is a guest in someone else's workspace. This is the
+  # same check the lobby applies to space-level operations — the refusal is the
+  # channel's normal `%{"reason" => ...}` map.
   defp authorize(socket) do
-    case Agents.get_info(socket.assigns.space_id, socket.assigns.name) do
-      {:ok, _info} ->
-        :ok
-
-      {:error, reason} ->
-        {:error, ErrorPayload.from_reason(Replies.chat_message_reason(reason))}
+    case Authz.authorize_space_owner(socket.assigns.space_id, socket.assigns.current_user) do
+      {:ok, :owner} -> :ok
+      {:error, reason} -> {:error, ErrorPayload.from_reason(reason)}
     end
   end
 

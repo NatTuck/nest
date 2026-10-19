@@ -12,9 +12,34 @@ import { agentChannels, getStore } from "./state";
 import { errorText } from "../utils/errorText";
 
 /**
+ * The space a pane payload belongs to, or `null` when it names a different
+ * space than the channel it arrived on.
+ *
+ * The channel's own space is what the entry is keyed by — an agent channel
+ * belongs to exactly one space — so a payload that says otherwise is a
+ * cross-space broadcast bug. Refusing it loudly turns that from state quietly
+ * filed under the wrong space into a warning nobody can miss. A payload that
+ * names no space is not a mismatch: the channel's space is the answer.
+ */
+export function paneFrameSpace(agentId, spaceId, payload) {
+  const named = payload?.spaceId;
+  if (named == null || named === spaceId) return spaceId;
+
+  console.warn(
+    `[agent:${agentId}] pane frame names space ${named} on the channel for space ${spaceId}. Refused.`,
+  );
+  return null;
+}
+
+/**
  * Ask for the pane's whole state. The agent channel's join calls this, so a
  * reload restores the pane; the reply is the same payload a `pane:state` frame
  * carries, and the store's `seq` guard makes an overlapping frame harmless.
+ *
+ * The reply goes to the store as-is: `setPaneState` is the one place that
+ * decides a payload is unusable, and it warns when it refuses one. Guarding
+ * here as well would only silence that warning, leaving a reload that got a
+ * malformed reply with a permanently empty pane and a clean console.
  *
  * A no-op when the channel isn't connected.
  */
@@ -23,20 +48,18 @@ export function requestPaneSync(agentId, spaceId) {
   if (!channel || spaceId == null) return;
 
   channel.push("pane:sync", {}).receive("ok", (payload) => {
-    // The reply is the same frame a push carries. A reply that is not one is
-    // not applied: the pane keeps what it already has, and the next frame
-    // brings it up to date — there is nothing to warn about, because nothing
-    // on screen is stale and nothing was lost.
-    if (typeof payload?.seq !== "number") return;
-    getStore().setPaneState(spaceId, payload);
+    const space = paneFrameSpace(agentId, spaceId, payload);
+    if (space == null) return;
+    getStore().setPaneState(space, payload);
   });
 }
 
 /**
  * Send the answers the user saved. `answers` is `[{id, answer}]`; the reply
- * names what was delivered, what the server refused for a transient reason
- * (still answerable) and what turned out orphaned (drop-only). The two
- * refusals are kept on the question, so the pane can say why inline.
+ * names what landed, what the server refused while leaving the question in the
+ * list (still answerable), what turned out orphaned (drop-only), and what was
+ * removed with its answer lost. Each report is kept on its question, so the
+ * pane can say what happened inline.
  */
 export function sendDecisionAnswers(agentId, spaceId, answers) {
   const channel = agentChannels.get(agentId);

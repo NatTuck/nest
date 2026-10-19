@@ -3,9 +3,11 @@
  * and the current agent's TODO list (#120).
  *
  * The pane is keyed by **space**, not by agent. The questions are the space's
- * — any of its agents may ask one, and the human answers them once — while the
- * `todos` map inside the same payload is keyed by agent name and the pane shows
- * only the list for the agent whose page is open.
+ * — any of its agents may ask one, and the human answers them once. The `todos`
+ * map in the same payload is not: a frame carries the list of the agent whose
+ * channel it arrived on (one entry), and a frame for an agent with no list
+ * carries no entry for it at all, so an absent key is "this agent has no TODOs"
+ * and never "someone else's list".
  *
  * ## The frame is the whole list, and `seq` is the only ordering
  *
@@ -49,8 +51,9 @@ const EMPTY_PANE = Object.freeze({
   drafts: {},
   // question id -> "save" | "drop", the control the user pressed.
   marks: {},
-  // question id -> {kind: "orphaned" | "failed" | "explained", reason}: what
-  // the last answer push said about it, shown inline on that question.
+  // question id -> {kind, reason}: what the last answer push said about it,
+  // shown inline on that question. `kind` is one of "orphaned" | "failed" |
+  // "lost" | "explained".
   outcomes: {},
   // The last pane push that failed, as a sentence. Cleared by the next success.
   error: null,
@@ -100,9 +103,13 @@ function prune(map, decisions) {
 }
 
 /**
- * The id of the row to open after `id` is resolved: the next question that
- * carries no mark, wrapping around the end, and — when every question is
- * resolved — the one directly below it, so the accordion always has a row open.
+ * The id of the row to open after `id` is resolved: the next question the user
+ * can actually act on — no mark, and not drop-only — wrapping around the end.
+ * When every question is resolved or orphaned, the one directly below it stays
+ * open, so the accordion always has a row open.
+ *
+ * An orphaned question carries no mark (nothing can be saved for it), so
+ * "unmarked" alone would advance onto a row whose only control is Drop.
  */
 function nextOpenId(decisions, marks, id) {
   const count = decisions.length;
@@ -113,6 +120,7 @@ function nextOpenId(decisions, marks, id) {
 
   for (let step = 1; step <= count; step++) {
     const candidate = decisions[(at + step) % count];
+    if (candidate.orphaned === true) continue;
     if (!marks[candidate.id]) return candidate.id;
   }
   return decisions[(at + 1) % count].id;
@@ -131,23 +139,23 @@ export function outstandingCount(pane) {
 
 /**
  * Apply a `decisions:answer` reply: the ids it delivered, refused for a
- * transient reason, or found orphaned.
+ * transient reason, found orphaned, or lost along with the question itself.
  *
- * Nothing is removed here. The server broadcasts the list without the delivered
- * questions, and a removal the user did not see a frame for would be this
- * client guessing — the reply says which answers were *delivered*, not that the
- * list on screen is now wrong.
+ * Nothing is removed here. The server broadcasts the list without the questions
+ * it took, and a removal the user did not see a frame for would be this client
+ * guessing — the reply says what happened to each answer, not that the list on
+ * screen is now wrong.
  */
 function applyOutcomes(pane, reply) {
   const marks = { ...pane.marks };
   const drafts = { ...pane.drafts };
   const outcomes = { ...pane.outcomes };
 
-  // `delivered` is a list of ids; the two refusals are `%{"id", "reason"}`.
+  // `delivered` is a list of ids; the three reports are `%{"id", "reason"}`.
   const delivered = Array.isArray(reply?.delivered)
     ? reply.delivered.filter((id) => typeof id === "string" && id.length > 0)
     : [];
-  const refusals = (value) =>
+  const reports = (value) =>
     Array.isArray(value) ? value.filter((entry) => hasId(entry)) : [];
 
   for (const id of delivered) {
@@ -158,7 +166,7 @@ function applyOutcomes(pane, reply) {
     delete outcomes[id];
   }
 
-  for (const entry of refusals(reply?.orphaned)) {
+  for (const entry of reports(reply?.orphaned)) {
     // Its asking agent is gone, so the answer can never be delivered: drop the
     // mark (which would offer to send it) and keep the reason on the question,
     // which is now drop-only.
@@ -170,11 +178,20 @@ function applyOutcomes(pane, reply) {
     delete drafts[entry.id];
   }
 
-  for (const entry of refusals(reply?.failed)) {
-    // A transient refusal: the question stays answerable and the draft stays
-    // put, so the user can send the same answer again.
+  for (const entry of reports(reply?.failed)) {
+    // Refused, and still in the list: the question stays answerable and the
+    // draft stays put, so the user can send the same answer again.
     outcomes[entry.id] = { kind: "failed", reason: entry.reason ?? null };
     delete marks[entry.id];
+  }
+
+  for (const entry of reports(reply?.lost)) {
+    // The question was removed *and* the answer did not land. There is nothing
+    // left to answer and nothing left to send, so the row keeps only the report
+    // until the frame that no longer carries it arrives.
+    outcomes[entry.id] = { kind: "lost", reason: entry.reason ?? null };
+    delete marks[entry.id];
+    delete drafts[entry.id];
   }
 
   return { marks, drafts, outcomes, error: null };
@@ -326,7 +343,7 @@ export function paneSetters(set) {
       });
     },
 
-    /** The `decisions:answer` reply: what was delivered, refused or orphaned. */
+    /** The `decisions:answer` reply: what landed, was refused, or was lost. */
     applyPaneAnswerReply: (spaceId, reply) => {
       set((state) => {
         const pane = state.panes[spaceId];

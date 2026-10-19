@@ -57,6 +57,7 @@ describe("the pane's transport", () => {
     resetMockSocket();
     useStore.getState()._reset();
     clearAgentChannels();
+    vi.restoreAllMocks();
   });
 
   it("restores the pane from the join's pane:sync", async () => {
@@ -73,28 +74,54 @@ describe("the pane's transport", () => {
     expect(pane().decisions.map((held) => held.id)).toEqual(["d1"]);
   });
 
-  it("ignores a pane:sync reply that is not a frame", async () => {
-    // A channel that has nothing to say answers with an empty reply; that must
-    // not be cached as an empty pane, which would claim the space has no
-    // questions.
+  it("sends a pane:sync reply that is not a frame to the store, which refuses it out loud", async () => {
+    // The store is the one place that decides a payload is unusable. A helper
+    // that dropped it first would leave a reload with a permanently empty pane
+    // and a clean console — the one signal that the two sides disagree.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     setNextPushResult(TOPIC, "pane:sync", { ok: {} });
     setNextJoinResult(TOPIC, { autoInit: { status: "idle" } });
 
     joinAgent("agent-1", 1);
+
     await vi.waitFor(() => {
-      assert.strictEqual(
-        useStore.getState().agentsCache["agent-1"]?.status,
-        "connected",
-      );
+      assert.strictEqual(warn.mock.calls.length, 1);
     });
-    // Then a real frame lands: the pane was waiting for it, not emptied by the
-    // empty reply.
+    // Nothing was cached, so the pane is still waiting for a real frame.
+    expect(useStore.getState().panes[1]).toBeUndefined();
+    expect(String(warn.mock.calls[0][0])).toContain(
+      "unusable pane:state frame",
+    );
+
     simulateServerEvent(TOPIC, "pane:state", frame(1, [decision({})]));
 
     await vi.waitFor(() => {
       assert.strictEqual(pane()?.decisions.length, 1);
     });
     expect(pane().seq).toBe(1);
+  });
+
+  it("refuses a pane frame that names another space", async () => {
+    // The channel's space is the key; a payload that disagrees is a
+    // cross-space broadcast bug, and filing it under either space would leave
+    // the bug in place and invisible. The join's own sync left the pane at
+    // `seq: 0`, so this frame is newer than it — a client that did not check
+    // the space would apply it, which is what makes this able to fail.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    setNextJoinResult(TOPIC, { autoInit: { status: "idle" } });
+    joinAgent("agent-1", 1);
+
+    simulateServerEvent(TOPIC, "pane:state", {
+      ...frame(1, [decision({})]),
+      spaceId: 2,
+    });
+
+    await vi.waitFor(() => {
+      assert.strictEqual(warn.mock.calls.length, 1);
+    });
+    expect(pane()?.decisions).toEqual([]);
+    expect(useStore.getState().panes[2]).toBeUndefined();
+    expect(String(warn.mock.calls[0][0])).toContain("space 2");
   });
 
   it("stores a pane:state frame pushed after the join", async () => {
@@ -109,7 +136,7 @@ describe("the pane's transport", () => {
     expect(pane().todos).toEqual({});
   });
 
-  it("posts the answers and applies the reply's refusals", async () => {
+  it("posts the answers and applies the reply's reports", async () => {
     setNextJoinResult(TOPIC, { autoInit: { status: "idle" } });
     joinAgent("agent-1", 1);
     useStore
@@ -120,6 +147,7 @@ describe("the pane's transport", () => {
           decision({ id: "d1" }),
           decision({ id: "d2" }),
           decision({ id: "d3" }),
+          decision({ id: "d4" }),
         ]),
       );
     setNextPushResult(TOPIC, "decisions:answer", {
@@ -127,6 +155,7 @@ describe("the pane's transport", () => {
         delivered: ["d1"],
         orphaned: [{ id: "d2", reason: "the agent is archived" }],
         failed: [{ id: "d3", reason: "the agent is busy" }],
+        lost: [{ id: "d4", reason: "the agent vanished" }],
       },
     });
 
@@ -137,13 +166,19 @@ describe("the pane's transport", () => {
       answers: [{ id: "d1", answer: "Ship" }],
     });
     await vi.waitFor(() => {
-      assert.strictEqual(pane()?.outcomes.d3?.kind, "failed");
+      assert.strictEqual(pane()?.outcomes.d4?.kind, "lost");
     });
     expect(pane().outcomes.d2).toEqual({
       kind: "orphaned",
       reason: "the agent is archived",
     });
+    expect(pane().outcomes.d3).toEqual({
+      kind: "failed",
+      reason: "the agent is busy",
+    });
     expect(pane().error).toBeNull();
+    // Every question is still in the list: the server's frame is the removal.
+    expect(pane().decisions).toHaveLength(4);
   });
 
   it("posts the ids to drop and the one to explain, and marks the explain", async () => {
@@ -210,6 +245,22 @@ describe("the pane's transport", () => {
     // A refusal with no reason still says what the click was trying to do.
     await vi.waitFor(() => {
       assert.match(pane()?.error ?? "", /more detail/i);
+    });
+
+    setNextPushResult(TOPIC, "decisions:explain", {
+      error: { reason: "agent_archived" },
+    });
+    explainDecision("agent-1", 1, "d1");
+
+    await vi.waitFor(() => {
+      assert.strictEqual(pane()?.error, "agent_archived");
+    });
+
+    setNextPushResult(TOPIC, "decisions:answer", { timeout: true });
+    sendDecisionAnswers("agent-1", 1, [{ id: "d1", answer: "Ship" }]);
+
+    await vi.waitFor(() => {
+      assert.match(pane()?.error ?? "", /answers timed out/i);
     });
   });
 

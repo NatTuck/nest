@@ -28,6 +28,7 @@ defmodule NestWeb.AgentChannel do
   alias NestWeb.AgentChannel.ShellLog
   alias NestWeb.AgentChannel.Sync
   alias NestWeb.ErrorPayload
+  alias NestWeb.LobbyChannel.Authz
 
   # The statuses that cannot accept a chat message at all: the machine's declared
   # blocked phases, which need an operator action (repair, model change, compaction
@@ -86,7 +87,14 @@ defmodule NestWeb.AgentChannel do
     # has already subscribed this process to (and which it must not subscribe
     # twice, or every frame would arrive twice), and not the space topic the
     # lobby uses. `Pane.sync` is the resync frame for a client that missed one.
-    Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.pane_topic(space_id))
+    #
+    # Owner-only, and the join is where it is decided: `authorize_join/3` above
+    # admits a `shared` agent's guest, and the pane belongs to the space rather
+    # than to that agent — see `NestWeb.AgentChannel.Pane`'s moduledoc. A guest
+    # therefore never subscribes, and every pane handler refuses.
+    if match?({:ok, :owner}, Authz.authorize_space_owner(space_id, current_user)) do
+      Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.pane_topic(space_id))
+    end
 
     socket =
       socket
@@ -262,13 +270,13 @@ defmodule NestWeb.AgentChannel do
     {:noreply, socket}
   end
 
-  # Handle a pane update from PubSub (broadcast by
-  # `Nest.Agents.Agent.Pane` on every mutation). The payload is the space's
-  # whole decision queue and TODO lists, with an advancing `seq` so the client
-  # can drop an out-of-order frame.
+  # A pane mutation (broadcast by `Nest.Agents.Agent.Pane`). The frame is a
+  # notification, not a payload: the TODO half is per viewer, so the push is
+  # built here for the agent whose page this socket is on — one atomic read, so
+  # the decisions and the `seq` agree. See `NestWeb.AgentChannel.Pane`.
   @impl true
-  def handle_info({:pane_state, payload}, socket) do
-    push(socket, "pane:state", payload)
+  def handle_info({:pane_changed, _space_id}, socket) do
+    push(socket, "pane:state", Pane.state(socket))
     {:noreply, socket}
   end
 
