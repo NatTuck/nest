@@ -186,7 +186,8 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
     end
 
     test "slugifies parameter items and omits the prefix when blank" do
-      assert BatchPlan.names_for_items(["Foo Bar", "a/b", "x_y"], "", true) ==
+      # Not a path: `a/b` would (rightly) contribute just `b` now.
+      assert BatchPlan.names_for_items(["Foo Bar", "a.b", "x_y"], "", true) ==
                ["foo-bar", "a-b", "x-y"]
     end
 
@@ -220,8 +221,25 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
     end
   end
 
+  describe "params?/2" do
+    test "an item is a parameter when the call has a template or a glob, and not otherwise" do
+      items = %{"items" => ["review the parser", "review the lexer"]}
+
+      refute BatchPlan.params?(items, "")
+
+      assert BatchPlan.params?(items, "Review {item} for crashes.")
+      assert BatchPlan.params?(%{"glob" => "lib/**/*.ex"}, "")
+
+      # A model that is not using the parameter sends `null` for it. `null` is
+      # neither absent nor `""`, and reading it as "a glob" switched the naming
+      # rule off for a call that had no glob at all.
+      refute BatchPlan.params?(Map.put(items, "glob", nil), "")
+      refute BatchPlan.params?(Map.put(items, "template", nil), "")
+    end
+  end
+
   describe "the item bound" do
-    test "an item at the cap is accepted and one byte over is refused with the remedy" do
+    test "an item at the cap is accepted and one character over is refused with the remedy" do
       at_cap = String.duplicate("a", 256)
       over = String.duplicate("a", 257)
 
@@ -229,7 +247,7 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
 
       assert {:error, message} = BatchPlan.resolve_items(%{"items" => [over]}, @ctx)
 
-      assert message =~ "257 bytes"
+      assert message =~ "257 characters"
       assert message =~ "at most 256"
       # The remedy, so the model can correct the call rather than retry it.
       assert message =~ "template"

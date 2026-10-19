@@ -431,8 +431,8 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     # (it asked for the stop) — and the coordinator did not report a spawn
     # failure it did not have.
     state = await_idle(parent_pid)
-    assert {:error, :not_found} = Nest.Persistence.fetch_agent(space_id, "alpha")
-    assert {:error, :not_found} = Nest.Persistence.fetch_agent(space_id, "beta")
+    assert {:error, :not_found} = Nest.Persistence.fetch_agent(space_id, "item-1")
+    assert {:error, :not_found} = Nest.Persistence.fetch_agent(space_id, "item-2")
     assert state.live.machine.children == %Children{}
     messages = state.chat_state.messages
     assert delivered_texts(messages, "stopped before reporting its aggregate") == []
