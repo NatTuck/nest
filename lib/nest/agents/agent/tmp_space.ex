@@ -189,8 +189,8 @@ defmodule Nest.Agents.Agent.TmpSpace do
   because a *peer's* sweeper can remove the directory between them (it sees a
   root with no `.alive`, or a stale one, and it has no way to know we are
   between two calls). Giving up rather than raising is deliberate: this runs in
-  `Nest.Agents.TmpSweeper.init/1`, and a boot that cannot make a scratch root
-  must not take the application down with it.
+  `Nest.Application.start/2`, and a boot that cannot make a scratch root must
+  not take the application down with it.
   """
   @spec prepare_own_root() :: :ok
   def prepare_own_root do

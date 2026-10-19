@@ -62,23 +62,18 @@ defmodule Nest.Agents.TmpSweeper do
 
   ## Restart
 
-  `init/1` calls `TmpSpace.prepare_own_root/0`, which removes whatever is at our
-  root before making it. At boot that path can only be a corpse from a recycled
-  pid, but a *restart* of this process would remove a live root and take every
-  agent's scratch with it. So the process is written to run from boot to
-  shutdown without one: a tick does nothing but `File.ls`, two registry reads,
-  and `rm_rf`s of trees Nest wrote, and a message it does not understand is
-  ignored rather than crashing it. If it does restart, the damage is the one
-  `Mounts.ensure_scratch!/1` already bounds — the directory comes back on the
-  agent's next command — except that a running background job's log goes with it.
+  This process holds no state and is safe to restart: the root is prepared once
+  in `Nest.Application.start/2`, never here, so a supervisor restart cannot
+  remove a live root. A tick does nothing but `File.ls`, two registry reads, and
+  `rm_rf`s of trees Nest wrote, and a message it does not understand is ignored
+  rather than crashing it.
 
   ## Blocking
 
-  This GenServer never blocks for an unknown amount of time. `init/1` removes one
-  directory, makes it and writes one file; a tick lists a directory per root and
-  per space, asks the registry and the shell-jobs manager, and `rm_rf`s trees that
-  only Nest wrote. Nothing here waits on an agent, a sandbox, an LLM or the
-  network.
+  This GenServer never blocks for an unknown amount of time. A tick lists a
+  directory per root and per space, asks the registry and the shell-jobs
+  manager, and `rm_rf`s trees that only Nest wrote. Nothing here waits on an
+  agent, a sandbox, an LLM or the network.
   """
 
   use GenServer
@@ -166,7 +161,6 @@ defmodule Nest.Agents.TmpSweeper do
 
   @impl true
   def init(_arg) do
-    TmpSpace.prepare_own_root()
     schedule_tick()
     {:ok, %{}}
   end
