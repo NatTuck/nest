@@ -58,6 +58,36 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert [%{id: ^id, status: :exited, killed: true}] = ShellJobs.list(key)
   end
 
+  # `kill/2` also arms the manager's five-second fallback for a job whose
+  # exec-port `:DOWN` never arrives. That timer always fires in the end —
+  # normally after the job has already finished, where it must do nothing — so
+  # reaching it by waiting would cost the suite five seconds, and reaching it by
+  # luck made this file's coverage depend on where in the run the last kill fell
+  # (four stale timers fired in one full-suite seed and none in another). This is
+  # that timer's own message to the manager, i.e. `handle_info/2`'s contract.
+  test "a kill-finalize that arrives after the exit changes nothing", %{key: key, tmp: tmp} do
+    {space_id, name} = key
+    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
+
+    id = start_running!("sleep 30", tmp, key)
+    assert_receive {:shell_jobs, %{jobs: [%{id: ^id, status: :running}]}}, 1_000
+
+    assert :ok = ShellJobs.subscribe(key, id, self())
+    assert :ok = ShellJobs.kill(key, id)
+    assert_receive {:shell_jobs, %{jobs: [%{id: ^id, killed: true}]}}, 1_000
+    assert_receive {:shell_job_exit, ^id, code}, 1_000
+    assert_receive {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}, 1_000
+
+    send(ShellJobs.name(), {:kill_finalize, id})
+
+    # A call to the manager is queued behind that message — same sender, same
+    # receiver — so the fallback has run when this returns. It must leave the
+    # recorded exit alone and broadcast nothing: the job is no longer
+    # `:running`, so there is nothing to finalize.
+    assert [%{id: ^id, status: :exited, exit_code: ^code}] = ShellJobs.list(key)
+    refute_received {:shell_jobs, _}
+  end
+
   test "reports the log path the agent can read, not the manager's own", %{key: key, tmp: tmp} do
     assert {:ok, message} = start_background("sleep 30", tmp, key)
     assert [%{id: id, log_path: log_path}] = ShellJobs.list(key)
@@ -122,6 +152,29 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert_received {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}
 
     assert Path.wildcard(Path.join(tmp, ".nest-cmd-*.sh"), match_dot: true) == []
+  end
+
+  test "a subscribe that lands after the exit still reports it", %{key: key, tmp: tmp} do
+    {:ok, _message} = start_background("true", tmp, key)
+    assert [%{id: id}] = ShellJobs.list(key)
+
+    # The already-exited arm of `handle_call({:subscribe, ...})` fires only when
+    # the subscribe arrives after the job exited, which is what makes it a race
+    # to reach at all. `list/1` is a call to the manager, so it cannot return
+    # before the exit has been recorded: waiting on it is a happens-after
+    # barrier, not a clock. (`true` exits in about a millisecond, so this is one
+    # poll in practice.)
+    eventually(
+      fn -> match?([%{id: ^id, status: :exited}], ShellJobs.list(key)) end,
+      timeout: 1_000
+    )
+
+    assert :ok = ShellJobs.subscribe(key, id, self())
+
+    # No timeout on purpose: `handle_call` sends the message before it replies,
+    # so it is already in the mailbox when `subscribe/3` returns. If the arm is
+    # not taken the message never arrives and this fails — deterministically.
+    assert_received {:shell_job_exit, ^id, 0}
   end
 
   test "enforces the per-agent cap and frees a slot on exit", %{key: key, tmp: tmp} do
