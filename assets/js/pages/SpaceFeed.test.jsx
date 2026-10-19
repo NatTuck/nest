@@ -464,6 +464,12 @@ describe("SpaceFeed", () => {
     // Collapsed, the summary row still states the workspace: that is the fact
     // that makes a space unusable when it is missing, so it is not behind the
     // disclosure. Everything else is.
+    const disclosure = screen.getByRole("button", { name: /Environment/ });
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    // `aria-controls` names the body only while the body exists: an IDREF that
+    // resolves to nothing is an ARIA violation.
+    expect(disclosure).not.toHaveAttribute("aria-controls");
+
     expect(screen.getByText("/home/nat/ws")).toBeInTheDocument();
     expect(
       screen.queryByText("Agents in this space can reach the network."),
@@ -473,6 +479,13 @@ describe("SpaceFeed", () => {
     ).not.toBeInTheDocument();
 
     expandEnvironment();
+
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    expect(disclosure).toHaveAttribute(
+      "aria-controls",
+      "space-environment-body",
+    );
+    expect(document.getElementById("space-environment-body")).not.toBeNull();
 
     expect(
       screen.getByText("Agents in this space can reach the network."),

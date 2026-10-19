@@ -44,7 +44,7 @@ export function SpaceEnvironmentCard({ space }) {
           type="button"
           onClick={() => setExpanded((open) => !open)}
           aria-expanded={expanded}
-          aria-controls="space-environment-body"
+          aria-controls={expanded ? "space-environment-body" : undefined}
           className="w-full flex items-center justify-between gap-3 p-4 text-left rounded-lg hover:bg-gray-50 transition-colors"
         >
           <span className="flex items-baseline gap-2 min-w-0">
@@ -63,6 +63,11 @@ export function SpaceEnvironmentCard({ space }) {
         </button>
       </h2>
 
+      {/* Mounted only when open, and `aria-controls` names it only then: an
+          IDREF that resolves to nothing is an ARIA violation, so the attribute
+          follows the element rather than pointing at a body that is not there.
+          (Rendering it always and hiding it with `hidden` would fix the IDREF
+          too, at the cost of the workspace appearing twice in the document.) */}
       {expanded && (
         <div id="space-environment-body" className="px-4 pb-4">
           <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
