@@ -20,6 +20,9 @@ let mockSpaces = [];
 // The space edit's latch (`SpacePausedBanner` reads it): no space is paused in
 // these tests.
 const mockPausedSpaces = [];
+// The right-hand pane's state, by space id. Empty by default, which is what a
+// page whose first `pane:state` frame has not arrived looks like.
+let mockPanes = {};
 vi.mock("../store", () => {
   const actions = {
     clearAgentError: (id) => {
@@ -43,11 +46,13 @@ vi.mock("../store", () => {
       agentsCache: mockAgentsCache,
       spaces: mockSpaces,
       pausedSpaces: mockPausedSpaces,
+      panes: mockPanes,
     });
   useStore.getState = () => ({
     ...actions,
     agentsCache: mockAgentsCache,
     spaces: mockSpaces,
+    panes: mockPanes,
     pausedSpaces: mockPausedSpaces,
   });
 
@@ -154,6 +159,8 @@ beforeEach(() => {
   scroll.isAtBottom = true;
   scroll.hasNewContent = false;
   scroll.jumpToBottom.mockClear();
+  // No pane state has arrived for any space in these tests unless one says so.
+  mockPanes = {};
   // The host the server injects into `window.NEST_CONFIG`, plus the
   // shell's default title: a page test proves the page *replaces* it.
   window.NEST_CONFIG = { host: "vampire" };
@@ -2477,7 +2484,12 @@ describe("ChatPage scroll containers (issue #86)", () => {
   it("clips the column, scrolls only the chrome when it must, and never squeezes the composer", () => {
     const { container } = renderChat();
 
-    const column = container.firstElementChild;
+    // The page root is a row, so the right-hand pane (#119) can be a sibling
+    // column that squishes this one instead of taking its height. The chat
+    // column is its first child, and every clause below is about that column.
+    const row = container.firstElementChild;
+    expect(row.className).toContain("flex");
+    const column = row.firstElementChild;
     expect(column.className).toContain("overflow-hidden");
 
     // The chrome region: header + banners. It fits its content in the normal
@@ -2559,5 +2571,78 @@ describe("ChatPage page title", () => {
     expect(
       screen.getByRole("heading", { name: /test-agent/ }),
     ).toBeInTheDocument();
+  });
+});
+
+describe("ChatPage right-hand pane (#119 / #120)", () => {
+  const decision = {
+    id: "d1",
+    title: "Ship or wait?",
+    body: "Shipping early risks bugs.",
+    options: ["Ship", "Wait"],
+    askedBy: "test-agent",
+    obsolete: false,
+    obsoleteReason: null,
+    orphaned: false,
+    orphanedReason: null,
+  };
+
+  it("puts the pane beside the conversation column, never inside it", () => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+    mockPanes = {
+      1: {
+        decisions: [decision],
+        todos: {
+          "test-agent": [{ text: "write the tests", status: "in_progress" }],
+        },
+        seq: 1,
+        collapsed: false,
+        expandedId: null,
+        drafts: {},
+        marks: {},
+        outcomes: {},
+        error: null,
+      },
+    };
+
+    const { container } = renderChat();
+
+    const row = container.firstElementChild;
+    const column = row.firstElementChild;
+    const aside = screen.getByLabelText("Questions and TODO");
+
+    // A sibling, not a child: the conversation column owns the page's one
+    // scroll region (issue #86), and the pane squishes it rather than taking
+    // its height.
+    expect(row.contains(aside)).toBe(true);
+    expect(column.contains(aside)).toBe(false);
+    // Both sections are wired to the page's agent and space.
+    expect(screen.getByText("Ship or wait?")).toBeInTheDocument();
+    expect(screen.getByText("write the tests")).toBeInTheDocument();
+  });
+
+  it("leaves the pane out entirely until a frame for the space arrives", () => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    const { container } = renderChat();
+
+    // An empty column would shove the chat sideways the moment the frame
+    // landed, so there is nothing to render yet.
+    expect(screen.queryByLabelText("Questions and TODO")).toBeNull();
+    expect(container.firstElementChild.children).toHaveLength(1);
   });
 });

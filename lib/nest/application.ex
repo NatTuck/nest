@@ -5,7 +5,7 @@ defmodule Nest.Application do
 
   use Application
 
-  alias Nest.Agents.Agent.TmpSpace
+  alias Nest.Agents.Agent.{Pane, TmpSpace}
   alias Nest.Agents.{ChildRegistry, TmpSweeper}
   alias Nest.Sandbox.ShellJobs
   alias Nest.Tokens.Tokenizer
@@ -78,6 +78,10 @@ defmodule Nest.Application do
       {Task.Supervisor, name: Nest.Models.TaskSupervisor},
       # Background shell-job manager (per-agent `shell-cmd background`)
       ShellJobs.child_spec(),
+      # The right-hand pane's in-memory state: each space's decision queue and
+      # every agent's TODO list (issues #119/#120). In memory by design, so a
+      # restart empties the pane.
+      Pane.child_spec(),
       # The scratch sweeper. It goes after everything a tick asks: the agent
       # registry (which agents are live) and the shell-jobs manager (which jobs
       # are). The root it sweeps is prepared once in `start/2` above,

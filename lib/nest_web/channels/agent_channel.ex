@@ -15,6 +15,7 @@ defmodule NestWeb.AgentChannel do
   require Logger
 
   alias Nest.Agents
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.PersistedAgent
   alias Nest.Messages.Message
@@ -22,10 +23,12 @@ defmodule NestWeb.AgentChannel do
   alias Nest.Sandbox.ShellJobs
   alias Nest.Spaces
   alias NestWeb.AgentChannel.History
+  alias NestWeb.AgentChannel.Pane
   alias NestWeb.AgentChannel.Replies
   alias NestWeb.AgentChannel.ShellLog
   alias NestWeb.AgentChannel.Sync
   alias NestWeb.ErrorPayload
+  alias NestWeb.LobbyChannel.Authz
 
   # The statuses that cannot accept a chat message at all: the machine's declared
   # blocked phases, which need an operator action (repair, model change, compaction
@@ -78,6 +81,20 @@ defmodule NestWeb.AgentChannel do
     # every broadcast (e.g. `chat:delta`) would be delivered twice —
     # doubling streamed deltas. Let Phoenix own the subscription.
     send(self(), {:after_join, agent})
+
+    # The pane (issues #119/#120) is the *space's*, so this is a second
+    # subscription on a topic of its own — not the channel topic, which Phoenix
+    # has already subscribed this process to (and which it must not subscribe
+    # twice, or every frame would arrive twice), and not the space topic the
+    # lobby uses. `Pane.sync` is the resync frame for a client that missed one.
+    #
+    # Owner-only, and the join is where it is decided: `authorize_join/3` above
+    # admits a `shared` agent's guest, and the pane belongs to the space rather
+    # than to that agent — see `NestWeb.AgentChannel.Pane`'s moduledoc. A guest
+    # therefore never subscribes, and every pane handler refuses.
+    if match?({:ok, :owner}, Authz.authorize_space_owner(space_id, current_user)) do
+      Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.pane_topic(space_id))
+    end
 
     socket =
       socket
@@ -250,6 +267,16 @@ defmodule NestWeb.AgentChannel do
   @impl true
   def handle_info({:shell_jobs, payload}, socket) do
     push(socket, "shell:jobs", payload)
+    {:noreply, socket}
+  end
+
+  # A pane mutation (broadcast by `Nest.Agents.Agent.Pane`). The frame is a
+  # notification, not a payload: the TODO half is per viewer, so the push is
+  # built here for the agent whose page this socket is on — one atomic read, so
+  # the decisions and the `seq` agree. See `NestWeb.AgentChannel.Pane`.
+  @impl true
+  def handle_info({:pane_changed, _space_id}, socket) do
+    push(socket, "pane:state", Pane.state(socket))
     {:noreply, socket}
   end
 
@@ -473,6 +500,25 @@ defmodule NestWeb.AgentChannel do
         {:reply, {:error, %{"reason" => "job_not_found"}}, socket}
     end
   end
+
+  # ---- The pane (issues #119/#120) ----
+  #
+  # The pane is per space: a client joined to any agent in the space sees the
+  # same list. The handlers live in `NestWeb.AgentChannel.Pane` so this module
+  # stays within its file budget; each replies with the channel's normal
+  # `{:ok, ...}` / `{:error, %{"reason" => ...}}` shape.
+
+  @impl true
+  def handle_in("pane:sync", _payload, socket), do: Pane.sync(socket)
+
+  @impl true
+  def handle_in("decisions:answer", payload, socket), do: Pane.answer(payload, socket)
+
+  @impl true
+  def handle_in("decisions:drop", payload, socket), do: Pane.drop(payload, socket)
+
+  @impl true
+  def handle_in("decisions:explain", payload, socket), do: Pane.explain(payload, socket)
 
   @impl true
   def handle_in("chat:status", _payload, socket) do

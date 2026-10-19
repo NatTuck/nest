@@ -26,20 +26,15 @@ import {
   refreshShellJobs,
   requestInbox,
 } from "../channels";
-import { StatusBanner } from "../components/StatusBanner";
-import { NotificationBanner } from "../components/NotificationBanner";
-import { SpacePausedBanner } from "../components/SpacePausedBanner";
-import { ChatHeader } from "../components/ChatHeader";
 import { ChatComposer } from "../components/ChatComposer";
 import { ChatMessages } from "../components/ChatMessages";
 import { ChatTypingIndicator } from "../components/ChatTypingIndicator";
 import { ChatLoading } from "../components/ChatLoading";
 import { InboxPanel } from "../components/InboxPanel";
-import { ChatTabs, CHAT_TAB, JOBS_TAB } from "../components/ChatTabs";
+import { PanePanel } from "../components/Pane/PanePanel";
+import { ChatChrome } from "../components/ChatChrome";
+import { CHAT_TAB, JOBS_TAB } from "../components/ChatTabs";
 import { AgentEditModal } from "../components/AgentEditModal";
-import { SendErrorBanner } from "../components/SendErrorBanner";
-import { ModelMissingBanner } from "../components/ModelMissingBanner";
-import { NeedsRepairBanner } from "../components/NeedsRepairBanner";
 import { ShellJobsPanel } from "../components/ShellJobsPanel";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
@@ -484,17 +479,15 @@ export function ChatPage() {
   const isInputDisabled = status !== "connected";
 
   return (
-    <div className="flex flex-col h-full max-w-6xl mx-auto overflow-hidden">
-      {/* Issue #86: this column is the page's whole height, and
-          `overflow-hidden` is what keeps it that way. `main` in `Layout`
-          scrolls for every other page, and on this one that scrolled the
-          header and the composer away with it. The chrome region below is
-          the only thing allowed to scroll when the chrome alone is taller
-          than the viewport; the composer sits outside it, so the banners
-          can never carry it off screen. */}
-      <div className="min-h-0 overflow-y-auto">
-        {/* Header */}
-        <ChatHeader
+    <div className="relative flex h-full max-w-6xl mx-auto overflow-hidden">
+      {/* The pane (#119/#120) is a sibling column: it squishes this one, never takes its height. */}
+      <div className="flex flex-col h-full min-w-0 flex-1 overflow-hidden">
+        {/* Issue #86: this column is the page's whole height, and `overflow-hidden`
+          keeps it that way — `main` in `Layout` scrolls for every other page and
+          scrolled this one's header and composer away. The chrome region below is
+          the only thing allowed to scroll; the composer sits outside it, so the
+          banners can never carry it off screen. */}
+        <ChatChrome
           name={name}
           vocation={vocation}
           model={model}
@@ -509,168 +502,110 @@ export function ChatPage() {
           contextLimit={contextLimit}
           status={status}
           streaming={streaming}
-          onModelPickerOpen={() => setModelPickerOpen(true)}
-          getStatusLabel={() => statusLabel}
-        />
-
-        {/* Status banner — `agentState` carries the agent's GenServer
-          state (including `:compacting` / `:compaction_failed`),
-          distinct from the connection-level `status`. The banner
-          handles both axes.
-
-          After a chat-task error the companion `chat:status: idle`
-          lands AFTER `chat:error`, so `agentState === "idle"` while
-          `cache.status === "error"` is the recoverable case.
-          Promote the banner's `status` prop to `"error"` whenever
-          `cache.error` is set, so the Retry/Dismiss banner stays
-          visible during the idle window instead of silently
-          disappearing (a regression that previously required a
-          full page reload to recover from). */}
-        <StatusBanner
-          status={
-            status === "error" && error ? "error" : (agentState ?? status)
-          }
+          statusLabel={statusLabel}
           error={error}
+          compactionError={compactionError}
+          compactionLoop={compactionLoop}
+          notification={notification}
+          sendError={sendError}
+          sequenceViolations={sequenceViolations}
+          repairCommand={repairCommand}
+          reloadError={reloadError}
+          spaceId={spaceId}
+          spaceName={space?.name}
+          tab={tab}
+          jobCount={jobs.length}
+          onSelectTab={setTab}
+          onModelPickerOpen={() => setModelPickerOpen(true)}
           onRetry={handleRetry}
           onDismiss={handleDismissError}
           onRetryCompaction={handleRetryCompaction}
           onCompactionLoopOk={handleCompactionLoopOk}
-          compactionError={compactionError}
-          compactionLoop={compactionLoop}
+          onReload={handleReloadAgent}
+          onClearNotification={() =>
+            useStore.getState().clearNotification(name)
+          }
         />
 
-        {/* Repair banner — only shown when the agent's persisted
-          model no longer resolves to a runtime provider
-          (status ":model_missing"). Per the recovery flow,
-          the user picks a replacement model from here; the
-          channel layer blocks all `chat:message` traffic
-          while in this state, so this banner is the only way
-          forward. The picker's selection calls
-          `handleChangeModel`, which closes the picker and
-          pushes `"change_model"` over the lobby channel. */}
-        {agentState === "model_missing" && (
-          <ModelMissingBanner
-            model={model}
-            onChooseModel={() => setModelPickerOpen(true)}
-          />
-        )}
-
-        {/* Repair banner — the persisted active sequence failed wire
-          validation at load (status ":needs_repair"). Chat is blocked
-          until the operator runs the offline repair command and
-          reloads the agent. */}
-        {agentState === "needs_repair" && (
-          <NeedsRepairBanner
-            violations={sequenceViolations}
-            repairCommand={repairCommand}
-            onReload={handleReloadAgent}
-            error={reloadError}
-          />
-        )}
-
-        {/* The space's environment is being edited: work is held, and the user
-          has to see that rather than an agent that looks stuck. */}
-        <SpacePausedBanner spaceId={spaceId} spaceName={space?.name} />
-
-        {/* Notification banner */}
-        <NotificationBanner
-          notification={notification}
-          onClose={() => useStore.getState().clearNotification(name)}
-        />
-
-        {/* Send error */}
-        <SendErrorBanner message={sendError} />
-      </div>
-
-      {/* The conversation and the agent's background shell jobs are
-          separate views: the jobs panel used to render inline above the
-          message list, where a handful of jobs pushed the conversation
-          off screen. `shrink-0`: the tab bar is chrome the conversation
-          must not squeeze, and it is what the chrome region above shrinks
-          against. */}
-      <div className="shrink-0">
-        <ChatTabs active={tab} onSelect={setTab} jobCount={jobs.length} />
-      </div>
-
-      {tab === JOBS_TAB ? (
-        <div className="mb-4 flex-1 min-h-0 overflow-y-auto">
-          {jobs.length === 0 ? (
-            <p className="py-12 text-center text-sm text-gray-400">
-              No background jobs.
-            </p>
-          ) : (
-            <ShellJobsPanel
-              jobs={jobs}
-              onKill={(id) => killShellJob(name, id)}
-              onOpenLog={(id) => fetchShellLog(name, id)}
-              onRefresh={() => refreshShellJobs(name)}
-              showTitle={false}
+        {tab === JOBS_TAB ? (
+          <div className="mb-4 flex-1 min-h-0 overflow-y-auto">
+            {jobs.length === 0 ? (
+              <p className="py-12 text-center text-sm text-gray-400">
+                No background jobs.
+              </p>
+            ) : (
+              <ShellJobsPanel
+                jobs={jobs}
+                onKill={(id) => killShellJob(name, id)}
+                onOpenLog={(id) => fetchShellLog(name, id)}
+                onRefresh={() => refreshShellJobs(name)}
+                showTitle={false}
+              />
+            )}
+          </div>
+        ) : (
+          <>
+            {/* Messages */}
+            <ChatMessages
+              messages={messages}
+              partial={partial}
+              archivedHistory={archivedHistory}
+              lastCompactionIndex={lastCompactionIndex}
+              lastCompactionMarker={lastCompactionMarker}
+              historyError={historyError}
+              onLoadHistory={loadHistoryPage}
+              onLoadOlder={loadOlderHistory}
+              name={name}
+              loading={conversationLoading}
+              setScrollContainerEl={setScrollContainerEl}
+              setMessagesEndEl={setMessagesEndEl}
             />
-          )}
-        </div>
-      ) : (
-        <>
-          {/* Messages */}
-          <ChatMessages
-            messages={messages}
-            partial={partial}
-            archivedHistory={archivedHistory}
-            lastCompactionIndex={lastCompactionIndex}
-            lastCompactionMarker={lastCompactionMarker}
-            historyError={historyError}
-            onLoadHistory={loadHistoryPage}
-            onLoadOlder={loadOlderHistory}
-            name={name}
-            loading={conversationLoading}
-            setScrollContainerEl={setScrollContainerEl}
-            setMessagesEndEl={setMessagesEndEl}
-          />
 
-          {/* Typing indicator - shown when waiting or generating */}
-          <ChatTypingIndicator
-            waitingForResponse={waitingForResponse}
-            streaming={streaming}
-            executingTools={executingTools}
-          />
+            {/* Typing indicator - shown when waiting or generating */}
+            <ChatTypingIndicator
+              waitingForResponse={waitingForResponse}
+              streaming={streaming}
+              executingTools={executingTools}
+            />
 
-          {/* Async agent-to-agent messages queued while the agent is busy. */}
-          <InboxPanel name={name} onFetch={() => requestInbox(name)} />
+            {/* Async agent-to-agent messages queued while the agent is busy. */}
+            <InboxPanel name={name} onFetch={() => requestInbox(name)} />
 
-          {/* Input area with floating Jump to latest button */}
-          <ChatComposer
-            inputValue={inputValue}
-            onChange={setInputValue}
-            onSend={handleSendMessage}
-            onStop={handleStopMessage}
-            isBusy={isAgentBusy}
-            stopping={stopping}
-            disabled={isInputDisabled}
-            frozen={
-              agentState === "compaction_failed" ||
-              agentState === "compaction_loop_detected" ||
-              agentState === "context_overflow" ||
-              agentState === "model_missing" ||
-              agentState === "needs_repair"
-            }
-            placeholder={
-              status === "connected"
-                ? "Type a message..."
-                : "Connect to send messages..."
-            }
-            modes={availableModes}
-            mode={currentMode ?? defaultMode}
-            onModeChange={handleModeChange}
-            onModeRestore={setCurrentMode}
-            history={history}
-            commands={SLASH_COMMANDS}
-            hasNewContent={hasNewContent}
-            isAtBottom={isAtBottom}
-            jumpToBottom={jumpToBottom}
-          />
-        </>
-      )}
+            {/* Input area with floating Jump to latest button */}
+            <ChatComposer
+              inputValue={inputValue}
+              onChange={setInputValue}
+              onSend={handleSendMessage}
+              onStop={handleStopMessage}
+              isBusy={isAgentBusy}
+              stopping={stopping}
+              disabled={isInputDisabled}
+              frozen={
+                agentState === "compaction_failed" ||
+                agentState === "compaction_loop_detected" ||
+                agentState === "context_overflow" ||
+                agentState === "model_missing" ||
+                agentState === "needs_repair"
+              }
+              placeholder={
+                status === "connected"
+                  ? "Type a message..."
+                  : "Connect to send messages..."
+              }
+              modes={availableModes}
+              mode={currentMode ?? defaultMode}
+              onModeChange={handleModeChange}
+              onModeRestore={setCurrentMode}
+              history={history}
+              commands={SLASH_COMMANDS}
+              hasNewContent={hasNewContent}
+              isAtBottom={isAtBottom}
+              jumpToBottom={jumpToBottom}
+            />
+          </>
+        )}
 
-      {/* Model picker modal — opens from the header chip
+        {/* Model picker modal — opens from the header chip
           (any state) or the :model_missing banner (repair
           flow). The picker's `onSelect` pushes
           `"change_model"` over the lobby channel. The agent
@@ -680,12 +615,14 @@ export function ChatPage() {
           resolve (provider removed, etc.) the server
           replies `agent_busy` or `invalid_model` and we
           surface the message inline below the picker. */}
-      <AgentEditModal
-        open={modelPickerOpen}
-        onClose={() => setModelPickerOpen(false)}
-        onSave={handleSaveAgentEdits}
-        model={model}
-      />
+        <AgentEditModal
+          open={modelPickerOpen}
+          onClose={() => setModelPickerOpen(false)}
+          onSave={handleSaveAgentEdits}
+          model={model}
+        />
+      </div>
+      <PanePanel name={name} spaceId={spaceId} />
     </div>
   );
 }

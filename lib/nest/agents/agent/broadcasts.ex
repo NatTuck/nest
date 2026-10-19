@@ -49,6 +49,32 @@ defmodule Nest.Agents.Agent.Broadcasts do
   def space_topic(space_id), do: "space:#{space_id}"
 
   @doc """
+  The per-space pane topic (issues #119/#120).
+
+  Deliberately **not** `space_topic/1`: `NestWeb.LobbyChannel` subscribes to
+  that one, and its unknown-frame clause would take every pane frame and log it
+  as a frame it does not know. The pane has its own audience (clients viewing
+  an agent in the space, via `NestWeb.AgentChannel`) and its own topic.
+  """
+  @spec pane_topic(integer()) :: String.t()
+  def pane_topic(space_id), do: "space:#{space_id}:pane"
+
+  @doc """
+  Announce that a space's pane changed.
+
+  Deliberately a **notification, not a payload**. The decision queue is the
+  space's, but a TODO list belongs to one agent, and the per-agent cap means a
+  frame holding every agent's list would grow with the number of agents in the
+  space. Each subscriber therefore builds its own frame with
+  `Nest.Agents.Agent.Pane.payload/2`, naming the agent whose page it is on —
+  one atomic read, so the decisions and the `seq` it carries always agree.
+  """
+  @spec pane(integer()) :: :ok
+  def pane(space_id) do
+    Phoenix.PubSub.broadcast(PubSub, pane_topic(space_id), {:pane_changed, space_id})
+  end
+
+  @doc """
   Announce a newly spawned agent on its space's topic (#41).
 
   Every lobby channel whose user can see `space_id` subscribes to that

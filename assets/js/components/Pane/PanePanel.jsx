@@ -1,0 +1,77 @@
+/**
+ * PanePanel — the chat page's right-hand pane: the open agent's TODO list
+ * (#120) and the space's questions for the user (#119).
+ *
+ * It is a sibling of the conversation column, not part of it: the conversation
+ * is the page's one scroll container (issue #86), and a pane inside it would
+ * either scroll the questions away with the transcript or take the transcript's
+ * height. On a wide screen the pane is a fixed-width column beside the chat; on
+ * a narrow one it is an overlay over the chat, which is why the page's root is
+ * the positioning context.
+ *
+ * Closing the pane is the user's state and lives in the store, so it survives a
+ * navigation. While it is closed, a frame that brings a new question must not
+ * reopen it — the count on the indicator changes instead. The indicator is the
+ * only thing left on screen when the pane is closed, and only while questions
+ * are waiting for the user.
+ *
+ * With no frame for this space there is nothing to show yet, and rendering an
+ * empty column would shove the chat sideways the moment the first frame landed.
+ */
+
+import { useStore } from "../../store";
+import { outstandingCount } from "../../store/slices/pane";
+import { DecisionsAccordion } from "./DecisionsAccordion";
+import { TodoList } from "./TodoList";
+
+export function PanePanel({ name, spaceId }) {
+  const pane = useStore((state) => state.panes?.[spaceId]);
+
+  if (!pane) return null;
+
+  const outstanding = outstandingCount(pane);
+
+  if (pane.collapsed) {
+    if (outstanding === 0) return null;
+
+    return (
+      <button
+        type="button"
+        title="Show the pane"
+        onClick={() => useStore.getState().setPaneCollapsed(spaceId, false)}
+        className="absolute right-3 top-3 z-30 flex items-center gap-2 rounded-full border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-900 shadow-md transition-colors hover:bg-amber-100 lg:static lg:mr-2 lg:mt-2 lg:self-start"
+      >
+        <span
+          className="h-2 w-2 rounded-full bg-amber-500"
+          aria-hidden="true"
+        />
+        {outstanding} question{outstanding === 1 ? "" : "s"}
+      </button>
+    );
+  }
+
+  return (
+    <aside
+      aria-label="Questions and TODO"
+      className="absolute inset-y-0 right-0 z-20 flex w-full max-w-md flex-col overflow-hidden border-l border-gray-200 bg-white shadow-xl lg:static lg:z-auto lg:w-96 lg:max-w-none lg:shrink-0 lg:shadow-none"
+    >
+      <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-3 py-1.5">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+          Pane
+        </span>
+        <button
+          type="button"
+          onClick={() => useStore.getState().setPaneCollapsed(spaceId, true)}
+          className="rounded px-1.5 py-0.5 text-xs font-medium text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800"
+        >
+          Hide pane
+        </button>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <TodoList todos={pane.todos} agentName={name} />
+        <DecisionsAccordion name={name} spaceId={spaceId} />
+      </div>
+    </aside>
+  );
+}

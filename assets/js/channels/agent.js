@@ -5,6 +5,7 @@
  */
 
 import { agentChannels, getStore, joinFailedAgents, socket } from "./state";
+import { paneFrameSpace, requestPaneSync } from "./pane";
 import { errorText } from "../utils/errorText";
 
 /**
@@ -313,6 +314,10 @@ export function joinAgent(agentId, spaceId) {
       // prompt fetches off the boundary now sitting on the cache.
       loadArchiveProjections(agentId);
     });
+    // Already joined: no `join` reply is coming, so the pane's restore has to
+    // ride this path too or a second visit to the page would show an empty
+    // pane until something happened to change it.
+    requestPaneSync(agentId, spaceId);
     return;
   }
 
@@ -405,6 +410,19 @@ export function joinAgent(agentId, spaceId) {
     store.setAgentJobs(agentId, payload?.jobs ?? []);
   });
 
+  // The right-hand pane (#119 / #120): one frame carries the whole state of
+  // the space's questions and the TODO lists. The channel's own space is what
+  // the entry is keyed by — this channel belongs to exactly one space — so a
+  // payload that names a different one is a cross-space broadcast bug, refused
+  // loudly rather than filed under the wrong space. The store drops a frame
+  // whose `seq` is not newer than the last one it applied, and warns about one
+  // it cannot address at all.
+  channel.on("pane:state", (payload) => {
+    const space = paneFrameSpace(agentId, spaceId, payload);
+    if (space == null) return;
+    store.setPaneState(space, payload);
+  });
+
   // Async agent-to-agent inbox: the queue is published incrementally
   // (issue #27), one frame per queue change — an append when a peer or a
   // human queues a message, a removal when the agent drains it. A frame that
@@ -431,7 +449,11 @@ export function joinAgent(agentId, spaceId) {
 
   channel
     .join()
-    .receive("ok", () => {})
+    .receive("ok", () => {
+      // A reload must restore the pane, and no frame is pushed until something
+      // changes, so ask for the whole state as soon as the channel is joined.
+      requestPaneSync(agentId, spaceId);
+    })
     .receive("error", (err) => {
       console.error(`Agent ${agentId} channel join error:`, err);
       joinFailedAgents.add(agentId);

@@ -24,6 +24,7 @@ defmodule Nest.Tools do
     FileTools,
     History,
     InspectFile,
+    Pane,
     QueryAgent,
     ShellCmdTool,
     ShellJobs,
@@ -121,6 +122,11 @@ defmodule Nest.Tools do
   defp regular_tool_function("shell-list", _mounts), do: ShellJobs.list_function()
   defp regular_tool_function("shell-wait", _mounts), do: ShellJobs.wait_function()
   defp regular_tool_function("shell-kill", _mounts), do: ShellJobs.kill_function()
+  defp regular_tool_function("decisions-ask", _mounts), do: Pane.ask_function()
+  defp regular_tool_function("decisions-list", _mounts), do: Pane.list_function()
+  defp regular_tool_function("decisions-obsolete", _mounts), do: Pane.obsolete_function()
+  defp regular_tool_function("todos-write", _mounts), do: Pane.todos_write_function()
+  defp regular_tool_function("todos-list", _mounts), do: Pane.todos_list_function()
   defp regular_tool_function("context-check", _mounts), do: context_check_function()
   defp regular_tool_function("context-compact", _mounts), do: context_compact_function()
   defp regular_tool_function(_name, _mounts), do: nil

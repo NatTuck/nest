@@ -124,6 +124,50 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
           "  owed replies: none; pending inbox: 0 message(s)"
       )
 
+  # The pane tools. The three that mutate answer with one short sentence. The
+  # two that read answer with a list capped by the pane's own limits
+  # (`Nest.Agents.Agent.Pane.caps/0`), and each projects **one representative
+  # report** — five questions and ten TODO items, rendered the way the tools
+  # render them — rather than the cap (which would price every call at a
+  # 50-row report) or the substitute minimum (which priced a real list at
+  # nothing: 21.6 tokens against ~190). `agents-status` is the same shape.
+  def project(%ToolCall{name: "decisions-ask"}, _ctx),
+    do: estimator_overhead("Recorded question d1 for the user; they will answer later.")
+
+  def project(%ToolCall{name: "decisions-obsolete"}, _ctx),
+    do: estimator_overhead("Marked question d1 as no longer needed.")
+
+  def project(%ToolCall{name: "todos-write"}, _ctx),
+    do: estimator_overhead("TODO list updated: 12 items.")
+
+  # `decisions-list`'s five-question report, titles only: `- <id>: <title>
+  # (asked by <agent>)`, with a flag when the pane carries one.
+  def project(%ToolCall{name: "decisions-list"}, _ctx) do
+    estimator_overhead(
+      "- d1: Which database should the new service use? (asked by clever-raven)\n" <>
+        "- d2: Should the migration run online? (asked by clever-raven)\n" <>
+        "- d3: Which region do we deploy to first? (asked by brave-otter)\n" <>
+        "- d4: Do we keep the old endpoint? (asked by brave-otter) [obsolete: folded into d3]\n" <>
+        "- d5: Who reviews the release notes? (asked by clever-raven)"
+    )
+  end
+
+  # `todos-list`'s ten-item report: `- [<status>] <text>`.
+  def project(%ToolCall{name: "todos-list"}, _ctx) do
+    estimator_overhead(
+      "- [done] Read the failing test\n" <>
+        "- [done] Reproduce the failure locally\n" <>
+        "- [in_progress] Fix the off-by-one in the paginator\n" <>
+        "- [pending] Add a regression test for the last page\n" <>
+        "- [pending] Run the full suite against the fix\n" <>
+        "- [pending] Update the changelog entry\n" <>
+        "- [pending] Ask the reviewer about the API name\n" <>
+        "- [pending] Squash the branch onto main\n" <>
+        "- [pending] Deploy to staging\n" <>
+        "- [pending] Watch the error rate for an hour"
+    )
+  end
+
   # Catch-all for tools the LLM hallucinates or spells
   # incorrectly. These calls never reach execution; they return
   # small error strings ("Unknown tool: X", "Tool X not
@@ -150,6 +194,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
     agents-spawn agents-query agents-batch agents-list agents-list-archived models-list
     agents-archive agents-unarchive agents-send agents-wait
     agents-history agents-status
+    decisions-ask decisions-list decisions-obsolete todos-write todos-list
   )
 
   @doc false

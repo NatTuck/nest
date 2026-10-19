@@ -11,6 +11,9 @@ defmodule Nest.Tools.GroupsTest do
       assert Groups.expand(["shell"]) == ~w(shell-cmd shell-list shell-wait shell-kill)
       assert Groups.expand(["context"]) == ~w(context-check context-compact)
 
+      assert Groups.expand(["pane"]) ==
+               ~w(decisions-ask decisions-list decisions-obsolete todos-write todos-list)
+
       assert Groups.expand(["agents"]) ==
                ~w(agents-spawn agents-query agents-send agents-wait agents-list agents-list-archived agents-archive agents-unarchive agents-batch models-list agents-history agents-status)
     end

@@ -25,7 +25,16 @@ alias Nest.Vocations
 # `models-list`. `agents-spawn` and `agents-batch` are additionally
 # stripped for max-depth agents at spawn/compaction time (the others
 # remain).
-all_groups = ["file", "shell", "context", "agents"]
+# The standard capability set: what a seeded vocation gets when it needs no
+# narrower or wider list (`Default` and `Chat` name their own). Written out
+# rather than taken from `Nest.Tools.Groups.all/0` on purpose — a new group is a
+# capability, and a vocation that should have it says so.
+standard_groups = ["file", "shell", "context", "agents"]
+
+# The groups a vocation that *coordinates* other agents gets: the standard set
+# plus the pane (`decisions-*` / `todos-*`), which is how such an agent asks the
+# human a question or shows its plan instead of burying either in a stop reply.
+lead_groups = standard_groups ++ ["pane"]
 
 # Default - minimal vocation for agents without a specific role.
 # Used as the fallback for any test or runtime path that needs a
@@ -66,7 +75,7 @@ all_groups = ["file", "shell", "context", "agents"]
     useful outputs with head, tail, grep, or similar. Never throw away output for commands 
     that cost significant time or access remote APIs.
     """,
-    tools: all_groups
+    tools: standard_groups
   })
 
 # ---- Role vocations ----
@@ -92,7 +101,7 @@ all_groups = ["file", "shell", "context", "agents"]
     You are a tabletop RPG game master. Narrate the world, run NPCs, and 
     arbitrate the rules.
     """,
-    tools: all_groups
+    tools: standard_groups
   })
 
 # Head TA — coordinates assignment grading and manages Grader agents.
@@ -110,7 +119,7 @@ all_groups = ["file", "shell", "context", "agents"]
       Make sure procedures are followed and that the intent of the procedures
       are achieved.
     """,
-    tools: all_groups
+    tools: lead_groups
   })
 
 # Grader — evaluates individual submissions against rubrics.
@@ -125,7 +134,7 @@ all_groups = ["file", "shell", "context", "agents"]
       You may be assigned any of a variety of tasks. Complete them to the best of your
       ability.
     """,
-    tools: all_groups
+    tools: standard_groups
   })
 
 # Team Lead — coordinates a small engineering team: plans the work,
@@ -191,7 +200,7 @@ all_groups = ["file", "shell", "context", "agents"]
     **Important**: If you are the clone after an agents-clone call, your role has changed.
     Complete your assigned task according to your new role as assigned by your parent.
     """,
-    tools: all_groups
+    tools: lead_groups
   })
 
 # Code Reviewer — inspects work in the shared workspace and reports
@@ -218,7 +227,7 @@ all_groups = ["file", "shell", "context", "agents"]
     as long as there's not a concrete technical reason why the changes should be 
     merged seperately.
     """,
-    tools: all_groups
+    tools: standard_groups
   })
 
 # ---- Blueprints ----
