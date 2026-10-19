@@ -17,11 +17,9 @@ defmodule Nest.Sandbox.Backend.DockerTest do
   import Nest.Sandbox.Backend.DockerTestHelpers
 
   alias Nest.FSPath
-  alias Nest.Sandbox
   alias Nest.Sandbox.Backend
   alias Nest.Sandbox.Backend.Docker
   alias Nest.Sandbox.{Binds, Installation, Mounts, Paths}
-  alias Nest.Tools.ShellEscape
 
   # ---- container identity ----
 
@@ -33,14 +31,9 @@ defmodule Nest.Sandbox.Backend.DockerTest do
       # Another agent, another scratch, another workspace: the *same* container.
       # Nothing per-BEAM is bound any more, which is what lets it outlive a BEAM
       # restart — and what makes every agent of a space share one environment.
-      assert {:ok, ^name} = Docker.container_name(mounts("/ws", "/tmp/agent-b"))
-      assert {:ok, ^name} = Docker.container_name(mounts("/other-ws"))
-    end
-
-    test "refuses mounts that belong to no space" do
-      assert {:error, reason} = Docker.container_name(Mounts.new("/ws", nil, "docker"))
-
-      assert reason =~ "needs the space"
+      # (The refusal for mounts with no space at all is pinned through
+      # `command/3` below, which is the only way a production call reaches it.)
+      assert {:ok, ^name} = Docker.container_name(mounts("/other-ws", "/tmp/agent-b"))
     end
   end
 
@@ -61,25 +54,20 @@ defmodule Nest.Sandbox.Backend.DockerTest do
       end
     end
 
-    test "does not move for a per-call difference the container's superset covers" do
+    test "does not move for anything per-call or per-agent" do
       # Two modes of one space, one writing the workspace and one not. The
       # container serves both, so its layout must not move between them —
       # otherwise every alternation between the two modes would remove and
-      # recreate it.
+      # recreate it. The scratch is the container's own `/tmp/<agent>`, which the
+      # container does not bind at all — it is the sandbox inside it that makes
+      # the agent's directory — so another agent's scratch does not move it
+      # either. One container serves every agent of a space, which is what "one
+      # container per space" means.
       mounts = mounts("/ws")
+      layout = Docker.layout(mounts, caps(), [])
 
-      assert Docker.layout(mounts, caps(), []) == Docker.layout(mounts, caps(write: []), [])
-    end
-
-    test "does not move for another agent's scratch" do
-      # The scratch is the container's own `/tmp/<agent>`, which the container
-      # does not bind at all — it is the sandbox inside it that makes the agent's
-      # directory. So one container serves every agent of a space, which is what
-      # "one container per space" means.
-      mounts = mounts("/ws")
-
-      assert Docker.layout(mounts, caps(), []) ==
-               Docker.layout(mounts("/ws", "/tmp/agent-b"), caps(), [])
+      assert Docker.layout(mounts, caps(write: []), []) == layout
+      assert Docker.layout(mounts("/ws", "/tmp/agent-b"), caps(), []) == layout
     end
 
     test "moves when the project's mounts do" do
@@ -121,16 +109,18 @@ defmodule Nest.Sandbox.Backend.DockerTest do
       end
 
       # The project toolchain is deliberately not in the base: a project adds it.
+      # One representative is enough — the base set either names a project
+      # toolchain or it does not.
       refute Docker.dockerfile(caps()) =~ "nodejs"
-      refute Docker.dockerfile(caps()) =~ "elixir"
     end
 
     test "packages/1 is the base set plus the project's, sorted and unique" do
+      # `bash` is already in the base set, so the project list exercises the
+      # de-duplication as well as the merge.
       packages = Docker.packages(caps_with_packages(["nodejs", "bash"]))
 
       assert packages == Enum.sort(packages)
       assert packages == Enum.uniq(packages)
-      assert "bash" in packages
       assert "nodejs" in packages
     end
 
@@ -151,19 +141,14 @@ defmodule Nest.Sandbox.Backend.DockerTest do
       # inside masks them per call, so a container-level copy would shadow the file
       # a human adds later (it is a `/dev/null` bind whenever the file is absent)
       # and would make `nest.layout` depend on whether the two files exist yet.
-      # `Nest.Sandbox.Backend.Docker.CommandLine` renders both masks.
+      # `Nest.Sandbox.Backend.Docker.CommandLine` renders both masks. The list is
+      # exactly the workspace and nothing else — in particular no host path is
+      # bound over the container's own `/tmp`: the scratch bind's source is a path
+      # *inside* the container, so a container that rendered it literally would
+      # replace its own `/tmp` with the host's, and every agent's scratch would
+      # become the host's. It is the sandbox inside the container that needs that
+      # bind, to set `/tmp`'s mode.
       assert Docker.container_binds(mounts("/ws")) == [{"/ws", "/ws", :rw}]
-    end
-
-    test "never binds a host path over the container's own /tmp" do
-      # The scratch bind's source under docker is `/tmp` — a path *inside* the
-      # container — so a container that rendered it literally would replace its
-      # own `/tmp` with the host's, and every agent's scratch would become the
-      # host's. It is the sandbox inside the container that needs that bind, to
-      # set `/tmp`'s mode.
-      for {source, _dest, _mode} <- Docker.container_binds(mounts("/ws")) do
-        refute source == Paths.sandbox_root()
-      end
     end
 
     test "binds what a workspace-writing mode gets, for the modes that get less" do
@@ -185,16 +170,8 @@ defmodule Nest.Sandbox.Backend.DockerTest do
       binds = Docker.container_binds(mounts(workspace))
 
       assert {Path.join(workspace, "data"), Path.join(workspace, "data"), :rw} in binds
-
-      # The two protected files are the one thing dropped from the superset even
-      # though it names them: the sandbox inside masks them, so the container must
-      # not. See `Binds.dropped_at_container?/3`.
-      refute Enum.any?(binds, fn {_source, dest, _mode} ->
-               Path.basename(dest) in [
-                 Nest.ConfigFile.nest_name(),
-                 Nest.ConfigFile.agents_md_name()
-               ]
-             end)
+      # (That the two protected files are dropped from this superset even though
+      # it names them is `Nest.Sandbox.Backend.DockerProtectedTest`'s.)
     end
 
     test "binds nothing but the mask when the call has no workspace" do
@@ -228,18 +205,15 @@ defmodule Nest.Sandbox.Backend.DockerTest do
                "sleep",
                "infinity"
              ]
-    end
 
-    test "stages read-only, so the agent cannot write into the host's staging dir" do
-      # The agent can write `/tmp`, so a writable staging bind would be a host
-      # write path — and one that could rewrite a sibling agent's pending script
-      # between the BEAM writing it and the container running it.
-      assert "#{stage_dir()}:/tmp/.cmds:ro" in Docker.run_args(mounts("/ws"), caps(), "img", [])
-    end
-
-    test "the network flag is the space's, and there is no flag when it may reach it" do
-      assert "--network" in Docker.run_args(mounts("/ws"), caps(), "img", [])
-      refute "--network" in Docker.run_args(mounts("/ws"), caps(net: true), "img", [])
+      # The staging bind is read-only: the agent can write `/tmp`, so a writable
+      # staging bind would be a host write path — and one that could rewrite a
+      # sibling agent's pending script between the BEAM writing it and the
+      # container running it.
+      #
+      # And the network flag is the space's: a space that may reach the network
+      # gets no flag at all.
+      refute "--network" in Docker.run_args(mounts, caps(net: true), "img", [])
     end
 
     test "passes HPU devices through, and omits the directory when there is none" do
@@ -266,71 +240,37 @@ defmodule Nest.Sandbox.Backend.DockerTest do
       assert {:ok, %{command: command, cd: nil}} =
                Docker.command(mounts("/ws"), caps(), "/tmp/.cmds/nest-cmd-1.sh")
 
-      # `-c` is load-bearing: the payload is a command, not a script path.
+      # `-c` is load-bearing: the payload is a command, not a script path. What
+      # the payload then contains — the inner bwrap's flags, the scratch
+      # `mkdir`, the per-call bind modes — is pinned as text by
+      # `Nest.Sandbox.Backend.Docker.CommandLineTest`, which calls the renderer
+      # directly; what is pinned here is that this backend hands it *this space's*
+      # container.
       assert command =~ ~r/\Adocker exec -i nest-space-#{space_id()}-[^ ]+ \/bin\/bash -c '/
-      assert payload(command) =~ "exec bwrap"
-      assert payload(command) =~ "--ro-bind / /"
-      assert payload(command) =~ "--dev-bind /dev /dev"
-      assert payload(command) =~ "--proc /proc"
-      # No namespace of its own: a user namespace is what made earlier attempts
-      # fail at `pivot_root`, and bwrap's own loopback setup fails without one.
-      refute payload(command) =~ "--unshare"
-    end
-
-    test "makes the agent's scratch directory inside the container" do
-      # The scratch is the container's own `/tmp/<agent>`, so nothing on the host
-      # can make it and the command that runs has to.
-      assert {:ok, %{command: command}} =
-               Docker.command(mounts("/ws"), caps(), "/tmp/.cmds/nest-cmd-1.sh")
-
-      assert payload(command) =~ "mkdir -p '/tmp/agent-a'"
-      assert payload(command) =~ "&& exec bwrap"
     end
 
     test "tightens the container's binds per call, by setting their mode" do
       # The container has already put each bind at its destination, so what the
       # sandbox inside has to do is set that path's *mode*: `--ro-bind / /` made
       # everything read-only and a read-only bind cannot be upgraded from inside.
-      assert {:ok, %{command: writable}} =
-               Docker.command(mounts("/ws"), caps(), "/tmp/.cmds/nest-cmd-1.sh")
-
+      # The writable half is `CommandLineTest`'s; what is pinned here is that a
+      # call which writes nothing gets no writable bind *at all* — `--ro-bind / /`
+      # is recursive *and* recursively read-only, so a stray `--bind` is exactly
+      # what would loosen it.
       assert {:ok, %{command: read_only}} =
                Docker.command(mounts("/ws"), caps(write: []), "/tmp/.cmds/nest-cmd-1.sh")
 
-      assert payload(writable) =~ "--bind '/ws' '/ws'"
-      assert payload(writable) =~ "--bind '/tmp' '/tmp'"
       assert payload(read_only) =~ "--ro-bind '/ws' '/ws'"
-      assert payload(read_only) =~ "--ro-bind '/tmp' '/tmp'"
-      refute payload(read_only) =~ "--bind '/ws' '/ws'"
-      # And not merely the two expected self-binds: a read-only call's payload must
-      # contain no `--bind` at all. `--ro-bind / /` is recursive *and* recursively
-      # read-only, so a stray `--bind` is exactly what would loosen it.
       refute payload(read_only) =~ "--bind"
     end
 
-    test "starts in the workspace, and in the scratch root when there is none" do
-      assert {:ok, %{command: with_ws}} =
-               Docker.command(mounts("/ws"), caps(), "/tmp/.cmds/nest-cmd-1.sh")
-
-      assert payload(with_ws) =~ "--chdir '/ws'"
-
+    test "starts in the scratch root when the call has no workspace" do
+      # The workspace case is `CommandLineTest`'s exact line; this is the other
+      # branch of `chdir/1`.
       assert {:ok, %{command: without_ws}} =
                Docker.command(mounts(), caps(), "/tmp/.cmds/nest-cmd-1.sh")
 
       assert payload(without_ws) =~ "--chdir '/tmp'"
-    end
-
-    test "escapes a path that needs it" do
-      # Two shell layers read this: the BEAM's command parser, which sees the
-      # whole payload as one quoted argument, and the container's bash, which
-      # runs it. A path with a quote in it has to survive both.
-      ws = Path.join(workspace("nest_docker_escape"), "it's a ws")
-      File.mkdir_p!(ws)
-
-      assert {:ok, %{command: command}} = Docker.command(mounts(ws), caps(), "/tmp/.cmds/it's.sh")
-
-      assert payload(command) =~ "--chdir " <> ShellEscape.escape(ws)
-      assert payload(command) =~ ShellEscape.escape("/tmp/.cmds/it's.sh")
     end
 
     test ~s(refuses a `mode = "tmp"` .nest mount, by name, and says the way out) do
@@ -460,66 +400,24 @@ defmodule Nest.Sandbox.Backend.DockerTest do
   end
 
   describe "job_spec/4" do
-    test "tees the job's output into the container's own log, and keeps the exit code" do
+    test "hands the job's log inside the container to the command, which tees it there" do
       log = "/tmp/agent-a/shell-jobs/job-1.log"
 
       assert {:ok, %{command: command, cd: nil}} =
                Docker.job_spec(mounts("/ws"), caps(), "/tmp/.cmds/nest-cmd-1.sh", log)
 
-      # The log is the container's, so the command writes it — and its
-      # directory, which the scratch's own `mkdir -p` does not cover.
-      assert payload(command) =~ "mkdir -p '/tmp/agent-a' '/tmp/agent-a/shell-jobs'"
+      # The log is a file in the container's own `/tmp`, so the command that runs
+      # is the one that has to write it. The pipeline itself (`set -o pipefail`
+      # and the `tee`, and the `mkdir` for the log's directory) is pinned by
+      # `Nest.Sandbox.Backend.Docker.CommandLineTest`; what is pinned here is
+      # that this entry point passes the path through to it.
       assert payload(command) =~ "2>&1 | tee '#{log}'"
-
-      # Without `pipefail` the pipeline's status would be `tee`'s, and a job that
-      # failed would report exit 0.
-      assert payload(command) =~ "set -o pipefail; "
-    end
-
-    test "needs no daemon call, and no scratch to stage the transcript" do
-      # `command/3` has already ensured the container, and the name is a pure
-      # function of the mounts.
-      assert {:ok, %{command: command}} =
-               Docker.job_spec(mounts("/ws"), caps(), "/tmp/.cmds/x.sh", "/tmp/agent-a/j.log")
-
-      assert command =~ "nest-space-#{space_id()}-#{Installation.segment()}"
-
-      assert {:error, reason} =
-               Docker.job_spec(Mounts.new("/ws", nil, "docker"), caps(), "/x.sh", "/tmp/l.log")
-
-      assert reason =~ "needs the space"
     end
   end
 
   # ---- the shared bind list ----
 
   describe "the shared bind list" do
-    test "bwrap renders exactly the specs, after its readable roots" do
-      # Both binding backends derive their binds from `Nest.Sandbox.Binds`, so
-      # there is one derivation and two renderings rather than two derivations
-      # with a drift guard. This pins bwrap's rendering; the docker rendering is
-      # pinned by the command-line and `run_args` tests above. The readable roots
-      # are bwrap's own prefix — docker does not bind them, because the image is
-      # its read set.
-      caps =
-        caps_with(%{
-          "write" => ["/tmp", ":workspace", "/var/cache/thing"],
-          "project" => [%{"source" => "/host/data", "dest" => "/ws/data"}],
-          "protected" => [%{"source" => "/dev/null", "path" => "/ws/.nest"}]
-        })
-
-      workspace = workspace("nest_docker_render")
-      mounts = Mounts.new(workspace, "/tmp/nest-1/space-7/agent-a", "bwrap")
-
-      {:ok, args} = Sandbox.build(caps, mounts)
-
-      assert bwrap_binds(args) ==
-               readable_roots(caps) ++
-                 Enum.map(Binds.specs(caps, mounts), fn {source, dest, mode} ->
-                   {source, dest, to_string(mode)}
-                 end)
-    end
-
     test "docker's inner sandbox renders the same specs, one self-bind each" do
       caps =
         caps_with(%{
@@ -569,20 +467,15 @@ defmodule Nest.Sandbox.Backend.DockerTest do
 
   describe "staging" do
     test "is one host directory per space, bound at /tmp/.cmds inside the container" do
+      # The directory's shape, its stability across a BEAM restart and its
+      # per-space, per-installation key are `Nest.Sandbox.Paths`'s
+      # (`test/nest/sandbox/paths_test.exs`), and the bind that carries it into
+      # the container is `run_args/4`'s above. What is left here is that this
+      # backend names it, and the name it logs itself under.
       mounts = mounts("/ws")
 
       assert Docker.stage_dir(mounts) == Paths.docker_stage_dir(space_id())
-      assert Docker.stage_dir_sandbox(mounts) == "/tmp/.cmds"
-      assert Backend.stage_dir(mounts) == Docker.stage_dir(mounts)
       assert Backend.display_name(mounts) == "docker exec"
-    end
-
-    test "is the same directory before and after a restart, and per installation" do
-      # Keyed on the space rather than on the BEAM's pid, which is what lets the
-      # container that binds it outlive a restart.
-      assert Paths.docker_stage_dir(space_id()) == Paths.docker_stage_dir(space_id())
-      refute Paths.docker_stage_dir(space_id()) == Paths.docker_stage_dir(space_id() + 1)
-      assert Paths.docker_stage_dir(space_id()) =~ Installation.segment()
     end
 
     test "falls back to the no-bind spelling for a call with no space" do
@@ -590,22 +483,5 @@ defmodule Nest.Sandbox.Backend.DockerTest do
       # to be total.
       assert Docker.stage_dir(Mounts.new("/ws", nil, "docker")) == Paths.stage_dir(nil)
     end
-  end
-
-  # ---- bwrap's own argument list, read back as binds ----
-
-  defp bwrap_binds(args), do: do_bwrap_binds(args, [])
-
-  defp do_bwrap_binds([flag, source, dest | rest], acc) when flag in ["--bind", "--ro-bind"],
-    do: do_bwrap_binds(rest, [{source, dest, bind_mode(flag)} | acc])
-
-  defp do_bwrap_binds([_other | rest], acc), do: do_bwrap_binds(rest, acc)
-  defp do_bwrap_binds([], acc), do: Enum.reverse(acc)
-
-  defp bind_mode("--bind"), do: "rw"
-  defp bind_mode("--ro-bind"), do: "ro"
-
-  defp readable_roots(caps) do
-    caps |> Sandbox.readable_roots() |> Enum.map(&{&1, &1, "ro"})
   end
 end

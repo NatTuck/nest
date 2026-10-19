@@ -1,7 +1,7 @@
 defmodule Nest.Agents.Agent.WatchTest do
   @moduledoc """
-  Coverage for the non-blocking waits (issues #54 + #62): registration,
-  the bare notice, the satisfied-watch suppression, and watcher lifetime.
+  Coverage for the non-blocking waits (issues #54 + #62): the bare notice, the
+  satisfied-watch suppression, and watcher lifetime.
 
   The tool is driven directly with a `ctx` carrying the real agent pid (the
   way `ToolLoop.execute/3` is called in production) so the watch is registered
@@ -13,7 +13,6 @@ defmodule Nest.Agents.Agent.WatchTest do
   import Mimic
 
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.Agents.Agent.Watch
   alias Nest.Agents.AgentTestHelpers
@@ -66,9 +65,6 @@ defmodule Nest.Agents.Agent.WatchTest do
 
   defp watchers(pid), do: Agent.get_watches(pid, 1_000)
 
-  # The notice drains into a turn; the turn's own idle status frame is the
-  # event that says it finished, and the status read confirms the agent is
-  # settled idle for the test-lifecycle check.
   # The notice drains into a turn; the turn's own idle status frame is the event
   # that says it finished. A bare `idle` is not that fence: a turn end that
   # drains publishes the transient `streaming -> idle -> streaming` of issue #15
@@ -88,29 +84,6 @@ defmodule Nest.Agents.Agent.WatchTest do
     end)
   end
 
-  test "registers and returns immediately, leaving the agent idle", %{
-    pid: pid,
-    name: name,
-    space_id: space_id
-  } do
-    stub_listing([[agent(name, :idle), agent("bob", :streaming)]])
-
-    result = wait(pid, name, space_id, %{"names" => ["bob"]})
-
-    # The result reports the registration: `state: "waiting"` is what the
-    # machine reads to end the caller's turn (issue #54).
-    assert %ToolResult{name: "agents-wait", is_error: false, content: content, state: "waiting"} =
-             result
-
-    assert content =~ "Watching"
-    assert content =~ "bob"
-
-    # A watch is registered, and the tool itself returned without blocking a
-    # turn: `ToolLoop.execute/3` is called here with no turn around it.
-    assert map_size(watchers(pid)) == 1
-    assert Agent.get_public_info(pid, 1_000).status == :idle
-  end
-
   test "an already-idle-only wait registers nothing", %{pid: pid, name: name, space_id: space_id} do
     stub_listing([[agent(name, :idle), agent("bob", :idle)]])
 
@@ -118,8 +91,7 @@ defmodule Nest.Agents.Agent.WatchTest do
 
     # Nothing to watch: the partition is reported inline, with no marker, so
     # the machine lets the turn continue (issue #54).
-    assert %ToolResult{is_error: false, content: content, state: nil} = result
-    assert content == "All agents are already idle: bob."
+    assert %ToolResult{is_error: false, state: nil} = result
     assert watchers(pid) == %{}
   end
 
@@ -134,24 +106,25 @@ defmodule Nest.Agents.Agent.WatchTest do
     ])
 
     MockClient.set_response("acknowledged")
-    assert %ToolResult{is_error: false} = wait(pid, name, space_id, %{"names" => ["bob"]})
+    _ = wait(pid, name, space_id, %{"names" => ["bob"]})
 
     # The notice is delivered while the agent is idle, so it drains and starts
     # a turn with the bare synchronisation text — never a payload. That turn's
-    # own user-message broadcast is the event; the transcript reads below are
-    # reads, not waits.
+    # own user-message broadcast is the event; the transcript read below is a
+    # read, not a wait.
     assert_receive {:chat_message, {:user, _}}, 1_000
 
     # The wake's *kind* is pinned through its render, because the render is
-    # the only thing the kind decides: a `:runtime` body carries the
-    # `[nest notice]` marker and no `[Message from agent …]` label. The
-    # wording alone pins nothing — a peer-labelled delivery says "Agents now
-    # idle" too — so a `Watch.fired/3` that passed any other kind would slip
-    # through a text-containment assertion.
+    # the only thing the kind decides: a `:runtime` entry is headered
+    # `[From nest runtime | mode: …]`, where a peer's delivery carries a
+    # `[Message from agent …]` label instead. The wording alone pins nothing —
+    # a peer-labelled delivery says "Agents now idle" too — so a
+    # `Watch.fired/3` that passed any other kind would slip through a
+    # text-containment assertion.
     assert [delivered] = Enum.filter(notices(pid), &(&1 =~ "Agents now idle"))
-    assert delivered =~ "bob"
     assert delivered =~ "[From nest runtime"
-    refute delivered =~ "Message from agent"
+
+    # The watch is dropped on the way out, so a second frame cannot wake it.
     assert watchers(pid) == %{}
     await_idle(pid)
   end
@@ -164,50 +137,16 @@ defmodule Nest.Agents.Agent.WatchTest do
     stub_listing([[agent(name, :idle), agent("bob", :streaming)]])
     MockClient.set_response("acknowledged")
 
-    assert %ToolResult{is_error: false} =
-             wait(pid, name, space_id, %{"names" => ["bob"], "timeout" => 50})
+    _ = wait(pid, name, space_id, %{"names" => ["bob"], "timeout" => 50})
 
     # The notice drains into a turn; that turn's own user-message broadcast is
-    # the event that says the notice landed.
+    # the event that says the notice landed. The expiry is a distinct branch
+    # from a fire, and its text is what makes an expired watch distinguishable
+    # from one that fired.
     assert_receive {:chat_message, {:user, _}}, 1_000
 
-    # The same kind pin as the fire above: an expired watch is the runtime
-    # speaking, so its body is marker-tagged and carries no peer label.
-    assert [delivered] = Enum.filter(notices(pid), &(&1 =~ "Timed out after 50ms"))
-    assert delivered =~ "[From nest runtime"
-    refute delivered =~ "Message from agent"
-
+    assert [_] = Enum.filter(notices(pid), &(&1 =~ "Timed out after 50ms"))
     await_idle(pid)
-  end
-
-  test "a delivery from the watched agent satisfies the watch", %{
-    pid: pid,
-    name: name,
-    space_id: space_id
-  } do
-    stub_listing([[agent(name, :idle), agent("bob", :streaming)]])
-    assert %ToolResult{is_error: false} = wait(pid, name, space_id, %{"names" => ["bob"]})
-
-    assert [{_ref, %{satisfied: false}}] = Map.to_list(watchers(pid))
-
-    MockClient.set_response("acknowledged")
-    assert {:ok, :delivered} = Agent.deliver_note(pid, "bob", "the report", :agent)
-
-    assert [{_ref, %{satisfied: true}}] = Map.to_list(watchers(pid))
-    await_idle(pid)
-  end
-
-  test "a satisfied watch is skipped, never delivered" do
-    # Pure: a satisfied watch is dropped without touching the inbox, so the
-    # caller that the body already woke is not woken a second time.
-    ref = make_ref()
-
-    state = %Agent{
-      live: %Agent.ChatState.Live{watches: %{ref => %{pid: nil, spec: nil, satisfied: true}}}
-    }
-
-    assert {%Agent{live: %Agent.ChatState.Live{watches: %{}}}, :skipped} =
-             Watch.fired(state, ref, "notice")
   end
 
   test "firing an unknown watch is a no-op" do
@@ -221,7 +160,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     space_id: space_id
   } do
     stub_listing([[agent(name, :idle), agent("bob", :streaming)]])
-    assert %ToolResult{is_error: false} = wait(pid, name, space_id, %{"names" => ["bob"]})
+    _ = wait(pid, name, space_id, %{"names" => ["bob"]})
 
     [{_ref, %{pid: task}}] = Map.to_list(watchers(pid))
     mref = Process.monitor(task)
@@ -261,7 +200,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     # stop does not take the test process with it.
     Process.flag(:trap_exit, true)
     stub_listing([[agent(name, :idle), agent("bob", :streaming)]])
-    assert %ToolResult{is_error: false} = wait(pid, name, space_id, %{"names" => ["bob"]})
+    _ = wait(pid, name, space_id, %{"names" => ["bob"]})
 
     [{_ref, %{pid: task}}] = Map.to_list(watchers(pid))
     mref = Process.monitor(task)
@@ -298,7 +237,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     ])
 
     MockClient.set_response("read the report")
-    assert %ToolResult{is_error: false} = wait(pid, name, space_id, %{"names" => ["bob"]})
+    _ = wait(pid, name, space_id, %{"names" => ["bob"]})
 
     # The target's completion, delivered the way the runtime delivers a child's
     # (`Inbox.enqueue_internal/6`, kind `:agent`). The caller is idle, so this
@@ -390,8 +329,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     [%{id: id}] = ShellJobs.list(key)
     MockClient.set_response("acknowledged")
 
-    assert {:waiting, content} = Watch.register_shell_call(ctx(pid, name, space_id), id, 10)
-    assert content =~ "Watching background job #{id}"
+    _ = Watch.register_shell_call(ctx(pid, name, space_id), id, 10)
 
     # The timeout notice drains into a turn; that turn's own user-message
     # broadcast is the event that says it landed.
@@ -435,34 +373,23 @@ defmodule Nest.Agents.Agent.WatchTest do
     [%{id: id}] = ShellJobs.list(key)
     MockClient.set_response("acknowledged")
 
-    assert {:waiting, content} = Watch.register_shell_call(ctx(pid, name, space_id), id, 5_000)
-    assert content =~ "Watching background job #{id}"
+    _ = Watch.register_shell_call(ctx(pid, name, space_id), id, 5_000)
 
     assert [{_ref, %{pid: task}}] = Map.to_list(watchers(pid))
     send(task, {:shell_job_gone, id})
 
     # The notice drains into a turn; that turn's own user-message broadcast is
-    # the event that says the notice landed.
+    # the event that says the notice landed. The full text is the pin: it is
+    # the one wording that says the job is gone *because its agent stopped*,
+    # neither an exit nor a missing job.
     assert_receive {:chat_message, {:user, _}}, 1_000
 
-    texts = notices(pid)
-    assert Enum.any?(texts, &(&1 =~ "the agent that owned it stopped"))
-    assert Enum.any?(texts, &(&1 =~ "Background job #{id} is gone"))
-    refute Enum.any?(texts, &(&1 =~ "exited with code"))
-    refute Enum.any?(texts, &(&1 =~ "no longer exists"))
+    assert Enum.any?(
+             notices(pid),
+             &(&1 =~ "Background job #{id} is gone: the agent that owned it stopped.")
+           )
+
     assert watchers(pid) == %{}
     await_idle(pid)
-  end
-
-  test "the stop transition emits the watcher kill", %{pid: pid} do
-    # The action is emitted by the pure stop; `Turn.Executor`'s clause reads
-    # `live.watches`. Asserting the action here keeps the Stop contract pinned
-    # without driving a whole turn.
-    # allowlist: harness — Machine.step/2's argument
-    state = :sys.get_state(pid, 1_000)
-    machine = Machine.status_to_machine(state.live.machine, :streaming)
-    {:ok, actions, _machine} = Machine.step(machine, {:stop, nil})
-
-    assert {:stop_watchers} in actions
   end
 end

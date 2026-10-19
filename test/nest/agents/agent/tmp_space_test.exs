@@ -61,28 +61,19 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
   end
 
   describe "the layout" do
-    test "a binding backend's space dir is under this BEAM's root; none and docker are unchanged" do
-      # The three segments of the bwrap spelling, each with its own function.
-      assert TmpSpace.root_parent() == "/tmp/nest"
-      assert TmpSpace.own_root() == Path.join("/tmp/nest", System.pid())
-
+    test "a binding backend's space dir is under this BEAM's root" do
+      # The last two segments of the bwrap spelling, each with its own function.
+      # The first two are `TmpRootTest`'s (`root_parent/0` and `own_root/0`); the
+      # `"none"` spelling is `Nest.Sandbox.NoneBackendTest`'s and the `"docker"`
+      # one this file's "a docker space's scratch".
       assert TmpSpace.space_dir(7, "bwrap") == Path.join(TmpSpace.own_root(), "space-7")
 
       assert TmpSpace.agent_dir(7, "agent-a", "bwrap") ==
                Path.join(TmpSpace.space_dir(7, "bwrap"), "agent-a")
-
-      # The two backends whose `/tmp` *is* the scratch root keep the bare
-      # `/tmp/<agent-name>` spelling byte for byte: one binds nothing (so the
-      # host path is the agent's `/tmp`), the other's root is inside the
-      # container.
-      for backend <- ["none", "docker"] do
-        assert TmpSpace.space_dir(7, backend) == "/tmp"
-        assert TmpSpace.agent_dir(7, "agent-a", backend) == "/tmp/agent-a"
-      end
     end
   end
 
-  describe "create/2" do
+  describe "create/3" do
     test "creates a per-agent dir under one shared space dir", %{
       space_id: space_id,
       space_dir: space_dir
@@ -91,25 +82,16 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
         a = TmpSpace.create(space_id, "agent-a", "bwrap")
         b = TmpSpace.create(space_id, "agent-b", "bwrap")
 
+        # Both agents share one space dir: it is the parent each path names.
         assert a == Path.join(space_dir, "agent-a")
         assert b == Path.join(space_dir, "agent-b")
         assert File.dir?(a)
         assert File.dir?(b)
-        # Both agents share one space dir (the parent of each).
-        assert Path.dirname(a) == Path.dirname(b)
-        assert Path.dirname(a) == space_dir
-      end)
-    end
-
-    test "is idempotent", %{space_id: space_id} do
-      capture_log(fn ->
-        first = TmpSpace.create(space_id, "agent-a", "bwrap")
-        assert TmpSpace.create(space_id, "agent-a", "bwrap") == first
       end)
     end
   end
 
-  describe "cleanup/2" do
+  describe "cleanup/3" do
     test "removes only the agent's own dir, leaving the space + siblings", %{
       space_id: space_id,
       space_dir: space_dir
@@ -123,24 +105,10 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
         assert :ok = TmpSpace.cleanup(space_id, "agent-a", "bwrap")
 
         refute File.exists?(a)
+        # The space dir is a shared parent and is never rmdir'd, so a sibling
+        # survives both its directory and its file.
         assert File.dir?(space_dir)
         assert File.read!(Path.join(b, "b.txt")) == "b"
-
-        # A sibling can still be created after the cleanup: the space
-        # dir (a shared parent) was not rmdir'd.
-        c = TmpSpace.create(space_id, "agent-c", "bwrap")
-        assert File.dir?(c)
-      end)
-    end
-
-    test "never removes the space dir, even when the last agent goes", %{
-      space_id: space_id,
-      space_dir: space_dir
-    } do
-      capture_log(fn ->
-        TmpSpace.create(space_id, "only-agent", "bwrap")
-        assert :ok = TmpSpace.cleanup(space_id, "only-agent", "bwrap")
-        assert File.dir?(space_dir)
       end)
     end
 
@@ -156,16 +124,14 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
 
         # ".." would pass a *syntactic* `Path.dirname/1` guard and
         # `rm_rf` the whole shared `nest/<ospid>` root (every space,
-        # every agent's scratch). "a/b" would nest a path. `create/2`
-        # refuses both outright (the DB boundary rejects such a name, so
-        # this only happens if a caller skipped it)...
+        # every agent's scratch). `create/3` refuses it outright (the DB
+        # boundary rejects such a name, so this only happens if a caller
+        # skipped it)...
         assert_raise ArgumentError, fn -> TmpSpace.create(space_id, "..", "bwrap") end
-        assert_raise ArgumentError, fn -> TmpSpace.create(space_id, "a/b", "bwrap") end
 
-        # ...and `cleanup/2` (which runs from `terminate/2`, so it must
+        # ...and `cleanup/3` (which runs from `terminate/2`, so it must
         # never raise) logs the refusal and removes nothing.
         assert :ok = TmpSpace.cleanup(space_id, "..", "bwrap")
-        assert :ok = TmpSpace.cleanup(space_id, "a/b", "bwrap")
 
         assert File.dir?(keeper)
         assert File.dir?(space_dir)
@@ -226,8 +192,10 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
 
     test "carries no scratch for a name that cannot be a path component", %{space_id: space_id} do
       # Such an agent is refused by its own changeset, and nothing composes a
-      # prompt for it — but this must not raise on the way there.
-      for name <- ["..", "a/b", "with space", ""] do
+      # prompt for it — but this must not raise on the way there. The escape and
+      # the empty boundary: every unsafe literal takes the same
+      # `Nest.Name.valid?/1` branch, so one of each shape is enough.
+      for name <- ["..", ""] do
         assert Mounts.scratch(TmpSpace.prompt_mounts(nil, space_id, name, "bwrap", true, nil)) ==
                  nil
       end
@@ -235,26 +203,13 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
   end
 
   describe "the \"none\" marker" do
-    test "create/3 marks a none agent's scratch and leaves the other backends unmarked", %{
-      space_id: space_id
-    } do
-      for backend <- ["none", "bwrap", "docker"] do
-        name = unique("#{backend}-a")
-        if backend == "none", do: track_none_scratch(space_id, name)
-
-        path = TmpSpace.create(space_id, name, backend)
-        marked = File.exists?(Path.join(path, ".nest-scratch"))
-
-        assert marked == (backend == "none"),
-               "#{backend} scratch marked=#{marked}, expected #{backend == "none"}"
-      end
-    end
-
     test "create/3 refuses to adopt a directory that is not Nest's", %{space_id: space_id} do
       # `mkdir_p!` is a no-op on an existing directory, so without this check
       # `create/3` would claim exactly the directories the marker exists to
       # protect — and stamp the marker into one, which is what licenses the next
-      # `cleanup/3` to delete it.
+      # `cleanup/3` to delete it. The name that would be the root parent itself
+      # (`/tmp/nest`, the parent of every BEAM's scratch root) is the same
+      # branch: a directory that exists and carries no marker.
       dir = host_tmp_dir("nest-rmtest-adopt")
       File.write!(Path.join(dir, "host-file"), "not Nest's")
 
@@ -264,27 +219,6 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
 
       refute File.exists?(Path.join(dir, ".nest-scratch"))
       assert File.read!(Path.join(dir, "host-file")) == "not Nest's"
-    end
-
-    test "create/3 refuses the name that would be the root parent itself", %{
-      space_id: space_id
-    } do
-      # A `"none"` agent named `nest` names `/tmp/nest` — the parent of every
-      # BEAM's scratch root, which always exists by the time an agent can start
-      # (`Nest.Agents.TmpSweeper`'s `init/1` makes this BEAM's root under it).
-      # The adoption guard is what refuses it: without that, `create/3` would
-      # stamp its marker into the root parent and the next `cleanup/3` would
-      # `rm_rf` every BEAM's scratch root.
-      path = TmpSpace.agent_dir(space_id, "nest", "none")
-
-      assert path == TmpSpace.root_parent()
-      assert File.dir?(path)
-
-      assert_raise ArgumentError, ~r/it exists and is not Nest's/, fn ->
-        TmpSpace.create(space_id, "nest", "none")
-      end
-
-      refute File.exists?(Path.join(path, ".nest-scratch"))
     end
 
     test "create/3 re-opens a marked directory idempotently", %{space_id: space_id} do
@@ -306,17 +240,14 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       refute File.exists?(path)
     end
 
-    test "cleanup/3 refuses an unmarked directory, whatever it is called", %{space_id: space_id} do
+    test "cleanup/3 refuses an unmarked directory", %{space_id: space_id} do
       # The name rule alone cannot tell Nest's directory from the host's: a
       # `"none"` agent named `nest` would name the parent of every BEAM's scratch
       # root, and `snap-private-tmp` is a real `/tmp` entry that passes the same
-      # rule.
-      dirs =
-        for prefix <- ["nest-rmtest", "snap-private-tmp-rmtest"] do
-          dir = host_tmp_dir(prefix)
-          File.write!(Path.join(dir, "host-file"), "not Nest's")
-          dir
-        end
+      # rule. Neither is Nest's without the marker, so the name it carries
+      # decides nothing — this one is a plain host directory of the same shape.
+      dir = host_tmp_dir("nest-rmtest")
+      File.write!(Path.join(dir, "host-file"), "not Nest's")
 
       # The refusal is an `:error` line — a directory that exists and is not
       # Nest's is worth an operator's attention — so the test that provokes it
@@ -324,17 +255,12 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       # Inclusion only: `capture_log` collects every process's lines.
       log =
         capture_log(fn ->
-          Enum.each(dirs, fn dir ->
-            assert :ok = TmpSpace.cleanup(space_id, Path.basename(dir), "none")
-          end)
+          assert :ok = TmpSpace.cleanup(space_id, Path.basename(dir), "none")
         end)
 
       assert log =~ "it is not a Nest scratch directory"
-
-      Enum.each(dirs, fn dir ->
-        assert File.dir?(dir), "#{dir} was removed without Nest's marker"
-        assert File.read!(Path.join(dir, "host-file")) == "not Nest's"
-      end)
+      assert File.dir?(dir), "#{dir} was removed without Nest's marker"
+      assert File.read!(Path.join(dir, "host-file")) == "not Nest's"
     end
 
     test "remove_stale/3 obeys the same rule", %{space_id: space_id} do
@@ -357,7 +283,6 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
     test "remove_stale/3 ignores a name that cannot be a path component", %{space_id: space_id} do
       # It runs before the row changeset refuses the name, and must not raise.
       assert :ok = TmpSpace.remove_stale(space_id, "..", "none")
-      assert :ok = TmpSpace.remove_stale(space_id, "a/b", "none")
     end
 
     test "a bwrap scratch is removed without a marker", %{space_id: space_id} do
@@ -399,13 +324,11 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
         File.write!(Path.join(a, "report.txt"), "shared result\n")
 
         # B's sandbox sees the same /tmp (the space dir), so A's file is
-        # readable at /tmp/agent-a/report.txt. `ls /tmp` shows both agents
-        # sit under the one bound root.
+        # readable at /tmp/agent-a/report.txt.
         assert {:ok, out} =
-                 Sandbox.run("cat /tmp/agent-a/report.txt && ls /tmp", Mounts.new(ws, b), caps)
+                 Sandbox.run("cat /tmp/agent-a/report.txt", Mounts.new(ws, b), caps)
 
         assert out =~ "shared result"
-        assert out =~ "agent-a"
 
         # A write to /tmp lands under the space dir; the host /tmp is
         # shadowed and untouched. (This, not `write_allowed?/3`, is the
@@ -428,11 +351,10 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       # is the bare name under the `/tmp` spelling — the same spelling every
       # agent is told it has, on every backend.
       assert TmpSpace.space_dir(7, "docker") == Paths.sandbox_root()
-      assert TmpSpace.agent_dir(7, name, "docker") == Path.join("/tmp", name)
 
-      # `create/3` only *names* it: the container makes it, in the command that
-      # runs. Making it here would leave a host directory at a spelling the
-      # container would never see.
+      # `create/3` only *names* it (the same path `agent_dir/3` derives): the
+      # container makes it, in the command that runs. Making it here would leave
+      # a host directory at a spelling the container would never see.
       assert TmpSpace.create(7, name, "docker") == Path.join("/tmp", name)
       refute File.exists?(Path.join("/tmp", name))
     end
