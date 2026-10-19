@@ -13,6 +13,7 @@ defmodule Nest.Tools do
 
   require Logger
 
+  alias Nest.Agents.Agent.BatchPlan
   alias Nest.Agents.Agent.CapCalculator
   alias Nest.Agents.Agent.Config
   alias Nest.LLM.Tool
@@ -498,12 +499,14 @@ defmodule Nest.Tools do
       "Provide `items` (a non-empty list) OR `glob` (a pattern expanded " <>
       "to readable files — preferred for large sets, so you never list " <>
       "files by hand). An item is a short *parameter* — a path, an id, or a " <>
-      "one-line instruction, at most 256 bytes; for a longer instruction, pass " <>
+      "one-line instruction, at most #{BatchPlan.max_item_chars()} characters; " <>
+      "for a longer instruction, pass " <>
       "short items and a `template` that renders them with {item}. If " <>
       "`template` is given it is rendered per item with {item} and {index}; if " <>
       "omitted, each item is the instruction. Children are named from their " <>
       "item when the call has a template or a glob, and by position " <>
-      "(`item-1`, `item-2`, …) otherwise. `archive` defaults to true. " <>
+      "(`<prefix>-item-<n>`, or `item-<n>` with no prefix) otherwise. " <>
+      "`archive` defaults to true. " <>
       "Sub-agents can be spawned down to a maximum depth of " <>
       "#{Config.configured_max_depth()}."
   end
@@ -544,11 +547,15 @@ defmodule Nest.Tools do
           },
           "items" => %{
             "type" => "array",
-            "items" => %{"type" => "string", "maxLength" => 256},
+            "items" => %{
+              "type" => "string",
+              "maxLength" => BatchPlan.max_item_chars()
+            },
             "description" =>
               "The items to fan out over (each becomes one sub-agent): a " <>
                 "parameter per child — a path, an id, or a one-line instruction, " <>
-                "at most 256 bytes each. Provide this OR `glob`, not both."
+                "at most #{BatchPlan.max_item_chars()} characters each. Provide " <>
+                "this OR `glob`, not both."
           },
           "set_mode" =>
             set_mode_property(

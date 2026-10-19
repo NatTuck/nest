@@ -15,10 +15,15 @@ defmodule Nest.Agents.Agent.BatchPlan do
   * `template` (optional) — if present, must contain `{item}` or
     `{index}` (substituted per item); otherwise the whole call is an
     error. When absent, each item *is* the child's instruction.
-  * `items` (a non-empty list of non-blank strings or integers) XOR `glob`
-    (expanded via `Sandbox.glob/4` to readable regular files). A blank or
-    otherwise unusable item is a whole-call error, not a slot marker: it is
+  * `items` (a non-empty list of non-blank strings or integers, at most
+    `max_item_chars/0` each) XOR `glob` (expanded via `Sandbox.glob/4` to
+    readable regular files). A blank, over-long or otherwise unusable item is a
+    whole-call error, not a slot marker: it is
     knowable before the launch.
+  * children's names — from the item when the call has a `template` or a
+    `glob` (the item is a parameter: what fills the template, or a path), and
+    by position (`<prefix>-item-<n>`) otherwise (the item *is* the instruction,
+    and no slug of a sentence is a name). `name_prefix` is prepended either way.
   * `vocation` (slug) / `model` (optional) — per child, inherit parent
     when omitted.
   * `timeout` — PER-ITEM ms (default 5 min). A child still running at
@@ -57,7 +62,7 @@ defmodule Nest.Agents.Agent.BatchPlan do
   # Marker prefix for a failed / timed-out item's slot.
   @error_prefix "[error: "
 
-  # The longest item a batch may carry, in bytes.
+  # The longest item a batch may carry, in characters.
   #
   # An item is a *parameter* — a path, an assignment id, a one-line instruction
   # — never a whole task description. A call whose items are paragraphs is a
@@ -65,8 +70,19 @@ defmodule Nest.Agents.Agent.BatchPlan do
   # used to be accepted and then mangled twice over: the prose rode the model's
   # tool-call arguments, and each child was named from a slug of it (issue #104).
   # Refusing it before the launch is the whole fix; the bound is generous enough
-  # for a path and far below a paragraph.
-  @max_item_bytes 256
+  # for a path and far below a paragraph. It is counted in **characters**, which
+  # is what the schema's `maxLength` counts, so the two cannot disagree about a
+  # non-ASCII item.
+  @max_item_chars 256
+
+  @doc """
+  The longest item a batch may carry, in characters.
+
+  Exposed so the tool schema's `maxLength` is this number rather than a second
+  copy of it.
+  """
+  @spec max_item_chars() :: pos_integer()
+  def max_item_chars, do: @max_item_chars
 
   @doc """
   The plan for one `agents-batch` call: what to spawn, in what order, under
@@ -88,7 +104,7 @@ defmodule Nest.Agents.Agent.BatchPlan do
       names:
         names_for_space(
           items,
-          Map.get(args, "name_prefix", ""),
+          opt_string(args, "name_prefix"),
           params?(args, template),
           ctx.space_id
         ),
@@ -130,9 +146,9 @@ defmodule Nest.Agents.Agent.BatchPlan do
   @spec resolve_items(map(), map()) :: {:ok, [String.t()]} | {:error, String.t()}
   def resolve_items(args, ctx) do
     items = Map.get(args, "items")
-    glob = Map.get(args, "glob", "")
+    glob = opt_string(args, "glob")
     has_items? = is_list(items)
-    has_glob? = is_binary(glob) and glob != ""
+    has_glob? = glob != ""
 
     cond do
       has_items? and has_glob? ->
@@ -159,7 +175,7 @@ defmodule Nest.Agents.Agent.BatchPlan do
   end
 
   # An item is a non-blank string (a parameter — a path, an id, a one-line
-  # instruction) or an integer (an assignment id), at most `@max_item_bytes`.
+  # instruction) or an integer (an assignment id), at most `@max_item_chars`.
   # A blank item is rejected rather than dropped: a child spawned for `""` has
   # no instruction — it is never tracked, never runs, and burns the whole
   # per-item timeout before its slot becomes a marker — and dropping it would
@@ -172,7 +188,7 @@ defmodule Nest.Agents.Agent.BatchPlan do
   defp usable_item?(item) when is_integer(item), do: true
 
   defp usable_item?(item) when is_binary(item),
-    do: String.trim(item) != "" and byte_size(item) <= @max_item_bytes
+    do: String.trim(item) != "" and String.length(item) <= @max_item_chars
 
   defp usable_item?(_item), do: false
 
@@ -180,8 +196,8 @@ defmodule Nest.Agents.Agent.BatchPlan do
     if String.trim(item) == "" do
       "`items[#{index}]` is blank; an item must be a non-blank string or an integer"
     else
-      "`items[#{index}]` is #{byte_size(item)} bytes; an item must be at most " <>
-        "#{@max_item_bytes}. An item is a parameter — a path, an id, or a one-line " <>
+      "`items[#{index}]` is #{String.length(item)} characters; an item must be at most " <>
+        "#{@max_item_chars}. An item is a parameter — a path, an id, or a one-line " <>
         "instruction. For a longer instruction, pass short items and a `template` " <>
         "that renders them with {item}, or spawn the children with `agents-spawn`."
     end
@@ -212,6 +228,7 @@ defmodule Nest.Agents.Agent.BatchPlan do
   # A present template must contain `{item}` or `{index}`; an
   # absent/empty template means "the item string is the instruction".
   @spec template_ok(String.t()) :: {:ok, String.t()} | {:error, String.t()}
+  def template_ok(template) when not is_binary(template), do: {:ok, ""}
   def template_ok(template) when template == "", do: {:ok, ""}
 
   def template_ok(template) do
@@ -290,8 +307,26 @@ defmodule Nest.Agents.Agent.BatchPlan do
   # and a `glob` produced them (so each item is a path). Without either, each
   # item *is* the instruction, and a name slugged from it would be a truncated
   # sentence — see `names_for_items/3`.
-  defp params?(args, template) do
-    template != "" or Map.get(args, "glob", "") != ""
+  @doc false
+  @spec params?(map(), String.t()) :: boolean()
+  def params?(args, template) do
+    template != "" or opt_string(args, "glob") != ""
+  end
+
+  # An optional string argument, read the one way.
+  #
+  # Models routinely send `null` for the parameter they are not using, and
+  # `Map.get(args, key, "")` returns `nil` for that — neither absent nor `""`.
+  # Two places used to read `glob` with different predicates, and they
+  # disagreed: `resolve_items/2` tested `is_binary` (so `null` meant "no glob")
+  # while `params?/2` tested `!= ""` (so `null` meant "a glob"), which switched
+  # the naming rule off for a call that had no glob at all. A `null` `template`
+  # and a `null` `name_prefix` raised for the same reason.
+  defp opt_string(args, key) do
+    case Map.get(args, key) do
+      value when is_binary(value) -> value
+      _other -> ""
+    end
   end
 
   # Slugify an item. Items can be integers (assignment ids) or
@@ -299,13 +334,19 @@ defmodule Nest.Agents.Agent.BatchPlan do
   # single `-`. A slug that comes out empty (e.g. all punctuation)
   # falls back to a deterministic `item-<n>`.
   #
-  # The 32-character cap is what keeps a name a name: a long path still reads,
-  # and the slice is trimmed again because cutting mid-word can leave a trailing
-  # `-` that `base_name/4` would then double.
+  # A path contributes its **basename**, without the extension: every file in one
+  # directory shares a prefix, so slugging from the head made siblings collide
+  # (`home-nat-code-nest-lib-nest-agen-1`, `-2`) and the occurrence suffix then
+  # claimed a repeat that never happened. `batch-plan` and `batch-coordinator`
+  # are what the sidebar wants.
+  #
+  # The 32-character cap is what keeps a name a name: a long basename still
+  # reads, and the slice is trimmed again because cutting mid-word can leave a
+  # trailing `-` that `base_name/4` would then double.
   defp item_slug(item, index) do
     slug =
       item
-      |> to_string()
+      |> slug_source()
       |> String.downcase()
       |> String.replace(~r/[^a-z0-9]+/u, "-")
       |> String.trim("-")
@@ -313,6 +354,16 @@ defmodule Nest.Agents.Agent.BatchPlan do
       |> String.trim("-")
 
     if slug == "", do: "item-#{index + 1}", else: slug
+  end
+
+  defp slug_source(item) do
+    text = to_string(item)
+
+    if String.contains?(text, "/") do
+      text |> Path.basename() |> Path.rootname()
+    else
+      text
+    end
   end
 
   defp base_name(prefix, slug, occurrence, total) do
