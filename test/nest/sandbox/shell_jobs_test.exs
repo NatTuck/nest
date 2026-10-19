@@ -275,7 +275,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert :ok = ShellJobs.unsubscribe(key, "job-999", self())
   end
 
-  test "list returns jobs oldest-first" do
+  test "list returns jobs newest-first" do
     name = "order-agent-#{System.unique_integer([:positive])}"
     key = {7, name}
     root = Path.join(System.tmp_dir!(), "nest_jobs_order_#{System.unique_integer([:positive])}")
@@ -304,7 +304,9 @@ defmodule Nest.Sandbox.ShellJobsTest do
         id
       end
 
-    assert ShellJobs.list(key) |> Enum.map(& &1.id) == ids
+    # Newest first: a listing is read to find what just ran. `trim/2` sorts the
+    # other way on purpose, because it deletes the oldest.
+    assert ShellJobs.list(key) |> Enum.map(& &1.id) == Enum.reverse(ids)
   end
 
   # A job's command line is the backend's to build, from the *staged* script

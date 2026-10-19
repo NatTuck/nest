@@ -286,7 +286,10 @@ defmodule Nest.Sandbox.ShellJobs do
       state.jobs
       |> Map.values()
       |> Enum.filter(&(&1.agent_key == agent_key))
-      |> Enum.sort_by(& &1.started_at, DateTime)
+      # Most recent first: a listing is read to find what just ran, and a job id
+      # is not a timestamp. `trim/2` sorts the other way on purpose — it deletes
+      # the oldest — so the two orders are not a shared helper.
+      |> Enum.sort_by(& &1.started_at, {:desc, DateTime})
       |> Enum.map(&to_info/1)
 
     {:reply, jobs, state}
