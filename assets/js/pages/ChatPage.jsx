@@ -484,28 +484,36 @@ export function ChatPage() {
   const isInputDisabled = status !== "connected";
 
   return (
-    <div className="flex flex-col h-full max-w-6xl mx-auto">
-      {/* Header */}
-      <ChatHeader
-        name={name}
-        vocation={vocation}
-        model={model}
-        agentState={agentState}
-        changeModelError={changeModelError}
-        parentName={parentName}
-        depth={depth}
-        spaceSlug={spaceSlug}
-        usage={usage}
-        descendantUsage={descendantUsage}
-        totalUsage={totalUsage}
-        contextLimit={contextLimit}
-        status={status}
-        streaming={streaming}
-        onModelPickerOpen={() => setModelPickerOpen(true)}
-        getStatusLabel={() => statusLabel}
-      />
+    <div className="flex flex-col h-full max-w-6xl mx-auto overflow-hidden">
+      {/* Issue #86: this column is the page's whole height, and
+          `overflow-hidden` is what keeps it that way. `main` in `Layout`
+          scrolls for every other page, and on this one that scrolled the
+          header and the composer away with it. The chrome region below is
+          the only thing allowed to scroll when the chrome alone is taller
+          than the viewport; the composer sits outside it, so the banners
+          can never carry it off screen. */}
+      <div className="min-h-0 overflow-y-auto">
+        {/* Header */}
+        <ChatHeader
+          name={name}
+          vocation={vocation}
+          model={model}
+          agentState={agentState}
+          changeModelError={changeModelError}
+          parentName={parentName}
+          depth={depth}
+          spaceSlug={spaceSlug}
+          usage={usage}
+          descendantUsage={descendantUsage}
+          totalUsage={totalUsage}
+          contextLimit={contextLimit}
+          status={status}
+          streaming={streaming}
+          onModelPickerOpen={() => setModelPickerOpen(true)}
+          getStatusLabel={() => statusLabel}
+        />
 
-      {/* Status banner — `agentState` carries the agent's GenServer
+        {/* Status banner — `agentState` carries the agent's GenServer
           state (including `:compacting` / `:compaction_failed`),
           distinct from the connection-level `status`. The banner
           handles both axes.
@@ -518,18 +526,20 @@ export function ChatPage() {
           visible during the idle window instead of silently
           disappearing (a regression that previously required a
           full page reload to recover from). */}
-      <StatusBanner
-        status={status === "error" && error ? "error" : (agentState ?? status)}
-        error={error}
-        onRetry={handleRetry}
-        onDismiss={handleDismissError}
-        onRetryCompaction={handleRetryCompaction}
-        onCompactionLoopOk={handleCompactionLoopOk}
-        compactionError={compactionError}
-        compactionLoop={compactionLoop}
-      />
+        <StatusBanner
+          status={
+            status === "error" && error ? "error" : (agentState ?? status)
+          }
+          error={error}
+          onRetry={handleRetry}
+          onDismiss={handleDismissError}
+          onRetryCompaction={handleRetryCompaction}
+          onCompactionLoopOk={handleCompactionLoopOk}
+          compactionError={compactionError}
+          compactionLoop={compactionLoop}
+        />
 
-      {/* Repair banner — only shown when the agent's persisted
+        {/* Repair banner — only shown when the agent's persisted
           model no longer resolves to a runtime provider
           (status ":model_missing"). Per the recovery flow,
           the user picks a replacement model from here; the
@@ -538,47 +548,52 @@ export function ChatPage() {
           forward. The picker's selection calls
           `handleChangeModel`, which closes the picker and
           pushes `"change_model"` over the lobby channel. */}
-      {agentState === "model_missing" && (
-        <ModelMissingBanner
-          model={model}
-          onChooseModel={() => setModelPickerOpen(true)}
-        />
-      )}
+        {agentState === "model_missing" && (
+          <ModelMissingBanner
+            model={model}
+            onChooseModel={() => setModelPickerOpen(true)}
+          />
+        )}
 
-      {/* Repair banner — the persisted active sequence failed wire
+        {/* Repair banner — the persisted active sequence failed wire
           validation at load (status ":needs_repair"). Chat is blocked
           until the operator runs the offline repair command and
           reloads the agent. */}
-      {agentState === "needs_repair" && (
-        <NeedsRepairBanner
-          violations={sequenceViolations}
-          repairCommand={repairCommand}
-          onReload={handleReloadAgent}
-          error={reloadError}
-        />
-      )}
+        {agentState === "needs_repair" && (
+          <NeedsRepairBanner
+            violations={sequenceViolations}
+            repairCommand={repairCommand}
+            onReload={handleReloadAgent}
+            error={reloadError}
+          />
+        )}
 
-      {/* The space's environment is being edited: work is held, and the user
+        {/* The space's environment is being edited: work is held, and the user
           has to see that rather than an agent that looks stuck. */}
-      <SpacePausedBanner spaceId={spaceId} spaceName={space?.name} />
+        <SpacePausedBanner spaceId={spaceId} spaceName={space?.name} />
 
-      {/* Notification banner */}
-      <NotificationBanner
-        notification={notification}
-        onClose={() => useStore.getState().clearNotification(name)}
-      />
+        {/* Notification banner */}
+        <NotificationBanner
+          notification={notification}
+          onClose={() => useStore.getState().clearNotification(name)}
+        />
 
-      {/* Send error */}
-      <SendErrorBanner message={sendError} />
+        {/* Send error */}
+        <SendErrorBanner message={sendError} />
+      </div>
 
       {/* The conversation and the agent's background shell jobs are
           separate views: the jobs panel used to render inline above the
           message list, where a handful of jobs pushed the conversation
-          off screen. */}
-      <ChatTabs active={tab} onSelect={setTab} jobCount={jobs.length} />
+          off screen. `shrink-0`: the tab bar is chrome the conversation
+          must not squeeze, and it is what the chrome region above shrinks
+          against. */}
+      <div className="shrink-0">
+        <ChatTabs active={tab} onSelect={setTab} jobCount={jobs.length} />
+      </div>
 
       {tab === JOBS_TAB ? (
-        <div className="mb-4 flex-1 overflow-y-auto">
+        <div className="mb-4 flex-1 min-h-0 overflow-y-auto">
           {jobs.length === 0 ? (
             <p className="py-12 text-center text-sm text-gray-400">
               No background jobs.

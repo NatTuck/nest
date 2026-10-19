@@ -553,3 +553,68 @@ describe("SpaceFeed", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("mode: (missing)");
   });
 });
+
+describe("SpaceFeed scroll containers (issue #86)", () => {
+  // `main` in `Layout` is `overflow-auto`, and on this page that made it a
+  // second scroll container: tall chrome (the environment card alone can be
+  // taller than a phone viewport) pushed the column past it, and scrolling
+  // anywhere over the page then took the space's name and the composer with it —
+  // the same defect the chat page had.
+  //
+  // jsdom has no layout engine, so the overflow itself cannot be measured here;
+  // what is pinned is the class contract the fix rests on, because dropping any
+  // one clause puts `main` back in the scrolling business: the column clips, the
+  // chrome region may shrink and scroll on its own, the notes pane is the one
+  // `flex-1` scroll region, and the composer is outside both.
+  const panes = (column) =>
+    [...column.children].filter((el) =>
+      String(el.className).includes("flex-1"),
+    );
+
+  it("clips the column, scrolls only the chrome when it must, and never squeezes the composer", () => {
+    const { container } = renderFeed();
+
+    const column = container.firstElementChild;
+    expect(column.className).toContain("overflow-hidden");
+
+    // The chrome region: the pause banner, the space's name and blueprint, the
+    // environment card and the owed-reply banner. Identified positively as well
+    // as positionally, so an element added above the header fails loudly here
+    // instead of quietly turning this into an assertion about the wrong node.
+    const chrome = column.firstElementChild;
+    expect(
+      within(chrome).getByRole("heading", { name: "My Space" }),
+    ).toBeInTheDocument();
+    // The whole chrome is in there, not just the header: the environment card is
+    // the tall thing that used to push the column past the viewport.
+    expect(
+      within(chrome).getByRole("button", { name: /Environment/ }),
+    ).toBeInTheDocument();
+    expect(chrome.className).toContain("overflow-y-auto");
+    expect(chrome.className).toContain("min-h-0");
+    // It scrolls; it never truncates what it holds.
+    expect(chrome.className).not.toContain("overflow-hidden");
+
+    // One scroll region, and it is the notes. `min-h-0` is load-bearing: without
+    // it the pane keeps `min-height: auto`, stays at content height, its own
+    // `overflow-y-auto` never engages, and the column's `overflow-hidden` clips
+    // the newest notes out of reach.
+    expect(panes(column)).toHaveLength(1);
+    expect(panes(column)[0].className).toContain("overflow-y-auto");
+    expect(panes(column)[0].className).toContain("min-h-0");
+
+    // The composer is outside every scroll region and cannot be squeezed.
+    const composer = screen.getByLabelText("Message").closest(".shrink-0");
+    expect(composer).not.toBeNull();
+    expect(chrome.contains(composer)).toBe(false);
+    expect(panes(column)[0].contains(composer)).toBe(false);
+    expect(column.contains(composer)).toBe(true);
+
+    // The recipient picker is part of the composer's half of the page, not of
+    // the chrome: it is the control that says who the next note is for, so it
+    // may not be scrolled away from the input it applies to.
+    const picker = screen.getByLabelText("Send to");
+    expect(chrome.contains(picker)).toBe(false);
+    expect(column.contains(picker)).toBe(true);
+  });
+});
