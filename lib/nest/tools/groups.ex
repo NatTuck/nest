@@ -16,6 +16,8 @@ defmodule Nest.Tools.Groups do
     * `"context"` — context usage/compaction control tools
     * `"agents"`  — spawn/query/archive sub-agents, read their history, and
       list models
+    * `"pane"`    — the user's right-hand pane: ask decisions and keep a
+      visible TODO list (issues #119/#120)
   """
 
   require Logger
@@ -25,13 +27,14 @@ defmodule Nest.Tools.Groups do
     "shell" => ~w(shell-cmd shell-list shell-wait shell-kill),
     "context" => ~w(context-check context-compact),
     "agents" =>
-      ~w(agents-spawn agents-query agents-send agents-wait agents-list agents-list-archived agents-archive agents-unarchive agents-batch models-list agents-history agents-status)
+      ~w(agents-spawn agents-query agents-send agents-wait agents-list agents-list-archived agents-archive agents-unarchive agents-batch models-list agents-history agents-status),
+    "pane" => ~w(decisions-ask decisions-list decisions-obsolete todos-write todos-list)
   }
 
   # Canonical order. Expansion follows this order (and the tool order
   # within each group) so an agent's tool list — and therefore its tool
   # schemas in the LLM request — is deterministic.
-  @group_order ~w(file shell context agents)
+  @group_order ~w(file shell context agents pane)
 
   @doc "All known group names, in canonical order."
   @spec all() :: [String.t()]
