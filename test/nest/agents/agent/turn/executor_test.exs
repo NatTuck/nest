@@ -1,7 +1,10 @@
 defmodule Nest.Agents.Agent.Turn.ExecutorTest do
   @moduledoc false
-  # One focused assertion per executor action (plus fact round-trips). The
-  # guard suite pins that every declared action has a clause.
+  # One test per family of executor actions that share a fixture and do not
+  # contradict each other (plus fact round-trips). The guard suite pins that
+  # every declared action has a clause. Tests that own a capture window stay
+  # separate: `capture_log` is whole-VM, so a shared window would let one
+  # action's line satisfy another action's assertion.
 
   use Nest.DataCase, async: true
 
@@ -76,13 +79,11 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
   end
 
   describe "bookkeeping actions" do
-    test "merge_metrics folds usage into the totals" do
+    test "merge_metrics and the set_* actions fold into live state" do
       {state, nil} = run({:merge_metrics, %{output_tokens: 7, total_tokens: 9}})
       assert state.llm_metrics.usage_totals.output_tokens == 7
-    end
 
-    test "set_crossed_thresholds / set_context_projection / set_api_log_sequences" do
-      {state, nil} = run({:set_crossed_thresholds, MapSet.new([:p25])})
+      {state, nil} = run({:set_crossed_thresholds, MapSet.new([:p25])}, state)
       assert state.live.crossed_thresholds == MapSet.new([:p25])
 
       {state, nil} = run({:set_context_projection, 42}, state)
@@ -93,24 +94,27 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
 
       {state, nil} = run({:set_api_log_sequences, %{0 => 3}}, state)
       assert state.live.api_log_sequences == %{0 => 3}
-    end
 
-    test "set_cancelled sets the sticky flag" do
-      {state, nil} = run({:set_cancelled, true})
+      {state, nil} = run({:set_cancelled, true}, state)
       assert state.live.cancelled
-    end
 
-    test "set_streaming seeds an accumulator at the index" do
-      {state, nil} = run({:set_streaming, 5})
+      {state, nil} = run({:set_streaming, 5}, state)
       assert state.live.streaming_acc.index == 5
     end
 
-    test "ack sends a term" do
+    test "ack, iterate, arm_timer, cancel_timer and kill act on the caller's mailbox and process" do
       {_state, nil} = run({:ack, self(), :stopped})
       assert_received :stopped
-    end
 
-    test "kill exits the worker" do
+      assert {_state, nil} = run(:iterate)
+      assert_received :iterate
+
+      assert {_state, nil} = run({:cancel_timer, make_ref()})
+
+      {_state, follow} = run({:arm_timer, 2_000, :stop_timer})
+      assert {:timer_armed, :stop_timer, timer_ref} = follow
+      Process.cancel_timer(timer_ref)
+
       pid =
         spawn(fn ->
           receive do
@@ -118,33 +122,22 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
           end
         end)
 
-      ref = Process.monitor(pid)
+      monitor_ref = Process.monitor(pid)
       {_state, nil} = run({:kill, pid})
-      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 1_000
-    end
-
-    test "cancel_timer is a no-op for unknown refs" do
-      assert {_state, nil} = run({:cancel_timer, make_ref()})
-    end
-
-    test "arm_timer produces a timer_armed follow-up" do
-      {_state, follow} = run({:arm_timer, 2_000, :stop_timer})
-      assert {:timer_armed, :stop_timer, ref} = follow
-      Process.cancel_timer(ref)
+      assert_receive {:DOWN, ^monitor_ref, :process, ^pid, :killed}, 1_000
     end
 
     test "log emits at the given level" do
       assert capture_log(fn -> {_state, nil} = run({:log, :warning, "noop"}) end) =~ "noop"
     end
-
-    test "iterate is deferred through the mailbox" do
-      assert {_state, nil} = run(:iterate)
-      assert_received :iterate
-    end
   end
 
   describe "sequence actions" do
-    test "append and append_many persist and round-trip ok" do
+    test "append, append_many and record_file_access on a fresh chat" do
+      # `record_file_access` runs first: its claim is a chat with no messages at
+      # all, which the appends below would violate.
+      assert {_state, nil} = run({:record_file_access})
+
       # No capture: the fixture owns a real row, so these appends genuinely
       # persist and the append path logs nothing.
       {appended, nil} = run({:append, user_msg()})
@@ -176,40 +169,25 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
 
       assert reason =~ "second consecutive assistant"
     end
-
-    test "record_file_access is a no-op with no messages" do
-      assert {_state, nil} = run({:record_file_access})
-    end
   end
 
   describe "fact round-trips" do
-    test "preflight returns a preflight_result" do
+    test "preflight, spawn_http and spawn_tools return their follow-up facts" do
       {_state, {:preflight_result, decision}} = run({:preflight, ctx(), [], :cont})
       assert decision == :fits
-    end
 
-    test "spawn_http returns worker_started and monitors a task" do
-      {_state, follow} = run({:spawn_http, Map.put(ctx(), :messages, [])})
-      assert {:worker_started, ref, pid, :http} = follow
-      assert is_reference(ref) and is_pid(pid)
-      Process.exit(pid, :kill)
-    end
+      {_state, follow} = run({:spawn_http, ctx()})
+      assert {:worker_started, http_ref, http_pid, :http} = follow
+      assert is_reference(http_ref) and is_pid(http_pid)
+      Process.exit(http_pid, :kill)
 
-    test "spawn_tools returns worker_started" do
       {_state, follow} = run({:spawn_tools, ctx(), []})
-      assert {:worker_started, _ref, pid, :tools} = follow
-      Process.exit(pid, :kill)
+      assert {:worker_started, _ref, tools_pid, :tools} = follow
+      Process.exit(tools_pid, :kill)
     end
   end
 
   describe "broadcasts and terminal actions" do
-    test "broadcast :status" do
-      state = state()
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
-      {_state, nil} = run({:broadcast, :status, nil}, state)
-      assert_receive {:chat_status, _}
-    end
-
     test "broadcast overflow emits chat:error" do
       state = state()
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
@@ -224,10 +202,6 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
 
       assert log =~ "chat:error"
       assert_receive {:chat_error, _}
-    end
-
-    test "finalize clean completes a turn" do
-      assert {_state, nil} = run({:finalize, :clean})
     end
 
     test "finalize waiting ends the turn without reporting a completion" do
@@ -259,7 +233,11 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       assert name == child.name
     end
 
-    test "finalize stopped recovery appends nothing without a partial" do
+    test "finalize :clean completes a turn and the stopped recovery appends nothing" do
+      assert {_state, nil} = run({:finalize, :clean})
+
+      # The user-stop recovery has no partial to append, so it ends the turn
+      # without inventing an assistant message.
       assert {_state, nil} = run({:finalize, %{"stopped_by_user" => true}})
     end
 
@@ -313,11 +291,6 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
 
       {fallback, nil} = run({:child_message, "kid", {:ok, "resp"}}, with_target(state(), dead))
       assert [%{from: "kid", content: "resp", kind: :agent}] = fallback.live.inbox
-    end
-
-    test "merge_usage folds descendant usage" do
-      {state, nil} = run({:merge_usage, "kid", %{output_tokens: 4}})
-      assert state.llm_metrics.descendant_usage.output_tokens == 4
     end
 
     test "drain_inbox peeks: the queue is untouched and no inbox frame is sent" do
@@ -481,16 +454,17 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       assert state.live.machine.pending_user_message == nil
     end
 
-    test "stop_all_children clears the children sub-machine" do
-      {state, nil} = run({:stop_all_children})
-      assert state.live.machine.children.children == %{}
-    end
+    test "descendant bookkeeping: usage, stop_all_children and the per-child actions" do
+      {state, nil} = run({:merge_usage, "kid", %{output_tokens: 4}})
+      assert state.llm_metrics.descendant_usage.output_tokens == 4
 
-    test "stop_child / archive_child tolerate unknown names" do
+      {state, nil} = run({:stop_all_children}, state)
+      assert state.live.machine.children.children == %{}
+
       # No capture: `stop_one/3`'s `{:error, :not_found}` arm logs nothing, so
       # there is no line to assert on and a capture could only hide one.
-      assert {_state, nil} = run({:stop_child, "missing"})
-      assert {_state, nil} = run({:archive_child, "missing"})
+      assert {_state, nil} = run({:stop_child, "missing"}, state)
+      assert {_state, nil} = run({:archive_child, "missing"}, state)
     end
 
     test "commit_compaction with an empty summary returns commit_error" do
@@ -506,9 +480,12 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       assert {_state, {:commit_error, _reason}} = run({:commit_compaction, data})
     end
 
-    test "notification / error / compaction broadcasts" do
+    test "status, notification, error and compaction broadcasts" do
       state = state()
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
+
+      {_state, nil} = run({:broadcast, :status, nil}, state)
+      assert_receive {:chat_status, _}
 
       {_state, nil} = run({:broadcast, {:notification, %{type: "x"}}, nil}, state)
       assert_receive {:chat_notification, %{type: "x"}}

@@ -37,8 +37,10 @@ defmodule Nest.SandboxTest do
   end
 
   describe "build_default/2" do
-    test "produces args for the build profile (workspace + /tmp writable)", %{tmp: dir} do
+    test "produces args for the build profile, binding the space dir at /tmp only with a tmp_path",
+         %{tmp: dir} do
       {:ok, args} = Sandbox.build_default(Mounts.new(dir, "/tmp/nest-123/space-7/agent-1"))
+
       assert "--unshare-all" in args
       assert "--unshare-net" in args
       assert "--ro-bind" in args
@@ -50,11 +52,6 @@ defmodule Nest.SandboxTest do
       assert workspace_idx != nil
       assert Enum.at(args, workspace_idx - 1) == "--bind"
       assert Enum.at(args, workspace_idx + 1) == dir
-    end
-
-    test "includes --bind space_dir /tmp when tmp_path is provided", %{tmp: dir} do
-      {:ok, args} = Sandbox.build_default(Mounts.new(dir, "/tmp/nest-123/space-7/agent-1"))
-      assert "--bind" in args
 
       # The *space* dir (the parent of the agent's own tmp_path) is what
       # gets bound at /tmp, so every agent in the space shares one /tmp.
@@ -62,171 +59,158 @@ defmodule Nest.SandboxTest do
       assert idx != nil
       assert Enum.at(args, idx - 1) == "--bind"
       assert Enum.at(args, idx + 1) == "/tmp"
-    end
 
-    test "does not include --bind tmp_path /tmp when tmp_path is nil", %{tmp: dir} do
-      {:ok, args} = Sandbox.build_default(Mounts.new(dir, nil))
+      {:ok, no_tmp_path} = Sandbox.build_default(Mounts.new(dir, nil))
       # /tmp appears nowhere in args when there's no tmp_path to bind
-      refute "/tmp" in args
+      refute "/tmp" in no_tmp_path
     end
   end
 
   describe "build/3 with net caps" do
-    test "net=true includes --share-net and omits --unshare-net", %{tmp: dir} do
-      caps = build_caps(net: true, write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, Mounts.new(dir, nil))
-      assert "--share-net" in args
-      refute "--unshare-net" in args
-    end
+    test "the net cap picks --share-net or --unshare-net", %{tmp: dir} do
+      {:ok, shared} =
+        Sandbox.build(build_caps(net: true, write: [":workspace"]), Mounts.new(dir, nil))
 
-    test "net=false includes --unshare-net", %{tmp: dir} do
-      caps = build_caps(net: false, write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, Mounts.new(dir, nil))
-      assert "--unshare-net" in args
+      assert "--share-net" in shared
+      refute "--unshare-net" in shared
+
+      {:ok, unshared} =
+        Sandbox.build(build_caps(net: false, write: [":workspace"]), Mounts.new(dir, nil))
+
+      assert "--unshare-net" in unshared
+      refute "--share-net" in unshared
     end
   end
 
   describe "build/3 with fs.read caps" do
-    test "read=['/'] includes --ro-bind / /", %{tmp: dir} do
-      caps = build_caps(read: ["/"], write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, Mounts.new(dir, nil))
+    test "read=['/'] produces the root ro-bind; an empty read list is an error", %{tmp: dir} do
+      {:ok, args} =
+        Sandbox.build(build_caps(read: ["/"], write: [":workspace"]), Mounts.new(dir, nil))
+
       assert "--ro-bind" in args
       assert "/" in args
-    end
 
-    test "read=[] returns an error (bwrap needs /bin/sh)", %{tmp: dir} do
-      caps = build_caps(read: [], write: [":workspace"])
-      assert {:error, msg} = Sandbox.build(caps, Mounts.new(dir, nil))
+      # bwrap runs /bin/sh out of the read set, so an empty list cannot produce
+      # a runnable sandbox.
+      assert {:error, msg} =
+               Sandbox.build(build_caps(read: [], write: [":workspace"]), Mounts.new(dir, nil))
+
       assert msg =~ "caps.fs.read must include"
     end
   end
 
   describe "build/3 with fs.write caps" do
-    test "write=[] (no extras) does NOT bind the workspace", %{tmp: dir} do
-      # Plan mode: workspace stays read-only via the / ro-bind.
-      caps = build_caps(write: [])
-      {:ok, args} = Sandbox.build(caps, Mounts.new(dir, nil))
+    test "the write list decides which paths get a --bind", %{tmp: dir} do
+      # No write entries at all (plan mode): the workspace stays read-only via
+      # the / ro-bind, so there is no --bind anywhere.
+      {:ok, no_writes} = Sandbox.build(build_caps(write: []), Mounts.new(dir, nil))
+      refute "--bind" in no_writes
 
-      # No --bind at all (workspace not bound, no /tmp bind, no extras).
-      refute "--bind" in args
-    end
+      # ":workspace" binds the workspace read-write at its actual path.
+      {:ok, workspace_write} =
+        Sandbox.build(build_caps(write: [":workspace"]), Mounts.new(dir, nil))
 
-    test "write=[\":workspace\"] binds the workspace read-write", %{tmp: dir} do
-      caps = build_caps(write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, Mounts.new(dir, nil))
-
-      # The workspace is bound at its actual path.
-      workspace_idx = Enum.find_index(args, &(&1 == dir))
+      workspace_idx = Enum.find_index(workspace_write, &(&1 == dir))
       assert workspace_idx != nil
-      assert Enum.at(args, workspace_idx - 1) == "--bind"
-      assert Enum.at(args, workspace_idx + 1) == dir
-    end
+      assert Enum.at(workspace_write, workspace_idx - 1) == "--bind"
+      assert Enum.at(workspace_write, workspace_idx + 1) == dir
 
-    test ~s(write=[":workspace", "/tmp"] binds workspace + the space dir at /tmp), %{tmp: dir} do
-      caps = build_caps(write: ["/tmp", ":workspace"])
-      {:ok, args} = Sandbox.build(caps, Mounts.new(dir, "/tmp/nest-123/space-7/agent-1"))
+      # A literal path is bound at its own path, and the workspace is not bound
+      # at all. (It does appear once more as the --chdir argument, which is
+      # fine.)
+      {:ok, extra} = Sandbox.build(build_caps(write: ["/some/extra"]), Mounts.new(dir, nil))
+      assert Enum.count(extra, &(&1 == "--bind")) == 1
 
-      # Two --bind directives: workspace and the space dir bound at /tmp
-      assert Enum.count(args, &(&1 == "--bind")) == 2
-      # The /tmp in args is the space-dir bind (NOT a caps-derived bind)
-      tmp_indices = args |> Enum.with_index() |> Enum.filter(&match?({"/tmp", _}, &1))
-      assert length(tmp_indices) == 1
-      {_, idx} = hd(tmp_indices)
-      assert Enum.at(args, idx - 1) == "/tmp/nest-123/space-7"
-    end
-
-    test "write=[\"/some/extra\"] binds the extra path, NOT the workspace", %{tmp: dir} do
-      caps = build_caps(write: ["/some/extra"])
-      {:ok, args} = Sandbox.build(caps, Mounts.new(dir, nil))
-
-      # /some/extra is bound
-      assert Enum.count(args, &(&1 == "--bind")) == 1
-      # Workspace path does NOT appear as a --bind target. (It does
-      # appear once more as the --chdir argument, which is fine.)
       bind_count =
-        args
+        extra
         |> Enum.with_index()
         |> Enum.count(fn
-          {^dir, i} -> Enum.at(args, i - 1) == "--bind"
+          {^dir, i} -> Enum.at(extra, i - 1) == "--bind"
           _ -> false
         end)
 
       assert bind_count == 0
-    end
 
-    test "write=[\"/tmp\"] does not produce a redundant /tmp --bind", %{tmp: dir} do
-      # The /tmp symbolic entry is resolved by append_tmp_bind/3; the
-      # write list entry should be rejected to avoid a double bind.
-      caps = build_caps(write: ["/tmp"])
-      {:ok, args} = Sandbox.build(caps, Mounts.new(dir, "/tmp/nest-123/space-7/agent-1"))
-
-      # Only the space-dir bind; no extra --bind /tmp /tmp
-      assert Enum.count(args, &(&1 == "--bind")) == 1
-    end
-
-    test "write includes the literal workspace_path: no double bind", %{tmp: dir} do
-      caps = build_caps(write: [dir])
-      {:ok, args} = Sandbox.build(caps, Mounts.new(dir, nil))
       # The literal workspace path matches the rejection list (it equals
-      # workspace_path), so no --bind is produced.
-      refute "--bind" in args
+      # workspace_path), so no --bind is produced for it either.
+      {:ok, literal_workspace} = Sandbox.build(build_caps(write: [dir]), Mounts.new(dir, nil))
+      refute "--bind" in literal_workspace
+    end
+
+    test "a raw /tmp write entry adds no bind of its own, while :workspace still binds", %{
+      tmp: dir
+    } do
+      mounts = Mounts.new(dir, "/tmp/nest-123/space-7/agent-1")
+
+      # Two --bind directives: workspace and the space dir bound at /tmp
+      {:ok, both} = Sandbox.build(build_caps(write: ["/tmp", ":workspace"]), mounts)
+      assert Enum.count(both, &(&1 == "--bind")) == 2
+
+      # The /tmp in args is the space-dir bind (NOT a caps-derived bind)
+      tmp_indices = both |> Enum.with_index() |> Enum.filter(&match?({"/tmp", _}, &1))
+      assert length(tmp_indices) == 1
+      {_, idx} = hd(tmp_indices)
+      assert Enum.at(both, idx - 1) == "/tmp/nest-123/space-7"
+
+      # The symbolic /tmp entry is resolved by the scratch bind, so the write
+      # list entry is rejected to avoid a double bind: only the space-dir bind
+      # is left.
+      {:ok, raw_tmp} = Sandbox.build(build_caps(write: ["/tmp"]), mounts)
+      assert Enum.count(raw_tmp, &(&1 == "--bind")) == 1
     end
   end
 
   describe "build/3 tmp_path" do
-    test "tmp_path=nil produces no /tmp bind", %{tmp: dir} do
-      caps = build_caps(write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, Mounts.new(dir, nil))
-      refute "/tmp" in args
-    end
+    test "the space dir is bound at /tmp only with a tmp_path, read-only unless the mode grants it",
+         %{
+           tmp: dir
+         } do
+      # No tmp_path means no /tmp bind at all.
+      {:ok, no_scratch} = Sandbox.build(build_caps(write: [":workspace"]), Mounts.new(dir, nil))
+      refute "/tmp" in no_scratch
 
-    test "a mode without /tmp grant binds its space dir at /tmp read-only", %{tmp: dir} do
+      mounts = Mounts.new(dir, "/tmp/nest-123/space-7/agent-1")
+
       # The scratch is only writable when the mode grants the symbolic /tmp
       # write; otherwise it stays readable but read-only.
-      caps = build_caps(write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, Mounts.new(dir, "/tmp/nest-123/space-7/agent-1"))
-      tmp_indices = args |> Enum.with_index() |> Enum.filter(&match?({"/tmp", _}, &1))
+      {:ok, ro_args} = Sandbox.build(build_caps(write: [":workspace"]), mounts)
+      ro_tmp = ro_args |> Enum.with_index() |> Enum.filter(&match?({"/tmp", _}, &1))
+      assert length(ro_tmp) == 1
+      {_, ro_idx} = hd(ro_tmp)
+      assert Enum.at(ro_args, ro_idx - 2) == "--ro-bind"
+      assert Enum.at(ro_args, ro_idx - 1) == "/tmp/nest-123/space-7"
 
-      assert length(tmp_indices) == 1
-      {_, idx} = hd(tmp_indices)
-      assert Enum.at(args, idx - 2) == "--ro-bind"
-      assert Enum.at(args, idx - 1) == "/tmp/nest-123/space-7"
-    end
-
-    test "a mode with /tmp grant binds its space dir at /tmp read-write", %{tmp: dir} do
-      caps = build_caps(write: [":workspace", "/tmp"])
-      {:ok, args} = Sandbox.build(caps, Mounts.new(dir, "/tmp/nest-123/space-7/agent-1"))
-      tmp_indices = args |> Enum.with_index() |> Enum.filter(&match?({"/tmp", _}, &1))
-
-      assert length(tmp_indices) == 1
-      {_, idx} = hd(tmp_indices)
-      assert Enum.at(args, idx - 2) == "--bind"
-      assert Enum.at(args, idx - 1) == "/tmp/nest-123/space-7"
+      {:ok, rw_args} = Sandbox.build(build_caps(write: [":workspace", "/tmp"]), mounts)
+      rw_tmp = rw_args |> Enum.with_index() |> Enum.filter(&match?({"/tmp", _}, &1))
+      assert length(rw_tmp) == 1
+      {_, rw_idx} = hd(rw_tmp)
+      assert Enum.at(rw_args, rw_idx - 2) == "--bind"
+      assert Enum.at(rw_args, rw_idx - 1) == "/tmp/nest-123/space-7"
     end
   end
 
   describe "build/5 HPU passthrough" do
-    test "binds host /dev and the Habana log dir read-write when HPUs are present", %{tmp: dir} do
+    test "HPUs bind host /dev and the Habana log dir; without them, a fresh devtmpfs", %{
+      tmp: dir
+    } do
       caps = build_caps(write: [":workspace"])
       log_dir = Hardware.habana_log_dir()
-      {:ok, args} = Sandbox.build(caps, Mounts.new(dir, nil), dir, ["/dev/accel"])
+
+      {:ok, with_hpu} = Sandbox.build(caps, Mounts.new(dir, nil), dir, ["/dev/accel"])
 
       # No fresh devtmpfs; the host /dev is bound so accelerator nodes
       # are present and usable.
-      refute "--dev" in args
-      assert Enum.chunk_every(args, 3, 1) |> Enum.member?(["--dev-bind", "/dev", "/dev"])
+      refute "--dev" in with_hpu
+      assert Enum.chunk_every(with_hpu, 3, 1) |> Enum.member?(["--dev-bind", "/dev", "/dev"])
 
       # The Habana log dir is overlaid read-write after the root ro-bind.
-      assert Enum.chunk_every(args, 3, 1) |> Enum.member?(["--bind", log_dir, log_dir])
-    end
+      assert Enum.chunk_every(with_hpu, 3, 1) |> Enum.member?(["--bind", log_dir, log_dir])
 
-    test "uses a fresh --dev devtmpfs and no Habana bind without HPUs", %{tmp: dir} do
-      caps = build_caps(write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, Mounts.new(dir, nil), dir, [])
+      {:ok, without_hpu} = Sandbox.build(caps, Mounts.new(dir, nil), dir, [])
 
-      assert "--dev" in args
-      refute "--dev-bind" in args
-      refute Hardware.habana_log_dir() in args
+      assert "--dev" in without_hpu
+      refute "--dev-bind" in without_hpu
+      refute log_dir in without_hpu
     end
   end
 
@@ -261,7 +245,10 @@ defmodule Nest.SandboxTest do
   end
 
   describe "workspace validation" do
-    test "rejects a workspace at or under the scratch bind", %{tmp: dir} do
+    test "rejects a workspace at or under the scratch bind or one that does not exist, and chdirs to the scratch root with no workspace",
+         %{
+           tmp: dir
+         } do
       caps = build_caps(write: [":workspace", "/tmp"])
 
       assert {:error, msg} =
@@ -277,21 +264,24 @@ defmodule Nest.SandboxTest do
       # A workspace that does not exist is rejected too.
       assert {:error, msg} = Sandbox.build(caps, Mounts.new(Path.join(dir, "missing"), nil))
       assert msg =~ "does not exist"
-    end
 
-    test "nil workspace binds no workspace and chdirs to the scratch root" do
-      caps = build_caps(write: ["/tmp"])
-      {:ok, args} = Sandbox.build(caps, Mounts.new(nil, "/tmp/nest-1/space-1/agent-1"))
+      # `workspace_error/1` is the classification both gates above go through.
+      assert :ok = Sandbox.workspace_error(nil)
+      assert {:error, :workspace_under_tmp} = Sandbox.workspace_error("/tmp/ws")
+      assert {:error, :workspace_missing} = Sandbox.workspace_error("/nope/does/not/exist")
+
+      # With no workspace at all there is nothing to bind, so bwrap's cwd is the
+      # scratch root.
+      {:ok, args} =
+        Sandbox.build(build_caps(write: ["/tmp"]), Mounts.new(nil, "/tmp/nest-1/space-1/agent-1"))
 
       assert ["--chdir", "/tmp" | _] = after_flag(args, "--chdir", "/tmp")
     end
 
-    test "workspace_error/1 classifies missing and /tmp-rooted paths" do
-      assert :ok = Sandbox.workspace_error(nil)
-      assert {:error, :workspace_under_tmp} = Sandbox.workspace_error("/tmp/ws")
-      assert {:error, :workspace_missing} = Sandbox.workspace_error("/nope/does/not/exist")
-    end
-
+    # These two stay separate even though they build the same fixture: the
+    # refusal warning is logged once per path (`Nest.ConfigFile.refuse/2` dedupes
+    # on `:persistent_term`), so whichever call runs first consumes it and the
+    # second logs nothing. Asserting both warnings in one test is impossible.
     test "workspace_error/1 refuses a workspace whose config file is a symlink", %{tmp: dir} do
       # A symlink cannot be masked, and a mask that is merely omitted leaves the
       # path replaceable — an `act` agent could delete the link and write a
@@ -302,7 +292,9 @@ defmodule Nest.SandboxTest do
 
       log =
         capture_log(fn ->
-          assert {:error, {:config_file_not_regular, path, _type}} = Sandbox.workspace_error(dir)
+          assert {:error, {:config_file_not_regular, path, _type}} =
+                   Sandbox.workspace_error(dir)
+
           assert path == Path.join(dir, ".nest")
         end)
 
@@ -347,79 +339,35 @@ defmodule Nest.SandboxTest do
   end
 
   describe "validate_caps/1" do
-    test "valid caps return :ok" do
+    test "valid caps return :ok, with or without :workspace and /tmp in the write list" do
       assert :ok = Sandbox.validate_caps(build_caps())
-    end
 
-    test "valid caps with :workspace and /tmp in write list" do
       assert :ok =
                Sandbox.validate_caps(build_caps(write: ["/tmp", ":workspace"]))
     end
 
-    test "missing net" do
-      assert {:error, msg} =
-               Sandbox.validate_caps(%{
-                 "fs" => %{"read" => ["/"], "write" => []}
-               })
-
-      assert msg =~ "caps.net is required"
-    end
-
-    test "missing fs" do
-      assert {:error, msg} = Sandbox.validate_caps(%{"net" => true})
-      assert msg =~ "caps.fs is required"
-    end
-
-    test "fs.read not a list" do
-      assert {:error, msg} =
-               Sandbox.validate_caps(%{
-                 "net" => true,
-                 "fs" => %{"read" => "/", "write" => []}
-               })
-
-      assert msg =~ "caps.fs.read must be a list"
-    end
-
-    test "fs.write not a list" do
-      assert {:error, msg} =
-               Sandbox.validate_caps(%{
-                 "net" => true,
-                 "fs" => %{"read" => ["/"], "write" => nil}
-               })
-
-      assert msg =~ "caps.fs.write must be a list"
-    end
-
-    test "fs not a map" do
-      assert {:error, msg} =
-               Sandbox.validate_caps(%{"net" => true, "fs" => []})
-
-      assert msg =~ "caps.fs must be a map"
-    end
-
-    test "read entries not all strings" do
-      assert {:error, msg} =
-               Sandbox.validate_caps(%{
-                 "net" => true,
-                 "fs" => %{"read" => ["/", 42], "write" => []}
-               })
-
-      assert msg =~ "caps.fs.read entries must be strings"
-    end
-
-    test "write entries not all strings" do
-      assert {:error, msg} =
-               Sandbox.validate_caps(%{
-                 "net" => true,
-                 "fs" => %{"read" => ["/"], "write" => ["/foo", :bar]}
-               })
-
-      assert msg =~ "caps.fs.write entries must be strings"
-    end
-
-    test "non-map caps" do
-      assert {:error, msg} = Sandbox.validate_caps("not a map")
-      assert msg =~ "invalid caps"
+    test "malformed caps are rejected with a diagnostic naming the problem" do
+      # One row per way the shape can be wrong; `build_caps/1` cannot express
+      # these, so each map is written out.
+      for {label, caps, expected} <- [
+            {"missing net", %{"fs" => %{"read" => ["/"], "write" => []}}, "caps.net is required"},
+            {"missing fs", %{"net" => true}, "caps.fs is required"},
+            {"fs not a map", %{"net" => true, "fs" => []}, "caps.fs must be a map"},
+            {"fs.read not a list", %{"net" => true, "fs" => %{"read" => "/", "write" => []}},
+             "caps.fs.read must be a list"},
+            {"fs.write not a list", %{"net" => true, "fs" => %{"read" => ["/"], "write" => nil}},
+             "caps.fs.write must be a list"},
+            {"read entries not all strings",
+             %{"net" => true, "fs" => %{"read" => ["/", 42], "write" => []}},
+             "caps.fs.read entries must be strings"},
+            {"write entries not all strings",
+             %{"net" => true, "fs" => %{"read" => ["/"], "write" => ["/foo", :bar]}},
+             "caps.fs.write entries must be strings"},
+            {"non-map caps", "not a map", "invalid caps"}
+          ] do
+        assert {:error, msg} = Sandbox.validate_caps(caps), label
+        assert msg =~ expected, label
+      end
     end
 
     test "the project's declared docker packages are checked for shape" do
@@ -473,64 +421,46 @@ defmodule Nest.SandboxTest do
       %{tmp: dir, root: root}
     end
 
-    test "single star matches within one segment, sorted", %{root: root} do
-      caps = build_caps(read: ["/"])
-      pattern = Path.join(root, "sub/*.txt")
-      expected = [Path.join(root, "sub/a.txt"), Path.join(root, "sub/b.txt")]
-      assert {:ok, ^expected} = Sandbox.glob(pattern, caps, Mounts.new(nil, nil))
-    end
-
-    test "star matches names with a dot in them", %{root: root} do
-      caps = build_caps(read: ["/"])
-      pattern = Path.join(root, "sub/*.*")
-
-      expected = [
-        Path.join(root, "sub/a.txt"),
-        Path.join(root, "sub/b.txt"),
-        Path.join(root, "sub/c.md")
-      ]
-
-      assert {:ok, ^expected} = Sandbox.glob(pattern, caps, Mounts.new(nil, nil))
-    end
-
-    test "double star crosses directory boundaries (zero-or-more segments)", %{
+    test "star, double-star, literal and relative patterns expand to the expected paths", %{
       root: root
     } do
       caps = build_caps(read: ["/"])
-      pattern = Path.join(root, "**/c.txt")
-      expected = [Path.join(root, "deep/c.txt"), Path.join(root, "deep/x/c.txt")]
 
-      assert {:ok, ^expected} = Sandbox.glob(pattern, caps, Mounts.new(nil, nil))
+      for {label, pattern, workspace, expected} <- [
+            # `*` stays within one segment, and the matches come back sorted.
+            {"single star", Path.join(root, "sub/*.txt"), nil,
+             [Path.join(root, "sub/a.txt"), Path.join(root, "sub/b.txt")]},
+            # A name with a dot in it is matched by `*` like any other name.
+            {"star with dots", Path.join(root, "sub/*.*"), nil,
+             [
+               Path.join(root, "sub/a.txt"),
+               Path.join(root, "sub/b.txt"),
+               Path.join(root, "sub/c.md")
+             ]},
+            # `**` crosses directory boundaries (zero-or-more segments).
+            {"double star", Path.join(root, "**/c.txt"), nil,
+             [Path.join(root, "deep/c.txt"), Path.join(root, "deep/x/c.txt")]},
+            # A literal path with no metacharacters matches exactly.
+            {"literal", Path.join(root, "sub/a.txt"), nil, [Path.join(root, "sub/a.txt")]},
+            # A relative pattern is resolved against the workspace.
+            {"relative", "sub/*.txt", root,
+             [Path.join(root, "sub/a.txt"), Path.join(root, "sub/b.txt")]}
+          ] do
+        assert {:ok, ^expected} = Sandbox.glob(pattern, caps, Mounts.new(workspace, nil)), label
+      end
     end
 
-    test "a literal path with no metacharacters matches exactly", %{root: root} do
+    test "a pattern that matches nothing returns an empty list", %{root: root} do
       caps = build_caps(read: ["/"])
-      file = Path.join(root, "sub/a.txt")
-      assert {:ok, [^file]} = Sandbox.glob(file, caps, Mounts.new(nil, nil))
-    end
 
-    test "a non-matching pattern returns an empty list", %{root: root} do
-      caps = build_caps(read: ["/"])
-      pattern = Path.join(root, "sub/*.xyz")
-      assert {:ok, []} = Sandbox.glob(pattern, caps, Mounts.new(nil, nil))
-    end
-
-    test "a pattern rooted at a nonexistent directory matches nothing", %{root: root} do
-      caps = build_caps(read: ["/"])
-      pattern = Path.join(root, "missing/*.txt")
-      assert {:ok, []} = Sandbox.glob(pattern, caps, Mounts.new(nil, nil))
-    end
-
-    test "a relative pattern is resolved against the workspace", %{root: root} do
-      caps = build_caps(read: ["/"])
-      expected = [Path.join(root, "sub/a.txt"), Path.join(root, "sub/b.txt")]
-      assert {:ok, ^expected} = Sandbox.glob("sub/*.txt", caps, Mounts.new(root, nil))
-    end
-
-    test "a relative pattern with no workspace is an error" do
-      caps = build_caps(read: ["/"])
-      assert {:error, msg} = Sandbox.glob("sub/*.txt", caps, Mounts.new(nil, nil))
-      assert msg =~ "No workspace configured"
+      for {label, pattern} <- [
+            # The directory exists, but nothing in it has that extension.
+            {"no matching name", Path.join(root, "sub/*.xyz")},
+            # The directory the pattern is rooted at does not exist at all.
+            {"missing base dir", Path.join(root, "missing/*.txt")}
+          ] do
+        assert {:ok, []} = Sandbox.glob(pattern, caps, Mounts.new(nil, nil)), label
+      end
     end
 
     test "matches resolve through the bwrap mounts, not the host", %{root: root} do
@@ -550,16 +480,18 @@ defmodule Nest.SandboxTest do
       assert Path.join(root, "sub/b.txt") in files
     end
 
-    test "a terminal ** is refused (bash would expand the whole subtree)", %{root: root} do
+    test "a pattern that cannot be honored is refused", %{root: root} do
       caps = build_caps(read: ["/"])
-      pattern = Path.join(root, "**")
 
+      # A relative pattern has nothing to resolve against with no workspace.
+      assert {:error, msg} = Sandbox.glob("sub/*.txt", caps, Mounts.new(nil, nil))
+      assert msg =~ "No workspace configured"
+
+      # A terminal `**` is refused: bash would expand the whole subtree.
       assert {:error, :glob_terminal_double_star} =
-               Sandbox.glob(pattern, caps, Mounts.new(root, nil))
-    end
+               Sandbox.glob(Path.join(root, "**"), caps, Mounts.new(root, nil))
 
-    test "an over-broad expansion is rejected with :glob_too_broad", %{root: root} do
-      caps = build_caps(read: ["/"])
+      # More raw matches than `limit:` allows is refused rather than truncated.
       broad = Path.join(root, "broad")
       File.mkdir_p!(broad)
 
@@ -567,10 +499,8 @@ defmodule Nest.SandboxTest do
         File.write!(Path.join(broad, "f#{i}.txt"), "x")
       end
 
-      pattern = Path.join(broad, "*.txt")
-
       assert {:error, :glob_too_broad} =
-               Sandbox.glob(pattern, caps, Mounts.new(nil, nil), limit: 5)
+               Sandbox.glob(Path.join(broad, "*.txt"), caps, Mounts.new(nil, nil), limit: 5)
     end
   end
 

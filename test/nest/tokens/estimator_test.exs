@@ -37,17 +37,15 @@ defmodule Nest.Tokens.EstimatorTest do
   end
 
   describe "raw_count/1" do
-    test "returns the real cl100k_base count for ASCII" do
+    test "counts ASCII, empty, long, and non-binary input" do
       # Sanity: "Hello, world!" is exactly 4 tokens in cl100k_base
       assert Estimator.raw_count("Hello, world!") == 4
-    end
 
-    test "returns 0 for non-binary input" do
+      assert Estimator.raw_count("") == 0
+
       assert Estimator.raw_count(nil) == 0
       assert Estimator.raw_count(123) == 0
-    end
 
-    test "handles long strings" do
       long = String.duplicate("a", 1000)
       # Each character is at most 1 token; 1000 chars ≈ 1000 tokens
       # for all-same-char (usually encoded as 1 token in BPE).
@@ -56,19 +54,14 @@ defmodule Nest.Tokens.EstimatorTest do
       assert n > 0
     end
 
-    test "empty string" do
-      assert Estimator.raw_count("") == 0
-    end
-
     test "invalid UTF-8 falls back to a byte estimate instead of crashing" do
       # Gzip magic bytes — the shape that crashed the tool loop when a
       # shell command dumped a compressed download to stdout.
       binary = <<0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00>>
 
       assert Estimator.raw_count(binary) == div(byte_size(binary) + 3, 4)
-    end
 
-    test "a lone invalid byte falls back without raising" do
+      # A lone invalid byte also falls back without raising.
       assert is_integer(Estimator.raw_count(<<0xFF, 0xFE, 0x41>>))
     end
   end
@@ -93,76 +86,54 @@ defmodule Nest.Tokens.EstimatorTest do
   end
 
   describe "estimate/1 (string)" do
-    test "is at least 20% higher than raw_count" do
+    test "always overestimates raw count, with at least the 20% safety margin" do
       raw = Estimator.raw_count("Hello, world!")
       # The safety multiplier is 1.20, plus per-message overhead of 10.
       est = Estimator.estimate("Hello, world!")
       assert est >= ceil(raw * 1.20)
       # And the +10 overhead pushes it above the raw value
       assert est > raw
+
+      for t <- ["hi", "Hello, world!", "the quick brown fox", ""] do
+        t_raw = Estimator.raw_count(t)
+        t_est = Estimator.estimate(t)
+        assert t_est >= t_raw, "expected estimate >= raw for #{inspect(t)}"
+      end
     end
 
-    test "returns at least the per-message overhead for non-binary" do
+    test "returns the overhead for non-binary input and estimates invalid UTF-8 without raising" do
       assert Estimator.estimate(nil) == 10
       assert Estimator.estimate(123) == 10
-    end
 
-    test "invalid UTF-8 estimates without raising" do
       binary = <<0x1F, 0x8B, 0x08, 0x00>>
 
       assert is_integer(Estimator.estimate(binary))
       assert Estimator.estimate(binary) > 10
     end
-
-    test "always overestimates raw count" do
-      texts = ["hi", "Hello, world!", "the quick brown fox", ""]
-
-      for t <- texts do
-        raw = Estimator.raw_count(t)
-        est = Estimator.estimate(t)
-        assert est >= raw, "expected estimate >= raw for #{inspect(t)}"
-      end
-    end
   end
 
   describe "estimate_bytes/1" do
-    test "scales with byte size and applies the safety margin" do
+    test "scales with byte size, applies the safety margin, and returns overhead for zero bytes" do
       small = Estimator.estimate_bytes(4_000)
       large = Estimator.estimate_bytes(40_000)
 
       assert large > small
       # ~4 bytes/token, +20% safety, +10 per-message overhead.
       assert large == ceil(div(40_000, 4) * 1.20) + 10
-    end
 
-    test "returns the per-message overhead for zero bytes" do
       assert Estimator.estimate_bytes(0) == 10
     end
   end
 
   describe "estimate_messages/1" do
-    test "sums per-message estimates" do
-      messages = [
+    test "sums per-message estimates across all message types" do
+      simple = [
         sys_msg("You are helpful"),
         user_msg("Hello"),
         assistant_text_msg("Hi there")
       ]
 
-      total = Estimator.estimate_messages(messages)
-      individual = Enum.map(messages, &Estimator.estimate_message/1) |> Enum.sum()
-      assert total == individual
-    end
-
-    test "returns 0 for non-list input" do
-      assert Estimator.estimate_messages(nil) == 0
-    end
-
-    test "empty list" do
-      assert Estimator.estimate_messages([]) == 0
-    end
-
-    test "handles all message types" do
-      messages = [
+      all_types = [
         sys_msg("System prompt"),
         user_msg("User msg"),
         assistant_parts_msg([
@@ -175,31 +146,34 @@ defmodule Nest.Tokens.EstimatorTest do
         ])
       ]
 
-      total = Estimator.estimate_messages(messages)
-      # Sanity: at least some tokens for each message
-      assert total > 0
-      # And it's the sum of individual estimates
-      individual = Enum.map(messages, &Estimator.estimate_message/1) |> Enum.sum()
-      assert total == individual
+      for messages <- [simple, all_types] do
+        total = Estimator.estimate_messages(messages)
+        # Sanity: at least some tokens for each message
+        assert total > 0
+        # And it's the sum of individual estimates
+        individual = Enum.map(messages, &Estimator.estimate_message/1) |> Enum.sum()
+        assert total == individual
+      end
+    end
+
+    test "returns 0 for non-list and empty input" do
+      assert Estimator.estimate_messages(nil) == 0
+      assert Estimator.estimate_messages([]) == 0
     end
   end
 
   describe "estimate_message/1" do
-    test "system message" do
+    test "system and user messages are the parts estimate plus overhead" do
       assert Estimator.estimate_message(sys_msg("hi")) ==
                Estimator.estimate_parts([%Part.Text{text: "hi"}]) + 10
-    end
 
-    test "system message with nil content" do
-      # Should not crash
+      assert Estimator.estimate_message(user_msg("hello")) ==
+               Estimator.estimate_parts([%Part.Text{text: "hello"}]) + 10
+
+      # A system message with nil content should not crash
       result = Estimator.estimate_message({:system, %System{parts: nil}})
       assert is_integer(result)
       assert result > 0
-    end
-
-    test "user message" do
-      assert Estimator.estimate_message(user_msg("hello")) ==
-               Estimator.estimate_parts([%Part.Text{text: "hello"}]) + 10
     end
 
     test "assistant message with content and thinking" do
@@ -251,7 +225,7 @@ defmodule Nest.Tokens.EstimatorTest do
       assert result > result_no_sig
     end
 
-    test "tool message with multiple results" do
+    test "tool messages sum their result parts, and nil parts give the overhead" do
       results = [
         %{tool_call_id: "1", name: "foo", content: "result 1"},
         %{tool_call_id: "2", name: "bar", content: "result 2"}
@@ -261,12 +235,8 @@ defmodule Nest.Tokens.EstimatorTest do
       parts = Enum.map(results, &tool_result_to_part/1)
       individual = Estimator.estimate_parts(parts) + 10
       assert result == individual
-    end
 
-    test "tool message with nil parts" do
-      msg = %Tool{parts: nil}
-      result = Estimator.estimate_message({:tool, msg})
-      assert result == 10
+      assert Estimator.estimate_message({:tool, %Tool{parts: nil}}) == 10
     end
 
     test "unknown message variant returns per-message overhead" do
@@ -275,52 +245,42 @@ defmodule Nest.Tokens.EstimatorTest do
   end
 
   describe "estimate_part/1" do
-    test "text" do
+    test "sizes every part type" do
       assert Estimator.estimate_part(%Part.Text{text: "hi"}) == Estimator.estimate("hi")
-    end
 
-    test "thinking" do
-      part = %Part.Thinking{thinking: "hmm"}
-      assert Estimator.estimate_part(part) == Estimator.estimate("hmm")
-    end
+      assert Estimator.estimate_part(%Part.Thinking{thinking: "hmm"}) ==
+               Estimator.estimate("hmm")
 
-    test "tool_use" do
-      part = %Part.ToolUse{id: "x", name: "foo", arguments: %{"a" => 1}}
-      assert Estimator.estimate_part(part) > 0
-    end
+      assert Estimator.estimate_part(%Part.ToolUse{id: "x", name: "foo", arguments: %{"a" => 1}}) >
+               0
 
-    test "tool_result" do
-      part = %Part.ToolResult{tool_call_id: "x", name: "foo", content: "y"}
-      assert Estimator.estimate_part(part) == Estimator.estimate("y")
-    end
+      assert Estimator.estimate_part(%Part.ToolResult{
+               tool_call_id: "x",
+               name: "foo",
+               content: "y"
+             }) ==
+               Estimator.estimate("y")
 
-    test "refusal" do
-      part = %Part.Refusal{refusal: "no"}
-      assert Estimator.estimate_part(part) == Estimator.estimate("no")
+      assert Estimator.estimate_part(%Part.Refusal{refusal: "no"}) == Estimator.estimate("no")
     end
   end
 
   describe "estimate_parts/1" do
-    test "nil returns 0" do
+    test "returns 0 for nil and for the empty list" do
       assert Estimator.estimate_parts(nil) == 0
-    end
-
-    test "empty list returns 0" do
       assert Estimator.estimate_parts([]) == 0
     end
   end
 
   describe "safety multiplier" do
-    test "all public functions apply the 20% safety margin" do
+    test "applies the 20% margin to strings and to every message" do
       text = "the quick brown fox jumps over the lazy dog"
       raw = Estimator.raw_count(text)
       est = Estimator.estimate(text)
 
       # est should be ceil(raw * 1.20) + 10 (per-message overhead)
       assert est >= ceil(raw * 1.20) + 10
-    end
 
-    test "estimate_messages applies safety to every message" do
       # Two messages of equal raw size should give equal estimates
       msgs = [user_msg("hello world"), user_msg("hello world")]
 
