@@ -121,8 +121,8 @@ defmodule Nest.Persistence do
     # per missing property.
     #
     # A `"none"` space is the exception, and reads even then: its prompt suggests
-    # a scratch directory named after the space (`prompt_space_name/1`), which is
-    # the one property a parent's mounts cannot carry.
+    # a scratch directory named after the space (`Nest.Spaces.prompt_space_name/1`),
+    # which is the one property a parent's mounts cannot carry.
     if Enum.all?(@space_properties, &Map.has_key?(attrs, &1)) and attrs.sandbox_backend != "none" do
       attrs
     else
@@ -132,26 +132,21 @@ defmodule Nest.Persistence do
       |> Map.put_new(:sandbox_backend, environment.sandbox_backend)
       |> Map.put_new(:network_access, environment.network_access)
       |> Map.put_new(:workspace_path, environment.workspace_path)
-      |> Map.put(:space_name, prompt_space_name(environment))
+      |> Map.put(:space_name, Nest.Spaces.prompt_space_name(environment))
     end
   end
 
   def put_space_properties(attrs), do: attrs
 
-  # A `"none"` space has no enforced scratch directory — its agents' `/tmp` is
-  # the host's own — so its system prompt suggests one named after the space
-  # (`Nest.Agents.Agent.SystemPrompt`), and the suggestion needs the name. Every
-  # other backend gets `nil`: its prompt must stay byte-identical, and the gate is
-  # what guarantees it.
-  #
-  # It is resolved here, with the rest of the space's properties, rather than in
-  # `PreSpawn.pre_spawn/1`: both start paths funnel through this module, and
-  # `pre_spawn/1`'s attrs are *not* the ones `Init` builds the agent's mounts
-  # from — a caller-created agent's are re-read from the row by
-  # `build_attrs_for_start/2`, so a name put only on the pre-spawn attrs would
-  # reach the persisted system message and nothing else.
-  defp prompt_space_name(%{sandbox_backend: "none", space_name: name}), do: name
-  defp prompt_space_name(_environment), do: nil
+  # The space's name travels with its environment for one reason: a `"none"`
+  # space has no enforced scratch directory, so its prompt suggests one named
+  # after the space (`Nest.Spaces.prompt_space_name/1`). It is resolved here,
+  # with the rest of the properties, rather than in `PreSpawn.pre_spawn/1`:
+  # both start paths funnel through this module, and `pre_spawn/1`'s attrs are
+  # *not* the ones `Init` builds the agent's mounts from — a caller-created
+  # agent's are re-read from the row by `build_attrs_for_start/2`, so a name put
+  # only on the pre-spawn attrs would reach the persisted system message and
+  # nothing else.
 
   defp maybe_load_vocation(%{vocation: _vocation} = attrs), do: attrs
 
@@ -536,8 +531,8 @@ defmodule Nest.Persistence do
       workspace_path: environment.workspace_path,
       sandbox_backend: environment.sandbox_backend,
       network_access: environment.network_access,
-      # Only a `"none"` space's prompt reads it; see `prompt_space_name/1`.
-      space_name: prompt_space_name(environment),
+      # Only a `"none"` space's prompt reads it; see `Nest.Spaces.prompt_space_name/1`.
+      space_name: Nest.Spaces.prompt_space_name(environment),
       space_notice_pending: row.space_notice_pending == true,
       next_message_index: row.next_message_index,
       last_compaction_index: boundary,

@@ -2,12 +2,12 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
   @moduledoc """
   Space-scoped scratch-dir tests: one `/tmp` per **space**, not per agent.
 
-  The layout is `/tmp/nest-<BEAM ospid>/space-<space_id>/<agent-name>`,
-  and the **space** directory is what `Nest.Sandbox` binds at `/tmp`, so
-  siblings in a space can read each other's scratch files. `async: true`:
-  each test uses a unique *negative* space id (impossible to collide with
-  a real `spaces.id`) and leaves the space dir to OS `/tmp` cleanup, as
-  production does.
+  The layout is `/tmp/nest/<BEAM ospid>/space-<space_id>/<agent-name>`, and the
+  **space** directory is what `Nest.Sandbox` binds at `/tmp`, so siblings in a
+  space can read each other's scratch files. `async: true`: each test uses a
+  unique *negative* space id (impossible to collide with a real `spaces.id`) and
+  leaves the space dir behind — no agent removes one, and `Nest.Agents.TmpSweeper`
+  owns them (the suite removes its own root at exit, `test/test_helper.exs`).
   """
   use ExUnit.Case, async: true
 
@@ -23,9 +23,10 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
   # A `"none"` agent's scratch is the host's own `/tmp/<name>`, so these tests
   # build their stand-ins under the real temp dir with a unique name that passes
   # the name rule. They deliberately do *not* use the literal host names the
-  # guard exists for (`nest-<pid>`, `snap-private-tmp`): the guard
-  # cannot tell them apart from a stand-in, and a test that used one would delete
-  # the host's own directory if the guard ever regressed.
+  # guard exists for (`nest`, which is the parent of every BEAM's scratch root,
+  # and `snap-private-tmp`): the guard cannot tell them apart from a stand-in, and
+  # a test that used one would delete the host's own directory if the guard ever
+  # regressed.
   defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
 
   # A `"none"` scratch is the host's own `/tmp/<name>`, so a test that makes one
@@ -50,10 +51,10 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
     # `rm_rf` of this space dir would delete that live dir out from under a
     # concurrently running test (`bwrap: Can't find source path`).
     #
-    # We also do NOT remove the space dir at all: production never does
-    # (an agent's `terminate/2` removes only its own sub-dir, and the
-    # space dir is left to OS `/tmp` cleanup), so the test mirrors that
-    # and can never delete a shared parent.
+    # We also do NOT remove the space dir at all: nothing in production does
+    # (an agent's `terminate/2` removes only its own sub-dir; `TmpSweeper`
+    # removes a space dir when no agent is registered in it and no job is live),
+    # so the test mirrors that and can never delete a shared parent.
     space_id = -System.unique_integer([:positive])
     space_dir = TmpSpace.space_dir(space_id, "bwrap")
     %{space_id: space_id, space_dir: space_dir}
@@ -154,7 +155,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
         assert Path.dirname(keeper) == space_dir
 
         # ".." would pass a *syntactic* `Path.dirname/1` guard and
-        # `rm_rf` the whole shared `nest-<ospid>` root (every space,
+        # `rm_rf` the whole shared `nest/<ospid>` root (every space,
         # every agent's scratch). "a/b" would nest a path. `create/2`
         # refuses both outright (the DB boundary rejects such a name, so
         # this only happens if a caller skipped it)...
@@ -265,6 +266,27 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       assert File.read!(Path.join(dir, "host-file")) == "not Nest's"
     end
 
+    test "create/3 refuses the name that would be the root parent itself", %{
+      space_id: space_id
+    } do
+      # A `"none"` agent named `nest` names `/tmp/nest` — the parent of every
+      # BEAM's scratch root, which always exists by the time an agent can start
+      # (`Nest.Agents.TmpSweeper`'s `init/1` makes this BEAM's root under it).
+      # The adoption guard is what refuses it: without that, `create/3` would
+      # stamp its marker into the root parent and the next `cleanup/3` would
+      # `rm_rf` every BEAM's scratch root.
+      path = TmpSpace.agent_dir(space_id, "nest", "none")
+
+      assert path == TmpSpace.root_parent()
+      assert File.dir?(path)
+
+      assert_raise ArgumentError, ~r/it exists and is not Nest's/, fn ->
+        TmpSpace.create(space_id, "nest", "none")
+      end
+
+      refute File.exists?(Path.join(path, ".nest-scratch"))
+    end
+
     test "create/3 re-opens a marked directory idempotently", %{space_id: space_id} do
       # Re-creating a stopped agent's scratch is the ordinary path, and it must
       # not look like adoption.
@@ -286,7 +308,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
 
     test "cleanup/3 refuses an unmarked directory, whatever it is called", %{space_id: space_id} do
       # The name rule alone cannot tell Nest's directory from the host's: a
-      # `"none"` agent named `nest-<pid>` would take another BEAM's whole scratch
+      # `"none"` agent named `nest` would name the parent of every BEAM's scratch
       # root, and `snap-private-tmp` is a real `/tmp` entry that passes the same
       # rule.
       dirs =
@@ -339,7 +361,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
     end
 
     test "a bwrap scratch is removed without a marker", %{space_id: space_id} do
-      # Its path already carries `nest-<BEAM pid>/space-<id>`, so there is
+      # Its path already carries `nest/<BEAM pid>/space-<id>`, so there is
       # nothing to disambiguate.
       name = unique("bwrap-a")
       path = TmpSpace.create(space_id, name, "bwrap")

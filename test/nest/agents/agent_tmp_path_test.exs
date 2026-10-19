@@ -1,23 +1,21 @@
 defmodule Nest.Agents.AgentTmpPathTest do
   @moduledoc """
   Agent tmp_path lifecycle tests. `async: true`. The
-  `/tmp/nest-VMPID/space-SPACE/NAME/` dirs are per-VM shared
-  state, but each test uses a fresh space and a fresh
-  `System.unique_integer/1` agent name and asserts on its own
-  dir; concurrent tests' dirs sit at their own VMPID+space+name
-  path and don't collide.
+  `/tmp/nest/VMPID/space-SPACE/NAME/` dirs are per-VM shared state, but each test
+  uses a fresh space and a fresh `System.unique_integer/1` agent name and asserts
+  on its own dir; concurrent tests' dirs sit at their own VMPID+space+name path
+  and don't collide.
 
-  IMPORTANT: the shared parent `/tmp/nest-VMPID/` (and the space
-  dirs beneath it) must NEVER be wiped (in setup or on_exit). The
-  `nest-VMPID` root is process-global across all agents/tests in
-  this BEAM. A `File.rm_rf` on it races with a concurrent async
-  test's agent that is mid-`shell_cmd`: the wipe deletes that
-  agent's tmp dir while bwrap is starting, producing `bwrap: Can't
-  find source path` (exit_code=1). Per-agent dirs are unique (via
-  `System.unique_integer/1`) and cleaned by their own
-  `terminate/2`, so a parent wipe buys nothing and only causes
-  this flake. The parent is left in place and cleared by system
-  `/tmp` cleanup (see `Nest.Agents.Agent.TmpSpace`).
+  IMPORTANT: the shared parent `/tmp/nest/VMPID/` (and the space dirs beneath it)
+  must NEVER be wiped (in setup or on_exit). That root is process-global across
+  all agents/tests in this BEAM. A `File.rm_rf` on it races with a concurrent
+  async test's agent that is mid-`shell_cmd`: the wipe deletes that agent's tmp
+  dir while bwrap is starting, producing `bwrap: Can't find source path`
+  (exit_code=1). Per-agent dirs are unique (via `System.unique_integer/1`) and
+  cleaned by their own `terminate/2`, so a parent wipe buys nothing and only
+  causes this flake. The root is removed once, after the suite
+  (`test/test_helper.exs`), and `Nest.Agents.TmpSweeper` owns it at runtime (see
+  `Nest.Agents.Agent.TmpSpace`).
   """
   use Nest.DataCase, async: true
 
@@ -27,14 +25,15 @@ defmodule Nest.Agents.AgentTmpPathTest do
   alias Nest.Agents
   alias Nest.Agents.Agent
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.LLM.MockClient
   alias Nest.Sandbox.Mounts
 
   setup :verify_on_exit!
 
   setup do
-    # NOTE: do NOT `File.rm_rf` the shared parent
-    # `/tmp/nest-<System.pid()>/` here. It is process-global across
+    # NOTE: do NOT `File.rm_rf` the shared root
+    # `/tmp/nest/<System.pid()>/` here. It is process-global across
     # all concurrent agents/tests in this BEAM, so wiping it in
     # setup/on_exit races with another async test whose agent is
     # mid-`shell_cmd`, deleting its tmp dir under bwrap and
@@ -56,15 +55,11 @@ defmodule Nest.Agents.AgentTmpPathTest do
 
   import Nest.Agents.AgentTestHelpers
 
-  # The agent's own scratch dir: <space_dir>/<agent-name>, where
-  # <space_dir> = /tmp/nest-<VMPID>/space-<space_id>.
-  defp agent_tmp_path(space_id, name) do
-    Path.join(["/tmp", "nest-#{System.pid()}", "space-#{space_id}", name])
-  end
+  # The agent's own scratch dir and its space dir, derived from `TmpSpace` rather
+  # than spelled: it is the one place that layout is defined.
+  defp agent_tmp_path(space_id, name), do: TmpSpace.agent_dir(space_id, name, "bwrap")
 
-  defp space_dir(space_id) do
-    Path.join(["/tmp", "nest-#{System.pid()}", "space-#{space_id}"])
-  end
+  defp space_dir(space_id), do: TmpSpace.space_dir(space_id, "bwrap")
 
   describe "tmp_path lifecycle" do
     test "creates tmp directory on agent start" do
@@ -78,7 +73,7 @@ defmodule Nest.Agents.AgentTmpPathTest do
     end
 
     test "passes tmp_path to agent state" do
-      {pid, _name} = start_agent()
+      {pid, name} = start_agent()
 
       # Read the agent's own state rather than the introspection payload:
       # the scratch dir is a real host directory and is deliberately not on
@@ -86,8 +81,8 @@ defmodule Nest.Agents.AgentTmpPathTest do
       # allowlist: snapshot — tmp_path
       state = :sys.get_state(pid, 1_000)
 
-      assert Mounts.scratch(state.mounts) =~ ~r|/tmp/nest-#{System.pid()}/space-\d+/agent\d+|,
-             "Expected tmp_path to match pattern, got: #{inspect(Mounts.scratch(state.mounts))}"
+      assert Mounts.scratch(state.mounts) == agent_tmp_path(current_space_id(), name),
+             "Expected the agent's own scratch dir, got: #{inspect(Mounts.scratch(state.mounts))}"
 
       # It must not reach a client either. `build_public_info/1` is what the
       # channels push, and #79 removed the field from it so the one remaining
@@ -237,9 +232,10 @@ defmodule Nest.Agents.AgentTmpPathTest do
 
       refute File.exists?(path2)
 
-      # The space dir is a shared parent and is NEVER rmdir'd by an
-      # agent's terminate/2 (a sibling's mkdir_p! racing a terminate
-      # was a real bug). It is left to OS /tmp cleanup.
+      # The space dir is a shared parent and is NEVER rmdir'd by an agent's
+      # terminate/2 (a sibling's mkdir_p! racing a terminate was a real bug).
+      # `Nest.Agents.TmpSweeper` removes it once no agent is registered in the
+      # space and no shell job is live there.
       assert File.dir?(space_dir(space_id))
     end
   end

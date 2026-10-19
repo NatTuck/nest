@@ -60,7 +60,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       # replacing the space directory with a file makes `TmpSpace.create/3`'s
       # `File.mkdir_p!` raise `File.Error` for whichever child name comes out,
       # so the clone's `init/1` fails before the process starts.
-      rm_tmp!(space_dir, "nest-#{System.pid()}")
+      rm_tmp!(space_dir, Path.join("nest", System.pid()))
       File.write!(space_dir, "not a directory")
 
       log =

@@ -27,7 +27,6 @@ defmodule Nest.Persistence.AgentCompaction do
   alias Nest.Persistence.AgentCompaction.Planner
   alias Nest.Persistence.AgentCompaction.Summarizer
   alias Nest.Persistence.AgentCompaction.Writer
-  alias Nest.Sandbox.Mounts
   alias Nest.Spaces
   alias Nest.Vocations
 
@@ -141,20 +140,22 @@ defmodule Nest.Persistence.AgentCompaction do
   defp render_system(_agent, nil, _limit, _source), do: nil
 
   defp render_system(agent, vocation, limit, source) do
+    # `agent` is the *row*, not a running agent, so the space's environment is
+    # read rather than taken from mounts. One read for all four values: the
+    # workspace is the space's (there is no per-agent column), and the name is
+    # what a `"none"` space's prompt suggests a scratch directory from.
+    environment = Nest.Spaces.environment(agent.space_id)
+
     {system_prompt, _tools, _vocation} =
       SystemPrompt.compose_vocation_config(
         vocation,
         TmpSpace.prompt_mounts(
-          # The workspace is the *space's*; there is no per-agent column.
-          Nest.Spaces.workspace_path(agent.space_id),
+          environment.workspace_path,
           agent.space_id,
           agent.name,
-          Nest.Spaces.sandbox_backend(agent.space_id),
-          Nest.Spaces.network_access(agent.space_id),
-          # From the agent's own mounts, not another space read: this is the
-          # value the prompt stated at start, and only a `"none"` space's prompt
-          # uses it. `nil` for every other backend, which is what they had.
-          Mounts.space_name(agent.mounts)
+          environment.sandbox_backend,
+          environment.network_access,
+          Nest.Spaces.prompt_space_name(environment)
         ),
         {limit, source},
         agent.name,

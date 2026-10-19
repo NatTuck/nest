@@ -432,6 +432,21 @@ defmodule Nest.Spaces do
   end
 
   @doc """
+  The space's name when its system prompt can use one, `nil` otherwise.
+
+  A `"none"` space has no enforced scratch directory, so its prompt suggests
+  `/tmp/nest/<space-name>/` (`Nest.Agents.Agent.SystemPrompt`), and the suggestion
+  needs the name. Every other backend gets `nil`: its prompt must stay
+  byte-identical, and this gate is what guarantees it.
+
+  Takes the map `environment/1` returns, so a caller that already read the space
+  does not read it again.
+  """
+  @spec prompt_space_name(map()) :: String.t() | nil
+  def prompt_space_name(%{sandbox_backend: "none", space_name: name}), do: name
+  def prompt_space_name(_environment), do: nil
+
+  @doc """
   Get a space by its ID.
 
   Returns `%Space{}` or `nil`.
