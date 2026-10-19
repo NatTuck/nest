@@ -347,14 +347,14 @@ defmodule MachineDebtTest do
   # reads as the list of transitions it audits. `Compaction`/`Response` sites
   # return the same `{:ok, actions, machine}` shape `Machine.step/2` does.
   #
-  # Five of the audit's 26 sites are deliberately not driven here, because this
+  # Six of the audit's 29 sites are deliberately not driven here, because this
   # table drives `Machine.step/2` transitions and these are not reachable as one:
   #
-  #   * the `:workspace_notice` + `:cannot_compact` block — it needs a projected
-  #     notice that does not fit the reserve (`Transitions`' notice decision, the
-  #     `:cannot_compact` arm); the notice's `:fits` and `:needs_compaction` arms
-  #     are driven by "a workspace notice" and "a resume that appends a workspace
-  #     notice" above;
+  #   * the `:workspace_notice` and `:model_notice` + `:cannot_compact` blocks —
+  #     each needs a projected notice that does not fit the reserve
+  #     (`Transitions`' notice decision, the `:cannot_compact` arm); the notices'
+  #     `:fits` and `:needs_compaction` arms are driven by "a workspace notice",
+  #     "a model notice" and the two resumes above;
   #   * the second `:compaction_failed` site — `Compaction.compaction_failed/3`
   #     with an `{:assistant_response, _, _, _}` carried entry, which blocks
   #     instead of resuming; the table drives the carried-entry arm, which
@@ -367,7 +367,8 @@ defmodule MachineDebtTest do
   # The count is kept honest by `Machine.GiveUp.audit/0`: `GuardTest` checks it
   # against the sources, so a site added or removed without a row fails there
   # rather than going missing here.
-  defp give_up_sites, do: turn_sites() ++ compaction_sites() ++ response_sites()
+  defp give_up_sites,
+    do: turn_sites() ++ notice_sites() ++ compaction_sites() ++ response_sites()
 
   defp turn_sites do
     [
@@ -379,8 +380,16 @@ defmodule MachineDebtTest do
       {"a failed turn", &failed_turn/1},
       {"a killed worker", &killed_worker/1},
       {"an interrupted tool worker", &interrupted_tool/1},
-      {"a turn that cannot compact", &cannot_compact/1},
-      {"a workspace notice", &workspace_notice/1}
+      {"a turn that cannot compact", &cannot_compact/1}
+    ]
+  end
+
+  # The two notices are their own group: one appended pair each, delivered by the
+  # same transition shape, so their sites move together.
+  defp notice_sites do
+    [
+      {"a workspace notice", &workspace_notice/1},
+      {"a model notice", &model_notice/1}
     ]
   end
 
@@ -394,7 +403,8 @@ defmodule MachineDebtTest do
       {"a failed compaction", &compaction_failed/1},
       {"a carried reply that rests after a compaction", &resume_carried_reply/1},
       {"a resume with nothing left to resume", &resume_nothing/1},
-      {"a resume that appends a workspace notice", &resume_notice/1}
+      {"a resume that appends a workspace notice", &resume_notice/1},
+      {"a resume that appends a model notice", &resume_model_notice/1}
     ]
   end
 
@@ -438,6 +448,10 @@ defmodule MachineDebtTest do
 
   defp workspace_notice(senders) do
     Machine.step(owed(state_at(:idle), senders), {:workspace_notice, notice_values()})
+  end
+
+  defp model_notice(senders) do
+    Machine.step(owed(state_at(:idle), senders), {:model_notice, model_facts()})
   end
 
   defp cannot_compact(senders) do
@@ -488,6 +502,11 @@ defmodule MachineDebtTest do
     Compaction.resume(owed(staged, senders))
   end
 
+  defp resume_model_notice(senders) do
+    staged = %{committing(nil) | entry: {:compaction, nil, model_facts()}}
+    Compaction.resume(owed(staged, senders))
+  end
+
   defp settle_gate(senders) do
     {m, ref} = generating_with_debt(senders)
 
@@ -511,7 +530,14 @@ defmodule MachineDebtTest do
   # needs a compaction, that compaction's entry) — never `work.pending_notice`,
   # which is the budget reminder's slot.
   defp notice_values do
-    %{workspace: "/tmp/AGENTS.md", network_access: true, backend: "bwrap"}
+    %{kind: :workspace, workspace: "/tmp/AGENTS.md", network_access: true, backend: "bwrap"}
+  end
+
+  # A model change rides `:model_notice` (and, when it needs a compaction, that
+  # compaction's entry) for the same reason: the prompt's model section is never
+  # rebuilt, so the notice is the only place that can correct it.
+  defp model_facts do
+    %{kind: :model, model: "m", verdict: :unknown, context_limit: 100_000}
   end
 
   defp worker_machine(senders, kind) do

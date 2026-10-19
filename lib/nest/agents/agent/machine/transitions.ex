@@ -24,13 +24,13 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   alias Nest.Agents.Agent.Machine.Compaction
   alias Nest.Agents.Agent.Machine.Delivery
   alias Nest.Agents.Agent.Machine.Failure
+  alias Nest.Agents.Agent.Machine.Notices
   alias Nest.Agents.Agent.Machine.Phase
   alias Nest.Agents.Agent.Machine.Response
   alias Nest.Agents.Agent.Machine.Stopping
   alias Nest.Agents.Agent.Turn.BudgetReminder
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.Agent.Turn.Messages, as: TurnMessages
-  alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.LLM.Preflight
   alias Nest.Messages.MessageList
   alias Nest.Messages.ToolResult
@@ -274,37 +274,15 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   def do_step(%{phase: :idle} = m, {:append_result, :stale, _}), do: {:ignore, :stale_append, m}
 
-  # --- workspace notice ---
+  # --- notices (a space-environment change, or a model change) ---
 
-  # The values ride the *event*, not the machine: a notice's lifetime is one
-  # settle (or the compaction that settle stages — see `Compaction.stage/3`), so
-  # there is no slot for it to outlive. `pending_notice` is the iteration-budget
-  # reminder's alone.
-  def do_step(%{phase: :idle} = m, {:workspace_notice, values}) when is_map(values) do
-    pair = WorkspaceHandler.notice_pair(values, m.work.ctx.mode)
-    projected = messages(m) ++ pair
-    limit = m.work.ctx.context_limit
+  # One line each, so the dispatch table's order stays readable in one place; the
+  # bodies (and the overflow banner they share) live in `Machine.Notices`.
+  def do_step(%{phase: :idle} = m, {:workspace_notice, values}) when is_map(values),
+    do: Notices.step(m, :workspace_notice, values)
 
-    case Dispatch.preflight_decision(projected, limit) do
-      :fits ->
-        actions = [{:append_many, pair}, {:drain_inbox}]
-
-        # `pending_notice` is the budget reminder's slot and this transition has
-        # nothing to do with it — `Phase.rest/4` is the whole rest, so no field
-        # of another feature's is cleared on the way out.
-        Phase.rest(m, :chat, :workspace_notice, actions)
-
-      :needs_compaction ->
-        # The notice rides the compaction's entry, so only the compaction that
-        # staged it can append it, and a failure drops it with the entry.
-        Compaction.stage(m, nil, values)
-
-      :cannot_compact ->
-        actions = [{:broadcast, {:overflow, :reserve_exhausted, "start a conversation"}, nil}]
-
-        Phase.block(m, :context_overflow, :workspace_notice, actions)
-    end
-  end
+  def do_step(%{phase: :idle} = m, {:model_notice, facts}) when is_map(facts),
+    do: Notices.step(m, :model_notice, facts)
 
   # --- generating (chat) ---
 

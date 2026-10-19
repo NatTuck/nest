@@ -11,10 +11,17 @@ defmodule Nest.Models.MultiModalTest do
   use ExUnit.Case, async: true
 
   import Mimic
+  import Nest.Test.TmpCleanup
 
+  alias Nest.Agents.Agent.SystemPrompt
   alias Nest.DotConfig
+  alias Nest.LLM.ClientConfig
   alias Nest.LLM.MultimodalCache
+  alias Nest.Messages.Part
   alias Nest.Models.MultiModal
+  alias Nest.Sandbox.Mounts
+  alias Nest.Tools
+  alias Nest.Vocations.Vocation
 
   setup :verify_on_exit!
 
@@ -32,6 +39,12 @@ defmodule Nest.Models.MultiModalTest do
 
   @image %{"input" => ["image"]}
   @text_only %{"input" => []}
+
+  # A real 1x1 PNG: `file --mime-type` reports image/png for these bytes, which
+  # is the authoritative check `file-read`'s media path reads.
+  @png Base.decode64!(
+         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="
+       )
 
   # Exactly right for the probe's image A and image B respectively, and
   # different from each other. The ground truth is documented in
@@ -235,5 +248,103 @@ defmodule Nest.Models.MultiModalTest do
       assert MultiModal.effective(model, %{}) == nil
       assert MultiModal.effective(model, %{"other" => %DotConfig.Model{name: "other"}}) == nil
     end
+  end
+
+  describe "input_support/2 (the verdict both readers use)" do
+    test "answers from the merged catalog, on the model's name alone" do
+      stub_catalog([
+        %{"name" => "vision-model", "provider" => "a", "multi_modal" => @image},
+        # A positive claim from any provider serving the model wins over a
+        # negative one: the caller holds a name and no provider.
+        %{"name" => "vision-model", "provider" => "b", "multi_modal" => @text_only},
+        %{"name" => "text-model", "provider" => "a", "multi_modal" => @text_only},
+        %{"name" => "unknown-model", "provider" => "a", "multi_modal" => nil}
+      ])
+
+      assert MultiModal.input_support("vision-model", :image) == :supported
+      assert MultiModal.input_support("text-model", :image) == :unsupported
+      assert MultiModal.input_support("unknown-model", :image) == :unknown
+
+      # A name no catalog entry has is unknown, not text-only: nothing declared
+      # anything about it. So is a name that is not a usable binary, which is
+      # what a caller with no model at all has.
+      assert MultiModal.input_support("absent-model", :image) == :unknown
+      assert MultiModal.input_support(nil, :image) == :unknown
+      assert MultiModal.input_support("", :image) == :unknown
+    end
+
+    test "flipping the catalog moves `file-read`'s verdict and the prompt's sentence together" do
+      # The two readers must not be able to disagree: the agent whose prompt says
+      # its model accepts images must be the agent whose `file-read` attaches one,
+      # and the agent told its model refuses must be refused. Both go through
+      # `input_support/2`, so the catalog entry is the single input, and this
+      # walks all three verdicts through both readers.
+      workspace = tmp_workspace("nest_model_verdict")
+      File.write!(Path.join(workspace, "shot.png"), @png)
+      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
+
+      cases = [
+        {"vision-model", @image,
+         "It accepts image input: `file-read` on a png, jpeg, gif or webp attaches " <>
+           "the image to the conversation and you see it.", :media},
+        {"text-model", @text_only,
+         "It declares text-only input, so `file-read` refuses an image.",
+         "declares text-only input"},
+        {"unknown-model", nil,
+         "Nothing declares whether it accepts image input, so `file-read` refuses an image " <>
+           "and says how to declare it.", "no modality metadata"}
+      ]
+
+      for {name, declared, sentence, outcome} <- cases do
+        stub_catalog([%{"name" => name, "provider" => "p", "multi_modal" => declared}])
+
+        assert compose_for(name) =~ ~s(Your model is "#{name}". #{sentence})
+
+        case outcome do
+          :media ->
+            assert {:ok, {:media, %Part.Media{media_type: "image/png"}}} =
+                     function.function.(%{"path" => "shot.png"}, ctx(name))
+
+          refusal ->
+            assert {:error, msg} = function.function.(%{"path" => "shot.png"}, ctx(name))
+            assert msg =~ refusal
+            assert msg =~ ~s("#{name}")
+        end
+      end
+    end
+  end
+
+  # The prompt for `model`, on mounts with no workspace: no section of it reads a
+  # file, so the only thing under test is the model section. A tool-capable
+  # vocation, so the tool-gated sections are rendered too.
+  defp compose_for(model) do
+    {prompt, _tools, _vocation} =
+      SystemPrompt.compose_vocation_config(
+        %Vocation{system_prompt: "Base.", tools: ["shell"]},
+        Mounts.new(nil, nil),
+        {nil, nil},
+        "agent",
+        0,
+        model
+      )
+
+    prompt
+  end
+
+  defp ctx(model) do
+    %{client_config: %ClientConfig{model: model}, tool_call_id: "call_1"}
+  end
+
+  defp stub_catalog(models), do: Mimic.stub(Nest.Models, :list, fn -> models end)
+
+  # A workspace directory outside /tmp (the scratch dir is bound at /tmp, so a
+  # /tmp-rooted workspace is rejected by the sandbox).
+  defp tmp_workspace(label) do
+    dir =
+      Path.join([File.cwd!(), "_build", "tmp", "#{label}_#{System.unique_integer([:positive])}"])
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> rm_tmp!(dir, label) end)
+    dir
   end
 end

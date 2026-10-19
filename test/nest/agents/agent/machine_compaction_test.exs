@@ -41,16 +41,22 @@ defmodule MachineCompactionTest do
     ]
   end
 
-  defp notice_step(messages, limit) do
+  defp notice_step(messages, limit, event \\ {:workspace_notice, notice_values()}) do
     machine = state_at(:idle, ctx: %{ctx() | messages: messages, context_limit: limit})
 
-    {:ok, _actions, next} = Machine.step(machine, {:workspace_notice, notice_values()})
+    {:ok, _actions, next} = Machine.step(machine, event)
 
     next
   end
 
   defp notice_values do
-    %{workspace: "/tmp/x", network_access: true, backend: "bwrap"}
+    %{kind: :workspace, workspace: "/tmp/x", network_access: true, backend: "bwrap"}
+  end
+
+  # A model change's facts, as `ModelHandler.facts/2` builds them (hand-built
+  # here so the machine test needs no catalog).
+  defp model_facts do
+    %{kind: :model, model: "m", verdict: :unknown, context_limit: 100_000}
   end
 
   describe "compaction decisions" do
@@ -117,6 +123,18 @@ defmodule MachineCompactionTest do
                Enum.find_index(actions, &match?({:clear_space_notice, _}, &1))
     end
 
+    # A staged notice this build cannot render is a named error at the dispatch
+    # point. The workspace clause used to be the catch-all, so an untagged or
+    # mis-tagged map rendered a pair describing the wrong thing — or raised
+    # `KeyError` inside `WorkspaceHandler.body/1`, inside a settle.
+    test "a staged notice of no known kind raises instead of rendering a pair" do
+      m = %{state_at(:committing) | entry: {:compaction, nil, %{kind: :something_else}}}
+
+      assert_raise ArgumentError, ~r/unknown staged notice/, fn ->
+        Machine.Compaction.resume(m)
+      end
+    end
+
     # A space-environment notice lives on the compaction entry that will append
     # it — `{:compaction, carried, values}` — and nowhere else. So the only shape
     # that carries it forward is a compaction that actually started; the
@@ -151,6 +169,53 @@ defmodule MachineCompactionTest do
       assert Machine.status_for(rested) == :idle
       assert rested.entry == nil
       assert rested.work.pending_notice == nil
+    end
+
+    # A model change rides the same three arms as a space-environment change —
+    # the pair when it fits, the compaction's entry when one is needed, the
+    # overflow block when nothing can help — because the agent's prompt states the
+    # model's facts and is never rebuilt. Its entry carries the *facts*, and the
+    # resume that appends them has no space flag to clear.
+    test "a model notice stages on the compaction entry, resumes as its own pair, and blocks when nothing fits" do
+      messages = near_limit_conversation()
+      size = ConversationSize.size(messages)
+      facts = model_facts()
+
+      staged = notice_step(messages, size + 4_000, {:model_notice, facts})
+
+      assert staged.phase == :generating
+      assert staged.kind == :compaction
+      assert {:compaction, nil, ^facts} = staged.entry
+
+      {:ok, actions, resumed} = Machine.Compaction.resume(staged)
+
+      assert resumed.phase == :idle
+      assert {:append_many, [notice_row, ack_row]} = List.keyfind(actions, :append_many, 0)
+
+      assert {:user, %{parts: [%Part.Text{text: notice}]}} = notice_row
+      assert notice =~ "Your model changed. It is now \"m\"."
+      assert notice =~ "Nothing declares whether it accepts image input"
+      assert notice =~ "Its context limit is 100000 tokens"
+      assert {:assistant, %{parts: [%Part.Text{text: "Model change confirmed."}]}} = ack_row
+
+      # Nothing to clear: the model is the row's own property, so unlike the
+      # space's notice there is no "not told yet" flag anywhere.
+      refute List.keyfind(actions, :clear_space_notice, 0)
+
+      # No headroom for a compaction either: the notice must not be appended into
+      # a request that cannot hold it, so the agent blocks with the banner.
+      machine = state_at(:idle, ctx: %{ctx() | messages: messages, context_limit: 1})
+      {:ok, blocked_actions, blocked} = Machine.step(machine, {:model_notice, facts})
+
+      assert blocked.phase == :context_overflow
+      assert blocked.entry == nil
+
+      assert Enum.any?(
+               blocked_actions,
+               &match?({:broadcast, {:overflow, :reserve_exhausted, _}, _}, &1)
+             )
+
+      refute Enum.any?(blocked_actions, &match?({:append_many, _}, &1))
     end
 
     test "the compaction that carries the notice appends it, and one that does not resumes its reply" do

@@ -16,6 +16,7 @@ defmodule Nest.Tools.FileTools do
   alias Nest.LLM.Tool
   alias Nest.Messages.Part
   alias Nest.Messages.Sanitize
+  alias Nest.Models.MultiModal
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
   alias Nest.Tokens.RequestSize
@@ -277,6 +278,10 @@ defmodule Nest.Tools.FileTools do
   # declares nothing at all is unknown — "declares nothing" is not a claim of
   # support, and the caller is told which of the two it is because the remedies
   # differ.
+  #
+  # The verdict itself is `Nest.Models.MultiModal.input_support/2`, which the
+  # system prompt reads too: the agent is told what its own model accepts, and
+  # the two must not be able to disagree.
   defp check_media_input(modality, context) do
     case media_model(context) do
       nil ->
@@ -285,7 +290,7 @@ defmodule Nest.Tools.FileTools do
            "so Nest cannot tell whether it accepts #{modality} input."}
 
       model ->
-        case declared_input(model, modality) do
+        case MultiModal.input_support(model, modality) do
           :supported -> :ok
           :unsupported -> {:error, media_unsupported_error(model, modality)}
           :unknown -> {:error, media_unknown_error(model, modality)}
@@ -299,38 +304,6 @@ defmodule Nest.Tools.FileTools do
       _ -> nil
     end
   end
-
-  # What the merged catalog declares about `modality` for `model`:
-  # `:supported` when some entry lists it, `:unsupported` when entries list
-  # input modalities and none is this one, and `:unknown` when no entry lists
-  # any (`multi_modal` is `nil` there — the provider published no modality
-  # metadata we recognize, which is not the same as declaring text-only).
-  #
-  # Matched on name alone: `client_config` carries the model name but no
-  # provider, and the catalog merges models from every provider by name. A
-  # positive claim from any provider serving that model is the best evidence
-  # available, so it wins over a negative one.
-  defp declared_input(model, modality) do
-    name = Atom.to_string(modality)
-
-    declarations =
-      Nest.Models.list()
-      |> Enum.filter(&(&1["name"] == model))
-      |> Enum.map(&declared_inputs/1)
-      |> Enum.reject(&is_nil/1)
-
-    cond do
-      declarations == [] -> :unknown
-      Enum.any?(declarations, &(name in &1)) -> :supported
-      true -> :unsupported
-    end
-  end
-
-  # The input modalities one catalog entry declares, or `nil` when it declares
-  # none. `%{"input" => []}` is a declaration of no input modalities at all,
-  # so it is `[]` here rather than `nil`.
-  defp declared_inputs(%{"multi_modal" => %{"input" => inputs}}) when is_list(inputs), do: inputs
-  defp declared_inputs(_entry), do: nil
 
   defp media_unsupported_error(model, modality) do
     "file-read refused: the model #{inspect(model)} declares text-only input — its " <>

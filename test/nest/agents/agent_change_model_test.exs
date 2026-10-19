@@ -21,6 +21,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
   alias Nest.LLM.AnthropicClient
   alias Nest.LLM.OpenAIClient
   alias Nest.LLM.RecoveryClient
+  alias Nest.Messages.Part
   alias Nest.Persistence
   alias Nest.Repo
 
@@ -45,6 +46,10 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
   end
 
   defp vid, do: Process.get(:test_vocation_id)
+
+  # The text of a delivered user row. The notice pair is one text part, which is
+  # what the header and the body are joined into.
+  defp user_text({:user, %{parts: [%Part.Text{text: text}]}}), do: text
 
   # Spawn an agent via the supervisor path. We can't use
   # `AgentTestHelpers.start_agent/1` here because it swaps
@@ -281,6 +286,17 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
                    "name" => "claude-3-opus-20240229",
                    "provider" => "anthropic-provider"
                  }
+
+          # The recovery is announced too: the agent was blocked at start, so the
+          # prompt it holds describes the model that did not resolve, and the
+          # notice is the only place that can correct it. It lands *after* the
+          # `{:unblocked}` settle — which is what leaves the machine `:idle` with
+          # room to take it — so it is the last pair in the transcript.
+          [notice_row, _ack] = Agent.get_messages(pid) |> Enum.take(-2)
+          notice = user_text(notice_row)
+
+          assert notice =~ ~s(Your model changed. It is now "claude-3-opus-20240229".)
+          assert notice =~ "Nothing declares whether it accepts image input"
         end)
 
       assert log =~ "Agent #{agent_name} could not resolve model"

@@ -26,7 +26,7 @@ refresh:
        rendered prompt string. Was `{:system, %System{}}` — the
        `Message.t()` shape is no longer needed for sizing.
      * `Trigger.start/2` and `ChatPipeline.refuse_compaction/1`
-       render via `SystemPrompt.compose_vocation_config/5` (or
+       render via `SystemPrompt.compose_vocation_config/6` (or
        fall back to extracting from `messages[0]` for the
        `vocation: nil` test fixture) before calling `Overflow`.
 
@@ -248,7 +248,7 @@ end
 
 `rebuild_for_compaction/4` does the actual work:
 
-1. Re-render the system prompt via `SystemPrompt.compose_vocation_config/5`
+1. Re-render the system prompt via `SystemPrompt.compose_vocation_config/6`
    with the fresh `vocation`, current `state.workspace_path`, and
    `{state.llm_metrics.context_limit, state.llm_metrics.context_limit_source}`.
 2. Re-build `state.tools` via `Tools.get_functions/3` with the fresh

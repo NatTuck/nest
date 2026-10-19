@@ -225,6 +225,15 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
   # Render the system prompt from the cached vocation (production), or
   # from the system message at position 0 (test fixtures without a
   # vocation).
+  #
+  # This render is **size-only**: it feeds `within_size_budget?/2` and the
+  # summary budget, and the request is then dispatched over the ordinary message
+  # list, whose `messages[0]` is the real system prompt (`Nest.Agents.Agent.
+  # Compaction.Overflow`'s doc says so). So a wrong or `nil` model name here
+  # costs a few bytes of accuracy in the overflow decision and never a cache
+  # miss — which is why a mutation at this call site fails no test, while the
+  # commit's own re-render (`Turn.Executor.refresh_vocation_and_tools/1`) is
+  # pinned by `test/nest/agents/agent/system_prompt_cache_test.exs`.
   defp system_prompt(ctx, messages) do
     if ctx[:vocation] do
       {system_prompt, _tools, _vocation} =
@@ -233,7 +242,8 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
           ctx.mounts,
           {ctx.context_limit, ctx.context_limit_source},
           ctx.agent_name,
-          ctx.depth
+          ctx.depth,
+          ctx.client_config.model
         )
 
       system_prompt

@@ -131,6 +131,15 @@ defmodule Nest.Agents.Agent.Turn.ContextReminder do
 
   @threshold_atoms [:p25, :p50, :p75]
 
+  # Test-only (`@doc false`): no production code reads it, and it is public only
+  # so a test that lowers an agent's context limit can mark every threshold
+  # announced without spelling the list again. The reminder fires on the first
+  # unannounced threshold the measured context crosses, and a fixture that is
+  # about something else must not gain a reminder pair because the prompt grew.
+  @doc false
+  @spec threshold_atoms() :: [atom()]
+  def threshold_atoms, do: @threshold_atoms
+
   @doc """
   The set of context-usage thresholds already announced in the
   given active message list.

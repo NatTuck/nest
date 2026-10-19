@@ -26,6 +26,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
   alias Nest.Agents.Agent.Config
   alias Nest.Messages.Sanitize
+  alias Nest.Models.MultiModal
   alias Nest.Modes
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
@@ -120,6 +121,13 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   system message from its parent, so the reported name/depth
   may be stale once cloned — the clone's own "You are the
   clone" notice supersedes it.
+  The `model` argument is the agent's model **name** (a string, or `nil` for a
+  caller that has no model to state). It renders the model section — the model's
+  name and whether we treat it as accepting image input — which is the only
+  place an agent is told what *its own* model accepts (`file-read`'s description
+  states the capability unconditionally, because it is the same text for every
+  agent). It has no default on purpose: a default of `nil` would silently omit a
+  section that is identity rather than tool reference.
   It takes no `mode`. The modes are universal (`Nest.Modes`) and an agent's
   mode is a runtime property, so the composer renders the constant catalog and
   states the mode nowhere: every message already states it. The `AGENTS.md` read
@@ -131,19 +139,20 @@ defmodule Nest.Agents.Agent.SystemPrompt do
           Mounts.t(),
           {integer() | nil, atom() | nil},
           String.t(),
-          non_neg_integer()
+          non_neg_integer(),
+          String.t() | nil
         ) ::
           {String.t() | nil, [String.t()], Nest.Vocations.Vocation.t() | nil}
-  def compose_vocation_config(nil, _mounts, _context_limit_info, _name, _depth),
+  def compose_vocation_config(nil, _mounts, _context_limit_info, _name, _depth, _model),
     do: {nil, [], nil}
 
-  def compose_vocation_config(vocation, mounts, context_limit_info, name, depth) do
+  def compose_vocation_config(vocation, mounts, context_limit_info, name, depth, model) do
     tools = Groups.expand(vocation.tools || [])
 
     system_prompt =
       (vocation.system_prompt || "") <>
         modes_section(tools, mounts) <>
-        build_suffix(mounts, context_limit_info, name, depth, tools) <>
+        build_suffix(mounts, context_limit_info, name, depth, tools, model) <>
         agents_md_section(mounts) <>
         Nest.ProjectConfig.section(Mounts.workspace(mounts))
 
@@ -177,10 +186,69 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
   defp modes_marker(false), do: "\n\n[Available modes]\n\n"
 
-  defp build_suffix(mounts, context_limit_info, name, depth, tools) do
+  defp build_suffix(mounts, context_limit_info, name, depth, tools, model) do
     identity_section(name, depth) <>
+      model_section(model) <>
       tool_sections(tools, mounts, name) <>
       context_limit_section(context_limit_info)
+  end
+
+  # The agent's model, and whether we treat it as accepting image input.
+  #
+  # `file-read`'s description states the capability unconditionally — it is a
+  # constant string, the same for every agent — so this is the only place an
+  # agent is told whether *its own* model has it. The verdict is
+  # `MultiModal.input_support/2`'s, the same one `file-read`'s media gate reads,
+  # so the prompt and the tool cannot disagree.
+  #
+  # Identity, not a tool reference: an agent with no tools still has a model, so
+  # this is not gated on the tool list (unlike `tool_sections/3`).
+  #
+  # A model *change* does not rebuild this section — the system message is
+  # prefix-cache-visible — so it is announced instead, and the notice states this
+  # same sentence (`Nest.Agents.Agent.ModelHandler`).
+  defp model_section(name) when is_binary(name) and name != "" do
+    "\n\nYour model is \"#{name}\". " <>
+      model_verdict_sentence(MultiModal.input_support(name, :image)) <> "\n"
+  end
+
+  defp model_section(_name), do: ""
+
+  @doc """
+  The sentence stating whether the model accepts image input.
+
+  Public because two places state it and they must not be able to disagree: the
+  model section above, and the notice appended when the model changes (the
+  prompt itself is never rebuilt, so the notice is the only place that can
+  correct it). It names no model, so both callers can frame it themselves.
+  """
+  @spec model_verdict_sentence(:supported | :unsupported | :unknown) :: String.t()
+  def model_verdict_sentence(:supported) do
+    "It accepts image input: `file-read` on a png, jpeg, gif or webp attaches the " <>
+      "image to the conversation and you see it."
+  end
+
+  def model_verdict_sentence(:unsupported) do
+    "It declares text-only input, so `file-read` refuses an image."
+  end
+
+  def model_verdict_sentence(:unknown) do
+    "Nothing declares whether it accepts image input, so `file-read` refuses an image " <>
+      "and says how to declare it."
+  end
+
+  @doc """
+  The compaction reserve and the working budget it leaves, for a context `limit`.
+
+  Public because two places state the same arithmetic and must not drift: the
+  context-limit section above, and the notice a model change appends
+  (`Nest.Agents.Agent.ModelHandler`), which restates the numbers because the
+  prompt's own line is never rebuilt.
+  """
+  @spec working_budget(pos_integer()) :: {non_neg_integer(), pos_integer()}
+  def working_budget(limit) do
+    reserve = Reserve.compaction_reserve(limit)
+    {reserve, max(1, limit - reserve)}
   end
 
   # Every prompt section that only makes sense when the agent can call
@@ -327,8 +395,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   defp context_limit_section({nil, _}), do: ""
 
   defp context_limit_section({limit, source}) do
-    reserve = Reserve.compaction_reserve(limit)
-    effective = max(1, limit - reserve)
+    {reserve, effective} = working_budget(limit)
 
     "\n\nContext limit: #{limit} tokens (resolved from #{source}). " <>
       "Of this, ~#{reserve} tokens are reserved for compaction, " <>

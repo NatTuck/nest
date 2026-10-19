@@ -46,7 +46,7 @@ Legend for the sizing primitives used below:
 
 1. Resolve `L` (context limit) eagerly — `Init.initial_context_limit/1`
    (`init.ex:289+`); never `nil` in runtime.
-2. Render the system prompt: `SystemPrompt.compose_vocation_config/5`
+2. Render the system prompt: `SystemPrompt.compose_vocation_config/6`
    (`system_prompt.ex:131-143`). It appends the mode catalog, workspace,
    tool budget, context-limit section, AGENTS.md, and `.nest` section.
 3. **Decision:** `SystemPrompt.within_size_budget?/2`
@@ -215,7 +215,7 @@ On every LLM response, `NoticeInjector.collect_case2_specs/2`
 
 `Trigger.start/2` (`trigger.ex:116-145`):
 
-1. Render the system prompt (`SystemPrompt.compose_vocation_config/5`).
+1. Render the system prompt (`SystemPrompt.compose_vocation_config/6`).
 2. **Decision:** `SystemPrompt.within_size_budget?` (25% cap) — else
    `broadcast_oversized`.
 3. **Decision:** `Tokens.Compactor.compute_summary_budget/4`

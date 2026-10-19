@@ -29,6 +29,20 @@ defmodule Nest.ChatModel do
   @type source :: Discover.source()
 
   @doc """
+  The model name a persisted or hand-built model map carries, or `nil`.
+
+  The map is the shape the UI sends and the `agents.model` jsonb column stores —
+  `%{name, provider, thinking_level}` — and it reaches the runtime in two
+  spellings: atom keys from the channel and from `:sys`-built attrs, string keys
+  from a row read back through Ecto's `:map` column. It is `nil` for `nil`
+  (a row written before a model was required), which is why every caller gets to
+  decide what an absent name means for it.
+  """
+  @spec model_name(map() | nil) :: String.t() | nil
+  def model_name(nil), do: nil
+  def model_name(model) when is_map(model), do: model[:name] || model["name"]
+
+  @doc """
   Creates a client config for the given model specification.
 
   Options:

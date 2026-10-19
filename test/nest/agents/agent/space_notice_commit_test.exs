@@ -61,6 +61,7 @@ defmodule Nest.Agents.Agent.SpaceNoticeCommitTest do
       environment = Nest.Spaces.environment(space_id)
 
       values = %{
+        kind: :workspace,
         workspace: environment.workspace_path,
         network_access: environment.network_access,
         backend: environment.sandbox_backend
@@ -140,7 +141,12 @@ defmodule Nest.Agents.Agent.SpaceNoticeCommitTest do
 
     # Values the row does *not* hold: the space was edited after this notice was
     # staged.
-    stale = %{workspace: "/home/nat/elsewhere", network_access: true, backend: "bwrap"}
+    stale = %{
+      kind: :workspace,
+      workspace: "/home/nat/elsewhere",
+      network_access: true,
+      backend: "bwrap"
+    }
 
     :ok = Persistence.set_space_notice_pending(space_id, name, true)
     ref = make_ref()

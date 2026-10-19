@@ -327,6 +327,69 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
     end
   end
 
+  describe "the model section" do
+    # `file-read`'s description states the image-input capability
+    # unconditionally — the same text for every agent — so this section is the
+    # only place an agent is told whether *its own* model has it. The verdict is
+    # `Nest.Models.MultiModal.input_support/2`'s, which `file-read`'s media gate
+    # reads too, so the two cannot disagree.
+    test "states the model and what the catalog says it accepts" do
+      stub_catalog([
+        %{"name" => "vision-model", "provider" => "p", "multi_modal" => %{"input" => ["image"]}},
+        %{"name" => "text-model", "provider" => "p", "multi_modal" => %{"input" => []}},
+        %{"name" => "unknown-model", "provider" => "p", "multi_modal" => nil}
+      ])
+
+      vocation = tool_vocation("ModelSection")
+      mounts = Mounts.new(nil, nil)
+
+      assert compose_with(vocation, mounts, "vision-model") =~
+               ~s(Your model is "vision-model". It accepts image input: `file-read` on a png, ) <>
+                 "jpeg, gif or webp attaches the image to the conversation and you see it."
+
+      assert compose_with(vocation, mounts, "text-model") =~
+               ~s(Your model is "text-model". It declares text-only input, so `file-read` refuses an image.)
+
+      # `:unknown` refuses *unconditionally*, so the sentence must not imply the
+      # attempt might succeed — it would burn a call to learn otherwise.
+      assert compose_with(vocation, mounts, "unknown-model") =~
+               ~s(Your model is "unknown-model". Nothing declares whether it accepts image ) <>
+                 "input, so `file-read` refuses an image and says how to declare it."
+
+      # No model name → no section at all, rather than one naming nothing. The
+      # callers that pass `nil` are the ones with no model to state (a vocation
+      # prompt rendered for a row with no model), not agents that lost one.
+      refute compose_with(vocation, mounts, nil) =~ "Your model is"
+    end
+
+    test "a tool-less vocation gets it too, right after the identity line" do
+      # Identity, not a tool reference: an agent with nothing to call still has a
+      # model, and the sentence is about what the model accepts, not about a tool
+      # it may or may not have.
+      stub_catalog([
+        %{"name" => "text-model", "provider" => "p", "multi_modal" => %{"input" => []}}
+      ])
+
+      {:ok, vocation} =
+        Vocations.create_vocation(%{
+          name: "ModelNoTools-#{System.unique_integer([:positive])}",
+          description: "Test",
+          system_prompt: "Tool-less.",
+          tools: []
+        })
+
+      prompt = compose_with(vocation, Mounts.new(nil, nil), "text-model")
+
+      assert prompt =~ ~s(Your model is "text-model".)
+      # Directly after the identity line, and with no tool section in between:
+      # the tool-gated sections are absent for this vocation, so the model
+      # sentence is followed by the context limit.
+      assert prompt =~ "That may change when cloned.\n\n\nYour model is \"text-model\"."
+      refute prompt =~ "Your own scratch directory"
+      refute prompt =~ "Tool call budget"
+    end
+  end
+
   # Compose the prompt for a tool-capable vocation on `backend`, with the
   # space's network setting: no workspace and no scratch, so no section here
   # reads a file and the mounts only decide the network and enforcement
@@ -335,9 +398,9 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
     compose_with(vocation, Mounts.new(nil, nil, backend, nil, network_access))
   end
 
-  defp compose_with(vocation, mounts) do
+  defp compose_with(vocation, mounts, model \\ nil) do
     {prompt, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(vocation, mounts, {nil, nil}, "agent", 0)
+      SystemPrompt.compose_vocation_config(vocation, mounts, {nil, nil}, "agent", 0, model)
 
     prompt
   end
@@ -355,6 +418,12 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
     vocation
   end
+
+  # The merged catalog, as `Nest.Models.list/0` returns it. Stubbed wherever the
+  # model section is under test: the section's verdict is a catalog lookup, and
+  # the real catalog in the test environment is the checked-in `test/data`
+  # config.
+  defp stub_catalog(models), do: Mimic.stub(Nest.Models, :list, fn -> models end)
 
   # A real workspace directory outside /tmp: the scratch dir is bound at /tmp,
   # so a /tmp-rooted workspace is rejected, and a non-existent one too.

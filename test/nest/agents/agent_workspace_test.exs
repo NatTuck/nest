@@ -425,7 +425,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
 
   # The values an edit casts, as `apply_space_environment/2` wants them.
   defp notice_values(workspace) do
-    %{workspace: workspace, network_access: true, backend: "bwrap"}
+    %{kind: :workspace, workspace: workspace, network_access: true, backend: "bwrap"}
   end
 
   # One queued inbox entry, in the shape `Inbox.serialize/1` reads (the drain

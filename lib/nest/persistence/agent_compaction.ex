@@ -159,7 +159,8 @@ defmodule Nest.Persistence.AgentCompaction do
         ),
         {limit, source},
         agent.name,
-        agent.depth || 0
+        agent.depth || 0,
+        ChatModel.model_name(agent.model)
       )
 
     system_prompt
@@ -233,7 +234,7 @@ defmodule Nest.Persistence.AgentCompaction do
 
   defp build_client(model) do
     provider_name = provider_of(model)
-    model_name = model[:name] || model["name"]
+    model_name = ChatModel.model_name(model)
 
     with {:ok, dotconfig} <- DotConfig.load(),
          %DotConfig.Provider{} = provider <-
