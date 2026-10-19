@@ -497,10 +497,14 @@ defmodule Nest.Tools do
       "separate agents-spawn calls when every item gets the same task. " <>
       "Provide `items` (a non-empty list) OR `glob` (a pattern expanded " <>
       "to readable files — preferred for large sets, so you never list " <>
-      "files by hand). If `template` is given it is rendered per item " <>
-      "with {item} and {index}; if omitted, each item is the " <>
-      "instruction. `archive` defaults to true. Sub-agents can be " <>
-      "spawned down to a maximum depth of " <>
+      "files by hand). An item is a short *parameter* — a path, an id, or a " <>
+      "one-line instruction, at most 256 bytes; for a longer instruction, pass " <>
+      "short items and a `template` that renders them with {item}. If " <>
+      "`template` is given it is rendered per item with {item} and {index}; if " <>
+      "omitted, each item is the instruction. Children are named from their " <>
+      "item when the call has a template or a glob, and by position " <>
+      "(`item-1`, `item-2`, …) otherwise. `archive` defaults to true. " <>
+      "Sub-agents can be spawned down to a maximum depth of " <>
       "#{Config.configured_max_depth()}."
   end
 
@@ -540,10 +544,11 @@ defmodule Nest.Tools do
           },
           "items" => %{
             "type" => "array",
-            "items" => %{"type" => "string"},
+            "items" => %{"type" => "string", "maxLength" => 256},
             "description" =>
-              "The items to fan out over (each becomes one sub-agent). " <>
-                "Provide this OR `glob`, not both."
+              "The items to fan out over (each becomes one sub-agent): a " <>
+                "parameter per child — a path, an id, or a one-line instruction, " <>
+                "at most 256 bytes each. Provide this OR `glob`, not both."
           },
           "set_mode" =>
             set_mode_property(
@@ -587,9 +592,10 @@ defmodule Nest.Tools do
           "name_prefix" => %{
             "type" => "string",
             "description" =>
-              "Optional constant prefix prepended to each child's name. " <>
-                "Children are named from their item (`<prefix>-<item>`), with " <>
-                "`-1`/`-2` appended when the same item repeats."
+              "Optional constant prefix prepended to each child's name. With a " <>
+                "`template` or a `glob` the rest of the name comes from the item " <>
+                "(`<prefix>-<item>`, with `-1`/`-2` when the same item repeats); " <>
+                "without either, from its position (`<prefix>-item-<n>`)."
           },
           "max_concurrency" => %{
             "type" => "integer",

@@ -57,6 +57,17 @@ defmodule Nest.Agents.Agent.BatchPlan do
   # Marker prefix for a failed / timed-out item's slot.
   @error_prefix "[error: "
 
+  # The longest item a batch may carry, in bytes.
+  #
+  # An item is a *parameter* — a path, an assignment id, a one-line instruction
+  # — never a whole task description. A call whose items are paragraphs is a
+  # call that wanted `agents-spawn`, or a `template` with short items, and it
+  # used to be accepted and then mangled twice over: the prose rode the model's
+  # tool-call arguments, and each child was named from a slug of it (issue #104).
+  # Refusing it before the launch is the whole fix; the bound is generous enough
+  # for a path and far below a paragraph.
+  @max_item_bytes 256
+
   @doc """
   The plan for one `agents-batch` call: what to spawn, in what order, under
   which deadline and concurrency, and where the slots land. Built in the calling
@@ -74,7 +85,13 @@ defmodule Nest.Agents.Agent.BatchPlan do
       items: items,
       template: template,
       base_opts: base_opts(args),
-      names: names_for_space(items, Map.get(args, "name_prefix", ""), ctx.space_id),
+      names:
+        names_for_space(
+          items,
+          Map.get(args, "name_prefix", ""),
+          params?(args, template),
+          ctx.space_id
+        ),
       timeout_ms: int_arg(args, "timeout") || @default_timeout_ms,
       max_concurrency: Config.clamp_batch_concurrency(int_arg(args, "max_concurrency")),
       on_error: Map.get(args, "on_error", "collect"),
@@ -141,19 +158,34 @@ defmodule Nest.Agents.Agent.BatchPlan do
     end
   end
 
-  # An item is a non-blank string (an instruction, or a path to one) or an
-  # integer (an assignment id). A blank item is rejected rather than dropped: a
-  # child spawned for `""` has no instruction — it is never tracked, never runs,
-  # and burns the whole per-item timeout before its slot becomes a marker — and
-  # dropping it would silently change the item count and the slot indices the
-  # caller asked for. The check runs before the launch, so the whole call is an
-  # error result the model can correct.
+  # An item is a non-blank string (a parameter — a path, an id, a one-line
+  # instruction) or an integer (an assignment id), at most `@max_item_bytes`.
+  # A blank item is rejected rather than dropped: a child spawned for `""` has
+  # no instruction — it is never tracked, never runs, and burns the whole
+  # per-item timeout before its slot becomes a marker — and dropping it would
+  # silently change the item count and the slot indices the caller asked for.
+  # The checks run before the launch, so the whole call is an error result the
+  # model can correct.
+  #
+  # Only model-authored items are checked here. A `glob`'s matches are paths the
+  # sandbox returned, not prose a model wrote, so they are not bounded by this.
   defp usable_item?(item) when is_integer(item), do: true
-  defp usable_item?(item) when is_binary(item), do: String.trim(item) != ""
+
+  defp usable_item?(item) when is_binary(item),
+    do: String.trim(item) != "" and byte_size(item) <= @max_item_bytes
+
   defp usable_item?(_item), do: false
 
-  defp item_problem(index, item) when is_binary(item),
-    do: "`items[#{index}]` is blank; an item must be a non-blank string or an integer"
+  defp item_problem(index, item) when is_binary(item) do
+    if String.trim(item) == "" do
+      "`items[#{index}]` is blank; an item must be a non-blank string or an integer"
+    else
+      "`items[#{index}]` is #{byte_size(item)} bytes; an item must be at most " <>
+        "#{@max_item_bytes}. An item is a parameter — a path, an id, or a one-line " <>
+        "instruction. For a longer instruction, pass short items and a `template` " <>
+        "that renders them with {item}, or spawn the children with `agents-spawn`."
+    end
+  end
 
   defp item_problem(index, item),
     do: "`items[#{index}]` is #{inspect(item)}; an item must be a non-blank string or an integer"
@@ -203,26 +235,35 @@ defmodule Nest.Agents.Agent.BatchPlan do
 
   # ---- Child naming ----
 
-  # Names for the batch children, derived from each item so the
-  # sidebar is readable (an "assignment id" becomes the child's
-  # name) instead of a generated adjective-animal pair. The item is
-  # slugified; when the same item appears more than once, each
-  # occurrence gets a `-<n>` suffix (1-based). `name_prefix` is an
-  # optional constant prefix.
+  # Names for the batch children.
   #
-  #   names_for_items([1, 12, 8, 1, "goat"], "zoo")
+  # When the items are **parameters** (`params?/2` — a template renders them, or
+  # a glob produced them), each child is named from its item, so the sidebar
+  # reads as what the child is working on (an assignment id, a path) instead of a
+  # generated adjective-animal pair. When the items are **instructions**, the
+  # item is a sentence and no slug of it is a name, so children are named by
+  # position instead: `<prefix>-item-<n>`, matching the slot order the aggregate
+  # comes back in.
+  #
+  # Either way `name_prefix` is an optional constant prefix, and when the same
+  # slug appears more than once each occurrence gets a `-<n>` suffix (1-based).
+  #
+  #   names_for_items([1, 12, 8, 1, "goat"], "zoo", true)
   #   #=> ["zoo-1-1", "zoo-12", "zoo-8", "zoo-1-2", "zoo-goat"]
+  #   names_for_items(["review the parser", "review the lexer"], "rev", false)
+  #   #=> ["rev-item-1", "rev-item-2"]
   #
-  # Pure (no space/registry access); `run_items/5` then runs the
-  # result through `uniquify/2` so a name never collides with an
-  # existing agent in the space.
+  # Pure (no space/registry access); `names_for_space/4` then runs the result
+  # through `uniquify/2` so a name never collides with an existing agent.
   @doc false
-  @spec names_for_items([term()], String.t()) :: [String.t()]
-  def names_for_items(items, prefix) do
+  @spec names_for_items([term()], String.t(), boolean()) :: [String.t()]
+  def names_for_items(items, prefix, params?) do
     slugs =
       items
       |> Enum.with_index()
-      |> Enum.map(fn {item, index} -> item_slug(item, index) end)
+      |> Enum.map(fn {item, index} ->
+        if params?, do: item_slug(item, index), else: "item-#{index + 1}"
+      end)
 
     counts = Enum.frequencies(slugs)
 
@@ -238,16 +279,29 @@ defmodule Nest.Agents.Agent.BatchPlan do
 
   # `run_items/5` entry point: derive item names, then make them unique
   # against the space's live + persisted names.
-  def names_for_space(items, prefix, space_id) do
+  def names_for_space(items, prefix, params?, space_id) do
     items
-    |> names_for_items(prefix)
+    |> names_for_items(prefix, params?)
     |> uniquify(Supervisor.existing_names_for_space(space_id))
+  end
+
+  # Whether the items are *parameters* rather than instructions. They are when
+  # the call says so: a `template` renders them (so each item is what fills it),
+  # and a `glob` produced them (so each item is a path). Without either, each
+  # item *is* the instruction, and a name slugged from it would be a truncated
+  # sentence — see `names_for_items/3`.
+  defp params?(args, template) do
+    template != "" or Map.get(args, "glob", "") != ""
   end
 
   # Slugify an item. Items can be integers (assignment ids) or
   # strings (including paths); anything that isn't `[a-z0-9]` becomes a
   # single `-`. A slug that comes out empty (e.g. all punctuation)
   # falls back to a deterministic `item-<n>`.
+  #
+  # The 32-character cap is what keeps a name a name: a long path still reads,
+  # and the slice is trimmed again because cutting mid-word can leave a trailing
+  # `-` that `base_name/4` would then double.
   defp item_slug(item, index) do
     slug =
       item
@@ -255,7 +309,8 @@ defmodule Nest.Agents.Agent.BatchPlan do
       |> String.downcase()
       |> String.replace(~r/[^a-z0-9]+/u, "-")
       |> String.trim("-")
-      |> String.slice(0, 64)
+      |> String.slice(0, 32)
+      |> String.trim("-")
 
     if slug == "", do: "item-#{index + 1}", else: slug
   end

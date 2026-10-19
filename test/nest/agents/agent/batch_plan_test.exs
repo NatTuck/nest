@@ -61,6 +61,11 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
 
       assert {:error, msg} = BatchPlan.resolve_items(%{"items" => ["   "]}, @ctx)
       assert msg =~ "`items[0]` is blank"
+
+      # Blank is reported as blank, not as over the length bound: the two checks
+      # are ordered, and a message that named the wrong one would send the model
+      # after the wrong fix.
+      refute msg =~ "bytes"
     end
 
     test "an item that is neither a string nor an integer is rejected" do
@@ -174,19 +179,61 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
     end
   end
 
-  describe "names_for_items/2" do
-    test "derives names from items, suffixing repeated items by occurrence" do
-      assert BatchPlan.names_for_items([1, 12, 8, 1, "goat"], "zoo") ==
+  describe "names_for_items/3" do
+    test "derives names from parameter items, suffixing repeated items by occurrence" do
+      assert BatchPlan.names_for_items([1, 12, 8, 1, "goat"], "zoo", true) ==
                ["zoo-1-1", "zoo-12", "zoo-8", "zoo-1-2", "zoo-goat"]
     end
 
-    test "slugifies items and omits the prefix when blank" do
-      assert BatchPlan.names_for_items(["Foo Bar", "a/b", "x_y"], "") ==
+    test "slugifies parameter items and omits the prefix when blank" do
+      assert BatchPlan.names_for_items(["Foo Bar", "a/b", "x_y"], "", true) ==
                ["foo-bar", "a-b", "x-y"]
     end
 
     test "a slug that sanitizes to empty falls back to item-<n>" do
-      assert BatchPlan.names_for_items(["!!!", "@@@"], "p") == ["p-item-1", "p-item-2"]
+      assert BatchPlan.names_for_items(["!!!", "@@@"], "p", true) == ["p-item-1", "p-item-2"]
+    end
+
+    test "names instruction items by position, because no slug of a sentence is a name" do
+      # Issue #104: a batch whose items are instructions used to name each child
+      # after a 64-character slice of the instruction, which read as a truncated
+      # sentence in the sidebar. The slot order is what the aggregate comes back
+      # in, so the position is the honest name.
+      assert BatchPlan.names_for_items(
+               ["Review the parser for crashes", "Review the lexer for crashes"],
+               "rev",
+               false
+             ) == ["rev-item-1", "rev-item-2"]
+
+      assert BatchPlan.names_for_items(["one", "two"], "", false) == ["item-1", "item-2"]
+    end
+
+    test "a long parameter still yields a name, cut short and trimmed" do
+      # The 32-character cap: a path reads, and a cut mid-word does not leave a
+      # trailing dash that `base_name/4` would then double.
+      [name] =
+        BatchPlan.names_for_items(["/very/long/path/to/some/deeply/nested/file.exs"], "", true)
+
+      assert String.length(name) <= 32
+      refute name =~ "--"
+      refute String.ends_with?(name, "-")
+    end
+  end
+
+  describe "the item bound" do
+    test "an item at the cap is accepted and one byte over is refused with the remedy" do
+      at_cap = String.duplicate("a", 256)
+      over = String.duplicate("a", 257)
+
+      assert {:ok, [^at_cap]} = BatchPlan.resolve_items(%{"items" => [at_cap]}, @ctx)
+
+      assert {:error, message} = BatchPlan.resolve_items(%{"items" => [over]}, @ctx)
+
+      assert message =~ "257 bytes"
+      assert message =~ "at most 256"
+      # The remedy, so the model can correct the call rather than retry it.
+      assert message =~ "template"
+      assert message =~ "agents-spawn"
     end
   end
 end
