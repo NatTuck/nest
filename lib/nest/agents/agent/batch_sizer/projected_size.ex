@@ -124,6 +124,22 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
           "  owed replies: none; pending inbox: 0 message(s)"
       )
 
+  # The pane tools. The three that mutate answer with one short sentence; the
+  # two that read answer with a list bounded by the pane's own caps
+  # (`Nest.Agents.Agent.Pane`: 50 decisions, 50 TODO items), so they project at
+  # the substitute minimum the other bounded-read tools use.
+  def project(%ToolCall{name: "decisions-ask"}, _ctx),
+    do: estimator_overhead("Recorded question d1 for the user; they will answer later.")
+
+  def project(%ToolCall{name: "decisions-obsolete"}, _ctx),
+    do: estimator_overhead("Marked question d1 as no longer needed.")
+
+  def project(%ToolCall{name: "todos-write"}, _ctx),
+    do: estimator_overhead("TODO list updated: 12 items.")
+
+  def project(%ToolCall{name: name}, _ctx) when name in ["decisions-list", "todos-list"],
+    do: summary_baseline_size() * @safety_padding
+
   # Catch-all for tools the LLM hallucinates or spells
   # incorrectly. These calls never reach execution; they return
   # small error strings ("Unknown tool: X", "Tool X not
@@ -150,6 +166,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
     agents-spawn agents-query agents-batch agents-list agents-list-archived models-list
     agents-archive agents-unarchive agents-send agents-wait
     agents-history agents-status
+    decisions-ask decisions-list decisions-obsolete todos-write todos-list
   )
 
   @doc false
