@@ -59,6 +59,15 @@ export function SpaceEnvironmentCard({ space }) {
               )}
             </span>
           </span>
+          {/* The sandbox-less case is the workspace's peer, not a detail: a
+              space with no sandbox is a space where the network setting is not
+              enforced, and that has to survive the collapse rather than waiting
+              behind a click. */}
+          {space.sandbox_backend === "none" && (
+            <span className="shrink-0 text-xs font-medium text-red-600">
+              no sandbox — network not enforced
+            </span>
+          )}
           <ChevronDown rotated={expanded} />
         </button>
       </h2>

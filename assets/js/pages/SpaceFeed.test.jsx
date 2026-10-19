@@ -523,6 +523,12 @@ describe("SpaceFeed", () => {
   it("says a space with no sandbox cannot enforce network access", () => {
     renderFeed({ space: { ...SPACE, sandbox_backend: "none" } });
 
+    // Collapsed, the summary row already carries it: a space with no sandbox is
+    // a space where the network setting is not enforced, which is a safety
+    // consequence rather than a detail, so it does not wait behind the click
+    // the way the rest of the card does.
+    expect(screen.getByText(/network not enforced/i)).toBeInTheDocument();
+
     expandEnvironment();
 
     expect(screen.getByText(/nothing enforces that/i)).toBeInTheDocument();
