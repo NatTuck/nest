@@ -15,14 +15,17 @@ defmodule Nest.Agents.TmpSweeper do
     1. **Dead peer roots.** A direct child of `/tmp/nest` is a *process root*
        iff its name is all digits **and** it contains `.alive` — content, not
        name, which is what keeps a `"none"` space's suggested
-       `/tmp/nest/<space-name>` directory from ever being a candidate. A peer
-       root whose `.alive` is older than the TTL is removed whole; an `.alive`
-       whose content is not a timestamp is a corpse and goes at any age. A child
-       with no `.alive` is not a process root and is left alone.
+       `/tmp/nest/<space-name>` directory out of the running. (A `"none"` space
+       can still write a `.alive` there itself, since nothing constrains it; that
+       is unenforceable by design, and the directory is then a corpse at any age
+       like any other unparseable marker.) A peer root whose `.alive` is older
+       than the TTL is removed whole; an `.alive` whose content is not a
+       timestamp is a corpse and goes at any age. A child with no `.alive` is not
+       a process root and is left alone.
     2. **Our own agent directories with no registered owner.** Under our own
        root, `space-<id>/<name>` goes when no live agent is registered under
        `{space_id, name}` — through the same ownership guard the shell-jobs path
-       uses (`TmpSpace.remove_swept/2`), not a second removal implementation.
+       uses (`TmpSpace.remove_swept/3`), not a second removal implementation.
     3. **Our own space directories with no registered agent and no live job.** A
        `space-<id>` directory goes only when the registry holds no agent in that
        space *and* `Nest.Sandbox.ShellJobs.live_in_space?/1` is false. Pass 2
@@ -95,12 +98,14 @@ defmodule Nest.Agents.TmpSweeper do
   # dead, short enough that a killed BEAM's tree does not outlive the day.
   @ttl_ms 60 * 60 * 1000
 
-  # The two non-agent children a space directory can hold. `.cmds` is
+  # The non-agent children a space directory can hold. `.cmds` is
   # `Nest.Sandbox.Paths.stage_dir/1` — staged command transcripts, a sibling of
   # the agent directories on purpose. `project` holds the `tmp`-mode `.nest`
   # mount bind sources (`Nest.ProjectConfig`), which are made under an agent's
   # own scratch directory and so normally go with it; it is skipped here so that
-  # a space-level one can never be mistaken for an agent.
+  # a space-level one can never be mistaken for an agent. Only `project` needs
+  # saying: `.cmds` is already rejected by `Nest.Name.valid?/1`, and it stays in
+  # the list as belt and braces rather than as the load-bearing entry.
   @non_agent_children [".cmds", "project"]
 
   # ---- Client API ----
@@ -114,8 +119,8 @@ defmodule Nest.Agents.TmpSweeper do
     %{id: @name, start: {__MODULE__, :start_link, []}, type: :worker}
   end
 
-  @spec start_link() :: GenServer.on_start()
-  def start_link, do: GenServer.start_link(__MODULE__, %{}, name: @name)
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: @name)
 
   @doc """
   Record `now` in `root`'s `.alive`: the timestamp a peer's sweeper reads to
@@ -151,7 +156,7 @@ defmodule Nest.Agents.TmpSweeper do
     Enum.each(list_dir(parent), &sweep_peer_root(parent, &1, own, now, ttl_ms))
 
     spaces = space_dirs(own_root)
-    Enum.each(spaces, &sweep_agents/1)
+    Enum.each(spaces, &sweep_agents(own_root, &1))
     Enum.each(spaces, &sweep_space(own_root, &1))
 
     :ok
@@ -160,18 +165,34 @@ defmodule Nest.Agents.TmpSweeper do
   # ---- Server callbacks ----
 
   @impl true
-  def init(_arg) do
+  def init(opts) do
     schedule_tick()
-    {:ok, %{}}
+
+    # The root and the TTL are options rather than constants so the tick itself is
+    # testable: a test builds this state with `init/1`, calls
+    # `handle_info(:tick, state)` and reads the result, instead of messaging the
+    # one registered process — which would sweep this BEAM's *real* root, and with
+    # it the scratch of every concurrently running test.
+    {:ok,
+     %{
+       root: Keyword.get_lazy(opts, :root, &TmpSpace.own_root/0),
+       ttl_ms: Keyword.get(opts, :ttl_ms, @ttl_ms)
+     }}
   end
 
   @impl true
   def handle_info(:tick, state) do
     now = DateTime.utc_now()
-    root = TmpSpace.own_root()
 
-    mark(root, now)
-    sweep(root, now, @ttl_ms)
+    # Make the root before marking it. It can be missing — a peer aged us out
+    # after a clock error, or `prepare_own_root/0` gave up at boot rather than
+    # taking the application down — and without this every tick would log a write
+    # failure and nothing would ever recreate it. `mkdir_p` and *not*
+    # `prepare_own_root/0`: that one removes the root first, which here would take
+    # live scratch with it.
+    File.mkdir_p(state.root)
+    mark(state.root, now)
+    sweep(state.root, now, state.ttl_ms)
     schedule_tick()
 
     {:noreply, state}
@@ -244,21 +265,33 @@ defmodule Nest.Agents.TmpSweeper do
   # directory: a valid agent name, and not one of the two things a space
   # directory holds that is not an agent. Removal goes through `TmpSpace`, which
   # owns the ownership guard.
-  defp sweep_agents({space_id, path}) do
+  defp sweep_agents(own_root, {space_id, path}) do
     path
     |> list_dir()
     |> Enum.reject(&(not Nest.Name.valid?(&1) or &1 in @non_agent_children))
-    |> Enum.each(fn name -> TmpSpace.remove_swept(Path.join(path, name), {space_id, name}) end)
+    |> Enum.each(fn name ->
+      TmpSpace.remove_swept(own_root, Path.join(path, name), {space_id, name})
+    end)
   end
 
   # ---- Pass 3: our own space directories ----
 
   defp sweep_space(own_root, {space_id, path}) do
-    if registered_in_space?(space_id) or ShellJobs.live_in_space?(space_id) do
+    if registered_in_space?(space_id) or live_job_in_space?(space_id) do
       :ok
     else
       rm_under(own_root, path)
     end
+  end
+
+  # A `GenServer.call` to the shell-jobs manager *exits* if that manager is
+  # restarting, and a crash here would take this process with it for no gain.
+  # `true` is the safe answer — it means "do not remove" — and it is also the
+  # conservative one: a job we cannot ask about is a job we must assume is live.
+  defp live_job_in_space?(space_id) do
+    ShellJobs.live_in_space?(space_id)
+  catch
+    :exit, _reason -> true
   end
 
   defp registered_in_space?(space_id), do: Registry.list_for_space(space_id) != []

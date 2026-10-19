@@ -106,6 +106,69 @@ defmodule Nest.Agents.TmpSweeperTest do
       assert File.dir?(own)
       assert File.exists?(TmpSpace.alive_path(own))
     end
+
+    test "the TTL boundary is strict: exactly as old as the TTL stays" do
+      own = root_fixture()
+      parent = Path.dirname(own)
+      now_ms = System.os_time(:millisecond)
+
+      # `>` and not `>=`: a peer that marked one tick ago is alive, so the edge
+      # must be kept and only what is strictly older removed.
+      edge = peer_root(parent, "5555", now_ms - @ttl)
+      older = peer_root(parent, "6666", now_ms - @ttl - 1)
+
+      assert :ok = TmpSweeper.sweep(own, now_ms, @ttl)
+
+      assert File.dir?(edge)
+      refute File.exists?(older)
+    end
+
+    test "keeps a peer root whose .alive cannot be read" do
+      own = root_fixture()
+      parent = Path.dirname(own)
+      now_ms = System.os_time(:millisecond)
+
+      # The one branch that decides *not* to delete on an error: a marker we
+      # cannot read is not evidence that its owner is dead.
+      root = peer_root(parent, "7777", now_ms - 2 * @ttl)
+      File.chmod!(TmpSpace.alive_path(root), 0o000)
+
+      assert :ok = TmpSweeper.sweep(own, now_ms, @ttl)
+
+      assert File.dir?(root)
+    end
+  end
+
+  describe "the tick" do
+    test "marks, sweeps and reschedules, and ignores a message it does not know" do
+      base = Path.join(System.tmp_dir!(), "nest-tick-#{System.unique_integer([:positive])}")
+      own = Path.join(base, "4242")
+      File.mkdir_p!(own)
+      on_exit(fn -> rm_tmp!(base, "nest-tick-") end)
+
+      # Something for the sweep to do, so the tick's effect is observable rather
+      # than merely "did not raise": a space with no agent and no job.
+      space = Path.join(own, "space-#{unique_negative_space()}")
+      File.mkdir_p!(space)
+
+      assert {:ok, state} = TmpSweeper.init(root: own, ttl_ms: @ttl)
+      assert %{root: ^own, ttl_ms: @ttl} = state
+
+      # Driven directly rather than by messaging the one registered process: that
+      # one sweeps this BEAM's real root, and with it the scratch of every
+      # concurrently running async test.
+      assert {:noreply, ^state} = TmpSweeper.handle_info(:tick, state)
+
+      assert File.dir?(own)
+      assert {:ok, content} = File.read(TmpSpace.alive_path(own))
+      assert {:ok, at, _offset} = DateTime.from_iso8601(content)
+      assert DateTime.diff(DateTime.utc_now(), at, :second) < 60
+
+      refute File.exists?(space)
+
+      # The catch-all: a message it does not understand must not crash it.
+      assert {:noreply, ^state} = TmpSweeper.handle_info(:not_a_tick, state)
+    end
   end
 
   describe "pass 2: our own agent directories" do

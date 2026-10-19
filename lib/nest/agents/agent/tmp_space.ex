@@ -169,7 +169,20 @@ defmodule Nest.Agents.Agent.TmpSpace do
   """
   @spec write_alive(String.t(), DateTime.t() | integer()) :: :ok | {:error, term()}
   def write_alive(root, now \\ DateTime.utc_now()) do
-    File.write(alive_path(root), stamp(now))
+    path = alive_path(root)
+    scratch = path <> ".tmp"
+
+    # Written to a sibling and renamed, never truncated in place. A peer's sweeper
+    # reads this file while we write it, and `File.write/2` truncates first — so an
+    # in-place write is observable as `""` or as a prefix, and *every* prefix of an
+    # ISO 8601 stamp is unparseable. An unparseable `.alive` is a corpse, which
+    # would make a live root removable: exactly the outcome this feature exists to
+    # prevent. `File.rename/2` within one directory is atomic, so a reader sees the
+    # old stamp or the new one. The scratch name is not `.alive`, so a leftover
+    # from a crash between the two calls is never mistaken for a marker.
+    with :ok <- File.write(scratch, stamp(now)) do
+      File.rename(scratch, path)
+    end
   end
 
   defp stamp(%DateTime{} = now), do: DateTime.to_iso8601(now)
@@ -461,7 +474,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # `none_scratch?` is the one backend-dependent question the guard asks: only a
   # `"none"` scratch has to prove it is Nest's with the marker. It travels as a
   # boolean rather than as a backend string because a caller holding the path
-  # (`remove_swept/2`) has no backend to name — and must not invent one.
+  # (`remove_swept/3`) has no backend to name — and must not invent one.
   defp remove_at(path, {space_id, name}, none_scratch?, reason) do
     cond do
       # Nothing there: the agent never created one, or something already took it.
@@ -542,9 +555,13 @@ defmodule Nest.Agents.Agent.TmpSpace do
   the manager is preempted, that incarnation registers and creates, and the
   manager resumes, it removes the *new* agent's scratch. The window is one
   preemption gap (a registry lookup, a regex match and a `Path.join`; none
-  yields), and the consequence is a scratch-less agent — nothing re-creates the
-  directory. Closing it needs the create to be ordered after any pending delete
-  for the key (or an incarnation-unique path), not a better-timed check.
+  yields), and the consequence is a scratch-less agent — recovered on its next
+  tool call, because every sandboxed call re-creates the directory
+  (`Nest.Sandbox.Mounts.ensure_scratch!/1`, reached from
+  `Nest.Tools.ShellCmd.build_command/3`, which `Nest.Sandbox`'s read/write/stat
+  also go through). What is lost is the files that were in it, not the agent.
+  Closing the window needs the create to be ordered after any pending delete for
+  the key (or an incarnation-unique path), not a better-timed check.
   """
   @spec cleanup_agent_key(term(), pid() | nil, String.t()) :: :ok
   def cleanup_agent_key({space_id, name} = key, owner, backend)
@@ -578,9 +595,25 @@ defmodule Nest.Agents.Agent.TmpSpace do
 
   The guard is check-then-act, like `cleanup_agent_key/3`'s; see the residual
   window documented there.
+
+  `path` is asserted to be under `root` — the root the caller is sweeping — before
+  anything is removed. Against today's only caller that is a tautology (the
+  sweeper builds the path from a `File.ls/1` entry of that root), and it is here
+  for the same reason `remove_own_root/0`'s check is: this is the one remover that
+  takes a path from outside, so a future caller must not be able to turn it into
+  an `rm_rf` of something else. The backend-dependent guards cannot help: both of
+  them short-circuit to "allowed" for a non-`"none"` scratch. The root is a
+  parameter rather than `own_root/0` because the sweeper's root is injectable, and
+  a guard against the wrong root would refuse everything a test sweeps.
   """
-  @spec remove_swept(String.t(), {integer(), String.t()}) :: :ok
-  def remove_swept(path, {space_id, name} = key) when is_binary(path) do
+  @spec remove_swept(String.t(), String.t(), {integer(), String.t()}) :: :ok
+  def remove_swept(root, path, {space_id, name} = key) when is_binary(path) do
+    unless String.starts_with?(Path.expand(path), Path.expand(root) <> "/") do
+      raise ArgumentError,
+            "TmpSpace.remove_swept: refusing to rm_rf #{inspect(path)}: " <>
+              "it is not under #{inspect(root)}"
+    end
+
     if live_other_owner?(key, nil) do
       :ok
     else
