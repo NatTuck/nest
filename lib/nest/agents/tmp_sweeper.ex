@@ -74,10 +74,11 @@ defmodule Nest.Agents.TmpSweeper do
 
   ## Blocking
 
-  This GenServer never blocks for an unknown amount of time. `init/1` makes one
-  directory and writes one file; a tick lists a directory per root and per space,
-  asks the registry and the shell-jobs manager, and `rm_rf`s trees that only Nest
-  wrote. Nothing here waits on an agent, a sandbox, an LLM or the network.
+  This GenServer never blocks for an unknown amount of time. `init/1` removes one
+  directory, makes it and writes one file; a tick lists a directory per root and
+  per space, asks the registry and the shell-jobs manager, and `rm_rf`s trees that
+  only Nest wrote. Nothing here waits on an agent, a sandbox, an LLM or the
+  network.
   """
 
   use GenServer
@@ -131,12 +132,8 @@ defmodule Nest.Agents.TmpSweeper do
   """
   @spec mark(String.t(), DateTime.t() | integer()) :: :ok
   def mark(root, now \\ DateTime.utc_now()) do
-    case TmpSpace.write_alive(root, now) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        Logger.error("TmpSweeper: could not mark #{root} alive: #{inspect(reason)}")
+    with {:error, reason} <- TmpSpace.write_alive(root, now) do
+      Logger.error("TmpSweeper: could not mark #{root} alive: #{inspect(reason)}")
     end
   end
 
