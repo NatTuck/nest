@@ -119,9 +119,12 @@ defmodule Nest.Agents.SpaceGateTest do
     assert :ok = SpaceGate.hold(id, :space_edit, 30)
     assert :ok = SpaceGate.hold(id, :space_edit, 500)
 
-    # Nothing releases the space across the first TTL's expiry point. (A late
+    # Nothing releases the space across the first TTL's expiry point. The
+    # interval is the discriminating one: the first hold's TTL was 30 ms, so
+    # 50 ms is past it — a `refute_receive` pays its whole window, so this is
+    # the smallest window that still crosses the point being tested. (A late
     # timer can only make this pass, so load cannot turn it into a failure.)
-    refute_receive {:space_unlocked, ^id}, 200
+    refute_receive {:space_unlocked, ^id}, 50
     assert SpaceGate.held?(id)
   end
 

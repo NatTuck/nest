@@ -70,13 +70,23 @@ defmodule Nest.Sandbox.ShellJobsTest do
     Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
 
     id = start_running!("sleep 30", tmp, key)
-    assert_receive {:shell_jobs, %{jobs: [%{id: ^id, status: :running}]}}, 1_000
+    # `start_running!` ends on a `list/1` call and the manager broadcasts the
+    # list before it replies, so the frame is already here.
+    assert_received {:shell_jobs, %{jobs: [%{id: ^id, status: :running}]}}
 
     assert :ok = ShellJobs.subscribe(key, id, self())
     assert :ok = ShellJobs.kill(key, id)
-    assert_receive {:shell_jobs, %{jobs: [%{id: ^id, killed: true}]}}, 1_000
-    assert_receive {:shell_job_exit, ^id, code}, 1_000
-    assert_receive {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}, 1_000
+    assert_received {:shell_jobs, %{jobs: [%{id: ^id, killed: true}]}}
+
+    # The one real wait in this test: the process has to actually die. Bounded
+    # at the file's ceiling for a killed job, and it is an event being waited
+    # for, not a clock.
+    assert_receive {:shell_job_exit, ^id, code}, 500
+
+    # A call, so the manager has finished the `:DOWN` callback — and therefore
+    # issued the list frame — before this returns.
+    assert [%{id: ^id, status: :exited}] = ShellJobs.list(key)
+    assert_received {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}
 
     send(ShellJobs.name(), {:kill_finalize, id})
 
@@ -162,19 +172,16 @@ defmodule Nest.Sandbox.ShellJobsTest do
   end
 
   test "a subscribe that lands after the exit still reports it", %{key: key, tmp: tmp} do
-    {:ok, _message} = start_background("true", tmp, key)
-    assert [%{id: id}] = ShellJobs.list(key)
-
     # The already-exited arm of `handle_call({:subscribe, ...})` fires only when
     # the subscribe arrives after the job exited, which is what makes it a race
-    # to reach at all. `list/1` is a call to the manager, so it cannot return
-    # before the exit has been recorded: waiting on it is a happens-after
-    # barrier, not a clock. (`true` exits in about a millisecond, so this is one
-    # poll in practice.)
-    eventually(
-      fn -> match?([%{id: ^id, status: :exited}], ShellJobs.list(key)) end,
-      timeout: 1_000
-    )
+    # to reach at all. A grace window wider than `true` needs removes the race
+    # rather than polling at it: `await_background_start/6` subscribes to the
+    # job and returns as soon as the *exit event* arrives, and `start_job` has
+    # already registered the job, so `{:ok, output}` here means the job exists
+    # and is recorded as `:exited`. No clock and no poll — the barrier is the
+    # exit itself.
+    assert {:ok, _output} = start_background("true", tmp, key, grace_ms: 500)
+    assert [%{id: id, status: :exited}] = ShellJobs.list(key)
 
     assert :ok = ShellJobs.subscribe(key, id, self())
 

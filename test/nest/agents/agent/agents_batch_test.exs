@@ -250,8 +250,8 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     # happens-after fence on the parent's own loop rather than a clock. (The
     # `chat:status` frame is not usable for it: an `idle` frame from the turn
     # that started the batch could still be in the mailbox.)
-    assert Eventually.eventually(fn -> Agent.get_status(parent_pid, 1_000) == :idle end,
-             timeout: 1_000
+    assert Eventually.eventually(fn -> Agent.get_status(parent_pid, 500) == :idle end,
+             timeout: 500
            )
 
     # A `:kill`ed task never runs the coordinator's rescue, so there is no
@@ -303,8 +303,8 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     # coordinator's `:DOWN` is handled while the machine is NOT idle. The two
     # arms used to be a coin flip per run (whichever the seed's ordering picked
     # left the other uncovered).
-    assert Eventually.eventually(fn -> Agent.get_status(parent_pid, 1_000) == :idle end,
-             timeout: 1_000
+    assert Eventually.eventually(fn -> Agent.get_status(parent_pid, 500) == :idle end,
+             timeout: 500
            )
 
     set_status(parent_pid, :streaming)
@@ -315,16 +315,16 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
 
     ref = Process.monitor(coordinator)
     Process.exit(coordinator, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^coordinator, :killed}, 1_000
+    assert_receive {:DOWN, ^ref, :process, ^coordinator, :killed}, 500
 
     # The notice lands *behind* the peer's message: the parent is told the
     # aggregate is not coming, and the queue is left for its own next boundary.
     # The count is the fence — nothing else in this test queues an entry, so the
     # second `chat_inbox` frame is the one `notice_lost_batch/3` appended.
-    assert_receive {:chat_inbox, %{count: 2}}, 1_000
+    assert_receive {:chat_inbox, %{count: 2}}, 500
 
     # allowlist: snapshot — inbox + messages
-    state = :sys.get_state(parent_pid, 1_000)
+    state = :sys.get_state(parent_pid, 500)
     queued = Enum.map(state.live.inbox, & &1.content)
     assert Enum.any?(queued, &(&1 =~ "queued while busy"))
     assert Enum.any?(queued, &(&1 =~ "stopped before reporting its aggregate"))
