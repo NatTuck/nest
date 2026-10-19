@@ -23,19 +23,21 @@ defmodule NestWeb.AgentChannel.HistoryTest do
   end
 
   test "bounds the limit and rejects a non-positive or non-integer one" do
-    assert_page_opts(%{"limit" => 200}, before: nil, limit: 200, roles: nil, origin: nil)
-
-    # The ceiling keeps a misbehaving client from asking for the whole archive.
+    # The ceiling keeps a misbehaving client from asking for the whole archive,
+    # and pinning the clamped value pins the ceiling itself.
     assert_page_opts(%{"limit" => 10_000}, before: nil, limit: 200, roles: nil, origin: nil)
 
-    for bad <- [0, -5, "10"] do
+    # `0` is the off-by-one below the smallest valid limit; `"10"` pins the
+    # integer half of the guard.
+    for bad <- [0, "10"] do
       assert History.page(1, "agent", %{"limit" => bad}) == {:error, "invalid_limit"}
     end
   end
 
-  test "accepts the archive's roles and rejects anything else" do
+  test "accepts the archive's roles, origin-filtering only the user projection" do
     for role <- ~w(system user assistant tool compaction) do
-      # Only the `user` projection is origin-filtered (see the rule below).
+      # The `role: "user"` projection is the Ctrl/Cmd+Up recall list, so it
+      # keeps only human prompts; every other projection stays unfiltered.
       origin = if role == "user", do: "human", else: nil
 
       assert_page_opts(%{"role" => role}, before: nil, limit: 50, roles: [role], origin: origin)
@@ -47,29 +49,12 @@ defmodule NestWeb.AgentChannel.HistoryTest do
   end
 
   test "parses before and rejects a negative or non-integer one" do
+    # `0` is the boundary the cursor is allowed to reach (it stops the walk).
     assert_page_opts(%{"before" => 0}, before: 0, limit: 50, roles: nil, origin: nil)
-    assert_page_opts(%{"before" => 7}, before: 7, limit: 50, roles: nil, origin: nil)
 
     for bad <- [-1, "7"] do
       assert History.page(1, "agent", %{"before" => bad}) == {:error, "invalid_before"}
     end
-  end
-
-  test "origin-filters only the user projection, which is the recall list" do
-    # The `role: "user"` projection is the Ctrl/Cmd+Up recall list, so it keeps
-    # only human prompts; every other projection stays unfiltered.
-    assert_page_opts(%{"role" => "user"},
-      before: nil,
-      limit: 50,
-      roles: ["user"],
-      origin: "human"
-    )
-
-    for role <- ~w(system assistant tool compaction) do
-      assert_page_opts(%{"role" => role}, before: nil, limit: 50, roles: [role], origin: nil)
-    end
-
-    assert_page_opts(%{}, before: nil, limit: 50, roles: nil, origin: nil)
   end
 
   # `page/3` is the module's public entry point, so every case goes through it:

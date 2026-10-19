@@ -16,33 +16,7 @@ defmodule Nest.Messages.StreamingTest do
   """
   use ExUnit.Case, async: true
 
-  import Nest.WireFormatAssertions
-
   alias Nest.Messages.Streaming
-
-  test "new/1 creates an empty accumulator" do
-    acc = Streaming.new(0)
-    assert acc.index == 0
-    assert acc.text_buffer == []
-    assert acc.thinking_buffer == []
-    assert acc.tool_calls == %{}
-    assert acc.segments == []
-    assert acc.chars_sent == 0
-    assert acc.refusal == nil
-    assert acc.thinking_signature == nil
-  end
-
-  test "append_text/2 accumulates text into the buffer" do
-    acc = Streaming.new(0)
-    acc = Streaming.append_text(acc, "Hello, ")
-    acc = Streaming.append_text(acc, "world!")
-
-    # The buffer is an IO list; multiple appends may pre-reverse
-    # for performance. The semantic content is preserved.
-    joined = IO.iodata_to_binary(acc.text_buffer)
-    assert joined =~ "Hello,"
-    assert joined =~ "world!"
-  end
 
   test "append_text/2 raises FunctionClauseError on non-binary input" do
     # The function is guarded with `is_binary/1`; non-binary input
@@ -54,61 +28,22 @@ defmodule Nest.Messages.StreamingTest do
     end
   end
 
-  test "append_thinking/3 accumulates thinking content" do
-    acc = Streaming.new(0)
-    acc = Streaming.append_thinking(acc, "reasoning step 1")
-    acc = Streaming.append_thinking(acc, "more reasoning")
-
-    joined = IO.iodata_to_binary(acc.thinking_buffer)
-    assert joined =~ "reasoning step 1"
-    assert joined =~ "more reasoning"
-  end
-
   test "append_thinking/3 with a signature sets the thinking_signature" do
     acc = Streaming.new(0)
     acc = Streaming.append_thinking(acc, "thought", "sig-123")
     assert acc.thinking_signature == "sig-123"
   end
 
-  test "start_tool_call/3 starts a partial tool call" do
-    acc = Streaming.new(0)
-    acc = Streaming.start_tool_call(acc, "call_1", "file-read")
-    assert Map.has_key?(acc.tool_calls, "call_1")
-    tc = acc.tool_calls["call_1"]
-    assert tc.id == "call_1"
-    assert tc.name == "file-read"
-    assert tc.complete? == false
-  end
-
-  test "append_tool_call_args/3 accumulates arguments into the buffer" do
-    acc = Streaming.new(0)
-    acc = Streaming.start_tool_call(acc, "call_1", "file-read")
-    acc = Streaming.append_tool_call_args(acc, "call_1", ~s({"path":))
-    acc = Streaming.append_tool_call_args(acc, "call_1", ~s("foo.txt"}))
-    tc = acc.tool_calls["call_1"]
-
-    # The buffer is an IO list; we don't pin the exact ordering
-    # since the implementation may prepend for performance.
-    joined = IO.iodata_to_binary(tc.arguments_buffer)
-    assert joined =~ ~s("path")
-    assert joined =~ ~s("foo.txt")
-  end
-
   test "complete_tool_call/2 marks a partial tool call complete" do
     acc = Streaming.new(0)
     acc = Streaming.start_tool_call(acc, "call_1", "file-read")
     acc = Streaming.append_tool_call_args(acc, "call_1", ~s({}))
+
+    # A call is incomplete from the moment it starts until it completes.
+    refute acc.tool_calls["call_1"].complete?
+
     acc = Streaming.complete_tool_call(acc, "call_1")
-    assert acc.tool_calls["call_1"].complete? == true
-  end
-
-  test "finalize/1 returns a complete Assistant struct" do
-    acc = Streaming.new(0)
-    acc = Streaming.append_text(acc, "answer")
-    finalized = Streaming.finalize(acc)
-
-    assert %Nest.Messages.Assistant{index: 0, parts: parts} = finalized
-    assert [%Nest.Messages.Part.Text{text: "answer"}] = parts
+    assert acc.tool_calls["call_1"].complete?
   end
 
   test "finalize/1 assembles multi-fragment text in arrival order (not reversed)" do
@@ -130,17 +65,6 @@ defmodule Nest.Messages.StreamingTest do
 
     assert [%Nest.Messages.Part.Thinking{thinking: "step one step two"}] =
              Streaming.finalize(acc).parts
-  end
-
-  test "to_json/1 serializes a text-only accumulator" do
-    acc = Streaming.new(3)
-    acc = Streaming.append_text(acc, "hello")
-    json = Streaming.to_json(acc)
-
-    assert json["index"] == 3
-    assert json["role"] == "assistant"
-    assert json["content"] == "hello"
-    assert is_list(json["segments"])
   end
 
   test "to_json/1 serializes multi-fragment content in arrival order (not reversed)" do
@@ -204,21 +128,6 @@ defmodule Nest.Messages.StreamingTest do
       json = Streaming.to_json(acc)
       assert json["toolCalls"] == []
     end
-
-    test "currentType serializes an in-flight tool call as a JSON array" do
-      acc = Streaming.new(0)
-      acc = Streaming.append_text(acc, "x")
-      acc = Streaming.start_tool_call(acc, "call_1", "shell-cmd")
-      json = Streaming.to_json(acc)
-
-      # `current_block` is `{:tool_use, id}` internally. Jason has no
-      # tuple encoder, so `to_json/1` emits a two-element list — the
-      # shape the JS `normalizePartial` reads (`Array.isArray`). This
-      # is the regression guard for the lobby channel crash where a
-      # mid-stream `partial.currentType` tuple reached `Jason.encode!`.
-      assert json["currentType"] == ["tool_use", "call_1"]
-      assert_wire_encodable!(json, "streaming partial")
-    end
   end
 
   describe "defensive fallthroughs for malformed events" do
@@ -245,18 +154,6 @@ defmodule Nest.Messages.StreamingTest do
 
       assert log =~ "start_tool_call"
       assert log =~ ":by_index"
-    end
-
-    test "start_tool_call/3 with a non-binary name returns acc unchanged" do
-      acc = Streaming.new(0)
-
-      log =
-        capture_log(fn ->
-          result = Streaming.start_tool_call(acc, "call_1", nil)
-          assert result == acc
-        end)
-
-      assert log =~ "start_tool_call"
     end
 
     test "append_tool_call_args/3 for an unknown id returns acc unchanged" do

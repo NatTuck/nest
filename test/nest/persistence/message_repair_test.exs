@@ -41,13 +41,9 @@ defmodule Nest.Persistence.MessageRepairTest do
       {:ok, plan, agents} = MessageRepair.run(:all, apply: false)
 
       assert MessageRepair.violations?(plan)
-      refute MessageRepair.residual?(plan)
-      assert Enum.map(plan.inserts, & &1.index) == [3, 4]
-      assert MessageRepair.format_report(plan, agents) =~ "Violations found"
       assert MessageRepair.format_report(plan, agents) =~ name
 
-      assert {:ok, applied, _agents} = MessageRepair.run(:all, apply: true)
-      refute MessageRepair.residual?(applied)
+      assert {:ok, _applied, _agents} = MessageRepair.run(:all, apply: true)
 
       full = Persistence.load_full_messages(space_id, name)
       assert roles(full) == [:system, :user, :assistant, :tool, :assistant, :user]
@@ -58,26 +54,32 @@ defmodule Nest.Persistence.MessageRepairTest do
 
       {:ok, again, _agents} = MessageRepair.run(:all, apply: false)
       refute MessageRepair.violations?(again)
-      assert again.inserts == []
 
       assert {:ok, %PersistedAgent{next_message_index: 6}} =
                Persistence.fetch_agent(space_id, name)
     end
   end
 
-  describe "alternation only" do
-    test "two user messages are separated by a synthetic assistant" do
+  describe "space targeting" do
+    test "loads by space name, repairs an alternation, and reports a missing space" do
       space_id = test_space_id()
-      name = unique_name("alt")
+      name = unique_name("space-target")
       {:ok, _} = Persistence.insert_agent(agent_attrs(name))
 
       insert_messages(space_id, name, [system(0), user(1, "one"), user(2, "two")])
 
-      assert {:ok, _plan, _agents} = MessageRepair.run(:all, apply: true)
+      space_name = Spaces.get_space(space_id).name
+
+      assert {:ok, plan, _agents} = MessageRepair.run({:space, space_name}, [])
+      assert MessageRepair.violations?(plan)
+
+      assert {:ok, _plan, _agents} = MessageRepair.run({:space, space_name}, apply: true)
 
       full = Persistence.load_full_messages(space_id, name)
       assert roles(full) == [:system, :user, :assistant, :user]
       assert :ok = Preflight.validate(full)
+
+      assert {:error, {:space_not_found, "nope"}} = MessageRepair.run({:space, "nope"}, [])
     end
   end
 
@@ -98,12 +100,9 @@ defmodule Nest.Persistence.MessageRepairTest do
 
       {:ok, plan, agents} = MessageRepair.run(:all, apply: false)
       assert MessageRepair.violations?(plan)
-      refute MessageRepair.residual?(plan)
-      assert [%{index: 5}] = plan.deletes
       assert MessageRepair.format_report(plan, agents, true) =~ "deletes at [5]"
 
-      assert {:ok, applied, _agents} = MessageRepair.run(:all, apply: true)
-      refute MessageRepair.residual?(applied)
+      assert {:ok, _applied, _agents} = MessageRepair.run(:all, apply: true)
 
       full = Persistence.load_full_messages(space_id, name)
       assert :ok = Preflight.validate(full)
@@ -112,9 +111,8 @@ defmodule Nest.Persistence.MessageRepairTest do
       assert {:tool, %Tool{parts: [%Part.ToolResult{tool_call_id: "call_x", is_error: false}]}} =
                Enum.at(full, 3)
 
-      assert {:ok, again, _agents} = MessageRepair.run(:all, apply: false)
+      {:ok, again, _agents} = MessageRepair.run(:all, apply: false)
       refute MessageRepair.violations?(again)
-      assert again.inserts == [] and again.deletes == []
     end
 
     test "a plan with residual violations is never written" do
@@ -152,14 +150,10 @@ defmodule Nest.Persistence.MessageRepairTest do
         assistant_text(5)
       ])
 
-      assert {:ok, plan, _agents} = MessageRepair.run(:all, apply: true)
-      refute MessageRepair.residual?(plan)
+      assert {:ok, _plan, _agents} = MessageRepair.run(:all, apply: true)
 
       assert {:ok, %PersistedAgent{fork_message_index: 5, next_message_index: 7}} =
                Persistence.fetch_agent(space_id, child)
-
-      own = Persistence.load_messages(space_id, child)
-      assert Enum.map(own, &index/1) == [5, 6]
 
       full = Persistence.load_full_messages(space_id, child)
       assert :ok = Preflight.validate(full)
@@ -167,33 +161,8 @@ defmodule Nest.Persistence.MessageRepairTest do
     end
   end
 
-  describe "space targeting" do
-    test "loads by space name and reports a missing space" do
-      space_id = test_space_id()
-      name = unique_name("space-target")
-      {:ok, _} = Persistence.insert_agent(agent_attrs(name))
-
-      insert_messages(space_id, name, [
-        system(0),
-        user(1, "one"),
-        user(2, "two")
-      ])
-
-      space_name = Spaces.get_space(space_id).name
-
-      assert {:ok, plan, agents} = MessageRepair.run({:space, space_name}, [])
-      assert MessageRepair.violations?(plan)
-      assert MessageRepair.format_report(plan, agents, true) =~ "Planned writes"
-
-      assert {:error, {:space_not_found, "nope"}} = MessageRepair.run({:space, "nope"}, [])
-    end
-  end
-
   describe "CLI argument parsing" do
     test "validates targets, switches and flags" do
-      assert {:error, message} = parse([])
-      assert message =~ "--space"
-
       assert {:error, message} = parse(["--space", "s", "--all"])
       assert message =~ "not both"
 

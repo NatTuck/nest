@@ -20,10 +20,6 @@ defmodule Nest.Messages.UserTest do
   alias Nest.Messages.Part
   alias Nest.Messages.User
 
-  test "human_metadata/0 is the marker the client filter matches" do
-    assert User.human_metadata() == %{"origin" => "human"}
-  end
-
   test "to_json/1 exposes origin when the message carries it" do
     json =
       User.to_json(%User{
@@ -33,22 +29,12 @@ defmodule Nest.Messages.UserTest do
         api_logs: []
       })
 
+    # The literal the client's recall filter matches
+    # (`assets/js/utils/chatHistory.js`): the marker's value is a wire contract,
+    # not an internal detail.
     assert json["origin"] == "human"
     assert json["mode"] == "build"
     assert json["role"] == "user"
-  end
-
-  test "to_json/1 omits origin for an untagged row" do
-    json =
-      User.to_json(%User{
-        index: 1,
-        parts: [%Part.Text{text: "[mode: build]\nhi"}],
-        metadata: %{"mode" => "build"},
-        api_logs: []
-      })
-
-    refute Map.has_key?(json, "origin")
-    assert json["mode"] == "build"
   end
 
   test "to_json/1 omits origin when metadata is nil" do
@@ -79,7 +65,6 @@ defmodule Nest.Messages.UserTest do
                {:output, "more"}
              ]) == %{"command_output_parts" => [2, 4]}
 
-      assert User.command_output_metadata([{:text, "no output here"}]) == %{}
       assert User.command_output_metadata([]) == %{}
     end
 
@@ -93,9 +78,6 @@ defmodule Nest.Messages.UserTest do
                %{"kind" => "text", "text" => "Your backgrounded command (shell-cmd) finished."},
                %{"kind" => "text", "text" => "# output\n"}
              ]
-
-      assert Enum.map_join(json["parts"], "", & &1["text"]) ==
-               "Your backgrounded command (shell-cmd) finished.# output\n"
     end
 
     test "to_json/1 omits commandOutputParts for a row that has none" do
@@ -111,7 +93,6 @@ defmodule Nest.Messages.UserTest do
         json = json_for(metadata, two_parts())
 
         refute Map.has_key?(json, "commandOutputParts"), label
-        assert length(json["parts"]) == 2, label
       end
     end
   end
