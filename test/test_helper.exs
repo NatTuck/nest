@@ -394,21 +394,33 @@ end
 # `LazyHTML` is a Rust NIF, so the first call in a VM pays the module load and
 # the NIF load together, and it is paid by whichever test parses HTML first.
 # `page_controller_test.exs` is the only caller, and its first
-# `LazyHTML.from_document/1` runs inside a controller test the suite bounds —
-# observed as a timeout *inside* `from_document/1` while the same file passed
-# alone. That is the same shape as the TOML and Inspect warm-ups above: a
-# one-off cost landing inside somebody else's deadline.
+# `LazyHTML.from_document/1` (the favicon assertions, around line 108) runs
+# inside a controller test the suite bounds — observed as a timeout *inside*
+# `from_document/1` while the same file passed alone. That is the same shape as
+# the TOML and Inspect warm-ups above: a one-off cost landing inside somebody
+# else's deadline.
 #
-# Measured in an idle VM, first call vs second: 1787 us vs 61 us. The idle
-# absolute is small; what makes it a timeout is contention — under full-suite
-# concurrency the load queues on the shared code server behind every other
-# first load. Warming pays it before any deadline rather than making it
-# smaller.
+# Measured in an idle VM, first call vs second: 1787 us vs 61 us. A ~2 ms load
+# cannot by itself produce a timeout; what makes it one is contention — under
+# full-suite concurrency the load queues on the shared code server behind every
+# other first load. Warming pays it before any deadline rather than making it
+# smaller. What it therefore does *not* establish is whether that test's own
+# deadline is too tight on a loaded host: the warm-up removes a one-off cost, it
+# does not re-measure the bound.
 #
 # The document is a real one rather than `""`, because the NIF loads on the
 # parse and an empty string is the path least likely to touch it.
-warm_document = LazyHTML.from_document("<html><head><title>warmup</title></head></html>")
-_ = LazyHTML.text(LazyHTML.query(warm_document, "title"))
+warmup_html = "<html><head><title>warmup</title></head></html>"
+
+# Rescued so that the guard below can actually fire. Without the rescue, a
+# failed warm-up raises here and the guard is unreachable — a check that cannot
+# fail is worse than no check, because a reader counts it as one.
+try do
+  document = LazyHTML.from_document(warmup_html)
+  _ = LazyHTML.text(LazyHTML.query(document, "title"))
+rescue
+  _ -> :ok
+end
 
 # Fail loudly if it did not take, like the guards above. `:code.is_loaded/1`
 # returns `{:file, path}` rather than `true`, so this compares against `false`

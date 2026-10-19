@@ -84,6 +84,13 @@ defmodule Nest.Sandbox.ShellJobsTest do
     # receiver — so the fallback has run when this returns. It must leave the
     # recorded exit alone and broadcast nothing: the job is no longer
     # `:running`, so there is nothing to finalize.
+    #
+    # The negative assertion rests on an invariant: a kill broadcasts exactly
+    # twice, `killed: true` and then `:exited`, and both are consumed above. So
+    # anything still in the mailbox is a *third* frame, i.e. a duplicate
+    # broadcast — which is what this is for, not for detecting unrelated
+    # traffic. (The topic is `agent:<space>:<name>` for this test's own key, so
+    # no other test can contribute a frame to it.)
     assert [%{id: ^id, status: :exited, exit_code: ^code}] = ShellJobs.list(key)
     refute_received {:shell_jobs, _}
   end
