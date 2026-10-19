@@ -72,7 +72,6 @@ defmodule Nest.Sandbox.ShellJobs do
   alias Nest.Sandbox.{Backend, Mounts}
   alias Nest.Sandbox.ShellJobs.{JobLog, Launcher}
   alias Nest.Sandbox.ShellJobs.Waiters
-  alias Nest.Tools.Exec
   alias Nest.Tools.ShellCmd
 
   @name __MODULE__
@@ -137,10 +136,6 @@ defmodule Nest.Sandbox.ShellJobs do
   """
   @spec start_job(map()) :: {:ok, job_id(), String.t()} | {:error, String.t()}
   def start_job(attrs) do
-    # `:erlexec` is started lazily outside prod (see `Nest.Tools.Exec`).
-    # Start it in the caller so the one-off 350ms never blocks this
-    # server's mailbox.
-    Exec.ensure_started()
     GenServer.call(@name, {:start_job, attrs}, 30_000)
   end
 

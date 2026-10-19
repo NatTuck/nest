@@ -28,7 +28,7 @@ defmodule Nest.MixProject do
   def application do
     [
       mod: {Nest.Application, []},
-      extra_applications: [:logger, :runtime_tools]
+      extra_applications: [:logger, :runtime_tools, :erlexec]
     ]
   end
 
@@ -80,18 +80,18 @@ defmodule Nest.MixProject do
       {:unique_names_generator, "~> 0.2.0"},
       # `:erlexec`'s `exec` gen_server sleeps a hardcoded 350ms in `init/1`
       # (deps/erlexec/src/exec.erl) to see whether its port program dies
-      # immediately. Starting the app via the application controller would
-      # therefore add 350ms to *every* `mix test` boot, so in test we leave
-      # the app out of `applications` and let `Nest.Tools.Exec.ensure_started/0`
-      # start it on the first shell command instead.
+      # immediately. That cost is paid once per node either way — this was
+      # previously started lazily on the first shell command to keep it out of
+      # a boot that never runs one, but `Application.ensure_all_started/1` is a
+      # call into a single global process, and every command paid it.
       #
-      # ONLY `:test` skips the auto-start. Every other env keeps the default
-      # (`runtime: true`), so the app stays in `applications` and a release
-      # built in *any* env still ships it. Do not "simplify" this to a bare
-      # `runtime: false` (that drops the app from releases), and do not widen
-      # the exclusion past `:test` (a non-prod release would then ship without
-      # `:erlexec` and the first shell command would fail).
-      {:erlexec, "~> 2.0", runtime: Mix.env() != :test},
+      # Under `--cover` with `max_cases: 16` enough callers queued on that
+      # process that the controller exited them with `:terminating`, which made
+      # `mix precommit` fail on a busy host with timeouts and exits rather than
+      # assertion failures (#145). It is now a declared runtime application in
+      # every env: started once at boot, off the hot path, no stale flag to
+      # drift.
+      {:erlexec, "~> 2.0"},
       {:mustache, "~> 0.5"},
       {:tokenizers, "~> 0.5"},
       {:exprof, "~> 0.2", only: :test},
