@@ -25,14 +25,15 @@ defmodule Nest.Agents.Agent.NoticeDeliveryTest do
 
   @text "the notice"
 
-  test "an appended pair is :appended, and an earlier pair with the same text is not" do
+  test "an appended pair is :appended, a staged one is :deferred, and neither is an error" do
     earlier = pair()
     before = agent([system(), earlier])
 
     # The row `text` names is *already* in the transcript, from an earlier
     # change: a settle that adds nothing must not be read as having appended it.
     # That is what the `Enum.drop(length(before.chat_state.messages))` diff is
-    # for.
+    # for. The status an error carries is `Machine.status_for/1`'s, pinned per
+    # phase in `MachineTest`; `:idle` is the arm this state reaches.
     assert NoticeDelivery.outcome(before, before, @text) == {:error, :idle}
 
     # A settle that added the pair is `:appended`, even with the earlier one
@@ -43,13 +44,9 @@ defmodule Nest.Agents.Agent.NoticeDeliveryTest do
 
     # ...and a *different* text is not this notice, whatever else landed.
     assert NoticeDelivery.outcome(before, settled, "another notice") == {:error, :idle}
-  end
 
-  test "a notice on a compaction's entry is :deferred, and a blocked machine is an error" do
-    before = agent([system()])
-
-    # The notice is in flight: on the compaction's entry, which is the only place
-    # a notice can be staged from.
+    # The notice in flight: on the compaction's entry, which is the only place a
+    # notice can be staged from.
     staged = %{
       before
       | live: %{
@@ -59,12 +56,6 @@ defmodule Nest.Agents.Agent.NoticeDeliveryTest do
     }
 
     assert NoticeDelivery.outcome(before, staged, @text) == :deferred
-
-    # Nothing appended and nothing in flight: the status says where the machine
-    # ended up, and the caller decides what that means for it.
-    blocked = %{before | live: %{before.live | machine: %Machine{phase: :context_overflow}}}
-
-    assert NoticeDelivery.outcome(before, blocked, @text) == {:error, :context_overflow}
   end
 
   defp agent(messages) do

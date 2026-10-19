@@ -6,7 +6,9 @@ defmodule Nest.Agents.Agent.RestoreTest do
   Covers `rebuild_request_api_logs/4`: the wire-format request
   payload is built with the same
   `client_config.client.format_request_payload/2` the live path
-  uses (asserted via `MockClient`'s capture mode).
+  uses (asserted by comparing against `MockClient`'s own output
+  for an equivalent `RunRequest`), and that `{:compaction, _}`
+  markers in the preloaded sequence never reach the wire.
   """
 
   use ExUnit.Case, async: true
@@ -83,19 +85,14 @@ defmodule Nest.Agents.Agent.RestoreTest do
 
   describe "rebuild_request_api_logs/4" do
     test "id is formatted as '<message_index>.<sequence>' to match Broadcasts.next_api_log_id/2" do
+      state = fixture_state()
+
       rebuilt =
-        Restore.rebuild_request_api_logs(
-          fixture_state(),
-          fixture_messages(),
-          3,
-          fixture_state().client_config
-        )
+        Restore.rebuild_request_api_logs(state, fixture_messages(), 3, state.client_config)
 
       assert rebuilt.type == :request
-      assert is_binary(rebuilt.id)
       assert rebuilt.id == "003.000"
       assert is_struct(rebuilt.timestamp, DateTime)
-      assert is_map(rebuilt.payload)
     end
 
     test "payload matches the client's wire format for the same RunRequest slice" do
@@ -121,38 +118,6 @@ defmodule Nest.Agents.Agent.RestoreTest do
       }
 
       assert rebuilt.payload == MockClient.format_request_payload(expected_request, [])
-    end
-
-    test "omits opts to format_request_payload (wire format, no http concerns)" do
-      # The rebuilt payload is built with an empty opts list
-      # regardless of what's in `client_config` (no `base_url`,
-      # no `api_key`). The MockClient's wire shape doesn't read
-      # opts anyway, but this pins the contract for any future
-      # client whose `format_request_payload` does.
-      state = fixture_state()
-      messages = fixture_messages()
-
-      rebuilt = Restore.rebuild_request_api_logs(state, messages, 1, state.client_config)
-
-      # The payload is identical regardless of opts — confirms
-      # the rebuild uses an empty opts. (MockClient's signature
-      # is `format_request_payload(req, opts \\ [])` and ignores
-      # opts; we just compare to the canonical shape.)
-      assert is_map(rebuilt.payload)
-    end
-
-    test "uses tool_choice :auto (matches the agent's standard chat config)" do
-      state = fixture_state()
-      messages = fixture_messages()
-
-      rebuilt = Restore.rebuild_request_api_logs(state, messages, 1, state.client_config)
-
-      # MockClient's wire format keeps `tool_choice: :auto` as
-      # an atom. The OpenAI wire format would string-encode it;
-      # the rebuild just preserves whatever the client's wire
-      # format produces — the contract is "use the same client
-      # the live path uses", not "produce a specific encoding".
-      assert rebuilt.payload["tool_choice"] == :auto
     end
 
     test "a tool-less agent rebuilds with no tools and tool_choice :none" do
@@ -225,11 +190,6 @@ defmodule Nest.Agents.Agent.RestoreTest do
       # (Without the fix, `OpenAIClient.message_to_wire({:compaction, _})`
       # has no clause and the rebuild crashes with a CaseClauseError.)
       refute Enum.any?(wire_messages, &(&1["role"] == "compaction"))
-
-      # And the slice the LLM would see is the user's full
-      # context MINUS the compaction marker.
-      assert Enum.any?(wire_messages, &(&1["role"] == "user"))
-      assert Enum.any?(wire_messages, &(&1["role"] == "assistant"))
 
       # Compactness: 8 preloaded elements minus the compaction
       # marker = 7 wire messages (1 system + 4 user + 2 assistant,

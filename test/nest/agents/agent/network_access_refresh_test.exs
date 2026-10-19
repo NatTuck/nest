@@ -5,10 +5,14 @@ defmodule Nest.Agents.Agent.NetworkAccessRefreshTest do
   tells a live agent, so the space's own claim that a change takes effect for its
   agents' subsequent commands is true.
 
-  The mounts and the tool closures built from them move together (the closures
-  capture the mounts), and a turn in flight picks the new value up at its next
-  settle, because `Turn.build_ctx/2` re-reads the mounts. `Nest.Spaces` owns the
-  push; this file owns what the agent does with it.
+  That the mounts move (and only in the edited space) is pinned by
+  `Nest.Agents.Agent.SpaceNetworkAccessTest`; that the agent is told is pinned by
+  `Nest.Agents.Agent.NetworkAccessNoticeTest`. This file owns what neither can
+  see: the tool closures are *rebuilt* while the tool set survives (they capture
+  the mounts, so keeping the old closures would leave the agent running under the
+  old value, and re-deriving them must not strip it), and a turn in flight picks
+  the new value up at its next settle because `Turn.build_ctx/2` re-reads the
+  mounts.
   """
 
   use Nest.DataCase, async: true
@@ -33,7 +37,7 @@ defmodule Nest.Agents.Agent.NetworkAccessRefreshTest do
     :ok
   end
 
-  test "the cast moves the mounts, the tool closures and the resolved caps together" do
+  test "the cast rebuilds the tool closures and a turn's context resolves the new caps" do
     # The programmer vocation's tools include the ones that capture the mounts
     # (`file-*`, `shell-cmd`), which is what makes the closure rebuild
     # observable: a context tool captures nothing.
@@ -47,7 +51,6 @@ defmodule Nest.Agents.Agent.NetworkAccessRefreshTest do
     # the fields the cast moves have no accessor.
     before = :sys.get_state(pid, 1_000)
 
-    assert Mounts.network_access(before.mounts) == true
     assert Turn.build_ctx(before).caps["net"] == true
 
     :ok =
@@ -62,10 +65,9 @@ defmodule Nest.Agents.Agent.NetworkAccessRefreshTest do
     # the closures have no accessor.
     after_cast = :sys.get_state(pid, 1_000)
 
-    assert Mounts.network_access(after_cast.mounts) == false
-
     # The tool closures capture the mounts, so the refresh has to rebuild them —
-    # the same tool set, from the new mounts.
+    # the same tool set, from the new mounts. (The rebuild re-derives the tools
+    # from their names, so a change here would silently strip the agent.)
     assert Enum.map(after_cast.tools, & &1.name) == Enum.map(before.tools, & &1.name)
     refute after_cast.tools == before.tools
 
