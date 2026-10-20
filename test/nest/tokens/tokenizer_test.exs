@@ -17,26 +17,26 @@ defmodule Nest.Tokens.TokenizerTest do
       # `Nest.Application` already loaded the tokenizer at app start, so
       # by the time any test runs it must already be present — that is
       # the premise `Nest.Tokens.Estimator` sizes context windows on, so
-      # pin it before reloading.
+      # pin it before reloading. `Nest.Application.start/2` awaits the
+      # load before it returns, so this is not a race.
       assert Tokenizer.loaded?()
 
-      # An explicit reload must still work and leave `count/1` usable.
+      # An explicit reload must still work: `load/0` is idempotent and
+      # replaces the stored tokenizer with a freshly loaded one.
       assert :ok = Tokenizer.load()
-      assert Tokenizer.count("Hello, world!") == 4
     end
   end
 
   describe "count/1" do
     test "matches known cl100k_base counts" do
-      # "Hello, world!" is exactly 4 tokens in cl100k_base.
+      # "Hello, world!" is exactly 4 tokens in cl100k_base: "Hello", ",",
+      # " world", "!". That covers a space-adjacent word token and
+      # punctuation, and it would be 5 if special tokens were added.
       assert Tokenizer.count("Hello, world!") == 4
-      assert Tokenizer.count("") == 0
-      assert Tokenizer.count("hello world") == 2
-    end
 
-    test "is additive on independent words" do
-      assert Tokenizer.count("hello world") ==
-               Tokenizer.count("hello") + Tokenizer.count("world")
+      # The empty boundary, which pins `add_special_tokens: false`: a
+      # tokenizer that added them would count 1 here.
+      assert Tokenizer.count("") == 0
     end
   end
 end

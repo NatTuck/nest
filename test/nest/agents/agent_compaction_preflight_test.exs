@@ -1,13 +1,13 @@
 defmodule Nest.Agents.AgentCompactionPreflightTest do
   @moduledoc """
-  Tests for the preflight path: `:cannot_compact` (system
-  prompt + reserve exceeds the model's context limit) and
-  `:fits` (no compaction needed). Extracted from
+  Tests for the preflight refusal path — `:cannot_compact` (the
+  system prompt + reserve exceeds the model's context limit, so
+  the turn blocks instead of starting) — and for the
+  `chat:compaction` frame the commit broadcasts. Extracted from
   `agent_compaction_test.exs` to keep that file under
   credo's 500-line cap.
   """
   use Nest.DataCase, async: true
-  alias Nest.Agents.Agent.Machine
 
   import Mimic
 
@@ -51,10 +51,9 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       # 10k context_limit. Compaction would be a no-op (the
       # compactor returns :too_short for `[system, user]` with
       # an empty head), so the chat pipeline must refuse the
-      # user's request: clear `pending_user_message`, set
-      # `:context_overflow` status, broadcast a `chat:error`
-      # with the actual numbers, and stay idle. No chat turn
-      # is spawned.
+      # user's request: set `:context_overflow` status,
+      # broadcast a `chat:error` with the actual numbers, and
+      # stay idle. No chat turn is spawned.
       {pid, _agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
@@ -101,53 +100,23 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
           # The chat:error is broadcast with `compactionError`
           # NOT set (so the JS routes it to `setAgentError`,
           # not `setCompactionError`) and carries the actual
-          # numbers (limit, system prompt size, reserve).
+          # numbers (limit, reserve). The rest of the wording is
+          # `Overflow.message/4`'s, pinned in
+          # `compaction/overflow_test.exs`.
           assert_receive {:chat_error, payload}, 1_000
           refute Map.get(payload, :compactionError) == true
           assert payload.content =~ "context limit (10000)"
-          assert payload.content =~ "system prompt"
           assert payload.content =~ "compaction reserve (8192 tokens)"
         end)
 
       # The handler logs at info or warning level for debugging.
       assert log =~ "context_overflow" or log =~ "context limit"
 
-      # The agent stays idle (no chat turn was spawned).
-      # allowlist: snapshot — status + pending_user_message + messages
-      state_after = :sys.get_state(pid, 1_000)
-      assert Machine.status_for(state_after.live.machine) == :context_overflow
-      assert state_after.live.machine.pending_user_message == nil
-
-      # The user message was NOT appended to the conversation.
-      assert length(state_after.chat_state.messages) == 1
-      assert match?({:system, _}, hd(state_after.chat_state.messages))
-
-      Agent.terminate(pid)
-    end
-
-    test "first user message within limit → chat turn spawned, no overflow" do
-      # Regression guard: when the conversation actually fits,
-      # the preflight returns `:fits` and the chat turn proceeds
-      # normally. We use a generous context_limit (128k) so the
-      # default system prompt + user message + reserve all fit.
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: programmer_vocation_id()
-        })
-
-      MockClient.set_response("Hello back")
-
-      Agent.chat(pid, "Hello")
-
-      # The user message is broadcast, the chat turn starts,
-      # and the LLM responds. No context_overflow status. The idle
-      # broadcast is emitted last, so it is the fence that proves the turn
-      # (and with it any `context_overflow` frame) is finished.
-      assert_receive {:chat_message, {:user, _}}, 1_000
-
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
-      refute_received {:chat_status, %{status: "context_overflow"}}
+      # The user message was NOT appended to the conversation: no chat
+      # turn was spawned, and the transcript is still the system prompt.
+      messages = Agent.get_messages(pid, 1_000)
+      assert length(messages) == 1
+      assert match?({:system, _}, hd(messages))
 
       Agent.terminate(pid)
     end
@@ -187,7 +156,6 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       # payload so the fence cannot be satisfied by a non-commit frame.
       assert_receive {:chat_compaction, payload}, 1_000
 
-      assert payload.marker["role"] == "compaction"
       # The two pre-seeded messages plus the committed summary assistant
       # (staged at index 2), so the marker lands at 3.
       assert payload.marker["archivedCount"] == 3

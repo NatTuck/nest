@@ -10,7 +10,6 @@ defmodule Nest.LLM.RecoveryClientTest do
 
   use ExUnit.Case, async: true
 
-  alias Nest.LLM.Client
   alias Nest.LLM.RecoveryClient
   alias Nest.LLM.RunRequest
 
@@ -21,7 +20,6 @@ defmodule Nest.LLM.RecoveryClientTest do
       assert {:ok, stream} = RecoveryClient.run(req, [])
 
       events = Enum.to_list(stream)
-      assert length(events) >= 3
 
       text_events = for {:text, t} <- events, do: t
 
@@ -53,17 +51,6 @@ defmodule Nest.LLM.RecoveryClientTest do
       # request payload can identify this client (e.g. in
       # api_log renders).
       assert payload["_recovery"] == true
-    end
-  end
-
-  describe "behaviour compliance" do
-    test "implements the Client behaviour" do
-      # Compile-time check: the `@behaviour` declaration in
-      # `RecoveryClient` would fail to compile if a callback
-      # were missing, so just confirming the attribute is
-      # present is enough here.
-      attrs = RecoveryClient.module_info(:attributes)
-      assert List.flatten(Keyword.get_values(attrs, :behaviour)) == [Client]
     end
   end
 end

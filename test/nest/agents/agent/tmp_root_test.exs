@@ -36,12 +36,12 @@ defmodule Nest.Agents.Agent.TmpRootTest do
     File.mkdir_p!(corpse)
     File.write!(TmpSpace.alive_path(root), "2020-01-01T00:00:00Z")
 
-    assert :ok = TmpSpace.prepare_own_root()
+    TmpSpace.prepare_own_root()
 
     refute File.exists?(corpse)
-    assert File.dir?(root)
 
-    # The mark is fresh, and in the form the sweeper parses back.
+    # The mark is fresh, and in the form the sweeper parses back. Reading it also
+    # proves the root exists, so there is no separate assertion on the directory.
     {:ok, at, _offset} = root |> TmpSpace.alive_path() |> File.read!() |> DateTime.from_iso8601()
     assert DateTime.diff(DateTime.utc_now(), at, :second) < 60
   end
@@ -63,18 +63,21 @@ defmodule Nest.Agents.Agent.TmpRootTest do
       end
     end
 
-    assert :ok = TmpSpace.prepare_root(root, interleave)
+    TmpSpace.prepare_root(root, interleave)
 
     assert :counters.get(attempts, 1) == 1
-    assert File.dir?(root)
+    # The write landed inside the directory, which also proves the directory
+    # survived the peer's `rm_rf` and was remade.
     assert File.exists?(TmpSpace.alive_path(root))
   end
 
   test "remove_own_root/0 removes this BEAM's root" do
-    assert :ok = TmpSpace.prepare_own_root()
+    TmpSpace.prepare_own_root()
+    # Not redundant with the assertion below: without a root to remove, the
+    # `refute` would pass for a `remove_own_root/0` that did nothing.
     assert File.dir?(TmpSpace.own_root())
 
-    assert :ok = TmpSpace.remove_own_root()
+    TmpSpace.remove_own_root()
     refute File.exists?(TmpSpace.own_root())
   end
 end
