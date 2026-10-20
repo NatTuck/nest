@@ -43,8 +43,9 @@ nest-*.tar
 
 # `priv/static` is entirely generated: `phx.copy` copies `assets/static/`
 # (favicon, robots.txt) and vite writes `priv/static/assets/`. Nothing under it
-# is source, so nothing under it is tracked except `.gitkeep`, which keeps the
-# directory present on a fresh clone for `Plug.Static`.
+# is source, so nothing under it is tracked except `.gitkeep` — which is
+# belt-and-braces rather than load-bearing: `Plug.Static` never checks that its
+# `only:` entries exist, and `phx.copy` creates the directory anyway.
 /priv/static/
 
 # In case you use Node.js/npm, you want to ignore these.

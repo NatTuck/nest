@@ -76,11 +76,12 @@ defmodule Nest.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:excoveralls, "~> 0.18", only: :test, runtime: false},
       {:mimic, "~> 2.3", only: :test},
-      # Not `only: :dev`: `mix assets.deploy` runs `phx.copy default` under
-      # MIX_ENV=prod, and `test_helper.exs` runs it so `mix test` works in a
-      # clone whose `priv/static` has never been built. A dev-only dep made
-      # both of those fail with "application is not available".
-      {:phoenix_copy, "~> 0.1.4"},
+      # `runtime: false`: the task has to be resolvable under `MIX_ENV=prod`
+      # (`assets.deploy` runs `phx.copy default`) and `Phoenix.Copy.run/1` has to
+      # be callable from `test_helper.exs`, but neither needs the application
+      # started. Without this, the tool and its `file_system` dep ship in the
+      # release for something that only ever runs as a Mix task.
+      {:phoenix_copy, "~> 0.1.4", runtime: false},
       {:unique_names_generator, "~> 0.2.0"},
       # `:erlexec`'s `exec` gen_server sleeps a hardcoded 350ms in `init/1`
       # (deps/erlexec/src/exec.erl) to see whether its port program dies
