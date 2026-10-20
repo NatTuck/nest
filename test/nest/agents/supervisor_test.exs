@@ -71,13 +71,18 @@ defmodule Nest.Agents.SupervisorTest do
       name = fresh_name()
       {:ok, ours} = Persistence.insert_agent(attrs_for(space_id, name))
 
-      # The rollback logs a warning naming the row it removed; capture it so
-      # the suite's output stays clean.
-      ExUnit.CaptureLog.capture_log(fn ->
-        assert_raise RuntimeError, "boom", fn ->
-          Supervisor.start_pre_spawned(attrs_for(space_id, name), ours.id, fn -> raise "boom" end)
-        end
-      end)
+      # The rollback logs a warning naming the row it removed, and the row's
+      # removal is what the test is about; both are asserted.
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert_raise RuntimeError, "boom", fn ->
+            Supervisor.start_pre_spawned(attrs_for(space_id, name), ours.id, fn ->
+              raise "boom"
+            end)
+          end
+        end)
+
+      assert log =~ "Agent #{space_id}/#{name} (id #{ours.id}) failed to start"
 
       # The exception is the caller's to report, and the row is gone with it.
       assert Persistence.fetch_agent(space_id, name) == {:error, :not_found}
@@ -96,12 +101,16 @@ defmodule Nest.Agents.SupervisorTest do
       {:ok, theirs} = Persistence.insert_agent(attrs_for(space_id, name))
       refute theirs.id == ours.id
 
-      ExUnit.CaptureLog.capture_log(fn ->
-        assert {:error, :boom} =
-                 Supervisor.start_pre_spawned(attrs_for(space_id, name), ours.id, fn ->
-                   {:error, :boom}
-                 end)
-      end)
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:error, :boom} =
+                   Supervisor.start_pre_spawned(attrs_for(space_id, name), ours.id, fn ->
+                     {:error, :boom}
+                   end)
+        end)
+
+      # The failed start is logged before the row is removed.
+      assert log =~ "Agent #{space_id}/#{name} (id #{ours.id}) failed to start"
 
       assert {:ok, %{id: id}} = Persistence.fetch_agent(space_id, name)
       assert id == theirs.id

@@ -474,7 +474,14 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
 
     before = quarantines.()
 
-    capture_log(fn -> assert {:ok, _state} = Turn.settle(state, {:another_undeclared, 2}) end)
+    log =
+      capture_log(fn ->
+        assert {:ok, _state} = Turn.settle(state, {:another_undeclared, 2})
+      end)
+
+    # The quarantine is drift, so it must still reach the server log even with
+    # timeline recording off.
+    assert log =~ "quarantined undeclared turn event: {:another_undeclared, 2}"
 
     assert quarantines.() == before
   end

@@ -76,48 +76,50 @@ defmodule Nest.Agents.ChatTaskCrashTest do
 
       Mimic.allow(MockClient, self(), pid)
 
-      # capture_log swallows the `Logger.error` calls in
-      # `Broadcasts.log_error/4` (the agent logs the error
-      # before broadcasting the structured `chat:error`
-      # event). The structured broadcast itself still
-      # arrives on PubSub; the assertions below cover it.
-      capture_log(fn ->
-        :ok = Agent.chat(pid, "Hello")
+      # The crash is reported to the server log (`Broadcasts.log_error/4` logs
+      # the error before broadcasting the structured `chat:error` event) as
+      # well as to the UI over PubSub; both are asserted below.
+      log =
+        capture_log(fn ->
+          :ok = Agent.chat(pid, "Hello")
 
-        # Fence on idle: 500ms is the project's standard fence for a whole
-        # turn. This comment used to justify the value with a ~200-325ms BPE
-        # vocabulary build paid once per dirty CPU scheduler thread; that
-        # mechanism was DELETED when the project moved from `tiktoken` to
-        # `tokenizers`, which builds the vocabulary once and shares it across
-        # threads via `:persistent_term` (see `Nest.Tokens.Tokenizer`). Once
-        # the fence passes, every earlier message in the chat pipeline has
-        # already arrived in the test's mailbox.
-        assert_receive {:chat_status, %{status: "idle"}}, 1_000
+          # Fence on idle: 500ms is the project's standard fence for a whole
+          # turn. This comment used to justify the value with a ~200-325ms BPE
+          # vocabulary build paid once per dirty CPU scheduler thread; that
+          # mechanism was DELETED when the project moved from `tiktoken` to
+          # `tokenizers`, which builds the vocabulary once and shares it across
+          # threads via `:persistent_term` (see `Nest.Tokens.Tokenizer`). Once
+          # the fence passes, every earlier message in the chat pipeline has
+          # already arrived in the test's mailbox.
+          assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-        # The worker catches the raise and sends
-        # `{:worker_crashed, ref, exception, stacktrace}` to the
-        # Agent. The Agent's `{:worker_crashed, _}` transition
-        # broadcasts `chat:error` followed by a `chat:status:
-        # idle` transition. The error message carries the
-        # exception's text; the stacktrace snippet it also carries
-        # is asserted by the snippet test below.
-        assert_received {:chat_error, %{content: content}}
-        assert content =~ "no function clause matching"
-        # The source tag is appended so the user can grep the
-        # server log for the matching `chat:error` entry.
-        assert content =~ "[Source:"
+          # The worker catches the raise and sends
+          # `{:worker_crashed, ref, exception, stacktrace}` to the
+          # Agent. The Agent's `{:worker_crashed, _}` transition
+          # broadcasts `chat:error` followed by a `chat:status:
+          # idle` transition. The error message carries the
+          # exception's text; the stacktrace snippet it also carries
+          # is asserted by the snippet test below.
+          assert_received {:chat_error, %{content: content}}
+          assert content =~ "no function clause matching"
+          # The source tag is appended so the user can grep the
+          # server log for the matching `chat:error` entry.
+          assert content =~ "[Source:"
 
-        # Regression: only ONE chat:error event should fire per
-        # HTTP worker error. The HTTP worker's on_error callback
-        # used to broadcast chat:error directly AND send
-        # {:llm_error, msg} to the Agent, which would broadcast
-        # again. Now the worker only sends the message; the
-        # Agent is the single source. The one error frame is
-        # already in this mailbox (`assert_received` above), so
-        # a second one would be too — `refute_received` is the
-        # snapshot check, and it needs no wait at all.
-        refute_received {:chat_error, _}
-      end)
+          # Regression: only ONE chat:error event should fire per
+          # HTTP worker error. The HTTP worker's on_error callback
+          # used to broadcast chat:error directly AND send
+          # {:llm_error, msg} to the Agent, which would broadcast
+          # again. Now the worker only sends the message; the
+          # Agent is the single source. The one error frame is
+          # already in this mailbox (`assert_received` above), so
+          # a second one would be too — `refute_received` is the
+          # snapshot check, and it needs no wait at all.
+          refute_received {:chat_error, _}
+        end)
+
+      assert log =~ "chat:error"
+      assert log =~ "no function clause matching"
     end
 
     test "the user-facing message includes the file/line of the crash (stacktrace snippet)",
@@ -137,18 +139,23 @@ defmodule Nest.Agents.ChatTaskCrashTest do
 
       Mimic.allow(MockClient, self(), pid)
 
-      capture_log(fn ->
-        :ok = Agent.chat(pid, "Hello")
+      log =
+        capture_log(fn ->
+          :ok = Agent.chat(pid, "Hello")
 
-        assert_receive {:chat_error, %{content: content}}, 1_000
+          assert_receive {:chat_error, %{content: content}}, 1_000
 
-        # The original exception message is at the top.
-        assert content =~ "unique_pin_marker_12345"
-        # The stacktrace includes the test file (where the raise
-        # originated) so the user can locate the crash frame
-        # even when the actual production code has moved.
-        assert content =~ "test/nest/agents/chat_task_crash_test.exs"
-      end)
+          # The original exception message is at the top.
+          assert content =~ "unique_pin_marker_12345"
+          # The stacktrace includes the test file (where the raise
+          # originated) so the user can locate the crash frame
+          # even when the actual production code has moved.
+          assert content =~ "test/nest/agents/chat_task_crash_test.exs"
+        end)
+
+      # The same error reaches the server log, with the exception text in it.
+      assert log =~ "chat:error"
+      assert log =~ "unique_pin_marker_12345"
     end
   end
 
@@ -173,25 +180,29 @@ defmodule Nest.Agents.ChatTaskCrashTest do
 
       Mimic.allow(MockClient, self(), pid)
 
-      capture_log(fn ->
-        :ok = Agent.chat(pid, "Hello")
+      log =
+        capture_log(fn ->
+          :ok = Agent.chat(pid, "Hello")
 
-        # Fence on idle (see comment in the test above for
-        # the 500ms rationale — preflight + crash recovery
-        # under concurrent test load).
-        assert_receive {:chat_status, %{status: "idle"}}, 1_000
+          # Fence on idle (see comment in the test above for
+          # the 500ms rationale — preflight + crash recovery
+          # under concurrent test load).
+          assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-        # The partial content is saved as a normal assistant
-        # message before the error is broadcast.
-        assert_received {:chat_message,
-                         {:assistant,
-                          %Assistant{index: 2, parts: [%Part.Text{text: "Halfway through..."}]}}}
+          # The partial content is saved as a normal assistant
+          # message before the error is broadcast.
+          assert_received {:chat_message,
+                           {:assistant,
+                            %Assistant{index: 2, parts: [%Part.Text{text: "Halfway through..."}]}}}
 
-        # Then the error and idle status. The error content now
-        # includes a stacktrace snippet (per the new format).
-        assert_received {:chat_error, %{content: content}}
-        assert content =~ "stream failed"
-      end)
+          # Then the error and idle status. The error content now
+          # includes a stacktrace snippet (per the new format).
+          assert_received {:chat_error, %{content: content}}
+          assert content =~ "stream failed"
+        end)
+
+      assert log =~ "chat:error"
+      assert log =~ "stream failed"
     end
   end
 
@@ -221,25 +232,29 @@ defmodule Nest.Agents.ChatTaskCrashTest do
 
       Mimic.allow(MockClient, self(), pid)
 
-      capture_log(fn ->
-        :ok = Agent.chat(pid, "Hello")
+      log =
+        capture_log(fn ->
+          :ok = Agent.chat(pid, "Hello")
 
-        # The worker sends us its own pid, so there is nothing to poll: the agent
-        # recorded `active_worker` before the worker could run, and a synchronous
-        # read is ordered after that write.
-        assert_receive {worker, :worker_blocked}, 1_000
-        assert Agent.get_work(pid, 1_000).active_worker == worker
+          # The worker sends us its own pid, so there is nothing to poll: the agent
+          # recorded `active_worker` before the worker could run, and a synchronous
+          # read is ordered after that write.
+          assert_receive {worker, :worker_blocked}, 1_000
+          assert Agent.get_work(pid, 1_000).active_worker == worker
 
-        # A raw exit signal (not trappable by the worker's own try/catch)
-        # kills the worker before it can send a result. The turn's
-        # `Process.monitor` DOWN must convert that into `chat_crashed`;
-        # otherwise the turn hangs in `:streaming` forever.
-        Process.exit(worker, :boom)
+          # A raw exit signal (not trappable by the worker's own try/catch)
+          # kills the worker before it can send a result. The turn's
+          # `Process.monitor` DOWN must convert that into `chat_crashed`;
+          # otherwise the turn hangs in `:streaming` forever.
+          Process.exit(worker, :boom)
 
-        assert_receive {:chat_status, %{status: "idle"}}, 1_000
-        assert_received {:chat_error, %{content: content}}
-        assert content =~ "boom"
-      end)
+          assert_receive {:chat_status, %{status: "idle"}}, 1_000
+          assert_received {:chat_error, %{content: content}}
+          assert content =~ "boom"
+        end)
+
+      assert log =~ "chat_crashed"
+      assert log =~ "chat:error"
 
       # allowlist: snapshot — status + work
       state = :sys.get_state(pid, 1_000)
@@ -254,13 +269,17 @@ defmodule Nest.Agents.ChatTaskCrashTest do
 
       MockClient.set_response("")
 
-      capture_log(fn ->
-        :ok = Agent.chat(pid, "Hello")
+      log =
+        capture_log(fn ->
+          :ok = Agent.chat(pid, "Hello")
 
-        assert_receive {:chat_status, %{status: "idle"}}, 1000
-        assert_received {:chat_error, %{content: content}}
-        assert content =~ "no content"
-      end)
+          assert_receive {:chat_status, %{status: "idle"}}, 1000
+          assert_received {:chat_error, %{content: content}}
+          assert content =~ "no content"
+        end)
+
+      assert log =~ "chat:error"
+      assert log =~ "The model returned a response with no content."
 
       messages = Agent.get_messages(pid, 1_000)
 
