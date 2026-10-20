@@ -49,11 +49,11 @@ defmodule Nest.Agents.Agent.Turn.ModeTest do
     peer = %{entry(:agent, "peer", "peer note") | mode: "plan"}
     state = inbox_state([peer], "act", state)
 
+    # `:queued` *is* "nothing it peeked was consumed" (`drain_inbox/1` computes
+    # it from the queue), so the entry is still queued; the machine shape that
+    # decline leaves is `ExecutorTest`'s `:queued` test, on this same fixture.
+    # This file is about the mode.
     {state, :queued} = Turn.drain_inbox(state)
-
-    assert state.live.inbox == [peer]
-    assert state.live.machine.kind == :compaction
-    assert state.live.machine.pending_user_message == nil
 
     # The peek applied `plan` and the declined drain put it back, so the mode the
     # entry asked for must not be written down: the row still holds what the

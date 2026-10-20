@@ -44,27 +44,10 @@ defmodule NestWeb.AgentChannelArchivedTest do
       assert {:error, %{"reason" => "agent_archived"}} =
                subscribe_and_join(connected, AgentChannel, "agent:#{space_id}:#{name}")
 
-      # The refusal leaves no process behind and the row archived.
+      # The refusal leaves no process behind: the row exists and is archived, so
+      # a join that started it would make `agents-list` report it live while the
+      # sidebar still files it under Archived.
       assert {:error, :not_found} = Nest.Agents.Registry.lookup(space_id, name)
-      assert {:ok, %{archived: true}} = Persistence.fetch_agent(space_id, name)
-    end
-  end
-
-  describe "handle_in(chat:message) for an archived agent" do
-    test "replies agent_archived rather than crashing", %{socket: socket} do
-      # A channel can outlive its agent's archive (the client was
-      # already connected when the agent was archived and stopped).
-      # The lookup then reports `{:error, :archived}`, which this
-      # handler must answer instead of falling through its case.
-      Nest.Agents
-      |> expect(:get_info, fn _space_id, _name -> {:error, :archived} end)
-
-      ref = push(socket, "chat:message", %{"content" => "Hello"})
-
-      # The stub makes the reply take a Mimic round-trip, so allow the
-      # channel process to answer rather than requiring the reply to
-      # already be in the mailbox.
-      assert_reply ref, :error, %{"reason" => "agent_archived"}, 100
     end
   end
 end

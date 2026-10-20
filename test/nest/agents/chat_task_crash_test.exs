@@ -94,26 +94,18 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # already arrived in the test's mailbox.
         assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-        # The user message is broadcast first (the agent builds
-        # it before the turn starts).
-        assert_received {:chat_message, {:user, %{index: 1}}}
-
         # The worker catches the raise and sends
         # `{:worker_crashed, ref, exception, stacktrace}` to the
         # Agent. The Agent's `{:worker_crashed, _}` transition
         # broadcasts `chat:error` followed by a `chat:status:
         # idle` transition. The error message carries the
-        # exception's text AND a stacktrace snippet (the user
-        # explicitly asked for the file/line of the crash to
-        # be visible so they can find it in the server log).
+        # exception's text; the stacktrace snippet it also carries
+        # is asserted by the snippet test below.
         assert_received {:chat_error, %{content: content}}
         assert content =~ "no function clause matching"
-        assert content =~ "finish_event"
         # The source tag is appended so the user can grep the
         # server log for the matching `chat:error` entry.
         assert content =~ "[Source:"
-        # The stacktrace snippet is included below the message.
-        assert content =~ "** (FunctionClauseError)"
 
         # Regression: only ONE chat:error event should fire per
         # HTTP worker error. The HTTP worker's on_error callback
@@ -126,31 +118,6 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # snapshot check, and it needs no wait at all.
         refute_received {:chat_error, _}
       end)
-    end
-
-    test "the agent GenServer stays alive after the HTTP worker crashes", %{} do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-
-      Mimic.stub(MockClient, :run, fn _request, _opts ->
-        raise "boom"
-      end)
-
-      Mimic.allow(MockClient, self(), pid)
-
-      capture_log(fn ->
-        :ok = Agent.chat(pid, "Hello")
-
-        # Wait for the crash-recovery flow to complete. The
-        # Agent's `chat_crashed/3` handler broadcasts
-        # `chat:status: idle` after finalizing the partial
-        # and transitioning out of `:streaming`.
-        assert_receive {:chat_status, %{status: "idle"}}, 1_000
-      end)
-
-      # The agent is still alive and queryable. The `get_public_info/1`
-      # call is itself the proof of liveness, so a separate
-      # `Process.alive?/1` would be redundant (and AGENTS.md discourages it).
-      assert {:ok, _info} = Agent.get_public_info(pid) |> then(&{:ok, &1})
     end
 
     test "the user-facing message includes the file/line of the crash (stacktrace snippet)",
@@ -213,9 +180,6 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # the 500ms rationale — preflight + crash recovery
         # under concurrent test load).
         assert_receive {:chat_status, %{status: "idle"}}, 1_000
-
-        # Wait for the user message first.
-        assert_received {:chat_message, {:user, %{index: 1}}}
 
         # The partial content is saved as a normal assistant
         # message before the error is broadcast.

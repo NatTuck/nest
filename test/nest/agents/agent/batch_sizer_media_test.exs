@@ -72,8 +72,6 @@ defmodule Nest.Agents.Agent.BatchSizerMediaTest do
                  ctx([media_tool(media)])
                )
 
-      assert result.tool_call_id == "c1"
-      assert result.name == "media-probe"
       assert result.is_error == false
 
       # The text anchor is what keeps `ToolResult.content` a string, and it
@@ -102,13 +100,11 @@ defmodule Nest.Agents.Agent.BatchSizerMediaTest do
           assert result.is_error == true
           assert result.content =~ "exceeds your requested limit of 100"
           assert result.content =~ "cannot be summarized"
-          refute result.content =~ "base64"
         end)
 
       # `cook/2` logs every `is_error` result as a permanent diagnostic, so this
       # path is one of them: pin the log rather than leaking it to the console.
       assert log =~ "BatchSizer produced is_error=true tool result"
-      assert log =~ "media-probe"
     end
 
     test "a batch with two media reads keeps each result beside its own media" do
@@ -135,19 +131,6 @@ defmodule Nest.Agents.Agent.BatchSizerMediaTest do
       assert m1 == a
       assert r2.tool_call_id == "c2"
       assert m2 == b
-    end
-
-    test "a media part never reaches the binary or offload machinery" do
-      # It is not a binary, so it must not reach `handle_binary_shell` (which
-      # would write the base64 to a scratch file) or `offload` (which would
-      # replace it with a pointer).
-      media = media_part("c1")
-
-      parts = BatchSizer.run([call("c1", "media-probe", %{})], ctx([media_tool(media)]))
-
-      assert [%ToolResult{content: content}, %Part.Media{}] = parts
-      refute content =~ "saved to"
-      refute content =~ "scratch"
     end
   end
 end

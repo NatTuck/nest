@@ -134,11 +134,6 @@ defmodule Nest.DotConfig do
   def default_timeout_seconds, do: @default_timeout_seconds
 
   @doc """
-  Returns the full path to config.toml
-  """
-  def config_file, do: @config_file
-
-  @doc """
   Returns the full path to local.toml — the user's overlay config edited
   from the in-app Providers screen. `local.toml` is merged over
   `config.toml` (local wins per provider); `config.toml` is never
@@ -311,19 +306,6 @@ defmodule Nest.DotConfig do
     case Map.get(config.models, model_name) do
       nil -> nil
       model -> model
-    end
-  end
-
-  @doc """
-  Find model by name within a specific provider
-  """
-  def get_model_by_provider(config, provider_name, model_name) do
-    provider = get_provider(config, provider_name)
-
-    if provider do
-      Enum.find(provider.models || [], fn model ->
-        model.name == model_name
-      end)
     end
   end
 

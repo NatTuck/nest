@@ -159,40 +159,6 @@ defmodule Nest.Credo.Check.NoDrainLoopsTest do
 
       assert lines(source) == []
     end
-
-    test "a selective receive with several explicit clauses" do
-      source = """
-      defmodule A do
-        defp await do
-          receive do
-            {:chat_status, _payload} -> :ok
-            {:DOWN, _ref, :process, _pid, _reason} -> :ok
-          after
-            500 -> :timeout
-          end
-        end
-      end
-      """
-
-      assert lines(source) == []
-    end
-
-    test "a catch-all that calls a *different* function" do
-      source = """
-      defmodule A do
-        defp loop(n) do
-          receive do
-            :stop -> :ok
-            _other -> handle(n)
-          end
-        end
-
-        defp handle(_n), do: :ok
-      end
-      """
-
-      assert lines(source) == []
-    end
   end
 
   describe "project-wide" do

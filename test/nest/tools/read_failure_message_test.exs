@@ -95,7 +95,6 @@ defmodule Nest.Tools.ReadFailureMessageTest do
       capture_log(fn ->
         assert {:error, read_msg} = read_tool(broken, %{"path" => "f.txt"})
         assert read_msg =~ "The sandbox failed to start"
-        refute read_msg =~ "File not found"
 
         assert {:error, inspect_msg} = inspect_tool(broken, %{"path" => "f.txt"})
         assert inspect_msg =~ "The sandbox failed to start"

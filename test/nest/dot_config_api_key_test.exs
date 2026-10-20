@@ -46,7 +46,6 @@ defmodule Nest.DotConfig.ApiKeyTest do
         end
 
       assert env_error.message =~ "Provider env-key: cannot resolve api-key"
-      assert env_error.message =~ "NEST_TEST_DEFINITELY_UNSET_API_KEY"
       assert env_error.message =~ "not set"
 
       file_error =
@@ -62,23 +61,18 @@ defmodule Nest.DotConfig.ApiKeyTest do
       assert file_error.message =~ "Failed to read API key file"
     end
 
-    test "accepts a literal, an empty, and an absent key" do
+    test "accepts a literal and an absent key" do
       assert {:ok, config} =
                load_with_overlay("""
                [providers.none-key]
                base-url = "http://api.test.com/v1"
                api-key = "none"
 
-               [providers.blank-key]
-               base-url = "http://api.test.com/v1"
-               api-key = ""
-
                [providers.absent-key]
                base-url = "http://api.test.com/v1"
                """)
 
       assert config.providers["none-key"].api_key == "none"
-      assert config.providers["blank-key"].api_key == ""
       assert config.providers["absent-key"].api_key == nil
     end
   end

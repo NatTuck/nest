@@ -20,7 +20,6 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
   alias Nest.Agents.Supervisor
   alias Nest.LLM.AnthropicClient
   alias Nest.LLM.OpenAIClient
-  alias Nest.LLM.RecoveryClient
   alias Nest.Messages.Part
   alias Nest.Persistence
   alias Nest.Repo
@@ -40,8 +39,6 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
     # runner process — no sandbox ownership. See
     # `agent_file_policy_test.exs` for the canonical
     # version of this comment.
-    on_exit(fn -> :ok end)
-
     :ok
   end
 
@@ -55,10 +52,9 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
   # `AgentTestHelpers.start_agent/1` here because it swaps
   # the agent's HTTP client to `MockClient` (line 66 in
   # `agent_test_helpers.ex`), and several tests in this file
-  # assert on `client_config.client` directly — `RecoveryClient`
-  # for the `:model_missing` paths, `AnthropicClient` for the
-  # post-`change_model` paths. Test-side setup would have to
-  # either restore the swapped client per-test or skip
+  # assert on `client_config.client` directly — `AnthropicClient`
+  # for the post-`change_model` paths. Test-side setup would have
+  # to either restore the swapped client per-test or skip
   # `start_agent/1` entirely; the latter is cleaner.
   #
   # `AgentTestHelpers.ensure_cleanup/1` provides the missing
@@ -84,8 +80,8 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
   end
 
   describe "Agent.set_model/2 happy path" do
-    test "updates state.client_config and state.model in place" do
-      {pid, _name} =
+    test "swaps the client and broadcasts chat:status with the new model" do
+      {pid, name} =
         persist_and_start!(%{
           name: "switch-agent",
           model: %{name: "qwen3.5-plus", provider: "model-studio"},
@@ -94,38 +90,18 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
       assert Agent.get_client_config(pid, 1_000).client == OpenAIClient
 
+      Phoenix.PubSub.subscribe(
+        Nest.PubSub,
+        "agent:#{AgentTestHelpers.current_space_id()}:#{name}"
+      )
+
       :ok =
         Agent.set_model(pid, %{
           name: "claude-3-opus-20240229",
           provider: "anthropic-provider"
         })
 
-      # allowlist: snapshot — client config + model
-      state = :sys.get_state(pid, 1_000)
-      assert state.client_config.client == AnthropicClient
-
-      assert state.model == %{
-               name: "claude-3-opus-20240229",
-               provider: "anthropic-provider"
-             }
-
-      assert Machine.status_for(state.live.machine) == :idle
-    end
-
-    test "broadcasts chat:status with the new model" do
-      {pid, name} =
-        persist_and_start!(%{
-          name: "broadcast-agent",
-          model: %{name: "qwen3.5-plus", provider: "model-studio"},
-          vocation_id: vid()
-        })
-
-      Phoenix.PubSub.subscribe(
-        Nest.PubSub,
-        "agent:#{AgentTestHelpers.current_space_id()}:#{name}"
-      )
-
-      Agent.set_model(pid, %{name: "claude-3-opus-20240229", provider: "anthropic-provider"})
+      assert Agent.get_client_config(pid, 1_000).client == AnthropicClient
 
       assert_receive {:chat_status, payload}, 1_000
       assert payload.status == "idle"
@@ -134,6 +110,55 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
                "name" => "claude-3-opus-20240229",
                "provider" => "anthropic-provider"
              }
+    end
+
+    test "preserves the MapSet invariant on crossed_thresholds" do
+      # Regression for the `FunctionClauseError` reported on
+      # `MapSet.member?(%{}, :p50)`: applying a new model
+      # clears `chat_state.crossed_thresholds` so reminders
+      # re-fire under the new model's context window, but the
+      # reset must be a `MapSet.new()` — not a plain map — so
+      # `ContextReminder.highest_unannounced/3` can call
+      # `MapSet.member?/2` on the next chat turn.
+      {pid, _name} =
+        persist_and_start!(%{
+          name: "threshold-invariant-agent",
+          model: %{name: "qwen3.5-plus", provider: "model-studio"},
+          vocation_id: vid()
+        })
+
+      # Seed the set with `:p25` so the path through
+      # `apply_new_model/3` actually rewrites a non-empty
+      # value — the bug was a plain `%{}` landing where a
+      # `MapSet` was expected.
+      :sys.replace_state(
+        pid,
+        fn state ->
+          %{
+            state
+            | live: %{
+                state.live
+                | crossed_thresholds: MapSet.put(MapSet.new(), :p25)
+              }
+          }
+        end,
+        1_000
+      )
+
+      :ok =
+        Agent.set_model(pid, %{
+          name: "claude-3-opus-20240229",
+          provider: "anthropic-provider"
+        })
+
+      crossed = Agent.get_crossed_thresholds(pid, 1_000)
+
+      assert is_struct(crossed, MapSet),
+             "crossed_thresholds must be a MapSet (got #{inspect(crossed)})"
+
+      # Empty after the model change, so reminders re-fire
+      # under the new context window.
+      assert MapSet.size(crossed) == 0
     end
   end
 
@@ -195,22 +220,6 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
         1_000
       )
     end
-
-    test "rejects an unknown model with :invalid_model" do
-      {pid, _name} =
-        persist_and_start!(%{
-          name: "unknown-agent",
-          model: %{name: "qwen3.5-plus", provider: "model-studio"},
-          vocation_id: vid()
-        })
-
-      model_before = Agent.get_public_info(pid, 1_000).model
-
-      result = Agent.set_model(pid, %{name: "ghost-model-from-nowhere", provider: "nope"})
-      assert {:error, {:invalid_model, %Nest.ChatModel.ModelNotFoundError{}}} = result
-
-      assert Agent.get_public_info(pid, 1_000).model == model_before
-    end
   end
 
   describe "recovery from :model_missing" do
@@ -256,10 +265,9 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
               vocation_id: vid()
             })
 
-          # allowlist: snapshot — client config + status
+          # allowlist: snapshot — status
           state = :sys.get_state(pid, 1_000)
           assert Machine.status_for(state.live.machine) == :model_missing
-          assert state.client_config.client == RecoveryClient
 
           # Repair through Agents.change_model/2.
           :ok =
@@ -268,15 +276,10 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
               provider: "anthropic-provider"
             })
 
-          # allowlist: snapshot — client config + status + model
+          # allowlist: snapshot — client config + status
           state = :sys.get_state(pid, 1_000)
           assert Machine.status_for(state.live.machine) == :idle
           assert state.client_config.client == AnthropicClient
-
-          assert state.model == %{
-                   name: "claude-3-opus-20240229",
-                   provider: "anthropic-provider"
-                 }
 
           # The persisted row reflects the new model. Ecto's
           # `:map` column normalizes to string keys on read.
@@ -296,90 +299,9 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
           notice = user_text(notice_row)
 
           assert notice =~ ~s(Your model changed. It is now "claude-3-opus-20240229".)
-          assert notice =~ "Nothing declares whether it accepts image input"
         end)
 
       assert log =~ "Agent #{agent_name} could not resolve model"
-    end
-
-    test "proxies {:error, reason} replies unchanged so the channel can pattern-match" do
-      # Stub the persistence call so the change_model path
-      # exercises its error branch.
-      Nest.Agents.Agent
-      |> stub(:set_model, fn _pid, _new_model ->
-        {:error, :gen_server_timeout}
-      end)
-
-      {pid, name} =
-        persist_and_start!(%{
-          name: "busy-persist-agent",
-          model: %{name: "qwen3.5-plus", provider: "model-studio"},
-          vocation_id: vid()
-        })
-
-      assert {:error, :gen_server_timeout} =
-               Agents.change_model(AgentTestHelpers.current_space_id(), name, %{
-                 name: "claude-3-opus-20240229",
-                 provider: "anthropic-provider"
-               })
-
-      # State must not have been mutated. Model is stored as a
-      # string-keyed map (jsonb JSON wire format).
-      assert Agent.get_public_info(pid, 1_000).model["name"] == "qwen3.5-plus"
-    end
-
-    test "preserves the MapSet invariant on crossed_thresholds" do
-      # Regression for the `FunctionClauseError` reported on
-      # `MapSet.member?(%{}, :p50)`: applying a new model
-      # clears `chat_state.crossed_thresholds` so reminders
-      # re-fire under the new model's context window, but the
-      # reset must be a `MapSet.new()` — not a plain map — so
-      # `ContextReminder.highest_unannounced/3` can call
-      # `MapSet.member?/2` on the next chat turn.
-      {pid, _name} =
-        persist_and_start!(%{
-          name: "threshold-invariant-agent",
-          model: %{name: "qwen3.5-plus", provider: "model-studio"},
-          vocation_id: vid()
-        })
-
-      # Seed the set with `:p25` so the path through
-      # `apply_new_model/3` actually rewrites a non-empty
-      # value — the bug was a plain `%{}` landing where a
-      # `MapSet` was expected.
-      :sys.replace_state(
-        pid,
-        fn state ->
-          %{
-            state
-            | live: %{
-                state.live
-                | crossed_thresholds: MapSet.put(MapSet.new(), :p25)
-              }
-          }
-        end,
-        1_000
-      )
-
-      :ok =
-        Agent.set_model(pid, %{
-          name: "claude-3-opus-20240229",
-          provider: "anthropic-provider"
-        })
-
-      crossed = Agent.get_crossed_thresholds(pid, 1_000)
-
-      assert is_struct(crossed, MapSet),
-             "crossed_thresholds must be a MapSet (got #{inspect(crossed)})"
-
-      # Empty after the model change, so reminders re-fire
-      # under the new context window.
-      assert MapSet.size(crossed) == 0
-
-      # Sanity: every other writesite in the codebase
-      # operates on this field as a MapSet — `MapSet.put/2`
-      # must not raise.
-      assert MapSet.put(crossed, :p50) |> MapSet.size() == 1
     end
   end
 

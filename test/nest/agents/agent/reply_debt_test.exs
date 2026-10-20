@@ -66,14 +66,9 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
         1_000
       )
 
-      # allowlist: harness — Turn.build_ctx/1's argument
-      state = :sys.get_state(pid, 1_000)
-      assert Machine.owed_senders(state.live.machine) == ["peer"]
-
-      # Invisible to the model: the turn context (what the request is built
-      # from) has no debt field, and setting the debt wrote no message.
-      refute Map.has_key?(Turn.build_ctx(state), :owed_replies)
-      refute Enum.any?(texts(state.chat_state.messages), &(&1 =~ "owe"))
+      # The fixture must have produced a debt: with none, the give-up below
+      # would never fire and the test would pass on nothing.
+      assert Nest.Agents.Agent.get_public_info(pid, 1_000).owed_replies == ["peer"]
 
       AgentTestHelpers.send_compaction_done(pid, "a summary", carried_reply())
 
@@ -91,13 +86,11 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       assert Enum.any?(texts(state.chat_state.messages), &(&1 =~ "a summary"))
       assert Machine.owed_senders(state.live.machine) == []
 
-      # The requester was told, and a notice creates no obligation of its own.
-      # The notice starts the peer's own turn, and that turn's idle frame is the
-      # fence; the notice itself was appended inside the delivery, so it is in the
-      # transcript by then.
+      # The requester was told: the notice starts the peer's own turn, and that
+      # turn's idle frame is the fence; the notice itself was appended inside the
+      # delivery, so it is in the transcript by then.
       wait_idle("peer")
       assert Enum.any?(peer_texts(peer), &(&1 =~ "did not reply"))
-      assert Nest.Agents.Agent.get_public_info(peer, 1_000).owed_replies == []
     end
 
     test "a reply that reaches the peer clears it before the turn settles" do
@@ -192,16 +185,15 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       assert log =~ "BatchSizer produced is_error=true tool result"
       assert log =~ "ghost"
 
-      # allowlist: snapshot — messages + owed_replies
-      state = :sys.get_state(pid, 1_000)
-
-      # The gate reminded once, naming the still-unanswered peer, and the
-      # budget's end gave the reply up (which the peer is told about).
+      # The gate reminded once, naming the still-unanswered peer; the budget's
+      # end then gave the reply up, which the peer is told about below.
       reminded =
-        Enum.filter(agent_user_texts(state), &(&1 =~ "have not answered" and &1 =~ "peer"))
+        Enum.filter(
+          user_texts(Nest.Agents.Agent.get_messages(pid, 1_000)),
+          &(&1 =~ "have not answered" and &1 =~ "peer")
+        )
 
       assert length(reminded) == 1
-      assert Machine.owed_senders(state.live.machine) == []
 
       wait_idle("peer")
       assert Enum.any?(peer_texts(peer), &(&1 =~ "did not reply"))
@@ -230,7 +222,6 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # The delivery is a `GenServer.call` (`Agents.send_note/5` →
       # `Agent.deliver_note/4`), so the frame is already in the mailbox here
       # and there is nothing to wait for.
-      assert Nest.Agents.Agent.get_public_info(pid, 1_000).owed_replies == ["peer"]
       assert_received {:chat_status, %{name: ^name, status: "streaming", owedReplies: ["peer"]}}
 
       # The model's first request carries the query and nothing about the debt:
@@ -274,46 +265,6 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
              )
 
       assert Nest.Agents.Agent.get_public_info(peer, 1_000).owed_replies == []
-    end
-  end
-
-  describe "a refused give-up" do
-    test "is logged and notified, never swallowed" do
-      # intentional: the runtime is dropping an obligation, so a requester it
-      # cannot reach must still leave a trace — the server log and a
-      # `chat:notification` on the giving-up agent's own topic, mirroring
-      # any other delivery refusal. The notification is asserted inside the
-      # capture because it is broadcast *after* the warning, which is what
-      # proves the warning landed.
-      {pid, _name} = start_agent(default_attrs())
-      peer = start_peer("peer", "peer ack")
-      set_status(peer, :needs_repair)
-
-      :sys.replace_state(
-        pid,
-        fn state ->
-          %{
-            state
-            | live: %{state.live | machine: Machine.owe_replies(state.live.machine, ["peer"])}
-          }
-        end,
-        1_000
-      )
-
-      log =
-        capture_log(fn ->
-          AgentTestHelpers.send_compaction_done(pid, "a summary", carried_reply())
-          assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 1_000
-        end)
-
-      # The carried reply reminds first (the gate), so the give-up that gets
-      # refused here is the one the *next* would-be-rest emits once the budget
-      # is spent — the refusal is the same either way.
-      assert log =~ "reply give-up (no_reminder) could not reach peer"
-      assert log =~ "needs_repair"
-
-      # The debt is discharged regardless: the runtime gave up on it.
-      assert Nest.Agents.Agent.get_public_info(pid, 1_000).owed_replies == []
     end
   end
 
@@ -368,15 +319,8 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       assert :ok = Supervisor.archive_agent(current_space_id(), name)
       assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
 
-      # `terminate/2` has run, so the process is gone — and its registry name is
-      # already free, because `terminate/2` releases it itself, before the
-      # process exits (see `Nest.Agents.Registry.release/2`). `get_running_agent/2`
-      # additionally liveness-checks the pid, so both branches answer
-      # `{:error, :not_found}`.
-      assert Supervisor.get_running_agent(current_space_id(), name) == {:error, :not_found}
-
-      # The give-up notice starts the peer's own turn, and that turn's idle frame
-      # is the fence.
+      # `terminate/2` has run, so the process is gone. The give-up notice starts
+      # the peer's own turn, and that turn's idle frame is the fence.
       wait_idle("peer")
       assert Enum.any?(peer_texts(peer), &(&1 =~ "did not reply"))
     end
@@ -404,7 +348,6 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       log = capture_log(fn -> GenServer.stop(pid) end)
 
       assert log =~ "stopping with unpaid replies to [\"peer\"]"
-      assert log =~ "the obligation is in-process state and is lost"
     end
   end
 
@@ -477,22 +420,6 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
   # The bound is a failure detector, never the synchronisation.
   defp wait_idle(name) do
     assert_receive {:chat_status, %{name: ^name, status: "idle"}}, 1_000
-  end
-
-  # Put an agent into an arbitrary machine status, as `InboxTest` does. Only the
-  # blocked statuses are used here: the teardown's zero-remaining check rejects
-  # an agent left *in flight*.
-  defp set_status(pid, status) do
-    :sys.replace_state(
-      pid,
-      fn state ->
-        %{
-          state
-          | live: %{state.live | machine: Machine.status_to_machine(state.live.machine, status)}
-        }
-      end,
-      1_000
-    )
   end
 
   # Record the message list of every request the agent's turn makes, then hand

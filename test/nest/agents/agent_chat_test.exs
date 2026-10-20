@@ -41,20 +41,9 @@ defmodule Nest.Agents.AgentChatTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      assert_received {:chat_status, %{status: "streaming"}}
-      assert_received {:chat_delta, _}
-      assert_received {:chat_message, {:assistant, _}}
-    end
-
-    test "broadcasts status changes via PubSub" do
-      {pid, _agent_id} = start_agent()
-
-      :ok = Agent.chat(pid, "Hello", nil, nil, true)
-
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
-
       assert_received {:chat_message, {:user, _}}
       assert_received {:chat_status, %{status: "streaming"}}
+      assert_received {:chat_delta, _}
       assert_received {:chat_message, {:assistant, _}}
     end
 
@@ -84,35 +73,6 @@ defmodule Nest.Agents.AgentChatTest do
       assert log =~ "Connection failed"
     end
 
-    test "LLM error path returns a RunState (Task body destructures successfully)" do
-      MockClient.set_error("Connection failed")
-
-      {pid, _agent_id} = start_agent()
-
-      log =
-        capture_log(fn ->
-          :ok = Agent.chat(pid, "Hello", nil, nil, true)
-
-          assert_receive {:chat_status, %{status: "idle"}}, 1_000
-
-          assert_received {:chat_message,
-                           {:user,
-                            %{
-                              index: 1,
-                              parts: [%Part.Text{text: "[From user | mode: act]\nHello"}]
-                            }}}
-
-          assert_received {:chat_error, _error}
-        end)
-
-      # The error path logged its diagnostic and the Task body destructured its
-      # RunState: a `MatchError` would have left the messages above unarrived.
-      # (The absence of a `MatchError` in the log is not assertable —
-      # `capture_log` collects every process's output, including concurrent
-      # tests'.)
-      assert log =~ "Connection failed"
-    end
-
     test "user and error assistant messages carry empty api_logs (request logs rebuilt on demand)" do
       # Request logs are no longer attached to user or tool messages
       # during the live flow. The assistant message carries response
@@ -137,27 +97,31 @@ defmodule Nest.Agents.AgentChatTest do
              "error assistant messages carry no api_logs (the response log was never recorded)"
     end
 
-    test "accumulates delta content from streaming LLM response" do
+    test "accumulates delta content and character positions from the streaming response" do
       {pid, _agent_id} = start_agent()
 
       :ok = Agent.chat(pid, "Hello", nil, nil, true)
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
-      # Accumulate deltas by content; known to be at least 1 for the
-      # single set_response text. We match each as a known broadcast.
-      assert_received {:chat_message, {:user, _}}
+      # The single-text response produces one text delta. Its content is
+      # non-empty (so the containment check below can fail) and its character
+      # window is a real span — `is_integer` keeps a `nil`/atom payload from
+      # passing `end_pos > start` on Erlang term order.
+      assert_received {:chat_delta,
+                       %{content: partial_text, chars_start: start, chars_end: end_pos}}
 
-      assert_received {:chat_delta, %{content: partial_text}}
+      assert partial_text != ""
+      assert is_integer(start)
+      assert is_integer(end_pos)
+      assert end_pos > start
 
       # The assistant message broadcast carries the full accumulated
       # content as the externally visible result.
       assert_received {:chat_message, {:assistant, %{parts: parts}}}
 
       full_text = text_from_parts(parts)
-      assert partial_text != ""
-      assert full_text != ""
-      assert String.contains?(full_text, partial_text) or partial_text == full_text
+      assert String.contains?(full_text, partial_text)
     end
 
     test "a user message after a user tail is bridged and delivered, not dropped" do
@@ -271,30 +235,10 @@ defmodule Nest.Agents.AgentChatTest do
       texts =
         Enum.map(messages, fn {_role, msg} -> text_from_parts(msg.parts) end)
 
-      assert Enum.any?(texts, &(&1 =~ "Compaction complete"))
-
       refute Enum.any?(texts, &(&1 =~ "continuing from here")),
              "the next user turn must not need the alternation bridge ack"
 
       assert :ok = Preflight.validate(messages)
-    end
-  end
-
-  describe "delta handling" do
-    test "accumulates deltas with correct character counts" do
-      {pid, _agent_id} = start_agent()
-
-      :ok = Agent.chat(pid, "Hello", nil, nil, true)
-
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
-
-      # At least one delta is expected for the single-text response.
-      assert_received {:chat_message, {:user, _}}
-
-      assert_received {:chat_delta, %{chars_start: start, chars_end: end_pos}}
-      assert is_integer(start)
-      assert is_integer(end_pos)
-      assert end_pos > start
     end
   end
 
@@ -314,7 +258,6 @@ defmodule Nest.Agents.AgentChatTest do
       # process is the only place to observe it — through the introspection
       # accessor.
       cached = Agent.get_vocation(pid, 1_000)
-      assert cached != nil
       assert cached.id == vocation.id
       assert cached.name == vocation.name
     end

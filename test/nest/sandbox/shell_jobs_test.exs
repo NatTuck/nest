@@ -11,7 +11,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
   alias Nest.Sandbox.{Mounts, Paths}
   alias Nest.Sandbox.ShellJobs
   alias Nest.Sandbox.ShellJobs.JobLog
-  alias Nest.Tools.{ShellCmd, ShellEscape}
+  alias Nest.Tools.ShellCmd
 
   setup do
     # A real space id: the manager's job-list broadcast is keyed by
@@ -58,17 +58,51 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert [%{id: ^id, status: :exited, killed: true}] = ShellJobs.list(key)
   end
 
-  test "reports the log path the agent can read, not the manager's own", %{key: key, tmp: tmp} do
-    assert {:ok, message} = start_background("sleep 30", tmp, key)
-    assert [%{id: id, log_path: log_path}] = ShellJobs.list(key)
+  # `kill/2` also arms the manager's five-second fallback for a job whose
+  # exec-port `:DOWN` never arrives. That timer always fires in the end —
+  # normally after the job has already finished, where it must do nothing — so
+  # reaching it by waiting would cost the suite five seconds, and reaching it by
+  # luck made this file's coverage depend on where in the run the last kill fell
+  # (four stale timers fired in one full-suite seed and none in another). This is
+  # that timer's own message to the manager, i.e. `handle_info/2`'s contract.
+  test "a kill-finalize that arrives after the exit changes nothing", %{key: key, tmp: tmp} do
+    {space_id, name} = key
+    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
 
-    # The space dir is bound at /tmp and the agent's own dir is its
-    # basename, so the log the sandbox sees is /tmp/<agent>/shell-jobs/...
-    assert log_path == "/tmp/#{Path.basename(tmp)}/shell-jobs/#{id}.log"
-    assert message =~ "(log: #{log_path})"
+    id = start_running!("sleep 30", tmp, key)
+    # `start_running!` ends on a `list/1` call and the manager broadcasts the
+    # list before it replies, so the frame is already here.
+    assert_received {:shell_jobs, %{jobs: [%{id: ^id, status: :running}]}}
 
-    # The manager still writes the log under its own scratch directory.
-    assert File.exists?(Path.join([tmp, "shell-jobs", "#{id}.log"]))
+    assert :ok = ShellJobs.subscribe(key, id, self())
+    assert :ok = ShellJobs.kill(key, id)
+    assert_received {:shell_jobs, %{jobs: [%{id: ^id, killed: true}]}}
+
+    # The one real wait in this test: the process has to actually die. Bounded
+    # at the file's ceiling for a killed job, and it is an event being waited
+    # for, not a clock.
+    assert_receive {:shell_job_exit, ^id, code}, 500
+
+    # A call, so the manager has finished the `:DOWN` callback — and therefore
+    # issued the list frame — before this returns.
+    assert [%{id: ^id, status: :exited}] = ShellJobs.list(key)
+    assert_received {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}
+
+    send(ShellJobs.name(), {:kill_finalize, id})
+
+    # A call to the manager is queued behind that message — same sender, same
+    # receiver — so the fallback has run when this returns. It must leave the
+    # recorded exit alone and broadcast nothing: the job is no longer
+    # `:running`, so there is nothing to finalize.
+    #
+    # The negative assertion rests on an invariant: a kill broadcasts exactly
+    # twice, `killed: true` and then `:exited`, and both are consumed above. So
+    # anything still in the mailbox is a *third* frame, i.e. a duplicate
+    # broadcast — which is what this is for, not for detecting unrelated
+    # traffic. (The topic is `agent:<space>:<name>` for this test's own key, so
+    # no other test can contribute a frame to it.)
+    assert [%{id: ^id, status: :exited, exit_code: ^code}] = ShellJobs.list(key)
+    refute_received {:shell_jobs, _}
   end
 
   test "removes the staged script from the host once the job exits (nested tmp)" do
@@ -96,8 +130,8 @@ defmodule Nest.Sandbox.ShellJobsTest do
     # failure either: `ShellJobs.subscribe/3` has a late-subscribe clause that
     # still sends `{:shell_job_exit, …}` for an already-exited job, so the exit
     # frame still arrives and only the `assert_receive` below it fails — with an
-    # empty mailbox, which reads like a hang. The broadcast test further down
-    # subscribes first for the same reason.
+    # empty mailbox, which reads like a hang. The kill-finalize test above
+    # subscribes before it starts its job for the same reason.
     {space_id, name} = key
     Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
 
@@ -124,6 +158,26 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert Path.wildcard(Path.join(tmp, ".nest-cmd-*.sh"), match_dot: true) == []
   end
 
+  test "a subscribe that lands after the exit still reports it", %{key: key, tmp: tmp} do
+    # The already-exited arm of `handle_call({:subscribe, ...})` fires only when
+    # the subscribe arrives after the job exited, which is what makes it a race
+    # to reach at all. A grace window wider than `true` needs removes the race
+    # rather than polling at it: `await_background_start/6` subscribes to the
+    # job and returns as soon as the *exit event* arrives, and `start_job` has
+    # already registered the job, so `{:ok, output}` here means the job exists
+    # and is recorded as `:exited`. No clock and no poll — the barrier is the
+    # exit itself.
+    assert {:ok, _output} = start_background("true", tmp, key, grace_ms: 500)
+    assert [%{id: id, status: :exited}] = ShellJobs.list(key)
+
+    assert :ok = ShellJobs.subscribe(key, id, self())
+
+    # No timeout on purpose: `handle_call` sends the message before it replies,
+    # so it is already in the mailbox when `subscribe/3` returns. If the arm is
+    # not taken the message never arrives and this fails — deterministically.
+    assert_received {:shell_job_exit, ^id, 0}
+  end
+
   test "enforces the per-agent cap and frees a slot on exit", %{key: key, tmp: tmp} do
     id = start_running!("sleep 30", tmp, key)
 
@@ -140,14 +194,6 @@ defmodule Nest.Sandbox.ShellJobsTest do
   test "a command that exits within the grace window returns its output", %{key: key, tmp: tmp} do
     assert {:ok, output} = start_background("echo hello", tmp, key, grace_ms: 500)
     assert output == "hello\n"
-  end
-
-  test "captures the output of a job that exits after the grace window", %{key: key, tmp: tmp} do
-    id = start_running!("sleep 0.2; echo late", tmp, key)
-
-    assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, 0}, 1_000
-    assert {:ok, "late\n"} = ShellJobs.output(key, id)
   end
 
   test "caps.shell.background = 0 disables background jobs", %{key: key, tmp: tmp} do
@@ -205,8 +251,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
     refute ShellJobs.live_in_space?(space_id)
 
     # ... and `stop_all/1` drops the agent's jobs, so nothing is live after it.
-    assert {:ok, message} = start_background("sleep 30", tmp, key)
-    assert message =~ "Started background job"
+    assert {:ok, _} = start_background("sleep 30", tmp, key)
     assert ShellJobs.live_in_space?(space_id)
 
     assert :ok = ShellJobs.stop_all(key)
@@ -360,32 +405,6 @@ defmodule Nest.Sandbox.ShellJobsTest do
     Path.join(Paths.stage_dir_sandbox(tmp), "run.sh")
   end
 
-  test "kill broadcasts an updated job list" do
-    name = "bcast-agent-#{System.unique_integer([:positive])}"
-    key = {7, name}
-    root = Path.join(System.tmp_dir!(), "nest_jobs_bcast_#{System.unique_integer([:positive])}")
-    tmp = Path.join([root, "space-1", name])
-    File.mkdir_p!(tmp)
-
-    on_exit(fn ->
-      ShellJobs.stop_all(key)
-      if String.contains?(root, "nest_jobs_bcast"), do: File.rm_rf(root)
-    end)
-
-    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:7:#{name}")
-
-    id = start_running!("sleep 30", tmp, key)
-    assert_receive {:shell_jobs, %{jobs: [%{id: ^id}]}}, 1_000
-
-    # The pin for the converted barrier in the nested-tmp test: the broadcast is
-    # the happens-after event for `finish_job/3`'s script removal, so no
-    # `:exited` frame exists while the job is still running.
-    refute_received {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}
-
-    assert :ok = ShellJobs.kill(key, id)
-    assert_receive {:shell_jobs, %{jobs: [%{id: ^id, killed: true}]}}, 1_000
-  end
-
   # The space edit's quiesce: a running job is work in the environment that is
   # about to change, so it is stopped — but the agent is not going away, so the
   # key, the job's history and the scratch all have to survive (unlike
@@ -441,24 +460,6 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
       assert :ok = JobLog.remove(mounts, path, runner: runner)
       assert List.last(calls()) == ["exec", name, "rm", "-f", path]
-    end
-
-    test "the path the command tees into is the path the manager reads back" do
-      # The two halves of a docker job's log: the command writes it, because it
-      # is the only thing that can, and the manager reads it through the
-      # container. They have to agree on the file, or a job's output would be
-      # written where nothing ever looks.
-      mounts = container_mounts()
-      log = Path.join(Mounts.scratch(mounts), "shell-jobs/job-1.log")
-      {:ok, name} = Docker.container_name(mounts)
-
-      assert {:ok, spec} = Docker.job_spec(mounts, nil, "/tmp/.cmds/nest-cmd-1.sh", log)
-      assert payload(spec.command) =~ "tee " <> ShellEscape.escape(log)
-
-      runner = scripted_runner(%{["exec"] => {"the job's output\n", 0}})
-
-      assert JobLog.read(mounts, log, runner: runner) == "the job's output\n"
-      assert calls() == [["exec", name, "cat", log]]
     end
 
     test "prepares nothing on the host, because the scratch is not on the host" do

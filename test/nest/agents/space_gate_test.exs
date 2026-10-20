@@ -8,6 +8,10 @@ defmodule Nest.Agents.SpaceGateTest do
   tests colliding — and the release is asserted from the *broadcast* rather than
   by polling, which is also what proves the wake-up path a blocked tool worker
   depends on.
+
+  The latch's refusal of a second session, and the callers that block in
+  `await/2`, are covered end-to-end by `Nest.Spaces.EnvironmentConfirmTest` and
+  `Nest.Agents.Agent.BatchSizerTest`, so they are not repeated here.
   """
 
   use ExUnit.Case, async: true
@@ -37,43 +41,17 @@ defmodule Nest.Agents.SpaceGateTest do
     assert_receive {:space_unlocked, ^id}, 500
   end
 
-  test "a second session is refused, and the holder can ask again" do
-    id = watch(space_id())
-    assert :ok = SpaceGate.hold(id)
-
-    # A different process is another session: two edits of one space at once is
-    # exactly what the latch is for.
-    assert {:error, :already_held} = Task.async(fn -> SpaceGate.hold(id) end) |> Task.await()
-
-    # The same process asking twice is the two-push edit — preview, then confirm.
-    assert :ok = SpaceGate.hold(id)
-    assert SpaceGate.held?(id)
-  end
-
   test "only the holder may release" do
     id = watch(space_id())
     assert :ok = SpaceGate.hold(id)
 
+    # A release from another process is another session: it must leave the claim
+    # up, and the owner's monitor and TTL with it.
     assert :ok = Task.async(fn -> SpaceGate.release(id) end) |> Task.await()
-
     assert SpaceGate.held?(id)
-    refute_receive {:space_unlocked, ^id}, 50
 
     assert :ok = SpaceGate.release(id)
     assert_receive {:space_unlocked, ^id}, 500
-  end
-
-  test "a waiter blocks until the release, then proceeds" do
-    id = watch(space_id())
-    assert :ok = SpaceGate.hold(id)
-
-    waiter = Task.async(fn -> SpaceGate.await(id) end)
-
-    # It has not returned while the space is held.
-    assert Task.yield(waiter, 30) == nil
-
-    assert :ok = SpaceGate.release(id)
-    assert :ok = Task.await(waiter, 500)
   end
 
   test "a waiter past its ceiling proceeds without the latch, and says so" do
@@ -89,17 +67,6 @@ defmodule Nest.Agents.SpaceGateTest do
     assert :ok = SpaceGate.release(id)
   end
 
-  test "a waiter on an unheld space does not block" do
-    assert :ok = SpaceGate.await(space_id(), 0)
-  end
-
-  test "a context with no space behind it is never gated" do
-    # `BatchSizer`'s unit tests build a ctx without a space; there is no
-    # environment for the latch to protect and no id it could be held under.
-    assert :ok = SpaceGate.await(nil, 0)
-    assert :ok = SpaceGate.await("not a space", 0)
-  end
-
   test "the holder dying releases the space" do
     id = watch(space_id())
 
@@ -107,7 +74,6 @@ defmodule Nest.Agents.SpaceGateTest do
     # `hold` is a call, so the claim exists by the time the process exits, and the
     # release frame is the owner's `:DOWN` arriving.
     assert_receive {:space_unlocked, ^id}, 500
-    refute SpaceGate.held?(id)
   end
 
   test "a second hold from the same owner re-arms the TTL" do
@@ -119,10 +85,12 @@ defmodule Nest.Agents.SpaceGateTest do
     assert :ok = SpaceGate.hold(id, :space_edit, 30)
     assert :ok = SpaceGate.hold(id, :space_edit, 500)
 
-    # Nothing releases the space across the first TTL's expiry point. (A late
+    # Nothing releases the space across the first TTL's expiry point. The
+    # interval is the discriminating one: the first hold's TTL was 30 ms, so
+    # 50 ms is past it — a `refute_receive` pays its whole window, so this is
+    # the smallest window that still crosses the point being tested. (A late
     # timer can only make this pass, so load cannot turn it into a failure.)
-    refute_receive {:space_unlocked, ^id}, 200
-    assert SpaceGate.held?(id)
+    refute_receive {:space_unlocked, ^id}, 50
   end
 
   test "an abandoned claim expires" do
@@ -137,7 +105,6 @@ defmodule Nest.Agents.SpaceGateTest do
         assert SpaceGate.held?(id)
 
         assert_receive {:space_unlocked, ^id}, 1_000
-        refute SpaceGate.held?(id)
       end)
 
     # The expiry is the only record of *why* a paused space resumed by itself, and

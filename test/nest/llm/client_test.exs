@@ -5,21 +5,6 @@ defmodule Nest.LLM.ClientTest do
   alias Nest.LLM.OpenAIClient
 
   describe "accumulate/2 with tool_call_delta id: :by_index" do
-    test "resolves the by_index id to the real id captured by the matching :tool_call_start" do
-      acc =
-        Client.new_accumulator()
-        |> Client.accumulate({:tool_call_start, %{id: "toolu_1", name: "shell-cmd", index: 0}})
-        |> Client.accumulate(
-          {:tool_call_delta, %{id: :by_index, index: 0, arguments_delta: "{\"command\":\"ls\"}"}}
-        )
-
-      assert IO.iodata_to_binary(acc.tool_calls["toolu_1"].arguments_buffer) ==
-               "{\"command\":\"ls\"}"
-
-      assert Map.has_key?(acc, :tool_index_map)
-      assert acc.tool_index_map[0] == "toolu_1"
-    end
-
     test "ignores a by_index delta when no matching :tool_call_start has been seen" do
       acc =
         Client.new_accumulator()
@@ -28,10 +13,6 @@ defmodule Nest.LLM.ClientTest do
         )
 
       assert acc.tool_calls == %{}
-    end
-
-    test "a fresh accumulator has no tool_index_map key" do
-      refute Map.has_key?(Client.new_accumulator(), :tool_index_map)
     end
   end
 
@@ -122,13 +103,11 @@ defmodule Nest.LLM.ClientTest do
     end
   end
 
-  describe "tool-call arguments that do not decode" do
-    test "are answered with none, and say so — but an empty buffer is silent" do
+  describe "tool-call arguments" do
+    test "a buffer that does not decode is answered with none, and says so" do
       # A `context-compact` call whose arguments JSON is truncated stages a
       # compaction with no `preserve`, which is the loss that contract exists to
-      # prevent, so the decoder says so rather than answering silently. An empty
-      # buffer is the benign case: a call that genuinely carried no arguments,
-      # which every tool with only optional arguments can produce.
+      # prevent, so the decoder says so rather than answering silently.
       acc = %{
         Client.new_accumulator()
         | tool_calls: %{
@@ -149,21 +128,23 @@ defmodule Nest.LLM.ClientTest do
         end)
 
       assert log =~ "tool-call arguments did not decode"
+    end
 
-      silent =
-        ExUnit.CaptureLog.capture_log(fn ->
-          empty = %{
-            Client.new_accumulator()
-            | tool_calls: %{
-                "call_2" => %{id: "call_2", name: "context-compact", arguments_buffer: []}
-              }
+    test "an empty buffer is answered with none" do
+      # The benign case: a call that genuinely carried no arguments, which every
+      # tool with only optional arguments can produce. That it logs nothing is
+      # not assertable — `capture_log` collects every process's logs, so an
+      # absence assertion there can be tripped by any concurrent test and would
+      # test nothing. A stray warning would show up as test output instead.
+      empty = %{
+        Client.new_accumulator()
+        | tool_calls: %{
+            "call_2" => %{id: "call_2", name: "context-compact", arguments_buffer: []}
           }
+      }
 
-          assert [%Nest.Messages.ToolCall{arguments: args}] = Client.finalize(empty).tool_calls
-          assert args == %{}
-        end)
-
-      refute silent =~ "did not decode"
+      assert [%Nest.Messages.ToolCall{arguments: args}] = Client.finalize(empty).tool_calls
+      assert args == %{}
     end
   end
 
@@ -173,6 +154,8 @@ defmodule Nest.LLM.ClientTest do
     # its request from a `spawn_link`ed worker process, which a per-test
     # Mimic stub cannot reach (Mimic's private mode is process-scoped).
     test "a nil or empty key means no credential at all" do
+      # `nil` fails the `is_binary` guard and `""` fails the `!= ""` guard, so
+      # both are asserted: they are different conditions, not one path.
       assert Client.bearer_auth_opts(nil) == []
       assert Client.bearer_auth_opts("") == []
       assert Client.api_key_header(nil) == []
@@ -190,16 +173,14 @@ defmodule Nest.LLM.ClientTest do
       # `ClientConfig.receive_timeout` defaults to nil, which used to become
       # `:infinity` — unbounded socket read *and* unbounded SSE idle watchdog,
       # so a silently dropped connection hung the turn forever and no retry
-      # could fire.
+      # could fire. A missing key is the same `nil` clause.
       assert Client.receive_timeout(receive_timeout: nil) ==
                Client.default_receive_timeout_ms()
 
-      assert Client.receive_timeout([]) == Client.default_receive_timeout_ms()
       assert Client.default_receive_timeout_ms() == 600_000
     end
 
     test "an explicit value wins, including :infinity to opt out" do
-      assert Client.receive_timeout(receive_timeout: 5_000) == 5_000
       assert Client.receive_timeout(receive_timeout: :infinity) == :infinity
     end
   end

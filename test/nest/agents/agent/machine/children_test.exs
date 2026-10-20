@@ -7,17 +7,15 @@ defmodule Machine.ChildrenTest do
   alias Nest.Agents.Agent.Machine.Children
 
   test "a registered child is running and can be listed" do
-    {:ok, actions, m} = Children.register(Children.new(), "kid")
+    {:ok, [], m} = Children.register(Children.new(), "kid")
 
-    assert actions == []
     assert Children.status(m, "kid") == :running
-    assert Children.running?(m, "kid")
     assert Children.running_names(m) == ["kid"]
 
-    # The entry holds no caller pid: the outcome is delivered into the parent's
-    # own inbox by the executor, so a worker that is already gone cannot lose it.
-    assert %{state: :running, result: nil, usage: nil, archive: false, target: nil} =
-             m.children["kid"]
+    # A child registered with no reporting target reports to the parent's own
+    # inbox: the executor delivers the outcome in the parent's process, so a
+    # worker that is already gone cannot lose it.
+    assert Children.target(m, "kid") == nil
   end
 
   test "a child can report to a target, and the terminal transition keeps it" do
@@ -36,10 +34,9 @@ defmodule Machine.ChildrenTest do
     refute Children.reporting_target?(m, stranger)
     refute Children.reporting_target?(m, nil)
 
-    {:ok, actions, m} = Children.step(m, {:completed, "kid", "resp", %{total_tokens: 7}})
+    {:ok, _actions, m} = Children.step(m, {:completed, "kid", "resp", %{total_tokens: 7}})
 
     assert Children.target(m, "kid") == target
-    assert Enum.any?(actions, &match?({:child_message, "kid", {:ok, "resp"}}, &1))
   end
 
   test "a duplicate register is ignored" do
@@ -72,14 +69,6 @@ defmodule Machine.ChildrenTest do
     end
   end
 
-  test "abandoning a child stops it and is terminal" do
-    {:ok, _actions, m} = Children.register(Children.new(), "kid")
-
-    {:ok, actions, m} = Children.step(m, {:abandoned, "kid"})
-    assert Enum.any?(actions, &match?({:stop_child, "kid"}, &1))
-    assert Children.status(m, "kid") == :abandoned
-  end
-
   test "an abandoned child gets no message, while a child that dies on its own does" do
     # intentional: the parent's own tool asked for the abandonment (a batch
     # per-item deadline, or the parent's Stop) and reports that slot itself, so
@@ -87,30 +76,25 @@ defmodule Machine.ChildrenTest do
     # did. A child that dies on its own is the case the parent did *not* ask
     # for, and that one is news: `{:terminated, …}` becomes a message.
     {:ok, _actions, m} = Children.register(Children.new(), "kid")
-    {:ok, actions, _m} = Children.step(m, {:abandoned, "kid"})
+    {:ok, actions, m} = Children.step(m, {:abandoned, "kid"})
     assert actions == [{:stop_child, "kid"}]
+    assert Children.status(m, "kid") == :abandoned
 
     {:ok, _actions, dying} = Children.register(Children.new(), "kid")
     {:ok, dying_actions, _dying} = Children.step(dying, {:terminated, "kid", :shutdown})
     assert dying_actions == [{:child_message, "kid", {:terminated, :shutdown}}]
   end
 
-  test "an archived child emits exactly one archive action on completion" do
+  test "archiving is completion-only" do
+    # intentional: archiving is a completion-only concern. A completed child
+    # spawned with `archive: true` emits exactly one archive action; a child
+    # that fails/dies/abandons is left in place for inspection.
     {:ok, _actions, m} = Children.register(Children.new(), "kid", true)
 
-    {:ok, actions, m} = Children.step(m, {:completed, "kid", "resp", %{total_tokens: 7}})
+    {:ok, actions, _m} = Children.step(m, {:completed, "kid", "resp", %{total_tokens: 7}})
 
     assert Enum.count(actions, &match?({:archive_child, "kid"}, &1)) == 1
 
-    # A later event (e.g. a duplicate completion) does not archive again.
-    assert {:ignore, :already_terminal, _m} =
-             Children.step(m, {:completed, "kid", "resp", %{total_tokens: 7}})
-  end
-
-  test "a failed, terminated, or abandoned child is never archived" do
-    # intentional: archiving is completion-only. A child spawned with
-    # `archive: true` that fails/dies/abandons is left in place; only a
-    # clean completion emits the archive action.
     for event <- [
           {:failed, "kid", :crashed},
           {:terminated, "kid", :killed},
@@ -132,8 +116,6 @@ defmodule Machine.ChildrenTest do
 
     assert {:ignore, :already_terminal, ^m} =
              Children.step(m, {:completed, "kid", "resp", %{total_tokens: 7}})
-
-    assert {:ignore, :already_terminal, ^m} = Children.step(m, {:abandoned, "kid"})
   end
 
   test "an event for an unknown child is ignored" do

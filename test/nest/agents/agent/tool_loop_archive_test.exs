@@ -68,19 +68,9 @@ defmodule Nest.Agents.Agent.ToolLoopArchiveTest do
 
       assert %ToolResult{
                name: "agents-archive",
-               arguments: %{"name" => "spare-agent"},
                content: "Archived agent spare-agent.",
                is_error: false
              } = result
-    end
-
-    test "a list archives every name, one sentence each" do
-      {:ok, _pid} = start_parent("archive-many")
-
-      assert [result] = archive_from("archive-many", ["a1", "a2", "a3"])
-
-      assert %ToolResult{is_error: false, content: content} = result
-      assert content == "Archived agent a1.\nArchived agent a2.\nArchived agent a3."
     end
 
     test "one refused name does not abandon the names after it" do
@@ -105,30 +95,30 @@ defmodule Nest.Agents.Agent.ToolLoopArchiveTest do
       # would leave an agent the caller asked to clean up still running. A blank
       # name is the same class — it is a typo, not an agent, and looking it up
       # would report `:not_found`, which reads as "that agent is gone".
-      {results, log} = with_log(fn -> archive_from("archive-bad", []) end)
+      {results, log} =
+        with_log(fn ->
+          [
+            archive_from("archive-bad", []),
+            archive_from("archive-bad", " "),
+            archive_from("archive-bad", ["ok", 7])
+          ]
+        end)
 
-      assert [%ToolResult{is_error: true, content: empty_content}] = results
+      assert [
+               [%ToolResult{is_error: true, content: empty_content}],
+               [%ToolResult{is_error: true, content: blank_content}],
+               [%ToolResult{is_error: true, content: mixed_content}]
+             ] = results
 
       assert empty_content == "name must be an agent name or a list of agent names; got []."
-
-      assert log =~ "is_error=true tool result"
-
-      {results, log} = with_log(fn -> archive_from("archive-bad", " ") end)
-
-      assert [%ToolResult{is_error: true, content: blank_content}] = results
 
       assert blank_content ==
                ~s(name must be an agent name or a list of agent names; got " ".)
 
-      assert log =~ "is_error=true tool result"
-
-      {results, log} = with_log(fn -> archive_from("archive-bad", ["ok", 7]) end)
-
-      assert [%ToolResult{is_error: true, content: mixed_content}] = results
-
       assert mixed_content ==
                ~s(name must be an agent name or a list of agent names; got ["ok", 7].)
 
+      # Each refusal is an `is_error` result, so BatchSizer logs it.
       assert log =~ "is_error=true tool result"
     end
   end

@@ -28,11 +28,9 @@ defmodule Nest.AccountsTest do
   end
 
   describe "user_count/0" do
-    test "returns 0 when no users exist" do
+    test "returns 0 with no users, and the count after users exist" do
       assert Accounts.user_count() == 0
-    end
 
-    test "returns the count after users are created" do
       {:ok, alice, :admin} = Accounts.create_user(registration_attrs("alice"), "first-user")
       {:ok, _invite, token} = Accounts.create_invite(alice.id)
       {:ok, _bob} = Accounts.redeem_invite(token, registration_attrs("bob"))
@@ -42,15 +40,11 @@ defmodule Nest.AccountsTest do
   end
 
   describe "create_user/2" do
-    test "creates the first user via the magic token with is_admin: true" do
+    test "creates the first user via the magic token, then rejects it" do
       assert {:ok, %UserSchema{is_admin: true}, :admin} =
                Accounts.create_user(registration_attrs("alice"), "first-user")
 
       assert Accounts.user_count() == 1
-    end
-
-    test "rejects the magic token once any user exists" do
-      {:ok, _, :admin} = Accounts.create_user(registration_attrs("alice"), "first-user")
 
       assert {:error, :no_users_allowed} =
                Accounts.create_user(registration_attrs("bob"), "first-user")
@@ -155,12 +149,10 @@ defmodule Nest.AccountsTest do
       %{user: user}
     end
 
-    test "returns the user on a valid password", %{user: user} do
+    test "returns the user on a valid password, case-insensitively", %{user: user} do
       assert {:ok, %UserSchema{id: id}} = Accounts.authenticate("alice", "password123")
       assert id == user.id
-    end
 
-    test "matches case-insensitive usernames", %{user: user} do
       assert {:ok, %UserSchema{id: id}} = Accounts.authenticate("ALICE", "password123")
       assert id == user.id
     end
@@ -187,12 +179,10 @@ defmodule Nest.AccountsTest do
       end
     end
 
-    test "returns :invalid_credentials on a wrong password", %{user: _user} do
+    test "returns :invalid_credentials for a wrong password or an unknown username" do
       assert {:error, :invalid_credentials} =
                Accounts.authenticate("alice", "wrong-password")
-    end
 
-    test "returns :invalid_credentials for an unknown username" do
       assert {:error, :invalid_credentials} =
                Accounts.authenticate("nobody", "password123")
     end
@@ -265,16 +255,16 @@ defmodule Nest.AccountsTest do
       assert id == user.id
     end
 
-    test "returns nil for a tampered token", %{token: token} do
+    test "returns nil for a tampered, malformed, or nil/empty token", %{token: token} do
       # Flip a character somewhere in the middle of the token.
       <<head::binary-size(10), char, rest::binary>> = token
       flipped = if char == ?a, do: ?b, else: ?a
       tampered = head <> <<flipped>> <> rest
       assert Accounts.get_user_by_token(tampered) == nil
-    end
 
-    test "returns nil for a malformed token" do
       assert Accounts.get_user_by_token("not-a-token") == nil
+      assert Accounts.get_user_by_token(nil) == nil
+      assert Accounts.get_user_by_token("") == nil
     end
 
     test "returns nil when the underlying user no longer exists", %{user: alice} do
@@ -284,11 +274,6 @@ defmodule Nest.AccountsTest do
       Repo.delete!(transient)
 
       assert Accounts.get_user_by_token(signed) == nil
-    end
-
-    test "returns nil for nil/empty input" do
-      assert Accounts.get_user_by_token(nil) == nil
-      assert Accounts.get_user_by_token("") == nil
     end
   end
 
@@ -310,18 +295,12 @@ defmodule Nest.AccountsTest do
       assert DateTime.compare(invite.expires_at, DateTime.utc_now()) == :gt
     end
 
-    test "redeem_invite succeeds with valid params", %{raw_token: token} do
+    test "redeem_invite succeeds, then rejects unknown or used tokens", %{raw_token: token} do
       assert {:ok, %UserSchema{username: "bob"}} =
                Accounts.redeem_invite(token, registration_attrs("bob"))
-    end
 
-    test "redeem_invite rejects an unknown token" do
       assert {:error, :invalid_token} =
                Accounts.redeem_invite("not-a-token", registration_attrs("bob"))
-    end
-
-    test "redeem_invite rejects a token that's already been used", %{raw_token: token} do
-      {:ok, _} = Accounts.redeem_invite(token, registration_attrs("bob"))
 
       assert {:error, :already_used} =
                Accounts.redeem_invite(token, registration_attrs("carol"))
@@ -373,16 +352,14 @@ defmodule Nest.AccountsTest do
       %{alice: alice, bob: bob, invite: alice_invite}
     end
 
-    test "owner can revoke their own invite", %{alice: alice, invite: invite} do
-      assert :ok = Accounts.revoke_invite(invite.id, alice.id)
-    end
-
-    test "non-owner gets :forbidden", %{bob: bob, invite: invite} do
-      assert {:error, :forbidden} = Accounts.revoke_invite(invite.id, bob.id)
-    end
-
-    test "unknown id returns :not_found", %{alice: alice} do
+    test "owner revokes; a non-owner is forbidden and an unknown id is not found", %{
+      alice: alice,
+      bob: bob,
+      invite: invite
+    } do
       assert {:error, :not_found} = Accounts.revoke_invite(99_999, alice.id)
+      assert {:error, :forbidden} = Accounts.revoke_invite(invite.id, bob.id)
+      assert :ok = Accounts.revoke_invite(invite.id, alice.id)
     end
 
     test "already-used invite cannot be revoked", %{alice: alice, invite: invite} do
@@ -407,21 +384,12 @@ defmodule Nest.AccountsTest do
       %{alice: alice}
     end
 
-    test "succeeds for the first 10 invites", %{alice: alice} do
+    test "allows 10 invites, then rejects the 11th without inserting a row", %{alice: alice} do
       for n <- 1..10 do
         assert {:ok, _, _} = Accounts.create_invite(alice.id),
                "create_invite/1 failed at invite #{n}"
       end
-    end
 
-    test "returns :too_many_invites on the 11th attempt", %{alice: alice} do
-      for _ <- 1..10, do: {:ok, _, _} = Accounts.create_invite(alice.id)
-
-      assert {:error, :too_many_invites} = Accounts.create_invite(alice.id)
-    end
-
-    test "does not insert a row when the cap is hit", %{alice: alice} do
-      for _ <- 1..10, do: {:ok, _, _} = Accounts.create_invite(alice.id)
       before_count = Accounts.count_user_invites(alice.id)
 
       assert {:error, :too_many_invites} = Accounts.create_invite(alice.id)
@@ -431,14 +399,10 @@ defmodule Nest.AccountsTest do
   end
 
   describe "count_user_invites/1" do
-    test "returns 0 when the user owns no invites" do
+    test "counts 0 with no invites, then active, used, and revoked together" do
       {:ok, alice, _} = Accounts.create_user(registration_attrs("alice"), "first-user")
 
       assert Accounts.count_user_invites(alice.id) == 0
-    end
-
-    test "counts active, used, and revoked invites together" do
-      {:ok, alice, _} = Accounts.create_user(registration_attrs("alice"), "first-user")
 
       {:ok, _active, _} = Accounts.create_invite(alice.id)
       {:ok, used, _} = Accounts.create_invite(alice.id)

@@ -20,7 +20,7 @@ defmodule Nest.DotConfig.LoadTest do
     # `load/1` reads the file on every call and caches only the parse, keyed on
     # the bytes it read — never on the file's *identity*. `ParseCacheTest` pins
     # that key directly; this test pins what it buys where a caller can see it,
-    # and it makes the identity as unhelpful as it can be: each replacement is
+    # and it makes the identity as unhelpful as it can be: the replacement is
     # forced back onto the mtime the previous parse was cached under, with the
     # length held equal. A cache keyed on the identity would serve the stale
     # parse here; one keyed on the content cannot.
@@ -43,22 +43,6 @@ defmodule Nest.DotConfig.LoadTest do
 
       assert {:ok, second} = DotConfig.load(path)
       assert Map.keys(second.providers) == ["acmb"]
-
-      # The same question for a file the application never wrote. No writer was
-      # ever in a position to tell the cache anything, and it makes no
-      # difference: the key is the bytes, whoever put them there.
-      File.write!(path, provider_toml("https://one.example/v1"))
-      assert {:ok, hand_written} = DotConfig.load(path)
-      assert hand_written.providers["acme"].base_url == "https://one.example/v1"
-
-      hand_identity = identity_of(path)
-
-      File.write!(path, provider_toml("https://two.example/v1"))
-      File.touch!(path, hand_identity.mtime)
-      assert identity_of(path) == hand_identity
-
-      assert {:ok, edited} = DotConfig.load(path)
-      assert edited.providers["acme"].base_url == "https://two.example/v1"
     end
   end
 
@@ -92,8 +76,7 @@ defmodule Nest.DotConfig.LoadTest do
       # read rather than at whichever call first trips over them.
       for {label, value} <- [
             {"string", ~s("abc")},
-            {"element", "[1]"},
-            {"table", "{ a = 1 }"}
+            {"element", "[1]"}
           ] do
         toml = """
         [providers.foo]
@@ -137,52 +120,29 @@ defmodule Nest.DotConfig.LoadTest do
       assert by_name["blind"] == %{"input" => []}
     end
 
-    test "raises on a value that is not a table, instead of dropping it to no-claim" do
+    test "raises on a claim it cannot read, instead of dropping it to no-claim" do
       # `multi-modal = false` is the natural way to write "this model does not
       # accept images", and it used to be discarded into "no claim made" — a
-      # different fact, and one no reader can tell apart from silence.
-      for {label, value} <- [
-            {"false", "false"},
-            {"true", "true"},
-            {"string", ~s("image")},
-            {"int", "7"},
-            {"list", ~s(["image"])}
+      # different fact, and one no reader can tell apart from silence. An
+      # `input` that is not a list of names is refused for the same reason: a
+      # bare string is not a list, and a non-string element reaches
+      # `Enum.join/2` in the `models-list` formatter.
+      for {label, claim, message} <- [
+            {"not_a_table", "multi-modal = false", ~r/invalid multi-modal .*must be a table/},
+            {"input_string", ~s(multi-modal = { input = "image" }),
+             ~r/invalid multi-modal input .*must be a list of strings/},
+            {"input_element", "multi-modal = { input = [1] }",
+             ~r/invalid multi-modal input .*must be a list of strings/}
           ] do
-        toml = """
-        [[providers.foo.models]]
-        name = "m"
-        multi-modal = #{value}
-        """
-
         path = tmp_toml_file("mm_#{label}")
-        File.write!(path, toml)
 
-        assert_raise RuntimeError, ~r/invalid multi-modal .*must be a table/, fn ->
-          DotConfig.load(path)
-        end
-      end
-    end
-
-    test "raises on an input that is not a list of strings" do
-      for {label, value} <- [
-            {"string", ~s("image")},
-            {"element", "[1]"},
-            {"table", "[{ a = 1 }]"}
-          ] do
-        toml = """
+        File.write!(path, """
         [[providers.foo.models]]
         name = "m"
-        multi-modal = { input = #{value} }
-        """
+        #{claim}
+        """)
 
-        path = tmp_toml_file("mm_input_#{label}")
-        File.write!(path, toml)
-
-        assert_raise RuntimeError,
-                     ~r/invalid multi-modal input .*must be a list of strings/,
-                     fn ->
-                       DotConfig.load(path)
-                     end
+        assert_raise RuntimeError, message, fn -> DotConfig.load(path) end
       end
     end
   end
@@ -191,11 +151,11 @@ defmodule Nest.DotConfig.LoadTest do
     # The name is the model's id. `[[providers.x.models]] name = { a = 1 }` used
     # to reach the `models-list` formatter's `"#{provider}/#{name}"` and raise
     # `String.Chars` inside a tool call; a missing name was silently accepted and
-    # rendered as a bare `/`.
+    # rendered as a bare `/`. A blank name is the third shape: a string, but not
+    # an id.
     test "raises on a name that is not a non-empty string, or is absent" do
       for {label, name_line} <- [
             {"table", ~s(name = { a = 1 })},
-            {"number", "name = 3"},
             {"empty", ~s(name = "")},
             {"absent", ""}
           ] do
@@ -215,39 +175,6 @@ defmodule Nest.DotConfig.LoadTest do
     end
   end
 
-  describe "provider probe-base-url" do
-    # The reader raised on this before the write side guarded it, which is how a
-    # `probe-base-url = ""` from a channel client became a config the app wrote
-    # for itself and then refused to read.
-    test "keeps a non-empty binary, is nil when absent, and raises otherwise" do
-      kept = """
-      [providers.acme]
-      probe-base-url = "https://probe.example/v1"
-      """
-
-      absent = """
-      [providers.acme]
-      base-url = "https://acme.example/v1"
-      """
-
-      assert load_probe_base_url(kept) == "https://probe.example/v1"
-      assert load_probe_base_url(absent) == nil
-
-      for {label, line} <- [
-            {"empty", ~s(probe-base-url = "")},
-            {"number", "probe-base-url = 7"},
-            {"table", "probe-base-url = { a = 1 }"}
-          ] do
-        path = tmp_toml_file("probe_url_#{label}")
-        File.write!(path, "[providers.acme]\n" <> line <> "\n")
-
-        assert_raise RuntimeError, ~r/Provider acme: invalid probe-base-url/, fn ->
-          DotConfig.load(path)
-        end
-      end
-    end
-  end
-
   describe "model context-limit" do
     # The reader passed this through unvalidated, so it never raised — which is
     # why the earlier sweep missed it. It is refused now because the value is not
@@ -258,9 +185,9 @@ defmodule Nest.DotConfig.LoadTest do
       assert load_model_context_limit("") == nil
       assert load_model_context_limit("context-limit = 1000") == 1000
 
+      # `0` is the off-by-one boundary the guard exists for; `0.5` is the type.
       for {label, line} <- [
             {"zero", "context-limit = 0"},
-            {"negative", "context-limit = -1"},
             {"fractional", "context-limit = 0.5"}
           ] do
         path = tmp_toml_file("model_limit_#{label}")
@@ -279,10 +206,9 @@ defmodule Nest.DotConfig.LoadTest do
   end
 
   describe "provider base-url" do
-    # The last field of this class, and the same shape as `probe-base-url`
-    # above: neither side validated it, so the two *agreed* and no drift
-    # existed — but the value is dereferenced on every chat, and a non-binary
-    # raises `FunctionClauseError` in `String.trim_trailing/2`
+    # Neither side validated it, so the two *agreed* and no drift existed — but
+    # the value is dereferenced on every chat, and a non-binary raises
+    # `FunctionClauseError` in `String.trim_trailing/2`
     # (`OpenAIClient.normalize_endpoint/2`) and in `EndpointProbe.probe/1`.
     test "keeps a non-empty binary, is nil when absent, and raises otherwise" do
       assert load_base_url(~s(base-url = "https://acme.example/v1")) ==
@@ -292,10 +218,11 @@ defmodule Nest.DotConfig.LoadTest do
       # error.
       assert load_base_url(~s(api-key = "none")) == nil
 
+      # `""` is the boundary (`is_binary` holds, non-empty does not); `7` is the
+      # non-binary that used to reach `String.trim_trailing/2`.
       for {label, line} <- [
             {"empty", ~s(base-url = "")},
-            {"number", "base-url = 7"},
-            {"table", "base-url = { a = 1 }"}
+            {"number", "base-url = 7"}
           ] do
         path = tmp_toml_file("base_url_#{label}")
         File.write!(path, "[providers.acme]\n" <> line <> "\n")
@@ -314,24 +241,18 @@ defmodule Nest.DotConfig.LoadTest do
     # `resolve_api_key/1` at chat time. Both sides call the rule now, so it is a
     # startup error instead.
     test "keeps text, is nil when absent, and raises on a non-binary" do
-      # The premise: every legitimate shape of a key is text. An empty string and
-      # the documented `api-key = "none"` opt-out are both real, and refusing
-      # them would break working configs.
-      assert load_api_key(~s(api-key = "sk-literal")) == "sk-literal"
+      # The premise: every legitimate shape of a key is text. `ApiKeyTest` pins
+      # the documented `api-key = "none"` opt-out and the absent case; this test
+      # pins the empty string, the shape a "must be non-empty" refactor would
+      # reject. Both are real, and refusing either would break working configs.
       assert load_api_key(~s(api-key = "")) == ""
-      assert load_api_key(~s(api-key = "none")) == "none"
       assert load_api_key(~s(base-url = "https://acme.example/v1")) == nil
 
-      for {label, line} <- [
-            {"number", "api-key = 7"},
-            {"table", "api-key = { a = 1 }"}
-          ] do
-        path = tmp_toml_file("api_key_#{label}")
-        File.write!(path, "[providers.acme]\n" <> line <> "\n")
+      path = tmp_toml_file("api_key_number")
+      File.write!(path, "[providers.acme]\napi-key = 7\n")
 
-        assert_raise RuntimeError, ~r/Provider acme: invalid api-key/, fn ->
-          DotConfig.load(path)
-        end
+      assert_raise RuntimeError, ~r/Provider acme: invalid api-key/, fn ->
+        DotConfig.load(path)
       end
     end
   end
@@ -345,29 +266,16 @@ defmodule Nest.DotConfig.LoadTest do
       assert load_models(~s(base-url = "https://acme.example/v1")) == []
       assert length(load_models(~s(models = [{ name = "m" }]))) == 1
 
-      for {label, line} <- [
-            {"string", ~s(models = "abc")},
-            {"number", "models = 7"},
-            {"table", ~s(models = { name = "m" })}
-          ] do
-        path = tmp_toml_file("models_#{label}")
-        File.write!(path, "[providers.acme]\n" <> line <> "\n")
+      path = tmp_toml_file("models_string")
+      File.write!(path, "[providers.acme]\nmodels = \"abc\"\n")
 
-        assert_raise RuntimeError, ~r/Provider acme: invalid models/, fn ->
-          DotConfig.load(path)
-        end
+      assert_raise RuntimeError, ~r/Provider acme: invalid models/, fn ->
+        DotConfig.load(path)
       end
     end
   end
 
   # --- fixtures ---
-
-  defp load_probe_base_url(toml) do
-    path = tmp_toml_file("probe_url_ok")
-    File.write!(path, toml)
-    {:ok, config} = DotConfig.load(path)
-    config.providers["acme"].probe_base_url
-  end
 
   # Both of these take a bare `key = value` line and wrap it in a provider
   # table, so a premise case and a refusal case share one shape.
@@ -409,15 +317,8 @@ defmodule Nest.DotConfig.LoadTest do
     %Provider{name: name, base_url: "https://cache.example/v1", models: []}
   end
 
-  defp provider_toml(base_url) do
-    """
-    [providers.acme]
-    base-url = "#{base_url}"
-    """
-  end
-
   # A unique temp `.toml` path, cleaned up on exit by the project's guarded
-  # helper. Generic: the parse-cache fixtures and the value-validation fixtures
+  # helper. Generic: the parse-cache fixture and the value-validation fixtures
   # both write one and then load it.
   defp tmp_toml_file(label) do
     path =

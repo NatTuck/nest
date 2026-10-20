@@ -31,7 +31,7 @@ defmodule Nest.Agents.Agent.ModelNoticeTest do
   setup :verify_on_exit!
 
   describe "a change the prompt states" do
-    test "appends one pair naming the new model, its verdict and its limit" do
+    test "appends one pair stating the new model's verdict and limit" do
       {pid, _name} = start_agent(%{model: %{name: "qwen3.5-plus", provider: "model-studio"}})
 
       before = Agent.get_messages(pid)
@@ -50,7 +50,6 @@ defmodule Nest.Agents.Agent.ModelNoticeTest do
       # recipient's mode, exactly as every other delivered row states it.
       assert String.starts_with?(notice, "[From nest runtime | mode: ")
 
-      assert notice =~ ~s(Your model changed. It is now "MiniMax-M2.5".)
       assert notice =~ "Nothing declares whether it accepts image input"
 
       # The limit is the number the agent budgets against, and it was stale before

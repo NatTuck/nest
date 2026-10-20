@@ -4,7 +4,9 @@ defmodule Nest.Agents.Agent.Machine.GiveUpTest do
 
   The funnel that emits the action and the sites that rest through it are
   covered by `MachineDebtTest`; the audit table that lists those sites is
-  checked against the sources by `GuardTest`.
+  checked against the sources by `GuardTest`; the refusal wording an operator
+  sees is pinned on the banner the executor really broadcasts by
+  `GiveUpDeliveryTest`.
   """
 
   use ExUnit.Case, async: true
@@ -12,27 +14,27 @@ defmodule Nest.Agents.Agent.Machine.GiveUpTest do
   alias Nest.Agents.Agent.Machine.GiveUp
 
   test "failure_reason/1 words the refusals an operator can act on" do
-    # The two refusals with a human-readable cause, and the fallback for
-    # everything else (a missing peer, an exit): the banner says what happened
-    # rather than only that something did.
-    assert GiveUp.failure_reason(:inbox_full) == "the agent's inbox is full"
-
+    # `:inbox_full` is pinned end-to-end by `GiveUpDeliveryTest` (the banner a
+    # full inbox produces), so the clauses left here are the `{:status, _}` one,
+    # which nothing else reaches, and one representative of the fallback that
+    # `inspect/1`s everything else: `:not_found` and an exit share that clause.
     assert GiveUp.failure_reason({:status, :needs_repair}) ==
              "the agent is in a needs_repair state"
 
-    assert GiveUp.failure_reason(:not_found) == ":not_found"
     assert GiveUp.failure_reason({:exit, :noproc}) == "{:exit, :noproc}"
   end
 
-  test "notice_text/1 names the agent that did not answer and quotes nothing else" do
-    # decision 4's instinct applied to the give-up: the requester already has the
-    # query, and the runtime reports a fact about a peer rather than speaking for
-    # it — so no `[Message from agent …]` label and no `[mode: …]` prefix.
-    text = GiveUp.notice_text("alice")
-
-    assert text =~ "\"alice\""
-    assert text =~ "did not reply"
-    refute text =~ "Message from agent"
-    refute text =~ "[mode:"
+  test "notice_text/1 names the agent that did not answer" do
+    # The one fact this file owns: the notice says *which* peer the runtime
+    # stopped waiting for. That it arrives at all, and says "did not reply", is
+    # `GiveUpDeliveryTest`'s and `ReplyDebtTest`'s.
+    #
+    # decision 4 also wants it framed as the runtime's words — no
+    # `[Message from agent …]` label and no `[mode: …]` prefix. Neither absence
+    # is assertable: both are *retired* spellings, and the header that would
+    # frame the notice today (`[From agent … | mode: …]`) contains neither, so a
+    # `refute` on them passes with the framing applied. `ReplyDebtTest` asserts
+    # the same two spellings end to end, and is blind in the same way.
+    assert GiveUp.notice_text("alice") =~ "\"alice\""
   end
 end

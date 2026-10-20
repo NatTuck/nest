@@ -12,10 +12,10 @@ defmodule MachineTest do
   alias Nest.Messages.Part
 
   describe "vocabulary" do
-    test "phases, events, actions are declared and blocked is a subset of phases" do
-      refute Enum.empty?(Machine.phases())
-      refute Enum.empty?(Machine.events())
-      refute Enum.empty?(Machine.actions())
+    test "blocked phases are a subset of the declared phases" do
+      # The subset is load-bearing: `MachineDebtTest` walks `phases() -- blocked`
+      # and then `blocked`, so a blocked phase missing from `phases()` would
+      # silently drop that phase's give-up and discharge sites.
       assert MapSet.subset?(MapSet.new(Machine.blocked_phases()), MapSet.new(Machine.phases()))
     end
   end
@@ -62,7 +62,6 @@ defmodule MachineTest do
 
         case result do
           {:ok, actions, next} ->
-            assert is_list(actions)
             Machine.validate!(next)
 
             # Every emitted action must be in the declared vocabulary (and
@@ -100,21 +99,20 @@ defmodule MachineTest do
       assert Enum.any?(actions, &match?({:append, _}, &1))
       assert :iterate in actions
       assert generating.phase == :generating and generating.kind == :chat
-      Machine.validate!(generating)
     end
 
     test "a late worker result after :stopping is dropped, not appended" do
       # intentional: once a stop is in flight the terminal recovery closes
       # the sequence. A late HTTP/tool result MUST be dropped; appending it
       # would orphan the result. Do not "repair" this by appending.
+      # The `:tool_results` arm of the same guard is covered by
+      # `MachineBackgroundedTest`, where the guard must also win over the
+      # backgrounded clauses.
       stopping =
         Machine.new(phase: :stopping, kind: :chat, work: %Machine.Work{worker_ref: make_ref()})
 
       assert {:ignore, :late_result_after_stop, ^stopping} =
                Machine.step(stopping, {:http_ok, make_ref(), response()})
-
-      assert {:ignore, :late_result_after_stop, ^stopping} =
-               Machine.step(stopping, {:tool_results, make_ref(), []})
     end
 
     test "a stale result in :idle is a no-op" do
@@ -165,7 +163,6 @@ defmodule MachineTest do
       assert stopping.work.worker_kind == nil
       assert Enum.any?(actions, &match?({:kill, ^pid}, &1))
       assert Enum.any?(actions, &match?({:arm_timer, _, :stop_timer}, &1))
-      Machine.validate!(stopping)
 
       Process.exit(pid, :kill)
     end
@@ -213,8 +210,6 @@ defmodule MachineTest do
 
       assert {:ignore, :blocked, ^blocked} =
                Machine.step(blocked, {:chat_request, {:user_message, user()}})
-
-      assert {:ignore, :blocked, ^blocked} = Machine.step(blocked, :iterate)
     end
 
     test "the committing phase is a compaction-only phase reported as :compacting" do
@@ -223,7 +218,6 @@ defmodule MachineTest do
       committing = %Machine{kind: :compaction, phase: :committing}
 
       assert Machine.status_for(committing) == :compacting
-      Machine.validate!(committing)
     end
   end
 

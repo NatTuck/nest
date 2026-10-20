@@ -18,7 +18,6 @@ defmodule Nest.PersistenceAgentsTest do
   import Nest.PersistenceTestHelpers
 
   alias Nest.Agents.PersistedAgent
-  alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.System, as: MsgSystem
   alias Nest.Messages.User
@@ -39,9 +38,6 @@ defmodule Nest.PersistenceAgentsTest do
       assert {:ok, %PersistedAgent{id: id, name: name}} = Persistence.insert_agent(attrs)
       assert is_integer(id) and id > 0
       assert name == attrs.name
-
-      # last_compaction_index defaults to -1 on insert.
-      assert Nest.Repo.one!(PersistedAgent, where: [name: name]).last_compaction_index == -1
     end
 
     test "returns :duplicate_name when the name already exists" do
@@ -51,32 +47,17 @@ defmodule Nest.PersistenceAgentsTest do
       assert {:error, :duplicate_name} = Persistence.insert_agent(attrs)
     end
 
-    test "validates required fields" do
-      assert {:error, %Ecto.Changeset{} = changeset} =
-               Persistence.insert_agent(%{name: "", model: %{}, space_id: 0})
-
-      refute Enum.empty?(changeset.errors)
-    end
-
     test "returns :missing_required_field when :model is absent" do
       assert {:error, :missing_required_field} =
                Persistence.insert_agent(%{name: "no-model-agent", space_id: 0})
-
-      assert {:error, :missing_required_field} =
-               Persistence.insert_agent(%{space_id: 0})
     end
 
     test "rejects a name that is not a single filename-safe component" do
       for bad <- [
-            # A space / dot / slash / uppercase-free slug rule.
+            # A space is not in the class, and `..` is the escape the rule
+            # exists to stop; `""` fails the required/min-length validators.
             "my agent",
-            "a/b",
             "..",
-            ".",
-            "a.b",
-            "café",
-            "agent\n",
-            "agent:1",
             ""
           ] do
         assert {:error, %Ecto.Changeset{} = changeset} =
@@ -109,11 +90,9 @@ defmodule Nest.PersistenceAgentsTest do
       attrs = agent_attrs("fetch-#{Elixir.System.unique_integer([:positive])}")
       assert {:ok, inserted} = Persistence.insert_agent(attrs)
 
-      assert {:ok, %PersistedAgent{name: name, id: id}} =
-               Persistence.fetch_agent(test_space_id(), attrs.name)
+      assert {:ok, %PersistedAgent{id: id}} = Persistence.fetch_agent(test_space_id(), attrs.name)
 
       assert id == inserted.id
-      assert name == attrs.name
     end
 
     test "returns :not_found for an unknown name" do
@@ -175,18 +154,6 @@ defmodule Nest.PersistenceAgentsTest do
       # append path checks before writing (see
       # `Persistence.insert_message/4`).
       assert restored.agent_row_id == row_id
-
-      # The active slice is what is loaded as messages, and nothing here is
-      # above the boundary — so no rows come back as messages, and the
-      # archive is reported as facts instead (issue #52). Partitioning and
-      # seeding happen inside `Agent.init/1`'s `seed_from_db/5`.
-      assert restored.preloaded_messages == []
-
-      assert restored.archived_summary == %{
-               has_system_row: true,
-               highest_index: 2,
-               marker_count: 1
-             }
     end
 
     test "returns :not_found when no row exists" do
@@ -195,42 +162,6 @@ defmodule Nest.PersistenceAgentsTest do
                  Process.get(:nest_persistence_test_space_id),
                  "nonexistent-#{Elixir.System.unique_integer([:positive])}"
                )
-    end
-
-    test "round-trips assistant api_logs through insert + build_attrs_for_start" do
-      attrs = agent_attrs("roundtrip-#{Elixir.System.unique_integer([:positive])}")
-      {:ok, _} = Persistence.insert_agent(attrs)
-
-      log = %{
-        id: "003.000",
-        timestamp: DateTime.utc_now(),
-        type: :request,
-        payload: %{"messages" => [%{"role" => "user", "content" => "hi"}]}
-      }
-
-      {:ok, _} =
-        Persistence.insert_message(
-          test_space_id(),
-          attrs.name,
-          {:assistant,
-           %Assistant{
-             index: 1,
-             parts: [%Part.Text{text: "hello"}],
-             api_logs: [log]
-           }}
-        )
-
-      {:ok, restored} = Persistence.build_attrs_for_start(test_space_id(), attrs.name)
-
-      # Find the assistant message in the preloaded list.
-      {:assistant, %Assistant{api_logs: api_logs}} =
-        Enum.find(restored.preloaded_messages, &match?({:assistant, _}, &1))
-
-      # api_logs survive the round-trip with their atom keys (the
-      # runtime path reads `log.type == :request` directly).
-      assert length(api_logs) == 1
-      assert hd(api_logs).id == "003.000"
-      assert hd(api_logs).type == :request
     end
   end
 

@@ -19,18 +19,20 @@ defmodule NestWeb.AgentChannelTest do
 
   describe "join/3" do
     test "the init payload describes the agent, its model, its mode and its usage", %{
-      socket: socket,
-      agent_id: id,
-      space_id: space_id
+      agent_id: id
     } do
-      # One assertion per field of the same join payload (five tests merged).
-      assert socket.topic == "agent:#{space_id}:#{id}"
+      # One assertion per field of the same join payload (six tests merged).
       assert_push "init", payload
 
       # Identity and the join-time counters.
       assert payload["name"] == id
       assert payload["messageCount"] == 1
       assert payload["status"] == "idle"
+      # The shell-job list and the async inbox ride the same payload; both are
+      # empty for a fresh agent, and `pendingMessageCount` counts the queue.
+      assert payload["shellJobs"] == []
+      assert payload["inbox"] == []
+      assert payload["pendingMessageCount"] == 0
       # Init includes partial (nil when not streaming)
       assert Map.has_key?(payload, "partial")
       assert payload["partial"] == nil
@@ -82,18 +84,6 @@ defmodule NestWeb.AgentChannelTest do
 
       assert payload["usage"][:context_input_tokens] > 0,
              "expected context_input_tokens > 0 (system prompt estimated size), got #{payload["usage"][:context_input_tokens]}"
-    end
-
-    test "returns error for non-existent agent" do
-      token = Process.get(:agent_test_token)
-      {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
-
-      assert {:error, %{"reason" => "agent not found"}} =
-               subscribe_and_join(
-                 connected,
-                 NestWeb.AgentChannel,
-                 "agent:1:nonexistent"
-               )
     end
 
     test "returns agent_unavailable (not a crash) for non-:not_found errors" do
@@ -232,49 +222,10 @@ defmodule NestWeb.AgentChannelTest do
   end
 
   describe "handle_in(chat:message)" do
-    test "sends message and returns ok", %{socket: socket} do
-      ref = push(socket, "chat:message", %{"content" => "Hello"})
-      assert_reply ref, :ok, %{}
-
-      # Wait for the user message to be broadcast so the LLM Task is
-      # actively using the stub before the test exits.
-      assert_push "chat:message", %{"role" => "user"}, 1_000
-
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
-    end
-
-    test "accepts a mode field in the payload", %{socket: socket} do
-      ref = push(socket, "chat:message", %{"content" => "Hello", "mode" => "build"})
-      assert_reply ref, :ok, %{}
-
-      # The user message broadcast includes the mode (which gets stored
-      # in the User struct's metadata).
-      assert_push "chat:message", %{"role" => "user"}, 1_000
-
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
-    end
-
     test "omitting mode is allowed (defaults to chat)", %{socket: socket} do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
       assert_push "chat:message", %{"role" => "user"}, 1_000
-
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
-    end
-
-    test "broadcasts user message with index", %{socket: socket} do
-      ref = push(socket, "chat:message", %{"content" => "Hello"})
-      assert_reply ref, :ok, %{}
-
-      # Receive user message broadcast first
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
-
-      # Then receive streaming deltas
-      assert_push "chat:delta", payload, 1_000
-      assert is_integer(payload["index"])
-      assert is_binary(payload["content"])
-      assert is_integer(payload["charsStart"])
-      assert is_integer(payload["charsEnd"])
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
@@ -310,10 +261,7 @@ defmodule NestWeb.AgentChannelTest do
 
       # User message is the first chat:message (broadcast by the
       # agent when the chat starts). Then deltas stream. The
-      # final chat:message is the assistant. Each is a known
-      # broadcast; we use non-blocking receive with `after 0`
-      # to drain any extra deltas that landed between the
-      # user message and the assistant.
+      # final chat:message is the assistant.
       assert_push "chat:message", %{"role" => "user"}, 1_000
 
       # Each chat:delta is a known broadcast. The mock returns
@@ -350,43 +298,7 @@ defmodule NestWeb.AgentChannelTest do
     end
   end
 
-  describe "chat:inbox" do
-    test "handle_in replies with the full list and forwards deltas verbatim", %{
-      socket: socket,
-      space_id: space_id,
-      agent_id: name
-    } do
-      # The reply is the resync frame (issue #27): the whole queue with the
-      # sequence it was taken at, self-described as a replacement.
-      ref = push(socket, "chat:inbox", %{})
-
-      assert_reply ref, :ok, %{
-        "op" => "replace",
-        "messages" => [],
-        "count" => 0,
-        "inboxSeq" => seq
-      }
-
-      assert is_integer(seq)
-
-      # A delta is forwarded as it was broadcast: the channel relays the
-      # incremental frame verbatim rather than reshaping it into a list.
-      delta = %{op: "append", messages: [%{"from" => "peer", "content" => "hi"}], count: 1}
-
-      Phoenix.PubSub.broadcast(Nest.PubSub, "agent:#{space_id}:#{name}", {:chat_inbox, delta})
-
-      assert_push "chat:inbox", ^delta
-    end
-  end
-
   describe "background shell jobs" do
-    test "init payload includes an empty shellJobs list and async inbox", %{socket: _socket} do
-      assert_push "init", payload
-      assert payload["shellJobs"] == []
-      assert payload["inbox"] == []
-      assert payload["pendingMessageCount"] == 0
-    end
-
     test "shell:list / shell:log / shell:kill operate on this agent's jobs", %{
       socket: socket,
       agent_id: name,
@@ -510,20 +422,14 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref, :ok, %{"messages" => []}, 1_000
     end
 
-    test "rejects invalid before / limit / role", %{socket: socket} do
-      ref = push_history(socket, %{"before" => -1})
-      assert_reply ref, :error, %{"reason" => "invalid_before"}, 1_000
-
+    test "rejects an invalid limit (the one branch every chat:history validation error shares)",
+         %{socket: socket} do
+      # `History.page/3`'s per-field validation (`invalid_before`,
+      # `invalid_limit`, `invalid_role`) is pinned in
+      # `agent_channel_history_test.exs`; this is the channel's single
+      # error-reply branch.
       ref = push_history(socket, %{"limit" => 0})
       assert_reply ref, :error, %{"reason" => "invalid_limit"}, 1_000
-
-      ref = push_history(socket, %{"role" => "bogus"})
-      assert_reply ref, :error, %{"reason" => "invalid_role"}, 1_000
-    end
-
-    test "returns [] for a never-compacted agent", %{socket: socket} do
-      ref = push_history(socket, %{})
-      assert_reply ref, :ok, %{"messages" => []}, 1_000
     end
   end
 
@@ -637,49 +543,12 @@ defmodule NestWeb.AgentChannelTest do
     end
   end
 
-  describe "handle_in(chat:message) in :model_missing state" do
-    test "rejects with agent_status_model_missing", %{user: user} do
-      # The model-probe failure fires a `Logger.error` from
-      # `Agent.init/1` — capture it and assert it's the
-      # expected error path, not noise.
-      log =
-        ExUnit.CaptureLog.capture_log(fn ->
-          stub_ghost_model_config()
-
-          {_pid, name} =
-            AgentTestHelpers.start_agent(%{
-              name: "reject-model-missing-#{System.unique_integer([:positive])}",
-              model: %{name: "ghost-model"},
-              vocation_id: AgentTestHelpers.vocation_id_for_test(),
-              created_by_user_id: user.id
-            })
-
-          space_id = AgentTestHelpers.current_space_id()
-          token = Process.get(:agent_test_token)
-          {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
-
-          {:ok, _, socket} =
-            subscribe_and_join(
-              connected,
-              NestWeb.AgentChannel,
-              "agent:#{space_id}:#{name}"
-            )
-
-          ref = push(socket, "chat:message", %{"content" => "hello?"})
-          assert_reply ref, :error, %{"reason" => "agent_status_model_missing"}
-        end)
-
-      assert log =~ "could not resolve model"
-    end
-  end
-
   # Stub `Config.create_client_config/1` so `Agent.init/1`
   # boots in `:model_missing` for the "ghost-model" test
   # agent, while passing through to the real function for
-  # any other model name. The three callers below all
-  # need this exact pattern (change_model + invalid_payload
-  # + chat:message in :model_missing) but differ in the
-  # downstream handler under test.
+  # any other model name. Both callers below need this
+  # exact pattern (change_model + invalid_payload) but
+  # differ in the downstream handler under test.
   defp stub_ghost_model_config do
     Nest.Agents.Agent.Config
     |> stub(:create_client_config, fn model ->

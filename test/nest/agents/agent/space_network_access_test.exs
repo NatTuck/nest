@@ -1,6 +1,7 @@
 defmodule Nest.Agents.Agent.SpaceNetworkAccessTest do
   @moduledoc """
-  The space's network access reaches the agents that are already running.
+  The space's network access reaches the agents that are already running, and
+  only that space's.
 
   `spaces.network_access` is carried on an agent's `Nest.Sandbox.Mounts`, which
   is what its caps are resolved from and what its tool closures were built with
@@ -8,8 +9,12 @@ defmodule Nest.Agents.Agent.SpaceNetworkAccessTest do
   live agent in the space. Without that push a live agent would keep the value
   it started with until it was restarted, which is the hole this closes.
 
-  The agent side is `Nest.Agents.Agent.Callbacks`' `:space_changed` cast:
-  the mounts move and the tool closures are rebuilt from them.
+  Two things are pinned here and nowhere else: that the value the edit wrote
+  lands on a live agent's mounts, in both directions, and that the rebuild the
+  push triggers keeps the agent's tool set. `NetworkAccessRefreshTest` pins that
+  the closures are new ones and that a turn's context resolves the new caps;
+  `NetworkAccessNoticeTest` pins that the value reaches the notice the agent is
+  told.
 
   The observation is the agent's own state, because neither half of what moves
   has a public accessor (`get_public_info/1` reports the mode and the workspace,
@@ -27,7 +32,8 @@ defmodule Nest.Agents.Agent.SpaceNetworkAccessTest do
     space_id = current_space_id()
 
     # The rebuild has to keep the agent's tools: the handler re-derives them from
-    # `state.tools`' names, so a change here would silently strip the agent.
+    # `state.tools`' names, so a change here would silently strip the agent. The
+    # emptiness check is what stops the comparison below from being vacuous.
     names = tool_names(pid)
     assert names != []
     assert network_access(pid) == true
@@ -36,22 +42,23 @@ defmodule Nest.Agents.Agent.SpaceNetworkAccessTest do
     assert network_access(pid) == false
     assert tool_names(pid) == names
 
+    # Back on, so the mounts are pinned to the space's value rather than to the
+    # literal `false` an implementation could hardcode.
     assert {:ok, _space} = Spaces.update_environment(space_id, %{network_access: true})
     assert network_access(pid) == true
-    assert tool_names(pid) == names
   end
 
   test "leaves another space's agents on their own value" do
     {pid, _name} = start_agent()
     first_space_id = current_space_id()
 
+    # A second `start_agent/0` puts its agent in a space of its own.
     {other_pid, _other_name} = start_agent()
-    other_space_id = current_space_id()
-
-    assert other_space_id != first_space_id
 
     assert {:ok, _space} = Spaces.update_environment(first_space_id, %{network_access: false})
 
+    # The control: the edit did reach the space it was made in. Without it the
+    # line below would pass on an edit that reached nobody.
     assert network_access(pid) == false
     assert network_access(other_pid) == true
   end

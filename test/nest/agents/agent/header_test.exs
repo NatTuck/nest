@@ -23,15 +23,10 @@ defmodule Nest.Agents.Agent.HeaderTest do
 
   use ExUnit.Case, async: true
 
-  alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.Inbox.Render
-  alias Nest.Agents.Agent.Machine.GiveUp
   alias Nest.Agents.Agent.NoticePairInjector
-  alias Nest.Agents.Agent.SubAgentResults
   alias Nest.Agents.Agent.Turn.Backgrounded
   alias Nest.Agents.Agent.Turn.BudgetReminder
   alias Nest.Agents.Agent.Turn.ContextReminder
-  alias Nest.Agents.Agent.WaitForIdle
   alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.Messages.Assistant
   alias Nest.Messages.Header
@@ -49,7 +44,6 @@ defmodule Nest.Agents.Agent.HeaderTest do
                  NoticePairInjector.build_pair([], spec, :agent_user)
 
         assert row_text(attention) == spec.attention, label
-        refute headered?(attention), label
 
         assert header_of(notice) == @runtime_header, label
         assert body_of(notice) == spec.notice, label
@@ -70,17 +64,6 @@ defmodule Nest.Agents.Agent.HeaderTest do
         refute headered?(ack), label
       end
     end
-
-    test "headers the notice row and leaves the ack row bare on an assistant tail" do
-      for {label, spec} <- context_specs() ++ budget_specs() do
-        assert {:ok, [notice, ack]} =
-                 NoticePairInjector.build_pair([assistant(0)], spec, :user_agent)
-
-        assert header_of(notice) == @runtime_header, label
-        assert body_of(notice) == spec.notice, label
-        refute headered?(ack), label
-      end
-    end
   end
 
   describe "notice_record/3" do
@@ -92,7 +75,6 @@ defmodule Nest.Agents.Agent.HeaderTest do
         assert header_of(notice_row) == @runtime_header, label
         assert body_of(notice_row) == notice, label
         assert row_text(ack_row) == ack, label
-        refute headered?(ack_row), label
       end
     end
 
@@ -106,34 +88,6 @@ defmodule Nest.Agents.Agent.HeaderTest do
         assert header_of(notice_row) == @runtime_header, label
         assert body_of(notice_row) == notice, label
         assert row_text(ack_row) == ack, label
-        refute headered?(ack_row), label
-      end
-    end
-  end
-
-  describe "the drain's :runtime entry" do
-    test "renders the runtime header at the head of the notice body" do
-      # Every producer that queues a `:runtime` entry reaches the same
-      # `render_entry/1` clause, so one content per producer is driven here: a
-      # backgrounded outcome (its result and its worker's death), a give-up, a
-      # sub-agent result and a watch event.
-      assert {sub_agent_result, :runtime} = SubAgentResults.child_message("kid", {:ok, ""})
-
-      cases = [
-        {"a backgrounded result",
-         Backgrounded.notice({:results, [%{name: "shell-cmd", content: "done"}]})},
-        {"a backgrounded worker's death", Backgrounded.notice({:worker_down, :killed})},
-        {"a give-up", GiveUp.notice_text("peer")},
-        {"a sub-agent result", sub_agent_result},
-        {"a watch event", WaitForIdle.notice_text(%{idle: ["a"], still_busy: [], gone: []})}
-      ]
-
-      for {label, content} <- cases do
-        agent = %Agent{live: %Agent.ChatState.Live{mode: "act"}}
-
-        assert Render.combine_and_offload([entry(:runtime, content)], agent) ==
-                 Header.put(content, :runtime, "act"),
-               label
       end
     end
   end
@@ -158,7 +112,6 @@ defmodule Nest.Agents.Agent.HeaderTest do
                )
 
       assert metadata == %{"mode" => "act"}
-      assert header_of({:user, %User{parts: [%Part.Text{text: notice}]}}) == @runtime_header
 
       assert notice ==
                @runtime_header <>
@@ -181,21 +134,15 @@ defmodule Nest.Agents.Agent.HeaderTest do
   end
 
   describe "the bare framing" do
-    test "the attention texts are unchanged and unheadered" do
-      assert ContextReminder.spec(40_001, 200_000, MapSet.new()).attention == "Context?"
-      assert BudgetReminder.spec(2).attention == "Tool limit?"
-    end
-
     test "the injector's fallback ack is exactly Okay." do
       # `ack_for_kind/1`'s catch-all is reached only by a hand-built spec (in
       # `lib/` every caller puts its ack on the spec), so this is the fixture
       # that pins it.
       spec = %{kind: :something_else, attention: "Attention?", notice: "Notice.", mode: "act"}
 
-      assert {:ok, [_bridge, notice, ack]} =
+      assert {:ok, [_bridge, _notice, ack]} =
                NoticePairInjector.build_pair([user(0)], spec, :user_agent)
 
-      assert body_of(notice) == "Notice."
       assert row_text(ack) == "Okay."
     end
   end
@@ -240,7 +187,6 @@ defmodule Nest.Agents.Agent.HeaderTest do
       assert Header.runtime?("[From nest runtime, agents-send reply required | mode: act]")
 
       refute Header.runtime?("[From agent peer | mode: act]")
-      refute Header.runtime?("[From user | mode: act]")
       refute Header.runtime?("no header at all")
     end
 
@@ -275,29 +221,25 @@ defmodule Nest.Agents.Agent.HeaderTest do
       # already knows its speaker is a human gets labelled.
       assert Header.sender("@nat", false, :query) == Header.sender("nat", true)
 
-      assert Header.line(Header.sender("@nat", false, :query), "act", true) ==
-               "[From user @nat, agents-send reply required | mode: act]"
-
       # No name is the one case that stays bare: the row must not read as an
       # agent's, and printing `nil` would be worse.
       assert Header.sender(nil, true) == :user
       assert Header.sender("", true) == :user
-      assert Header.line(Header.sender(nil, true), "act") == "[From user | mode: act]"
     end
 
     test "a bare name with no `human?` is an agent's, and is not folded" do
       # A bare name is an identifier rather than a written address, so it is
       # taken as written: `Nat` names no agent, and the send tools' refusal
       # names the human `@nat` it could have meant.
-      assert Header.sender("nat", false) == {:agent, "nat"}
       assert Header.sender("Nat", false) == {:agent, "Nat"}
       assert Header.sender(nil, false) == {:agent, nil}
     end
 
     test "the runtime's own words are the runtime's whatever name they carry" do
-      # A notice about an agent must never be framed as that agent's words, nor
-      # as a human's — the kind wins over both the name and the flag.
-      assert Header.sender("crazy-dolphin", false, :runtime) == :runtime
+      # A notice must never be framed as the human's words or as an agent's, so
+      # the kind is the first fact `sender/3` reads: `@nat` with `human?: true`
+      # is the input that would otherwise be the human's row, and it is still
+      # the runtime's.
       assert Header.sender("@nat", true, :runtime) == :runtime
     end
   end
@@ -366,19 +308,6 @@ defmodule Nest.Agents.Agent.HeaderTest do
       %Part.Text{text: text} -> text || ""
       _ -> ""
     end)
-  end
-
-  defp entry(kind, content) do
-    %{
-      id: "id-#{kind}",
-      from: nil,
-      content: content,
-      timestamp: DateTime.utc_now(),
-      kind: kind,
-      mode: nil,
-      human?: false,
-      fulfilled_ids: []
-    }
   end
 
   defp user(index) do

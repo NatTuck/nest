@@ -38,8 +38,7 @@ defmodule Nest.Agents.Agent.SystemPromptCacheTest do
     {pid, _agent_id} =
       start_agent(%{
         model: %{name: "qwen3.5-plus"},
-        vocation_id: vocation_id,
-        vocation: Nest.Persistence.load_vocation(vocation_id)
+        vocation_id: vocation_id
       })
 
     prompt_before = get_system_prompt(pid)

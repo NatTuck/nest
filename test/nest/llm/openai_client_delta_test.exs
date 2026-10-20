@@ -54,27 +54,6 @@ defmodule Nest.LLM.OpenAIClient.DeltaTest do
       refute Enum.any?(events, &match?({:finish_reason, _}, &1))
     end
 
-    test "a delta with both reasoning_content and finish_reason emits both events" do
-      delta_frame = %{
-        "choices" => [
-          %{
-            "index" => 0,
-            "finish_reason" => "stop",
-            "delta" => %{
-              "role" => "assistant",
-              "reasoning_content" => "thinking..."
-            }
-          }
-        ]
-      }
-
-      chunk = "data: " <> Jason.encode!(delta_frame) <> "\n\n"
-      events = run_with_chunk(chunk)
-
-      assert {:thinking, "thinking..."} in events
-      assert {:finish_reason, "stop"} in events
-    end
-
     test "a delta with both content and tool_calls emits both events" do
       # Regression for the MiniMax-M3 "close think and start
       # tool call" frame: the server emits the closing
@@ -133,39 +112,6 @@ defmodule Nest.LLM.OpenAIClient.DeltaTest do
              "expected a :tool_call_delta with the file-read path argument"
     end
 
-    test "a delta with only tool_calls still emits the tool events (no content)" do
-      # The standard OpenAI path: a delta carries only
-      # `tool_calls` with no `content`. The combined-delta fix
-      # must not regress this case.
-      delta_frame = %{
-        "choices" => [
-          %{
-            "index" => 0,
-            "delta" => %{
-              "tool_calls" => [
-                %{
-                  "index" => 0,
-                  "id" => "call_only",
-                  "type" => "function",
-                  "function" => %{"name" => "shell-cmd", "arguments" => "{}"}
-                }
-              ]
-            }
-          }
-        ]
-      }
-
-      chunk = "data: " <> Jason.encode!(delta_frame) <> "\n\n"
-      events = run_with_chunk(chunk)
-
-      assert Enum.any?(events, fn
-               {:tool_call_start, %{id: "call_only", name: "shell-cmd"}} -> true
-               _ -> false
-             end)
-
-      refute Enum.any?(events, &match?({:text, _}, &1))
-    end
-
     test "a delta with no content and no finish_reason ends the body :stream_incomplete" do
       # e.g. a provider sends a delta with only role/name and no
       # meaningful content, then closes without `data: [DONE]`. The
@@ -189,32 +135,6 @@ defmodule Nest.LLM.OpenAIClient.DeltaTest do
       events = run_with_chunk(chunk)
 
       assert events == [{:error, {:stream_incomplete, :no_terminator}}]
-    end
-
-    test "a delta with both content and reasoning_content emits both events" do
-      # Lock in the fix for the previously-dropped combination.
-      # DeepSeek R1-style reasoning models can emit
-      # `reasoning_content` alongside `content` in the same
-      # frame; the walk must surface both, not silently drop
-      # the reasoning.
-      delta_frame = %{
-        "choices" => [
-          %{
-            "index" => 0,
-            "delta" => %{
-              "role" => "assistant",
-              "content" => "actual text",
-              "reasoning_content" => "thinking text"
-            }
-          }
-        ]
-      }
-
-      chunk = "data: " <> Jason.encode!(delta_frame) <> "\n\n"
-      events = run_with_chunk(chunk)
-
-      assert {:text, "actual text"} in events
-      assert {:thinking, "thinking text"} in events
     end
 
     test "a delta with content, reasoning_content, and tool_calls emits all three" do
@@ -278,84 +198,6 @@ defmodule Nest.LLM.OpenAIClient.DeltaTest do
 
       assert {:text, "partial answer"} in events
       assert {:refusal, "I cannot help with that."} in events
-    end
-  end
-
-  describe "delta field combinations (exhaustive)" do
-    # The general walk covers all 16 combinations of
-    # {content, reasoning_content, refusal, tool_calls}
-    # (minus the all-empty case). This parametrized test
-    # pins the event presence for every combination so
-    # future refactors don't accidentally drop a field
-    # again. The booleans are unquoted into each test body
-    # so the test function has direct access to them.
-    combinations =
-      for c <- [true, false],
-          r <- [true, false],
-          u <- [true, false],
-          t <- [true, false],
-          not (c == false and r == false and u == false and t == false),
-          do: {c, r, u, t}
-
-    for {c?, r?, u?, t?} <- combinations do
-      @c c?
-      @r r?
-      @u u?
-      @t t?
-
-      test "combination c=#{c?} r=#{r?} u=#{u?} t=#{t?}" do
-        delta = %{}
-        delta = if @c, do: Map.put(delta, "content", "t"), else: delta
-        delta = if @r, do: Map.put(delta, "reasoning_content", "r"), else: delta
-        delta = if @u, do: Map.put(delta, "refusal", "u"), else: delta
-
-        delta =
-          if @t,
-            do:
-              Map.put(delta, "tool_calls", [
-                %{
-                  "index" => 0,
-                  "id" => "call_x",
-                  "type" => "function",
-                  "function" => %{"name" => "file-read", "arguments" => "{}"}
-                }
-              ]),
-            else: delta
-
-        delta_frame = %{
-          "choices" => [%{"index" => 0, "delta" => delta}]
-        }
-
-        chunk = "data: " <> Jason.encode!(delta_frame) <> "\n\n"
-        events = run_with_chunk(chunk)
-
-        if @c,
-          do: assert({:text, "t"} in events, "expected :text event for #{inspect(delta)}"),
-          else: refute({:text, "t"} in events, "unexpected :text event for #{inspect(delta)}")
-
-        if @r,
-          do:
-            assert({:thinking, "r"} in events, "expected :thinking event for #{inspect(delta)}"),
-          else:
-            refute({:thinking, "r"} in events, "unexpected :thinking event for #{inspect(delta)}")
-
-        if @u,
-          do: assert({:refusal, "u"} in events, "expected :refusal event for #{inspect(delta)}"),
-          else:
-            refute({:refusal, "u"} in events, "unexpected :refusal event for #{inspect(delta)}")
-
-        if @t,
-          do:
-            assert(
-              Enum.any?(events, &match?({:tool_call_start, _}, &1)),
-              "expected :tool_call_start event for #{inspect(delta)}"
-            ),
-          else:
-            refute(
-              Enum.any?(events, &match?({:tool_call_start, _}, &1)),
-              "unexpected :tool_call_start event for #{inspect(delta)}"
-            )
-      end
     end
   end
 

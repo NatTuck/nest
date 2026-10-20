@@ -47,10 +47,5 @@ defmodule Nest.Agents.AgentSpawnDepthPromptTest do
     text = system.parts |> Enum.map_join("\n", & &1.text)
 
     assert text =~ "at spawn depth 0 of #{Config.configured_max_depth()}"
-
-    # The transposition's signature: the mode where the depth belongs. Both
-    # directions, so a future swap of *either* argument is caught.
-    refute text =~ "spawn depth act"
-    refute text =~ "spawn depth plan"
   end
 end

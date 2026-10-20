@@ -7,8 +7,6 @@ defmodule Nest.Agents.AgentToolsMaxIterationsTest do
   """
   use Nest.DataCase, async: true
 
-  import ExUnit.CaptureLog
-
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
 
@@ -39,26 +37,22 @@ defmodule Nest.Agents.AgentToolsMaxIterationsTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      capture_log(fn ->
-        send_compaction_done(pid, "Summary", {:tool_call, carried_tool_call_msg(), 5, 5})
+      send_compaction_done(pid, "Summary", {:tool_call, carried_tool_call_msg(), 5, 5})
 
-        assert_receive {:chat_notification,
-                        %{type: "max_iterations", message: "Max tool iterations reached"}},
-                       750
+      assert_receive {:chat_notification,
+                      %{type: "max_iterations", message: "Max tool iterations reached"}},
+                     750
 
-        assert_receive {:chat_message,
-                        {:assistant,
-                         %{
-                           parts: [
-                             %Part.Text{text: "I've completed the task after multiple iterations"}
-                           ]
-                         }}},
-                       750
+      assert_receive {:chat_message,
+                      {:assistant,
+                       %{
+                         parts: [
+                           %Part.Text{text: "I've completed the task after multiple iterations"}
+                         ]
+                       }}},
+                     750
 
-        assert_receive {:chat_status, %{status: "idle"}}, 750
-      end)
-
-      MockClient.clear()
+      assert_receive {:chat_status, %{status: "idle"}}, 750
     end
   end
 

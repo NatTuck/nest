@@ -79,10 +79,10 @@ defmodule NestWeb.LobbyChannelSpaceFeedTest do
       assert_reply ref, :ok, %{"notes" => notes, "modes" => modes, "default_mode" => default}, 500
 
       # `id` is the order: the table's key is monotonic, so `inserted_at` is for
-      # display only.
+      # display only. Both directions are the one read — `first` is the agent's
+      # note to alice and `second` is hers to the agent — and neither of the two
+      # rows that are not hers is in the list.
       assert Enum.map(notes, & &1.id) == [first.id, second.id]
-      # Both directions are the one read: the note alice sent is in her feed too.
-      assert [%Notes.UserNote{from_kind: :agent}, %Notes.UserNote{from_kind: :user}] = notes
       # The catalog is the server's, and the default is the space's blueprint's.
       assert modes == Nest.Modes.names()
       assert default == "act"
@@ -108,18 +108,6 @@ defmodule NestWeb.LobbyChannelSpaceFeedTest do
 
       ref = push(socket, "space_feed", %{})
       assert_reply ref, :error, %{"reason" => "invalid_payload"}, 500
-
-      # The same socket reads a space of its own, so the refusals above are not
-      # a channel that never answers.
-      {:ok, bobs_space} =
-        Spaces.create_space(bob.id, %{
-          name: "feed-bob-#{System.unique_integer([:positive])}",
-          slug: "feed-bob-#{System.unique_integer([:positive])}",
-          workspace_path: AgentTestHelpers.default_test_workspace()
-        })
-
-      ref = push(socket, "space_feed", %{"space_id" => bobs_space.id})
-      assert_reply ref, :ok, %{"notes" => []}, 500
     end
   end
 
@@ -141,10 +129,8 @@ defmodule NestWeb.LobbyChannelSpaceFeedTest do
 
       # The row reaches the browser as the schema's own JSON — its `@derive`d
       # field list, which is the contract the feed renders against.
-      assert %{"id" => ^id, "from_kind" => "agent", "inserted_at" => inserted_at} =
+      assert %{"id" => ^id, "from_kind" => "agent", "inserted_at" => _} =
                Jason.decode!(Jason.encode!(note))
-
-      assert is_binary(inserted_at)
 
       # A note between two other humans is in the space and is none of alice's
       # business: the push applies the same predicate as the read.

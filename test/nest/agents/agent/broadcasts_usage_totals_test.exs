@@ -1,7 +1,8 @@
 defmodule Nest.Agents.Agent.Broadcasts.UsageTotalsTest do
   @moduledoc """
-  Tests for `Nest.Agents.Agent.Broadcasts.merge_usage_totals/2`
-  and `empty_usage_totals/0`.
+  Tests for `Nest.Agents.Agent.Broadcasts.Usage`: the
+  `merge_usage_totals/2` discipline and the `context_usage_map/4`
+  chip fields.
 
   The merge runs on every `:llm_usage` event the GenServer
   receives. It maintains two axes of state:
@@ -19,7 +20,7 @@ defmodule Nest.Agents.Agent.Broadcasts.UsageTotalsTest do
   `LLMStreamHandler.mark_last_message_tokens/2`) with the
   estimator's projection of any suffix. Tests for the field's
   value live in `ConversationSizeTest`; this file pins the
-  shape and the merge's per-call / session discipline.
+  merge's per-call / session discipline.
   """
 
   use ExUnit.Case, async: true
@@ -28,106 +29,26 @@ defmodule Nest.Agents.Agent.Broadcasts.UsageTotalsTest do
   alias Nest.Agents.Agent.Broadcasts.Usage
 
   describe "context_usage_map/4" do
-    test "adds the derived context fields to the running totals" do
+    test "passes the running totals through and adds the in-flight projection" do
       direct = %{input_tokens: 100, total_input_tokens: 500}
 
       usage = Usage.context_usage_map(direct, [], 512_000, 999)
 
       assert usage.input_tokens == 100
       assert usage.total_input_tokens == 500
-      assert usage.context_input_tokens == 0
-      # 512_000 - max(0.20 * 512_000, 8_192) = 512_000 - 102_400
-      assert usage.working_budget == 409_600
       assert usage.projected_context_input_tokens == 999
     end
 
-    test "working_budget is nil when the limit is unknown" do
+    test "working_budget is nil for an unusable limit and floored at 1 for a tiny one" do
       assert Usage.context_usage_map(%{}, [], nil, nil).working_budget == nil
       assert Usage.context_usage_map(%{}, [], 0, nil).working_budget == nil
-    end
-
-    test "working_budget is floored at 1 when the reserve exceeds the limit" do
+      # 100 - compaction_reserve(100) is negative, so the floor applies.
       assert Usage.context_usage_map(%{}, [], 100, nil).working_budget == 1
     end
   end
 
-  describe "empty_usage_totals/0" do
-    test "returns the full shape with all fields initialized to 0" do
-      totals = Broadcasts.empty_usage_totals()
-
-      # Per-call (overwrite)
-      assert totals.input_tokens == 0
-      assert totals.cache_read_input_tokens == 0
-      assert totals.cache_creation_input_tokens == 0
-      assert totals.context_input_tokens == 0
-      assert totals.last_output == 0
-
-      # Session (sum)
-      assert totals.output_tokens == 0
-      assert totals.total_input_tokens == 0
-      assert totals.total_cache_read_input_tokens == 0
-      assert totals.total_cache_creation_input_tokens == 0
-      assert totals.total_tokens == 0
-      assert totals.reasoning_tokens == 0
-    end
-  end
-
   describe "merge_usage_totals/2" do
-    test "a nil usage payload is a no-op" do
-      current = Broadcasts.empty_usage_totals()
-      assert Broadcasts.merge_usage_totals(current, nil) == current
-    end
-
-    test "per-call fields overwrite on a fresh call" do
-      current = Broadcasts.empty_usage_totals()
-
-      next =
-        Broadcasts.merge_usage_totals(current, %{
-          input_tokens: 100,
-          cache_read_input_tokens: 50,
-          cache_creation_input_tokens: 10,
-          output_tokens: 25,
-          total_tokens: 175,
-          reasoning_tokens: 5
-        })
-
-      assert next.input_tokens == 100
-      assert next.cache_read_input_tokens == 50
-      assert next.cache_creation_input_tokens == 10
-      assert next.last_output == 25
-      # `context_input_tokens` is left at the current value
-      # (0 for a fresh agent). The status_payload broadcasts
-      # the real value computed from the messages list.
-      assert next.context_input_tokens == 0
-    end
-
-    test "session fields sum across calls" do
-      current =
-        Broadcasts.empty_usage_totals()
-        |> Broadcasts.merge_usage_totals(%{
-          input_tokens: 100,
-          output_tokens: 25,
-          total_tokens: 125,
-          reasoning_tokens: 5
-        })
-
-      next =
-        Broadcasts.merge_usage_totals(current, %{
-          input_tokens: 200,
-          cache_read_input_tokens: 80,
-          output_tokens: 30,
-          total_tokens: 310,
-          reasoning_tokens: 8
-        })
-
-      assert next.total_input_tokens == 300
-      assert next.total_cache_read_input_tokens == 80
-      assert next.output_tokens == 55
-      assert next.total_tokens == 435
-      assert next.reasoning_tokens == 13
-    end
-
-    test "a subsequent call overwrites the per-call fields but keeps the session totals" do
+    test "a new call overwrites the per-call fields and sums the session totals" do
       # The first call sets everything. The second call is
       # smaller — per-call fields should reflect the smaller
       # call, but session totals should be the SUM of both.
@@ -135,6 +56,8 @@ defmodule Nest.Agents.Agent.Broadcasts.UsageTotalsTest do
         Broadcasts.empty_usage_totals()
         |> Broadcasts.merge_usage_totals(%{
           input_tokens: 1000,
+          cache_read_input_tokens: 60,
+          cache_creation_input_tokens: 40,
           output_tokens: 200,
           total_tokens: 1200,
           reasoning_tokens: 50
@@ -144,6 +67,7 @@ defmodule Nest.Agents.Agent.Broadcasts.UsageTotalsTest do
         Broadcasts.merge_usage_totals(current, %{
           input_tokens: 50,
           cache_read_input_tokens: 30,
+          cache_creation_input_tokens: 10,
           output_tokens: 5,
           total_tokens: 85,
           reasoning_tokens: 0
@@ -152,10 +76,13 @@ defmodule Nest.Agents.Agent.Broadcasts.UsageTotalsTest do
       # Per-call: overwritten by the smaller second call.
       assert next.input_tokens == 50
       assert next.cache_read_input_tokens == 30
+      assert next.cache_creation_input_tokens == 10
       assert next.last_output == 5
 
       # Session: cumulative sum.
       assert next.total_input_tokens == 1050
+      assert next.total_cache_read_input_tokens == 90
+      assert next.total_cache_creation_input_tokens == 50
       assert next.output_tokens == 205
       assert next.total_tokens == 1285
       assert next.reasoning_tokens == 50
@@ -172,6 +99,8 @@ defmodule Nest.Agents.Agent.Broadcasts.UsageTotalsTest do
           total_tokens: 125
         })
 
+      # The non-cache field landed, so the zeroes below are the
+      # payload's missing fields rather than an unmerged map.
       assert next.input_tokens == 100
       assert next.cache_read_input_tokens == 0
       assert next.cache_creation_input_tokens == 0
@@ -180,10 +109,10 @@ defmodule Nest.Agents.Agent.Broadcasts.UsageTotalsTest do
     end
 
     test "a missing input_tokens leaves the per-call fields untouched" do
-      # A nil `input_tokens` is the signal that this isn't a
-      # usage-only update — the merge should leave the per-call
-      # fields alone and not zero them out. Session fields still
-      # sum the available data.
+      # A usage payload without `input_tokens` is a usage-only
+      # update: the per-call fields keep their values rather than
+      # being zeroed out, and the session fields still sum
+      # whatever the payload does carry.
       current =
         Broadcasts.empty_usage_totals()
         |> Broadcasts.merge_usage_totals(%{
@@ -192,9 +121,6 @@ defmodule Nest.Agents.Agent.Broadcasts.UsageTotalsTest do
           total_tokens: 125
         })
 
-      # Now a usage map without `input_tokens` — should be a
-      # no-op on the per-call fields, but `output_tokens` still
-      # adds.
       next =
         Broadcasts.merge_usage_totals(current, %{
           output_tokens: 10,

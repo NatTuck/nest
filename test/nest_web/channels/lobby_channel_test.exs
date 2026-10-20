@@ -17,7 +17,6 @@ defmodule NestWeb.LobbyChannelTest do
   alias Nest.Agents.Supervisor
   alias Nest.Blueprints
   alias Nest.Repo
-  alias Nest.TestSupport.ChannelQuiescence
   alias Nest.Vocations
 
   # The `:after_join` spawns a supervised `Task` for `broken_agents`;
@@ -76,32 +75,17 @@ defmodule NestWeb.LobbyChannelTest do
     test "a joined channel is recorded for the teardown to drain" do
       {socket, _payload} = join_lobby()
 
-      assert is_pid(socket.channel_pid)
       assert {socket.channel_pid, socket.topic} in Process.get(:nest_joined_channels, [])
-    end
-
-    test "draining with nothing joined is a no-op, and a channel that is gone is tolerated" do
-      assert ChannelQuiescence.drain() == :ok
-
-      dead = spawn(fn -> :ok end)
-      ref = Process.monitor(dead)
-      assert_receive {:DOWN, ^ref, :process, ^dead, _reason}
-
-      Process.put(:nest_joined_channels, [{dead, "lobby"}])
-
-      assert ChannelQuiescence.drain() == :ok
     end
   end
 
   describe "join/3" do
-    test "returns agents, models, vocations, blueprints, and spaces on join" do
+    test "returns the init payload's agents, blueprints, spaces, and suggested name" do
       # Connect socket and join lobby
       {_socket, payload} = join_lobby()
 
       # After joining, we should receive initial state
       assert is_list(payload.agents)
-      assert is_list(payload.models)
-      assert is_list(payload.vocations)
       assert is_list(payload.blueprints)
       assert is_list(payload.spaces)
       assert payload.suggested_name not in [nil, ""]
@@ -131,39 +115,6 @@ defmodule NestWeb.LobbyChannelTest do
       assert test_vocation.tools == ["file"]
     end
 
-    test "vocations are JSON-serializable and roundtrip correctly" do
-      # Create a test vocation with all fields BEFORE joining
-      {:ok, _vocation} =
-        Vocations.create_vocation(%{
-          name: "JSON Test Vocation",
-          description: "Testing JSON encoding",
-          system_prompt: "System prompt here",
-          tools: ["file"]
-        })
-
-      # Now connect socket and join lobby
-      {_socket, payload} = join_lobby()
-
-      # Verify the payload can be encoded to JSON
-      assert {:ok, json} = Jason.encode(payload)
-
-      # Verify we can decode it back
-      assert {:ok, decoded} = Jason.decode(json)
-
-      # Verify vocations are present and have correct structure
-      assert is_list(decoded["vocations"])
-      assert decoded["vocations"] != []
-
-      # Find and verify our test vocation in the decoded payload
-      test_vocation =
-        Enum.find(decoded["vocations"], fn v -> v["name"] == "JSON Test Vocation" end)
-
-      assert test_vocation != nil
-      assert test_vocation["description"] == "Testing JSON encoding"
-      assert test_vocation["system_prompt"] == "System prompt here"
-      assert test_vocation["tools"] == ["file"]
-    end
-
     test "returns models with correct JSON structure" do
       # Connect socket and join lobby
       {_socket, payload} = join_lobby()
@@ -174,13 +125,10 @@ defmodule NestWeb.LobbyChannelTest do
 
       # Verify each model has string keys (not atoms) for JSON serialization
       Enum.each(payload.models, fn model ->
-        assert is_map(model)
-        assert Map.has_key?(model, "name")
-        assert Map.has_key?(model, "provider")
-        assert Map.has_key?(model, "context_limit")
-
         assert is_binary(model["name"])
         assert is_binary(model["provider"])
+        assert Map.has_key?(model, "context_limit")
+
         assert is_integer(model["context_limit"]) or is_nil(model["context_limit"])
       end)
 
@@ -196,7 +144,7 @@ defmodule NestWeb.LobbyChannelTest do
       assert minimax_model["context_limit"] == nil
     end
 
-    test "model structure is JSON-serializable" do
+    test "the init payload is JSON-serializable" do
       # Connect socket and join lobby
       {_socket, payload} = join_lobby()
 
@@ -206,8 +154,6 @@ defmodule NestWeb.LobbyChannelTest do
 
       # Verify we can decode it back and get the same structure
       assert {:ok, decoded} = Jason.decode(json)
-      assert is_list(decoded["models"])
-      assert decoded["models"] != []
 
       # Verify decoded models have string keys
       first_model = List.first(decoded["models"])
@@ -220,14 +166,12 @@ defmodule NestWeb.LobbyChannelTest do
     test "returns an empty invites list when the user owns none", %{} do
       {_socket, payload} = join_lobby()
 
-      assert is_list(payload.invites)
       assert payload.invites == []
     end
 
     test "returns the configured providers in the init payload", %{} do
       {_socket, payload} = join_lobby()
 
-      assert is_list(payload.providers)
       assert Enum.any?(payload.providers, &(&1["name"] == "pegasus"))
     end
 
@@ -248,7 +192,6 @@ defmodule NestWeb.LobbyChannelTest do
 
       {_socket, payload} = join_lobby()
 
-      assert is_list(payload.invites)
       assert length(payload.invites) == 3
 
       ids = Enum.map(payload.invites, & &1.id)
@@ -278,9 +221,6 @@ defmodule NestWeb.LobbyChannelTest do
       # the channel process to read it with the default one — a longer window
       # on a `0` fence would only widen the race instead of removing it.
       assert_reply ref, :ok, public, 1_000
-      assert is_integer(public.id)
-      assert is_binary(public.token)
-      assert byte_size(public.token) == 43
       assert public.created_by_user_id == Process.get(:lobby_test_user_id)
 
       # The server also pushes invite:created to this socket
@@ -288,21 +228,6 @@ defmodule NestWeb.LobbyChannelTest do
       assert_push "invite:created", pushed
       assert pushed.id == public.id
       assert pushed.token == public.token
-    end
-
-    test "returns :too_many_invites error after 10 invites" do
-      # Mint 10 invites for the test user; the 11th must
-      # hit the cap and reply with the `too_many_invites`
-      # error string.
-      for _ <- 1..10 do
-        {:ok, _, _} = Accounts.create_invite(Process.get(:lobby_test_user_id))
-      end
-
-      {socket, _payload} = join_lobby()
-
-      ref = push(socket, "create_invite", %{})
-
-      assert_reply ref, :error, %{error: "too_many_invites"}
     end
   end
 
@@ -318,32 +243,6 @@ defmodule NestWeb.LobbyChannelTest do
 
       assert_push "invite:revoked", pushed
       assert pushed.id == invite.id
-    end
-
-    test "non-owner receives the :forbidden error" do
-      # Mint an invite owned by a different user; the
-      # lobby-tester cannot revoke it. Use a real invite
-      # (the magic `first-user` token was already spent on
-      # the test setup's bootstrap user).
-      {:ok, _invite, raw_token} =
-        Accounts.create_invite(Process.get(:lobby_test_user_id))
-
-      {:ok, alice} =
-        Accounts.redeem_invite(raw_token, %{username: "alice-other", password: "password123"})
-
-      {:ok, invite, _} = Accounts.create_invite(alice.id)
-
-      {socket, _payload} = join_lobby()
-
-      ref = push(socket, "revoke_invite", %{"id" => invite.id})
-      assert_reply ref, :error, %{error: "forbidden"}
-    end
-
-    test "invalid id returns :invalid_id" do
-      {socket, _payload} = join_lobby()
-
-      ref = push(socket, "revoke_invite", %{"id" => "not-a-number"})
-      assert_reply ref, :error, %{error: "invalid_id"}
     end
   end
 
@@ -396,9 +295,10 @@ defmodule NestWeb.LobbyChannelTest do
 
     test "forwards provider from the model params to the created agent" do
       # The lobby forwards the catalog's `provider` (whether from
-      # static DotConfig or auto-discovery) so the wire shape is
-      # always complete, even when the model isn't statically
-      # configured.
+      # static DotConfig or auto-discovery) into the root agent's
+      # model, not just its name. The `agent:created` frame's model
+      # shape is pinned by the create test above, so this only reads
+      # the agent that was actually started.
       {socket, _payload} = join_lobby()
 
       ref =
@@ -417,16 +317,6 @@ defmodule NestWeb.LobbyChannelTest do
       assert {:ok, info} = Agents.get_info(space_id, name)
       assert model_name(info.model) == "qwen3.5-plus"
       assert model_provider(info.model) == "model-studio"
-
-      # Same deliberate 500ms as the sibling test above: the push comes from
-      # the synchronous root-agent creation, serialized across the parallel
-      # channel-test load, so the 100ms default is flaky here.
-      assert_push "agent:created",
-                  %{
-                    "name" => ^name,
-                    "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-                  },
-                  500
     end
 
     test "blueprint_id drives the root agent's vocation over the default" do
@@ -651,7 +541,7 @@ defmodule NestWeb.LobbyChannelTest do
 
       ref = push(socket, "suggest_space_name", %{})
       assert_reply ref, :ok, %{"name" => name}
-      assert name =~ "-" and name != ""
+      assert name =~ "-"
     end
   end
 

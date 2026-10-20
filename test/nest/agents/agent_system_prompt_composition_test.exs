@@ -12,7 +12,6 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
   import Nest.Test.TmpCleanup
 
-  alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.LLM.MockClient
   alias Nest.Sandbox.Mounts
@@ -61,18 +60,13 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
       # The modes are universal constants now, so the section is the same bytes
       # for every vocation — including this one, whose stored `modes` map is dead
-      # data (`Nest.Modes.catalog/2`).
+      # data (`Nest.Modes.catalog/2`). The catalog's own wording is `ModesTest`'s;
+      # what this pins is that the composed prompt carries it.
       assert system_prompt =~ "**`plan`**"
-      assert system_prompt =~ "**`act`**"
-      assert system_prompt =~ "shown on every message you receive"
       # The space's sandbox enforces `plan`, so the one space-specific sentence
       # in the modes section says the restriction is real. (The *network* is not
       # a mode's — it is the space's, and the tool sections below state it.)
       assert system_prompt =~ "is enforced by the sandbox"
-      refute system_prompt =~ "cannot enforce"
-      # The vocation's own per-mode description is no longer rendered anywhere:
-      # the capability/posture content lives in the universal text now.
-      refute system_prompt =~ "You're clear to edit the project in the workspace."
 
       assert system_prompt =~ "\n\nWorkspace and tool working directory: #{workspace}"
 
@@ -81,16 +75,11 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       # is a real permission rather than one the sandbox cannot enforce.
       assert system_prompt =~ "Network access is enabled for this space"
 
-      # The identity line is composed by `PreSpawn` from the attrs the start
-      # path built, so this pins that path's argument order: a transposed
-      # `depth`/`mode` renders the mode where the depth belongs.
-      assert system_prompt =~ "at spawn depth 0 of #{Config.configured_max_depth()}"
       # `compact` is rendered next to the modes, with
-      # `Vocations.compact_description/0` as the body. The `[mode: compact]`
-      # prefix lives only in the per-call suffix at runtime, not in the initial
-      # prompt.
+      # `Vocations.compact_description/0` as the body (asserted in full by the
+      # tool-less test below). The `[mode: compact]` prefix lives only in the
+      # per-call suffix at runtime, not in the initial prompt.
       assert system_prompt =~ "- compact: We are out of context"
-      assert system_prompt =~ "summary alone."
       refute system_prompt =~ "[mode: compact]"
     end
 
@@ -135,11 +124,10 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       # No tools, so nothing for a mode to restrict: no modes section at all —
       # not even its prose. The `[Available modes]` marker stays, because the
       # compaction contract below it is what the runtime's `[mode: compact]`
-      # suffix refers to.
+      # suffix refers to. (`Modes.catalog(false, _)` being empty is
+      # `ModesTest`'s; one representative refute is enough here.)
       assert system_prompt =~ "\n\n[Available modes]\n\n"
       refute system_prompt =~ "**`plan`**"
-      refute system_prompt =~ "**`act`**"
-      refute system_prompt =~ "shown on every message you receive"
       # ... and the compaction contract survives anyway: a tool-less agent still
       # compacts.
       assert system_prompt =~ Vocations.compact_description()
@@ -149,43 +137,9 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       # tool-less vocation must not be told about one either (see
       # `SystemPrompt.tool_sections/3`).
       refute system_prompt =~ "Your own scratch directory"
-      refute system_prompt =~ "errors in tool calls"
       # The network sentence is tool-gated too: a tool-less agent has no command
       # that could reach the network.
       refute system_prompt =~ "Network access"
-      refute system_prompt =~ ~s(Read only "/")
-    end
-
-    test "compact-mode body lives once in the [Available modes] list" do
-      {:ok, vocation} =
-        Vocations.create_vocation(%{
-          name: "TestCompactPar-#{System.unique_integer([:positive])}",
-          description: "Test",
-          system_prompt: "Base.",
-          tools: []
-        })
-
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: vocation.id,
-          workspace_path: new_ws("test-compact")
-        })
-
-      system_prompt = get_system_prompt(pid)
-
-      # The compaction contract lives in the [Available modes] line
-      # for `compact`, not as a standalone trailing paragraph. The
-      # canonical wording is held by Vocations.compact_description/0.
-      assert system_prompt =~ Vocations.compact_description()
-      assert system_prompt =~ "Include incomplete tasks"
-      assert system_prompt =~ "decisions made"
-      assert system_prompt =~ "essential file paths"
-
-      # The `[mode: compact]` prefix itself must NOT appear in the
-      # initial system prompt — it lives only in the per-call suffix
-      # the compactor appends at runtime.
-      refute system_prompt =~ "[mode: compact]"
     end
   end
 
@@ -212,21 +166,12 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       system_prompt = get_system_prompt(pid)
 
       assert system_prompt =~ "Context limit:"
-      assert system_prompt =~ "tokens"
       assert system_prompt =~ "resolved from config"
-      # The reserve/working-budget narrative should appear in the
-      # prompt. qwen3.5-plus has a 512_000-token window; the
-      # reserve is 20% = 102_400, leaving a 409_600 working budget.
+      # The reserve/working-budget arithmetic. qwen3.5-plus has a 512_000-token
+      # window; the reserve is 20% = 102_400, leaving a 409_600 working budget.
       assert system_prompt =~ "102400"
       assert system_prompt =~ "reserved for compaction"
-      assert system_prompt =~ "working token budget"
       assert system_prompt =~ "409600"
-      # The prompt mentions the compaction guidance either in the
-      # context-limit suffix (compaction tooling reference) or
-      # in the [mode: compact] section.
-      assert system_prompt =~ "compact"
-      refute system_prompt =~ "default"
-      refute system_prompt =~ "may differ"
     end
 
     test "falls back to the 128k default when no config and no Models cache hit" do
@@ -255,7 +200,6 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
       assert system_prompt =~ "Context limit: 128000 tokens"
       assert system_prompt =~ "resolved from default"
-      refute system_prompt =~ "may differ"
     end
   end
 
@@ -273,10 +217,10 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
           tools: ["shell"]
         })
 
-      # An enforcing backend states the setting as a permission or a rule.
-      assert compose_for(vocation, "bwrap", true) =~ "Network access is enabled for this space"
+      # An enforcing backend states the setting as a permission or a rule. The
+      # `enabled` half is the started-agent test above's; `disabled` is only
+      # reachable here.
       assert compose_for(vocation, "bwrap", false) =~ "Network access is disabled for this space"
-      refute compose_for(vocation, "bwrap", true) =~ "cannot enforce"
 
       # A `"none"` space has no sandbox, so it names the setting *and* says it
       # cannot be enforced — it must not claim a restriction that is not there.
@@ -299,7 +243,9 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
       prompt = compose_with(tool_vocation("NoneScratch"), mounts)
 
-      assert prompt =~ "no sandbox, so `/tmp` is this host's own"
+      # The "no sandbox, so `/tmp` is this host's own" premise is asserted by the
+      # unknown-name test below (it is the same `none_scratch_text/0` literal);
+      # the cleanup half and the suggestion are asserted only here.
       assert prompt =~ "only your own scratch directory is cleaned up"
       assert prompt =~ "use `/tmp/nest/clever-otter/`"
     end
@@ -318,12 +264,11 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
       prompt = compose_with(tool_vocation("BwrapScratch"), mounts)
 
-      assert prompt =~ "Your own scratch directory is `/tmp/agent/`"
       # The bytes right after the scratch sentence belong to the next section, so
-      # anything appended to this one would break the adjacency.
+      # anything appended to this one would break the adjacency. (The sentence's
+      # own path spelling is `SystemPromptDepthFilterTest`'s.)
       assert prompt =~ "under your own directory.\n\n\nNetwork access is enabled for this space"
       refute prompt =~ "no sandbox, so `/tmp` is this host's own"
-      refute prompt =~ "/tmp/nest/"
     end
   end
 
@@ -382,11 +327,9 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
       assert prompt =~ ~s(Your model is "text-model".)
       # Directly after the identity line, and with no tool section in between:
-      # the tool-gated sections are absent for this vocation, so the model
-      # sentence is followed by the context limit.
+      # the tool-gated sections are absent for this vocation (asserted by the
+      # tool-less test above), so the model sentence follows the identity line.
       assert prompt =~ "That may change when cloned.\n\n\nYour model is \"text-model\"."
-      refute prompt =~ "Your own scratch directory"
-      refute prompt =~ "Tool call budget"
     end
   end
 

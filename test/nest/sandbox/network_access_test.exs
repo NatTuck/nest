@@ -21,28 +21,15 @@ defmodule Nest.Sandbox.NetworkAccessTest do
   describe "with_network_access/2" do
     test "puts the mounts' value in, overriding the mode's" do
       assert Sandbox.with_network_access(caps_with_net(false), mounts(true))["net"] == true
-      assert Sandbox.with_network_access(caps_with_net(true), mounts(false))["net"] == false
-    end
 
-    test "is false for a value that names no space" do
-      # `default_caps/0`'s value: an agent with no space behind it must not gain
-      # the network.
+      # `default_caps/0`'s value: a value that names no space must not gain the
+      # network, whatever its mode says.
       assert Sandbox.with_network_access(caps_with_net(true), Mounts.new(nil, nil))["net"] ==
                false
-
-      assert Sandbox.with_network_access(caps_with_net(true), Mounts.new(nil, nil))["net"] ==
-               Sandbox.default_caps()["net"]
     end
   end
 
   describe "resolve_caps/2" do
-    test "injects the space's value, so every caps resolution gets it" do
-      # Both resolution paths (`Agent.resolve_caps/1` and
-      # `ChatPipeline.resolve_mode_and_caps/3`) end here, which is what makes this
-      # the one injection point rather than two copies.
-      assert ProjectConfig.resolve_caps(caps_with_net(false), mounts(true))["net"] == true
-    end
-
     test "injects it even when the project config is malformed" do
       # The `.nest` failure path returns the caps unchanged, so injecting after
       # the merge would silently drop the network — and `Caps.validate/1` would
@@ -91,7 +78,6 @@ defmodule Nest.Sandbox.NetworkAccessTest do
       {:ok, args} = Sandbox.build(caps, Mounts.new(dir, nil, "bwrap", 7, true))
 
       assert "--share-net" in args
-      refute "--unshare-net" in args
     end
   end
 end

@@ -38,11 +38,6 @@ defmodule Nest.Tokens.ConversationSizeTest do
       assert ConversationSize.size(messages) == Estimator.estimate_messages(messages)
     end
 
-    test "assistant usage anchors the size (input + cache + output)" do
-      messages = [sys("a"), user("b"), assistant(2, %{input_tokens: 5_000, output_tokens: 120})]
-      assert ConversationSize.size(messages) == 5_120
-    end
-
     test "cache read/creation tokens are included in the anchor" do
       usage = %{
         input_tokens: 100,

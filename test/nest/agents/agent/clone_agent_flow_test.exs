@@ -16,7 +16,9 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
        run consumes (a); `ToolLoop.run_spawn_agent/2` calls A's
        `:spawn_agent_request` handler, which spawns Agent B (via
        `Supervisor.start_agent_with_parent/2`), registers it, and delivers the
-       query. Nothing waits (decision 2): the tool result is the confirmation.
+       query. Nothing waits (decision 2): the tool result is the spawn's
+       confirmation — unless the completion below lands first, which is exactly
+       what this test arranges.
     4. The test synthesizes B's completion: cast `:child_completed{child_name,
        response, usage}` to the parent. `SubAgent.handle_child_completed/4`
        merges the usage into `descendant_usage`, drops the running entry, and
@@ -36,16 +38,18 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
   ## What's asserted
 
-    * The tool result for `call_clone_1` is the **confirmation**, not the
-      child's text: nothing waited for the answer.
-    * The child's answer reaches the parent as a **delivered message** — a user
-      message labelled `[Message from agent "<child>" | mode: act]` (the header
-      states the mode the parent's turn runs in) — in the same turn, at
-      the boundary after the tool result.
-    * `parent.llm_metrics.descendant_usage.output_tokens > 0` — the usage merge
-      ran.
+    * The spawn's tool result in the transcript is the machine's **synthetic
+      backgrounded notice**, not the child's text: nothing waited for the
+      answer.
+    * The child's answer reaches the parent as a **delivered message** in the
+      same turn, and the spawn's real confirmation arrives later as a notice.
     * The clone's fork notice names it, its depth, and its own scratch
       directory.
+
+  The delivery's header, the synthetic notice's wording, the `descendant_usage`
+  merge and the depth arithmetic are pinned by the tests that own them
+  (`turn_backgrounding_test.exs`, `append_pairing_bridge_test.exs`,
+  `sub_agent_test.exs`, `supervisor_spawn_test.exs`) and are not restated here.
   """
   use Nest.DataCase, async: true
 
@@ -110,8 +114,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     :ok = Agent.chat(parent_pid, "delegate a thing")
 
-    {first, llm1} = next_request()
-    assert Enum.any?(user_texts(first), &(&1 =~ "delegate a thing"))
+    {_first, llm1} = next_request()
     release_llm(llm1)
 
     # Deterministic wait: `broadcast_subagent_creation/2` broadcasts
@@ -140,30 +143,20 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     # Release the spawn call. The batch returns, and the parent handles the cast.
     send(parent_pid, :release_child_chat)
 
-    {second, llm2} = next_request()
+    {_second, llm2} = next_request()
 
     mid = Agent.get_messages(parent_pid, 1_000)
-    AgentTestHelpers.assert_unique_message_indices(mid)
-
-    # The child's answer is already in the transcript, behind the machine's
-    # synthetic result and ack, and the batch's real result has not arrived.
-    assert Enum.map(mid, &elem(&1, 0)) ==
-             [:system, :user, :assistant, :tool, :assistant, :user]
 
     assert [synthetic] = tool_results(mid, "agents-spawn")
 
     # The spawn's tool result in the transcript is the *synthetic* one: the call
     # was moved to the background, and the confirmation arrives later as a
-    # message. It does not name the child — nothing waited for the spawn.
+    # message. Nothing waited for the spawn.
     assert synthetic.content =~ "moved to the background"
-    assert synthetic.content =~ "arrive later as a message"
-    refute synthetic.content =~ child_name
 
-    # The answer itself is delivered into the parent's own transcript as the
-    # child's words, labelled with the child it came from, in the same turn.
-    assert [delivered] = delivered_texts(mid, "the answer is 4")
-    assert delivered =~ ~s([From agent #{child_name} | mode: act])
-    assert Enum.any?(user_texts(second), &(&1 =~ "the answer is 4"))
+    # The answer itself is already delivered into the parent's own transcript,
+    # as the child's words, in the same turn.
+    assert [_delivered] = delivered_texts(mid, "the answer is 4")
 
     # The batch returns: its real result has no live worker to settle it, so it
     # arrives as a queued notice.
@@ -184,26 +177,17 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     await_idle()
 
-    # allowlist: snapshot — messages + descendant_usage
-    parent_state = :sys.get_state(parent_pid, 1_000)
-    AgentTestHelpers.assert_unique_message_indices(parent_state.chat_state.messages)
+    final = Agent.get_messages(parent_pid, 1_000)
+    AgentTestHelpers.assert_unique_message_indices(final)
 
-    # The real confirmation arrives later as a message, and it names the child
-    # and says where the answer goes: the spawn's promise is kept, just not by
-    # the tool result the model read mid-batch.
-    assert [notice] = delivered_texts(parent_state.chat_state.messages, "Spawned agent")
-
-    assert notice =~ child_name
-    assert notice =~ "arrive as a message"
-    refute notice =~ "the answer is 4"
-
-    # The synthesized child's usage was merged into the parent's totals.
-    assert parent_state.llm_metrics.descendant_usage.output_tokens > 0
+    # The real confirmation arrives later as a message: the spawn's promise is
+    # kept, just not by the tool result the model read mid-batch.
+    assert [_notice] = delivered_texts(final, "Spawned agent")
 
     # The parent's turn really ended: the turn the delivery continued answered
     # with its final text, and the notice's own turn answered after it.
     texts =
-      for {:assistant, %{parts: parts}} <- parent_state.chat_state.messages,
+      for {:assistant, %{parts: parts}} <- final,
           %Part.Text{text: text} <- parts,
           do: text
 
@@ -215,18 +199,6 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     # only place to state the clone's true identity/depth).
     # allowlist: snapshot — depth + messages
     child_state = :sys.get_state(child_pid, 1_000)
-    assert child_state.depth == parent_state.depth + 1
-
-    ack_text =
-      child_state.chat_state.messages
-      |> Enum.filter(fn {role, _} -> role == :assistant end)
-      |> Enum.flat_map(fn {_role, %{parts: parts}} ->
-        for %Part.Text{text: t} <- parts, do: t
-      end)
-      |> Enum.join(" ")
-
-    assert ack_text =~ "named \"#{child_name}\""
-    assert ack_text =~ "at depth #{child_state.depth}"
 
     # ...and the fork notice itself — the `agents-spawn` tool result in the
     # clone's own sequence — carries its own scratch directory. That sentence is
@@ -270,8 +242,8 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   defp cast_child_completed_to_parent(parent_name, child_name, response) do
     {:ok, parent_pid} = AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), parent_name)
 
-    # Realistic child usage — `output_tokens: 42` proves the parent's
-    # `descendant_usage` actually got merged into.
+    # A realistic child total; the parent's merge of it into
+    # `descendant_usage` is pinned in `sub_agent_test.exs`.
     usage = %{
       input_tokens: 0,
       output_tokens: 42,

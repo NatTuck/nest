@@ -20,16 +20,11 @@ defmodule Nest.NameTest do
       end
     end
 
-    test "refuses a capital, which is what makes @Nat and @nat one address" do
-      refute Name.valid?("Nat")
-      refute Name.valid?("review-prA5")
-      refute Name.valid?("café")
-    end
-
-    test "refuses everything that is not a single filename component" do
+    test "refuses everything outside the class, a capital and a path escape alike" do
       # `..` would escape the scratch root; `/` would nest; a space would need
-      # quoting in every place a name is written.
-      for name <- ["..", ".", "a/b", "a b", "a.b", "", "café", "agent\n"] do
+      # quoting in every place a name is written; a capital is what would make
+      # `@Nat` and `@nat` two addresses for one human.
+      for name <- ["Nat", "..", ".", "a/b", "a b", "a.b", "", "café", "agent\n"] do
         refute Name.valid?(name), inspect(name)
       end
     end
@@ -43,25 +38,22 @@ defmodule Nest.NameTest do
     end
 
     test "is total: anything that is not a binary is not a name" do
-      for value <- [nil, 42, :agent, %{}, ["a"]] do
+      # One representative per shape — the absent value and a non-string scalar
+      # — because every non-binary takes the same `is_binary/1` refusal.
+      for value <- [nil, 42] do
         refute Name.valid?(value), inspect(value)
       end
     end
   end
 
   describe "sanitize/1" do
-    test "folds case and punctuation to a readable name" do
+    test "folds case, punctuation and accented letters to a readable name" do
+      # NFD splits an accented letter from its combining mark, the mark is
+      # stripped, and the base letter survives: `Café` is `cafe`, not `caf`. A
+      # run of allowed characters is left alone.
       assert Name.sanitize("Jane Doe") == "jane-doe"
-      assert Name.sanitize("review-prA5") == "review-pra5"
-      assert Name.sanitize("  padded  ") == "padded"
-      assert Name.sanitize("a__b--c") == "a__b--c"
-    end
-
-    test "folds accented letters instead of dropping them" do
-      # NFD splits the letter from its combining mark, the mark is stripped, and
-      # the base letter survives: `Café` is `cafe`, not `caf`.
       assert Name.sanitize("Café ☕") == "cafe"
-      assert Name.sanitize("Ünïcode") == "unicode"
+      assert Name.sanitize("a__b--c") == "a__b--c"
     end
 
     test "returns an empty string when nothing survives the fold" do
@@ -71,8 +63,6 @@ defmodule Nest.NameTest do
       assert Name.sanitize("日本語") == ""
       assert Name.sanitize("...") == ""
       assert Name.sanitize("") == ""
-      assert Name.sanitize("---") == ""
-      refute Name.valid?(Name.sanitize("日本語"))
     end
 
     test "folds `..` to nothing, which is what makes the scratch path safe" do

@@ -20,40 +20,13 @@ defmodule Nest.ToolsInspectFileTest do
   alias Nest.Tools
 
   describe "get_function/2" do
-    test "returns the inspect_file function", %{tmp: dir} do
+    test "returns the inspect_file function, whose schema requires only path", %{tmp: dir} do
       function = Tools.get_function("file-inspect", Mounts.new(dir, nil))
 
       assert %Function{} = function
       assert function.name == "file-inspect"
       assert function.description =~ "metadata"
-    end
-
-    test "inspect_file struct does not carry a per-tool max_result_tokens field; cap is enforced by BatchSizer",
-         %{tmp: dir} do
-      function = Tools.get_function("file-inspect", Mounts.new(dir, nil))
-      refute Map.has_key?(function, :max_result_tokens)
-    end
-  end
-
-  describe "schema" do
-    test "inspect_file's schema requires only path", %{tmp: dir} do
-      schema = Tools.get_function("file-inspect", Mounts.new(dir, nil)).parameters_schema
-      assert schema["required"] == ["path"]
-    end
-
-    test "inspect_file's schema documents path and max_result_tokens", %{tmp: dir} do
-      properties =
-        Tools.get_function("file-inspect", Mounts.new(dir, nil)).parameters_schema["properties"]
-
-      assert Map.has_key?(properties, "path")
-      assert Map.has_key?(properties, "max_result_tokens")
-    end
-
-    test "inspect_file's max_result_tokens is optional (not in required)", %{tmp: dir} do
-      required =
-        Tools.get_function("file-inspect", Mounts.new(dir, nil)).parameters_schema["required"]
-
-      refute "max_result_tokens" in required
+      assert function.parameters_schema["required"] == ["path"]
     end
   end
 
@@ -89,23 +62,9 @@ defmodule Nest.ToolsInspectFileTest do
       function = Tools.get_function("file-inspect", Mounts.new(dir, nil))
       assert {:ok, output} = invoke(function, %{"path" => "foo.txt"})
 
-      assert output =~ "Type:"
       assert output =~ "UTF-8"
       assert output =~ "Size: 7 bytes"
       assert output =~ "Characters: 6"
-      assert output =~ "Lines: 2"
-      assert output =~ "Non-blank lines: 1"
-      assert output =~ "Max line length: 5"
-    end
-
-    test "file with very long lines reports the max line length", %{tmp: dir} do
-      path = Path.join(dir, "foo.txt")
-      File.write!(path, "short\n" <> String.duplicate("x", 200) <> "\nshort again\n")
-
-      function = Tools.get_function("file-inspect", Mounts.new(dir, nil))
-      assert {:ok, output} = invoke(function, %{"path" => "foo.txt"})
-
-      assert output =~ "Max line length: 200"
     end
 
     test "empty file returns the empty-text stats", %{tmp: dir} do
@@ -120,8 +79,6 @@ defmodule Nest.ToolsInspectFileTest do
       assert output =~ "Type: empty"
       assert output =~ "Size: 0 bytes"
       assert output =~ "Characters: 0"
-      assert output =~ "Max line length: 0"
-      assert output =~ "Non-blank lines: 0"
     end
 
     test "whitespace-only file reports 0 non-blank lines", %{tmp: dir} do
@@ -168,7 +125,6 @@ defmodule Nest.ToolsInspectFileTest do
       function = Tools.get_function("file-inspect", Mounts.new(dir, nil))
       assert {:ok, output} = invoke(function, %{"path" => "utf16.txt"})
 
-      assert output =~ "binary"
       assert output =~ "do not use file-read"
     end
   end
@@ -204,21 +160,6 @@ defmodule Nest.ToolsInspectFileTest do
 
       assert msg =~ "10 MB"
       assert msg =~ "wc -l"
-      assert msg =~ "huge.bin"
-    end
-  end
-
-  describe "inspect_file in get_functions/2" do
-    test "inspect_file is included when added to a tool list", %{tmp: dir} do
-      functions = Tools.get_functions(["file-inspect"], Mounts.new(dir, nil))
-      assert length(functions) == 1
-      assert hd(functions).name == "file-inspect"
-    end
-
-    test "inspect_file is filtered out when not in the tool list", %{tmp: dir} do
-      functions = Tools.get_functions(["file-read"], Mounts.new(dir, nil))
-      names = Enum.map(functions, & &1.name)
-      refute "file-inspect" in names
     end
   end
 

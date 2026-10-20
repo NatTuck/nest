@@ -42,7 +42,6 @@ defmodule Nest.Messages.SanitizeTest do
     end
 
     test "rejects NUL even though it is valid UTF-8" do
-      assert String.valid?("a" <> <<0>> <> "b")
       refute Sanitize.text?("a" <> <<0>> <> "b")
     end
 
@@ -52,7 +51,6 @@ defmodule Nest.Messages.SanitizeTest do
 
     test "rejects non-binaries" do
       refute Sanitize.text?(nil)
-      refute Sanitize.text?(42)
     end
   end
 

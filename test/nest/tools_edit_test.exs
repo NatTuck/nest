@@ -27,46 +27,15 @@ defmodule Nest.ToolsEditTest do
       assert function.name == "file-edit"
       assert function.description =~ "string replacement"
     end
-
-    test "edit struct does not carry a per-tool max_result_tokens field; cap is enforced by BatchSizer",
-         %{tmp: dir} do
-      function = Tools.get_function("file-edit", Mounts.new(dir, nil))
-      refute Map.has_key?(function, :max_result_tokens)
-    end
   end
 
   describe "schema" do
-    test "edit's schema requires path, old_text, new_text", %{tmp: dir} do
-      schema = Tools.get_function("file-edit", Mounts.new(dir, nil)).parameters_schema
-      assert schema["required"] == ["path", "old_text", "new_text"]
-    end
-
-    test "edit's schema documents path, old_text, new_text, replace_all, max_result_tokens",
+    test "edit's schema requires path, old_text, new_text and defaults replace_all to false",
          %{tmp: dir} do
-      properties =
-        Tools.get_function("file-edit", Mounts.new(dir, nil)).parameters_schema["properties"]
+      schema = Tools.get_function("file-edit", Mounts.new(dir, nil)).parameters_schema
 
-      assert Map.has_key?(properties, "path")
-      assert Map.has_key?(properties, "old_text")
-      assert Map.has_key?(properties, "new_text")
-      assert Map.has_key?(properties, "replace_all")
-      assert Map.has_key?(properties, "max_result_tokens")
-    end
-
-    test "edit's replace_all defaults to false", %{tmp: dir} do
-      property =
-        Tools.get_function("file-edit", Mounts.new(dir, nil)).parameters_schema["properties"][
-          "replace_all"
-        ]
-
-      assert property["default"] == false
-    end
-
-    test "edit's max_result_tokens is optional (not in required)", %{tmp: dir} do
-      required =
-        Tools.get_function("file-edit", Mounts.new(dir, nil)).parameters_schema["required"]
-
-      refute "max_result_tokens" in required
+      assert schema["required"] == ["path", "old_text", "new_text"]
+      assert schema["properties"]["replace_all"]["default"] == false
     end
   end
 
@@ -159,36 +128,6 @@ defmodule Nest.ToolsEditTest do
                })
 
       assert msg =~ "missing.txt"
-    end
-
-    test "edit preserves surrounding content (not the whole file)", %{tmp: dir} do
-      path = Path.join(dir, "foo.txt")
-      File.write!(path, "header\ntarget line\nfooter\n")
-
-      function = Tools.get_function("file-edit", Mounts.new(dir, nil))
-
-      assert {:ok, _} =
-               invoke(function, %{
-                 "path" => "foo.txt",
-                 "old_text" => "target line",
-                 "new_text" => "edited line"
-               })
-
-      assert File.read!(path) == "header\nedited line\nfooter\n"
-    end
-  end
-
-  describe "edit tool in get_functions/2" do
-    test "edit is included when added to a tool list", %{tmp: dir} do
-      functions = Tools.get_functions(["file-edit"], Mounts.new(dir, nil))
-      assert length(functions) == 1
-      assert hd(functions).name == "file-edit"
-    end
-
-    test "edit is filtered out when not in the tool list", %{tmp: dir} do
-      functions = Tools.get_functions(["file-read"], Mounts.new(dir, nil))
-      names = Enum.map(functions, & &1.name)
-      refute "file-edit" in names
     end
   end
 

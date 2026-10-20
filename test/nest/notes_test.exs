@@ -1,11 +1,11 @@
 defmodule Nest.NotesTest do
   @moduledoc """
   The `user_notes` context (`Nest.Notes`): what a note with a human at one end
-  is, who an address resolves to, and the two reads the feed is built on.
+  is, the two reads the feed is built on, and the answer that clears a query.
 
   The send path that writes these rows is `Nest.Agents.send_note/6`, and it is
-  covered by `Nest.Agents.SendNoteHumanTest`; this file is the table and its
-  rules.
+  covered by `Nest.Agents.SendNoteHumanTest` — including the refusal of an
+  address that names no user. This file is the table and its rules.
   """
 
   use Nest.DataCase, async: true
@@ -33,33 +33,10 @@ defmodule Nest.NotesTest do
       assert note.to_name == "alice"
       assert note.content == "hi"
       assert note.kind == :agent
-      assert note.answered_at == nil
-      assert %DateTime{} = note.inserted_at
 
       # The frame is the row the feed will read, on the space's topic.
       assert_receive {:user_note, %UserNote{id: id, content: "hi"}}, 500
       assert id == note.id
-    end
-
-    test "the runtime's note keeps the agent's name, so the feed can group it by that agent" do
-      # `from_kind: :runtime` is the runtime speaking, and `from_name` is the
-      # agent it is speaking *about*: the header still reads
-      # `[From nest runtime]`, and a give-up can be grouped by the agent that did
-      # not answer.
-      space = AddressTestHelpers.space_with_human("alice")
-
-      assert {:ok, note} =
-               Notes.deliver(
-                 space.id,
-                 {:runtime, "crazy-dolphin"},
-                 {:user, "alice"},
-                 "did not reply",
-                 :runtime
-               )
-
-      assert note.from_kind == :runtime
-      assert note.from_name == "crazy-dolphin"
-      assert note.kind == :runtime
     end
 
     test "a human-to-human note is one row both feeds read" do
@@ -74,16 +51,6 @@ defmodule Nest.NotesTest do
 
       assert [^note] = Notes.list_for(space.id, {:user, "alice"})
       assert [^note] = Notes.list_for(space.id, {:user, "bob"})
-    end
-
-    test "an address that names no user is refused and writes nothing" do
-      space = AddressTestHelpers.space_with_human("alice")
-
-      assert {:error, :not_found} =
-               Notes.deliver(space.id, {:agent, "crazy-dolphin"}, {:user, "nobody"}, "hi", :agent)
-
-      assert Notes.list_for(space.id, {:user, "nobody"}) == []
-      refute_received {:user_note, _}
     end
 
     test "an agent-to-agent note is refused by the table, not quietly stored" do
@@ -105,28 +72,6 @@ defmodule Nest.NotesTest do
                Notes.deliver(-1, {:agent, "a"}, {:user, "alice"}, "hi", :agent)
 
       assert "does not exist" in errors_on(changeset).space_id
-    end
-  end
-
-  describe "list_for/2" do
-    test "returns both directions in id order, and only this space's notes" do
-      space = AddressTestHelpers.space_with_human("alice")
-      other = AddressTestHelpers.space_with_human("carol")
-      AddressTestHelpers.human("bob")
-
-      {:ok, first} = Notes.deliver(space.id, {:agent, "a"}, {:user, "alice"}, "1", :query)
-
-      {:ok, _theirs} =
-        Notes.deliver(space.id, {:agent, "a"}, {:user, "bob"}, "not alice's", :agent)
-
-      {:ok, second} = Notes.deliver(space.id, {:user, "alice"}, {:agent, "a"}, "2", :agent)
-      {:ok, third} = Notes.deliver(space.id, {:agent, "b"}, {:user, "alice"}, "3", :query)
-      {:ok, _elsewhere} = Notes.deliver(other.id, {:agent, "a"}, {:user, "alice"}, "4", :query)
-
-      # `id` is the order — the table's key is monotonic, so the two index scans
-      # need no sort.
-      assert Enum.map(Notes.list_for(space.id, {:user, "alice"}), & &1.id) ==
-               [first.id, second.id, third.id]
     end
   end
 

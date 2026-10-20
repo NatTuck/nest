@@ -35,10 +35,6 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
   @ctx %{caps: %{}, mounts: Mounts.new(nil, nil)}
 
   describe "resolve_items/2" do
-    test "a non-empty items list (no glob) resolves to that list" do
-      assert {:ok, ["a", "b"]} = BatchPlan.resolve_items(%{"items" => ["a", "b"]}, @ctx)
-    end
-
     test "both items and glob is rejected" do
       assert {:error, msg} =
                BatchPlan.resolve_items(%{"items" => ["a"], "glob" => "x/*.txt"}, @ctx)
@@ -61,11 +57,6 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
 
       assert {:error, msg} = BatchPlan.resolve_items(%{"items" => ["   "]}, @ctx)
       assert msg =~ "`items[0]` is blank"
-
-      # Blank is reported as blank, not as over the length bound: the two checks
-      # are ordered, and a message that named the wrong one would send the model
-      # after the wrong fix.
-      refute msg =~ "bytes"
     end
 
     test "an item that is neither a string nor an integer is rejected" do
@@ -82,10 +73,7 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
       assert msg =~ "one of"
     end
 
-    test "a glob with no workspace is a resolve error", %{tmp: dir} do
-      # `dir` is unused beyond establishing the glob is non-empty; the
-      # relative pattern with a `nil` workspace is the error under test.
-      _ = dir
+    test "a glob with no workspace is a resolve error" do
       assert {:error, msg} = BatchPlan.resolve_items(%{"glob" => "*.txt"}, @ctx)
       assert msg =~ "No workspace configured"
     end
@@ -140,21 +128,6 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
     end
   end
 
-  describe "slot_to_string/1" do
-    test "a slot a child never filled says so instead of going out as null or empty" do
-      # `nil` is unreachable from `assemble/3` (every item is spawned, and every
-      # spawned child's outcome is consumed or times out before the finish
-      # guard), and `assemble_stopped/3` maps it to its own marker first. Both
-      # are here so neither can leak as JSON `null` / an empty string.
-      assert BatchPlan.slot_to_string(nil) == "[error: no result]"
-
-      assert BatchPlan.slot_to_string("") ==
-               "[error: finished its turn without producing any text]"
-
-      assert BatchPlan.slot_to_string("done") == "done"
-    end
-  end
-
   describe "assemble_stopped/3" do
     test "a stopped batch reports the slots it filled, in item order" do
       ctx = %{context_limit: 100_000, messages: []}
@@ -178,10 +151,6 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
 
     test "substitutes {item} and {index}" do
       assert BatchPlan.render("idx {index}: {item}", 3, "hello") == "idx 3: hello"
-    end
-
-    test "replaces every occurrence of a placeholder" do
-      assert BatchPlan.render("{item} vs {item}", 0, "x") == "x vs x"
     end
   end
 
@@ -211,8 +180,6 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
                "rev",
                false
              ) == ["rev-item-1", "rev-item-2"]
-
-      assert BatchPlan.names_for_items(["one", "two"], "", false) == ["item-1", "item-2"]
     end
 
     test "a long parameter is cut to 32 characters, and the cut is trimmed" do

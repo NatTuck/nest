@@ -19,11 +19,6 @@ defmodule Nest.VocationsTest do
       assert vocation in Vocations.list_vocations()
     end
 
-    test "get_vocation!/1 returns the vocation with given id" do
-      vocation = vocation_fixture()
-      assert Vocations.get_vocation!(vocation.id) == vocation
-    end
-
     test "create_vocation/1 with valid data creates a vocation" do
       valid_attrs = %{
         name: "some name",
@@ -36,7 +31,6 @@ defmodule Nest.VocationsTest do
       assert vocation.name == "some name"
       assert vocation.slug == "some-name"
       assert vocation.description == "some description"
-      assert vocation.tools == []
       assert vocation.system_prompt == "some system_prompt"
     end
 
@@ -88,7 +82,6 @@ defmodule Nest.VocationsTest do
       assert {:ok, %Vocation{} = vocation} = Vocations.update_vocation(vocation, update_attrs)
       assert vocation.name == "some updated name"
       assert vocation.description == "some updated description"
-      assert vocation.tools == []
       assert vocation.system_prompt == "some updated system_prompt"
     end
 
@@ -128,8 +121,7 @@ defmodule Nest.VocationsTest do
 
       assert {:error, :agents_using_vocation} = Vocations.delete_vocation(vocation)
       # The vocation is still present.
-      assert fetched = Vocations.get_vocation(vocation.id)
-      assert fetched.id == vocation.id
+      assert Vocations.get_vocation(vocation.id).id == vocation.id
     end
 
     test "change_vocation/1 returns a vocation changeset" do
@@ -146,8 +138,8 @@ defmodule Nest.VocationsTest do
       }
 
       assert {:ok, %Vocation{id: id}} = Vocations.upsert_vocation(attrs)
-      assert is_integer(id)
 
+      # A row really exists at the id the insert returned.
       assert %Vocation{description: "first version", system_prompt: "original prompt"} =
                Vocations.get_vocation!(id)
     end
@@ -173,16 +165,6 @@ defmodule Nest.VocationsTest do
       assert updated.id == original.id
       assert updated.description == "updated version"
       assert updated.system_prompt == "updated prompt"
-    end
-
-    test "upsert_vocation/1 returns the validation changeset when attrs are invalid" do
-      assert {:error, %Ecto.Changeset{}} =
-               Vocations.upsert_vocation(%{
-                 name: nil,
-                 description: nil,
-                 system_prompt: nil,
-                 tools: nil
-               })
     end
   end
 

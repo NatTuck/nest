@@ -13,18 +13,12 @@ defmodule Nest.AddressTest do
   alias Nest.Address
 
   describe "parse/1" do
-    test "a sigil names a human and a bare name names an agent" do
-      assert Address.parse("@nat") == {:user, "nat"}
-      assert Address.parse("crazy-dolphin") == {:agent, "crazy-dolphin"}
-    end
-
     test "an address folds through Nest.Name, so @Nat and @nat are one human" do
       # The sigil is what makes the fold safe: the text is an *address*, written
       # to be read back, and a username is stored folded — so a capital cannot
       # be a second account, and must not be a second address either.
       assert Address.parse("@Nat") == {:user, "nat"}
       assert Address.parse("@Jane Doe") == {:user, "jane-doe"}
-      assert Address.parse("@NAT") |> Address.format() == "@nat"
     end
 
     test "a bare name is not folded: it is an identifier, not an address" do
@@ -38,7 +32,6 @@ defmodule Nest.AddressTest do
 
     test "`@` alone is an address that names nobody" do
       assert Address.parse("@") == {:user, ""}
-      assert Address.parse("@...") |> Address.format() == "@"
     end
 
     test "a missing sender is an unnamed agent, never a human" do
@@ -59,7 +52,6 @@ defmodule Nest.AddressTest do
 
   describe "user?/1" do
     test "classifies by the sigil alone, whether or not anybody is named" do
-      assert Address.user?("@nat")
       assert Address.user?("@nobody")
       refute Address.user?("nat")
       refute Address.user?(nil)

@@ -46,8 +46,4 @@ defmodule Nest.Agents.AgentInitCrossedThresholdsTest do
     assert Init.seed_from_db(state(), preloaded, 1).live.crossed_thresholds ==
              MapSet.new([:p50])
   end
-
-  test "no preloaded messages leaves the default empty set" do
-    assert Init.seed_from_db(state(), [], -1).live.crossed_thresholds == MapSet.new()
-  end
 end

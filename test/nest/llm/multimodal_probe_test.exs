@@ -273,10 +273,9 @@ defmodule Nest.LLM.MultimodalProbeTest do
     test "unusable text for the first image -> :unknown in one request" do
       cases = [
         {"openai null content with finish_reason length", [], openai_body(nil, "length")},
-        {"openai empty content", [], openai_body("", "stop")},
+        # Whitespace is the case that needs the trim: `""` is unknown whether
+        # or not the text is trimmed.
         {"openai whitespace content", [], openai_body("  \n ", "stop")},
-        {"openai message without content", [],
-         %{"choices" => [%{"message" => %{"role" => "assistant"}}]}},
         {"openai no choices", [], %{"id" => "gen-1"}},
         {"openai JSON string body", [], Jason.encode!(openai_body(nil, "length"))},
         {"openai non-JSON body", [], "<html><body>Bad gateway</body></html>"},
@@ -284,9 +283,7 @@ defmodule Nest.LLM.MultimodalProbeTest do
         {"anthropic no content list", [protocol: "anthropic"], %{"type" => "message"}},
         {"anthropic thinking block only", [protocol: "anthropic"],
          %{"content" => [%{"type" => "thinking"}]}},
-        {"anthropic non-map block", [protocol: "anthropic"], %{"content" => ["raw text"]}},
-        {"anthropic blank text block", [protocol: "anthropic"],
-         %{"content" => [%{"type" => "text", "text" => " "}]}}
+        {"anthropic non-map block", [protocol: "anthropic"], %{"content" => ["raw text"]}}
       ]
 
       for {label, overrides, body} <- cases do
@@ -305,10 +302,11 @@ defmodule Nest.LLM.MultimodalProbeTest do
   end
 
   describe "a request that never lands" do
-    test "a transport error or a timeout -> :unknown, in one request each" do
-      Mimic.expect(Req, :post, 1, fn _url, _opts -> {:error, :nxdomain} end)
-      assert MultimodalProbe.probe(provider(), "unreachable") == :unknown
-
+    test "a timeout -> :unknown, in one request" do
+      # Every transport failure -- a refused connection, a DNS failure, a
+      # timeout -- reaches the same `{:error, _reason}` clause, so one
+      # representative pins the whole path. Req's own error shape (a
+      # `Mint.TransportError`) is the one used.
       Mimic.expect(Req, :post, 1, fn _url, _opts ->
         {:error, %Mint.TransportError{reason: :timeout}}
       end)
@@ -321,9 +319,10 @@ defmodule Nest.LLM.MultimodalProbeTest do
     test "-> :unknown, never :negative" do
       cases = [
         {"401 invalid key", 401, %{"error" => %{"message" => "Invalid API key provided"}}},
-        {"402 no credits", 402, %{"error" => %{"message" => "Insufficient credits"}}},
-        {"429 rate limited", 429, %{"error" => %{"message" => "Rate limit exceeded"}}},
+        # The measured modality rejection is a 404 too, so the status alone
+        # must not be the signal.
         {"404 unknown model", 404, %{"error" => %{"message" => "The model `x` does not exist"}}},
+        # Not a 4xx at all: the other clause of `modality_rejection?/2`.
         {"500 html", 500, "<html><body>Bad gateway</body></html>"},
         # Near misses: these mention images without rejecting image input, and
         # `provisioned` must not read as `vision`.
@@ -444,20 +443,21 @@ defmodule Nest.LLM.MultimodalProbeTest do
 
     test "an API key that cannot be resolved -> no auth header, and its 401 stays :unknown" do
       # `DotConfig.resolve_api_key/1` raises on an unset `${ENV_VAR}` and on an
-      # unreadable `file:` reference. `probe/2` documents that it never raises,
-      # and the scan that calls it rescues per provider -- so a raise escaping
-      # here would drop that provider's entire model list over one bad key.
-      # An unresolvable key is "no key": the request goes out unauthenticated
-      # and its 401 is `:unknown`, which claims nothing.
-      for key <- ["${MM_PROBE_UNSET_KEY_9f3a}", "file:/nonexistent/mm-probe-key"] do
-        Mimic.expect(Req, :post, 1, fn _url, opts ->
-          assert opts[:headers] == []
-          failed(401, %{"error" => %{"message" => "Invalid API key provided"}})
-        end)
+      # unreadable `file:` reference; both raise shapes are pinned in
+      # `test/nest_web/channels/lobby_channel/providers_test.exs`, and both land
+      # in the same `rescue` here, so one representative pins the probe's own
+      # rescue. `probe/2` documents that it never raises, and the scan that
+      # calls it rescues per provider -- so a raise escaping here would drop
+      # that provider's entire model list over one bad key. An unresolvable key
+      # is "no key": the request goes out unauthenticated and its 401 is
+      # `:unknown`, which claims nothing.
+      Mimic.expect(Req, :post, 1, fn _url, opts ->
+        assert opts[:headers] == []
+        failed(401, %{"error" => %{"message" => "Invalid API key provided"}})
+      end)
 
-        assert MultimodalProbe.probe(provider(api_key: key), "m") == :unknown,
-               "expected :unknown for key #{inspect(key)}"
-      end
+      assert MultimodalProbe.probe(provider(api_key: "${MM_PROBE_UNSET_KEY_9f3a}"), "m") ==
+               :unknown
     end
   end
 end

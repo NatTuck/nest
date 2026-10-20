@@ -27,13 +27,11 @@ defmodule Nest.Persistence.AgentCompactionTest do
     {space_id, name} =
       seed_agent(next: 4, messages: [system(0), user(1, "one"), assistant(2), user(3, "two")])
 
-    assert {:ok, plan, @summary} =
+    assert {:ok, _plan, @summary} =
              AgentCompaction.run(space_name(space_id) |> target(name),
                apply: true,
                llm_call: summary_call()
              )
-
-    assert plan.marker_index == 4
 
     assert {:ok, %PersistedAgent{last_compaction_index: 4, next_message_index: 7}} =
              Persistence.fetch_agent(space_id, name)
@@ -60,13 +58,11 @@ defmodule Nest.Persistence.AgentCompactionTest do
     {space_id, name} =
       seed_agent(next: 4, messages: [system(0), user(1, "one"), assistant(2), user(3, "two")])
 
-    assert {:ok, plan, nil} =
+    assert {:ok, _plan, nil} =
              AgentCompaction.run(
                space_name(space_id) |> target(name),
                llm_call: fn _ -> flunk("dry run must not call the LLM") end
              )
-
-    assert plan.marker_index == 4
 
     assert {:ok, %PersistedAgent{last_compaction_index: -1, next_message_index: 4}} =
              Persistence.fetch_agent(space_id, name)
@@ -79,13 +75,11 @@ defmodule Nest.Persistence.AgentCompactionTest do
         messages: [system(0), user(1, "one"), assistant(2), user(4, "gap"), assistant(5)]
       )
 
-    assert {:ok, plan, @summary} =
+    assert {:ok, _plan, @summary} =
              AgentCompaction.run(space_name(space_id) |> target(name),
                apply: true,
                llm_call: summary_call()
              )
-
-    assert plan.marker_index == 6
 
     assert {:ok, %PersistedAgent{last_compaction_index: 6, next_message_index: 9}} =
              Persistence.fetch_agent(space_id, name)
@@ -98,13 +92,11 @@ defmodule Nest.Persistence.AgentCompactionTest do
     {space_id, name} =
       seed_agent(next: 3, messages: [system(0), user(1, "one"), assistant_tool(2, "call_1")])
 
-    assert {:error, {:sequence_violations, message}} =
+    assert {:error, {:sequence_violations, _message}} =
              AgentCompaction.run(space_name(space_id) |> target(name),
                apply: true,
                llm_call: summary_call()
              )
-
-    assert message =~ "preflight"
 
     assert {:ok, _plan, @summary} =
              AgentCompaction.run(

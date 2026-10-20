@@ -24,9 +24,8 @@ defmodule Nest.Agents.Agent.SubAgentTest do
     * A failed or stopped child reaches the parent as a `:runtime`
       entry naming the child, so the parent learns the answer
       is not coming instead of waiting it out.
-    * When `handle_child_completed/4` arrives for an
-      unknown child (e.g. double-completion), the
-      handler is a no-op (defensive). A late termination after a
+    * An event for an unknown child (e.g. double-completion) is a
+      no-op (defensive). A late termination after a
       parent stop is the same no-op, because the stop cleared the
       children map.
     * Cascaded children accumulate into a single
@@ -51,12 +50,7 @@ defmodule Nest.Agents.Agent.SubAgentTest do
       child_name = "completed-child-#{System.unique_integer([:positive])}"
       state = with_running_child(parent, child_name)
 
-      child_total = %{
-        Broadcasts.empty_usage_totals()
-        | output_tokens: 42,
-          total_input_tokens: 100,
-          total_tokens: 142
-      }
+      child_total = %{Broadcasts.empty_usage_totals() | output_tokens: 42}
 
       result = SubAgent.handle_child_completed(state, child_name, "done", child_total)
       assert {:noreply, new_state} = result
@@ -66,26 +60,12 @@ defmodule Nest.Agents.Agent.SubAgentTest do
       assert [%{from: ^child_name, content: "done", kind: :agent}] = new_state.live.inbox
 
       # Running entry removed; the child is terminal.
-      assert Machine.pending_children(new_state.live.machine) == %{}
       assert Children.status(new_state.live.machine.children, child_name) == :completed
 
-      # Usage merged into descendant_usage.
+      # Usage merged into descendant_usage. The field-by-field sum is
+      # `broadcasts_usage_totals_test.exs`'s; one field is enough to show the
+      # merge ran.
       assert new_state.llm_metrics.descendant_usage.output_tokens == 42
-      assert new_state.llm_metrics.descendant_usage.total_input_tokens == 100
-      assert new_state.llm_metrics.descendant_usage.total_tokens == 142
-    end
-
-    test "no-op for an unknown child name" do
-      parent = build_parent_state()
-
-      assert {:noreply, new_state} =
-               SubAgent.handle_child_completed(parent, "ghost-child", "ok", %{})
-
-      # The turn settle-loop only rebuilds the (opaque) working ctx; the
-      # child bookkeeping and observable status are untouched.
-      assert Machine.pending_children(new_state.live.machine) == %{}
-      assert new_state.live.machine.children == parent.live.machine.children
-      assert Machine.status_for(new_state.live.machine) == Machine.status_for(parent.live.machine)
     end
 
     test "cascades the merge: descendant usage accumulates across children" do
@@ -95,63 +75,48 @@ defmodule Nest.Agents.Agent.SubAgentTest do
 
       state = with_running_child(parent, child_a)
 
-      total_a = %{Broadcasts.empty_usage_totals() | output_tokens: 10, total_input_tokens: 50}
+      total_a = %{Broadcasts.empty_usage_totals() | output_tokens: 10}
       {:noreply, state} = SubAgent.handle_child_completed(state, child_a, "a", total_a)
 
       state = with_running_child(state, child_b)
 
-      total_b = %{Broadcasts.empty_usage_totals() | output_tokens: 20, total_input_tokens: 70}
+      total_b = %{Broadcasts.empty_usage_totals() | output_tokens: 20}
       {:noreply, state} = SubAgent.handle_child_completed(state, child_b, "b", total_b)
 
       # Both answers are queued, in completion order.
       assert [%{from: ^child_a, content: "a"}, %{from: ^child_b, content: "b"}] = state.live.inbox
 
-      # Cumulative: 10 + 20 = 30 output, 50 + 70 = 120 input.
+      # Cumulative, not replaced: 10 + 20 = 30.
       assert state.llm_metrics.descendant_usage.output_tokens == 30
-      assert state.llm_metrics.descendant_usage.total_input_tokens == 120
-    end
-  end
-
-  describe "cascade_terminate/1" do
-    test "calls the supervisor's cascade_children_only and returns :ok" do
-      parent = build_parent_state()
-      assert SubAgent.cascade_terminate(parent) == :ok
     end
   end
 
   describe "handle_child_failed/3 and handle_child_terminated/3" do
     test "a failed or stopped child reaches the parent as a runtime notice" do
-      for {handle, tag, reason, status, news} <- [
-            {&SubAgent.handle_child_failed/3, "failed", {:crashed, "boom"}, :failed,
-             "failed before it answered: {:crashed, \"boom\"}"},
-            {&SubAgent.handle_child_terminated/3, "stopped", :shutdown, :terminated,
-             "was stopped before it answered: :shutdown"}
+      for {handle, tag, reason} <- [
+            {&SubAgent.handle_child_failed/3, "failed", {:crashed, "boom"}},
+            {&SubAgent.handle_child_terminated/3, "stopped", :shutdown}
           ] do
         parent = build_parent_state()
         child_name = "#{tag}-child-#{System.unique_integer([:positive])}"
-        state = with_running_child(parent, child_name, true)
+        state = with_running_child(parent, child_name)
 
         assert {:noreply, new_state} = handle.(state, child_name, reason)
 
         # The runtime speaks, not the child — a `:runtime` entry (rendered bare),
-        # naming the child and quoting why the answer is not coming. The
-        # child's slot is dropped and terminal; whether a terminal transition
-        # emits an archive is pinned in `Machine.ChildrenTest`.
-        assert [%{from: ^child_name, kind: :runtime, content: content}] = new_state.live.inbox
-        assert content == "Child agent #{child_name} #{news}"
-
-        assert Machine.pending_children(new_state.live.machine) == %{}
-        assert Children.status(new_state.live.machine.children, child_name) == status
+        # naming the child. The wording is `SubAgentResults`'s and the terminal
+        # bookkeeping is `Machine.ChildrenTest`'s, so neither is restated here.
+        assert [%{from: ^child_name, kind: :runtime}] = new_state.live.inbox
       end
     end
 
     test "a failure for an unknown child is a no-op" do
       parent = build_parent_state()
 
+      # Both handlers funnel through the same `Children.step/2` ignore path, so
+      # one comparison after both calls covers either of them mutating the map.
       assert {:noreply, failed} = SubAgent.handle_child_failed(parent, "ghost", :stopped)
-      assert failed.live.machine.children == parent.live.machine.children
-
-      assert {:noreply, terminated} = SubAgent.handle_child_terminated(parent, "ghost", :shutdown)
+      assert {:noreply, terminated} = SubAgent.handle_child_terminated(failed, "ghost", :shutdown)
       assert terminated.live.machine.children == parent.live.machine.children
     end
   end
@@ -170,15 +135,13 @@ defmodule Nest.Agents.Agent.SubAgentTest do
       # The two fake names aren't registered in the live
       # ChildRegistry, so `Supervisor.stop_agent/1` returns
       # `{:error, :not_found}` for each — which the helper
-      # discards. The bookkeeping assertions below are what
-      # the unit actually pins: the map resets cleanly so a
-      # late-arriving `:child_completed` becomes a defensive
-      # no-op in `handle_child_completed/4`.
+      # discards. (That the walk really stops live children is
+      # `clone_agent_chat_stop_test.exs`'s.) What this unit pins is the map
+      # reset, so a late-arriving `:child_completed` becomes a defensive no-op
+      # in `handle_child_completed/4`, and that clearing it leaves the machine's
+      # observable status alone.
       new_state = SubAgent.stop_pending_children(state)
-      assert Machine.pending_children(new_state.live.machine) == %{}
       assert new_state.live.machine.children == Children.new()
-      # Other fields are untouched.
-      assert new_state.name == state.name
 
       assert Machine.status_for(new_state.live.machine) ==
                Machine.status_for(state.live.machine)
@@ -202,9 +165,9 @@ defmodule Nest.Agents.Agent.SubAgentTest do
 
   # Helpers
 
-  defp with_running_child(state, name, archive \\ false) do
+  defp with_running_child(state, name) do
     {:ok, _actions, machine} =
-      Machine.step(state.live.machine, {:child_spawned, name, archive, nil})
+      Machine.step(state.live.machine, {:child_spawned, name, false, nil})
 
     %{state | live: %{state.live | machine: machine}}
   end

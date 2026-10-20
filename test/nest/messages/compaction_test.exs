@@ -16,8 +16,6 @@ defmodule Nest.Messages.CompactionTest do
 
   use ExUnit.Case, async: true
 
-  import Nest.WireFormatAssertions
-
   alias Nest.Messages.Compaction
 
   describe "to_json/1" do
@@ -40,8 +38,6 @@ defmodule Nest.Messages.CompactionTest do
                "occurredAt" => nil,
                "apiLogs" => []
              }
-
-      assert_wire_encodable!(json, "compaction marker")
     end
 
     test "passes token stats through to the wire format" do

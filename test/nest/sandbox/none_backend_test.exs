@@ -55,9 +55,7 @@ defmodule Nest.Sandbox.NoneBackendTest do
       assert String.trim(output) == dir
     end
 
-    test "round-trips stdout and the exit code", %{mounts: mounts} do
-      assert {:ok, "hi\n"} = ShellCmd.execute("echo hi", mounts, caps())
-
+    test "a non-zero exit is an error carrying the exit code and the stderr", %{mounts: mounts} do
       # A non-zero exit is an operator diagnostic: `ShellCmd` logs it with
       # `Logger.error` before returning, so the test that provokes it captures
       # and asserts that line rather than letting it into the suite output.
@@ -111,14 +109,12 @@ defmodule Nest.Sandbox.NoneBackendTest do
     test "TmpSpace roots a none space at the real /tmp" do
       assert TmpSpace.space_dir(1, "none") == "/tmp"
       assert TmpSpace.agent_dir(1, "agent-a", "none") == "/tmp/agent-a"
-      refute TmpSpace.space_dir(1, "bwrap") == "/tmp"
     end
 
     test "a write under the scratch dir lands in the real /tmp", %{
       scratch: scratch,
       mounts: mounts
     } do
-      assert scratch == Path.join("/tmp", Path.basename(scratch))
       target = Path.join(scratch, "report.txt")
 
       assert {:ok, _output} = Sandbox.write(target, "hello", caps(), mounts)

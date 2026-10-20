@@ -1,36 +1,29 @@
 defmodule Nest.Agents.Agent.NetworkAccessNoticeTest do
   @moduledoc """
-  A live `network_access` flip reaches the agent twice over, and the two halves
-  are pinned together so they cannot drift:
+  A live `network_access` flip tells the agent what its value now is.
 
-    * the **mounts** move, so the tool closures the agent will call next are built
-      from the new value (`Nest.Agents.Agent.SpaceNetworkAccessTest` covers that
-      half across two spaces and the tool rebuild);
-    * the agent is **told**, by a `[Nest notice]` naming the new value — because
-      the system prompt's network sentence was composed from the value the agent
-      started with and is deliberately never rebuilt.
+  The other half of the change — the mounts moving and the tool closures being
+  rebuilt from them — belongs to `Nest.Agents.Agent.SpaceNetworkAccessTest`. What
+  is left here is that the *value* travels: an edit that changed only the network
+  reaches the agent's notice as the new value rather than the default the agent
+  started with, which no other file pins (`Nest.Agents.Agent.WorkspaceTest`
+  drives the same edit → cast → append path with a workspace change instead).
+
+  The notice exists because the system prompt's network sentence was composed
+  from the value the agent started with and is deliberately never rebuilt: once a
+  conversation is active the system message does not change except on compaction
+  or a user-initiated model change, and a "fix" that re-rendered the sentence
+  would destroy prefix caching. The prompt's own bytes surviving an environment
+  edit are pinned in `Nest.Agents.Agent.WorkspaceTest` and
+  `Nest.Agents.Agent.SystemPromptCacheTest`.
 
   The notice is *appended*, not queued: a queued notice would need a turn to
   deliver it, so a space-wide edit would cost one LLM call per live agent. The
   pair goes in as a `:workspace_notice` step, which costs no turn.
 
-  It lands only on an idle machine. A mid-turn agent is not told *now* and is not
-  silently forgotten either: the space edit marks every agent in the space before
-  it casts (`Nest.Spaces.announce_environment/1`), and the cast cannot deliver to
-  a busy machine (`apply_space_environment/2` returns `{:ignored, phase}`), so the
-  flag survives and the change is announced at that agent's next start.
-
-  The prompt-bytes assertion is the one that protects the project's cache rule:
-  once a conversation is active the system message does not change except on
-  compaction or a user-initiated model change. A "fix" that re-rendered the
-  sentence would make it current and destroy prefix caching, which is a worse
-  trade than a sentence that says what was true when the session started — so the
-  sentence stays as composed, and the notice is what keeps the agent up to date.
-  (Rewording the sentence to say "as of session start" was tried and backed out:
-  `TurnBatchStartDeliveryTest` derives its context limit from the prompt's own
-  size, so growing the prompt silently changed which side of the limit a
-  delivery landed on. The sentence is true when it is composed; the notice is
-  what makes it stay true.)
+  On a `none` space the notice must not claim a sandbox the space does not have,
+  because `none` runs the bare command on the host: a "disabled" flip restricts
+  nothing, and a notice that said otherwise would contradict the prompt.
   """
 
   use Nest.DataCase, async: true
@@ -39,10 +32,10 @@ defmodule Nest.Agents.Agent.NetworkAccessNoticeTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents
+  alias Nest.Agents.Agent
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
-  alias Nest.Sandbox.Mounts
   alias Nest.Spaces
 
   setup :verify_on_exit!
@@ -54,34 +47,17 @@ defmodule Nest.Agents.Agent.NetworkAccessNoticeTest do
     :ok
   end
 
-  test "a live flip tells the agent and leaves the prompt's bytes alone" do
+  test "a live flip tells the agent the value the edit wrote" do
     {pid, _name} = AgentTestHelpers.start_agent()
     space_id = AgentTestHelpers.current_space_id()
 
-    prompt = AgentTestHelpers.get_system_prompt(pid)
-    assert prompt =~ "Network access is enabled for this space"
-
-    # Off.
     assert {:ok, _space} = Spaces.update_environment(space_id, %{network_access: false})
 
-    # The value the tools will actually run under moved...
-    assert network_access(pid) == false
-    # ...the agent was told what it is now...
-    assert [off_notice] = notices(pid)
-    assert off_notice =~ "Network access: disabled"
-    assert off_notice =~ "The `plan` restriction is enforced here"
-    # ...and the prompt did not. This is the cache rule, pinned.
-    assert AgentTestHelpers.get_system_prompt(pid) == prompt
-
-    # Back on, so the notice is not a one-way message.
-    assert {:ok, _space} = Spaces.update_environment(space_id, %{network_access: true})
-
-    assert network_access(pid) == true
-    # Both notices are in the transcript, in order: the pair is appended, so
-    # nothing had to drain an inbox to get them there.
-    assert [^off_notice, on_notice] = notices(pid)
-    assert on_notice =~ "Network access: enabled"
-    assert AgentTestHelpers.get_system_prompt(pid) == prompt
+    # The transcript, with no turn run: `Spaces.environment_values/1` and the
+    # cast's own field map are the two places that could quietly hand the agent
+    # the value it started with instead of the one just written.
+    assert [notice] = notices(pid)
+    assert notice =~ "Network access: disabled"
   end
 
   test "on a `none` space the notice does not claim a sandbox the space does not have" do
@@ -113,22 +89,20 @@ defmodule Nest.Agents.Agent.NetworkAccessNoticeTest do
     assert {:ok, _space} = Spaces.update_environment(space_id, %{network_access: false})
 
     assert [notice] = notices(pid)
-    assert notice =~ "Network access: disabled"
     assert notice =~ "not enforced on this backend"
-    refute notice =~ "is enforced here"
   end
 
-  # The runtime notices waiting in the agent's inbox. `pending_messages` is
-  # `Inbox.serialize/1`, so this is the same value the UI shows — the notice is
-  # visible to the operator as well as queued for the model.
+  # The runtime notices in the agent's transcript — the same value the UI shows,
+  # so the notice is visible to the operator as well as to the model.
   # The notice is *appended*, not queued: the machine's `:workspace_notice` step
   # runs `append_many` for the pair, so it lands in the transcript (and the DB)
   # without costing a turn. Reading the transcript is what pins that.
+  #
+  # `get_messages/2` is a call, so it is also what orders these assertions after
+  # the `:space_changed` cast, which broadcasts nothing to wait on.
   defp notices(pid) do
     pid
-    |> state()
-    |> Map.fetch!(:chat_state)
-    |> Map.fetch!(:messages)
+    |> Agent.get_messages(1_000)
     |> Enum.map(fn {_role, message} -> text_of(message) end)
     |> Enum.filter(&(&1 =~ "[From nest runtime"))
   end
@@ -139,14 +113,4 @@ defmodule Nest.Agents.Agent.NetworkAccessNoticeTest do
       _other -> ""
     end)
   end
-
-  defp network_access(pid), do: Mounts.network_access(state(pid).mounts)
-
-  # The mounts are not in `get_public_info/1`, and the `:space_changed` cast
-  # emits no frame of its own, so the value the tools were rebuilt from is only in
-  # the state. Reading it also drains the cast, which is what orders the
-  # assertions above rather than racing them.
-  #
-  # allowlist: barrier — the mounts have no accessor and the cast broadcasts nothing
-  defp state(pid), do: :sys.get_state(pid)
 end

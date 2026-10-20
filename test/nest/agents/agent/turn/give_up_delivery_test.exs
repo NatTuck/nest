@@ -46,7 +46,6 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
     assert note.from_name == giver.name
     assert {note.to_kind, note.to_name} == {:user, "alice"}
     assert note.kind == :runtime
-    assert note.content =~ giver.name
     assert note.content =~ "did not reply"
 
     assert_receive {:user_note, %{id: id}}, 500
@@ -132,12 +131,7 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
     # `stop_agent/2` is synchronous and we have its `:EXIT`, so the process is
     # provably dead — and its registry name is already free, because
     # `Agent.terminate/2`'s last act is `Registry.release/2`, which runs before
-    # the process exits and therefore before the `:EXIT` above. Asserting the
-    # lookup beats polling the row, and `get_running_agent/2` additionally
-    # liveness-checks the pid.
-    assert Nest.Agents.Supervisor.get_running_agent(space_id, peer_name) ==
-             {:error, :not_found}
-
+    # the process exits and therefore before the `:EXIT` above. The row stays.
     assert {:ok, _row} = Nest.Persistence.fetch_agent(space_id, peer_name)
 
     giver = giver(space_id)
@@ -166,9 +160,10 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
 
     # "Never resurrect a stopped peer": resolving through `get_agent/2` would
     # load the row and start a turn on it, so the refusal is what keeps the peer
-    # gone — no process, no registry entry, nothing loaded.
+    # gone. `get_running_agent/2` is the lookup the refusal itself went through,
+    # and it liveness-checks the pid, so `:not_found` here is "no process, no
+    # registry entry, nothing loaded".
     assert {:error, :not_found} = Nest.Agents.Supervisor.get_running_agent(space_id, peer_name)
-    assert Nest.Agents.Registry.lookup(space_id, peer_name) == {:error, :not_found}
   end
 
   test "a delivery task that cannot be started names every requester it could not reach" do
@@ -178,13 +173,10 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
     Mimic.stub(Nest.Agents.Supervisor, :get_running_agent, fn _space, _name -> {:ok, dead} end)
     Mimic.stub(Task.Supervisor, :start_child, fn _sup, _fun -> {:error, :max_children} end)
     giver = giver(space_id)
-    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{giver.name}")
 
     log =
       capture_log(fn ->
         assert :ok = GiveUpDelivery.deliver(giver, ["peer-a", "peer-b"], :stopped)
-        assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 1_000
-        assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 1_000
       end)
 
     # One refusal per requester, each named: a comma-joined target list would

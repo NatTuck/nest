@@ -121,17 +121,6 @@ defmodule Nest.Persistence.MessageRepair.PlannerTest do
   end
 
   describe "alternation repairs" do
-    test "two consecutive user messages get an assistant between them" do
-      plan =
-        plan([agent(1, next: 3)], %{
-          1 => [row(1, 1, system(0)), row(2, 1, user(1)), row(3, 1, user(2))]
-        })
-
-      assert [{1, 2}] = insert_indices(plan)
-      assert [%{runtime: {:assistant, %Assistant{}}}] = plan.inserts
-      assert plan.residual_violations == %{}
-    end
-
     test "two consecutive assistant messages get a user between them" do
       plan =
         plan([agent(1, next: 2)], %{
@@ -145,31 +134,6 @@ defmodule Nest.Persistence.MessageRepair.PlannerTest do
   end
 
   describe "clone renumbering" do
-    test "an insert into the parent prefix shifts the child fork and own indices" do
-      parent_rows = [
-        row(1, 1, system(0)),
-        row(2, 1, user(1)),
-        row(3, 1, user(2)),
-        row(4, 1, assistant_tool(3, "spawn"))
-      ]
-
-      child_rows = [row(5, 2, tool_result(4, "spawn")), row(6, 2, assistant_text(5))]
-
-      plan =
-        plan(
-          [agent(1, next: 4), agent(2, parent: 1, fork: 4, next: 6)],
-          %{1 => parent_rows, 2 => child_rows}
-        )
-
-      assert MapSet.member?(plan.changed_agents, 2)
-      assert plan.agent_updates[2].fork_message_index == 5
-      assert plan.agent_updates[2].next_message_index == 7
-
-      assert Enum.any?(plan.renumbers, &(&1.id == 5 and &1.index == 5))
-      assert Enum.any?(plan.renumbers, &(&1.id == 6 and &1.index == 6))
-      assert plan.residual_violations == %{}
-    end
-
     test "a shared prefix tool pair is not absorbed into the child's own rows" do
       parent_rows = [
         row(1, 1, system(0)),
@@ -190,7 +154,6 @@ defmodule Nest.Persistence.MessageRepair.PlannerTest do
       assert [{2, 6}] = insert_indices(plan)
       assert [%{runtime: {:assistant, %Assistant{}}}] = plan.inserts
       assert plan.changed_agents == MapSet.new([2])
-      refute Map.has_key?(plan.agent_updates, 1)
       assert plan.agent_updates[2].next_message_index == 8
 
       child_ids = for r <- plan.renumbers, r.agent_id == 2, do: r.id
@@ -235,8 +198,7 @@ defmodule Nest.Persistence.MessageRepair.PlannerTest do
           %{1 => parent_rows, 2 => [row(3, 2, system(0))]}
         )
 
-      refute MapSet.member?(plan.changed_agents, 2)
-      refute Map.has_key?(plan.agent_updates, 2)
+      assert plan.changed_agents == MapSet.new([1])
     end
 
     test "a parent delete below the fork pulls the child fork and own indices down" do

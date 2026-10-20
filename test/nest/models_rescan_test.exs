@@ -74,21 +74,23 @@ defmodule Nest.ModelsRescanTest do
       assert Map.keys(state.auto_models) |> Enum.sort() == ["a-model", "b-model"]
     end
 
-    test "ignores a result from a provider that is not part of the scan" do
-      state = state(scan(["a"]))
-      unchanged = handle_result(state, "ghost", %{"g" => model("g", "ghost")}, %{})
-
-      assert unchanged.scan.pending == MapSet.new(["a"])
-      assert unchanged.scan.auto_models == %{}
-    end
-
-    test "ignores a result when no scan is active" do
+    test "ignores a result nothing is waiting for" do
+      # A late answer after the scan finalized: no scan to fold it into.
       idle = state(nil)
 
       assert {:noreply, ^idle} =
                Models.handle_info(
                  {:models_provider_result, "a", %{"m" => model("m", "a")}, %{}},
                  idle
+               )
+
+      # A provider that is not in the live scan's pending set.
+      active = state(scan(["a"]))
+
+      assert {:noreply, ^active} =
+               Models.handle_info(
+                 {:models_provider_result, "ghost", %{"g" => model("g", "ghost")}, %{}},
+                 active
                )
     end
   end
@@ -101,9 +103,12 @@ defmodule Nest.ModelsRescanTest do
             state(scan(["a"], %{"stale" => model("stale", "a")}, %{"a" => %{"stale" => :x}}))
             |> handle_failure("a", :timeout)
 
+          # A failure counts as progress: the scan ends even though no
+          # provider answered. `drop_provider/2` clears the limit cache
+          # with the models (the discriminating case for both is in
+          # "stale providers" below).
           assert state.scan == nil
           assert state.auto_models == %{}
-          assert state.context_limits == %{}
         end)
 
       # The failure is surfaced, not swallowed silently.
@@ -123,7 +128,6 @@ defmodule Nest.ModelsRescanTest do
         )
         |> handle_result("a", %{"new" => model("new", "a")}, %{"a" => %{"new" => :limit}})
 
-      assert state.scan == nil
       # "old" (same provider) is gone; "keep" (another provider) survives.
       assert Map.keys(state.auto_models) |> Enum.sort() == ["keep", "new"]
       assert state.context_limits == %{"a" => %{"new" => :limit}}
@@ -132,43 +136,24 @@ defmodule Nest.ModelsRescanTest do
 
   describe "scan deadline" do
     test "finalizing a scan cancels its deadline timer" do
-      # The deadline is a *far future* value that the test proves gets
-      # cancelled, so this is a timer, not a wait. It is capped at 2s
-      # (#21: no test timeout over 2000ms) — which makes the
-      # `refute_received :deadline_should_be_cancelled` below sensitive to
-      # this test taking longer than 2s under load. See
-      # `notes/sketchy-slow-tests.md`.
+      # A real timer, so `Process.read_timer/1` has a ref to report on:
+      # only `finalize_scan/1` cancelling it can make it read `false`
+      # well before the 2s fires.
       timer = Process.send_after(self(), :deadline_should_be_cancelled, 2_000)
       state = state(scan(["a"], %{}, %{}, timer: timer))
 
-      state =
-        handle_result(state, "a", %{"m" => model("m", "a")}, %{"a" => %{}})
+      _ = handle_result(state, "a", %{"m" => model("m", "a")}, %{"a" => %{}})
 
-      assert state.scan == nil
       assert Process.read_timer(timer) == false
-      refute_received :deadline_should_be_cancelled
     end
 
     test "the deadline marks completion without ending the scan" do
-      # The deadline is a *far future* value that the test proves gets
-      # cancelled, so this is a timer, not a wait. It is capped at 2s
-      # (#21: no test timeout over 2000ms) — which makes the
-      # `refute_received :deadline_should_be_cancelled` below sensitive to
-      # this test taking longer than 2s under load. See
-      # `notes/sketchy-slow-tests.md`.
-      timer = Process.send_after(self(), :deadline_should_be_cancelled, 2_000)
-      state = state(scan(["a"], %{}, %{}, timer: timer))
-
-      assert {:noreply, next} = Models.handle_info(:models_scan_deadline, state)
+      assert {:noreply, next} = Models.handle_info(:models_scan_deadline, state(scan(["a"])))
 
       # The scan stays alive to accept late provider answers, and is
       # marked so a late finalize won't announce a second completion.
       assert next.scan != nil
       assert next.scan.deadline_fired == true
-
-      # The timer already fired in production; cancel the synthetic
-      # one so it can't leak into a later test.
-      Process.cancel_timer(timer)
     end
 
     test "a late provider result after the deadline finalizes the scan" do
@@ -194,12 +179,6 @@ defmodule Nest.ModelsRescanTest do
 
       assert {:noreply, next} = Models.handle_cast(:refresh, live)
       assert next.scan.id == 7
-      assert next.last_scan_id == nil
-
-      # The joined scan still finalizes exactly as normal.
-      done = handle_result(next, "a", %{"m" => model("m", "a")}, %{"a" => %{}})
-      assert done.scan == nil
-      assert Map.keys(done.auto_models) == ["m"]
     end
 
     test "a refresh after the deadline fired starts a fresh scan" do
@@ -207,8 +186,8 @@ defmodule Nest.ModelsRescanTest do
 
       assert {:noreply, next} = Models.handle_cast(:refresh, fired)
 
-      # No auto-providers, so the fresh scan finalizes on the same tick.
-      assert next.scan == nil
+      # A new scan id rather than the fired one: an explicit rescan is
+      # never a permanent no-op.
       assert next.last_scan_id != nil
       assert next.last_scan_id != 7
     end
@@ -216,10 +195,8 @@ defmodule Nest.ModelsRescanTest do
     test "a scan with no auto-providers completes immediately and later refreshes still run" do
       assert {:noreply, first} = Models.handle_cast(:refresh, state(nil))
       assert first.scan == nil
-      assert is_integer(first.last_scan_id)
 
       assert {:noreply, second} = Models.handle_cast(:refresh, first)
-      assert second.scan == nil
       assert second.last_scan_id != first.last_scan_id
     end
   end

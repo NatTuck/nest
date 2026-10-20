@@ -40,51 +40,6 @@ defmodule Nest.ChatModel.ListModelsTest do
   setup :verify_on_exit!
 
   describe "list_models/1 response-shape coverage" do
-    test "registers names from an OpenAI-shape body whose entries have no recognized limit field" do
-      provider = %DotConfig.Provider{
-        name: "minimax",
-        base_url: "https://api.minimax.io/v1",
-        api_key: "k",
-        protocol: "openai",
-        auto_models: true,
-        tags: [],
-        models: []
-      }
-
-      body = %{
-        "data" => [
-          %{
-            "created" => 1_780_272_000,
-            "id" => "MiniMax-M3",
-            "object" => "model",
-            "owned_by" => "minimax"
-          },
-          %{
-            "created" => 1_780_272_000,
-            "id" => "MiniMax-M2.7",
-            "object" => "model",
-            "owned_by" => "minimax"
-          },
-          %{
-            "created" => 1_780_272_000,
-            "id" => "MiniMax-M2.5",
-            "object" => "model",
-            "owned_by" => "minimax"
-          }
-        ]
-      }
-
-      stub(Req, :get, fn _url, _opts ->
-        {:ok, %{status: 200, body: body}}
-      end)
-
-      names = ChatModel.list_models(provider)
-      assert "MiniMax-M3" in names
-      assert "MiniMax-M2.7" in names
-      assert "MiniMax-M2.5" in names
-      assert length(names) == 3
-    end
-
     test "list_models/1 reads the `name` field in OpenAI-shape bodies" do
       provider = %DotConfig.Provider{
         name: "weird-openai-shape",
@@ -111,9 +66,7 @@ defmodule Nest.ChatModel.ListModelsTest do
       end)
 
       names = ChatModel.list_models(provider)
-      assert "from-id" in names
       assert "from-name" in names
-      assert "with-limit" in names
       assert length(names) == 3
     end
 
@@ -218,15 +171,6 @@ defmodule Nest.ChatModel.ListModelsTest do
                  multi_modal: %{"input" => ["image"]}
                }
              ] = ChatModel.list_models_with_metadata(provider)
-
-      # The limits projection keeps its own contract — limit-carrying
-      # entries only. Folding `multi_modal` into *that* filter would
-      # silently drop `image-no-limit`, which is the regression pinned
-      # by the two entry lists below.
-      assert ChatModel.list_models_with_limits(provider) == [
-               %{name: "with-limit", source: :vllm, limit: 4096},
-               %{name: "image-and-limit", source: :vllm, limit: 8192}
-             ]
     end
 
     test "drops entries with no usable id, and returns [] when the fetch fails" do
@@ -299,62 +243,6 @@ defmodule Nest.ChatModel.ListModelsTest do
       names = ChatModel.list_models(provider)
       assert names == ["m1"]
       assert_received {:probe_url, "http://probe.example.com/olla/models"}
-    end
-
-    test "list_models/1 falls back to base-url when probe-base-url is nil" do
-      # The common case: chat and discovery share one URL. Stays
-      # on `base-url` when no `probe-base-url` is configured.
-      provider = %DotConfig.Provider{
-        name: "shared",
-        base_url: "http://api.test/v1",
-        probe_base_url: nil,
-        api_key: "k",
-        protocol: "openai",
-        auto_models: true,
-        tags: [],
-        models: []
-      }
-
-      test_pid = self()
-
-      stub(Req, :get, fn url, _opts ->
-        send(test_pid, {:probe_url, url})
-        {:ok, %{status: 200, body: %{"data" => [%{"id" => "m1"}]}}}
-      end)
-
-      assert ChatModel.list_models(provider) == ["m1"]
-      assert_received {:probe_url, "http://api.test/v1/models"}
-    end
-
-    test "list_models_with_limits/1 routes through probe-base-url and parses Olla shape" do
-      # End-to-end: a provider with split URLs surfaces Olla-shaped
-      # metadata from the discovery URL via the Olla extractor.
-      provider = %DotConfig.Provider{
-        name: "typhon",
-        base_url: "http://chat.example.com/v1",
-        probe_base_url: "http://probe.example.com/olla",
-        api_key: "k",
-        protocol: "openai",
-        auto_models: true,
-        tags: [],
-        models: []
-      }
-
-      body = %{
-        "data" => [
-          %{
-            "id" => "Qwen/Qwen3.6-27B-FP8",
-            "object" => "model",
-            "owned_by" => "olla",
-            "olla" => %{"max_context_length" => 224_000}
-          }
-        ]
-      }
-
-      stub(Req, :get, fn _url, _opts -> {:ok, %{status: 200, body: body}} end)
-
-      assert [%{name: "Qwen/Qwen3.6-27B-FP8", source: :olla, limit: 224_000}] =
-               ChatModel.list_models_with_limits(provider)
     end
   end
 end

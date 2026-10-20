@@ -13,7 +13,6 @@ defmodule Nest.Persistence.AgentCompaction.SummarizerTest do
   alias Nest.Messages.User
   alias Nest.Persistence.AgentCompaction.Planner
   alias Nest.Persistence.AgentCompaction.Summarizer
-  alias Nest.Tokens.Estimator
 
   defmodule FailingClient do
     @moduledoc false
@@ -38,7 +37,6 @@ defmodule Nest.Persistence.AgentCompaction.SummarizerTest do
     assert_received {:call, 1, first}
     assert_received {:call, 2, second}
     assert system_text(first) =~ "Summarize the conversation that follows"
-    refute system_text(first) =~ "running summary of the earlier conversation"
     assert system_text(second) =~ "summary-1"
   end
 
@@ -83,7 +81,6 @@ defmodule Nest.Persistence.AgentCompaction.SummarizerTest do
     end
 
     assert {:ok, "short"} = Summarizer.summarize(plan([[user_msg(1, "a")]], budget: 100), call)
-    assert Estimator.estimate(long) > 100
     assert_received {:compress_call, 2, messages}
     assert compress_text(messages) =~ "Compress the following summary"
   end

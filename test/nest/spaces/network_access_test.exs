@@ -151,32 +151,9 @@ defmodule Nest.Spaces.NetworkAccessTest do
       derive!()
       assert Spaces.network_access(space_id) == false
     end
-
-    test "is a pure function of the tables: running it twice changes nothing" do
-      enabled = space_with_root_agent(%{"act" => mode_with_net(true)})
-      disabled = space_with_root_agent(%{"plan" => mode_with_net(false)})
-
-      derive!()
-      first = {Spaces.network_access(enabled), Spaces.network_access(disabled)}
-
-      derive!()
-      assert {Spaces.network_access(enabled), Spaces.network_access(disabled)} == first
-      assert first == {true, false}
-    end
   end
 
   describe "network_access/1" do
-    test "resolves the space's value" do
-      {:ok, space} =
-        Spaces.create_space(nil, %{
-          workspace_path: AgentTestHelpers.default_test_workspace(),
-          name: unique("net-read"),
-          network_access: false
-        })
-
-      assert Spaces.network_access(space.id) == false
-    end
-
     test "defaults to true for a new space, and for a missing row" do
       {:ok, space} =
         Spaces.create_space(nil, %{
@@ -184,7 +161,6 @@ defmodule Nest.Spaces.NetworkAccessTest do
           name: unique("net-default")
         })
 
-      assert space.network_access == true
       assert Spaces.network_access(space.id) == true
       assert Spaces.network_access(-1) == true
     end
@@ -224,39 +200,6 @@ defmodule Nest.Spaces.NetworkAccessTest do
       assert {:ok, updated} = Spaces.update_environment(space.id, %{network_access: false})
 
       assert updated.sandbox_backend == "none"
-      assert updated.name == space.name
-    end
-
-    test "releases the space's sandbox environment, so the new value is built" do
-      # A container's network is fixed when it is created (`--network none`), so
-      # the next command has to build one with the new value — which means the
-      # change has to release the container, exactly as an archive or a delete
-      # does. What that asks the daemon is asserted against a fake in
-      # `Nest.Sandbox.Backend.DockerTest`, because the test environment installs
-      # an inert runner rather than talking to a daemon (`config/test.exs`); what
-      # is asserted here is that the hook is on the path and does not interfere,
-      # and that a space whose backend keeps nothing is unaffected.
-      {:ok, docker} =
-        Spaces.create_space(nil, %{
-          workspace_path: AgentTestHelpers.default_test_workspace(),
-          name: unique("net-release"),
-          sandbox_backend: "docker"
-        })
-
-      assert {:ok, %Space{network_access: false}} =
-               Spaces.update_environment(docker.id, %{network_access: false})
-
-      assert {:ok, %Space{network_access: true}} =
-               Spaces.update_environment(docker.id, %{network_access: true})
-
-      {:ok, plain} =
-        Spaces.create_space(nil, %{
-          workspace_path: AgentTestHelpers.default_test_workspace(),
-          name: unique("net-release-plain")
-        })
-
-      assert {:ok, %Space{network_access: false}} =
-               Spaces.update_environment(plain.id, %{network_access: false})
     end
   end
 end

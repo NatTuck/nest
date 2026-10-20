@@ -8,11 +8,16 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
   `spaces.workspace_path`, so the agent edit dialog no longer carries one and
   `Agents.change_workspace/3` / `Agents.set_workspace/2` are gone. The caller is
   `Nest.Spaces.update_environment/2` (the space edit), so what these tests pin is
-  the seam it uses: the mounts move, the tool closures are rebuilt against them,
-  the persisted system prompt (index 0) is untouched to preserve the LLM prefix
-  cache, and the change is announced as a user/assistant notice pair naming the
-  values now in force — or, for a machine that cannot take it, left for the
-  agent's next start.
+  the seam it uses: the mounts move, the persisted system prompt (index 0) is
+  untouched to preserve the LLM prefix cache, and the change is announced as a
+  user/assistant notice pair naming the values now in force — or, for a machine
+  that cannot take it, left for the agent's next start.
+
+  The other half of that seam — that the tool closures are rebuilt against the
+  new mounts, and that a turn's context re-reads them — is
+  `Nest.Agents.Agent.NetworkAccessRefreshTest`'s (the rebuild is the same code
+  whatever property changed), with the tool set surviving the rebuild in
+  `Nest.Agents.Agent.SpaceNetworkAccessTest`.
   """
 
   use Nest.DataCase, async: true
@@ -38,28 +43,17 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
 
   setup do
     {:ok, _space_id} = AgentTestHelpers.create_test_space()
-    on_exit(fn -> :ok end)
     :ok
   end
 
   describe "apply_space_environment/2" do
-    test "moves the mounts, rebuilds the tools, and appends the notice pair" do
+    test "moves the mounts, appends the notice pair, and leaves the system message alone" do
       old = new_ws("old")
       new = new_ws("new")
 
-      # A vocation with the file tools, so the rebuild has a closure to rebuild.
-      {:ok, vocation} =
-        Nest.Vocations.create_vocation(%{
-          name: "WS Test (#{System.unique_integer([:positive])})",
-          description: "writes to workspace",
-          system_prompt: "workspace prompt",
-          tools: ["file", "shell", "context"]
-        })
+      {pid, _name} = AgentTestHelpers.start_agent(%{workspace_path: old})
 
-      {pid, _name} =
-        AgentTestHelpers.start_agent(%{workspace_path: old, vocation_id: vocation.id})
-
-      # allowlist: snapshot — the mounts, tools and messages the apply moves
+      # allowlist: snapshot — the mounts and messages the apply moves
       before = :sys.get_state(pid, 1_000)
       assert Mounts.workspace(before.mounts) == old
       system_before = List.first(before.chat_state.messages)
@@ -76,26 +70,16 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       assert Mounts.network_access(state.mounts) == false
       assert Mounts.backend(state.mounts) == "none"
 
-      # Tool closures rebuilt against the new mounts.
-      assert Enum.any?(state.tools, &(&1.name == "file-read"))
-
       # The system message (index 0) is untouched: rebuilding it would break the
       # prefix cache.
       assert List.first(state.chat_state.messages) == system_before
 
-      # The notice pair is the new tail, and it states the values now in force
-      # rather than a delta — a reconciliation, so two edits cannot leave the
-      # agent holding a partial picture.
-      assert [{:user, user}, {:assistant, assistant}] = Enum.take(state.chat_state.messages, -2)
-
-      text = Enum.map_join(user.parts, "", &(&1.text || ""))
-
-      assert text =~ "[From nest runtime"
-      assert text =~ "Workspace: #{new}"
-      assert text =~ "Network access: disabled"
-      assert text =~ "Sandbox: none"
-
-      assert Enum.any?(assistant.parts, &(&1.text == "Space environment change confirmed."))
+      # The notice pair is the new tail, and its body names the workspace now in
+      # force. The rest of the body — the other two properties, the runtime
+      # header and the acknowledgement — is `notice_pair/2`'s, pinned
+      # byte-for-byte in `Nest.Agents.Agent.HeaderTest`.
+      assert [{:user, user}, {:assistant, _}] = Enum.take(state.chat_state.messages, -2)
+      assert text_of(user) =~ "Workspace: #{new}"
     end
 
     test "reapplies the max-depth spawn exclusion when tools are rebuilt" do
@@ -151,7 +135,9 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       # announces either, so the read is the fence.
       state = :sys.get_state(pid, 1_000)
 
-      assert Mounts.workspace(state.mounts) == workspace
+      # The notice names the workspace the edit wrote, which is also the proof
+      # that the cast landed (the mounts moving is pinned above and in the
+      # mid-turn test below).
       assert [notice] = notices(state)
       assert notice =~ "Workspace: #{workspace}"
       assert pending?(space_id, name) == false
@@ -191,40 +177,43 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       # come from the edit itself, or a busy agent is silently never told. That is
       # the whole subject — an agent the cast cannot reach is one whose only
       # record of the change is the row.
-      for status <- [:streaming, :executing_tools] do
-        {pid, name} = AgentTestHelpers.start_agent()
-        space_id = AgentTestHelpers.current_space_id()
+      #
+      # One working status stands in for all of them (`:streaming`,
+      # `:executing_tools` and `:compacting` are `Spaces.Environment`'s
+      # `@working_statuses`, and the apply itself only asks whether the phase is
+      # `:idle`), so a second status here would pin the same branch twice.
+      {pid, name} = AgentTestHelpers.start_agent()
+      space_id = AgentTestHelpers.current_space_id()
 
-        # A turn in flight: the machine is not `:idle`, so the notice has
-        # nowhere to land.
-        _ = AgentStateHelpers.set_status(pid, status)
-        workspace = new_ws("busy-#{status}")
+      # A turn in flight: the machine is not `:idle`, so the notice has
+      # nowhere to land.
+      _ = AgentStateHelpers.set_status(pid, :streaming)
+      workspace = new_ws("busy")
 
-        # `confirm: true`: a working agent makes the edit ask the user first
-        # (`Nest.Spaces.update_environment/2`'s plan), and the user said yes. What
-        # this test pins is what the *apply* does, not the prompt.
-        assert {:ok, _space} =
-                 Spaces.update_environment(space_id, %{workspace_path: workspace}, confirm: true)
+      # `confirm: true`: a working agent makes the edit ask the user first
+      # (`Nest.Spaces.update_environment/2`'s plan), and the user said yes. What
+      # this test pins is what the *apply* does, not the prompt.
+      assert {:ok, _space} =
+               Spaces.update_environment(space_id, %{workspace_path: workspace}, confirm: true)
 
-        # allowlist: barrier — the cast is the only writer here.
-        state = :sys.get_state(pid, 1_000)
+      # allowlist: barrier — the cast is the only writer here.
+      state = :sys.get_state(pid, 1_000)
 
-        # The mounts moved — a command the agent runs next uses the space's
-        # current values whatever the machine is doing.
-        assert Mounts.workspace(state.mounts) == workspace
+      # The mounts moved — a command the agent runs next uses the space's
+      # current values whatever the machine is doing.
+      assert Mounts.workspace(state.mounts) == workspace
 
-        # ...and nothing was appended or staged.
-        assert notices(state) == []
-        assert state.live.machine.work.pending_notice == nil
+      # ...and nothing was appended or staged.
+      assert notices(state) == []
+      assert state.live.machine.work.pending_notice == nil
 
-        # The flag is the record: it was set by the edit, the cast could not
-        # deliver, and nothing cleared it — so the next start announces it.
-        assert pending?(space_id, name) == true
+      # The flag is the record: it was set by the edit, the cast could not
+      # deliver, and nothing cleared it — so the next start announces it.
+      assert pending?(space_id, name) == true
 
-        # Restore the fixture status, so the test's own leak check sees an idle
-        # agent rather than one left mid-turn on purpose.
-        _ = AgentStateHelpers.set_status(pid, :idle)
-      end
+      # Restore the fixture status, so the test's own leak check sees an idle
+      # agent rather than one left mid-turn on purpose.
+      _ = AgentStateHelpers.set_status(pid, :idle)
     end
 
     test "a conversation with no headroom for a compaction keeps the flag, and stages nothing" do

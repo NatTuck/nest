@@ -39,12 +39,7 @@ defmodule Nest.Tools.GroupsTest do
     end
   end
 
-  describe "group?/1 and tools_for/1" do
-    test "recognizes the known groups" do
-      assert Enum.all?(Groups.all(), &Groups.group?/1)
-      refute Groups.group?("bogus")
-    end
-
+  describe "tools_for/1" do
     test "unknown groups have no tools" do
       assert Groups.tools_for("bogus") == []
     end

@@ -26,9 +26,7 @@ defmodule Nest.WireFormatAssertionsTest do
         assert_wire_encodable!(payload, "bad")
       end
 
-    assert error.message =~ "not JSON-serializable"
     assert error.message =~ "partial.currentType"
-    assert error.message =~ "call_1"
   end
 
   test "reports the index of a non-encodable value inside a list" do

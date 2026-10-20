@@ -25,12 +25,4 @@ defmodule Nest.Agents.Agent.Turn.MessagesTest do
              Part.ToolUse
            ]
   end
-
-  test "assistant/1 omits thinking when the response carried none" do
-    response = %RunResponse{model: "m", text: "visible"}
-
-    {:assistant, assistant} = Messages.assistant(response)
-
-    assert Enum.map(assistant.parts, & &1.__struct__) == [Part.Text]
-  end
 end

@@ -4,13 +4,18 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
   `Nest.Agents.Agent.Inbox.Render`: what one inbox entry reads as when the
   drain delivers it to the model.
 
-  The pure rules are the module's own contract — a human entry and a `:runtime`
-  entry render bare, every other kind keeps its `[Message from agent "X" |
-  mode: M]` label (M being the mode the recipient's turn will run in), an
-  over-cap batch is replaced by a scratch-file pointer, and the delivered
-  message carries the batch's metadata. The last group drives that same
-  rendering through a real drain, so the pointer is asserted on the text the
-  transcript actually carries.
+  The pure rules are the module's own contract — every body opens with its own
+  `[From … | mode: M]` header (M being the mode the recipient's turn will run
+  in), a `:query` adds the reply-required marker, a body with no sender still
+  reads `agent`, an over-cap batch is replaced by a scratch-file pointer naming
+  its first entry's id, and a delivered notice is split into its prose and its
+  command output with the output's position in the row's metadata. The last
+  group drives that same rendering through a real drain, so the pointer and the
+  split are asserted on the text the transcript actually carries.
+
+  The per-sender wording (a human's name, the runtime's own voice) is
+  `HeaderTest`'s, and the metadata a batch rides (the human recall marker and
+  the fulfilled-promise ids) is `InboxTest`'s and `TurnBackgroundingTest`'s.
 
   Split out of `InboxTest` (which owns the delivery/disposition contract) and
   `InboxSerializationTest` (which owns the wire shape and the selection rules)
@@ -31,7 +36,6 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
   alias Nest.Agents.Agent.Turn.Backgrounded
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Messages.Header
-  alias Nest.Messages.MessageList
   alias Nest.Messages.Part
   alias Nest.Messages.User
   alias Nest.Sandbox.Mounts
@@ -40,25 +44,17 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
   @oversized String.duplicate("hello world ", 4_000)
 
   describe "combine_and_offload/2" do
-    test "every body states its sender, and the framing rows carry no header" do
+    test "a batch's bodies carry their own sender, and a query says a reply is required" do
       # intentional: the rendered text is LLM-facing. Every entry's body opens
       # with its own `[From … | mode: …]` header, so a batch disambiguates its
       # senders without an outer header; the mode is the recipient's, so the
-      # fixture names a real one (`Nest.Modes.default/0`).
+      # fixture names a real one (`Nest.Modes.default/0`). The per-sender
+      # wording — a human's name, the runtime's own voice — is `HeaderTest`'s.
       state = %Agent{live: %Agent.ChatState.Live{mode: "act"}}
 
-      # A human's own words are `user`, whatever name the channel passed —
-      # including none.
-      assert Render.combine_and_offload(
-               [entry(:user, "alice", "from a human", "plan", nil, true)],
-               state
-             ) == "[From user @alice | mode: act]\nfrom a human"
-
-      assert Render.combine_and_offload([entry(:user, nil, "from nobody", nil, nil, true)], state) ==
-               "[From user | mode: act]\nfrom nobody"
-
       # A missing or blank sender still says `agent`: the body must not read as
-      # a human's, and printing `nil` would be worse.
+      # a human's, and printing `nil` would be worse. Three bodies in one batch
+      # also pin the blank line that separates them.
       assert Render.combine_and_offload(
                [
                  entry(:agent, "peer", "from an agent"),
@@ -75,13 +71,6 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       # that obliges an answer.
       assert Render.combine_and_offload([entry(:query, "peer", "may I ask?")], state) ==
                "[From agent peer, agents-send reply required | mode: act]\nmay I ask?"
-
-      # A notice is the runtime's own and must never be framed as an agent's
-      # (decision 9) — it says `nest runtime` whatever agent it is *about*.
-      assert Render.combine_and_offload(
-               [entry(:runtime, "peer", "peer never answered")],
-               state
-             ) == "[From nest runtime | mode: act]\npeer never answered"
     end
 
     test "an over-cap batch is offloaded to a file named after its first entry's id" do
@@ -101,74 +90,19 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
   end
 
   describe "build_drained_message/3" do
-    test "the batch's metadata rides the message, and only a human batch is tagged" do
-      # intentional: the delivered message carries the batch's metadata and
-      # nothing else. The recall-list marker is fail-closed on the client, so
-      # `origin` is written only for a batch whose head is `kind: :user` *and*
-      # `human?: true` — an ordinary delivery and a `:runtime` entry that claimed
-      # `human?` stay untagged rather than being mistagged as the human's own
-      # words — while the backgrounded-promise metadata that already rides this
-      # message survives the merge.
-      cases = [
-        {"a human batch", [entry(:user, "alice", "hi", "plan", nil, true)], "hi", "plan",
-         %{"mode" => "plan", "origin" => "human"}},
-        {"a delivered batch", [%{entry(:agent, "peer", "do it") | fulfilled_ids: ["c1", "c2"]}],
-         "do it", "chat",
-         Map.merge(%{"mode" => "chat"}, MessageList.fulfilled_metadata(["c1", "c2"]))},
-        {"a non-user entry that claims human?",
-         [entry(:runtime, nil, "runtime note", nil, nil, true)], "runtime note", "chat",
-         %{"mode" => "chat"}}
-      ]
+    test "an entry that claims human? on a non-user kind is not tagged as the human's" do
+      # The recall-list marker is fail-closed on the client and needs both
+      # halves — `kind: :user` *and* `human?: true` — so a `:runtime` entry that
+      # claimed `human?` stays untagged instead of being mistagged as the
+      # human's own words. (The tagged human batch is `InboxTest`'s; the
+      # fulfilled-promise ids that ride this same message are
+      # `TurnBackgroundingTest`'s.)
+      notice = entry(:runtime, nil, "runtime note", nil, nil, true)
 
-      for {label, entries, content, mode, expected} <- cases do
-        assert {:user, %{metadata: metadata}} =
-                 Render.build_drained_message(entries, content, mode)
+      assert {:user, %{metadata: metadata}} =
+               Render.build_drained_message([notice], "runtime note", "chat")
 
-        assert metadata == expected, label
-      end
-    end
-
-    test "a notice becomes two text parts whose join is the delivered content, output marked" do
-      # issue #139: the row the browser renders is one text part per segment, so
-      # the command's output is its own part and `commandOutputParts` names it.
-      # The join is the content the drain delivered — and the content the model
-      # reads — byte for byte, which is what makes this a display change.
-      notice = notice_entry({:results, [%{name: "shell-cmd", content: "# output\n"}]})
-      content = Render.combine_and_offload([notice], render_state("act"))
-
-      assert {:user, %User{parts: parts, metadata: metadata}} =
-               Render.build_drained_message([notice], content, "act")
-
-      assert [
-               %Part.Text{text: "[From nest runtime | mode: act]\n" <> prose},
-               %Part.Text{text: "# output\n"}
-             ] = parts
-
-      assert prose == "Your backgrounded command (shell-cmd) finished. Its result:\n\n"
-      assert Enum.map_join(parts, "", & &1.text) == content
-      assert metadata["command_output_parts"] == [1]
-    end
-
-    test "a peer note before a notice puts the output index at the note's position, not last" do
-      # The index is a position in the row's parts, so a note delivered in front
-      # of the notice moves it. This is the case that rules out "the last part is
-      # the output", which would be right only for a notice delivered alone.
-      note = entry(:agent, "peer", "a note")
-      notice = notice_entry({:results, [%{name: "shell-cmd", content: "out"}]})
-      content = Render.combine_and_offload([note, notice], render_state("act"))
-
-      assert {:user, %User{parts: parts, metadata: metadata}} =
-               Render.build_drained_message([note, notice], content, "act")
-
-      assert Enum.map(parts, & &1.text) == [
-               "[From agent peer | mode: act]\na note\n\n",
-               "[From nest runtime | mode: act]\n" <>
-                 "Your backgrounded command (shell-cmd) finished. Its result:\n\n",
-               "out"
-             ]
-
-      assert Enum.map_join(parts, "", & &1.text) == content
-      assert metadata["command_output_parts"] == [2]
+      assert metadata == %{"mode" => "chat"}
     end
 
     test "a worker's death is one text part and carries no marker" do
@@ -195,7 +129,8 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       notice = notice_entry({:results, [%{name: "shell-cmd", content: @oversized}]})
 
       content = Render.combine_and_offload([notice], state)
-      assert content =~ "You have 1 queued message"
+      # The batch really was offloaded: the delivered content is the pointer,
+      # whose singular wording is pinned on the transcript by the drain test.
       assert content =~ "saved to"
 
       assert {:user, %User{parts: [%Part.Text{text: pointer}], metadata: metadata}} =
@@ -207,22 +142,17 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
   end
 
   describe "parts/2" do
-    test "a notice entry's header heads its first segment, and the text is unchanged" do
+    test "a notice entry's header heads its first segment, keeping the output's kind" do
       # issue #139: the header is a prefix, so applying it to the first segment
       # puts it at the head of the body exactly as before — and keeps it off the
-      # command output, which is the point of splitting at all. The joined
-      # segments are still byte-identical to the single-body rendering.
+      # command output, which is the point of splitting at all. (The notice's
+      # own wording is `BackgroundedTest`'s.)
       notice = notice_entry({:results, [%{name: "shell-cmd", content: "# output\n"}]})
 
       assert [
                {:text, "[From nest runtime | mode: act]\n" <> prose},
                {:output, "# output\n"}
              ] = Render.parts([notice], "act")
-
-      assert prose == "Your backgrounded command (shell-cmd) finished. Its result:\n\n"
-
-      assert Render.combine_and_offload([notice], render_state("act")) ==
-               Header.put(notice.content, :runtime, "act")
 
       # An entry with no segments of its own renders exactly as it always did,
       # and the blank line between entries rides the *last* segment of the
@@ -234,10 +164,6 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
                {:text, "[From nest runtime | mode: act]\n" <> prose},
                {:output, "# output\n"}
              ]
-
-      assert Render.combine_and_offload([peer, notice], render_state("act")) ==
-               "[From agent peer | mode: act]\nhi\n\n" <>
-                 Header.put(notice.content, :runtime, "act")
     end
   end
 

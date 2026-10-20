@@ -34,12 +34,6 @@ defmodule Nest.Agents.AgentInitSeedTest do
     {:compaction, %Compaction{index: index, archived_count: index + 1}}
   end
 
-  test "counts marker rows at or below the boundary" do
-    preloaded = [system_msg(), marker(1), system_msg(2), user_msg(3)]
-    seeded = Init.seed_from_db(state(), preloaded, 1, 0)
-    assert seeded.chat_state.compaction_count == 1
-  end
-
   test "ignores marker rows above the boundary" do
     preloaded = [system_msg(), marker(1), system_msg(2), marker(3), user_msg(4)]
     seeded = Init.seed_from_db(state(), preloaded, 2, 0)

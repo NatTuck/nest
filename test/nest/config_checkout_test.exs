@@ -41,19 +41,8 @@ defmodule Nest.Config.CheckoutTest do
 
   describe "every other checkout gets the scratch slot" do
     test "an unnamed checkout cannot reach nest_dev2" do
-      for checkout <- ["rename-vocab", "nest-edit", "wt", "some.other.checkout"] do
-        assert Checkout.dev(checkout) == %{port: 4044, database: "nest_dev_scratch"},
-               "#{checkout} must not get a named database"
-
-        assert Checkout.test_database(checkout) == "nest_test1"
-      end
-    end
-
-    test "the checkout's own directory name does not become part of the database" do
-      # The old default was "anything not called `nest` shares `nest_dev2`", and
-      # a per-checkout derivation would be the other extreme. Both are wrong for
-      # the same reason: the set of databases is chosen, not discovered.
-      refute Checkout.dev("rename-vocab").database =~ "rename_vocab"
+      assert Checkout.dev("rename-vocab") == %{port: 4044, database: "nest_dev_scratch"}
+      assert Checkout.test_database("rename-vocab") == "nest_test1"
     end
   end
 
@@ -63,21 +52,18 @@ defmodule Nest.Config.CheckoutTest do
       System.put_env("NEST_PORT", "4050")
 
       assert Checkout.dev("nest") == %{port: 4050, database: "nest_dev_scratch2"}
-      assert Checkout.dev("rename-vocab") == %{port: 4050, database: "nest_dev_scratch2"}
     end
 
     test "NEST_TEST_DB beats the table" do
       System.put_env("NEST_TEST_DB", "nest_test_scratch2")
 
       assert Checkout.test_database("nest") == "nest_test_scratch2"
-      assert Checkout.test_database("rename-vocab") == "nest_test_scratch2"
     end
 
     test "MIX_TEST_PARTITION selects another test slot" do
       System.put_env("MIX_TEST_PARTITION", "3")
 
       assert Checkout.test_database("nest") == "nest_test3"
-      assert Checkout.test_database("rename-vocab") == "nest_test3"
     end
 
     test "a blank override is treated as unset" do

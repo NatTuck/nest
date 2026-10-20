@@ -157,8 +157,6 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
 
       # `:iterate` is what keeps a turn going; a wait rest emits the rest
       # instead, and rests the machine in `:idle` with no worker.
-      refute :iterate in actions
-
       assert Enum.map(actions, &action_tag/1) == [
                :append,
                :record_file_access,
@@ -169,8 +167,12 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
 
       assert {:finalize, :waiting} in actions
       assert next.phase == :idle
+
+      # The rest leaves no worker. `worker_kind` is deliberately not asserted:
+      # `Machine.validate!/1`, which `Phase.enter/4` runs on every phase write,
+      # already raises for an `:idle` machine that still carries one, so that
+      # assertion could not fail.
       assert next.work.worker_ref == nil
-      assert next.work.worker_kind == nil
 
       # A queued message keeps the turn going instead: the machine stays in
       # `:generating`, no `{:finalize, …}` runs (nothing is over), and the
@@ -189,7 +191,6 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
                :drain_inbox
              ]
 
-      refute Enum.any?(actions, &match?({:finalize, _}, &1))
       assert next.phase == :generating
 
       # ...and because the turn is *not* over, a reply the agent owes is not
@@ -253,8 +254,7 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
       # The turn is over: no worker, and the live working set cleared by
       # `{:finalize, :waiting}` (the streaming accumulator is the observable
       # part of it).
-      assert %{worker_ref: nil, active_worker: nil, worker_kind: nil} =
-               Agent.get_work(pid, 1_000)
+      assert %{worker_ref: nil, active_worker: nil} = Agent.get_work(pid, 1_000)
 
       assert Agent.get_public_info(pid, 1_000).partial == nil
 
@@ -322,22 +322,23 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
       # The deferral's own shape: the synthetic result answers the wait call and
       # says its real result arrives later, and the ack follows it — the same
       # ordering the wait rest uses, because a `{:tool, _}` is a wire-`user`
-      # message either way.
+      # message either way. The ack's *presence* is the wire check's to enforce
+      # (a `{:tool, _}` straight onto the drained `{:user, _}` below is an
+      # alternation violation) and its wording is pinned in
+      # `TurnBackgroundingTest`.
       assert {:tool, synthetic} = Enum.at(msgs, backgrounded)
 
       assert [%Part.ToolResult{name: "agents-wait", state: "backgrounded", is_error: false}] =
                synthetic.parts
 
       assert hd(synthetic.parts).content =~ "moved to the background"
-      assert text_of(Enum.at(msgs, backgrounded + 1)) =~ "running in the background"
 
       assert {:user, %{parts: [%Part.Text{text: drained}]}} = Enum.at(msgs, backgrounded + 2)
       assert drained =~ "queued while busy"
 
-      # ...and the real result did arrive, as the notice the deferral promised:
-      # the watch was registered and its confirmation is in the transcript, not
-      # lost with the backgrounded batch.
-      assert Enum.any?(user_texts(msgs), &(&1 =~ "Watching (you will be notified): bob"))
+      # ...and the real result did arrive, as the notice the deferral promised
+      # (asserted above, at the delivery's own fence): the watch was registered,
+      # not lost with the backgrounded batch.
       assert Preflight.validate(msgs) == :ok
       assert Agent.get_public_info(pid, 1_000).pending_messages == []
       assert map_size(Agent.get_watches(pid, 1_000)) == 1
@@ -415,14 +416,13 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
 
       # The drained notice is the row issue #139 splits: its prose, then the
       # command's output as a part of its own — which is what lets the client
-      # render the output verbatim instead of as markdown — and the metadata
-      # names that part.
-      assert {:user, %{parts: [%Part.Text{text: prose}, %Part.Text{text: output}]} = notice} =
+      # render the output verbatim instead of as markdown. (The split's
+      # `commandOutputParts` metadata is pinned in `InboxRenderTest`.)
+      assert {:user, %{parts: [%Part.Text{text: prose}, %Part.Text{text: output}]}} =
                Enum.at(msgs, waiting + 2)
 
       assert prose =~ "Your backgrounded command (shell-cmd) finished."
       assert output =~ "backgrounded output"
-      assert notice.metadata["command_output_parts"] == [1]
 
       assert Agent.get_public_info(pid, 1_000).pending_messages == []
     end
@@ -456,7 +456,9 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
       send(task, {:chat_status, %{status: "idle"}})
 
       # The notice starts a turn of its own: the user-message broadcast is the
-      # event that says it landed.
+      # event that says it landed. `WatchTest` pins the watch's removal on the
+      # way out ("the watcher fires a bare notice when the target goes idle"),
+      # so this test stops at the wake.
       assert_receive {:chat_message, {:user, _}}, 1_000
       await_idle(pid)
 
@@ -464,7 +466,6 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
         for {:user, %{parts: parts}} <- messages(pid), %Part.Text{text: text} <- parts, do: text
 
       assert Enum.any?(notices, &(&1 =~ "Agents now idle: bob. Still busy: (none)."))
-      assert Agent.get_watches(pid, 1_000) == %{}
     end
   end
 
@@ -496,8 +497,7 @@ defmodule Nest.Agents.Agent.WaitTurnTest do
       :ok = Agent.chat(pid, "wait for the job")
       await_idle(pid)
 
-      assert %{worker_ref: nil, active_worker: nil, worker_kind: nil} =
-               Agent.get_work(pid, 1_000)
+      assert %{worker_ref: nil, active_worker: nil} = Agent.get_work(pid, 1_000)
 
       assert [{:tool, tool_msg}, {:assistant, _ack}] = Enum.take(messages(pid), -2)
 

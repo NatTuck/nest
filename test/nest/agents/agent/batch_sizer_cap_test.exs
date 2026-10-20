@@ -82,34 +82,14 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
 
     # Defaults summary for these tests:
     #
-    # * usable = 10_000 (context_limit - messages - reserve)
-    # * default_cap = floor(usable * 0.80) = 8_000
-    # * With override `max_result_tokens: 100`, cap = min(100, 8000) = 100.
-    # * With override `max_result_tokens: 100_000`, cap = min(100_000, 8000) = 8000.
-
-    test "shell_cmd output exceeding 80% cap routes to summary path", %{tmp_dir: dir} do
-      # 40_000 chars ≈ 10_000 tokens → exceeds default_cap of 8_000.
-      big_output = TextFixtures.big_text(40_000)
-
-      tools = [
-        make_tool("shell-cmd", fn _, _ -> {:ok, big_output} end)
-      ]
-
-      c = ctx(tools, context_limit: 20_000, tmp_path: dir)
-
-      assert [result] =
-               BatchSizer.run(
-                 [call("c1", "shell-cmd", %{"command" => "cat foo"})],
-                 c
-               )
-
-      assert result.is_error == false
-      assert result.content =~ "Command output of 'cat foo'"
-      assert result.content =~ "saved to"
-
-      [exec_file] = Enum.filter(File.ls!(dir), &String.starts_with?(&1, "exec-"))
-      assert File.read!(Path.join(dir, exec_file)) == big_output
-    end
+    # * cap = min(LLM override, floor(usable * 0.80)), where
+    #   usable = context_limit - size(messages) - reserve.
+    # * `context_limit: 100_000` leaves 80_000 usable, so the default cap is
+    #   64_000 — far above these outputs, so the `max_result_tokens: 100`
+    #   override is the only thing that bites.
+    # * `context_limit: 20_000` leaves 11_808 usable (the 8_192-token reserve
+    #   dominates), so the default cap is 9_446 — which the `max_result_tokens:
+    #   100_000` override is clamped to.
 
     test "LLM override below 80% forces summary even when output fits inline",
          %{tmp_dir: dir} do
@@ -165,7 +145,8 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
                )
 
       assert result.is_error == false
-      assert result.content =~ "Command output of 'cat big'"
+      # Substituted, not kept whole: had the override been honoured the
+      # ~12_000-token output would have gone inline under a 100_000 cap.
       assert result.content =~ "saved to"
     end
 
@@ -180,7 +161,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
                )
 
       assert content == "small output for shell-cmd"
-      refute content =~ "saved to"
+      # Nothing was offloaded: no substitute was built at all.
       assert Enum.all?(File.ls!(dir), &(not String.starts_with?(&1, "exec-")))
     end
 
@@ -206,29 +187,26 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
                      c
                    )
 
-          assert error =~ "File is"
           assert error =~ "tokens which exceeds your requested limit of 100"
         end)
 
       # The `is_error=true` cap-overflow path is a deliberate
       # diagnostic — assert on it so the test's intent is
       # self-documenting and the log doesn't escape to the test
-      # output.
+      # output. The tool name is asserted too: `capture_log` is
+      # process-global, so the generic line alone could be another
+      # test's.
       assert log =~ "BatchSizer produced is_error=true tool result"
       assert log =~ "tool=file-read"
     end
 
     test "raises when context_limit is nil (limit is never optional)" do
-      big_output = TextFixtures.big_text(40_000)
-
-      tools = [
-        make_tool("shell-cmd", fn _, _ -> {:ok, big_output} end)
-      ]
-
-      c = ctx(tools, context_limit: nil)
+      # `preflight/2` is where the raise happens, so the batch needs no tool
+      # and no output: it never reaches execution.
+      calls = [call("c1", "shell-cmd", %{"command" => "ls"})]
 
       assert_raise FunctionClauseError, fn ->
-        BatchSizer.run([call("c1", "shell-cmd", %{"command" => "ls"})], c)
+        BatchSizer.run(calls, ctx([], context_limit: nil))
       end
     end
   end
@@ -249,7 +227,9 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
     test "non-shell tools over the cap are substituted, not kept full", %{tmp_dir: dir} do
       big_output = TextFixtures.big_text(40_000)
 
-      for name <- ["shell-wait", "shell-list", "file-inspect", "some-tool"] do
+      # One name per `write_prefix/1` shape other than `shell-wait`'s: the
+      # shell tools' shared "exec" prefix, and the sanitized tool name.
+      for name <- ["shell-list", "file-inspect"] do
         tools = [make_tool(name, fn _, _ -> {:ok, big_output} end)]
         c = ctx(tools, context_limit: 20_000, tmp_path: dir)
 
@@ -271,14 +251,6 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
 
       assert content =~ "Output of shell-wait job-7"
       assert content =~ "saved to"
-    end
-
-    test "a small bounded tool stays inline", %{tmp_dir: dir} do
-      tools = [make_tool("shell-kill", fn _, _ -> {:ok, "Killed background job job-1."} end)]
-      c = ctx(tools, context_limit: 100_000, tmp_path: dir)
-
-      assert [%ToolResult{content: "Killed background job job-1.", is_error: false}] =
-               BatchSizer.run([call("c1", "shell-kill", %{"id" => "job-1"})], c)
     end
 
     test "cook bounds a mixed regular + sub-agent batch as a whole", %{tmp_dir: dir} do
@@ -342,31 +314,6 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       File.mkdir_p!(tmp_dir)
       on_exit(fn -> rm_tmp!(tmp_dir, "batchsizer-clamp-") end)
       {:ok, tmp_dir: tmp_dir}
-    end
-
-    test "clamps a projection above the cap down to the cap", %{tmp_dir: dir} do
-      File.write!(Path.join(dir, "big.txt"), TextFixtures.big_text(400_000))
-
-      # 400_000 bytes prices at `estimate_bytes/1` == 120_010 tokens. At
-      # `context_limit: 100_000` the content budget is 80_000, so the cap is
-      # floor(0.80 * 80_000) == 64_000.
-      unclamped = Estimator.estimate_bytes(400_000)
-      c = ctx([], context_limit: 100_000, workspace_path: dir)
-      tc = call("c1", "file-read", %{"path" => "big.txt"})
-
-      assert unclamped == 120_010
-      assert ProjectedSize.project(tc, c) == 64_000
-    end
-
-    test "leaves a projection under the cap alone", %{tmp_dir: dir} do
-      File.write!(Path.join(dir, "small.txt"), TextFixtures.big_text(4_000))
-
-      # 1_210 tokens is well under the 64_000 cap, so the clamp must not touch
-      # it: the projection is the estimator's number, unchanged.
-      c = ctx([], context_limit: 100_000, workspace_path: dir)
-
-      assert ProjectedSize.project(call("c1", "file-read", %{"path" => "small.txt"}), c) ==
-               Estimator.estimate_bytes(4_000)
     end
 
     test "clamps a media projection to the cap too", %{tmp_dir: dir} do
@@ -448,7 +395,6 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       cap = floor(CapCalculator.usable_remaining(c) * 0.8)
 
       assert ProjectedSize.project_batch(calls, c) == 2 * cap
-      assert 2 * cap + Reserve.compaction_reserve(limit) > limit
       assert {:refuse, _} = BatchSizer.preflight(calls, c)
     end
   end

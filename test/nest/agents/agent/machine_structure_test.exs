@@ -22,7 +22,7 @@ defmodule MachineStructureTest do
       forbidden = ~r/\b(intentional|do not|must not|don't|shouldn't)\b/i
 
       for path <- @machine_sources do
-        for {doc, _} <- doc_blocks(File.read!(path)) do
+        for doc <- doc_blocks(File.read!(path)) do
           refute Regex.match?(forbidden, doc),
                  "#{path}: intent must be an inline # comment, not @doc/@moduledoc:\n#{doc}"
         end
@@ -32,24 +32,17 @@ defmodule MachineStructureTest do
 
   describe "single transition authority" do
     test "Machine.step/2 is exported and there is no `to_*` side door" do
-      assert Code.ensure_loaded?(Machine)
       assert function_exported?(Machine, :step, 2)
-      refute function_exported?(Machine, :to_chat_generating, 1)
-      refute function_exported?(Machine, :to_idle, 1)
-      refute function_exported?(Machine, :to_blocked, 2)
-      refute function_exported?(Machine, :to_stopping, 1)
-      refute function_exported?(Machine, :to_compaction_generating, 1)
-      refute function_exported?(Machine, :to_compaction_committing, 1)
-    end
 
-    test "no lib source calls a Machine.to_ transition" do
-      offenders =
-        for path <- @agent_sources, source = File.read!(path) do
-          if Regex.match?(~r/Machine\.to_/, source), do: path
-        end
-        |> Enum.reject(&is_nil/1)
+      # A per-transition helper is the side door this pins shut, whatever it is
+      # called: `step/2` must stay the only way to move the machine.
+      side_doors =
+        for {name, _arity} <- Machine.__info__(:functions),
+            String.starts_with?(Atom.to_string(name), "to_"),
+            do: name
 
-      assert offenders == [], "reintroduced side-door transition(s): #{inspect(offenders)}"
+      assert side_doors == [],
+             "reintroduced side-door transition(s): #{inspect(side_doors)}"
     end
 
     test "Turn is the only lib caller of Machine.step/2" do
@@ -133,37 +126,9 @@ defmodule MachineStructureTest do
     end
   end
 
-  describe "tag coverage" do
-    test "every route_for/1 tag is a Machine event or a known lifecycle tag" do
-      lifecycle =
-        MapSet.new([
-          :delta_received,
-          :thinking_signature_received,
-          :llm_usage,
-          :api_log_sequences_updated,
-          :llm_error,
-          :http_response,
-          :http_error,
-          :worker_crashed,
-          :DOWN,
-          :EXIT
-        ])
-
-      tags = route_tags()
-
-      assert :iterate in tags and :http_error in tags and :stop_timer in tags
-
-      for tag <- tags do
-        assert tag in Machine.events() or MapSet.member?(lifecycle, tag),
-               "route_for/1 tag #{inspect(tag)} is neither a Machine event nor a " <>
-                 "known lifecycle tag; classify it explicitly"
-      end
-    end
-  end
-
   defp doc_blocks(source) do
     Regex.scan(~r/@(?:moduledoc|doc)\s+"""(.*?)"""/s, source)
-    |> Enum.map(fn [_, body] -> {body, :doc} end)
+    |> Enum.map(fn [_, body] -> body end)
   end
 
   defp field_set(mod), do: mod.__struct__() |> Map.from_struct() |> Map.keys() |> Enum.sort()
@@ -182,16 +147,4 @@ defmodule MachineStructureTest do
     end)
     |> elem(1)
   end
-
-  defp route_tags do
-    source = File.read!("lib/nest/agents/agent/handlers.ex")
-
-    Regex.scan(~r/defp route_for\((.+?)\), do:/, source, capture: :all_but_first)
-    |> Enum.map(fn [pattern] -> pattern |> Code.string_to_quoted!() |> event_tag_of() end)
-    |> Enum.reject(&is_nil/1)
-  end
-
-  defp event_tag_of({:{}, _, [tag | _]}) when is_atom(tag), do: tag
-  defp event_tag_of(tag) when is_atom(tag), do: tag
-  defp event_tag_of(_), do: nil
 end

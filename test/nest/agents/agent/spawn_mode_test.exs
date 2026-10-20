@@ -109,20 +109,6 @@ defmodule Nest.Agents.Agent.SpawnModeTest do
       assert %{current_mode: "plan"} = Agent.get_public_info(child_pid(space_id, name), 1_000)
     end
 
-    test "a `plan` parent may spawn a `plan` child", %{space_id: space_id} do
-      state = plan_coordinator(space_id)
-      name = unique("plan-of-plan")
-
-      assert {:ok, ^name} =
-               Supervisor.spawn_agent_in_space(state, name, fresh_vocation().slug, nil,
-                 mode: "plan"
-               )
-
-      on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
-
-      assert %{mode: "plan"} = row_for(space_id, name)
-    end
-
     test "a `plan` parent may not spawn an `act` child, and no row is written", %{
       space_id: space_id
     } do
@@ -142,23 +128,7 @@ defmodule Nest.Agents.Agent.SpawnModeTest do
   end
 
   describe "the clone path" do
-    test "a clone takes the mode it is given, and may not be raised", %{space_id: space_id} do
-      state = plan_coordinator(space_id)
-
-      assert {:ok, child} =
-               Supervisor.start_agent_with_parent(state, "carry on", nil, mode: "plan")
-
-      on_exit(fn -> _ = Supervisor.stop_agent(space_id, child) end)
-      assert %{mode: "plan"} = row_for(space_id, child)
-
-      # The same rule as a fresh spawn: a clone is a spawn, so a `plan` parent
-      # cannot fork itself into `act`. No name is returned, because the refusal
-      # happens before the child has one.
-      assert {:error, {:mode_refused, _reason}} =
-               Supervisor.start_agent_with_parent(state, "carry on", nil, mode: "act")
-    end
-
-    test "an omitted mode inherits the parent's, on the row and in the live state", %{
+    test "an omitted mode inherits the parent's, and a clone may not be raised", %{
       space_id: space_id
     } do
       state = plan_coordinator(space_id)
@@ -169,6 +139,14 @@ defmodule Nest.Agents.Agent.SpawnModeTest do
 
       assert %{mode: "plan"} = row_for(space_id, child)
       assert %{current_mode: "plan"} = Agent.get_public_info(child_pid(space_id, child), 1_000)
+
+      # The same rule as a fresh spawn: a clone is a spawn, so a `plan` parent
+      # cannot fork itself into `act`. No name is returned, because the refusal
+      # happens before the child has one. A mode named here that equals the
+      # parent's would be indistinguishable from the inherited one, so this
+      # direction is the one the clone path can be held to.
+      assert {:error, {:mode_refused, _reason}} =
+               Supervisor.start_agent_with_parent(state, "carry on", nil, mode: "act")
     end
   end
 

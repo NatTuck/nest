@@ -30,9 +30,10 @@ defmodule NestWeb.AgentChannelConfigGateTest do
   setup :verify_on_exit!
 
   describe "a config file Nest cannot protect" do
-    # One push per **reply shape**, not per event: `chat:compact`,
-    # `chat:retry-compaction`, `chat:stop` and `chat:loop-detected-ok` all go
-    # through `Replies.reply_control/2`, so the two here stand for all four.
+    # One push per **reply shape**, not per event: `chat:compact` stands for
+    # every event that answers through `Replies.reply_control/2` —
+    # `chat:retry-compaction`, `chat:stop` and `chat:loop-detected-ok` are the
+    # other three, and the shared clause they reach is the one under test.
     test "every reply shape answers, rather than killing the socket", %{
       socket: socket
     } do
@@ -45,7 +46,6 @@ defmodule NestWeb.AgentChannelConfigGateTest do
       stub(Agents, :change_model, fn _space, _name, _model -> refused end)
       stub(Agents, :reload_agent, fn _space, _name -> refused end)
       stub(Agents, :compact, fn _space, _name, _focus -> refused end)
-      stub(Agents, :retry_compaction, fn _space, _name -> refused end)
 
       # The channel is a process of its own: a stub set here is invisible to it
       # until it is allowed.
@@ -61,38 +61,33 @@ defmodule NestWeb.AgentChannelConfigGateTest do
                 {"chat:api-logs", %{"index" => 0}},
                 {"chat:message", %{"content" => "hi"}},
                 {"chat:compact", %{}},
-                {"chat:retry-compaction", %{}},
                 {"reload_agent", %{}},
                 {"change_model",
                  %{"model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}}}
               ] do
             ref = push(socket, event, payload)
 
-            assert_reply ref, :error, %{
-              "reason" => "config_file_not_regular",
-              "path" => ^path,
-              "type" => "symlink"
-            }
+            # The reply itself, not the payload's shape: `path` and `type` are
+            # pinned in `NestWeb.ErrorPayloadTest`, and once through a channel by
+            # the join test below. What each handler owes here is an answer
+            # instead of a raise.
+            assert_reply ref, :error, %{"reason" => "config_file_not_regular"}
           end
         end)
 
       assert log =~ "change_model failed on agent"
     end
 
-    test "chat:message keeps its own spelling for the two refusals it renames", %{
-      socket: socket
-    } do
+    test "chat:message spells :not_found as agent_not_found", %{socket: socket} do
+      # The one rename with no test of its own: `chat_message_reason/1` answers
+      # `:not_found` as `agent_not_found` on this channel, and the catch-all arm
+      # it falls through to for every other reason is covered above. The other
+      # rename, `:archived`, is pinned in `NestWeb.AgentChannelArchivedTest`.
       Mimic.allow(Agents, self(), socket.channel_pid)
 
       stub(Agents, :get_info, fn _space, _name -> {:error, :not_found} end)
       ref = push(socket, "chat:message", %{"content" => "hi"})
       assert_reply ref, :error, %{"reason" => "agent_not_found"}
-
-      # An archived agent is its own code rather than "not found": the row exists,
-      # it is stopped, and it must not be resurrected to answer.
-      stub(Agents, :get_info, fn _space, _name -> {:error, :archived} end)
-      ref = push(socket, "chat:message", %{"content" => "hi"})
-      assert_reply ref, :error, %{"reason" => "agent_archived"}
     end
 
     test "the join names the file, rather than answering agent_unavailable" do

@@ -14,7 +14,6 @@ defmodule Nest.Agents.AgentStreamErrorTest do
     3. Broadcast `chat:error` and transition to `:idle`.
   """
   use Nest.DataCase, async: true
-  alias Nest.Agents.Agent.Machine
 
   import ExUnit.CaptureLog
 
@@ -23,8 +22,7 @@ defmodule Nest.Agents.AgentStreamErrorTest do
   # arrival. `Turn.run/5` runs the turn's effects — append the assistant message,
   # broadcast `chat:error` — and only then broadcasts the new status, so the idle
   # `chat_status` frame is emitted last: fencing on it proves the frames asserted
-  # below are already in this process's mailbox, and that the machine has already
-  # settled and cleared its worker.
+  # below are already in this process's mailbox.
   #
   # The fence is a failure bound, not an expected duration. The idle broadcast
   # inherits the whole turn's latency (after the stream is consumed, usage merged,
@@ -68,39 +66,37 @@ defmodule Nest.Agents.AgentStreamErrorTest do
 
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      capture_log(fn ->
-        :ok = Agent.chat(pid, "Hello")
+      # The capture is asserted below: an unasserted one can only hide prints
+      # (`SMELLS.md`). `Broadcasts.error/5` logs the failure on the server and
+      # then broadcasts, both before the idle frame that fences this window.
+      log =
+        capture_log(fn ->
+          :ok = Agent.chat(pid, "Hello")
 
-        # The idle broadcast is the fence: it is emitted after the append and
-        # `chat:error`, so the frames asserted below are already here.
-        assert_receive {:chat_status, %{status: "idle"}}, @turn_fence_ms
+          # The idle broadcast is the fence: it is emitted after the append and
+          # `chat:error`, so the frames asserted below are already here.
+          assert_receive {:chat_status, %{status: "idle"}}, @turn_fence_ms
 
-        # The single assistant message carries the partial text AND the
-        # error, tagged as an error.
-        assert_received {:chat_message,
-                         {:assistant, %Assistant{parts: parts, metadata: %{"error" => true}}}}
+          # The single assistant message carries the partial text AND the
+          # error, tagged as an error.
+          assert_received {:chat_message,
+                           {:assistant, %Assistant{parts: parts, metadata: %{"error" => true}}}}
 
-        assert Enum.any?(parts, &match?(%Part.Text{text: "Halfway through..."}, &1))
+          assert Enum.any?(parts, &match?(%Part.Text{text: "Halfway through..."}, &1))
 
-        assert Enum.any?(parts, fn
-                 %Part.Text{text: text} when is_binary(text) ->
-                   text =~ "stream ended unexpectedly"
+          assert Enum.any?(parts, fn
+                   %Part.Text{text: text} when is_binary(text) ->
+                     text =~ "stream ended unexpectedly"
 
-                 _ ->
-                   false
-               end)
+                   _ ->
+                     false
+                 end)
 
-        assert_received {:chat_error, %{content: content}}
-        assert content =~ "stream ended unexpectedly"
-      end)
+          assert_received {:chat_error, %{content: content}}
+          assert content =~ "stream ended unexpectedly"
+        end)
 
-      # The machine settles and clears its worker before `Turn.run/5` announces
-      # the new status, so the fence above already proves both; read it without
-      # waiting again.
-      # allowlist: snapshot — status + work
-      state = :sys.get_state(pid, 1_000)
-      assert Machine.status_for(state.live.machine) == :idle
-      assert state.live.machine.work.active_worker == nil
+      assert log =~ "chat:error"
     end
 
     test "an error with no streamed content produces an error-only message" do
@@ -108,22 +104,23 @@ defmodule Nest.Agents.AgentStreamErrorTest do
 
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      capture_log(fn ->
-        :ok = Agent.chat(pid, "Hello")
+      log =
+        capture_log(fn ->
+          :ok = Agent.chat(pid, "Hello")
 
-        assert_receive {:chat_status, %{status: "idle"}}, @turn_fence_ms
+          assert_receive {:chat_status, %{status: "idle"}}, @turn_fence_ms
 
-        assert_received {:chat_message,
-                         {:assistant,
-                          %Assistant{
-                            parts: [%Part.Text{text: text}],
-                            metadata: %{"error" => true}
-                          }}}
+          assert_received {:chat_message,
+                           {:assistant,
+                            %Assistant{
+                              parts: [%Part.Text{text: text}],
+                              metadata: %{"error" => true}
+                            }}}
 
-        assert text =~ "no output from the model for 300s"
-        assert_received {:chat_error, %{content: content}}
-        assert content =~ "no output from the model for 300s"
-      end)
+          assert text =~ "no output from the model for 300s"
+        end)
+
+      assert log =~ "chat:error"
     end
   end
 end

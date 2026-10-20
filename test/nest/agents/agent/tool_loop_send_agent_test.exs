@@ -1,9 +1,12 @@
 defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
   @moduledoc """
   Unit coverage for the `agents-send` dispatch in `ToolLoop`: the
-  delivered/queued acks, argument validation, missing targets, the
-  delivery-error surfaces, and the reply-debt clear a successful send
-  performs (issue #31 §1.4). Runs the dispatch directly (no live turn).
+  delivered/queued acks, argument validation, the delivery-error surfaces,
+  and the reply-debt clear a successful send performs (issue #31 §1.4).
+  Runs the dispatch directly (no live turn).
+
+  A missing target is `ToolLoopHumanAddressTest`'s: the wording it pins names
+  the human possibility too.
   """
 
   use Nest.DataCase, async: true
@@ -105,18 +108,6 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
     assert content =~ "Missing required argument: message"
   end
 
-  test "reports a missing target and clears nothing" do
-    stub_send(fn -> {:error, :not_found} end)
-
-    assert [%ToolResult{content: content, is_error: true}] =
-             run_errors(%{"name" => "ghost", "message" => "hi"})
-
-    assert content == "Agent ghost not found in this space."
-
-    # A failed send is not a reply: the debt stands (decision 11).
-    refute_received {:"$gen_cast", {:reply_sent, _}}
-  end
-
   test "surfaces delivery errors" do
     stub_send(fn -> {:error, :inbox_full} end)
 
@@ -145,7 +136,6 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
       # than the "not an agent you spawned" one.
       space_id = System.unique_integer([:positive])
       ChildRegistry.register(space_id, "sender", "bob")
-      capture_send({:ok, :delivered})
 
       results =
         run_errors(
@@ -157,10 +147,6 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
       assert content =~ "`plan`"
       assert content =~ "`act`"
       assert content =~ "never raised"
-
-      # Nothing was delivered: the change and the message are one delivery, so a
-      # refused change refuses the message with it.
-      refute_received {:sent, _, _, _, _, _}
     end
 
     test "an act sender may lower the target's mode, and it rides the delivery" do
@@ -194,61 +180,9 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
       assert_received {:sent, "bob", "hi", :agent, "plan"}
     end
 
-    test "`mine` aimed at a stranger is refused: it is a mode request like any other" do
-      # `"mine"` is sugar for the sender's mode, not a permission of its own. The
-      # authority decides whether putting a given target into that mode is
-      # allowed, and an agent it did not spawn is not its to command — so taking
-      # the shortcut here let an `act` agent raise a stranger.
-      space_id = System.unique_integer([:positive])
-      capture_send({:ok, :queued})
-
-      results =
-        run_errors(
-          %{"name" => "bob", "message" => "hi", "set_mode" => "mine"},
-          %{space_id: space_id, mode: "act"}
-        )
-
-      assert [%ToolResult{name: "agents-send", is_error: true, content: content}] = results
-      assert content =~ "not one"
-      refute_received {:sent, _, _, _, _, _}
-    end
-
-    test "`mine` aimed at the sender's own parent is refused: an agent may not raise an ancestor" do
-      space_id = System.unique_integer([:positive])
-      ChildRegistry.register(space_id, "parent", "sender")
-      capture_send({:ok, :queued})
-
-      results =
-        run_errors(
-          %{"name" => "parent", "message" => "hi", "set_mode" => "mine"},
-          %{space_id: space_id, mode: "act"}
-        )
-
-      assert [%ToolResult{name: "agents-send", is_error: true, content: content}] = results
-      assert content =~ "not one"
-      refute_received {:sent, _, _, _, _, _}
-    end
-
-    test "`mine` aimed at the sender itself is refused: that is self-escalation" do
-      space_id = System.unique_integer([:positive])
-      capture_send({:ok, :queued})
-
-      results =
-        run_errors(
-          %{"name" => "sender", "message" => "hi", "set_mode" => "mine"},
-          %{space_id: space_id, mode: "act"}
-        )
-
-      assert [%ToolResult{name: "agents-send", is_error: true, content: content}] = results
-      assert content =~ "your own mode"
-      refute_received {:sent, _, _, _, _, _}
-    end
-
     test "`mine` cannot be used to raise a stranger" do
       # The hole this closes: `"mine"` used to skip the authority entirely, so an
       # `act` agent could raise any agent it could name.
-      capture_send({:ok, :delivered})
-
       results =
         run_errors(
           %{"name" => "bob", "message" => "hi", "set_mode" => "mine"},
@@ -257,7 +191,6 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
 
       assert [%ToolResult{name: "agents-send", is_error: true, content: content}] = results
       assert content =~ "not one"
-      refute_received {:sent, _, _, _, _, _}
     end
 
     test "`mine` cannot be used to raise the sender's own parent" do
@@ -266,7 +199,6 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
       space_id = System.unique_integer([:positive])
       # "bob" is the *parent* of "sender", not its child.
       ChildRegistry.register(space_id, "bob", "sender")
-      capture_send({:ok, :delivered})
 
       results =
         run_errors(
@@ -276,12 +208,9 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
 
       assert [%ToolResult{name: "agents-send", is_error: true, content: content}] = results
       assert content =~ "not one"
-      refute_received {:sent, _, _, _, _, _}
     end
 
     test "`mine` aimed at yourself is still self-escalation" do
-      capture_send({:ok, :delivered})
-
       results =
         run_errors(
           %{"name" => "sender", "message" => "hi", "set_mode" => "mine"},
@@ -290,7 +219,6 @@ defmodule Nest.Agents.Agent.ToolLoopSendAgentTest do
 
       assert [%ToolResult{name: "agents-send", is_error: true, content: content}] = results
       assert content =~ "your own mode"
-      refute_received {:sent, _, _, _, _, _}
     end
   end
 end

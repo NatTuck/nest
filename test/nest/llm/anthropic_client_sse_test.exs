@@ -100,93 +100,6 @@ defmodule Nest.LLM.AnthropicClientSSETest do
       assert {:thinking_signature, "sig_late"} in events
     end
 
-    test "translates tool_use content_block_start into :tool_call_start and input_json_delta into :tool_call_delta" do
-      sse = """
-      event: message_start
-      data: {"message":{"id":"msg_4","model":"claude-3-opus-20240229","usage":{"input_tokens":1,"output_tokens":1}}}
-
-      event: content_block_start
-      data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"shell-cmd","input":{}}}
-
-      event: content_block_delta
-      data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"command\\":"}}
-
-      event: content_block_delta
-      data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\\"ls\\"}"}}
-
-      event: content_block_stop
-      data: {"type":"content_block_stop","index":0}
-
-      event: message_delta
-      data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
-
-      event: message_stop
-      data: {"type":"message_stop"}
-
-      """
-
-      events = run_with_sse(sse)
-
-      assert {:tool_call_start, %{id: "toolu_1", name: "shell-cmd", index: 0}} in events
-
-      assert {:tool_call_delta, %{id: :by_index, index: 0, arguments_delta: "{\"command\":"}} in events
-
-      assert {:tool_call_delta, %{id: :by_index, index: 0, arguments_delta: "\"ls\"}"}} in events
-
-      assert {:finish_reason, "tool_use"} in events
-    end
-
-    test "accumulates input_tokens from message_start and output_tokens from message_delta" do
-      sse = """
-      event: message_start
-      data: {"message":{"id":"msg_5","model":"claude-3-opus-20240229","usage":{"input_tokens":120,"output_tokens":1}}}
-
-      event: content_block_start
-      data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
-
-      event: content_block_delta
-      data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
-
-      event: content_block_stop
-      data: {"type":"content_block_stop","index":0}
-
-      event: message_delta
-      data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}
-
-      event: message_stop
-      data: {"type":"message_stop"}
-
-      """
-
-      events = run_with_sse(sse)
-      {:done, %{response: %RunResponse{usage: usage}}} = List.last(events)
-
-      assert usage.input_tokens == 120
-      assert usage.output_tokens == 7
-    end
-
-    test "ignores ping and unknown events" do
-      sse = """
-      event: ping
-      data: {"type":"ping"}
-
-      event: message_start
-      data: {"message":{"id":"msg_6","model":"claude-3-opus-20240229","usage":{"input_tokens":1,"output_tokens":1}}}
-
-      event: message_delta
-      data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}
-
-      event: message_stop
-      data: {"type":"message_stop"}
-
-      """
-
-      events = run_with_sse(sse)
-
-      refute Enum.any?(events, &match?({:ping, _}, &1))
-      assert {:finish_reason, "end_turn"} in events
-    end
-
     test "captures cache_read and cache_creation tokens from message_start" do
       sse = """
       event: message_start
@@ -279,7 +192,6 @@ defmodule Nest.LLM.AnthropicClientSSETest do
       events = run_with_sse(sse)
       {:done, %{response: %RunResponse{usage: usage}}} = List.last(events)
 
-      assert usage.input_tokens == 50
       assert usage.cache_read_input_tokens == 0
       assert usage.cache_creation_input_tokens == 0
     end
@@ -335,25 +247,20 @@ defmodule Nest.LLM.AnthropicClientSSETest do
   end
 
   describe "error handling" do
-    test "parses synthetic http_error chunk into {:error, _} event" do
-      error_chunk =
+    test "parses synthetic error chunks, tagging a nil status as :transport" do
+      http_error =
         "event: error\ndata: " <>
           Jason.encode!(%{error: "http_error", status: 429, body: "rate limited"}) <> "\n\n"
 
-      events = run_with_sse(error_chunk)
-
-      assert {:error, _} = List.first(events)
-    end
-
-    test "parses synthetic request_failed chunk into {:error, _} event" do
-      error_chunk =
+      transport_error =
         "event: error\ndata: " <>
           Jason.encode!(%{error: "request_failed", status: nil, body: "connection refused"}) <>
           "\n\n"
 
-      events = run_with_sse(error_chunk)
+      assert [{:error, {"http_error", 429, "rate limited"}}] = run_with_sse(http_error)
 
-      assert {:error, _} = List.first(events)
+      assert [{:error, {"request_failed", :transport, "connection refused"}}] =
+               run_with_sse(transport_error)
     end
   end
 

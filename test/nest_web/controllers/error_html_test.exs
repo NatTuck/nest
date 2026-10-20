@@ -1,14 +1,17 @@
 defmodule NestWeb.ErrorHTMLTest do
-  use NestWeb.ConnCase, async: true
+  use ExUnit.Case, async: true
 
-  # Bring render_to_string/4 for testing custom views
+  # `Phoenix.Controller.render/3` renders an error through
+  # `Phoenix.Template.render_to_string/4`, so this is the production entry point.
   import Phoenix.Template, only: [render_to_string: 4]
 
-  test "renders 404.html" do
+  # One test covers both statuses: `render/2` is a single delegation to
+  # `status_message_from_template/1` with no branch of its own. Both literals
+  # stay because neither status stands in for the other — a hardcoded
+  # "Not Found" would pass the 404 alone, and the library's `rescue` clause
+  # returns "Internal Server Error" for any template it cannot parse.
+  test "renders an error template as its status message" do
     assert render_to_string(NestWeb.ErrorHTML, "404", "html", []) == "Not Found"
-  end
-
-  test "renders 500.html" do
     assert render_to_string(NestWeb.ErrorHTML, "500", "html", []) == "Internal Server Error"
   end
 end

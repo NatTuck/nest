@@ -39,7 +39,6 @@ defmodule Nest.ToolsScratchPathTest do
     %{
       workspace: workspace,
       tmp_path: tmp_path,
-      agent: agent,
       sandbox_file: "/tmp/#{agent}/report.txt",
       outside_file: Path.join(tmp_path, "report.txt"),
       caps: Sandbox.default_caps()
@@ -79,18 +78,16 @@ defmodule Nest.ToolsScratchPathTest do
 
         # `file-edit` reads and writes the same file through the sandbox
         # spelling (this could not work under the old split-path design).
-        assert {:ok, edit_message} =
+        assert {:ok, _} =
                  edit.function.(
                    %{"path" => sandbox_file, "old_text" => "hello", "new_text" => "world"},
                    %{caps: caps}
                  )
 
-        assert edit_message =~ "Replaced 1"
         assert {:ok, "world"} = read.function.(%{"path" => sandbox_file}, %{caps: caps})
 
         # `file-inspect` operates on the same spelling.
-        assert {:ok, inspect_out} = inspect.function.(%{"path" => sandbox_file}, %{caps: caps})
-        assert inspect_out =~ "File: #{sandbox_file}"
+        assert {:ok, _} = inspect.function.(%{"path" => sandbox_file}, %{caps: caps})
 
         # `shell-cmd` sees the same file through the same spelling.
         assert {:ok, "world"} =
@@ -107,14 +104,14 @@ defmodule Nest.ToolsScratchPathTest do
 
   test "no tool description advertises a scratch path any more", %{
     workspace: workspace,
-    tmp_path: tmp_path,
-    agent: agent
+    tmp_path: tmp_path
   } do
     # The "your own scratch directory is /tmp/<agent>/" sentence used to be
     # appended to every path-taking description. It now lives once in the
     # agent's system prompt (`Nest.Agents.Agent.SystemPrompt`), so a
-    # description must neither mention the host scratch path nor the
-    # sandbox spelling — and must not depend on `tmp_path` at all.
+    # description must not depend on `tmp_path` at all: it can neither
+    # mention the host scratch path nor the sandbox spelling, because both
+    # are derived from `tmp_path` and it is unique to this run.
     for name <- [
           "shell-cmd",
           "shell-list",
@@ -127,8 +124,6 @@ defmodule Nest.ToolsScratchPathTest do
       without_tmp = Tools.get_function(name, Mounts.new(workspace, nil)).description
 
       assert with_tmp == without_tmp, "#{name}'s description still depends on tmp_path"
-      refute with_tmp =~ tmp_path, "#{name} leaked the host scratch path"
-      refute with_tmp =~ "/tmp/#{agent}/", "#{name} still advertises a scratch dir"
     end
   end
 end

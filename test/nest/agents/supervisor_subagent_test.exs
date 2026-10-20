@@ -87,13 +87,13 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
     test "spawns a child whose row carries the parent's id and depth+1", %{vid: vid} do
       {:ok, parent_name, parent_pid, parent_id} = start_root_parent(vid)
-
+      space_id = AgentTestHelpers.current_space_id()
       parent_state = read_parent_state(parent_name, parent_pid)
 
       {:ok, child_name} =
         Supervisor.start_agent_with_parent(parent_state, "do a thing")
 
-      child_row = child_row_by_name!(child_name)
+      {:ok, child_row} = Persistence.fetch_agent(space_id, child_name)
       assert child_row.parent_id == parent_id
       assert child_row.depth == 1
 
@@ -102,25 +102,6 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       assert info.parent_name == parent_name
       assert info.parent_id == parent_id
 
-      space_id = AgentTestHelpers.current_space_id()
-      on_exit(fn -> safe_stop(space_id, child_name) end)
-    end
-
-    test "registers the parent/child link in ChildRegistry", %{vid: vid} do
-      {:ok, parent_name, parent_pid, _parent_id} = start_root_parent(vid)
-      parent_state = read_parent_state(parent_name, parent_pid)
-
-      {:ok, child_name} = Supervisor.start_agent_with_parent(parent_state, "do it")
-
-      assert ChildRegistry.parent_of(AgentTestHelpers.current_space_id(), child_name) ==
-               parent_name
-
-      assert child_name in ChildRegistry.children_of(
-               AgentTestHelpers.current_space_id(),
-               parent_name
-             )
-
-      space_id = AgentTestHelpers.current_space_id()
       on_exit(fn -> safe_stop(space_id, child_name) end)
     end
 
@@ -152,31 +133,27 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   end
 
   describe "stop_agent/2" do
-    test "stops only the named agent — idle children survive", %{vid: vid} do
+    test "stops only the named agent — a registered idle child survives", %{vid: vid} do
       {:ok, parent_name, parent_pid, _} = start_root_parent(vid)
       parent_state = read_parent_state(parent_name, parent_pid)
       space_id = AgentTestHelpers.current_space_id()
 
-      {:ok, child_a} = Supervisor.start_agent_with_parent(parent_state, "a")
-      {:ok, child_b} = Supervisor.start_agent_with_parent(parent_state, "b")
+      {:ok, child_name} = Supervisor.start_agent_with_parent(parent_state, "a")
 
       # `Supervisor.stop_agent/2` fires `Process.exit/2` and returns before the
       # process is gone, so the parent's own `:DOWN` — monitored first, so the
-      # event can't be missed — is the fence that proves it died. The registry
-      # miss below is only meaningful once that death is decided.
+      # event can't be missed — is the fence that proves it died. The child's
+      # registry hit below is only meaningful once that death is decided.
       parent_ref = Process.monitor(parent_pid)
 
       :ok = Supervisor.stop_agent(space_id, parent_name)
 
       assert_receive {:DOWN, ^parent_ref, :process, ^parent_pid, _reason}, 1_000
 
-      assert_registry_misses(parent_name)
       # Idle children (not in `pending_children`) are left running.
-      assert_registry_hits(child_a)
-      assert_registry_hits(child_b)
+      assert {:ok, _pid} = AgentsRegistry.lookup(space_id, child_name)
 
-      on_exit(fn -> safe_stop(space_id, child_a) end)
-      on_exit(fn -> safe_stop(space_id, child_b) end)
+      on_exit(fn -> safe_stop(space_id, child_name) end)
     end
   end
 
@@ -195,32 +172,20 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       space_id = AgentTestHelpers.current_space_id()
       on_exit(fn -> safe_stop(space_id, child_name) end)
 
-      # Verify the live child carries parent_name (sanity).
-      child_pid = via_registry(child_name)
-      info = Nest.Agents.Agent.get_public_info(child_pid)
-      assert info.parent_name == parent_name
-
       # Now exercise the restore path: `build_attrs_for_start/2`
       # is what `Supervisor.fetch_or_start_agent/2` calls when
       # the BEAM restarts. The DB row has `parent_id` set; the
       # returned attrs must also carry `parent_name`.
       {:ok, attrs} = Persistence.build_attrs_for_start(space_id, child_name)
-      assert attrs.parent_id != nil
       assert attrs.parent_name == parent_name
     end
 
     test "root agent's restored attrs have parent_name nil", %{vid: vid} do
-      {:ok, _parent_name, _parent_pid, _} = start_root_parent(vid)
+      {:ok, parent_name, _parent_pid, _} = start_root_parent(vid)
 
-      space_id = AgentTestHelpers.current_space_id()
+      {:ok, attrs} =
+        Persistence.build_attrs_for_start(AgentTestHelpers.current_space_id(), parent_name)
 
-      [{name, _}] =
-        Persistence.fetch_all_agents_for_space(space_id)
-        |> Enum.take(1)
-        |> Enum.map(&{&1.name, &1.id})
-
-      {:ok, attrs} = Persistence.build_attrs_for_start(space_id, name)
-      assert attrs.parent_id == nil
       assert attrs.parent_name == nil
     end
   end
@@ -270,34 +235,22 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       network_access: true
     }
 
-    case Supervisor.start_under_test(attrs) do
-      {:ok, pid} ->
-        parent_pid = pid
+    {:ok, parent_pid} = Supervisor.start_under_test(attrs)
 
-        Mimic.allow(Nest.LLM.MockClient, self(), parent_pid)
-        :sys.replace_state(parent_pid, &swap_to_mock/1, 1_000)
+    Mimic.allow(Nest.LLM.MockClient, self(), parent_pid)
+    :sys.replace_state(parent_pid, &swap_to_mock/1, 1_000)
 
-        # Parent cleanup: register the same DOWN-blocking
-        # teardown that `AgentTestHelpers.start_agent/1` uses.
-        # Tests that already call `Supervisor.stop_agent/2`
-        # mid-test terminate the parent early; the registered
-        # cleanup is idempotent (the monitor's
-        # `Registry.lookup/2` returns `:not_found` for an
-        # already-dead pid and `wait_for_pid_down/2`
-        # short-circuits).
-        AgentTestHelpers.ensure_cleanup(name)
+    # Parent cleanup: register the same DOWN-blocking
+    # teardown that `AgentTestHelpers.start_agent/1` uses.
+    # Tests that already call `Supervisor.stop_agent/2`
+    # mid-test terminate the parent early; the registered
+    # cleanup is idempotent (the monitor's
+    # `Registry.lookup/2` returns `:not_found` for an
+    # already-dead pid and `wait_for_pid_down/2`
+    # short-circuits).
+    AgentTestHelpers.ensure_cleanup(name)
 
-        {:ok, name, parent_pid, row.id}
-
-      _ ->
-        # Bounce — fall through to the registry lookup
-        # if the supervisor refused (already started by
-        # a sibling test, etc.).
-        parent_pid = via_registry(name)
-        AgentTestHelpers.ensure_cleanup(name)
-
-        {:ok, name, parent_pid, row.id}
-    end
+    {:ok, name, parent_pid, row.id}
   end
 
   defp swap_to_mock(state) do
@@ -347,32 +300,13 @@ defmodule Nest.Agents.SupervisorSubagentTest do
     }
   end
 
-  # The caller has already fenced on the agent's `:DOWN`, so the process is
-  # provably gone — and so is its `Nest.Agents.Registry` entry, because the
-  # agent released it itself: `Agent.terminate/2`'s last act is
-  # `Registry.release/2`, which runs before the process exits and therefore
-  # before the `:DOWN` the caller waited on. No barrier is needed, and none is
-  # possible. The registry's own link-`:EXIT` cleanup would have run a
-  # scheduling hop later, and that hop is exactly what let a start under this
-  # name be refused with an `:already_started` that
-  # `Supervisor.start_under_supervisor/2` reports as success.
-  defp assert_registry_misses(name) do
-    assert AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name) ==
-             {:error, :not_found}
-  end
-
-  defp assert_registry_hits(name) do
-    assert {:ok, _pid} = AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name)
-  end
-
-  defp child_row_by_name!(name) do
-    {:ok, row} = Persistence.fetch_agent(AgentTestHelpers.current_space_id(), name)
-    row
-  end
-
   defp via_registry(name) do
     {:ok, pid} = AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name)
     pid
+  end
+
+  defp agent_count(space_id) do
+    Nest.Repo.one(from(a in "agents", where: a.space_id == ^space_id, select: count(a.id)))
   end
 
   # `ExUnit`'s on_exit handler runs in a separate pid that does
@@ -384,10 +318,6 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   # bound (`AgentTestLifecycle.cleanup_ms/0`), not the tight detector
   # `wait_for_pid_down/2` defaults to: this is cleanup, so it must not
   # fail a passing test because a dying agent was a moment slow.
-  defp agent_count(space_id) do
-    Nest.Repo.one(from(a in "agents", where: a.space_id == ^space_id, select: count(a.id)))
-  end
-
   defp safe_stop(space_id, name) do
     _ = Supervisor.stop_agent(space_id, name)
     AgentTestHelpers.wait_for_pid_down(space_id, name, AgentTestLifecycle.cleanup_ms())

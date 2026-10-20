@@ -28,7 +28,6 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Agents.Agent.Turn.Dispatch
-  alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
   alias Nest.Messages.ToolCall
   alias Nest.Tokens.ConversationSize
@@ -104,20 +103,14 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
     assert Enum.map(state.chat_state.messages, &elem(&1, 0)) ==
              [:system, :user, :assistant, :tool, :assistant, :user]
 
-    # The synthetic result answers the batch's call and says the real result
-    # arrives later; the ack is the machine's own.
-    synthetic = Enum.at(state.chat_state.messages, 3)
-    ack = text_of(Enum.at(state.chat_state.messages, 4))
-
-    assert length(tool_texts(synthetic)) == 1
-    assert Enum.all?(tool_texts(synthetic), &(&1 =~ "moved to the background"))
-    assert ack =~ "running in the background"
-
-    assert text_of(Enum.at(state.chat_state.messages, 5)) ==
-             "[From agent peer | mode: act]\npeer note"
-
     # The delivered message rides the turn the batch yielded, so the model sees
-    # it in this request.
+    # it in this request. The two rows before it — the synthetic result that
+    # answers the batch's call and the machine's ack — are pinned by their
+    # wording in `MachineBackgroundingTest` ("backgrounds the batch and
+    # continues the turn with the delivered message"); the shape above is what
+    # this path adds, and the header's `[From agent … | mode: …]` form is
+    # `ModeDeliveryTest`'s ("a queued delivery's header names the mode its own
+    # turn will run in").
     assert Enum.any?(
              user_texts(delivered_request),
              &(&1 =~ "[From agent peer | mode: act]\npeer note")
@@ -146,26 +139,19 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
     # The notice's own turn, which ends the run.
     assert statuses_until_idle(name) == ["streaming", "idle"]
 
-    # allowlist: snapshot — status + work.backgrounded + inbox + messages
+    # allowlist: snapshot — status + work.backgrounded + inbox
     state = :sys.get_state(pid, 1_000)
 
+    # The run is over: no turn is in flight at this snapshot, the drained notice
+    # resolved the batch's entry, and nothing is left queued behind it. What the
+    # drained notice says — the batch's real result and the disposition its send
+    # resolved — is `TurnBackgroundingTest` 1.1.9's and, on the wire,
+    # `AgentChannelQueuedMessageTest`'s ("a human push while a tool batch runs
+    # backgrounds it and is delivered alone"); the two inbox counts above are
+    # the fence that both entries landed before the drain.
     assert Machine.status_for(state.live.machine) == :idle
     assert state.live.machine.work.backgrounded == %{}
     assert state.live.inbox == []
-
-    # Both later deliveries land in the drain that ends the delivered turn's
-    # turn, in one batch: the batch's own send reports the disposition it
-    # resolved (queued — the agent was streaming when it landed), and the notice
-    # reports the batch's real result.
-    late =
-      state.chat_state.messages
-      |> Enum.find(&(&1 |> text_of() |> String.contains?("backgrounded command")))
-      |> text_of()
-
-    assert late =~ "[From agent #{name} | mode: act]\nnote"
-    assert late =~ "Message queued for #{name} (busy)"
-
-    AgentTestHelpers.assert_unique_message_indices(state.chat_state.messages)
   end
 
   test "a batch-start delivery the context cannot hold stays queued and leaves the mode alone" do
@@ -216,16 +202,16 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
       ConversationSize.size(Agent.get_messages(pid, 1_000)) + 100 + 8_192 +
         div(ConversationSize.size([delivered]), 3)
 
-    # Under 40_960, so the reserve the two decisions use is its 8_192 floor.
+    # The reserve is its 8_192 floor — which is also what puts `limit` under
+    # 40_960 — so the two decisions are taken against the same reserve.
     assert Reserve.compaction_reserve(limit) == 8_192
-    assert limit < 40_960
 
-    set_context_limit(pid, limit, silence_reminders: true)
+    set_context_limit(pid, limit)
 
     # The human's message — in a mode the agent is not in — arrives while the
     # model is still streaming, so it queues: the streaming arm must queue it.
+    # The inbox snapshot below pins that it is still there when the batch starts.
     :ok = Agent.chat(pid, queued, "plan", "alice", true)
-    assert_receive {:chat_inbox, %{count: 1}}, 500
 
     # The response asks for the tool batch, whose worker parks inside its call:
     # the batch starts, and the deferral armed there runs the drain — which this
@@ -250,7 +236,10 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
 
     # Nothing was delivered: the entry is still queued, the batch was not moved
     # to the background, and the transcript gained no message at all (the
-    # assistant row the response appended is its last).
+    # assistant row the response appended is its last). The live worker is
+    # asserted too, so the decline cannot be the *no batch to background*
+    # no-op: a machine that had lost its worker would deliver nothing for that
+    # reason instead, and every other assertion here would still hold.
     assert Machine.status_for(state.live.machine) == :executing_tools
     assert [%{content: ^queued, kind: :user, mode: "plan"}] = state.live.inbox
     assert state.live.machine.work.backgrounded == %{}
@@ -258,13 +247,16 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
     assert Enum.map(state.chat_state.messages, &elem(&1, 0)) == [:system, :user, :assistant]
 
     # ... and the mode did not stick. The peek published the queued message's
-    # mode while the batch was still executing — that frame's timing is pinned
-    # by `TurnBackgroundingTest` 1.1.10, because `currentMode` is read from
-    # `state.live.mode` — and the undelivered attempt published the agent's own
-    # mode again, so the UI is not left showing a mode that never took effect.
-    assert state.live.mode == "act"
+    # mode while the batch was still executing — `currentMode` is read from
+    # `state.live.mode`, and that frame's timing is
+    # `AgentChannelQueuedMessageTest`'s ("a human push while a tool batch runs
+    # backgrounds it and is delivered alone") — so the frame asserted here is the
+    # mode the delivery tried to apply, and the state below is the agent's own
+    # again. The revert's own frame carries the same status and count as the
+    # `act` frames the turn broadcast before the peek, so a selective receive
+    # cannot tell it apart from them; the state is what pins the revert.
     assert_receive {:chat_status, %{currentMode: "plan"}}, 500
-    assert_receive {:chat_status, %{currentMode: "act"}}, 500
+    assert state.live.mode == "act"
 
     # Leave the agent idle for the teardown, with the entry dropped: the decline,
     # not the fabricated limit, is what this test pins.
@@ -281,27 +273,21 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
   # the turn opens, so the request that asks for the batch is sized against it
   # too — which is what makes the batch start and the delivery decline.
   #
-  # `silence_reminders: true` marks every context threshold already announced.
-  # Lowering the limit mid-turn legitimately puts the agent over the first one,
-  # and the reminder it appends is a `user`/`assistant` pair of its own — which
-  # would change the transcript this fixture asserts on for a reason that has
-  # nothing to do with the fit decision. The thresholds come from
+  # Every context threshold is marked already announced. Lowering the limit
+  # mid-turn legitimately puts the agent over the first one, and the reminder it
+  # appends is a `user`/`assistant` pair of its own — which would change the
+  # transcript this fixture asserts on for a reason that has nothing to do with
+  # the fit decision. The thresholds come from
   # `ContextReminder.threshold_atoms/0`, so adding one there does not silently
   # re-introduce the pair here.
-  defp set_context_limit(pid, limit, opts) do
-    announced =
-      if Keyword.get(opts, :silence_reminders, false),
-        do: MapSet.new(ContextReminder.threshold_atoms()),
-        else: nil
+  defp set_context_limit(pid, limit) do
+    announced = MapSet.new(ContextReminder.threshold_atoms())
 
     :sys.replace_state(
       pid,
       fn state ->
         state = %{state | llm_metrics: %{state.llm_metrics | context_limit: limit}}
-
-        if announced,
-          do: %{state | live: %{state.live | crossed_thresholds: announced}},
-          else: state
+        %{state | live: %{state.live | crossed_thresholds: announced}}
       end,
       1_000
     )

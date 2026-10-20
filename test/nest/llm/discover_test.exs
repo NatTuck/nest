@@ -219,25 +219,21 @@ defmodule Nest.LLM.DiscoverTest do
       assert Discover.context_limit(build_config()) == {:default, @default_limit}
     end
 
-    test "extract_limit_from_model returns {:olla, n} for populated entry" do
-      model = %{
-        "id" => "Qwen/Qwen3.6-27B-FP8",
-        "olla" => %{"max_context_length" => 224_000}
-      }
+    # Three single-call probes of the same pure function, so they share a test.
+    test "extract_limit_from_model/1 reads olla.max_context_length and returns nil otherwise" do
+      # A populated entry yields the olla-tagged limit.
+      assert Discover.extract_limit_from_model(%{
+               "id" => "Qwen/Qwen3.6-27B-FP8",
+               "olla" => %{"max_context_length" => 224_000}
+             }) == {:olla, 224_000}
 
-      assert Discover.extract_limit_from_model(model) == {:olla, 224_000}
-    end
+      # An olla block without max_context_length yields nil.
+      assert Discover.extract_limit_from_model(%{
+               "id" => "unsloth/Qwen3.5-122B-A10B-GGUF",
+               "olla" => %{"family" => "qwen"}
+             }) == nil
 
-    test "extract_limit_from_model returns nil when max_context_length is absent" do
-      model = %{
-        "id" => "unsloth/Qwen3.5-122B-A10B-GGUF",
-        "olla" => %{"family" => "qwen"}
-      }
-
-      assert Discover.extract_limit_from_model(model) == nil
-    end
-
-    test "extract_limit_from_model returns nil when olla block is absent" do
+      # No olla block at all yields nil.
       assert Discover.extract_limit_from_model(%{"id" => "some-model"}) == nil
     end
 
@@ -445,39 +441,40 @@ defmodule Nest.LLM.DiscoverTest do
   end
 
   describe "failure modes" do
-    test "falls through to default on a non-200 status" do
+    # Every stubbed failure below resolves to the identical outcome, so they
+    # share one test rather than repeating the stub scaffolding. Mimic consumes
+    # expectations in definition order, so each stub is used by exactly the one
+    # `context_limit/1` call that follows it.
+    test "falls through to default on a bad status, a transport error, or an unusable body" do
+      # A non-200 status.
       Mimic.expect(Req, :get, fn _url, _opts ->
         {:ok, %{status: 500, body: "oops"}}
       end)
 
       assert Discover.context_limit(build_config()) == {:default, @default_limit}
-    end
 
-    test "falls through to default on a 401" do
+      # A 401.
       Mimic.expect(Req, :get, fn _url, _opts ->
         {:ok, %{status: 401, body: "unauthorized"}}
       end)
 
       assert Discover.context_limit(build_config()) == {:default, @default_limit}
-    end
 
-    test "falls through to default when Req.get returns an error tuple" do
+      # Req.get returning an error tuple.
       Mimic.expect(Req, :get, fn _url, _opts ->
         {:error, :econnrefused}
       end)
 
       assert Discover.context_limit(build_config()) == {:default, @default_limit}
-    end
 
-    test "falls through to default on a malformed body" do
+      # A malformed, non-JSON body.
       Mimic.expect(Req, :get, fn _url, _opts ->
         {:ok, %{status: 200, body: "<html>not json</html>"}}
       end)
 
       assert Discover.context_limit(build_config()) == {:default, @default_limit}
-    end
 
-    test "falls through to default on an empty body" do
+      # An empty body.
       Mimic.expect(Req, :get, fn _url, _opts ->
         {:ok, %{status: 200, body: nil}}
       end)
@@ -492,9 +489,10 @@ defmodule Nest.LLM.DiscoverTest do
   end
 
   describe "auth header" do
-    test "sends a Bearer header when api_key is present" do
+    test "sends a Bearer header from api_key and none when api_key is nil or empty" do
       test_pid = self()
 
+      # A present api_key becomes a Bearer Authorization header.
       Mimic.expect(Req, :get, fn _url, opts ->
         send(test_pid, {:opts, opts})
         {:ok, %{status: 200, body: %{"data" => []}}}
@@ -504,11 +502,8 @@ defmodule Nest.LLM.DiscoverTest do
 
       assert_received {:opts, opts}
       assert {"Authorization", "Bearer sk-test-123"} in opts[:headers]
-    end
 
-    test "sends no Authorization header when api_key is nil" do
-      test_pid = self()
-
+      # A nil api_key sends no Authorization header at all.
       Mimic.expect(Req, :get, fn _url, opts ->
         send(test_pid, {:opts, opts})
         {:ok, %{status: 200, body: %{"data" => []}}}
@@ -518,11 +513,8 @@ defmodule Nest.LLM.DiscoverTest do
 
       assert_received {:opts, opts}
       refute Enum.any?(opts[:headers] || [], fn {k, _v} -> k == "Authorization" end)
-    end
 
-    test "sends no Authorization header when api_key is an empty string" do
-      test_pid = self()
-
+      # An empty-string api_key is treated exactly like nil.
       Mimic.expect(Req, :get, fn _url, opts ->
         send(test_pid, {:opts, opts})
         {:ok, %{status: 200, body: %{"data" => []}}}
@@ -536,7 +528,7 @@ defmodule Nest.LLM.DiscoverTest do
   end
 
   describe "URL construction" do
-    test "appends /models to the base URL" do
+    test "appends /models to the base URL, preserving any path already on it" do
       test_pid = self()
 
       Mimic.expect(Req, :get, fn url, _opts ->
@@ -547,10 +539,6 @@ defmodule Nest.LLM.DiscoverTest do
       Discover.context_limit(build_config(base_url: "http://example.com/v1"))
 
       assert_received {:url, "http://example.com/v1/models"}
-    end
-
-    test "preserves any path already on the base URL" do
-      test_pid = self()
 
       Mimic.expect(Req, :get, fn url, _opts ->
         send(test_pid, {:url, url})

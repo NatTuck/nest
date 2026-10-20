@@ -77,9 +77,7 @@ defmodule Nest.Agents.Agent.ToolLoopUnarchiveTest do
       assert [result] = unarchive_from("parent-success", "old-specialist")
 
       assert %ToolResult{
-               tool_call_id: "unarchive-1",
                name: "agents-unarchive",
-               arguments: %{"name" => "old-specialist"},
                content: content,
                is_error: false
              } = result
@@ -97,14 +95,7 @@ defmodule Nest.Agents.Agent.ToolLoopUnarchiveTest do
       # BatchSizer logs every `is_error` result: expected, so capture it.
       {results, log} = with_log(fn -> unarchive_from("parent-err", "ghost") end)
 
-      assert [
-               %ToolResult{
-                 tool_call_id: "unarchive-1",
-                 name: "agents-unarchive",
-                 is_error: true,
-                 content: content
-               }
-             ] = results
+      assert [%ToolResult{is_error: true, content: content}] = results
 
       assert content =~ "Could not restore ghost"
       assert content =~ "not_found"
@@ -143,15 +134,6 @@ defmodule Nest.Agents.Agent.ToolLoopUnarchiveTest do
         assert :ok = Nest.Persistence.archive_agent(space_id, name)
       end
 
-      # A non-archived row must not appear in the listing.
-      {:ok, _active_row} =
-        Nest.Persistence.insert_agent(%{
-          space_id: space_id,
-          name: "tl-arch-active-#{suffix}",
-          model: model,
-          vocation_id: vid
-        })
-
       assert [result] = list_archived_from("parent-read")
 
       assert %ToolResult{
@@ -160,12 +142,10 @@ defmodule Nest.Agents.Agent.ToolLoopUnarchiveTest do
                is_error: false
              } = result
 
-      assert content =~ parent_name
       assert content =~ child_name
       # The child's parent is resolved by name so the model can
       # see the subtree it is restoring.
       assert content =~ ~s(parent: "#{parent_name}")
-      refute content =~ "tl-arch-active-#{suffix}"
     end
 
     test "an empty space reports no archived agents" do

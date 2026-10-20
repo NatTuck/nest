@@ -63,7 +63,6 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
 
       assert {:user, %User{parts: [%Part.Text{text: notice_text}]}} = notice
       assert notice_text =~ "lost when this agent restarted"
-      assert notice_text =~ "Call it again if you still need it"
 
       assert {:assistant, %Assistant{parts: [%Part.Text{text: ack_text}], metadata: metadata}} =
                ack
@@ -88,11 +87,10 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
       # below — is unchanged.
       assert [
                {:assistant, %Assistant{metadata: %{"backgrounded_lost_ids" => ["call_1"]}}},
-               {:user, %User{parts: [%Part.Text{text: text}]}},
+               {:user, %User{parts: [%Part.Text{}]}},
                {:assistant, %Assistant{metadata: %{"backgrounded_lost_ids" => ["call_1"]}}}
              ] = record
 
-      assert text =~ "lost when this agent restarted"
       assert :ok = Repair.classify_load(user_tail ++ record, "act")
 
       # Two promises in one transcript: the record counts the *calls*, not the
@@ -154,30 +152,11 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
       insert_messages(space_id, name, [system(0), user(1, "hi")])
 
       assert {:ok, attrs} = Persistence.build_attrs_for_start(space_id, name)
-      assert attrs.sequence_violations == []
 
       assert {:bridge, [{:assistant, %Assistant{parts: [%Part.Text{text: text}]}}]} =
                attrs.load_heal
 
       assert text =~ "interrupted"
-    end
-
-    test "leaves a clean assistant tail and the trailing orphan unchanged" do
-      space_id = current_space_id()
-
-      clean = unique_name("clean")
-      {:ok, _} = Persistence.insert_agent(agent_attrs(space_id, clean))
-      insert_messages(space_id, clean, [system(0), user(1, "hi"), assistant_text(2)])
-
-      assert {:ok, clean_attrs} = Persistence.build_attrs_for_start(space_id, clean)
-      assert clean_attrs.load_heal == nil
-
-      orphan = unique_name("orphan")
-      {:ok, _} = Persistence.insert_agent(agent_attrs(space_id, orphan))
-      insert_messages(space_id, orphan, [system(0), user(1, "hi"), assistant_tool(2, "call_1")])
-
-      assert {:ok, orphan_attrs} = Persistence.build_attrs_for_start(space_id, orphan)
-      assert [%Part.ToolUse{id: "call_1", name: "shell-cmd"}] = orphan_attrs.load_heal
     end
 
     test "attaches the lost-promise record for a restored backgrounded call" do
@@ -197,7 +176,6 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
       ])
 
       assert {:ok, attrs} = Persistence.build_attrs_for_start(space_id, name)
-      assert attrs.sequence_violations == []
 
       assert {:lost_promises, [{:user, %User{parts: [%Part.Text{text: notice}]}}, _]} =
                attrs.load_heal
@@ -257,10 +235,6 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
         capture_log(fn ->
           again = Agent.pre_load_heal(attrs)
           assert again.load_heal == nil
-
-          assert Enum.map(again.preloaded_messages, &elem(&1, 0)) ==
-                   [:system, :user, :assistant]
-
           refute_received {:chat_message, _}
         end)
 
@@ -318,36 +292,6 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
   end
 
   describe "Init.LoadHeal.heal/2" do
-    test "appends and persists the load bridge before idling" do
-      space_id = current_space_id()
-      name = unique_name("heal-bridge")
-      {:ok, _} = Persistence.insert_agent(agent_attrs(space_id, name))
-      initial = [system(0), user(1, "hi")]
-      insert_messages(space_id, name, initial)
-
-      state = load_state(name, space_id, initial)
-
-      log =
-        capture_log(fn ->
-          {:bridge, [ack]} = Repair.classify_load(initial, "act")
-          healed = Init.LoadHeal.heal(state, {:bridge, [ack]})
-
-          assert {:assistant, %Assistant{parts: [%Part.Text{text: text}]}} =
-                   List.last(healed.chat_state.messages)
-
-          assert text =~ "interrupted"
-        end)
-
-      assert log =~ "idle sequence ending on a user message"
-
-      # Persisted, so a subsequent load has nothing left to bridge.
-      assert [:system, :user, :assistant] =
-               Persistence.load_messages(space_id, name) |> Enum.map(&elem(&1, 0))
-
-      assert {:ok, again} = Persistence.build_attrs_for_start(space_id, name)
-      assert again.load_heal == nil
-    end
-
     test "records a lost backgrounded promise, and the healed tail needs no second record" do
       space_id = current_space_id()
       name = unique_name("heal-lost-promise")

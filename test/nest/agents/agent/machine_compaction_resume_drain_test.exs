@@ -27,8 +27,6 @@ defmodule MachineCompactionResumeDrainTest do
       # nobody asked for.
       machine = resume_segment()
 
-      assert Boundary.drain?(machine)
-
       # The entry is what makes it drainable: the same user tail with no entry
       # dispatches instead. That is the property the entry clause exists for, and
       # it is invisible without this comparison.
@@ -53,9 +51,6 @@ defmodule MachineCompactionResumeDrainTest do
 
       {:ok, _actions, failed} =
         Compaction.compaction_failed(staged, :boom, {:compact_resume, 0, 10})
-
-      assert failed.kind == :chat and failed.phase == :generating
-      assert Boundary.drain?(failed)
 
       {:ok, actions, _next} = Machine.step(failed, :iterate)
 

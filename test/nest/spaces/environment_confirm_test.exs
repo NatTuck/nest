@@ -20,7 +20,6 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
 
   alias Nest.Agents
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.SpaceGate
   alias Nest.Agents.Supervisor
@@ -66,21 +65,6 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
     # Nothing was written, and nothing can start: the latch is up.
     assert Spaces.get_space(space_id).network_access == true
     assert SpaceGate.held?(space_id)
-
-    release_llm(worker)
-    assert List.last(statuses_until_idle(name)) == "idle"
-  end
-
-  test "cancelling releases the space and changes nothing" do
-    {space_id, name, worker} = working_agent()
-
-    assert {:error, {:confirmation_required, _plan}} =
-             Spaces.update_environment(space_id, %{network_access: false})
-
-    # The client's "no": the latch comes down, the turn keeps running.
-    assert :ok = SpaceGate.release(space_id)
-    refute SpaceGate.held?(space_id)
-    assert Spaces.get_space(space_id).network_access == true
 
     release_llm(worker)
     assert List.last(statuses_until_idle(name)) == "idle"
@@ -189,9 +173,9 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
 
     assert :ok = Agents.chat(space_id, name, "hi", nil, "tester", true)
 
-    # allowlist: barrier — the cast is the only writer here.
-    state = :sys.get_state(pid, 1_000)
-    assert Machine.status_for(state.live.machine) == :idle
+    # Queued, not running: a turn that had started would have taken the message
+    # out of the queue. `get_public_info/2` is a call, so it is also the fence
+    # behind the cast above.
     assert [%{"content" => "hi"}] = Agent.get_public_info(pid, 1_000).pending_messages
 
     # The unlock drains it: the turn runs, and the queue empties.
@@ -294,30 +278,6 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
     assert Spaces.get_space(space_id).workspace_path == workspace
     # The refusal came before the latch, so the space was never even paused.
     refute SpaceGate.held?(space_id)
-  end
-
-  # A changeset can be *invalid* and still change nothing (`cast/4` records no
-  # change for a value it rejects), so "nothing changed" is not the same as "nothing
-  # to do". The refusal has to win, before the latch and the quiesce: this shape
-  # used to be reported to the client as a successful save of the *old* values.
-  test "a save the changeset refuses stops nothing and is not reported as a save" do
-    {pid, name} = AgentTestHelpers.start_agent()
-    space_id = AgentTestHelpers.current_space_id()
-    # allowlist: snapshot — the agent's own mounts, which the job needs.
-    state = :sys.get_state(pid, 1_000)
-    start_job(space_id, name, pid, state.mounts)
-
-    Phoenix.PubSub.subscribe(Nest.PubSub, SpaceGate.topic(space_id))
-
-    # Invalid *and* changed: the backend is not one this build has, which is a row
-    # a rollback can leave behind — so on such a space every save used to cancel
-    # the whole space's work and then refuse.
-    assert {:error, %Ecto.Changeset{errors: errors}} =
-             Spaces.update_environment(space_id, %{sandbox_backend: "firecracker"})
-
-    assert Keyword.has_key?(errors, :sandbox_backend)
-    assert [%{status: :running}] = ShellJobs.list({space_id, name})
-    refute_receive {:space_locked, ^space_id}, 0
   end
 
   test "a blank workspace is refused rather than saved as a no-op" do

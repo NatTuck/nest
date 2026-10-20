@@ -30,41 +30,41 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
     {:ok, dir: dir}
   end
 
-  describe "no-budget paths" do
-    test "head_text/3 and truncate_to_fit/3 return the caller's marker, never empty" do
-      # No budget at all, a budget too small for even the first line, and
-      # empty content: each returns the caller's elision marker verbatim
-      # instead of "" (or a truncated head).
-      marker = "[content elided: see /tmp/x.txt]"
+  test "head_text/3 and truncate_to_fit/3 never return an empty string" do
+    marker = "[content elided: see /tmp/x.txt]"
 
-      assert Overflow.head_text("content", 0, marker) == marker
-      assert Overflow.head_text("a line far too long for a 1-token budget", 1, marker) == marker
-      assert Overflow.head_text("", 100, marker) == marker
-      assert Overflow.truncate_to_fit("content", 0, marker) == marker
-    end
+    # No budget at all, a budget too small for even the first line, and
+    # empty content: each returns the caller's elision marker verbatim
+    # instead of "" (or a truncated head).
+    assert Overflow.head_text("content", 0, marker) == marker
+    assert Overflow.head_text("a line far too long for a 1-token budget", 1, marker) == marker
+    assert Overflow.head_text("", 100, marker) == marker
+    assert Overflow.truncate_to_fit("content", 0, marker) == marker
 
-    test "head_text/3 returns the leading whole lines that fit the budget" do
-      # The marker goes unused here: every line fits, so nothing is dropped.
-      assert Overflow.head_text("first\nsecond\nthird\n", 100, "unused") ==
-               "first\nsecond\nthird"
-    end
+    # The one clause that does return content: leading whole lines, joined
+    # and trailing-trimmed. The marker goes unused because every line fits,
+    # so nothing was dropped.
+    assert Overflow.head_text("first\nsecond\nthird\n", 100, "unused") ==
+             "first\nsecond\nthird"
   end
 
   describe "substitute/5" do
     test "names the scratch file even when the budget leaves no room", %{dir: dir} do
-      content = "line one\nline two\n"
-      ctx = %{mounts: Mounts.new(nil, dir)}
+      # A budget of `1` has room for neither the content nor even the header
+      # line, so the result must be the marker naming the file rather than
+      # "". (The `0` no-budget clause of `truncate_to_fit/3` is pinned by the
+      # test above.)
+      out =
+        Overflow.substitute(
+          "line one\nline two\n",
+          %{mounts: Mounts.new(nil, dir)},
+          "Command output",
+          1,
+          "exec"
+        )
 
-      # `0` hits the no-budget clause; `1` has a budget but can't fit even
-      # the pointer line. Both must name the file rather than return "".
-      for budget <- [0, 1] do
-        out = Overflow.substitute(content, ctx, "Command output", budget, "exec")
-
-        assert out =~ "elided"
-        assert out =~ Sandbox.sandbox_tmp_path(dir)
-        refute out =~ dir
-        assert String.valid?(out)
-      end
+      assert out =~ "elided"
+      assert out =~ Sandbox.sandbox_tmp_path(dir)
     end
 
     test "keeps the pointer and a head when there is room", %{dir: dir} do
@@ -77,7 +77,8 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
           "exec"
         )
 
-      assert out =~ "saved to"
+      # The pointer is the sandbox spelling, never the host scratch dir, and
+      # the body keeps a head of the content — all within the budget.
       assert out =~ Sandbox.sandbox_tmp_path(dir)
       refute out =~ dir
       assert out =~ "line of content"
@@ -89,7 +90,6 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
 
       assert out =~ "elided"
       assert out =~ "could not be written"
-      refute out =~ "saved to"
     end
   end
 end

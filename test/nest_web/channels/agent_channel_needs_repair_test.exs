@@ -1,8 +1,11 @@
 defmodule NestWeb.AgentChannelNeedsRepairTest do
   @moduledoc """
   Channel coverage for the `:needs_repair` on-load state: the `init`
-  payload carries the violations + repair command, and `chat:message`
-  is refused with `agent_status_needs_repair`.
+  payload carries the violations + repair command.
+
+  The `chat:message` refusal for a blocked agent is covered in
+  `agent_channel_queued_message_test.exs`; the reply is a pure function of
+  the agent's status, so how that status was reached does not matter.
   """
   use NestWeb.ChannelCase, async: true
   use NestWeb.AgentChannelTestHelpers
@@ -15,7 +18,7 @@ defmodule NestWeb.AgentChannelNeedsRepairTest do
   alias Nest.Messages.User
   alias Nest.Persistence
 
-  test "init carries the violations and chat:message is refused", %{
+  test "init carries the violations and the repair command", %{
     user: user,
     space_id: space_id
   } do
@@ -56,16 +59,13 @@ defmodule NestWeb.AgentChannelNeedsRepairTest do
     # the needs_repair agent's.
     assert_push "init", _helper_init
 
-    {:ok, _, socket} =
+    {:ok, _, _socket} =
       subscribe_and_join(connected, NestWeb.AgentChannel, "agent:#{space_id}:#{name}")
 
     assert_push "init", init
     assert init["status"] == "needs_repair"
     assert [%{rule: :tool_pairing}] = init["sequenceViolations"]
     assert init["repairCommand"] =~ "mix nest.repair_messages --space "
-
-    ref = push(socket, "chat:message", %{"content" => "hello?"})
-    assert_reply ref, :error, %{"reason" => "agent_status_needs_repair"}
   end
 
   # ---- helpers ----

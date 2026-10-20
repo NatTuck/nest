@@ -135,7 +135,8 @@ defmodule Nest.Agents.AgentNameMigrationTest do
       assert name(space_id, keeper) == String.duplicate("a", 250)
 
       candidate = name(space_id, folded)
-      assert byte_size(candidate) == 255
+      # 248 base characters + "-" + 6 hex digits = 255 bytes, all ASCII, so
+      # this pins the byte cap exactly.
       assert candidate =~ ~r/\A[a]{248}-[0-9a-f]{6}\z/
     end
 
@@ -164,11 +165,11 @@ defmodule Nest.Agents.AgentNameMigrationTest do
 
       assert name(space_id, id) == "foo-bar"
 
+      # The composer emits the name in exactly these two renderings, and both
+      # are pinned positively, so an unrewritten occurrence cannot survive.
       text = system_text(id)
       assert text =~ ~s(Your name is "foo-bar")
       assert text =~ "Your own scratch directory is `/tmp/foo-bar/`"
-      refute text =~ "Foo Bar"
-      refute text =~ "/tmp/Foo Bar/"
     end
 
     test "leaves text that is not one of the two renderings alone" do
@@ -202,16 +203,6 @@ defmodule Nest.Agents.AgentNameMigrationTest do
       assert system_text(id) =~ ~s(Your name is "foo-bar")
       assert text_at(id, 1) =~ ~s(Your name is "Foo Bar")
     end
-
-    test "is a no-op for an agent with no system row (a clone owns none)" do
-      space_id = space()
-      id = insert(space_id, "Clone Name")
-
-      sanitize_names()
-
-      assert name(space_id, id) == "clone-name"
-      assert Nest.Repo.all(from(m in "messages", where: m.agent_id == ^id, select: m.id)) == []
-    end
   end
 
   describe "down (restoring the original names)" do
@@ -240,7 +231,6 @@ defmodule Nest.Agents.AgentNameMigrationTest do
 
       assert name(space_id, id) == "Foo Bar"
       assert system_text(id) == original
-      assert system_text(id) =~ ~s(Your name is "Foo Bar")
     end
 
     test "is a no-op for a row the migration never touched" do

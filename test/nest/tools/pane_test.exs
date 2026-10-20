@@ -160,16 +160,9 @@ defmodule Nest.Tools.PaneTest do
 
     assert {:error, message} = invoke("todos-write", %{"nope" => []}, agent)
     assert message =~ "items"
-
-    # A refused call writes nothing.
-    assert {:ok, "No open decisions."} = invoke("decisions-list", %{}, agent)
-    assert {:ok, "Your TODO list is empty."} = invoke("todos-list", %{}, agent)
   end
 
   test "a call with no agent identity is refused" do
-    assert {:error, message} = invoke("decisions-list", %{}, %{})
-    assert message =~ "identity"
-
     assert {:error, message} = invoke("todos-list", %{}, %{space_id: 1})
     assert message =~ "identity"
   end

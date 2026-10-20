@@ -6,6 +6,12 @@ defmodule NestWeb.Auth.FetchCurrentUserTest do
   The plug must always assign `:current_user` (never raise)
   and leave anonymous requests with `nil` so downstream
   plugs can branch on it.
+
+  What a *token* means — malformed, tampered, or pointing at a
+  user that no longer exists — is `Nest.Accounts.get_user_by_token/1`
+  behaviour, tested in `test/nest/accounts_test.exs`. This plug's
+  only job is to extract the bearer token and map that result onto
+  `:current_user`, which the tests here cover by branch.
   """
 
   # Async: the plug is pure. It reads the `authorization` header and
@@ -42,15 +48,6 @@ defmodule NestWeb.Auth.FetchCurrentUserTest do
     assert conn.assigns.current_user == nil
   end
 
-  test "assigns nil for a malformed token", %{conn: conn} do
-    conn =
-      conn
-      |> Plug.Conn.put_req_header("authorization", "Bearer not-a-token")
-      |> FetchCurrentUser.call([])
-
-    assert conn.assigns.current_user == nil
-  end
-
   test "assigns the user when the token is valid", %{conn: conn} do
     {:ok, user, :admin} =
       Accounts.create_user(%{username: "alice", password: "password123"}, "first-user")
@@ -63,21 +60,5 @@ defmodule NestWeb.Auth.FetchCurrentUserTest do
       |> FetchCurrentUser.call([])
 
     assert conn.assigns.current_user.id == user.id
-    assert conn.assigns.current_user.username == "alice"
-  end
-
-  test "assigns nil when the token points at a deleted user", %{conn: conn} do
-    {:ok, user, _} =
-      Accounts.create_user(%{username: "alice", password: "password123"}, "first-user")
-
-    token = AuthToken.sign(user.id)
-    Repo.delete!(user)
-
-    conn =
-      conn
-      |> Plug.Conn.put_req_header("authorization", "Bearer #{token}")
-      |> FetchCurrentUser.call([])
-
-    assert conn.assigns.current_user == nil
   end
 end

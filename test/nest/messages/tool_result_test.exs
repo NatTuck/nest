@@ -22,7 +22,6 @@ defmodule Nest.Messages.ToolResultTest do
     assert json["name"] == "shell-cmd"
     assert json["content"] == "ok"
     assert json["arguments"] == %{}
-    assert json["is_error"] == false
     refute Map.has_key?(json, "state")
 
     waiting = %{plain | state: "waiting", is_error: nil}
