@@ -96,9 +96,11 @@ defmodule NestWeb.LobbyChannelRescanModelsTest do
     {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => auth_token})
     {:ok, _reply, socket} = subscribe_and_join(connected, NestWeb.LobbyChannel, "lobby")
 
-    assert_push "init", _payload
     # The `:after_join` broken-agents fetch runs in a spawned task; wait
-    # for its push so it can't outlive the test's sandbox checkout.
+    # for its push so it can't outlive the test's sandbox checkout. It is
+    # pushed after `init` from the same `handle_info/2`, so this also
+    # proves `init` went out; its full payload is asserted in
+    # `LobbyChannelTest`.
     assert_push "broken_agents_updated", %{broken_agents: _list}, 1_000
 
     socket

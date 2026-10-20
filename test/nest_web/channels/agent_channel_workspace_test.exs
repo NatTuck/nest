@@ -16,60 +16,21 @@ defmodule NestWeb.AgentChannelWorkspaceTest do
 
   import Mimic
 
-  import Nest.Test.TmpCleanup
-
-  alias Nest.Agents.AgentTestHelpers
-
   setup :verify_on_exit!
 
-  describe "init payload workspace fields" do
-    test "carries the vocation's identity", %{socket: _socket} do
-      assert_push "init", payload
-      # `get_vocation_info/1` carries the role the agent was created with, which
-      # is what the header shows. It carries no `modes`: there is nothing
-      # per-vocation left to describe.
-      assert %{"id" => id, "name" => name, "slug" => slug} = payload["vocation"]
-      assert is_integer(id)
-      assert is_binary(name)
-      assert is_binary(slug)
-      refute Map.has_key?(payload["vocation"], "modes")
-    end
+  test "the init payload carries the vocation's identity and the workspace_path", %{
+    space_id: space_id
+  } do
+    assert_push "init", payload
 
-    test "carries the agent workspace_path", %{user: user} do
-      workspace =
-        Path.join([
-          File.cwd!(),
-          "_build",
-          "tmp",
-          "agent-ws-#{System.unique_integer([:positive])}"
-        ])
+    # `get_vocation_info/1` carries the role the agent was created with, which
+    # is what the header shows. It carries no `modes`: there is nothing
+    # per-vocation left to describe.
+    assert %{"id" => _, "name" => _, "slug" => _} = payload["vocation"]
+    refute Map.has_key?(payload["vocation"], "modes")
 
-      File.mkdir_p!(workspace)
-      on_exit(fn -> rm_tmp!(workspace, "agent-ws-") end)
-
-      {_pid, agent_name} =
-        AgentTestHelpers.start_agent(%{
-          model: %{name: "qwen3.5-plus", provider: "model-studio"},
-          vocation_id: AgentTestHelpers.programmer_vocation_id_for_test(),
-          workspace_path: workspace,
-          created_by_user_id: user.id
-        })
-
-      space_id = AgentTestHelpers.current_space_id()
-      {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
-
-      {:ok, _, _socket} =
-        subscribe_and_join(
-          connected,
-          NestWeb.AgentChannel,
-          "agent:#{space_id}:#{agent_name}"
-        )
-
-      # Consume the setup agent's `init` first (that agent has no
-      # workspace), then assert our new agent's.
-      assert_push "init", _setup_init, 1_000
-      assert_push "init", payload
-      assert payload["workspace_path"] == workspace
-    end
+    # An agent has no workspace of its own — the path is its space's — so the
+    # payload mirrors the space row the Edit agent dialog prefills from.
+    assert payload["workspace_path"] == Nest.Spaces.get_space(space_id).workspace_path
   end
 end
