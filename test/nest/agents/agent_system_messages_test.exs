@@ -15,7 +15,6 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
 
   use Nest.DataCase, async: true
 
-  import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Agents.Agent
@@ -75,10 +74,8 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      capture_log(fn ->
-        :ok = Agent.chat(pid, "Loop until done")
-        assert_receive {:chat_status, %{status: "idle"}}, 1_000
-      end)
+      :ok = Agent.chat(pid, "Loop until done")
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       messages = Agent.get_messages(pid, 1_000)
 
@@ -133,10 +130,8 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      capture_log(fn ->
-        :ok = Agent.chat(pid, "Loop until done")
-        assert_receive {:chat_status, %{status: "idle"}}, 1_000
-      end)
+      :ok = Agent.chat(pid, "Loop until done")
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       messages = Agent.get_messages(pid, 1_000)
 

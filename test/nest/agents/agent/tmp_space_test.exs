@@ -78,16 +78,14 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       space_id: space_id,
       space_dir: space_dir
     } do
-      capture_log(fn ->
-        a = TmpSpace.create(space_id, "agent-a", "bwrap")
-        b = TmpSpace.create(space_id, "agent-b", "bwrap")
+      a = TmpSpace.create(space_id, "agent-a", "bwrap")
+      b = TmpSpace.create(space_id, "agent-b", "bwrap")
 
-        # Both agents share one space dir: it is the parent each path names.
-        assert a == Path.join(space_dir, "agent-a")
-        assert b == Path.join(space_dir, "agent-b")
-        assert File.dir?(a)
-        assert File.dir?(b)
-      end)
+      # Both agents share one space dir: it is the parent each path names.
+      assert a == Path.join(space_dir, "agent-a")
+      assert b == Path.join(space_dir, "agent-b")
+      assert File.dir?(a)
+      assert File.dir?(b)
     end
   end
 
@@ -96,46 +94,49 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       space_id: space_id,
       space_dir: space_dir
     } do
-      capture_log(fn ->
-        a = TmpSpace.create(space_id, "agent-a", "bwrap")
-        b = TmpSpace.create(space_id, "agent-b", "bwrap")
-        File.write!(Path.join(a, "a.txt"), "a")
-        File.write!(Path.join(b, "b.txt"), "b")
+      a = TmpSpace.create(space_id, "agent-a", "bwrap")
+      b = TmpSpace.create(space_id, "agent-b", "bwrap")
+      File.write!(Path.join(a, "a.txt"), "a")
+      File.write!(Path.join(b, "b.txt"), "b")
 
-        assert :ok = TmpSpace.cleanup(space_id, "agent-a", "bwrap")
+      assert :ok = TmpSpace.cleanup(space_id, "agent-a", "bwrap")
 
-        refute File.exists?(a)
-        # The space dir is a shared parent and is never rmdir'd, so a sibling
-        # survives both its directory and its file.
-        assert File.dir?(space_dir)
-        assert File.read!(Path.join(b, "b.txt")) == "b"
-      end)
+      refute File.exists?(a)
+      # The space dir is a shared parent and is never rmdir'd, so a sibling
+      # survives both its directory and its file.
+      assert File.dir?(space_dir)
+      assert File.read!(Path.join(b, "b.txt")) == "b"
     end
 
     test "refuses a hostile agent name instead of escaping the space dir", %{
       space_id: space_id,
       space_dir: space_dir
     } do
-      capture_log(fn ->
-        # A real agent dir first, so the refusals below are checked
-        # against something that exists.
-        keeper = TmpSpace.create(space_id, "keeper", "bwrap")
-        assert Path.dirname(keeper) == space_dir
+      log =
+        capture_log(fn ->
+          # A real agent dir first, so the refusals below are checked
+          # against something that exists.
+          keeper = TmpSpace.create(space_id, "keeper", "bwrap")
+          assert Path.dirname(keeper) == space_dir
 
-        # ".." would pass a *syntactic* `Path.dirname/1` guard and
-        # `rm_rf` the whole shared `nest/<ospid>` root (every space,
-        # every agent's scratch). `create/3` refuses it outright (the DB
-        # boundary rejects such a name, so this only happens if a caller
-        # skipped it)...
-        assert_raise ArgumentError, fn -> TmpSpace.create(space_id, "..", "bwrap") end
+          # ".." would pass a *syntactic* `Path.dirname/1` guard and
+          # `rm_rf` the whole shared `nest/<ospid>` root (every space,
+          # every agent's scratch). `create/3` refuses it outright (the DB
+          # boundary rejects such a name, so this only happens if a caller
+          # skipped it)...
+          assert_raise ArgumentError, fn -> TmpSpace.create(space_id, "..", "bwrap") end
 
-        # ...and `cleanup/3` (which runs from `terminate/2`, so it must
-        # never raise) logs the refusal and removes nothing.
-        assert :ok = TmpSpace.cleanup(space_id, "..", "bwrap")
+          # ...and `cleanup/3` (which runs from `terminate/2`, so it must
+          # never raise) logs the refusal and removes nothing.
+          assert :ok = TmpSpace.cleanup(space_id, "..", "bwrap")
 
-        assert File.dir?(keeper)
-        assert File.dir?(space_dir)
-      end)
+          assert File.dir?(keeper)
+          assert File.dir?(space_dir)
+        end)
+
+      # The refusal is loud: the log line is the only trace of a `terminate/2`
+      # that declined to remove a scratch directory.
+      assert log =~ "TmpSpace.cleanup: refusing to rm_rf for an unsafe agent name: \"..\""
     end
   end
 
@@ -315,31 +316,29 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       File.mkdir_p!(ws)
       on_exit(fn -> rm_tmp!(ws, "nest_tmp_space_ws_") end)
 
-      capture_log(fn ->
-        a = TmpSpace.create(space_id, "agent-a", "bwrap")
-        b = TmpSpace.create(space_id, "agent-b", "bwrap")
+      a = TmpSpace.create(space_id, "agent-a", "bwrap")
+      b = TmpSpace.create(space_id, "agent-b", "bwrap")
 
-        # Agent A writes into its own scratch dir. This is the shape the
-        # `Overflow` writers produce (a direct host write).
-        File.write!(Path.join(a, "report.txt"), "shared result\n")
+      # Agent A writes into its own scratch dir. This is the shape the
+      # `Overflow` writers produce (a direct host write).
+      File.write!(Path.join(a, "report.txt"), "shared result\n")
 
-        # B's sandbox sees the same /tmp (the space dir), so A's file is
-        # readable at /tmp/agent-a/report.txt.
-        assert {:ok, out} =
-                 Sandbox.run("cat /tmp/agent-a/report.txt", Mounts.new(ws, b), caps)
+      # B's sandbox sees the same /tmp (the space dir), so A's file is
+      # readable at /tmp/agent-a/report.txt.
+      assert {:ok, out} =
+               Sandbox.run("cat /tmp/agent-a/report.txt", Mounts.new(ws, b), caps)
 
-        assert out =~ "shared result"
+      assert out =~ "shared result"
 
-        # A write to /tmp lands under the space dir; the host /tmp is
-        # shadowed and untouched. (This, not `write_allowed?/3`, is the
-        # real enforcement — `write_allowed?/3` has no production caller;
-        # the bwrap mount is the gate.)
-        leak = "leak-#{System.unique_integer([:positive])}"
-        assert {:ok, _} = Sandbox.run("echo x > /tmp/#{leak}", Mounts.new(ws, b), caps)
+      # A write to /tmp lands under the space dir; the host /tmp is
+      # shadowed and untouched. (This, not `write_allowed?/3`, is the
+      # real enforcement — `write_allowed?/3` has no production caller;
+      # the bwrap mount is the gate.)
+      leak = "leak-#{System.unique_integer([:positive])}"
+      assert {:ok, _} = Sandbox.run("echo x > /tmp/#{leak}", Mounts.new(ws, b), caps)
 
-        assert File.read!(Path.join(space_dir, leak)) == "x\n"
-        refute File.exists?(Path.join("/tmp", leak))
-      end)
+      assert File.read!(Path.join(space_dir, leak)) == "x\n"
+      refute File.exists?(Path.join("/tmp", leak))
     end
   end
 

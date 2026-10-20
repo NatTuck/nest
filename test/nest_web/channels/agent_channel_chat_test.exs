@@ -324,18 +324,17 @@ defmodule NestWeb.AgentChannelChatTest do
       end)
 
       # The send guard used to reject this resume at error level; with the
-      # append-time bridge repairing it, no warning/error is expected.
-      capture_log(fn ->
-        ref = push(socket, "chat:retry-compaction", %{})
+      # append-time bridge repairing it, the resume emits no warning or error
+      # at all. Nothing is captured here: a capture could only hide prints.
+      ref = push(socket, "chat:retry-compaction", %{})
 
-        assert_reply ref, :ok, %{}
+      assert_reply ref, :ok, %{}
 
-        assert_receive {:chat_status, %{status: "compacting"}}, 1_000
+      assert_receive {:chat_status, %{status: "compacting"}}, 1_000
 
-        # Finish the retried compaction so the agent is idle at test
-        # end (the teardown asserts zero in-flight agents).
-        assert_receive {:chat_status, %{status: "idle"}}, 1_000
-      end)
+      # Finish the retried compaction so the agent is idle at test
+      # end (the teardown asserts zero in-flight agents).
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # The held user message was appended after the compaction summary
       # (wire role `user`); the bridge inserted an assistant ack so the

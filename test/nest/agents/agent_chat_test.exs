@@ -82,10 +82,15 @@ defmodule Nest.Agents.AgentChatTest do
 
       {pid, _agent_id} = start_agent()
 
-      capture_log(fn ->
-        :ok = Agent.chat(pid, "Hello", nil, nil, true)
-        assert_receive {:chat_status, %{status: "idle"}}, 1_000
-      end)
+      log =
+        capture_log(fn ->
+          :ok = Agent.chat(pid, "Hello", nil, nil, true)
+          assert_receive {:chat_status, %{status: "idle"}}, 1_000
+        end)
+
+      # The stubbed error is reported to the server log as well as to the UI.
+      assert log =~ "chat:error"
+      assert log =~ "Connection failed"
 
       assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 1_000
       assert_receive {:chat_message, {:assistant, %{api_logs: error_assistant_api_logs}}}, 1_000

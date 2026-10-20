@@ -47,9 +47,15 @@ defmodule NestWeb.AgentChannelNeedsRepairTest do
 
     {:ok, attrs} = Persistence.build_attrs_for_start(space_id, name)
 
-    ExUnit.CaptureLog.capture_log(fn ->
-      {:ok, _pid} = Supervisor.start_under_test(attrs)
-    end)
+    # Blocking chat is the loud outcome of an invalid on-load sequence, and the
+    # log line names the agent and the repair command; assert it rather than
+    # discarding it.
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        {:ok, _pid} = Supervisor.start_under_test(attrs)
+      end)
+
+    assert log =~ "Agent #{name} (space #{space_id}) loaded an invalid active message sequence"
 
     token = Process.get(:agent_test_token)
     {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})

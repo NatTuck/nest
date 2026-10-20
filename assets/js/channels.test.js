@@ -2095,12 +2095,30 @@ describe("channels", () => {
         },
       });
 
-      const historyPush = captureNextPush("agent:1:agent-1", "chat:history");
       joinAgent("agent-1", 1);
-      const timeout = new Promise((resolve) =>
-        setTimeout(() => resolve("timeout"), 40),
+      // The channel is in the map synchronously after `joinAgent`, and the
+      // init handler runs on a timer, so spying here catches every push the
+      // join makes — `push` is synchronous, so a fetch the handler decided
+      // on is already recorded by the time the handler returns.
+      const pushSpy = vi.spyOn(agentChannels.get("agent-1"), "push");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      // The init handler is synchronous end to end, so observing the state
+      // it set means it returned — including `loadArchiveProjections`, whose
+      // never-compacted guard is what keeps `chat:history` off the wire.
+      assert.strictEqual(
+        pushSpy.mock.calls.some(([event]) => event === "chat:history"),
+        false,
+        "a never-compacted agent must not fetch its archive at join",
       );
-      assert.strictEqual(await Promise.race([historyPush, timeout]), "timeout");
+
+      pushSpy.mockRestore();
     });
   });
 
@@ -4897,8 +4915,9 @@ describe("channels", () => {
 
     it("does NOT push chat:sync when the message is the expected next index", async () => {
       // lastIndex=2, incoming message.index=3 → no gap, no
-      // sync. (If a sync fires here, the test would have
-      // captured a push that never came.)
+      // sync. The push spy below is registered before the
+      // message is delivered, so a sync fired here would be
+      // recorded and fail the assertion.
       joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
@@ -4918,13 +4937,9 @@ describe("channels", () => {
         ],
       });
 
-      // `captureNextPush` would resolve on the next push;
-      // a 50ms wait with no push means none fired.
-      const pushPromise = captureNextPush("agent:1:agent-1", "chat:sync");
-      const timeout = new Promise((resolve) =>
-        setTimeout(() => resolve("timeout"), 50),
-      );
-      const result = await Promise.race([pushPromise, timeout]);
+      // `push` is synchronous, so a sync this handler decided on is recorded
+      // before the message lands in the cache — spying here catches it.
+      const pushSpy = vi.spyOn(agentChannels.get("agent-1"), "push");
 
       simulateServerEvent("agent:1:agent-1", "chat:message", {
         index: 3,
@@ -4932,7 +4947,22 @@ describe("channels", () => {
         parts: [{ kind: "text", text: "D" }],
       });
 
-      assert.strictEqual(result, "timeout");
+      // The message must land, so the claim is about an expected-next message
+      // that actually arrived and was applied, not one that never got
+      // delivered.
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache.messages.length, 4);
+        assert.strictEqual(cache.lastIndex, 3);
+      });
+
+      assert.strictEqual(
+        pushSpy.mock.calls.some(([event]) => event === "chat:sync"),
+        false,
+        "an expected-next message must not trigger chat:sync",
+      );
+
+      pushSpy.mockRestore();
     });
   });
 
@@ -5025,13 +5055,11 @@ describe("channels", () => {
       // The `requestSync` is called from event handlers
       // that are only registered once the channel is joined,
       // so the cache is always present in practice. The
-      // defensive `!cache` guard exists for the edge
+      // defensive `!channel` guard exists for the edge
       // case where a stale handler fires after a
-      // leaveAgent. We test it by leaving the channel
-      // and then firing an event (the channel mock
-      // silently drops the event since the channel is
-      // gone, and `requestSync`'s `!channel` guard
-      // also bails).
+      // leaveAgent. We test it by leaving the channel,
+      // spying on the pushes that channel would make, and
+      // then firing the event the stale handler still gets.
       joinAgent("agent-1", 1);
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -5039,14 +5067,30 @@ describe("channels", () => {
           "connected",
         );
       });
+      const pushSpy = vi.spyOn(agentChannels.get("agent-1"), "push");
       leaveAgent("agent-1");
 
-      const pushPromise = captureNextPush("agent:1:agent-1", "chat:sync");
-      const timeout = new Promise((resolve) =>
-        setTimeout(() => resolve("timeout"), 30),
+      simulateServerEvent("agent:1:agent-1", "chat:compaction", {
+        marker: { index: 5, role: "compaction", archivedCount: 5 },
+      });
+
+      // The store recording the marker proves the stale handler ran: it is
+      // set synchronously by the same handler that reaches `requestSync`, so
+      // by the time this is observable the push decision has been made.
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.lastCompactionIndex,
+          5,
+        );
+      });
+
+      assert.strictEqual(
+        pushSpy.mock.calls.some(([event]) => event === "chat:sync"),
+        false,
+        "a handler left without a channel must not push chat:sync",
       );
-      const result = await Promise.race([pushPromise, timeout]);
-      assert.strictEqual(result, "timeout");
+
+      pushSpy.mockRestore();
     });
   });
 

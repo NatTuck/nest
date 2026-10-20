@@ -37,13 +37,17 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
       space_id: space_id,
       agent_id: agent_id
     } do
-      capture_log(fn ->
-        Broadcasts.error(space_id, agent_id, 5, "Something broke", "Foo.bar/2")
+      log =
+        capture_log(fn ->
+          Broadcasts.error(space_id, agent_id, 5, "Something broke", "Foo.bar/2")
+        end)
 
-        assert_receive {:chat_error, %{index: 5, content: content}}, 1_000
+      assert log =~ "chat:error"
+      assert log =~ "Something broke"
 
-        assert content == "Something broke\n[Source: Foo.bar/2]"
-      end)
+      assert_receive {:chat_error, %{index: 5, content: content}}, 1_000
+
+      assert content == "Something broke\n[Source: Foo.bar/2]"
     end
 
     test "logs the error at error level with structured context", %{
@@ -93,14 +97,19 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
       space_id: space_id,
       agent_id: agent_id
     } do
-      capture_log(fn ->
-        Broadcasts.error(space_id, agent_id, 1, "msg", "")
+      log =
+        capture_log(fn ->
+          Broadcasts.error(space_id, agent_id, 1, "msg", "")
+        end)
 
-        assert_receive {:chat_error, %{content: content}}, 1_000
-        # Empty source is filtered out by `tag_source/2` — only
-        # non-empty sources get the `[Source: ...]` suffix.
-        assert content == "msg"
-      end)
+      # The empty source is filtered out of the *user-facing* message, but the
+      # server log still names it explicitly rather than logging an empty tag.
+      assert log =~ "chat:error msg_index=1 source=unknown"
+
+      assert_receive {:chat_error, %{content: content}}, 1_000
+      # Empty source is filtered out by `tag_source/2` — only
+      # non-empty sources get the `[Source: ...]` suffix.
+      assert content == "msg"
     end
   end
 

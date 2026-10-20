@@ -78,6 +78,12 @@ defmodule Nest.Agents.SpaceGate do
   watcher. The gate's topic is subscribed by the agents of the space (a deferred
   turn waits for it) and by the lobby channels that show the paused banner, and by
   nobody else.
+
+  It carries three frames: `{:space_locked, _}` and `{:space_unlocked, _}` for the
+  pause itself, and `{:space_waiting, _}` when a caller finds the space still held
+  after subscribing in `await/2`. The last is observability only — it reports that
+  a caller reached the gate, not a change to the space — and it is sent only on
+  the held path, so a tool use in a space nobody is editing sends nothing.
   """
 
   use GenServer
@@ -166,7 +172,12 @@ defmodule Nest.Agents.SpaceGate do
 
   The unheld path is one ETS read. The held path subscribes **before** its second
   read — the ordering `Nest.Agents.Agent.WaitForIdle` documents — so a release
-  that lands between the two cannot be missed and no poll is needed.
+  that lands between the two cannot be missed and no poll is needed. Finding the
+  space still held after the subscribe, it broadcasts `{:space_waiting, space_id}`
+  on that topic, so its arrival at the gate is an event rather than something a
+  caller has to infer from a clock. (A release landing between that read and the
+  wait means the frame is sent for a wait that returns at once: it reports the
+  space still being held at the gate, not that the wait blocked.)
   """
   @spec await(integer(), non_neg_integer()) :: :ok
   def await(space_id, timeout \\ @await_ms)
@@ -181,7 +192,16 @@ defmodule Nest.Agents.SpaceGate do
       deadline = System.monotonic_time(:millisecond) + timeout
 
       try do
-        if held?(space_id), do: wait_until_open(space_id, deadline, timeout), else: :ok
+        # Still held after the subscribe: say so. It is the only observable that
+        # a caller *reached* the gate — an event, where "it has not finished" is a
+        # reading of the clock. Sent only here, so a tool use in an unedited space
+        # costs one ETS read and nothing.
+        if held?(space_id) do
+          Phoenix.PubSub.broadcast(Nest.PubSub, topic, {:space_waiting, space_id})
+          wait_until_open(space_id, deadline, timeout)
+        else
+          :ok
+        end
       after
         Phoenix.PubSub.unsubscribe(Nest.PubSub, topic)
       end
