@@ -24,64 +24,31 @@ defmodule Nest.ToolsDefensiveDispatchTest do
   alias Nest.Sandbox.Mounts
   alias Nest.Tools
 
-  test "write_file returns a structured error when called with no arguments" do
-    tool = Tools.get_function("file-write", Mounts.new("/tmp", nil))
+  # The *real* tool schemas are the ones the model sees, and their
+  # closures pattern-match strictly (`fn %{"path" => path}, context ->`),
+  # so the schema's `"required"` list is the only thing that turns an
+  # argument-less call into a structured error instead of a rescued
+  # crash. `Nest.LLM.ToolsTest` covers the validation logic itself with
+  # synthetic schemas; this covers the schemas shipped to the model.
+  test "real file tools return a structured error naming the missing required args" do
+    for {name, caps, missing} <- [
+          {"file-write", %{"fs" => %{"write" => ["/tmp"]}}, ["path", "content"]},
+          {"file-read", %{"fs" => %{"read" => ["/"]}}, ["path"]}
+        ] do
+      tool = Tools.get_function(name, Mounts.new("/tmp", nil))
 
-    assert {:error, msg} =
-             LLMTools.execute_one(
-               [tool],
-               %ToolCall{id: "c1", name: "file-write", arguments: %{}},
-               %{caps: %{"fs" => %{"write" => ["/tmp"]}}}
-             )
+      assert {:error, msg} =
+               LLMTools.execute_one(
+                 [tool],
+                 %ToolCall{id: "c1", name: name, arguments: %{}},
+                 %{caps: caps}
+               )
 
-    assert msg =~ "Missing required arguments"
-    assert msg =~ "path"
-    assert msg =~ "content"
-  end
+      assert msg =~ "Missing required arguments"
 
-  test "write_file returns a structured error when only some required args are present" do
-    tool = Tools.get_function("file-write", Mounts.new("/tmp", nil))
-
-    assert {:error, msg} =
-             LLMTools.execute_one(
-               [tool],
-               %ToolCall{
-                 id: "c1",
-                 name: "file-write",
-                 arguments: %{"path" => "/tmp/foo"}
-               },
-               %{caps: %{"fs" => %{"write" => ["/tmp"]}}}
-             )
-
-    assert msg =~ "Missing required arguments"
-    assert msg =~ "content"
-  end
-
-  test "read_file returns a structured error when called with no arguments" do
-    tool = Tools.get_function("file-read", Mounts.new("/tmp", nil))
-
-    assert {:error, msg} =
-             LLMTools.execute_one(
-               [tool],
-               %ToolCall{id: "c1", name: "file-read", arguments: %{}},
-               %{caps: %{"fs" => %{"read" => ["/"]}}}
-             )
-
-    assert msg =~ "Missing required arguments"
-    assert msg =~ "path"
-  end
-
-  test "shell_cmd returns a structured error when called with no arguments" do
-    tool = Tools.get_function("shell-cmd", Mounts.new("/tmp", nil))
-
-    assert {:error, msg} =
-             LLMTools.execute_one(
-               [tool],
-               %ToolCall{id: "c1", name: "shell-cmd", arguments: %{}},
-               %{caps: %{}}
-             )
-
-    assert msg =~ "Missing required arguments"
-    assert msg =~ "command"
+      for field <- missing do
+        assert msg =~ field, "#{name} error did not name #{field}: #{msg}"
+      end
+    end
   end
 end

@@ -62,18 +62,17 @@ defmodule NestWeb.LobbyChannelEditSpaceTest do
 
       assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}, 500
       AgentTestHelpers.ensure_cleanup(name)
-      assert Spaces.get_space(space_id).network_access == true
 
       toggle =
         push(socket, "edit_space", %{"space_id" => space_id, "network_access" => false})
 
       # The reply carries the whole environment, not just the field that moved:
-      # the dialog updates its cache from it.
+      # the dialog updates its cache from it. One field the edit did not name is
+      # enough to prove that shape; the row's own write is
+      # `test/nest/spaces/network_access_test.exs`'s.
       assert_reply toggle, :ok, reply, 500
       assert reply["network_access"] == false
       assert reply["workspace_path"] == Spaces.get_space(space_id).workspace_path
-      assert reply["sandbox_backend"] == Spaces.get_space(space_id).sandbox_backend
-      assert Spaces.get_space(space_id).network_access == false
 
       # The frame carries the whole space, so another session of the same user
       # shows the same value rather than its stale one.
@@ -90,11 +89,13 @@ defmodule NestWeb.LobbyChannelEditSpaceTest do
     end
 
     test "refuses a payload that is not a boolean, or names no space", %{socket: socket} do
+      # Three arms: a `network_access` that is not a boolean, no environment
+      # field at all, and a payload the environment validator would accept but
+      # that names no space (`handle_in/3`'s own head).
       for payload <- [
             %{"space_id" => 1, "network_access" => "yes"},
             %{"space_id" => 1},
-            %{"network_access" => true},
-            %{}
+            %{"network_access" => true}
           ] do
         assert_reply push(socket, "edit_space", payload),
                      :error,
@@ -120,7 +121,10 @@ defmodule NestWeb.LobbyChannelEditSpaceTest do
       # Refused at the edit, not at the next agent start: this is the moment the
       # user can still pick another directory. The reply is the same code the
       # create path produces for the same path — including the blank one, which
-      # the changeset rejects before the workspace gate ever runs.
+      # the changeset rejects before the workspace gate ever runs. One case per
+      # arm: the changeset's `validate_required` and the sandbox gate. The
+      # gate's other code (`/tmp/…`) is `test/nest/sandbox_test.exs`'s, and the
+      # edit path's use of it is `test/nest/spaces/environment_confirm_test.exs`'s.
       {:ok, space} =
         Spaces.create_space(user.id, %{
           name: "edit-space-#{System.unique_integer([:positive])}",
@@ -129,7 +133,6 @@ defmodule NestWeb.LobbyChannelEditSpaceTest do
 
       for {path, code} <- [
             {"", "workspace_required"},
-            {"/tmp/not-a-workspace", "workspace_under_tmp"},
             {"/nonexistent/nest-workspace", "workspace_missing"}
           ] do
         assert_reply push(socket, "edit_space", %{
@@ -139,9 +142,10 @@ defmodule NestWeb.LobbyChannelEditSpaceTest do
                      :error,
                      %{"reason" => ^code},
                      500
-
-        assert Spaces.get_space(space.id).workspace_path == space.workspace_path
       end
+
+      # Both were refused before the write, so the row still names what it had.
+      assert Spaces.get_space(space.id).workspace_path == space.workspace_path
     end
   end
 end

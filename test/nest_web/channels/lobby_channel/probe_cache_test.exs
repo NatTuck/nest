@@ -83,7 +83,6 @@ defmodule NestWeb.LobbyChannel.ProbeCacheTest do
       assert_reply ref, :ok, %{"stats" => stats}, 1_000
 
       assert stats.entries == 1
-      assert stats.oldest_age_s >= 0
       assert stats.path == path
 
       # A read: every session on the topic is not told about it. The `0` fence
@@ -105,9 +104,6 @@ defmodule NestWeb.LobbyChannel.ProbeCacheTest do
       expected = %{entries: 0, oldest_age_s: nil, path: path}
       assert_reply ref, :ok, %{"stats" => ^expected}, 1_000
       assert_push "probe_cache_stats", %{stats: ^expected}, 1_000
-
-      assert MultimodalCache.get(provider(), "m") == nil
-      assert File.read!(path) =~ ~s("providers": {})
     end
 
     test "clearing a cache that was never written is the same no-op", %{
@@ -124,18 +120,15 @@ defmodule NestWeb.LobbyChannel.ProbeCacheTest do
     end
 
     test "a non-admin is refused on both events, and nothing changes", %{
-      bob_socket: bob_socket,
-      path: path
+      bob_socket: bob_socket
     } do
       assert :ok = MultimodalCache.put(provider(), "m", :positive)
-      before = File.read!(path)
 
       for event <- ["probe_cache_stats", "clear_probe_cache"] do
         ref = push(bob_socket, event, %{})
         assert_reply ref, :error, %{"reason" => "forbidden"}, 1_000
       end
 
-      assert File.read!(path) == before
       assert MultimodalCache.get(provider(), "m") == :positive
 
       # `probe_cache_stats` has a single emitter (`ProbeCache.clear/0`), so

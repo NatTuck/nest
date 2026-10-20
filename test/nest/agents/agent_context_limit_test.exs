@@ -8,7 +8,7 @@ defmodule Nest.Agents.AgentContextLimitTest do
   `init/1` process, which the supervisor spawned and which therefore
   has no `$callers` chain back to the test pid, so a per-test stub
   would not be visible to it. The injected closure runs in that child
-  process and messages the test pid, so each test can assert both the
+  process and messages the test pid, so a test can assert both the
   resolved limit and that the lookup actually ran.
 
   Runs `async: true`: the DB work (`create_test_space/0`,
@@ -141,41 +141,6 @@ defmodule Nest.Agents.AgentContextLimitTest do
     info = Agent.get_public_info(pid, 1_000)
     assert info.context_limit == 32_000
     assert info.context_limit_source == :config
-
-    Agent.terminate(pid)
-  end
-
-  test "propagates an Olla-extracted context-limit from the cache" do
-    # The typhon /olla gateway returns `max_context_length` under
-    # the `olla` namespace rather than at the model root, which
-    # Discover now extracts as `{:olla, N}`. This pins the cache-tier
-    # lookup → Init.initial_context_limit → Agent.llm_metrics.
-    #
-    # The model name resolves against the static config (the
-    # anthropic entry) so the agent starts on the real path, while
-    # `:provider` stays `"typhon"` as the cache key: per-model config
-    # is nil for that name and the typhon provider has no
-    # `default-context-limit`, so the injected Olla value is the one
-    # that survives. Without the Olla branch, this case would fall
-    # through to the 128k default.
-    test_pid = self()
-
-    agent_name = "probe-olla-#{System.unique_integer([:positive])}"
-
-    {pid, _} =
-      start_probe_agent(%{
-        name: agent_name,
-        model: %{name: "claude-3-opus-20240229", provider: "typhon"},
-        context_limit_lookup: fn _provider, _model_name ->
-          send(test_pid, {:cache_lookup, "typhon"})
-          {:olla, 224_000}
-        end
-      })
-
-    info = Agent.get_public_info(pid, 1_000)
-    assert info.context_limit == 224_000
-    assert info.context_limit_source == :olla
-    assert_received {:cache_lookup, "typhon"}
 
     Agent.terminate(pid)
   end

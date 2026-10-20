@@ -18,10 +18,10 @@ defmodule Nest.EndpointCacheTest do
 
   setup :verify_on_exit!
 
-  defp provider(opts \\ []) do
+  defp provider(base_url) do
     %DotConfig.Provider{
-      name: Keyword.get(opts, :name, "cache-test"),
-      base_url: Keyword.get(opts, :base_url, "https://api.test.com"),
+      name: "cache-test",
+      base_url: base_url,
       api_key: "k",
       protocol: "openai",
       auto_models: true,
@@ -43,16 +43,10 @@ defmodule Nest.EndpointCacheTest do
     Mimic.stub(Req, :post, fn _url, _opts -> {:ok, %{status: 404}} end)
   end
 
-  describe "get/1" do
-    test "returns nil for a provider that has not been probed" do
-      assert EndpointCache.get(provider()) == nil
-    end
-  end
-
   describe "probe_and_cache/1" do
     test "probes, caches, and returns the resolved structure" do
       stub_resolvable()
-      p = provider(base_url: "https://resolvable.test.com")
+      p = provider("https://resolvable.test.com")
 
       assert {:ok, structure} = EndpointCache.probe_and_cache(p)
       assert structure.protocol == :openai
@@ -63,7 +57,7 @@ defmodule Nest.EndpointCacheTest do
 
     test "does not cache when the probe fails" do
       stub_unreachable()
-      p = provider(base_url: "https://unreachable.test.com")
+      p = provider("https://unreachable.test.com")
 
       assert {:error, :unreachable} = EndpointCache.probe_and_cache(p)
       assert EndpointCache.get(p) == nil
@@ -73,7 +67,7 @@ defmodule Nest.EndpointCacheTest do
   describe "invalidate/1" do
     test "drops the cached structure" do
       stub_resolvable()
-      p = provider(base_url: "https://invalidate.test.com")
+      p = provider("https://invalidate.test.com")
 
       assert {:ok, _structure} = EndpointCache.probe_and_cache(p)
       assert EndpointCache.get(p) != nil

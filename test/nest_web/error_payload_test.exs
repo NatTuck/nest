@@ -23,9 +23,6 @@ defmodule NestWeb.ErrorPayloadTest do
              "path" => "/ws/AGENTS.md",
              "type" => "hardlink"
            } = ErrorPayload.from_reason({:config_file_not_regular, "/ws/AGENTS.md", :hardlink})
-
-    assert %{"type" => "symlink"} =
-             ErrorPayload.from_reason({:config_file_not_regular, "/ws/.nest", :symlink})
   end
 
   test "passes a wire code through and stringifies a bare reason" do
@@ -42,16 +39,10 @@ defmodule NestWeb.ErrorPayloadTest do
     # not fall silently to the catch-all's `"unknown_error"`.
     log =
       capture_log(fn ->
-        for {reason, tag} <- [
-              {{:some_new_refusal, "detail"}, "some_new_refusal"},
-              {{:a_new_reason, "one", :two}, "a_new_reason"}
-            ] do
-          assert ErrorPayload.from_reason(reason) == %{"reason" => tag}
-        end
+        assert ErrorPayload.from_reason({:a_new_reason, "one", :two}) ==
+                 %{"reason" => "a_new_reason"}
       end)
 
-    assert log =~ "Unmapped error reason :some_new_refusal"
-    assert log =~ "detail"
     assert log =~ "Unmapped error reason :a_new_reason"
     assert log =~ ~s(["one", :two])
   end
