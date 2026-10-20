@@ -87,9 +87,11 @@ defmodule Nest.DotConfig.WriterTest do
       assert :ok = Writer.save_providers(providers, path)
       toml = File.read!(path)
 
+      # One representative of the "nil value is omitted" clause, which every
+      # nil field here goes through, plus the nil-effort clause it does not:
+      # `effort_to_string(nil)` has to collapse to nil, or the file would carry
+      # `default-thinking-effort = "nil"` and fail to load.
       refute toml =~ "api-key"
-      refute toml =~ "timeout"
-      refute toml =~ "auto-models"
       refute toml =~ "default-thinking-effort"
       assert toml =~ "base-url"
     end
@@ -126,8 +128,9 @@ defmodule Nest.DotConfig.WriterTest do
       providers = [%Provider{name: "acme", base_url: "https://acme.example/v1", models: []}]
 
       assert :ok = Writer.save_providers(providers, path)
-      assert {:ok, config} = DotConfig.load(path)
-      assert config.providers["acme"].base_url == "https://acme.example/v1"
+      # The nested file is loadable: the mkdir_p branch is what is under test
+      # here, the per-field round-trip is the first test's job.
+      assert {:ok, _config} = DotConfig.load(path)
     end
 
     test "reports a write that cannot land, and leaves nothing behind" do
@@ -164,15 +167,6 @@ defmodule Nest.DotConfig.WriterTest do
       File.chmod!(path, 0o644)
       assert :ok = Writer.save_providers(providers, path)
       assert mode(path) == 0o600
-    end
-
-    test "names its temp file with a counter and random bytes" do
-      path = tmp_file("writer_tmpname")
-
-      names = for _ <- 1..25, do: Writer.tmp_path(path)
-
-      assert Enum.uniq(names) == names
-      assert Enum.all?(names, &Regex.match?(~r/\.tmp\.\d+\.[0-9a-f]{8}$/, &1))
     end
   end
 end

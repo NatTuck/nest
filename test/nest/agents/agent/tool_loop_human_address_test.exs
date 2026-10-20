@@ -2,8 +2,8 @@ defmodule Nest.Agents.Agent.ToolLoopHumanAddressTest do
   @moduledoc """
   The sub-agent tools, with a human as an addressee: `agents-list` names the
   space's humans, `agents-send`/`agents-query` refuse a bad address in words
-  that name both possibilities, `agents-wait` treats a human as never mid-turn,
-  and a successful send to an address clears the debt keyed on it.
+  that name both possibilities, and a successful send to an address clears the
+  debt keyed on it.
 
   Dispatch-level (`ToolLoop.execute/3`), like `ToolLoopSendAgentTest`: the
   delivery itself is stubbed, because what is under test is what the tool tells
@@ -35,13 +35,12 @@ defmodule Nest.Agents.Agent.ToolLoopHumanAddressTest do
                  "Humans in this space (a human is addressed with the @ sigil; " <>
                  "a bare name is an agent): @alice"
 
-      # ...and it is a line in the existing result, not a replacement for it.
+      # ...and it is appended to a non-empty listing too, not only to the
+      # "no agents" case above. (The listing itself is `SubAgentToolsTest`'s:
+      # it asserts the names and vocation slugs.)
       insert_agent(space.id, "bob")
-      content = run(ctx(space.id), "agents-list", %{}).content
 
-      assert content =~ "bob"
-      assert content =~ "@alice"
-      assert content =~ "a bare name is an agent"
+      assert run(ctx(space.id), "agents-list", %{}).content =~ "@alice"
     end
 
     test "says nothing about humans in a space that has none" do
@@ -77,14 +76,12 @@ defmodule Nest.Agents.Agent.ToolLoopHumanAddressTest do
                "Agent ghostname not found in this space."
     end
 
-    test "an address points at the agent of that name, and only when one exists" do
+    test "an address points at the agent of that name, when one exists" do
+      # The other half — no hint when no agent row has that name — is
+      # `WaitForHumanTest`'s through `agents-wait`: the same `target_error/2`
+      # branch, so this test only needs the positive case.
       space = AddressTestHelpers.space_with_human("alice")
       stub_send({:error, :not_found})
-
-      assert content(
-               run_errors(ctx(space.id), "agents-query", %{"name" => "@ghost", "prompt" => "hi"})
-             ) ==
-               "No human @ghost."
 
       insert_agent(space.id, "ghost")
 
@@ -106,7 +103,7 @@ defmodule Nest.Agents.Agent.ToolLoopHumanAddressTest do
   end
 
   describe "a human target" do
-    test "agents-query says what a human owes — nothing" do
+    test "a query to a human says what it owes, and a send back clears the address-keyed debt" do
       # A human has no turn to be in, so the peer-shaped confirmation ("it stays
       # in its turn until it answers") would be a lie.
       space = AddressTestHelpers.space_with_human("alice")
@@ -117,17 +114,11 @@ defmodule Nest.Agents.Agent.ToolLoopHumanAddressTest do
 
       assert content =~ "Query delivered to @alice"
       assert content =~ "A human owes no reply"
-    end
 
-    test "agents-send clears the debt keyed on the address" do
       # The obligation a human's query sets is keyed on the address string, and
       # this cast is the clear: same key, no new machinery. `SendNoteHumanTest`
       # pins the key the debt is set with.
-      space = AddressTestHelpers.space_with_human("alice")
-      stub_send({:ok, :delivered})
-
-      assert run(ctx(space.id), "agents-send", %{"name" => "@alice", "message" => "hi"}).is_error ==
-               false
+      run(ctx(space.id), "agents-send", %{"name" => "@alice", "message" => "hi"})
 
       assert_received {:"$gen_cast", {:reply_sent, "@alice"}}
     end

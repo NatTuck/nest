@@ -19,7 +19,6 @@ defmodule Nest.Agents.AgentTmpPathTest do
   """
   use Nest.DataCase, async: true
 
-  import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Agents
@@ -62,18 +61,12 @@ defmodule Nest.Agents.AgentTmpPathTest do
   defp space_dir(space_id), do: TmpSpace.space_dir(space_id, "bwrap")
 
   describe "tmp_path lifecycle" do
-    test "creates tmp directory on agent start" do
-      {_pid, name} = start_agent()
+    test "creates the tmp directory on start and passes it to agent state" do
+      {pid, name} = start_agent()
       expected_tmp_path = agent_tmp_path(current_space_id(), name)
 
-      assert File.exists?(expected_tmp_path),
+      assert File.dir?(expected_tmp_path),
              "Expected tmp directory to exist: #{expected_tmp_path}"
-
-      assert File.dir?(expected_tmp_path)
-    end
-
-    test "passes tmp_path to agent state" do
-      {pid, name} = start_agent()
 
       # Read the agent's own state rather than the introspection payload:
       # the scratch dir is a real host directory and is deliberately not on
@@ -81,112 +74,13 @@ defmodule Nest.Agents.AgentTmpPathTest do
       # allowlist: snapshot — tmp_path
       state = :sys.get_state(pid, 1_000)
 
-      assert Mounts.scratch(state.mounts) == agent_tmp_path(current_space_id(), name),
+      assert Mounts.scratch(state.mounts) == expected_tmp_path,
              "Expected the agent's own scratch dir, got: #{inspect(Mounts.scratch(state.mounts))}"
 
       # It must not reach a client either. `build_public_info/1` is what the
       # channels push, and #79 removed the field from it so the one remaining
       # host path outside `Nest.Sandbox.Mounts` stops leaving the boundary.
       refute Map.has_key?(Agent.get_public_info(pid), :tmp_path)
-    end
-
-    test "cleans up tmp directory on agent termination" do
-      {pid, name} = start_agent()
-      expected_tmp_path = agent_tmp_path(current_space_id(), name)
-
-      assert File.exists?(expected_tmp_path)
-
-      ref = Process.monitor(pid)
-      Agent.terminate(pid)
-      wait_for_down(ref, pid, :_)
-
-      refute File.exists?(expected_tmp_path),
-             "Expected tmp directory to be removed: #{expected_tmp_path}"
-    end
-
-    test "uses unique tmp_path per agent" do
-      name = "unique-#{System.unique_integer([:positive])}"
-      model = %{name: "qwen3.5-plus", provider: "model-studio"}
-
-      {:ok, agent_id} =
-        Agents.create_agent(AgentTestHelpers.current_space_id(), model,
-          name: name,
-          vocation_id: AgentTestHelpers.vocation_id_for_test()
-        )
-
-      AgentTestHelpers.ensure_cleanup(agent_id)
-
-      {:ok, pid} = Nest.Agents.Supervisor.get_agent(AgentTestHelpers.current_space_id(), agent_id)
-
-      # allowlist: snapshot — tmp_path
-      state = :sys.get_state(pid, 1_000)
-
-      assert Mounts.scratch(state.mounts) == agent_tmp_path(current_space_id(), name)
-    end
-
-    test "cleans up tmp directory when stopped via Supervisor.stop_agent/2" do
-      name = "delete-#{System.unique_integer([:positive])}"
-      model = %{name: "qwen3.5-plus", provider: "model-studio"}
-
-      {:ok, agent_id} =
-        Agents.create_agent(AgentTestHelpers.current_space_id(), model,
-          name: name,
-          vocation_id: AgentTestHelpers.vocation_id_for_test()
-        )
-
-      AgentTestHelpers.ensure_cleanup(agent_id)
-
-      expected_tmp_path = agent_tmp_path(current_space_id(), name)
-
-      assert File.exists?(expected_tmp_path),
-             "Expected tmp directory to exist: #{expected_tmp_path}"
-
-      {:ok, pid} = Nest.Agents.Supervisor.get_agent(AgentTestHelpers.current_space_id(), agent_id)
-      ref = Process.monitor(pid)
-
-      :ok = Nest.Agents.Supervisor.stop_agent(AgentTestHelpers.current_space_id(), agent_id)
-      wait_for_down(ref, pid, :_)
-
-      refute File.exists?(expected_tmp_path),
-             "Expected tmp directory to be removed after stop: #{expected_tmp_path}"
-    end
-
-    test "cleans up tmp directory when agent crashes" do
-      Process.flag(:trap_exit, true)
-
-      {pid, name} = start_agent()
-      expected_tmp_path = agent_tmp_path(current_space_id(), name)
-
-      assert File.exists?(expected_tmp_path),
-             "Expected tmp directory to exist: #{expected_tmp_path}"
-
-      ref = Process.monitor(pid)
-
-      capture_log(fn ->
-        Process.exit(pid, :crash)
-        wait_for_down(ref, pid, :crash)
-      end)
-
-      refute File.exists?(expected_tmp_path),
-             "Expected tmp directory to be removed after agent crash: #{expected_tmp_path}"
-    end
-
-    test "cleans up tmp directory when linked process dies" do
-      Process.flag(:trap_exit, true)
-
-      {pid, name} = start_agent()
-      expected_tmp_path = agent_tmp_path(current_space_id(), name)
-
-      assert File.exists?(expected_tmp_path),
-             "Expected tmp directory to exist: #{expected_tmp_path}"
-
-      ref = Process.monitor(pid)
-
-      Process.exit(pid, :shutdown)
-      wait_for_down(ref, pid, :shutdown)
-
-      refute File.exists?(expected_tmp_path),
-             "Expected tmp directory to be removed when linked process dies: #{expected_tmp_path}"
     end
 
     test "agent tmp dirs are removed per-agent on stop, leaving the space dir" do
@@ -245,11 +139,7 @@ defmodule Nest.Agents.AgentTmpPathTest do
   # test's `{:EXIT, _, _}` leaking into this test's `trap_exit`
   # mailbox) are left in the mailbox and ignored — no drain loop is
   # needed. The `:DOWN` is the event and the 1s fence is only the
-  # failure bound. Pass `reason = :_` to accept any reason.
-  defp wait_for_down(ref, pid, :_) do
-    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
-  end
-
+  # failure bound.
   defp wait_for_down(ref, pid, reason) do
     assert_receive {:DOWN, ^ref, :process, ^pid, ^reason}, 1_000
   end

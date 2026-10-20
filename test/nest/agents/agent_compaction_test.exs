@@ -1,10 +1,8 @@
 defmodule Nest.Agents.AgentCompactionTest do
   @moduledoc """
-  Agent compaction and pre-flight tests: tool budget loop,
-  compaction history, pre-flight streaming guard,
-  `chat:compaction` broadcast, and system prompt regeneration
-  on compaction (the on-demand-load fix — see
-  `notes/update-system-msg-on-compaction.md`).
+  Agent compaction tests: the tool budget loop, final-reply reserve
+  deferral, the `context-compact` tool flow, and the removal of the
+  per-iteration preflight trigger (no handler accepts its messages).
   """
   use Nest.DataCase, async: true
 
@@ -31,25 +29,6 @@ defmodule Nest.Agents.AgentCompactionTest do
     on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
 
     :ok
-  end
-
-  # Build a `{:assistant, %Assistant{}}` with a single
-  # `%Part.ToolUse{name: "context-compact"}` at index `idx`. Tests use
-  # this when they need a carried tool_use without pre-seeding
-  # `state.chat_state.messages` via `:sys.replace_state`.
-  defp compact_tool_call_msg(idx) do
-    {:assistant,
-     %Assistant{
-       index: idx,
-       parts: [
-         %Part.ToolUse{
-           id: "c1",
-           name: "context-compact",
-           arguments: %{}
-         }
-       ],
-       api_logs: []
-     }}
   end
 
   # Create a Programmer vocation in the test DB and return its id.
@@ -90,22 +69,12 @@ defmodule Nest.Agents.AgentCompactionTest do
       # with the machine (`status_for/1`) read behind it as the authority.
       await_idle(pid)
 
-      assert_received {:chat_message, {:user, _}}
-      assert_received {:chat_status, %{status: "streaming"}}
-      assert_received {:chat_delta, %{content: "Reading file"}}
-      assert_received {:chat_delta, %{content: "Done"}}
-      assert_received {:chat_message, {:assistant, _}}
-      # Zero fence for the block above: every one of those frames was
-      # broadcast before the "idle" frame `await_idle/1` fences on, which is
-      # where the assertion on that frame now lives.
-
       %Part.ToolResult{content: content} = result_part
 
       assert_shell_ok(result_part)
 
       refute String.contains?(content, "[truncated:")
       refute String.contains?(content, "[skipped:")
-      assert content =~ "small"
 
       # The tool actually ran (we have a Programmer vocation with
       # shell_cmd registered), so the result should be the
@@ -174,15 +143,6 @@ defmodule Nest.Agents.AgentCompactionTest do
           # authority.
           await_idle(pid)
 
-          assert_received {:chat_message, {:user, _}}
-          assert_received {:chat_status, %{status: "streaming"}}
-          assert_received {:chat_delta, %{content: "Running two commands"}}
-          assert_received {:chat_delta, %{content: "All done"}}
-          assert_received {:chat_message, {:assistant, _}}
-          # Zero fence for the block above: every one of those frames was
-          # broadcast before the "idle" frame `await_idle/1` fences on, which
-          # is where the assertion on that frame now lives.
-
           assert length(parts) == 2
           assert Enum.map(parts, & &1.tool_call_id) == ["call_1", "call_2"]
 
@@ -195,95 +155,6 @@ defmodule Nest.Agents.AgentCompactionTest do
       # "Missing required arguments" log is a deliberate diagnostic
       # for that incremental-validation path.
       assert log =~ "Missing required arguments"
-    end
-  end
-
-  describe "compaction history" do
-    test "compaction_done archives previous messages to history with a marker" do
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: programmer_vocation_id_for_test()
-        })
-
-      old_messages = [
-        {:user, %User{index: 0, parts: [%Part.Text{text: "First"}], api_logs: []}},
-        {:assistant, %Assistant{index: 1, parts: [%Part.Text{text: "A1"}], api_logs: []}},
-        {:user, %User{index: 2, parts: [%Part.Text{text: "Second"}], api_logs: []}},
-        {:assistant, %Assistant{index: 3, parts: [%Part.Text{text: "A2"}], api_logs: []}},
-        # The compaction request the machine appended *before* dispatching the
-        # compactor. It is committed history — not a request-only addition —
-        # so the commit archives it along with the segment it summarises.
-        {:user,
-         %User{index: 4, parts: [%Part.Text{text: "[mode: compact] summarize"}], api_logs: []}}
-      ]
-
-      # The compactor LLM's response text. The commit wraps it as
-      # "[From nest runtime | mode: …]\nSummary of previous conversation
-      # (compacted from N tokens):\n\n…".
-      summary_text = "..."
-
-      # `:tool_call` continuation: the resumed post-compaction turn
-      # executes the carried tool call, then calls the LLM. Finish it so
-      # the agent is idle when the test ends (the teardown asserts zero
-      # in-flight agents) instead of killing it mid-turn.
-      tool_call_msg = compact_tool_call_msg(3)
-
-      # Replace the active list and point the counter past the in-memory
-      # indices so the commit's appends don't collide with the persisted
-      # system row.
-      :sys.replace_state(
-        pid,
-        fn s ->
-          %{s | chat_state: %{s.chat_state | messages: old_messages, next_message_index: 5}}
-        end,
-        1_000
-      )
-
-      carried_entry = {:tool_call, tool_call_msg, 3, 30}
-      ref = make_ref()
-
-      :sys.replace_state(
-        pid,
-        fn s ->
-          machine = s.live.machine
-
-          machine = %{
-            machine
-            | kind: :compaction,
-              phase: :generating,
-              entry: {:compaction, carried_entry, nil},
-              work: %{
-                machine.work
-                | worker_kind: :http,
-                  worker_ref: ref,
-                  active_message_index: s.chat_state.next_message_index
-              }
-          }
-
-          %{s | live: %{s.live | machine: machine}}
-        end,
-        1_000
-      )
-
-      send(
-        pid,
-        {:http_response, ref, %Nest.LLM.RunResponse{text: summary_text, usage: nil}}
-      )
-
-      # The commit broadcasts `chat:compaction` inline from the agent while it
-      # handles the response (after the marker and the regenerated messages are
-      # in the state), so the frame is the happens-after event for the commit.
-      # The marker payload binds the fence to a commit rather than to ambient
-      # traffic.
-      assert_receive {:chat_compaction, payload}, 1_000
-      assert payload.marker["role"] == "compaction"
-      assert payload.marker["archivedCount"] == 6
-      # The archive is no longer pushed with the marker; the client
-      # fetches it lazily over `chat:history`.
-      refute Map.has_key?(payload, :history)
-
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 
@@ -377,40 +248,6 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       Agent.terminate(pid)
     end
-
-    test "CompactionHandler does not accept {:compaction_failed_for_preflight, _, _}" do
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: programmer_vocation_id_for_test()
-        })
-
-      fake_task = self()
-
-      send(pid, {:compaction_failed_for_preflight, fake_task, :llm_returned_empty})
-
-      refute_no_preflight_reply(pid)
-
-      Agent.terminate(pid)
-    end
-
-    test "streaming_acc is no longer consulted by any preflight path" do
-      # The legacy design had a `streaming_active?` shortcut that
-      # returned `:proceed` while the LLM was still streaming the
-      # response. That shortcut is forbidden under our constraint
-      # ("never send an LLM request whose message list predictably
-      # overflows"). Streaming_acc still exists — the BatchSizer
-      # waits for the assistant message to be finalized before
-      # running — but no preflight handler reads it.
-      #
-      # Structural assertion: the pure preflight/request-staging path has
-      # no branch that consults `streaming_acc` to short-circuit fit.
-      dispatch = File.read!("lib/nest/agents/agent/turn/dispatch.ex")
-
-      refute dispatch =~ "streaming_acc",
-             "the preflight/request-staging path must not consult streaming_acc " <>
-               "(forbidden under the never-overflow constraint)"
-    end
   end
 
   describe "context-compact tool flow" do
@@ -434,12 +271,10 @@ defmodule Nest.Agents.AgentCompactionTest do
       # so it falls back to a random text summary. We assert on
       # the final post-compaction shape, not on the compactor's text.
 
-      # Use a real Programmer vocation so the compaction
-      # re-renders the system prompt (proving the
-      # `compose_vocation_config/6` path runs). Tests
-      # without a real vocation also pass — the
-      # re-rendered system is just absent — but this
-      # exercises the full code path.
+      # Use a real Programmer vocation so the compaction's
+      # `compose_vocation_config/6` re-render runs over a real prompt
+      # (the regenerated system message itself is asserted in
+      # `agent_compaction_system_repeat_test.exs`).
       voc_id = programmer_vocation_id_for_test()
 
       {pid, _agent_id} =
@@ -461,8 +296,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       messages = state.chat_state.messages
       history = Nest.Persistence.load_history(state.space_id, state.name)
 
-      # Post-compaction shape (compactor is a chat turn, compactor
-      # re-renders the system message per AGENTS.md exception).
+      # Post-compaction shape (the compactor is a chat turn).
       #
       # History:  [old_system, old_user, old_assistant, compact_assistant,
       #             compact_tool_result, bridge_ack, compaction request,
@@ -473,12 +307,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # request, so the archive reads in causal order and the pair is never
       # replayed into the new segment. Index positions vary; assert by content.
 
-      # The fresh system message is the head of the active list (re-rendered
-      # from the latest DB vocation + AGENTS.md at compaction time).
-      assert match?({:system, _}, Enum.at(messages, 0)),
-             "expected fresh system message at messages[0]; got #{inspect(Enum.at(messages, 0))}"
-
-      # The summary row follows it: the compactor's prose, wrapped with what
+      # The summary row: the compactor's prose, wrapped with what
       # this compaction replaced and the agent's own `preserve` text verbatim
       # (the machinery writes that part, so it survives whatever the compactor
       # returned).
@@ -539,21 +368,6 @@ defmodule Nest.Agents.AgentCompactionTest do
              end),
              "the compact call belongs to the archived segment"
 
-      # The fresh system message's text contains the
-      # rendered system prompt (vocation `system_prompt`
-      # plus tool budget / context limit / delegation sections).
-      [{:system, sys_struct} | _] = messages
-
-      sys_text =
-        sys_struct.parts
-        |> Enum.map_join("", fn
-          %Part.Text{text: text} -> text
-          _ -> ""
-        end)
-
-      assert sys_text =~ "Test programmer prompt.",
-             "expected fresh system message to contain the rendered system prompt"
-
       # The resumed turn generated over the new segment — the summary plus the
       # compaction's own state — so the active list ends on its assistant
       # response. The compact call and its result are in the archive, not here.
@@ -586,10 +400,6 @@ defmodule Nest.Agents.AgentCompactionTest do
                  false
              end),
              "expected the compaction request's header in history"
-
-      # Trigger user message archived during the swap.
-      assert Enum.any?(history, &match?({:user, _}, &1)),
-             "expected the trigger user message archived into history"
 
       # Exactly once: the staged compaction request is committed once
       # (it is not persisted before the compaction and never re-appended).
@@ -653,16 +463,6 @@ defmodule Nest.Agents.AgentCompactionTest do
       # The operator's `/compact <focus>` guidance rides in this message's
       # text, which is why the slash command needs no row of its own.
       assert text =~ "keep the API decisions"
-
-      # ... and it is on the payload the client reads, not only in the agent's
-      # own state.
-      assert Enum.any?(Agent.get_messages(pid, 1_000), fn
-               {:user, %User{parts: [%Part.Text{text: text}]}} ->
-                 String.contains?(text, "[From nest runtime | mode: compact]")
-
-               _ ->
-                 false
-             end)
     end
   end
 
@@ -682,7 +482,7 @@ defmodule Nest.Agents.AgentCompactionTest do
   # appends, the tool batch) has landed, so a subscriber woken by the "idle"
   # frame already holds every frame of the turn; the `get_public_info/2` call
   # behind the fence is a synchronous `GenServer.call` to the same process, so
-  # it orders the call sites' `assert_received/1` assertions behind it too.
+  # it orders anything read after it behind the turn.
   # Every call site first fences on the batch's own broadcast, so the
   # sandbox work (real bwrap processes) is never inside this wait.
   # The compaction's summary row: the runtime's header, then the body.

@@ -13,15 +13,17 @@ defmodule Nest.ModesTest do
 
   describe "the modes" do
     test "are plan and act, least permissive first" do
+      # `plan/0` and `act/0` return these same two constants, so this pins both
+      # names and the order at once; the accessors are exercised by
+      # `Nest.Sandbox.Backend.Docker.CommandLineTest`.
       assert Modes.names() == ["plan", "act"]
-      assert Modes.plan() == "plan"
-      assert Modes.act() == "act"
     end
 
     test "are validated by name, not by shape" do
       for name <- Modes.names(), do: assert(Modes.valid?(name))
 
-      refute Modes.valid?("chat")
+      # A made-up string is refused by the `allows?/2` test below; these two are
+      # the shapes that must not be coerced into a name.
       refute Modes.valid?(nil)
       refute Modes.valid?(:plan)
     end
@@ -43,9 +45,9 @@ defmodule Nest.ModesTest do
     end
 
     test "an unknown mode resolves to the default, never to nothing" do
-      # A stale row, or a client that made a name up, must not become a mode with
-      # no restrictions at all — nor one with no caps.
-      assert Modes.caps("chat") == Modes.caps(Modes.default())
+      # A stale row must not become a mode with no restrictions at all — nor one
+      # with no caps. An unknown *string* takes this same clause; nil is the
+      # boundary a NULL mode column reaches.
       assert Modes.caps(nil) == Modes.caps(Modes.default())
     end
   end
@@ -62,7 +64,6 @@ defmodule Nest.ModesTest do
 
     test "a name this build does not know is refused, from either side" do
       refute Modes.allows?("act", "chat")
-      refute Modes.allows?("chat", "plan")
       refute Modes.allows?(nil, "plan")
     end
   end
@@ -92,12 +93,10 @@ defmodule Nest.ModesTest do
       enforced = Modes.catalog(true, true)
       unenforced = Modes.catalog(true, false)
 
+      # The two sentences are mutually exclusive by construction, so asserting
+      # each one is the whole claim; the negative forms of the other add nothing.
       assert enforced =~ "is enforced by the sandbox"
       assert unenforced =~ "cannot enforce"
-      assert unenforced =~ "on you"
-
-      refute enforced =~ "cannot enforce"
-      refute unenforced =~ "is enforced by the sandbox"
     end
   end
 end

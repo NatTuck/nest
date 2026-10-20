@@ -159,11 +159,10 @@ defmodule Nest.Agents.TmpSweeperTest do
       # concurrently running async test.
       assert {:noreply, ^state} = TmpSweeper.handle_info(:tick, state)
 
-      assert File.dir?(own)
-      assert {:ok, content} = File.read(TmpSpace.alive_path(own))
-      assert {:ok, at, _offset} = DateTime.from_iso8601(content)
-      assert DateTime.diff(DateTime.utc_now(), at, :second) < 60
-
+      # The tick's two effects: it marked the root (the stamp's *form* is
+      # `mark/2`'s test, below) and it swept. That the root itself survives is
+      # "never removes our own root".
+      assert File.exists?(TmpSpace.alive_path(own))
       refute File.exists?(space)
 
       # The catch-all: a message it does not understand must not crash it.
@@ -188,11 +187,15 @@ defmodule Nest.Agents.TmpSweeperTest do
       refute File.exists?(Path.join(space, "orphan"))
 
       # A live owner keeps its directory, and a registered agent in the space
-      # keeps the space (and so the two non-agent children) for pass 3.
+      # keeps the space (and so its children) for pass 3. Each child is also
+      # the space surviving — no separate assertion on the parent.
+      #
+      # `.cmds` and `project` are the two halves of the reject: `".cmds"` fails
+      # `Nest.Name.valid?/1`, `"project"` is valid and so needs
+      # `@non_agent_children`. Drop either half and that child is rm_rf'd.
       assert File.dir?(Path.join(space, "live"))
       assert File.dir?(Path.join(space, ".cmds"))
       assert File.dir?(Path.join(space, "project"))
-      assert File.dir?(space)
     end
   end
 
@@ -234,14 +237,16 @@ defmodule Nest.Agents.TmpSweeperTest do
         rm_tmp!(base, "nest-sweeper-job-")
       end)
 
-      assert {:ok, message} =
+      assert {:ok, _} =
                ShellCmd.execute("sleep 30", Mounts.new(File.cwd!(), scratch), nil,
                  background: true,
                  agent_key: key,
                  grace_ms: 0
                )
 
-      assert message =~ "Started background job"
+      # The barrier: the job is registered in the space, which is what
+      # `live_in_space?/1` asks. The wording of `ShellCmd`'s own success message
+      # is that module's business, not the sweeper's.
       assert ShellJobs.live_in_space?(space_id)
 
       assert :ok = TmpSweeper.sweep(own, now(), @ttl)

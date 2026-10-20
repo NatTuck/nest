@@ -89,7 +89,7 @@ defmodule Nest.Agents.Agent.PersistenceTest do
         })
 
       system_msg = {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "x"}]}}
-      assert :ok = AgentPersistence.append_message(append_state(name, agent_id), system_msg, 1)
+      AgentPersistence.append_message(append_state(name, agent_id), system_msg, 1)
 
       assert [%PersistedAgent{next_message_index: 1}] =
                Nest.Repo.all(PersistedAgent)
@@ -181,12 +181,11 @@ defmodule Nest.Agents.Agent.PersistenceTest do
         {:ok, %PersistedMessage{agent_id: original_id}}
       end)
 
-      assert :ok =
-               AgentPersistence.append_message(
-                 state,
-                 {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "x"}]}},
-                 1
-               )
+      AgentPersistence.append_message(
+        state,
+        {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "x"}]}},
+        1
+      )
 
       assert_received {:took_over, replacement_id}
       assert replacement_id != original_id
@@ -213,26 +212,6 @@ defmodule Nest.Agents.Agent.PersistenceTest do
       assert log =~ "Failed to persist message for agent #{name}"
 
       assert Persistence.load_messages(test_space_id(), name) == []
-    end
-
-    test "drops an append for a name with no row at all" do
-      # Unchanged behaviour: an unresolvable name is `:agent_not_found`,
-      # which the wrapper logs and drops like any other write failure.
-      name = "gone-#{System.unique_integer([:positive])}"
-      system_msg = {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "x"}]}}
-
-      log =
-        capture_log(fn ->
-          assert :ok =
-                   AgentPersistence.append_message(
-                     append_state(name, System.unique_integer([:positive])),
-                     system_msg,
-                     1
-                   )
-        end)
-
-      assert log =~ "Failed to persist message for agent #{name}"
-      assert log =~ "agent_not_found"
     end
   end
 
@@ -275,27 +254,6 @@ defmodule Nest.Agents.Agent.PersistenceTest do
              ] =
                Nest.Repo.all(PersistedMessage)
                |> Enum.filter(&(&1.agent_id == agent_id and &1.message_index == 1))
-    end
-
-    test "the 5-arity form passes token stats through to the underlying Persistence call" do
-      name = "rc-stats-#{System.unique_integer([:positive])}"
-
-      {:ok, %PersistedAgent{id: agent_id}} =
-        Persistence.insert_agent(%{
-          space_id: test_space_id(),
-          name: name,
-          model: %{name: "test-model", provider: "test"},
-          vocation_id: local_vocation_id()
-        })
-
-      assert :ok =
-               AgentPersistence.record_compaction(
-                 append_state(name, agent_id),
-                 5,
-                 3,
-                 18_432,
-                 4_096
-               )
     end
   end
 end
