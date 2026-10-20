@@ -258,6 +258,64 @@ defmodule Nest.Sandbox.ShellJobsTest do
     refute ShellJobs.live_in_space?(space_id)
   end
 
+  # The motivating case: a minion's job was holding locks and the root agent
+  # could not find it, because `list/1` only ever answers for its own key.
+  test "list_space/1 and kill_space/2 reach every agent in one space, and no other" do
+    # Own space ids, not the fixture's shared `1`: this module is `async`, so a
+    # concurrent test's job in space 1 would be listed here whether or not this
+    # test's jobs are.
+    space_id = System.unique_integer([:positive])
+    other_space = space_id + 1
+    tag = System.unique_integer([:positive])
+    mine = {space_id, "space-mine-#{tag}"}
+    sibling = {space_id, "space-sibling-#{tag}"}
+    outsider = {other_space, "space-outsider-#{tag}"}
+    outsider_name = elem(outsider, 1)
+    root = Path.join(System.tmp_dir!(), "nest_jobs_space_#{tag}")
+
+    scratch = fn {id, name} ->
+      dir = Path.join([root, "space-#{id}", name])
+      File.mkdir_p!(dir)
+      dir
+    end
+
+    on_exit(fn ->
+      for key <- [mine, sibling, outsider], do: ShellJobs.stop_all(key)
+      rm_tmp!(root, "nest_jobs_space_")
+    end)
+
+    mine_id = start_running!("sleep 30", scratch.(mine), mine)
+    sibling_id = start_running!("sleep 30", scratch.(sibling), sibling)
+    outsider_id = start_running!("sleep 30", scratch.(outsider), outsider)
+
+    # Every agent in the space and only them: each job carries its owner's name
+    # (the column a space listing shows) and the other space's job is absent.
+    jobs = ShellJobs.list_space(space_id)
+    assert Enum.sort(Enum.map(jobs, & &1.id)) == Enum.sort([mine_id, sibling_id])
+    assert Enum.sort(Enum.map(jobs, & &1.agent)) == Enum.sort([elem(mine, 1), elem(sibling, 1)])
+
+    # `space_id + 1` may be another concurrent test's space, so this one looks
+    # its job up by the agent name only it uses.
+    assert [%{id: ^outsider_id, agent: ^outsider_name}] =
+             Enum.filter(ShellJobs.list_space(other_space), &(&1.agent == outsider_name))
+
+    # `list/1` was not widened: the caller's own listing still holds one job.
+    assert [%{id: ^mine_id}] = ShellJobs.list(mine)
+
+    # Killing another agent's job answers with its owner, so the caller can say
+    # whose job it stopped.
+    assert :ok = ShellJobs.subscribe(sibling, sibling_id, self())
+    assert {:ok, ^sibling} = ShellJobs.kill_space(space_id, sibling_id)
+    assert_receive {:shell_job_exit, ^sibling_id, _code}, 1_000
+    assert [%{id: ^sibling_id, status: :exited}] = ShellJobs.list(sibling)
+
+    # A job in another space is unreachable, and the refusal is inert: the
+    # outsider's job is still running.
+    assert {:error, :not_found} = ShellJobs.kill_space(space_id, outsider_id)
+    assert [%{id: ^outsider_id, status: :running}] = ShellJobs.list(outsider)
+    assert {:error, :not_found} = ShellJobs.kill_space(space_id, "job-999")
+  end
+
   test "keeps the scratch while a live agent owns the key, then removes it" do
     # `TmpSpace.create` builds the real scratch path (`/tmp/nest/<pid>/space-<id>/<name>`),
     # which is the path `cleanup_agent_key/2` derives from the key — unlike the

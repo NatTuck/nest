@@ -293,7 +293,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
            # Per-call identity. Tools that manage per-agent resources
            # (`shell-cmd background`, `shell-list`/`wait`/`kill`) need the
            # real `{space_id, agent_name}` and the Agent pid; without these
-           # they default to `{nil, nil}` / `:unknown` and operate on the
+           # they default to `{:unknown, :unknown}` and operate on the
            # wrong (or no) agent. See `Nest.Tools.agent_key/1`.
            agent_pid: Map.get(ctx, :agent_pid),
            agent_name: Map.get(ctx, :agent_name),
