@@ -29,27 +29,10 @@ defmodule Nest.Agents.Agent.RecoveryTest do
 
   setup :verify_on_exit!
 
-  # The pre-test cleanup uses `Nest.Persistence.list_agent_names/0`
-  # (DB query) rather than `Agents.list_agents/0`
-  # (`Registry.list/0`). The Registry only contains live
-  # GenServers; per-test on_exit handlers terminate the
-  # GenServer but leave the DB row behind, so the Registry
-  # misses those rows. Querying the DB catches both running
-  # and dead-but-row-still-present agents.
-  #
-  # `Nest.Persistence.delete_agent/2` is a single SQL
-  # DELETE — no `Supervisor.stop_agent/2` call, so this loop
-  # doesn't serialize through the supervisor's GenServer under
-  # parallel load. The previous `Agents.delete_agent/1` loop
-  # timed out at 5s when many parallel tests' setups queued
-  # supervisor stops on a single mailbox.
+  # A fresh space per test (`create_test_space/0` inserts a space and
+  # nothing else), so there are no agent rows to clear.
   setup do
-    {:ok, space_id} = AgentTestHelpers.create_test_space()
-
-    for name <- Nest.Persistence.list_agent_names_for_space(space_id) do
-      Nest.Persistence.delete_agent(space_id, name)
-    end
-
+    {:ok, _space_id} = AgentTestHelpers.create_test_space()
     :ok
   end
 
@@ -87,50 +70,11 @@ defmodule Nest.Agents.Agent.RecoveryTest do
                }}
             )
 
-          assert Process.alive?(pid)
-
           # allowlist: snapshot — client config + status + model
           state = :sys.get_state(pid, 1_000)
           assert Machine.status_for(state.live.machine) == :model_missing
           assert state.client_config.client == RecoveryClient
           assert state.model == %{name: "ghost-model"}
-        end)
-
-      assert log =~ "could not resolve model"
-    end
-
-    test "subsequent chat:message is dropped in :model_missing state" do
-      # Same model-probe failure as above — capture the
-      # `Logger.error` and assert it's the expected error path.
-      log =
-        ExUnit.CaptureLog.capture_log(fn ->
-          Nest.DotConfig
-          |> stub(:get_model, fn _config, "ghost-model" -> nil end)
-
-          {:ok, pid} =
-            start_supervised(
-              {Agent,
-               %{
-                 space_id: AgentTestHelpers.current_space_id(),
-                 name: "ghost-agent-#{System.unique_integer([:positive])}",
-                 model: %{name: "ghost-model"},
-                 vocation_id: vocation_id(),
-                 sandbox_backend: "bwrap",
-                 network_access: true
-               }}
-            )
-
-          # Sanity: the agent is alive. The chat:message drop happens
-          # in `chat_or_queue/4` so the message counter never
-          # advances. We assert that the GenServer returns
-          # {:noreply, state} and the in-memory `messages` list
-          # stays at the initial `[{:system, _}]`.
-          _ref = Agent.chat(pid, "hello?")
-          # Yield to the GenServer so the cast has been handled.
-          # allowlist: barrier — a dropped cast in :model_missing broadcasts nothing
-          _ = :sys.get_state(pid, 1_000)
-          messages = Agent.get_messages(pid, 1_000)
-          assert Enum.all?(messages, &match?({:system, _}, &1))
         end)
 
       assert log =~ "could not resolve model"

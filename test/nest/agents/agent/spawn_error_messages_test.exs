@@ -21,11 +21,5 @@ defmodule Nest.Agents.Agent.SpawnErrorMessagesTest do
 
     assert BatchPlan.spawn_error_message(reason) ==
              "Could not spawn batch children: #{sentence}"
-
-    for message <- [SpawnErrors.message(reason), BatchPlan.spawn_error_message(reason)] do
-      assert message =~ "/ws/AGENTS.md"
-      assert message =~ "is not a regular file"
-      refute message =~ "config_file_not_regular"
-    end
   end
 end

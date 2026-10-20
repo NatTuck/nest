@@ -47,9 +47,12 @@ defmodule NestWeb.AgentChannelCompactionTest do
 
     assert_push "chat:compaction", payload, 200
 
-    assert payload.marker["index"] == 5
-    assert payload.marker["role"] == "compaction"
-    assert payload.marker["archivedCount"] == 3
-    refute Map.has_key?(payload, :history)
+    # One exact payload: the handler forwards the broadcast verbatim, so a
+    # dropped or altered field — or one the channel invented, such as the
+    # archive `:history` that the moduledoc says travels over `chat:history`
+    # instead — fails here.
+    assert payload == %{
+             marker: %{"index" => 5, "role" => "compaction", "archivedCount" => 3}
+           }
   end
 end

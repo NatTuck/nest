@@ -87,7 +87,10 @@ defmodule Nest.Agents.Agent.TurnDeclinedDeliveryTest do
 
     assert :cannot_compact = Dispatch.preflight_decision(transcript ++ [delivered], 100)
 
-    assert :ok = Agent.chat(pid, "a message that will not fit", nil, "alice")
+    # `Agent.chat/5` is a cast: it returns `:ok` whatever the agent does with
+    # the message, so the outcome is asserted below — on the wire and in the
+    # state — not on the call's return.
+    Agent.chat(pid, "a message that will not fit", nil, "alice")
 
     # Visible: the queue is broadcast on enqueue, and the declined drain
     # consumed nothing, so that frame is still the whole queue.
@@ -108,13 +111,14 @@ defmodule Nest.Agents.Agent.TurnDeclinedDeliveryTest do
 
     refute Enum.any?(user_texts(state.chat_state.messages), &(&1 =~ "will not fit"))
 
-    # The batch the decline refused to background is untouched: same worker,
-    # same ref, no entry, and nothing killed it.
+    # The batch the decline refused to background is untouched: still executing,
+    # still the same worker, no entry recorded. `active_worker` and `worker_ref`
+    # are nulled together by `Phase.enter/4`, so the pid alone covers both; the
+    # worker being alive would prove nothing, since backgrounding leaves it
+    # running.
     assert Machine.status_for(state.live.machine) == :executing_tools
     assert state.live.machine.work.active_worker == worker
-    assert state.live.machine.work.worker_ref == ref
     assert state.live.machine.work.backgrounded == %{}
-    assert Process.alive?(worker)
 
     # Leave the agent idle for the teardown, with the entry dropped: the
     # decline, not the fabricated batch, is what this test pins.
