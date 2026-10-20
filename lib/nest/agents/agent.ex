@@ -375,11 +375,6 @@ defmodule Nest.Agents.Agent do
   # OTP's 5 s.
   defdelegate get_public_info(pid, timeout \\ 5_000), to: ClientAPI
 
-  # Returns the combined usage map for the agent: `usage_totals +
-  # descendant_usage`, computed field-by-field. Re-export of
-  # `ClientAPI.get_total_usage/2`; `timeout` defaults to OTP's 5 s.
-  defdelegate get_total_usage(pid, timeout \\ 5_000), to: ClientAPI
-
   @doc """
   Returns the active message list for the agent.
 

@@ -38,7 +38,6 @@ defmodule Nest.LLM.Runner do
   index for delta broadcasts, the streaming accumulator).
   """
 
-  alias Nest.Agents.Agent.Broadcasts
   alias Nest.LLM.Client
   alias Nest.LLM.ClientConfig
   alias Nest.LLM.RunRequest
@@ -296,18 +295,5 @@ defmodule Nest.LLM.Runner do
   @spec format_request_payload(ClientConfig.t(), RunRequest.t(), keyword()) :: map()
   def format_request_payload(%ClientConfig{client: client} = _cc, request, opts) do
     client.format_request_payload(request, opts)
-  end
-
-  @doc false
-  # Re-export of `Broadcasts.delta_text/5` so consumer
-  # modules that need it don't have to alias `Broadcasts`
-  # themselves. Cheap convenience.
-  def delta_text(space_id, name, message_index, content, chars_start) do
-    Broadcasts.delta_text(space_id, name, message_index, content, chars_start)
-  end
-
-  @doc false
-  def delta_thinking(space_id, name, message_index, content, chars_start) do
-    Broadcasts.delta_thinking(space_id, name, message_index, content, chars_start)
   end
 end
