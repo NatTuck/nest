@@ -185,6 +185,16 @@ defmodule NestWeb.LobbyChannel do
     {:noreply, socket}
   end
 
+  # `SpaceGate.await/2` broadcasts this when a caller actually parks at the
+  # latch, so that "it reached the gate" is an event a test can assert instead
+  # of something inferred from a clock. It reports a waiter arriving, not a
+  # change to the space, so the lobby has nothing to show for it — but it has to
+  # be matched here, because the catch-all below logs a warning for any frame it
+  # does not know, and this one fires on every tool call that parks during an
+  # edit, which is exactly the case it exists for.
+  @impl true
+  def handle_info({:space_waiting, _space_id}, socket), do: {:noreply, socket}
+
   # A note with a human at one end (`Nest.Notes`), broadcast on the space's
   # topic by every insert. The space is already scoped by the subscription the
   # frame arrived on; `SpaceFeed.note_created/2` applies the other half of the

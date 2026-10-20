@@ -98,29 +98,23 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
   test "a start waits for the latch before it reads the row" do
     {_pid, _name} = AgentTestHelpers.start_agent()
     space_id = AgentTestHelpers.current_space_id()
-    test_pid = self()
 
     assert :ok = SpaceGate.hold(space_id)
+    Phoenix.PubSub.subscribe(Nest.PubSub, SpaceGate.topic(space_id))
 
     # A start reads the row for the space's three environment values, so it must
     # not run while an edit is writing them. The name has no row, so this would
     # answer `:not_found` at once — unless the gate is ahead of the read.
     #
-    # The barrier is the task's own first message: once it has been received the
-    # task is running and inside the call, so "it has not finished" is evidence of
-    # blocking rather than of never having been scheduled. It is not *proof* that
-    # the task is parked in `await/1` — the 50ms below is a grace for the single
-    # DB read the un-gated path would need — but the window is now measured from a
-    # running task rather than from `Task.async`'s return, which is what made the
-    # earlier version pass with the gate removed.
-    starter =
-      Task.async(fn ->
-        send(test_pid, {:started, self()})
-        Supervisor.get_agent(space_id, "not-an-agent")
-      end)
+    # The barrier is the gate's own frame: `await/2` broadcasts
+    # `{:space_waiting, _}` once it is still held after subscribing and
+    # immediately before it blocks, so receiving it proves the start is parked at
+    # the gate. A bypassed gate sends no frame at all, and the `:not_found` below
+    # can only be answered after the release — the block is what `await/2` returns
+    # from. (A 50 ms probe here used to say only "not yet".)
+    starter = Task.async(fn -> Supervisor.get_agent(space_id, "not-an-agent") end)
 
-    assert_receive {:started, _pid}, 1_000
-    refute Task.yield(starter, 50)
+    assert_receive {:space_waiting, ^space_id}, 1_000
 
     assert :ok = SpaceGate.release(space_id)
     assert {:error, :not_found} = Task.await(starter, 1_000)
@@ -133,28 +127,23 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
   test "a spawn waits for the latch before it reads the row" do
     {pid, _name} = AgentTestHelpers.start_agent()
     space_id = AgentTestHelpers.current_space_id()
-    test_pid = self()
     # allowlist: harness — spawn_agent_in_space/3's state argument
     parent = :sys.get_state(pid, 1_000)
     child = "child-#{System.unique_integer([:positive])}"
 
     assert :ok = SpaceGate.hold(space_id)
+    Phoenix.PubSub.subscribe(Nest.PubSub, SpaceGate.topic(space_id))
 
-    # Same barrier, and the same limit, as the start test: the task's first
-    # message proves it is running, so the missing row below is the gate's doing
-    # rather than the scheduler's. The 50ms is a grace for the *handful* of reads
-    # the un-gated path would need — the vocation lookup and the spawn's own
-    # `Persistence.fetch_agent` and pre-spawn checks before it starts a child — not
-    # for one, and it is still a grace rather than proof of parking in `await/1`.
+    # The same barrier as the start test: the spawn's own `await/2` broadcasts
+    # `{:space_waiting, _}` from inside the call, before it blocks — so the missing
+    # row below is the gate's doing rather than the scheduler's, and a bypassed
+    # gate sends no frame.
     spawner =
       Task.async(fn ->
-        send(test_pid, {:started, self()})
-
         Supervisor.spawn_agent_in_space(parent, child, AgentTestHelpers.vocation_slug_for_test())
       end)
 
-    assert_receive {:started, _pid}, 1_000
-    refute Task.yield(spawner, 50)
+    assert_receive {:space_waiting, ^space_id}, 1_000
     assert Nest.Persistence.fetch_agent(space_id, child) == {:error, :not_found}
 
     assert :ok = SpaceGate.release(space_id)

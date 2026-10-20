@@ -86,8 +86,13 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       c = ctx([small_tool("echo")], space_id: id)
 
       :ok = SpaceGate.hold(id)
+      Phoenix.PubSub.subscribe(Nest.PubSub, SpaceGate.topic(id))
+
+      # `await/2` broadcasts `{:space_waiting, _}` after it subscribes and before
+      # it blocks, so this is the batch parked at the gate — an event, where a
+      # probe of how long it takes to finish would measure the host.
       batch = Task.async(fn -> BatchSizer.execute([call("c1", "echo")], c) end)
-      assert Task.yield(batch, 30) == nil
+      assert_receive {:space_waiting, ^id}, 500
 
       :ok = SpaceGate.release(id)
 

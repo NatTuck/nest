@@ -82,15 +82,22 @@ defmodule Nest.Agents.SpaceGateTest do
     # The two-push edit: a preview, then the confirmation that has to cover its
     # own quiesce and write. The confirmation's window is what counts, so the
     # claim must not keep running on the preview's clock.
-    assert :ok = SpaceGate.hold(id, :space_edit, 30)
-    assert :ok = SpaceGate.hold(id, :space_edit, 500)
+    #
+    # The preview is left on the default two-minute TTL and the confirmation is
+    # given a short one, which is what turns the re-arm into an *event* rather
+    # than a window: a claim still running on the preview's clock releases
+    # nothing we could ever wait for, so the unlock arriving is something only a
+    # re-armed claim produces.
+    log =
+      capture_log(fn ->
+        assert :ok = SpaceGate.hold(id, :space_edit)
+        assert :ok = SpaceGate.hold(id, :space_edit, 40)
+        assert_receive {:space_unlocked, ^id}, 500
+      end)
 
-    # Nothing releases the space across the first TTL's expiry point. The
-    # interval is the discriminating one: the first hold's TTL was 30 ms, so
-    # 50 ms is past it — a `refute_receive` pays its whole window, so this is
-    # the smallest window that still crosses the point being tested. (A late
-    # timer can only make this pass, so load cannot turn it into a failure.)
-    refute_receive {:space_unlocked, ^id}, 50
+    # And the expiry names the TTL the second hold stated — the record of which
+    # clock the claim ended on.
+    assert log =~ "the space_edit claim expired after 40ms"
   end
 
   test "an abandoned claim expires" do
