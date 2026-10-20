@@ -4231,6 +4231,27 @@ describe("channels", () => {
       assert.strictEqual(captured.sandbox_backend, "none");
     });
 
+    it("forwards workspace_path in the create_space payload", async () => {
+      // A space requires a workspace: `Space.create_changeset/2` refuses one
+      // without it, and `Nest.Spaces.Creation` names that refusal
+      // `workspace_required`. Dropping the field here therefore failed *every*
+      // create, whatever the form said — and the page-level test cannot catch
+      // it, because it asserts `createSpace` was called with the value, not
+      // that the value reached the wire.
+      const capturePromise = captureNextPush("lobby", "create_space");
+      setNextPushResult("lobby", "create_space", {
+        ok: { space_id: 1, name: "new-agent" },
+      });
+      joinLobby(() => {});
+
+      createSpace("gpt-4", 1, () => {}, undefined, {
+        workspace_path: "/home/nat/proj",
+      });
+
+      const captured = await capturePromise;
+      assert.strictEqual(captured.workspace_path, "/home/nat/proj");
+    });
+
     it("should include vocation slug in payload when provided", async () => {
       setNextPushResult("lobby", "create_space", {
         ok: { space_id: 1, name: "new-agent" },
