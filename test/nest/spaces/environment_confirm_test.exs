@@ -107,14 +107,14 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
     # answer `:not_found` at once — unless the gate is ahead of the read.
     #
     # The barrier is the gate's own frame: `await/2` broadcasts
-    # `{:space_waiting, _}` once it is still held after subscribing and
-    # immediately before it blocks, so receiving it proves the start is parked at
-    # the gate. A bypassed gate sends no frame at all, and the `:not_found` below
-    # can only be answered after the release — the block is what `await/2` returns
-    # from. (A 50 ms probe here used to say only "not yet".)
+    # `{:space_waiting, _}` once it finds the space still held after subscribing,
+    # so receiving it proves the start reached the gate. A bypassed gate sends no
+    # frame at all, and the `:not_found` below can only be answered after the
+    # release — the block is what `await/2` returns from. (A 50 ms probe here used
+    # to say only "not yet".)
     starter = Task.async(fn -> Supervisor.get_agent(space_id, "not-an-agent") end)
 
-    assert_receive {:space_waiting, ^space_id}, 1_000
+    assert_receive {:space_waiting, ^space_id}, 500
 
     assert :ok = SpaceGate.release(space_id)
     assert {:error, :not_found} = Task.await(starter, 1_000)
@@ -135,15 +135,15 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
     Phoenix.PubSub.subscribe(Nest.PubSub, SpaceGate.topic(space_id))
 
     # The same barrier as the start test: the spawn's own `await/2` broadcasts
-    # `{:space_waiting, _}` from inside the call, before it blocks — so the missing
-    # row below is the gate's doing rather than the scheduler's, and a bypassed
-    # gate sends no frame.
+    # `{:space_waiting, _}` from inside the call, once it finds the space still
+    # held — so the missing row below is the gate's doing rather than the
+    # scheduler's, and a bypassed gate sends no frame.
     spawner =
       Task.async(fn ->
         Supervisor.spawn_agent_in_space(parent, child, AgentTestHelpers.vocation_slug_for_test())
       end)
 
-    assert_receive {:space_waiting, ^space_id}, 1_000
+    assert_receive {:space_waiting, ^space_id}, 500
     assert Nest.Persistence.fetch_agent(space_id, child) == {:error, :not_found}
 
     assert :ok = SpaceGate.release(space_id)

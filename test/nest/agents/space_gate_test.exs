@@ -100,6 +100,32 @@ defmodule Nest.Agents.SpaceGateTest do
     assert log =~ "the space_edit claim expired after 40ms"
   end
 
+  test "a stale TTL timer drops nothing" do
+    id = watch(space_id())
+    assert :ok = SpaceGate.hold(id, :space_edit, 5_000)
+
+    # A re-arm cancels the old timer, but a timer that has already fired cannot
+    # be: its `{:ttl, space_id, token}` is in the mailbox by the time `renew/4`
+    # asks, and `Process.cancel_timer/1` says `false`. That frame carries the
+    # *old* token, so it must match no claim and drop nothing — otherwise a
+    # re-arm would end the claim it just renewed. `arm_ttl/2` mints a fresh token
+    # per arm, so a token no claim holds is exactly what such a frame looks like,
+    # and the frame is the handler's own message, as in `shell_jobs_test`'s
+    # kill-finalize test.
+    send(SpaceGate, {:ttl, id, make_ref()})
+
+    # A call to the gate is the ordering fence — same sender, same receiver — so
+    # the frame above has been handled when this returns, and the claim's survival
+    # is a fact rather than a race. No event can serve as the fence here: the
+    # stale frame is supposed to produce none.
+    # allowlist: barrier — the frame's whole point is that it emits nothing
+    :sys.get_state(SpaceGate)
+
+    assert SpaceGate.held?(id)
+    assert :ok = SpaceGate.release(id)
+    assert_receive {:space_unlocked, ^id}, 500
+  end
+
   test "an abandoned claim expires" do
     id = watch(space_id())
 

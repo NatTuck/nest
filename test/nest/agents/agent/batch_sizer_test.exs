@@ -88,9 +88,10 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       :ok = SpaceGate.hold(id)
       Phoenix.PubSub.subscribe(Nest.PubSub, SpaceGate.topic(id))
 
-      # `await/2` broadcasts `{:space_waiting, _}` after it subscribes and before
-      # it blocks, so this is the batch parked at the gate — an event, where a
-      # probe of how long it takes to finish would measure the host.
+      # `await/2` broadcasts `{:space_waiting, _}` once it finds the space still
+      # held after subscribing, so this is the batch reaching the gate — an
+      # event, where a probe of how long it takes to finish would measure the
+      # host.
       batch = Task.async(fn -> BatchSizer.execute([call("c1", "echo")], c) end)
       assert_receive {:space_waiting, ^id}, 500
 
