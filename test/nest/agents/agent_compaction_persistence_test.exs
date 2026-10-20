@@ -12,7 +12,11 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
     coverage (still exercised by `record_compaction/3` callers).
   - `persistence_test.exs` — existing `insert_message/2` and
     `record_compaction/3` tests (retained for backward
-    compatibility on the `record_compaction` API).
+    compatibility on the `record_compaction` API), including the
+    marker-collision rollback of the boundary bump:
+    `record_compaction/7` is a pure facade over the compaction
+    clause here, so a second rollback test in this file would
+    exercise the same `CompactionMarker.record/6` transaction.
   - `agent_compaction_system_repeat_test.exs` — agent-level
     coverage of the system-message + tools + AGENTS.md re-read
     on compaction.
@@ -59,37 +63,6 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
       assert agent_row.last_compaction_index == 5
     end
 
-    test "compaction tuple rolls back last_compaction_index when the marker INSERT fails on collision" do
-      attrs = agent_attrs("cm-rollback-#{Elixir.System.unique_integer([:positive])}")
-      {:ok, %PersistedAgent{id: agent_id}} = Persistence.insert_agent(attrs)
-
-      # Pre-insert a row at the marker index to force a unique-constraint violation.
-      %PersistedMessage{}
-      |> PersistedMessage.changeset(%{
-        agent_id: agent_id,
-        message_index: 5,
-        role: "user",
-        content: %{"parts" => []}
-      })
-      |> Nest.Repo.insert!()
-
-      marker = %Compaction{
-        index: 5,
-        archived_count: 0,
-        tokens_compacted: nil,
-        tokens_compacted_to: nil,
-        occurred_at: Persistence.now(),
-        metadata: nil
-      }
-
-      assert {:error, _reason} =
-               Persistence.insert_message(test_space_id(), attrs.name, {:compaction, marker})
-
-      # Rollback: boundary column must NOT be bumped.
-      agent_row = Nest.Repo.one!(from(a in PersistedAgent, where: a.id == ^agent_id))
-      assert agent_row.last_compaction_index == -1
-    end
-
     test "regular (non-compaction) tuple is unchanged by the compaction clause — same persistence semantics as before" do
       attrs = agent_attrs("cm-regular-#{Elixir.System.unique_integer([:positive])}")
       {:ok, %PersistedAgent{id: agent_id}} = Persistence.insert_agent(attrs)
@@ -127,7 +100,6 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
       assert Enum.all?(results, &match?({:ok, _}, &1))
 
       rows = Nest.Repo.all(from(m in PersistedMessage, where: m.agent_id == ^agent_id))
-      assert length(rows) == 5
       assert Enum.sort(Enum.map(rows, & &1.message_index)) == [0, 1, 2, 3, 4]
       assert Enum.sort(Enum.map(rows, & &1.role)) == ~w(assistant compaction system tool user)
     end

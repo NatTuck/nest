@@ -4,6 +4,11 @@ defmodule Nest.Agents.Agent.StatusTest do
   range it implies, the last compaction index, the current state, and the
   explicit `not_running` / unknown report for an agent with no live process.
 
+  The refusals that are this tool's own are here too (a malformed `name`, an
+  archived target). A name that does not exist in the space is not repeated
+  here: it is the shared `Nest.Agents.Agent.History.Target` refusal, covered by
+  `Nest.Agents.Agent.HistoryTest`.
+
   The `model` line is `inspect/1` of the persisted map, so the assertion spells
   out the string-keyed shape the row really holds.
   """
@@ -53,6 +58,16 @@ defmodule Nest.Agents.Agent.StatusTest do
   defp append(pid, {_role, _message} = message) do
     {_role, _stamped} = GenServer.call(pid, {:append_message, message})
     :ok
+  end
+
+  # A row with no process behind it, in the caller's own space.
+  defp insert_row(space_id, name) do
+    Persistence.insert_agent(%{
+      space_id: space_id,
+      name: name,
+      model: %{name: "qwen3.5-plus", provider: "model-studio"},
+      vocation_id: AgentTestHelpers.vocation_id_for_test()
+    })
   end
 
   # Put the agent in a busy status so a delivery queues rather than draining.
@@ -115,7 +130,7 @@ defmodule Nest.Agents.Agent.StatusTest do
     # A compaction marker moves the boundary; the report says which index it is
     # at (and the count includes the marker row, as it does at runtime).
     {:ok, %PersistedAgent{id: agent_id}} = Persistence.fetch_agent(space_id, name)
-    assert {:ok, _marker} = Persistence.record_compaction(space_id, name, 5, 4)
+    {:ok, _marker} = Persistence.record_compaction(space_id, name, 5, 4)
     Persistence.update_next_message_index_by_id(agent_id, 6)
 
     {compacted, _log} = run(space_id, name, %{"name" => name})
@@ -143,63 +158,39 @@ defmodule Nest.Agents.Agent.StatusTest do
     reset_to_idle(pid)
   end
 
-  test "an agent with no live process is reported as not_running, and is never started", %{
-    space_id: space_id,
-    name: caller
-  } do
+  test "a row with no live process is not_running and is never started; an empty one has no range",
+       %{
+         space_id: space_id,
+         name: caller
+       } do
     bare = "idle-#{System.unique_integer([:positive])}"
-
-    {:ok, %PersistedAgent{id: agent_id}} =
-      Persistence.insert_agent(%{
-        space_id: space_id,
-        name: bare,
-        model: %{name: "qwen3.5-plus", provider: "model-studio"},
-        vocation_id: AgentTestHelpers.vocation_id_for_test()
-      })
-
+    {:ok, %PersistedAgent{id: agent_id}} = insert_row(space_id, bare)
     {:ok, _} = Persistence.insert_message(space_id, bare, {:user, %User{index: 0, parts: []}})
     Persistence.update_next_message_index_by_id(agent_id, 1)
 
-    assert {:error, :not_found} = Registry.lookup(space_id, bare)
+    {:error, :not_found} = Registry.lookup(space_id, bare)
 
     {result, _log} = run(space_id, caller, %{"name" => bare})
 
     assert %ToolResult{is_error: false, content: content} = result
+    assert content =~ "Agent \"#{bare}\": not_running (no live process)"
 
-    assert content ==
-             "Agent \"#{bare}\": not_running (no live process)\n" <>
-               "  messages: 1 (indices 0..0)\n" <>
-               "  last compaction index: -1 (never compacted)\n" <>
-               ~s(  model: %{"name" => "qwen3.5-plus", "provider" => "model-studio"}\n) <>
-               "  vocation: #{AgentTestHelpers.vocation_slug_for_test()}\n" <>
-               "  depth: 0\n" <>
-               "  owed replies: unknown (no live process)\n" <>
+    assert content =~
+             "  owed replies: unknown (no live process)\n" <>
                "  pending inbox: unknown (no live process)\n" <>
                "  context limit: unknown (no live process)"
 
     # The read did not start it.
     assert {:error, :not_found} = Registry.lookup(space_id, bare)
-  end
 
-  test "a row with no messages reports zero, with no index range", %{
-    space_id: space_id,
-    name: caller
-  } do
-    bare = "empty-#{System.unique_integer([:positive])}"
+    # A row with no messages at all states the count and no range.
+    empty = "empty-#{System.unique_integer([:positive])}"
+    {:ok, %PersistedAgent{}} = insert_row(space_id, empty)
 
-    {:ok, %PersistedAgent{}} =
-      Persistence.insert_agent(%{
-        space_id: space_id,
-        name: bare,
-        model: %{name: "qwen3.5-plus", provider: "model-studio"},
-        vocation_id: AgentTestHelpers.vocation_id_for_test()
-      })
+    {empty_result, _log} = run(space_id, caller, %{"name" => empty})
 
-    {result, _log} = run(space_id, caller, %{"name" => bare})
-
-    assert %ToolResult{is_error: false, content: content} = result
+    assert %ToolResult{is_error: false, content: content} = empty_result
     assert content =~ "  messages: 0\n"
-    refute content =~ "indices"
   end
 
   test "a registered pid that does not answer is unknown, not a state", %{
@@ -207,14 +198,7 @@ defmodule Nest.Agents.Agent.StatusTest do
     name: caller
   } do
     bare = "wedged-#{System.unique_integer([:positive])}"
-
-    {:ok, %PersistedAgent{}} =
-      Persistence.insert_agent(%{
-        space_id: space_id,
-        name: bare,
-        model: %{name: "qwen3.5-plus", provider: "model-studio"},
-        vocation_id: AgentTestHelpers.vocation_id_for_test()
-      })
+    {:ok, %PersistedAgent{}} = insert_row(space_id, bare)
 
     # A pid the registry reports as running, but which is gone by the time the
     # read lands: a non-answer must not be reported as a state.
@@ -231,28 +215,21 @@ defmodule Nest.Agents.Agent.StatusTest do
     assert content =~ "  owed replies: unknown (the live process did not answer)"
   end
 
-  test "resolves `name`: absent means the caller, a malformed one is refused", %{
+  test "a malformed `name` is a refusal, not a fallback to the caller", %{
     name: name,
     space_id: space_id
   } do
-    # Absent means the caller itself.
-    {self_report, _log} = run(space_id, name, %{})
-
-    assert %ToolResult{is_error: false, content: content} = self_report
-    assert content =~ "Agent \"#{name}\": idle (running)"
-
     # Present but not a string is a typo, not a default: reporting the caller's
     # own status in its place would answer a question the model did not ask.
-    for {bad, rendered} <- [{123, "123"}, {%{}, "%{}"}, {nil, "nil"}] do
-      {result, log} = run(space_id, name, %{"name" => bad})
+    # `nil` is included because it is given, where absent is not.
+    for {bad, rendered} <- [{123, "123"}, {nil, "nil"}] do
+      {result, _log} = run(space_id, name, %{"name" => bad})
 
       assert %ToolResult{is_error: true, content: content} = result
 
       assert content ==
                "Invalid `name` argument: expected a string, got: #{rendered}. " <>
                  "Omit it to target yourself."
-
-      assert log =~ "BatchSizer produced is_error=true tool result"
     end
   end
 
@@ -270,27 +247,17 @@ defmodule Nest.Agents.Agent.StatusTest do
     assert content =~ ~r/^  vocation: unknown \(id \d+\)$/m
   end
 
-  test "an unknown name and an archived agent are refusals", %{
-    pid: pid,
-    name: name,
-    space_id: space_id
-  } do
-    append(pid, {:user, %User{parts: [%Part.Text{text: "a question"}]}})
-
-    {ghost, log} = run(space_id, name, %{"name" => "ghost"})
-
-    assert %ToolResult{name: "agents-status", is_error: true, content: content} = ghost
-    assert content == "Agent ghost not found in this space."
-    assert log =~ "BatchSizer produced is_error=true tool result"
-
+  test "an archived agent is a refusal", %{name: name, space_id: space_id} do
     assert :ok = Persistence.archive_agent(space_id, name)
 
-    {archived, _log} = run(space_id, name, %{"name" => name})
+    {result, log} = run(space_id, name, %{"name" => name})
 
-    assert %ToolResult{is_error: true, content: content} = archived
+    assert %ToolResult{is_error: true, content: content} = result
 
     assert content ==
              "Agent #{name} is archived, so it is out of service; " <>
                "restore it with agents-unarchive first."
+
+    assert log =~ "BatchSizer produced is_error=true tool result"
   end
 end

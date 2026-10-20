@@ -197,6 +197,12 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
     end
   end
 
+  # The edit's refusal payloads are pinned in
+  # `NestWeb.LobbyChannel.AgentErrorsTest`, its error reply path by the
+  # config-gate case below, and the `{:invalid_model, _}` reason itself by the
+  # `change_model` case above — both events land in the same
+  # `perform_set_model/2`. So this group needs only the success path and the
+  # catch-all clause.
   describe "handle_in(edit_agent)" do
     test "edits the model and broadcasts agent:updated", %{socket: socket} do
       {:ok, space_id, name} = create_test_agent(socket, "qwen3.5-plus")
@@ -217,19 +223,6 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
       # No `workspace_path` in the frame: a workspace is the *space's*, so the
       # agent edit neither takes nor reports one.
       assert_push "agent:updated", %{"name" => ^name, "space_id" => ^space_id}, 200
-    end
-
-    test "returns :invalid_model for an unknown model", %{socket: socket} do
-      {:ok, space_id, name} = create_test_agent(socket, "qwen3.5-plus")
-
-      ref =
-        push(socket, "edit_agent", %{
-          "name" => name,
-          "space_id" => space_id,
-          "model" => %{"name" => "totally-bogus-model"}
-        })
-
-      assert_reply ref, :error, %{"reason" => "invalid_model"}, 750
     end
 
     test "returns :invalid_payload for a malformed message", %{socket: socket} do

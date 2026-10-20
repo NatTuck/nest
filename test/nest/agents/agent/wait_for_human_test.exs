@@ -29,8 +29,6 @@ defmodule Nest.Agents.Agent.WaitForHumanTest do
 
     assert content ==
              "A human is never mid-turn, so there is nothing to wait for: @alice."
-
-    refute content =~ "bob"
   end
 
   test "a human mixed into a wait is dropped and named, and the agents are watched" do

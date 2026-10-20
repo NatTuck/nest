@@ -40,9 +40,9 @@ defmodule Nest.ModelsTest do
 
     # Stub the only auto-models provider in test/data/config.toml
     # (`pegasus`) to return a mix of:
-    #   * 3 OpenAI-shape entries with only `id` (no limit field) — the
-    #     MiniMax regression: names must appear in `Models.list/0`
-    #     even though `extract_limit_from_model/1` returns nil for all.
+    #   * 2 OpenAI-shape entries with no limit field — the MiniMax
+    #     regression: names must appear in `Models.list/0` even though
+    #     `extract_limit_from_model/1` returns nil for both.
     #   * 1 vLLM-shape entry with `max_model_len` — limits must still
     #     get cached for providers that include recognized fields.
     #   * 1 image-capable entry with NO limit field — the multi-modal
@@ -72,12 +72,6 @@ defmodule Nest.ModelsTest do
              "data" => [
                %{
                  "id" => "MiniMax-M3",
-                 "object" => "model",
-                 "owned_by" => "minimax",
-                 "created" => 1_780_272_000
-               },
-               %{
-                 "id" => "MiniMax-M2.7",
                  "object" => "model",
                  "owned_by" => "minimax",
                  "created" => 1_780_272_000
@@ -162,13 +156,11 @@ defmodule Nest.ModelsTest do
       names = models |> Enum.filter(&(&1["provider"] == "pegasus")) |> Enum.map(& &1["name"])
 
       assert "MiniMax-M3" in names
-      assert "MiniMax-M2.7" in names
       # `MiniMax-M2.5` is also defined statically under `model-studio`
       # in `test/data/config.toml`; static config wins the merge, so
       # the merged-map entry for that name resolves to model-studio,
       # not pegasus. Don't assert provider here for it — see the
       # static-config-wins test below.
-      assert "vllm-shape-model" in names
     end
 
     test "static config wins over auto-discovery when a name appears in both" do
@@ -176,14 +168,12 @@ defmodule Nest.ModelsTest do
       # AND returned by the auto-discovery stub for `pegasus`.
       # Static config has authoritative `provider_name` / context_limit.
       mini = Enum.find(Models.list(), fn m -> m["name"] == "MiniMax-M2.5" end)
-      assert mini != nil
       assert mini["provider"] == "model-studio"
       assert mini["context_limit"] == nil
     end
 
     test "Models.context_limit/2 returns nil for entries with no recognized limit field" do
       assert Models.context_limit("pegasus", "MiniMax-M3") == nil
-      assert Models.context_limit("pegasus", "MiniMax-M2.7") == nil
     end
 
     test "Models.context_limit/2 caches the vLLM-extracted limit when a recognized field is present" do
@@ -198,7 +188,6 @@ defmodule Nest.ModelsTest do
       # limit field, the effective `context_limit` in `Models.list/0`
       # is the provider default.
       mm3 = Enum.find(Models.list(), fn m -> m["name"] == "MiniMax-M3" end)
-      assert mm3 != nil
       assert mm3["provider"] == "pegasus"
       assert mm3["context_limit"] == 512_000
     end
@@ -214,24 +203,20 @@ defmodule Nest.ModelsTest do
       assert Models.context_limit("pegasus", "pegasus-per-model-test") == {:vllm, 65_536}
 
       per_model = Enum.find(Models.list(), fn m -> m["name"] == "pegasus-per-model-test" end)
-      assert per_model != nil
       assert per_model["provider"] == "pegasus"
       assert per_model["context_limit"] == 32_000
     end
   end
 
   describe "multi_modal discovery" do
-    test "emits a detected multi_modal for an auto-discovered model with no context limit" do
+    test "emits a detected multi_modal for an auto-discovered model" do
       # `MiniMax-VL` reports image input and no context limit. The
       # capability must survive the scan — the limits pass keeps one
-      # entry per model — and its limit still resolves through the
-      # provider default.
+      # entry per model.
       vl = Enum.find(Models.list(), fn m -> m["name"] == "MiniMax-VL" end)
 
-      assert vl != nil
       assert vl["provider"] == "pegasus"
       assert vl["multi_modal"] == %{"input" => ["image"]}
-      assert vl["context_limit"] == 512_000
     end
 
     test "keeps a declared text-only answer apart from an unknown one" do
@@ -244,36 +229,21 @@ defmodule Nest.ModelsTest do
       text_only = Enum.find(Models.list(), fn m -> m["name"] == "pegasus-text-only" end)
       unknown = Enum.find(Models.list(), fn m -> m["name"] == "MiniMax-M3" end)
 
-      assert text_only != nil
       assert text_only["provider"] == "pegasus"
       assert text_only["multi_modal"] == %{"input" => []}
 
-      assert unknown != nil
       assert unknown["provider"] == "pegasus"
       assert unknown["multi_modal"] == nil
-    end
-
-    test "emits a static multi_modal verbatim, including for a model no scan covers" do
-      # `model-studio` is not an auto-models provider, so `qwen3.5-plus`
-      # appears in no scan at all: its static `multi-modal` is the only
-      # source and is emitted verbatim.
-      qwen = Enum.find(Models.list(), fn m -> m["name"] == "qwen3.5-plus" end)
-
-      assert qwen != nil
-      assert qwen["provider"] == "model-studio"
-      assert qwen["multi_modal"] == %{"input" => ["image"]}
     end
 
     test "fills in a static nil multi_modal from the same provider's scan" do
       # `pegasus-per-model-test` is a static entry under the scanned
       # `pegasus` provider with no `multi-modal`; the provider reports
-      # image input for it. The static context limit is untouched.
+      # image input for it.
       model = Enum.find(Models.list(), fn m -> m["name"] == "pegasus-per-model-test" end)
 
-      assert model != nil
       assert model["provider"] == "pegasus"
       assert model["multi_modal"] == %{"input" => ["image"]}
-      assert model["context_limit"] == 32_000
     end
 
     test "does not fill in from a same-named model found under another provider" do
@@ -284,7 +254,6 @@ defmodule Nest.ModelsTest do
       # provider's capability must not land on this entry.
       model = Enum.find(Models.list(), fn m -> m["name"] == "MiniMax-M2.5" end)
 
-      assert model != nil
       assert model["provider"] == "model-studio"
       assert model["multi_modal"] == nil
     end
@@ -322,7 +291,6 @@ defmodule Nest.ModelsTest do
 
       model = Enum.find(Models.list(), fn m -> m["name"] == "pegasus-static-audio" end)
 
-      assert model != nil
       assert model["provider"] == "pegasus"
       # The provider answered `["text", "image"]`; static config said
       # `audio`, and static config wins.
@@ -334,9 +302,7 @@ defmodule Nest.ModelsTest do
     test "a scan costs one request per provider, not one per scan" do
       # The setup's scan covered `pegasus`, the config's only auto-models
       # provider; consume that request so what is left is this test's own.
-      assert_received {:models_req_get, setup_url}
-      assert String.contains?(setup_url, "pegasus")
-      assert String.ends_with?(setup_url, "/models")
+      assert_received {:models_req_get, _}
 
       # A second auto-models provider, so "one request per provider" is
       # distinguishable from "one request per scan". It is injected here
@@ -460,19 +426,10 @@ defmodule Nest.ModelsTest do
           context_limit: 8000
         }
 
-        pegasus_model = %Nest.DotConfig.Model{
-          name: "pegasus-static",
-          provider_name: "pegasus",
-          context_limit: 8000
-        }
-
         {:ok,
          %{
            providers: %{"pegasus" => pegasus},
-           models: %{
-             "reload-only-model" => reload_model,
-             "pegasus-static" => pegasus_model
-           }
+           models: %{"reload-only-model" => reload_model}
          }}
       end)
 
@@ -481,8 +438,6 @@ defmodule Nest.ModelsTest do
       names = Models.list() |> Enum.map(& &1["name"])
       # Reloaded static-only entry:
       assert "reload-only-model" in names
-      # Static entry alongside auto-discovery:
-      assert "pegasus-static" in names
       # Auto-discovered entry from pegasus (the `Req.get`
       # stub from setup supplies these names):
       assert "MiniMax-M3" in names

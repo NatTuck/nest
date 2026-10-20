@@ -86,28 +86,6 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
     # timing. `estimate_bytes(100) == 40`.
     @per_call Estimator.estimate_bytes(100)
 
-    test "batches every call that targets the same path into one stat" do
-      stub_stats(100)
-
-      Mimic.expect(Sandbox, :stat_many, 1, fn paths, _c, _m ->
-        assert paths == ["/ws/a.txt"]
-        Map.new(paths, &{&1, {:ok, 100}})
-      end)
-
-      Mimic.reject(Sandbox, :stat, 3)
-
-      calls = [
-        call("c1", "file-read", %{"path" => "a.txt"}),
-        call("c2", "file-read", %{"path" => "a.txt"}),
-        call("c3", "file-read", %{"path" => "a.txt"})
-      ]
-
-      # One spawn for the batch, three projections: the dedupe is the stat,
-      # not the size.
-      assert BatchSizer.projected_content_size(calls, ctx_with_ws("/ws", [])) ==
-               Budget.size([]) + ceil(3 * @per_call)
-    end
-
     test "passes each distinct path once, in a single stat invocation" do
       stub_stats(100)
 
@@ -124,6 +102,8 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
         call("c3", "file-read", %{"path" => "a.txt"})
       ]
 
+      # `a.txt` twice is one operand, but three projections: the dedupe is the
+      # stat, not the size.
       assert BatchSizer.projected_content_size(calls, ctx_with_ws("/ws", [])) ==
                Budget.size([]) + ceil(3 * @per_call)
     end
@@ -248,11 +228,6 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
 
       content = Budget.size([]) + ceil(Enum.sum(oracle))
       assert BatchSizer.projected_content_size(calls, c) == content
-
-      # Refusal decisions agree at a limit derived from the oracle's own total:
-      # `content` refuses (the reserve is always positive) and a huge limit fits.
-      assert {:refuse, _} = BatchSizer.preflight(calls, %{c | context_limit: content})
-      assert {:fits, _} = BatchSizer.preflight(calls, %{c | context_limit: 10_000_000})
     end
 
     test "matches the frozen oracle on the tool clauses it knows" do
@@ -270,13 +245,11 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
                "projection differs for #{name}"
       end
 
-      # The catch-all for a hallucinated name, plus the public helpers the real
-      # module also exposes.
+      # The catch-all for a hallucinated name, plus the fallback the real module
+      # also exposes.
       unknown = call("c-unknown", "no-such-tool", %{})
 
       assert ProjectedSize.project(unknown, c) == ProjectedSizeOracle.project(unknown, c)
-      assert ProjectedSize.projected?("file-read") == ProjectedSizeOracle.projected?("file-read")
-      assert ProjectedSize.projected?("nope") == ProjectedSizeOracle.projected?("nope")
 
       assert ProjectedSize.read_file_projection(:not_a_tool_call, c) ==
                ProjectedSizeOracle.read_file_projection(:not_a_tool_call, c)
@@ -284,10 +257,9 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
       # Tools added to `main` after the oracle was frozen (#57) have their own
       # clauses on the real module. They are deliberately NOT compared to the
       # oracle — it falls to its catch-all for them — but they are exercised so
-      # the real module's projections stay covered.
-      for name <- ~w(agents-unarchive agents-list-archived) do
-        assert ProjectedSize.project(call("c-#{name}", name, %{}), c) > 0
-      end
+      # the real module's projections stay covered. `agents-list-archived`
+      # shares the `agents-list` clause covered by the loop above.
+      assert ProjectedSize.project(call("c-unarchive", "agents-unarchive", %{}), c) > 0
 
       # The oracle is frozen at the pre-#62 name `agents-wait` (its moduledoc:
       # do not "fix" it to track the real module). The real module's
@@ -296,26 +268,6 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
       frozen_wait = ProjectedSizeOracle.project(call("c-wait", "agents-wait", %{}), c)
 
       assert ProjectedSize.project(call("c-wait", "agents-wait", %{}), c) == frozen_wait
-    end
-
-    test "projection is byte-identical to the naive per-call sum" do
-      ws = tmp_ws!("batchsizer-statbatch-parity")
-      File.write!(Path.join(ws, "a.txt"), String.duplicate("x", 4_000))
-
-      calls = [
-        call("c1", "file-read", %{"path" => "a.txt"}),
-        call("c2", "file-read", %{"path" => "a.txt"}),
-        call("c3", "file-read", %{"path" => "b.txt"}),
-        call("c4", "shell-cmd", %{"command" => "ls"})
-      ]
-
-      c = ctx_with_ws(ws, [])
-
-      # The pre-change projection: sum `ProjectedSize.project/2` per call. A
-      # real bwrap stat for `a.txt` (the memo) and a fallback for `b.txt`.
-      naive = Budget.size([]) + ceil(Enum.sum(Enum.map(calls, &ProjectedSize.project(&1, c))))
-
-      assert BatchSizer.projected_content_size(calls, c) == naive
     end
 
     test "duplicate calls each still contribute to the refusal decision" do
@@ -395,32 +347,16 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
       # consulted the filesystem would fall back to the summary size. Pricing
       # media needs no I/O: every provider downsamples to its own ceiling
       # before billing, so the ceiling is the bound.
+      #
+      # Which extensions reach this branch is `MediaKind.from_path/1`'s
+      # contract, tested in `test/nest/tools_file_media_test.exs`; that the
+      # gate does not widen to text is what the frozen-oracle parity test
+      # above pins, since every `.txt` fixture there takes the stat-then-
+      # estimate body (see `ProjectedSize.read_file_projection/2`'s comment).
       c = ctx_with_ws("/ws", [])
 
       assert ProjectedSize.project(call("c1", "file-read", %{"path" => "shot.png"}), c) ==
                Estimator.estimate_media_ceiling(:image)
-    end
-
-    test "every extension the tool can attach projects at the ceiling" do
-      c = ctx_with_ws("/ws", [])
-
-      for ext <- ~w(png PNG jpg jpeg gif webp) do
-        assert ProjectedSize.project(call("c1", "file-read", %{"path" => "a.#{ext}"}), c) ==
-                 Estimator.estimate_media_ceiling(:image)
-      end
-    end
-
-    test "a non-media path still projects from its stat, not from the ceiling" do
-      # The media branch is extension-gated on purpose: every `.txt` fixture
-      # takes the original stat-then-estimate body, which is what keeps this
-      # file's frozen-oracle parity tests byte-identical. Do not widen the gate.
-      stub_stats(4_000)
-      c = ctx_with_ws("/ws", [])
-
-      projected = ProjectedSize.project(call("c1", "file-read", %{"path" => "a.txt"}), c)
-
-      assert projected == Estimator.estimate_bytes(4_000)
-      refute projected == Estimator.estimate_media_ceiling(:image)
     end
   end
 

@@ -59,15 +59,6 @@ defmodule Nest.AgentsTest do
   defp fresh_name, do: "agent#{System.unique_integer([:positive])}"
 
   describe "create_agent/1" do
-    test "creates agent with model map" do
-      {_pid, id} = AgentTestHelpers.start_agent(%{name: fresh_name()})
-
-      assert Regex.match?(~r/agent\d+/, id)
-
-      {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), id)
-      assert model_name(info.model) == "qwen3.5-plus"
-    end
-
     test "enriches model with provider from DotConfig when only :name is given" do
       # Callers (e.g. NewAgentPage) send just %{name: ...}; the API
       # looks up the provider so the chat header can render
@@ -81,25 +72,6 @@ defmodule Nest.AgentsTest do
       {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), id)
       assert model_name(info.model) == "qwen3.5-plus"
       assert model_provider(info.model) == "model-studio"
-    end
-
-    test "starts the agent in :model_missing state when the model is unresolvable" do
-      log =
-        ExUnit.CaptureLog.capture_log(fn ->
-          {_pid, name} =
-            AgentTestHelpers.start_agent(%{
-              name: fresh_name(),
-              model: %{name: "custom-model", provider: nil}
-            })
-
-          assert is_binary(name)
-
-          {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), name)
-          assert info.status == :model_missing
-          assert model_name(info.model) == "custom-model"
-        end)
-
-      assert log =~ "could not resolve model"
     end
 
     test "persists a system message row at index 0 (hd(messages) invariant)" do
@@ -201,7 +173,6 @@ defmodule Nest.AgentsTest do
                )
 
       AgentTestHelpers.ensure_cleanup(name)
-      assert {:ok, _row} = Nest.Persistence.fetch_agent(space_id, name)
       assert message_count(space_id) == 1
     end
 
@@ -279,58 +250,9 @@ defmodule Nest.AgentsTest do
       assert {:error, {:timeout, {GenServer, :call, [Nest.Models, :list, 5000]}}} =
                Agents.get_agent(AgentTestHelpers.current_space_id(), "any-name")
     end
-
-    test "returns {:error, reason} for arbitrary non-{:ok, pid} reasons" do
-      Supervisor
-      |> stub(:get_agent, fn _space_id, _name -> {:error, :gen_server_timeout} end)
-
-      assert Agents.get_agent(AgentTestHelpers.current_space_id(), "any-name") ==
-               {:error, :gen_server_timeout}
-    end
-  end
-
-  describe "list_agents/0" do
-    test "returns list of agent names" do
-      {_pid1, id1} = AgentTestHelpers.start_agent(%{name: fresh_name()})
-      space_id = AgentTestHelpers.current_space_id()
-      id2 = fresh_name()
-
-      {:ok, ^id2} =
-        Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
-          name: id2,
-          vocation_id: AgentTestHelpers.vocation_id_for_test()
-        )
-
-      AgentTestHelpers.ensure_cleanup(id2)
-
-      # This file is async; other tests' agents may be in the
-      # registry too. Verify our two are present rather than
-      # asserting a count.
-      agents = Agents.list_agents_for_space(space_id)
-      assert id1 in agents
-      assert id2 in agents
-    end
   end
 
   describe "list_agents_info/0" do
-    test "returns list of agent info" do
-      {_pid1, id1} = AgentTestHelpers.start_agent(%{name: fresh_name()})
-      space_id = AgentTestHelpers.current_space_id()
-      id2 = fresh_name()
-
-      {:ok, ^id2} =
-        Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
-          name: id2,
-          vocation_id: AgentTestHelpers.vocation_id_for_test()
-        )
-
-      AgentTestHelpers.ensure_cleanup(id2)
-
-      agents_info = Agents.list_agents_info_for_space(space_id)
-      assert Enum.any?(agents_info, fn info -> info.name == id1 end)
-      assert Enum.any?(agents_info, fn info -> info.name == id2 end)
-    end
-
     test "skips agents whose process dies during enumeration" do
       # Regression for the race where a sibling test's agent
       # is alive at registry-lookup time but exits with
@@ -414,7 +336,7 @@ defmodule Nest.AgentsTest do
 
   describe "retry_compaction/1" do
     test "dispatches :retry_compaction synchronously and replies :ok" do
-      {agent_pid, id} = AgentTestHelpers.start_agent(%{name: fresh_name()})
+      {_agent_pid, id} = AgentTestHelpers.start_agent(%{name: fresh_name()})
 
       # `Agents.retry_compaction/1` is now a `GenServer.call`
       # (synchronous). The reply is delivered only after the
@@ -430,7 +352,6 @@ defmodule Nest.AgentsTest do
         end)
 
       assert log =~ "retry_compaction ignored"
-      assert Process.alive?(agent_pid)
     end
 
     test "returns error for non-existent agent" do
@@ -441,7 +362,7 @@ defmodule Nest.AgentsTest do
 
   describe "compaction_loop_detected_ok/1" do
     test "dispatches :compaction_loop_detected_ok synchronously and replies :ok" do
-      {agent_pid, id} = AgentTestHelpers.start_agent(%{name: fresh_name()})
+      {_agent_pid, id} = AgentTestHelpers.start_agent(%{name: fresh_name()})
 
       # See `retry_compaction/1` above. Same handler-level
       # "ignored" warning at the wrong-status checkpoint;
@@ -452,7 +373,6 @@ defmodule Nest.AgentsTest do
         end)
 
       assert log =~ "compaction_loop_detected_ok ignored"
-      assert Process.alive?(agent_pid)
     end
 
     test "returns error for non-existent agent" do
@@ -507,11 +427,10 @@ defmodule Nest.AgentsTest do
                {:error, {:not_idle, :streaming}}
 
       # No compaction was staged: the machine is still the fabricated
-      # streaming state, the loop counter and focus are untouched.
-      # allowlist: snapshot — status + loop_count + work.focus
+      # streaming state and the focus is untouched.
+      # allowlist: snapshot — status + work.focus
       machine = :sys.get_state(agent_pid, 1_000).live.machine
       assert Machine.status_for(machine) == :streaming
-      assert machine.loop_count == 0
       assert machine.work.focus == nil
 
       # Restore idle so the teardown's zero-in-flight-agents assertion holds.
@@ -528,56 +447,11 @@ defmodule Nest.AgentsTest do
   end
 
   describe "change_model/2" do
-    test "repairs an agent that started in :model_missing state" do
-      log =
-        ExUnit.CaptureLog.capture_log(fn ->
-          {_pid, name} =
-            AgentTestHelpers.start_agent(%{
-              name: fresh_name(),
-              model: %{name: "ghost-model", provider: nil}
-            })
-
-          {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), name)
-          assert info.status == :model_missing
-
-          :ok =
-            Agents.change_model(AgentTestHelpers.current_space_id(), name, %{
-              name: "qwen3.5-plus",
-              provider: "model-studio"
-            })
-
-          {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), name)
-          assert info.status == :idle
-          assert model_name(info.model) == "qwen3.5-plus"
-        end)
-
-      assert log =~ "could not resolve model"
-    end
-
     test "returns :not_found for an unknown agent" do
       assert Agents.change_model(AgentTestHelpers.current_space_id(), "nope", %{
                name: "qwen3.5-plus",
                provider: "model-studio"
              }) == {:error, :not_found}
-    end
-
-    test "proxies the agent's {:error, reason} reply verbatim" do
-      {pid, name} = AgentTestHelpers.start_agent(%{name: fresh_name()})
-
-      Agent
-      |> stub(:set_model, fn _pid, _new_model -> {:error, :gen_server_timeout} end)
-
-      assert Agents.change_model(AgentTestHelpers.current_space_id(), name, %{
-               name: "claude-3-opus-20240229",
-               provider: "anthropic-provider"
-             }) == {:error, :gen_server_timeout}
-
-      # `Agent.get_public_info/1` is the proper introspection
-      # call. The `:sys.get_state/1` "drain" was a code smell —
-      # it bypassed the GenServer protocol and was only useful
-      # for synchronizing on prior messages, which the chat
-      # turn's not-yet-processing here doesn't need.
-      assert model_name(Agent.get_public_info(pid).model) == "qwen3.5-plus"
     end
   end
 

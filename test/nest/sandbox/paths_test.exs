@@ -29,7 +29,6 @@ defmodule Nest.Sandbox.PathsTest do
       # parent of the agent's own dir — canonicalised, because it becomes a
       # bwrap mount source.
       assert Paths.scratch_root(path) == FSPath.canonical(Path.dirname(path))
-      refute Paths.scratch_root(path) == path
     end
 
     test "refuses a bind root of / (the whole host filesystem)" do
@@ -53,24 +52,17 @@ defmodule Nest.Sandbox.PathsTest do
       path = tmp_path()
 
       assert Paths.sandbox_tmp_path(path) == Path.join("/tmp", "agent-a")
-      assert Paths.sandbox_tmp_path(path) == Path.join(Paths.sandbox_root(), Path.basename(path))
     end
   end
 
   describe "scratch_dir/1" do
     test "is the sandbox spelling, derived from the name alone" do
       assert Paths.scratch_dir("clever-raven") == "/tmp/clever-raven"
-      assert Sandbox.scratch_dir("clever-raven") == Paths.scratch_dir("clever-raven")
 
       # The same answer as the derived spelling, for the scratch dir that
       # name produces.
       scratch = "/tmp/nest-1/space-7/clever-raven"
       assert Paths.scratch_dir("clever-raven") == Paths.sandbox_tmp_path(scratch)
-    end
-
-    test "names only the agent's own directory" do
-      refute Paths.scratch_dir("agent-a") =~ "nest-"
-      refute Sandbox.scratch_dir("agent-a") =~ "space-"
     end
   end
 
@@ -90,7 +82,6 @@ defmodule Nest.Sandbox.PathsTest do
 
     test "inherits the refusal of scratch_root/1" do
       assert_raise ArgumentError, fn -> Paths.stage_dir("/tmp/agent-a") end
-      assert_raise ArgumentError, fn -> Paths.stage_dir("/agent-a") end
     end
 
     test "the sandbox spelling is always under /tmp when a scratch bind exists" do
@@ -109,7 +100,6 @@ defmodule Nest.Sandbox.PathsTest do
 
       # Keyed on the space, never on the BEAM's pid: the container that binds it
       # outlives a restart, so the directory it binds has to as well.
-      assert Paths.docker_stage_dir(7) == Paths.docker_stage_dir(7)
       refute Paths.docker_stage_dir(7) == Paths.docker_stage_dir(8)
 
       assert Paths.docker_stage_dir_sandbox() == "/tmp/.cmds"

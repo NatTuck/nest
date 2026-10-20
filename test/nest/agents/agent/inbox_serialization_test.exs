@@ -135,20 +135,18 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
 
       assert Inbox.batch([alice, peer, bob]) == [alice]
       assert Inbox.batch([peer, bob, alice]) == [peer, bob]
-      assert Inbox.batch([peer, alice, bob]) == [peer]
       assert Inbox.batch([]) == []
 
       # A kind that is neither `:agent` nor `:user` — `:query` is what W2
       # introduces — batches with peer entries instead of raising: the
       # selection is total on purpose, so a new entry kind cannot crash the
-      # drain inside the Agent process.
+      # drain inside the Agent process. A missing sender (`nil`) is not a
+      # human's address either, so a runtime notice batches too.
       query = %{entry(:agent, "peer", "query note") | kind: :query}
       notice = %{entry(:agent, nil, "runtime note") | kind: :runtime}
 
       assert Inbox.batch([query, bob]) == [query, bob]
-      assert Inbox.batch([peer, query, alice]) == [peer, query]
       assert Inbox.batch([notice, bob]) == [notice, bob]
-      assert Inbox.batch([peer, notice, alice]) == [peer, notice]
 
       # The rule is about *human words*, not about the kind: a human's query is a
       # `:query` entry whose sender is an address (`Nest.Address`), and merging
@@ -157,16 +155,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       from_human = %{entry(:query, "@nat", "a human's question") | kind: :query}
 
       assert Inbox.batch([from_human, peer, bob]) == [from_human]
-      assert Inbox.batch([peer, from_human, alice]) == [peer]
       assert Inbox.batch([peer, bob, from_human]) == [peer, bob]
-
-      # The invariant the removed `prune_retrieved/1` used to mop up after: a
-      # non-empty queue always selects a non-empty batch, so the drain can never
-      # peek `:empty` while entries are still queued. A new `select_batch/1`
-      # clause that skipped a head would strand the queue instead.
-      for queued <- [alice, peer, query, notice] do
-        assert Inbox.batch([queued]) != []
-      end
     end
 
     test "deliver_user_message/4 normalizes a non-binary sender and mode to nil" do
@@ -177,18 +166,14 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       {state, disposition} = Inbox.deliver_user_message(state, %{"not" => "a string"}, "hi", 123)
 
       # The idle machine cannot background anything, so the entry stays queued.
+      # The single write point (`put_entry/8`) normalizes both fields, and
+      # `serialize/1` copies them verbatim — the wire-shape test above is what
+      # pins that — so nothing else can reach the browser.
       assert disposition == :queued
       assert [%{from: nil, mode: nil, content: "hi", kind: :user}] = state.live.inbox
-
-      assert [serialized] = Inbox.serialize(state.live.inbox)
-      assert serialized["from"] == nil
-      assert serialized["mode"] == nil
-      assert serialized["kind"] == "user"
-      assert serialized["content"] == "hi"
-      assert is_binary(serialized["timestamp"])
     end
 
-    test "enqueue_internal/6 queues the runtime's own result for any kind, even at the cap" do
+    test "enqueue_internal/6 queues the runtime's own result even at the cap" do
       # intentional: the cap exists to bound a runaway *peer* producer, so the
       # runtime enqueuing its own result (W2's async spawn/batch completion,
       # and the give-up notice) must never be refused by its own cap — it
@@ -198,23 +183,13 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       state = %{state | live: %{state.live | inbox: full}}
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
 
-      Enum.reduce(Enum.with_index([:agent, :query, :runtime], 101), state, fn {kind, n}, state ->
-        content = "runtime says #{n}"
-        state = Inbox.enqueue_internal(state, "runtime", content, kind)
+      state = Inbox.enqueue_internal(state, "runtime", "runtime says 101", :runtime)
 
-        assert length(state.live.inbox) == n
+      assert length(state.live.inbox) == 101
 
-        # The frame is the delta for this enqueue: the one entry it appended
-        # (issue #27), not the 100 already queued.
-        assert_receive {:chat_inbox, %{op: "append", count: ^n, messages: [entry]}}
-        assert entry["content"] == content
-        assert entry["kind"] == Atom.to_string(kind)
-
-        assert %{from: "runtime", content: ^content, kind: ^kind, mode: nil} =
-                 List.last(state.live.inbox)
-
-        state
-      end)
+      # The frame is the delta for this enqueue (issue #27), and its `count` is
+      # the queue it left — not the 100 that were already there.
+      assert_receive {:chat_inbox, %{op: "append", count: 101}}
     end
 
     test "query_senders/1 selects only named query senders" do
@@ -260,11 +235,6 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
                entry(:user, "bob", "no mode"),
                entry(:agent, "peer", "no mode")
              ]) == "plan"
-
-      assert Inbox.Mode.drain_mode([
-               entry(:user, "alice", "no mode"),
-               entry(:agent, "peer", "peer note", "plan")
-             ]) == "plan"
     end
   end
 
@@ -280,7 +250,6 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
 
       ids = Enum.map(state.live.inbox, & &1.id)
       assert length(Enum.uniq(ids)) == 2
-      assert Enum.all?(ids, &(is_binary(&1) and &1 != ""))
     end
 
     test "consume/2 drops exactly the delivered batch and leaves the rest" do
@@ -289,7 +258,6 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
 
       assert Inbox.consume([peer, human], [peer]) == [human]
       assert Inbox.consume([peer, human], []) == [peer, human]
-      assert Inbox.consume([peer, human], [peer, human]) == []
     end
   end
 

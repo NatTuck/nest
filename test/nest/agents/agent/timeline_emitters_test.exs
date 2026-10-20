@@ -101,8 +101,6 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     assert [%{"event" => "chat_request", "message_indices" => [index]}] =
              Enum.filter(events("turn"), &(&1["event"] == "chat_request"))
 
-    assert is_integer(index)
-
     # The request line: the sizing numbers the request actually cost.
     limit = Agent.get_public_info(pid, 1_000).context_limit
 
@@ -114,6 +112,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
                "projected_tokens" => projected,
                "limit" => ^limit,
                "reserve" => reserve,
+               "remaining" => remaining,
                "outcome" => "sent"
              }
            ] = events("llm")
@@ -123,8 +122,6 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     assert next_index == index + 1
     assert projected > 0
     assert reserve == max(8_192, round(limit * 0.20))
-    assert [%{"remaining" => remaining}] = events("llm")
-    assert remaining >= 0
 
     # The usage line translates the client's long names to the schema's short
     # ones, and is the only place that translation happens.
@@ -205,69 +202,22 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     assert [%{"action" => "refused", "bytes" => 4, "disposition" => "inbox_full"}] =
              inbox_disposition("inbox_full")
 
-    # A drain's own line: the batch it delivered, with the mode it resolved.
-    assert [%{"action" => "drained", "count" => 1, "from" => "peer", "mode" => "act"}] =
-             inbox_action("drained")
-
-    # ...and the delivered entry's delivery id (issue #62), so the `drained`
-    # line names the same entry a removal frame would. The id is a 16-hex token
-    # from `Inbox.Delivery.new_id/0`; a regression that stopped propagating it
-    # would leave `nil` here.
-    assert [%{"id" => drained_id}] = inbox_action("drained")
-    assert is_binary(drained_id) and byte_size(drained_id) == 16
-  end
-
-  test "a delivery that backgrounds the batch records the disposition the sender was given" do
-    # The batch is parked inside its `agents-send`, so the delivery really
-    # arrives while the agent is `:executing_tools` with a live worker and an
-    # unanswered `tool_use`: the message is delivered *now* (decision D5) and the
-    # batch moves to the background. The record must say so — the sender's tool
-    # result reads "Message delivered to …", so a line claiming `queued` would
-    # contradict both the sender and the transcript.
-    {pid, name} =
-      start_spawnable_agent(%{
-        model: %{name: "qwen3.5-plus"},
-        vocation_id: programmer_vocation_id_for_test()
-      })
-
-    track_agent(name)
-    park_agent_sends(pid)
-
-    MockClient.set_tool_response(%{
-      text: "Sending",
-      tool_calls: [
-        %{id: "send_1", name: "agents-send", arguments: %{"name" => name, "message" => "note"}}
-      ]
-    })
-
-    MockClient.set_response("After the note")
-    MockClient.set_response("After the notice")
-
-    :ok = Agent.chat(pid, "start the turn")
-
-    assert_receive {:send_blocked, tool}, 1_000
-    assert Agent.get_public_info(pid, 1_000).status == :executing_tools
-
-    send(tool, :release_send)
-
-    # The delivery's turn ends, and the batch's late result then gets its own.
-    # That idle is also the fence for the delivery's record below: the agent
-    # writes the record while it handles the delivery, so it is already on disk
-    # before the turn the delivery started can end.
-    assert statuses_until_idle(name) == ["streaming", "executing_tools", "streaming", "idle"]
-
+    # A drain's own line: the batch it delivered, with the mode it resolved and
+    # the delivered entry's delivery id (issue #62), so the `drained` line names
+    # the same entry a removal frame would. The id is a 16-hex token from
+    # `Inbox.Delivery.new_id/0`; a regression that stopped propagating it would
+    # leave `nil` here.
     assert [
              %{
-               "action" => "delivered",
-               "from" => ^name,
-               "kind" => "agent",
+               "action" => "drained",
                "count" => 1,
-               "disposition" => "delivered"
+               "from" => "peer",
+               "mode" => "act",
+               "id" => drained_id
              }
-           ] = inbox_action("delivered")
+           ] = inbox_action("drained")
 
-    # The batch's late result then gets its own turn.
-    assert statuses_until_idle(name) == ["streaming", "idle"]
+    assert is_binary(drained_id) and byte_size(drained_id) == 16
   end
 
   test "a human message that backgrounds the batch records the disposition it was given" do
@@ -529,28 +479,23 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     assert quarantines.() == before
   end
 
-  test "the debt diff records each branch of the obligation's change" do
+  test "the debt diff records a cleared obligation and nothing for a no-op step" do
     {pid, name} = start_agent(default_attrs())
     track_agent(name)
     # allowlist: harness — Agent.Timeline.debt_changes/3's argument
     state = :sys.get_state(pid, 1_000)
     before = state.live.machine
 
-    # not owed → owed: the delivery that incurred the obligation.
+    # The `set` and `reminded` branches are recorded through their real paths in
+    # the test above; this one pins the branch only a diff reaches — owed → not
+    # owed, the reply-sent discharge, the only in-step clear — and the no-op.
     owed = Machine.owe_replies(before, ["peer"])
-    assert :ok = Agent.Timeline.debt_changes(state, before, owed)
-
-    # the count grew: the reminder gate.
     reminded = Machine.count_reminders(owed, ["peer"])
-    assert :ok = Agent.Timeline.debt_changes(state, owed, reminded)
-
-    # owed → not owed: the reply-sent discharge, the only in-step clear.
     discharged = Machine.discharge_reply(reminded, "peer")
+
     assert :ok = Agent.Timeline.debt_changes(state, reminded, discharged)
 
     assert [
-             %{"action" => "set", "peer" => "peer", "reminders_used" => 0, "how" => "delivered"},
-             %{"action" => "reminded", "peer" => "peer", "reminders_used" => 1, "how" => "gate"},
              %{
                "action" => "cleared",
                "peer" => "peer",
@@ -563,7 +508,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     # a diff that silently stops matching is exactly the failure a diagnostic
     # must not have, and this is what pins it.
     assert :ok = Agent.Timeline.debt_changes(state, discharged, discharged)
-    assert length(events("debt")) == 3
+    assert length(events("debt")) == 1
   end
 
   test "a child's terminal outcomes are each recorded as their own action" do
@@ -631,25 +576,23 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     assert log =~ "the inbox emitter failed"
     assert inbox_action("drained") == []
 
-    # The spawn line's model: the runtime passes a resolved map, and the
-    # fallbacks cover a bare name and a value that names nothing.
+    # The spawn line's model: the resolved map the runtime passes is pinned by
+    # the real spawn above, so these are the fallbacks — a bare name and a value
+    # that names nothing.
     models =
-      for model <- [%{name: "m"}, "m", 42, nil] do
+      for model <- ["m", 42] do
         assert :ok = Agent.Timeline.child_spawned(state, "kid", model, %{})
         List.last(child_action("spawned"))["model"]
       end
 
-    assert models == ["m", "m", nil, nil]
+    assert models == ["m", nil]
 
     # The compaction's carried continuation: the entry's tag when the
-    # compaction entry carries one, nil when it carries none or there is no
-    # compaction entry at all.
+    # compaction entry carries one, nil when there is no compaction entry at
+    # all. (A compaction entry that carries nothing is the real path's shape,
+    # pinned by the manual compaction above.)
     carried =
-      for entry <- [
-            {:compaction, {:assistant_response, "text", []}, nil},
-            {:compaction, nil, nil},
-            nil
-          ] do
+      for entry <- [{:compaction, {:assistant_response, "text", []}, nil}, nil] do
         :sys.replace_state(
           pid,
           fn s ->
@@ -663,7 +606,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
         List.last(events("compaction"))["carried"]
       end
 
-    assert carried == ["assistant_response", nil, nil]
+    assert carried == ["assistant_response", nil]
 
     # Leave the fabricated machine as it was found.
     :sys.replace_state(pid, fn s -> %{s | live: %{s.live | machine: machine}} end, 1_000)
@@ -678,18 +621,17 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     state = :sys.get_state(pid, 1_000)
 
     # `:timeline_dir` is read at call time, and a non-binary value makes
-    # `Path.join/2` raise inside the writer. These emitters call `record/4`
-    # directly and have no rescue of their own — `give_up_refused/4` runs inside
-    # the executor — so the writer's own guard is the only thing keeping a settle
-    # alive. (A value no other test disables under: the disable flag is
-    # per-key, and it outlives the test that set it.)
+    # `Path.join/2` raise inside the writer. These emitters have no rescue of
+    # their own — `give_up_refused/4` runs inside the executor — so the writer's
+    # own guard is the only thing keeping a settle alive. The two calls are its
+    # two shapes: a direct `record/4` and `record/3`'s thunk. (A value no other
+    # test disables under: the disable flag is per-key, and it outlives the test
+    # that set it.)
     Application.put_env(:nest, :timeline_dir, :not_a_dir)
 
     log =
       capture_log(fn ->
         assert :ok = Agent.Timeline.give_up_refused(state.space_id, name, "peer", :not_found)
-        assert :ok = Agent.Timeline.notification(state.space_id, name, %{type: "x", message: "y"})
-        assert :ok = Agent.Timeline.error(state.space_id, name, "boom", "Turn.run/2")
         assert :ok = Agent.Timeline.drained(state, [%{from: "peer", kind: :agent, content: "x"}])
       end)
 

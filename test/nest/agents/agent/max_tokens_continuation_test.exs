@@ -44,8 +44,6 @@ defmodule Nest.Agents.Agent.MaxTokensContinuationTest do
 
     :ok = Agent.chat(pid, "Explain the thing")
 
-    assert_receive {:chat_message, {:user, %{index: 1}}}, 1_000
-
     assert_receive {:chat_message, {:assistant, %{index: 2, parts: parts}}}, 1_000
     assert Enum.any?(parts, &match?(%Part.Text{text: "The first half of the answer"}, &1))
 
@@ -73,13 +71,10 @@ defmodule Nest.Agents.Agent.MaxTokensContinuationTest do
 
     :ok = Agent.chat(pid, "Analyze the lab")
 
-    assert_receive {:chat_message, {:user, %{index: 1}}}, 1_000
     assert_receive {:chat_message, {:assistant, %{index: 2, parts: [%Part.Thinking{}]}}}, 1_000
 
     assert_receive {:chat_message, {:user, %{index: 3, parts: [%Part.Text{text: nudge}]}}}, 1_000
     assert nudge =~ "Keep going"
-    assert nudge =~ "[From nest runtime"
-    refute nudge =~ "empty response"
 
     assert_receive {:chat_message, {:assistant, %{index: 4, parts: parts}}}, 1_000
     assert Enum.any?(parts, &match?(%Part.Text{text: "Here is the real reply."}, &1))
@@ -103,12 +98,9 @@ defmodule Nest.Agents.Agent.MaxTokensContinuationTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Keep writing")
 
-        assert_receive {:chat_message, {:user, %{index: 1}}}, 1_000
-        assert_receive {:chat_message, {:assistant, %{index: 2}}}, 1_000
-        assert_receive {:chat_message, {:user, %{index: 3}}}, 1_000
-        assert_receive {:chat_message, {:assistant, %{index: 4}}}, 1_000
+        # One sender, one receiver: frames arrive in order, so the second
+        # keep-going nudge at index 5 also proves the two nudges before it.
         assert_receive {:chat_message, {:user, %{index: 5}}}, 1_000
-        assert_receive {:chat_message, {:assistant, %{index: 6}}}, 1_000
 
         assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)

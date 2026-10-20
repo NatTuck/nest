@@ -1,8 +1,8 @@
 defmodule Nest.ChatModelProbeTest do
   @moduledoc """
   Integration tests for the endpoint-probe wiring in `Nest.ChatModel`:
-  `build_client_config/2` consulting the endpoint cache, and the
-  discovery path re-probing on a `404`.
+  `build_client_config/2` falling back to the provider config when
+  nothing is cached, and the discovery path re-probing on a `404`.
 
   `probe_and_cache/1` runs the probe in the caller process, so the
   `Req` stubs apply via plain private-mode Mimic and this module can be
@@ -25,45 +25,20 @@ defmodule Nest.ChatModelProbeTest do
       name: Keyword.get(opts, :name, "probe-wire-test"),
       base_url: Keyword.get(opts, :base_url, "http://api.test.com"),
       api_key: "k",
-      protocol: Keyword.get(opts, :protocol, "openai"),
-      auto_models: Keyword.get(opts, :auto_models, true),
+      protocol: "openai",
+      auto_models: true,
       auto_probe: Keyword.get(opts, :auto_probe, true),
       tags: [],
       models: []
     }
   end
 
-  defp stub_resolvable do
-    Mimic.stub(Req, :get, fn _url, _opts ->
-      {:ok, %{status: 200, body: %{"data" => [%{"id" => "m"}]}}}
-    end)
+  test "build_client_config/2 falls back to the provider config when nothing is cached" do
+    p = provider(name: "uncached-openai", base_url: "http://nocache.test")
 
-    Mimic.stub(Req, :post, fn _url, _opts -> {:ok, %{status: 200}} end)
-  end
-
-  describe "build_client_config/2 with a cached structure" do
-    test "uses the cached protocol and chat base URL" do
-      stub_resolvable()
-
-      p =
-        provider(name: "cached-anthropic", protocol: "anthropic", base_url: "http://cached.test")
-
-      assert {:ok, _} = EndpointCache.probe_and_cache(p)
-
-      assert {:ok, config} = ChatModel.build_client_config(p, "m")
-      assert config.client == Nest.LLM.AnthropicClient
-      assert config.base_url == "http://cached.test"
-
-      EndpointCache.invalidate(p)
-    end
-
-    test "falls back to the provider config when nothing is cached" do
-      p = provider(name: "uncached-openai", base_url: "http://nocache.test")
-
-      assert {:ok, config} = ChatModel.build_client_config(p, "m")
-      assert config.client == Nest.LLM.OpenAIClient
-      assert config.base_url == "http://nocache.test"
-    end
+    assert {:ok, config} = ChatModel.build_client_config(p, "m")
+    assert config.client == Nest.LLM.OpenAIClient
+    assert config.base_url == "http://nocache.test"
   end
 
   describe "discovery re-probe on a 404" do
@@ -94,12 +69,10 @@ defmodule Nest.ChatModelProbeTest do
         end
       end)
 
+      # Only the re-probe can produce this list: the naive `/models` URL
+      # 404s and `/v1/models` is the only route this stub answers with a
+      # body, so the result pins the discovered discovery path too.
       assert ChatModel.list_models(p) == ["m1"]
-
-      # The probe cached the discovered /v1 discovery path.
-      structure = EndpointCache.get(p)
-      assert structure.discovery_base_url == base <> "/v1"
-      assert structure.discovery_resolved? == true
 
       EndpointCache.invalidate(p)
     end
@@ -113,8 +86,6 @@ defmodule Nest.ChatModelProbeTest do
 
       assert capture_log(fn -> assert ChatModel.list_models(p) == [] end) =~
                "Provider returned status 404 when listing models from noprobe"
-
-      assert EndpointCache.get(p) == nil
     end
   end
 end

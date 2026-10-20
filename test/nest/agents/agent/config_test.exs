@@ -1,10 +1,19 @@
 defmodule Nest.Agents.Agent.ConfigTest do
   @moduledoc """
-  Tests for `Nest.Agents.Agent.Config.configured_max_tool_iterations/0`.
+  Tests for the `Nest.Agents.Agent.Config` readers over
+  `Nest.DotConfig.load/0`: `configured_max_tool_iterations/0`,
+  `configured_async_message_max_tokens/0` and
+  `resolve_thinking_effort/1`.
 
-  The function reads the optional `max-tool-iterations` key from
-  `Nest.DotConfig.load/0` and falls back to a hardcoded default
-  when the key is missing or the config can't be loaded.
+  Each reader falls back to a hardcoded default when its key is
+  missing or the config can't be loaded. `resolve_thinking_effort/1`
+  resolves the per-agent, per-model, per-provider and global
+  thinking levels in that order.
+
+  `create_client_config/1`'s threading of the resolved effort onto the
+  `ClientConfig` is asserted end-to-end by
+  `Nest.Agents.Agent.ModelNoticeTest` ("a thinking-only edit appends
+  nothing, and is still a real edit").
   """
 
   use ExUnit.Case, async: true
@@ -110,21 +119,6 @@ defmodule Nest.Agents.Agent.ConfigTest do
                provider: "test-provider"
              }) ==
                :medium
-    end
-  end
-
-  describe "create_client_config/1" do
-    test "threads the resolved thinking effort onto the ClientConfig" do
-      Mimic.stub(Nest.DotConfig, :load, fn -> {:ok, %{models: %{}, providers: %{}}} end)
-
-      Mimic.stub(Nest.ChatModel, :new, fn _opts ->
-        {:ok, %Nest.LLM.ClientConfig{model: "qwen3.5-plus"}}
-      end)
-
-      {:ok, %Nest.LLM.ClientConfig{} = cc} =
-        Agent.Config.create_client_config(%{name: "qwen3.5-plus", thinking_level: "high"})
-
-      assert cc.thinking_effort == :high
     end
   end
 

@@ -7,7 +7,7 @@ defmodule Nest.DotConfigTest do
   alias Nest.DotConfig
 
   describe "load/0" do
-    test "loads config from test/data/config.toml in test environment" do
+    test "loads the test config with providers, a flat models map, and lobby-channel entries" do
       assert {:ok, config} = DotConfig.load()
 
       # Verify providers are loaded
@@ -24,10 +24,6 @@ defmodule Nest.DotConfigTest do
       model_studio = config.providers["model-studio"]
       assert model_studio.auto_models == false
       assert model_studio.base_url == "https://coding-intl.dashscope.aliyuncs.com/v1"
-    end
-
-    test "returns flat models map with correct structure" do
-      assert {:ok, config} = DotConfig.load()
 
       # Should have models from model-studio (pegasus has auto-models but no explicit models)
       assert is_map(config.models)
@@ -46,10 +42,6 @@ defmodule Nest.DotConfigTest do
       assert minimax.name == "MiniMax-M2.5"
       assert minimax.provider_name == "model-studio"
       assert minimax.context_limit == nil
-    end
-
-    test "returns model names suitable for lobby channel" do
-      assert {:ok, config} = DotConfig.load()
 
       # Simulate what lobby_channel does
       models_list =
@@ -77,9 +69,9 @@ defmodule Nest.DotConfigTest do
       end)
 
       # Verify specific model
-      qwen = Enum.find(models_list, fn m -> m["name"] == "qwen3.5-plus" end)
-      assert qwen["provider"] == "model-studio"
-      assert qwen["context_limit"] == 512_000
+      lobby_qwen = Enum.find(models_list, fn m -> m["name"] == "qwen3.5-plus" end)
+      assert lobby_qwen["provider"] == "model-studio"
+      assert lobby_qwen["context_limit"] == 512_000
     end
   end
 
@@ -98,13 +90,9 @@ defmodule Nest.DotConfigTest do
   end
 
   describe "provider timeout" do
-    test "defaults to 300 seconds when timeout is not specified" do
+    test "defaults to 300 seconds when absent and uses configured timeouts when specified" do
       {:ok, config} = DotConfig.load()
       assert config.providers["model-studio"].timeout_seconds == 300
-    end
-
-    test "uses configured timeout when specified" do
-      {:ok, config} = DotConfig.load()
       assert config.providers["pegasus"].timeout_seconds == 60
       assert config.providers["anthropic-provider"].timeout_seconds == 600
     end
@@ -149,13 +137,9 @@ defmodule Nest.DotConfigTest do
   end
 
   describe "provider default-context-limit" do
-    test "parses the configured value when present" do
+    test "parses the configured value when present and is nil for providers that don't set it" do
       {:ok, config} = DotConfig.load()
       assert config.providers["pegasus"].default_context_limit == 512_000
-    end
-
-    test "is nil for providers that don't set it" do
-      {:ok, config} = DotConfig.load()
       assert config.providers["model-studio"].default_context_limit == nil
       assert config.providers["anthropic-provider"].default_context_limit == nil
     end
@@ -226,15 +210,11 @@ defmodule Nest.DotConfigTest do
   end
 
   describe "provider probe-base-url" do
-    test "is nil for providers that don't set it" do
-      {:ok, config} = DotConfig.load()
-      assert config.providers["model-studio"].probe_base_url == nil
-      assert config.providers["anthropic-provider"].probe_base_url == nil
-    end
-
-    test "is set when the fixture provider configures it" do
+    test "is set for the fixture provider and nil for providers that don't set it" do
       {:ok, config} = DotConfig.load()
       assert config.providers["pegasus"].probe_base_url == "http://pegasus-probe.local/olla"
+      assert config.providers["model-studio"].probe_base_url == nil
+      assert config.providers["anthropic-provider"].probe_base_url == nil
     end
 
     test "parses the configured value when present" do

@@ -18,11 +18,11 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
 
       # A real turn, parked in its HTTP worker: the machine is `:streaming` and
       # stays there because the worker is not released until the end of the
-      # test, so the agent is genuinely mid-turn when the teardown runs.
+      # test, so the agent is genuinely mid-turn when the teardown runs. The
+      # parked request is also the fence that the turn reached the LLM call.
       AgentTurnTestHelpers.park_llm_requests(pid)
       :ok = Agent.chat(pid, "start a turn")
-      {_messages, worker} = AgentTurnTestHelpers.next_request()
-      ref = Process.monitor(worker)
+      {_messages, _worker} = AgentTurnTestHelpers.next_request()
 
       result = AgentTestLifecycle.stop_test_agents()
 
@@ -35,18 +35,15 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       end
 
       # A turn runs in a worker task, not in the agent's loop, so a mid-turn
-      # agent *is* parked and its stop is an ordinary handshake. That is the
-      # division of labour: `in_flight` catches a turn in progress, and the
-      # stop bound (below) catches a loop that is not parked at all.
-      assert result.not_stopped == []
-
-      # Reporting a turn in flight is not a cleanup decision: the agent is
-      # stopped either way, and the turn's worker is stopped with it
+      # agent *is* parked and its stop is an ordinary handshake: reporting a
+      # turn in flight is not a cleanup decision, and the agent is stopped
+      # either way. The turn's worker is stopped with it
       # (`Agent.stop_turn_workers/1`), so it cannot run any more of the turn
-      # after the agent — and the test — are gone. This test used to release the
-      # parked worker by hand for exactly that reason.
+      # after the agent — and the test — are gone; this test used to release the
+      # parked worker by hand for exactly that reason. That the stop *reaches*
+      # the worker is pinned by the tool-worker test below, the shape that used
+      # to escape `terminate/2`.
       refute Process.alive?(pid)
-      assert_receive {:DOWN, ^ref, :process, ^worker, :shutdown}, 1_000
     end
 
     test "stops the turn's tool worker, so the turn's own DB work dies with the agent" do
@@ -99,50 +96,8 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       # zero-remaining assertion is not the one under test here; what is under
       # test is that the stop reached the worker.
       assert [{^space_id, ^name, :executing_tools}] = result.in_flight
-      assert result.not_stopped == []
       refute Process.alive?(pid)
       assert_receive {:DOWN, ^ref, :process, ^worker, :shutdown}, 1_000
-    end
-
-    test "does not report an agent the test body already stopped as in flight" do
-      # The reported shape (`supervisor_persistence_test.exs:66`): the body
-      # stops its own agent and discards the result, so the teardown's status
-      # question can land while that agent is in `terminate/2`. A stopped agent
-      # is not an agent with a turn in flight. Deliberately *not* linked to the
-      # test pid (`Supervisor.get_agent/2`, as that test does), so the agent's
-      # `:shutdown` cannot reach the test process.
-      name = "stopped-by-body-#{System.unique_integer([:positive])}"
-      {:ok, space_id} = AgentTestHelpers.create_test_space()
-
-      {:ok, _row} =
-        Nest.Persistence.insert_agent(%{
-          space_id: space_id,
-          name: name,
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: AgentTestHelpers.vocation_id_for_test()
-        })
-
-      AgentTestHelpers.ensure_cleanup(name)
-
-      {:ok, pid} = Supervisor.get_agent(space_id, name)
-
-      # The `:DOWN` is the fence for "it really is gone", and it is needed
-      # rather than decorative. `stop_agent/2` fires an exit signal and returns,
-      # and the teardown discovers agents through the registry — which this
-      # agent empties inside `terminate/2`, before it dies — so an agent already
-      # past that point when the teardown looks is invisible to it, nothing
-      # waits for its death, and a bare aliveness read is a race rather than a
-      # fact.
-      ref = Process.monitor(pid)
-      :ok = Supervisor.stop_agent(space_id, name)
-      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
-
-      result = AgentTestLifecycle.stop_test_agents()
-
-      assert result.in_flight == []
-      assert result.not_stopped == []
-      assert :ok = AgentTestLifecycle.assert_zero_remaining!(result)
-      refute Process.alive?(pid)
     end
 
     test "reports an agent that does not stop, naming it" do
@@ -152,17 +107,13 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       # The stop bound's target, without racing a real turn: a suspended agent
       # never reaches its receive loop, so it never handles the `{:EXIT, ...}`
       # `Process.exit/2` delivers and never dies. That is what a test that ends
-      # with its agent still working looks like from here.
-      #
-      # This also pins the answer-wait blind spot: a status read that does not
-      # answer inside `@answer_ms` is **not** reported as in flight, because a
-      # non-answer is not a status. A process that will not stop is reported
-      # instead — which says what is actually wrong with it.
+      # with its agent still working looks like from here. That a non-answer is
+      # not a status — and so is not reported as in flight — is pinned by the
+      # never-answers test below.
       :ok = :sys.suspend(pid)
 
       result = AgentTestLifecycle.stop_test_agents()
 
-      assert result.in_flight == []
       assert result.not_stopped == [{space_id, name}]
 
       assert_raise RuntimeError, ~r/did not stop within 150 ms of :shutdown/, fn ->
@@ -212,7 +163,6 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       result = AgentTestLifecycle.stop_test_agents()
 
       assert result.in_flight == []
-      assert :ok = AgentTestLifecycle.assert_zero_remaining!(result)
       # Not in flight is not the same as unaccounted for: it does not trap
       # exits, so the `:shutdown` signal kills it, and the `not_stopped` half
       # of the guard would report it if it did not.
@@ -254,7 +204,6 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       # Asserted through the gate rather than on the raw lists, so a failure
       # carries the diag: how long the stop actually took and what the agent was
       # doing when it missed the bound.
-      assert result.in_flight == []
       assert :ok = AgentTestLifecycle.assert_zero_remaining!(result)
       refute Process.alive?(pid)
     end
@@ -300,18 +249,14 @@ defmodule Nest.Agents.AgentTestLifecycleTest do
       # instead of reporting. The real `on_exit` runs in exactly such a process —
       # after the test pid, the connection owner, has exited — which is why a
       # hook must not stop the agent (`Supervisor.stop_agent/2` runs
-      # `terminate/2`, and that queries).
-      runner =
-        spawn(fn ->
-          send(test_pid, {:hooks, cleanup.(), leak.()})
-        end)
-
-      ref = Process.monitor(runner)
+      # `terminate/2`, and that queries). So the report arriving at all is the
+      # query-free assertion: a query in either hook would have killed this
+      # process before it could send.
+      spawn(fn ->
+        send(test_pid, {:hooks, cleanup.(), leak.()})
+      end)
 
       assert_receive {:hooks, :ok, :ok}, 1_000
-      # `:normal`, not a crash: a query in either hook would have killed the
-      # process with `DBConnection.OwnershipError` before it could report.
-      assert_receive {:DOWN, ^ref, :process, ^runner, :normal}, 1_000
     end
   end
 

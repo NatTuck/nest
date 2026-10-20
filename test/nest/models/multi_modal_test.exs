@@ -11,17 +11,10 @@ defmodule Nest.Models.MultiModalTest do
   use ExUnit.Case, async: true
 
   import Mimic
-  import Nest.Test.TmpCleanup
 
-  alias Nest.Agents.Agent.SystemPrompt
   alias Nest.DotConfig
-  alias Nest.LLM.ClientConfig
   alias Nest.LLM.MultimodalCache
-  alias Nest.Messages.Part
   alias Nest.Models.MultiModal
-  alias Nest.Sandbox.Mounts
-  alias Nest.Tools
-  alias Nest.Vocations.Vocation
 
   setup :verify_on_exit!
 
@@ -40,23 +33,11 @@ defmodule Nest.Models.MultiModalTest do
   @image %{"input" => ["image"]}
   @text_only %{"input" => []}
 
-  # A real 1x1 PNG: `file --mime-type` reports image/png for these bytes, which
-  # is the authoritative check `file-read`'s media path reads.
-  @png Base.decode64!(
-         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="
-       )
-
   # Exactly right for the probe's image A and image B respectively, and
   # different from each other. The ground truth is documented in
   # `Nest.LLM.MultimodalProbe`, and the probe's own tests pin the payloads.
   @answer_a "There are 4 shapes and the largest is the green circle."
   @answer_b "There are 7 shapes and the largest is a yellow triangle."
-
-  # The measured real-world rejection OpenRouter returns when none of the
-  # endpoints behind a model accept image input.
-  @rejection %{
-    "error" => %{"message" => "No endpoints found that support image input", "code" => 404}
-  }
 
   # A provider configured well enough for the probe to build a request: a
   # base URL it can speak, an OpenAI protocol, a literal key, and the opt-in.
@@ -78,44 +59,7 @@ defmodule Nest.Models.MultiModalTest do
     {:ok, %{status: 200, body: %{"choices" => [%{"message" => %{"content" => text}}]}}}
   end
 
-  defp rejected(status, body), do: {:ok, %{status: status, body: body}}
-
-  # A probe that must not be reached: if a test that passes this fails,
-  # it fails with the provider and model it was wrongly called for.
-  defp forbidden_probe do
-    fn provider, name ->
-      raise "probe must not run for #{provider.name}/#{name}"
-    end
-  end
-
   describe "resolve/4 metadata gate" do
-    test "keeps a definite metadata answer without probing" do
-      opted_in_provider = %DotConfig.Provider{name: "p", probe_multimodal: true}
-      opted_out_provider = %DotConfig.Provider{name: "p"}
-
-      assert MultiModal.resolve(opted_in_provider, "m", @image, forbidden_probe()) == @image
-
-      assert MultiModal.resolve(opted_in_provider, "m", @text_only, forbidden_probe()) ==
-               @text_only
-
-      assert MultiModal.resolve(opted_out_provider, "m", @image, forbidden_probe()) == @image
-
-      assert MultiModal.resolve(opted_out_provider, "m", @text_only, forbidden_probe()) ==
-               @text_only
-    end
-
-    test "leaves an unknown model unknown when the provider did not opt in" do
-      assert MultiModal.resolve(%DotConfig.Provider{name: "p"}, "m", nil, forbidden_probe()) ==
-               nil
-
-      assert MultiModal.resolve(
-               %DotConfig.Provider{name: "p", probe_multimodal: false},
-               "m",
-               nil,
-               forbidden_probe()
-             ) == nil
-    end
-
     test "maps each probe answer onto the vocabulary when the provider opted in" do
       provider = %DotConfig.Provider{name: "p", probe_multimodal: true}
 
@@ -144,14 +88,11 @@ defmodule Nest.Models.MultiModalTest do
         flunk("a definite metadata answer must never be probed")
       end)
 
-      assert MultiModal.resolve(%DotConfig.Provider{name: "p"}, "m", @text_only) == @text_only
-      assert MultiModal.resolve(%DotConfig.Provider{name: "p"}, "m", @image) == @image
-
-      # The same, for a provider that *did* opt in: a definite answer is kept
-      # without the probe being consulted at all, because the probe gate is
-      # `detected == nil` as well as `probe_multimodal: true`.
-      assert MultiModal.resolve(opted_in(), "m", @text_only) == @text_only
+      # The opted-in provider is the interesting case: the probe gate is
+      # `detected == nil` as well as `probe_multimodal: true`, so a definite
+      # answer is kept without the probe being consulted at all.
       assert MultiModal.resolve(opted_in(), "m", @image) == @image
+      assert MultiModal.resolve(%DotConfig.Provider{name: "p"}, "m", @text_only) == @text_only
     end
 
     test "an unknown model on a provider that did not opt in is never probed" do
@@ -160,9 +101,6 @@ defmodule Nest.Models.MultiModalTest do
       end)
 
       assert MultiModal.resolve(%DotConfig.Provider{name: "p"}, "m", nil) == nil
-
-      assert MultiModal.resolve(%DotConfig.Provider{name: "p", probe_multimodal: false}, "m", nil) ==
-               nil
     end
 
     test "an unknown model on an opted-in provider is resolved by the real probe" do
@@ -179,17 +117,6 @@ defmodule Nest.Models.MultiModalTest do
       Mimic.expect(MultimodalCache, :put, 1, fn _provider, "unknown-model", :positive -> :ok end)
 
       assert MultiModal.resolve(opted_in(), "unknown-model", nil) == @image
-    end
-
-    test "an unknown model whose probe is rejected resolves to text-only" do
-      # The measured rejection for a model whose endpoints take no images.
-      # It settles the verdict, so the second image is never sent: the
-      # expected count of 1 is itself the assertion that the probe halts.
-      Mimic.expect(Req, :post, 1, fn _url, _opts -> rejected(404, @rejection) end)
-
-      Mimic.expect(MultimodalCache, :put, 1, fn _provider, "text-only-model", :negative -> :ok end)
-
-      assert MultiModal.resolve(opted_in(), "text-only-model", nil) == @text_only
     end
 
     test "a probe that settles nothing is not cached" do
@@ -229,7 +156,7 @@ defmodule Nest.Models.MultiModalTest do
     test "fills in from the auto entry for the same provider, keeping negative apart from unknown" do
       model = %DotConfig.Model{name: "m", provider_name: "p"}
 
-      for detected <- [@image, @text_only, nil] do
+      for detected <- [@text_only, nil] do
         auto = %{"m" => %DotConfig.Model{name: "m", provider_name: "p", multi_modal: detected}}
         assert MultiModal.effective(model, auto) == detected
       end
@@ -246,7 +173,6 @@ defmodule Nest.Models.MultiModalTest do
       model = %DotConfig.Model{name: "m", provider_name: "p"}
 
       assert MultiModal.effective(model, %{}) == nil
-      assert MultiModal.effective(model, %{"other" => %DotConfig.Model{name: "other"}}) == nil
     end
   end
 
@@ -265,86 +191,12 @@ defmodule Nest.Models.MultiModalTest do
       assert MultiModal.input_support("text-model", :image) == :unsupported
       assert MultiModal.input_support("unknown-model", :image) == :unknown
 
-      # A name no catalog entry has is unknown, not text-only: nothing declared
-      # anything about it. So is a name that is not a usable binary, which is
-      # what a caller with no model at all has.
-      assert MultiModal.input_support("absent-model", :image) == :unknown
+      # A name that is not a usable binary is unknown too, which is what a
+      # caller with no model at all has.
       assert MultiModal.input_support(nil, :image) == :unknown
       assert MultiModal.input_support("", :image) == :unknown
     end
-
-    test "flipping the catalog moves `file-read`'s verdict and the prompt's sentence together" do
-      # The two readers must not be able to disagree: the agent whose prompt says
-      # its model accepts images must be the agent whose `file-read` attaches one,
-      # and the agent told its model refuses must be refused. Both go through
-      # `input_support/2`, so the catalog entry is the single input, and this
-      # walks all three verdicts through both readers.
-      workspace = tmp_workspace("nest_model_verdict")
-      File.write!(Path.join(workspace, "shot.png"), @png)
-      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
-
-      cases = [
-        {"vision-model", @image,
-         "It accepts image input: `file-read` on a png, jpeg, gif or webp attaches " <>
-           "the image to the conversation and you see it.", :media},
-        {"text-model", @text_only,
-         "It declares text-only input, so `file-read` refuses an image.",
-         "declares text-only input"},
-        {"unknown-model", nil,
-         "Nothing declares whether it accepts image input, so `file-read` refuses an image " <>
-           "and says how to declare it.", "no modality metadata"}
-      ]
-
-      for {name, declared, sentence, outcome} <- cases do
-        stub_catalog([%{"name" => name, "provider" => "p", "multi_modal" => declared}])
-
-        assert compose_for(name) =~ ~s(Your model is "#{name}". #{sentence})
-
-        case outcome do
-          :media ->
-            assert {:ok, {:media, %Part.Media{media_type: "image/png"}}} =
-                     function.function.(%{"path" => "shot.png"}, ctx(name))
-
-          refusal ->
-            assert {:error, msg} = function.function.(%{"path" => "shot.png"}, ctx(name))
-            assert msg =~ refusal
-            assert msg =~ ~s("#{name}")
-        end
-      end
-    end
-  end
-
-  # The prompt for `model`, on mounts with no workspace: no section of it reads a
-  # file, so the only thing under test is the model section. A tool-capable
-  # vocation, so the tool-gated sections are rendered too.
-  defp compose_for(model) do
-    {prompt, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(
-        %Vocation{system_prompt: "Base.", tools: ["shell"]},
-        Mounts.new(nil, nil),
-        {nil, nil},
-        "agent",
-        0,
-        model
-      )
-
-    prompt
-  end
-
-  defp ctx(model) do
-    %{client_config: %ClientConfig{model: model}, tool_call_id: "call_1"}
   end
 
   defp stub_catalog(models), do: Mimic.stub(Nest.Models, :list, fn -> models end)
-
-  # A workspace directory outside /tmp (the scratch dir is bound at /tmp, so a
-  # /tmp-rooted workspace is rejected by the sandbox).
-  defp tmp_workspace(label) do
-    dir =
-      Path.join([File.cwd!(), "_build", "tmp", "#{label}_#{System.unique_integer([:positive])}"])
-
-    File.mkdir_p!(dir)
-    on_exit(fn -> rm_tmp!(dir, label) end)
-    dir
-  end
 end

@@ -7,12 +7,12 @@ defmodule Nest.Agents.Agent.SpaceNoticeCommitTest do
   The values ride the compaction's entry (`{:compaction, carried, values}`), so
   the pair is appended by `Machine.Compaction.resume/1` on the commit — and the
   space's `space_notice_pending` flag is cleared by an executor action *after*
-  that append, only while the row still holds the values the notice names. Both
-  halves are pinned here: the flag must stay set while the notice is only staged
-  (a stop, archive, crash or deploy before the commit loses the entry, and the
-  next start is what announces it), and a second edit that lands while the
-  compaction is in flight must not have its mark erased by the first one's
-  commit.
+  that append, only while the row still holds the values the notice names. The
+  flag is deliberately not cleared while the notice is only staged: a stop,
+  archive, crash or deploy before the commit loses the entry, and the next start
+  is what announces it. Both the append and the clear are pinned here, and so is
+  the guard: a second edit that lands while the compaction is in flight has
+  marked the row again, and this commit must not erase that mark.
 
   Split out of `Nest.Agents.AgentCompactionTest`, which is at the credo
   file-length cap.
@@ -46,10 +46,6 @@ defmodule Nest.Agents.Agent.SpaceNoticeCommitTest do
     row.space_notice_pending
   end
 
-  # The deferred half of the space-notice path, end to end: the values ride the
-  # compaction's entry, the space's `space_notice_pending` flag stays set for as
-  # long as they are only staged, and the commit both appends the pair and clears
-  # the flag (the executor's `{:clear_space_notice, values}`).
   describe "a deferred space-environment notice" do
     test "is appended by the commit, and the space's flag lands with it" do
       {pid, name} = start_agent(%{model: %{name: "qwen3.5-plus"}})
@@ -95,17 +91,14 @@ defmodule Nest.Agents.Agent.SpaceNoticeCommitTest do
         1_000
       )
 
-      # In flight: staged, and the flag is still set — the row must not claim the
-      # agent was told while the values are only in machine state.
-      assert pending?(space_id, name) == true
-
       send(pid, {:http_response, ref, %RunResponse{text: "a summary", usage: nil}})
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # allowlist: barrier — the notice append is one of the commit's actions and
-      # broadcasts no frame of its own; the idle frame above precedes the append,
-      # so the read is what orders the assertions.
+      # broadcasts no frame of its own. `Turn.run` runs the action list before it
+      # broadcasts the idle frame, so that frame already implies the append and
+      # the clear; the read returns the transcript the assertion below uses.
       state = :sys.get_state(pid, 1_000)
 
       assert [_notice] =
@@ -118,17 +111,6 @@ defmodule Nest.Agents.Agent.SpaceNoticeCommitTest do
 
       # ...and the flag is cleared only now, by the action the append ordered.
       assert pending?(space_id, name) == false
-
-      # It is in the transcript the UI reads, not only in memory.
-      persisted = Persistence.load_messages(space_id, name)
-
-      assert Enum.any?(persisted, fn
-               {:user, %User{parts: parts}} ->
-                 Enum.any?(parts, &(&1.text =~ "This space's environment changed"))
-
-               _other ->
-                 false
-             end)
     end
   end
 

@@ -7,34 +7,17 @@ defmodule Nest.BlueprintsTest do
   alias Nest.VocationsFixtures
 
   describe "blueprints" do
-    test "create_blueprint/1 with valid data creates a blueprint" do
-      vocation = VocationsFixtures.vocation_fixture()
-
-      valid_attrs = %{
-        name: "blueprint-#{System.unique_integer([:positive])}",
-        description: "Test blueprint",
-        root_vocation: vocation.slug,
-        spawnable_vocations: []
-      }
-
-      assert {:ok, %Blueprint{} = blueprint} = Blueprints.create_blueprint(valid_attrs)
-      assert blueprint.name == valid_attrs.name
-      assert blueprint.root_vocation == vocation.slug
-      # `slug` is auto-generated from `:name` when omitted
-      assert is_binary(blueprint.slug) and blueprint.slug != ""
-    end
-
     test "create_blueprint/1 derives slug from name when omitted" do
       vocation = VocationsFixtures.vocation_fixture()
-      name = "My Cool Blueprint #{System.unique_integer([:positive])}"
+      n = System.unique_integer([:positive])
 
       {:ok, %Blueprint{slug: slug}} =
         Blueprints.create_blueprint(%{
-          name: name,
+          name: "My Cool Blueprint #{n}",
           root_vocation: vocation.slug
         })
 
-      assert slug == suffix(name)
+      assert slug == "my-cool-blueprint-#{n}"
     end
 
     test "create_blueprint/1 rejects missing root_vocation" do
@@ -62,30 +45,19 @@ defmodule Nest.BlueprintsTest do
       assert "has already been taken" in errors_on(cs).name
     end
 
-    test "create_blueprint/1 rejects spawnable_vocations with non-strings" do
+    test "create_blueprint/1 rejects malformed spawnable_vocations" do
       vocation = VocationsFixtures.vocation_fixture()
 
-      assert {:error, cs} =
-               Blueprints.create_blueprint(%{
-                 name: "bad-spawnable-#{System.unique_integer([:positive])}",
-                 root_vocation: vocation.slug,
-                 spawnable_vocations: [123]
-               })
+      for spawnable_vocations <- [[123], [vocation.slug, vocation.slug]] do
+        assert {:error, cs} =
+                 Blueprints.create_blueprint(%{
+                   name: "bad-spawnable-#{System.unique_integer([:positive])}",
+                   root_vocation: vocation.slug,
+                   spawnable_vocations: spawnable_vocations
+                 })
 
-      assert errors_on(cs).spawnable_vocations != []
-    end
-
-    test "create_blueprint/1 rejects duplicate spawnable_vocations" do
-      vocation = VocationsFixtures.vocation_fixture()
-
-      assert {:error, cs} =
-               Blueprints.create_blueprint(%{
-                 name: "dup-spawnable-#{System.unique_integer([:positive])}",
-                 root_vocation: vocation.slug,
-                 spawnable_vocations: [vocation.slug, vocation.slug]
-               })
-
-      assert errors_on(cs).spawnable_vocations != []
+        assert errors_on(cs).spawnable_vocations != []
+      end
     end
 
     test "get_blueprint/1 returns nil for missing id" do
@@ -152,30 +124,11 @@ defmodule Nest.BlueprintsTest do
   end
 
   describe "root_vocation_slug_for/1" do
-    test "returns nil when blueprint id is nil" do
+    # The valid-id path is covered end-to-end by `NestWeb.LobbyChannelTest`'s
+    # "blueprint_id drives the root agent's vocation over the default".
+    test "returns nil when there is no blueprint" do
       assert Blueprints.root_vocation_slug_for(nil) == nil
-    end
-
-    test "returns the root_vocation slug for a valid blueprint id" do
-      vocation = VocationsFixtures.vocation_fixture()
-      blueprint = BlueprintsFixtures.blueprint_fixture(%{root_vocation: vocation.slug})
-
-      assert Blueprints.root_vocation_slug_for(blueprint.id) == vocation.slug
-    end
-
-    test "returns nil for a missing blueprint id" do
       assert Blueprints.root_vocation_slug_for(-1) == nil
     end
-  end
-
-  # Helpers
-
-  # Strip the suffix portion of a slug for assertion in the
-  # slug-from-name test.
-  defp suffix(name) do
-    name
-    |> String.downcase()
-    |> String.replace(~r/[^a-z0-9]+/, "-")
-    |> String.trim("-")
   end
 end

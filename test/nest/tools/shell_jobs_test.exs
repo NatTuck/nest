@@ -137,15 +137,13 @@ defmodule Nest.Tools.ShellJobsTest do
     assert [%ToolResult{content: content}] = BatchSizer.run([tc], ctx)
     assert content =~ "Started background job"
 
-    # The job is owned by the real key, not {nil, nil} / {:unknown, :unknown}.
+    # The job is owned by the real key, not the `agent_key/1` fallback: a job
+    # carries exactly one key, so listing it here rules the fallback out.
     assert [%{id: id, log_path: log_path}] = ShellJobs.list({space_id, name})
 
     # The agent is told the path it can actually read from inside the
     # sandbox, not the log file the manager writes.
     assert log_path == "/tmp/#{Path.basename(tmp)}/shell-jobs/#{id}.log"
     assert content =~ "(log: #{log_path})"
-
-    assert ShellJobs.list({nil, nil}) == []
-    assert ShellJobs.list({:unknown, :unknown}) == []
   end
 end

@@ -1,25 +1,18 @@
 defmodule Nest.Agents.Agent.FilePolicyTest do
   @moduledoc """
   Tests for the `write_file` "must read first" / "contents
-  changed" policy.
+  changed" policy: the `:check_read_policy` clause of
+  `IntrospectionHandler.handle/3`, exercised directly against
+  a constructed agent state (cache lookup, on-disk stat
+  comparison, path resolution).
 
-  Two layers of coverage:
-
-    1. **Unit tests** for `IntrospectionHandler.handle/3`
-       clauses `:check_read_policy` and `:get_read_files` —
-       exercise the cache lookup, file-stat comparison, and
-       path-resolution branches directly against a constructed
-       `state`. These are fast and pinpoint regressions to the
-       policy logic without standing up an agent.
-
-    2. **End-to-end tests** in `agent_tools_test.exs` (the
-       existing tool execution test file) — use the
-       `MockClient` queue to script an LLM that emits
-       `read_file` followed by `write_file` (and
-       `write_file` after an external file mutation) and
-       assert the user-facing error string lands in the
-       tool result. See the `read-before-write policy`
-       describe block in that file.
+  Not covered here or anywhere else: the translation from the
+  policy atom to the user-facing tool-result string
+  (`BatchSizer.FilePolicy.error_message/1`), the `BatchSizer`
+  call site that produces it, and the `LLMStreamHandler`
+  recording path that populates the cache (these tests seed
+  the cache with `AgentTestHelpers.record_read_file/2`
+  instead).
   """
 
   use Nest.DataCase, async: true
@@ -88,7 +81,10 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
       # cache from `File.stat(path)`. We exercise the same
       # code path by writing a real file, then calling
       # `record_read_file/3` (the test helper that mirrors
-      # what `LLMStreamHandler` does).
+      # what `LLMStreamHandler` does). A workspace-relative
+      # path is also the resolution case: the cache key is the
+      # resolved full path, and the lookup resolves the same
+      # way.
       {pid, _name} = start_agent_with_workspace()
       full_path = write_test_file(pid, "foo.txt", "hello\n")
 
@@ -113,61 +109,14 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
                {:error, :contents_changed}
     end
 
-    test "returns :ok when the cache reflects a successful write_file" do
-      # Sequence: read -> write (success). The second write
-      # succeeds because the cache was overwritten by the
-      # post-write recording at the end of the LLM stream.
-      # We exercise that path by calling `record_read_file/3`
-      # again, which re-stats the file and stores the new
-      # pair. The policy check is then :ok.
-      {pid, _name} = start_agent_with_workspace()
-      full_path = write_test_file(pid, "foo.txt", "v1\n")
-      AgentTestHelpers.record_read_file(pid, full_path)
-
-      # Simulate the post-write recording by re-stat-ing
-      # the file and storing the new pair.
-      AgentTestHelpers.record_read_file(pid, full_path)
-
-      assert GenServer.call(pid, {:check_read_policy, %{path: "foo.txt"}}) == :ok
-
-      # Sanity: the file is unchanged.
-      assert File.read!(full_path) == "v1\n"
-    end
-
-    test "resolves workspace-relative paths against the agent's workspace root" do
-      # The cache key is the FULL path (workspace_root joined
-      # with the relative path). A lookup with the same
-      # relative path resolves to the same full path and
-      # matches.
-      {pid, _name} = start_agent_with_workspace()
-      full_path = write_test_file(pid, "src/foo.txt", "data\n")
-      AgentTestHelpers.record_read_file(pid, full_path)
-
-      # The LLM passes a workspace-relative path; the policy
-      # check resolves it and matches.
-      assert GenServer.call(pid, {:check_read_policy, %{path: "src/foo.txt"}}) == :ok
-    end
-
-    test "returns {:error, :never_read} for an absolute path outside the workspace" do
-      # The LLM emitted an absolute path (e.g. an unrelated
-      # `/etc/passwd`). The policy treats it as a fresh write
-      # with no recorded read.
-      {pid, _name} = start_agent_with_workspace()
-
-      assert GenServer.call(pid, {:check_read_policy, %{path: "/etc/passwd"}}) ==
-               {:error, :never_read}
-    end
-
     test "returns :ok for an absolute path that matches the recorded cache" do
-      # The LLM emitted an absolute path AND the absolute
-      # path's `{mtime, size}` was recorded (e.g. by a
-      # prior `read_file` that returned an absolute path).
+      # An absolute path is used as-is (not joined onto the
+      # workspace root), so the cache key and the lookup key
+      # are the same absolute string.
       {pid, _name} = start_agent_with_workspace()
       full_path = write_test_file(pid, "abs_foo.txt", "data\n")
       AgentTestHelpers.record_read_file(pid, full_path)
 
-      # LLM passes the absolute path explicitly (rare, but
-      # the tool closures allow it).
       assert GenServer.call(pid, {:check_read_policy, %{path: full_path}}) == :ok
     end
 
@@ -186,24 +135,6 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
                :ok
     end
 
-    test "returns :ok for a path that's been read (and found absent) then deleted" do
-      # The agent runs `read_file` and gets back the
-      # "File not found" content. The recording path
-      # (currently) skips `is_error: true`, so the cache is
-      # not populated. A subsequent `write_file` then finds
-      # the file still absent on disk and returns `:ok`.
-      {pid, _name} = start_agent_with_workspace()
-      full_path = Path.join(workspace_root(pid), "absent.txt")
-      refute File.exists?(full_path)
-
-      # The recording handler skips :is_error tool results, so
-      # the cache is empty. But the on-disk stat is the
-      # source of truth — `:enoent` → `:ok` regardless of
-      # cache.
-      assert GenServer.call(pid, {:check_read_policy, %{path: "absent.txt"}}) ==
-               :ok
-    end
-
     test "returns :ok when a previously-read file has been externally deleted" do
       # The agent ran `read_file` (cache populated), then the
       # user (or another process) deletes the file. The
@@ -212,7 +143,9 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
       # file, allow, no further checks". The on-disk
       # `File.stat/1` returns `:enoent` and the policy returns
       # `:ok` — the agent can recreate the file from its
-      # cached content.
+      # cached content. This is the ordering the cache-hit
+      # case pins: the stat is consulted first, so a stale
+      # entry cannot produce `:contents_changed` here.
       {pid, _name} = start_agent_with_workspace()
       full_path = write_test_file(pid, "ephemeral.txt", "data\n")
       AgentTestHelpers.record_read_file(pid, full_path)
@@ -222,93 +155,11 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
       assert GenServer.call(pid, {:check_read_policy, %{path: "ephemeral.txt"}}) ==
                :ok
     end
-
-    test "consecutive successful write_files all hit :ok (cache propagates)" do
-      # The user's guarantee: a successful `write_file`
-      # ALWAYS overwrites the cache with the new {mtime, size},
-      # regardless of prior state. Two consecutive writes from
-      # the same agent both pass the policy.
-      {pid, _name} = start_agent_with_workspace()
-      full_path = write_test_file(pid, "v.txt", "v1\n")
-      AgentTestHelpers.record_read_file(pid, full_path)
-
-      # Simulate a successful `write_file` from the agent.
-      # The cache is updated to the post-write state via
-      # `LLMStreamHandler.tool_results_received/2`. We
-      # emulate by re-stat-ing the file (the helper does
-      # this), so the cache is "what the agent knows the
-      # file looks like right now".
-      File.write!(full_path, "v2\n")
-      AgentTestHelpers.record_read_file(pid, full_path)
-
-      # Second write_file: the policy compares the recorded
-      # (post-v2) stat against the on-disk (post-v2) stat
-      # and they match — no false-positive staleness.
-      assert GenServer.call(pid, {:check_read_policy, %{path: "v.txt"}}) == :ok
-    end
-
-    test "capped read_file (error) does NOT populate the cache" do
-      # The all-or-nothing guarantee: a partial / capped /
-      # failed read does NOT populate the cache, so a
-      # subsequent `write_file` falls into `:never_read`.
-      # The error path is mocked by writing a tool result
-      # directly via `:sys.replace_state` and asserting the
-      # cache stays empty.
-      {pid, _name} = start_agent_with_workspace()
-      full_path = Path.join(workspace_root(pid), "capped.txt")
-      File.write!(full_path, "data\n")
-
-      :sys.replace_state(
-        pid,
-        fn state ->
-          # Simulate the streaming handler's record call with
-          # the :is_error true result. The handler skips the
-          # record for failed results, so the cache stays
-          # empty.
-          new_state = put_in(state.chat_state.read_files, %{}) |> then(fn s -> s end)
-          new_state
-        end,
-        1_000
-      )
-
-      # Cache is still empty — failed reads don't sneak in.
-      assert read_files(pid) == %{}
-
-      # The on-disk `File.stat/1` says the file is present
-      # (we just wrote it), but the cache is empty. The
-      # policy returns `:never_read` (not `:ok` from the
-      # enoent branch — that only fires when the file is
-      # actually missing on disk).
-      assert GenServer.call(pid, {:check_read_policy, %{path: "capped.txt"}}) ==
-               {:error, :never_read}
-    end
   end
 
   describe "ChatState.read_files" do
     test "is fresh (empty) at agent init" do
       {pid, _name} = start_agent_with_workspace()
-
-      assert read_files(pid) == %{}
-    end
-
-    test "is cleared on successful compaction" do
-      # The `read_files` cache gates the `file-write` "read first /
-      # contents changed" policy. A successful compaction drops the
-      # pre-summary reads (the LLM no longer carries them forward). The
-      # end-to-end behavior is covered by the compaction integration
-      # tests; here we pin the reset applied by the executor's commit.
-      {pid, _name} = start_agent_with_workspace()
-
-      seed_cache(pid, %{"foo.txt" => %{mtime: 0, size: 0}})
-      assert map_size(read_files(pid)) == 1
-
-      :sys.replace_state(
-        pid,
-        fn state ->
-          %{state | chat_state: %{state.chat_state | read_files: %{}}}
-        end,
-        1_000
-      )
 
       assert read_files(pid) == %{}
     end
@@ -353,18 +204,6 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
 
   defp read_files(pid) do
     GenServer.call(pid, :get_read_files)
-  end
-
-  defp seed_cache(pid, map) do
-    :sys.replace_state(
-      pid,
-      fn state ->
-        new = Map.merge(state.chat_state.read_files, map)
-
-        %{state | chat_state: %{state.chat_state | read_files: new}}
-      end,
-      1_000
-    )
   end
 
   # Materialize a workspace-relative file with the given

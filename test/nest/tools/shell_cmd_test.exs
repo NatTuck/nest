@@ -70,9 +70,10 @@ defmodule Nest.Tools.ShellCmdTest do
 
     # The bwrap non-zero exit on cancel is a deliberate
     # diagnostic — assert on it so the test's intent is
-    # self-documenting and the log doesn't escape.
+    # self-documenting and the log doesn't escape. (The
+    # `exit_code=` field it carries is the 130 the message
+    # above already asserts.)
     assert log =~ "ShellCmd.execute: bwrap exited non-zero"
-    assert log =~ "exit_code=130"
   end
 
   @tag :bwrap
@@ -147,18 +148,6 @@ defmodule Nest.Tools.ShellCmdTest do
     assert {:ok, "after\n"} = ShellCmd.execute("echo after", Mounts.new(ws, nil), nil, [])
   end
 
-  test "execute/5 returns the natural output for a successful command", %{ws: ws} do
-    # Sanity check that the receive doesn't match the
-    # pre-seeded stop when none is in the mailbox. A trivial
-    # `true` command exits 0 immediately and bwrap reports
-    # the success path.
-    assert {:ok, output} = ShellCmd.execute("true", Mounts.new(ws, nil), nil, [])
-
-    # The output is the "no output" placeholder because
-    # `true` produces no stdout/stderr.
-    assert output == "[Command executed successfully with no output]"
-  end
-
   # The bug this pins: `collect_output/5`'s `after` used to be an *idle*
   # timer, so every stdout chunk re-armed it and a command that wrote at
   # least once per `timeout` was never killed. Concrete timings: the loop
@@ -172,8 +161,11 @@ defmodule Nest.Tools.ShellCmdTest do
   # regression is a clean, fast failure (~0.6s) rather than a stuck suite.
   # There is deliberately no lower bound on the tick count: the bound starts
   # before bwrap spawns, so on a loaded host the kill can land before the
-  # command writes anything, and `ticks > 0` would flake. Sustained output is
-  # pinned by the flooding test below, which never pauses at all.
+  # command writes anything, and `ticks > 0` would flake. There is no flooding
+  # case here either: on this host erlexec delivers stdout in 4 KiB chunks and
+  # a loop with no pause at all drains them faster than the port fills them, so
+  # the mailbox empties and the pre-fix `after`-only check fires near the bound
+  # too — a flood test would pass with the bug present and pin nothing.
   @tag :bwrap
   test "a command that keeps writing is killed at its wall-clock deadline", %{ws: ws} do
     started = System.monotonic_time(:millisecond)
@@ -203,43 +195,6 @@ defmodule Nest.Tools.ShellCmdTest do
 
     # bwrap's non-zero exit on the kill is a deliberate diagnostic.
     assert log =~ "ShellCmd.execute: bwrap exited non-zero"
-  end
-
-  # The deadline used to be consulted only in `after`, so a command whose
-  # output never pauses can keep the mailbox non-empty and delay the kill
-  # indefinitely; the loop below has no sleep at all, so there is no quiet gap
-  # for an `after`-only check to fire in. The loop is finite on purpose: it
-  # outlives the 100ms bound (~300k iterations of `echo` take ~0.3s; measured
-  # 1M ≈ 1.1s), so a regression that misses the bound ends in a clean
-  # `{:ok, 0, ...}` instead of a hung suite. Measured with the fix: ~0.12s.
-  #
-  # Measured caveat: on this host the pre-fix code also kills it near the bound.
-  # erlexec's port delivers stdout in 4 KiB chunks and this loop drains them
-  # faster than the port can fill them (`yes` streams ~1.3 GB/s, ~310k
-  # messages/s, and is still drained), so the mailbox does empty and the
-  # `after`-only check fires. This test therefore pins the wall-clock bound for
-  # the regime where the producer *does* outrun the consumer; it is not a
-  # reproduction of that regime.
-  @tag :bwrap
-  test "a command that floods stdout with no pause is killed at its bound", %{ws: ws} do
-    started = System.monotonic_time(:millisecond)
-
-    result =
-      ShellCmd.execute_raw(
-        "for ((i = 0; i < 1000000; i++)); do echo tick; done",
-        Mounts.new(ws, nil),
-        nil,
-        timeout: 100
-      )
-
-    # `match?/2` plus the stderr projection, deliberately: on a regression the
-    # command floods megabytes of ticks into the result tuple, and a failure
-    # message carrying all of them helps nobody. The marker can only come from
-    # `handle_timeout/3`, i.e. the deadline check ran while output was still
-    # arriving; the exit code is 1, not the flood's own exit status.
-    assert match?({:ok, 1, _stdout, _stderr}, result)
-    assert elem(result, 3) =~ "[Command timed out after 100ms]"
-    assert System.monotonic_time(:millisecond) - started >= 100
   end
 
   # The `timeout` argument is documented as having no upper limit, but
@@ -319,7 +274,9 @@ defmodule Nest.Tools.ShellCmdTest do
 
     # Explicit: `timeout: 1` is one second, and the command runs ~0.1s, so
     # the bound must not truncate it (a broken conversion — e.g. seconds
-    # handed to `ShellCmd` as milliseconds — would kill it at once).
+    # handed to `ShellCmd` as milliseconds — would kill it at once). `{:ok, _}`
+    # is itself the "not truncated" claim: a timeout comes back as `{:error, _}`
+    # with exit code 1.
     assert {:ok, output} =
              function.function.(
                %{"command" => "echo one; sleep 0.1; echo two", "timeout" => 1},
@@ -328,19 +285,6 @@ defmodule Nest.Tools.ShellCmdTest do
 
     assert output =~ "one"
     assert output =~ "two"
-    refute output =~ "timed out"
-
-    # Omitted: the 60s default applies, so a command that writes every 100ms
-    # for 300ms — well past any short bound the default could be confused
-    # with — finishes with every tick.
-    assert {:ok, output} =
-             function.function.(
-               %{"command" => "for i in 1 2 3; do echo tick-$i; sleep 0.1; done"},
-               nil
-             )
-
-    for i <- 1..3, do: assert(output =~ "tick-#{i}")
-    refute output =~ "timed out"
   end
 
   test "the tool's schema declares `timeout` in seconds, default 60, no maximum, optional", %{
@@ -374,8 +318,10 @@ defmodule Nest.Tools.ShellCmdTest do
     # Rejected before anything runs, so the tool error is the whole result.
     # The shape is the one `agents-wait`'s `timeout` rejection uses, so the
     # model is told what it got wrong instead of silently getting the
-    # default.
-    for bad <- [0, -1, 1.5, "5", true] do
+    # default. One value per way the guard can be wrong: `0` and `-1` pin the
+    # `> 0` arm, `1.5` a guard that only checked `is_number`, and `"5"` one
+    # that skipped `is_integer` (which would raise in the multiplication).
+    for bad <- [0, -1, 1.5, "5"] do
       assert {:error, message} =
                function.function.(%{"command" => "echo nope", "timeout" => bad}, nil)
 
@@ -388,32 +334,20 @@ defmodule Nest.Tools.ShellCmdTest do
   test "the tool refuses to pipe output into head or tail", %{ws: ws} do
     function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
 
-    # Rejected before anything runs, so no bwrap is needed and the tool error
-    # is the whole result. Each command pipes into a pager at some stage.
-    for command <- [
-          "ls | head",
-          "ls | head -n 5",
-          "cat big.log | tail -f",
-          "sort | uniq -c | sort -rn | head"
-        ] do
-      assert {:error, message} = function.function.(%{"command" => command}, nil)
-      assert message =~ "will not pipe command output into"
-      assert message =~ "head or tail"
-    end
+    # One representative: `Nest.Tools.ShellPipes.check/1`'s own suite covers the
+    # detection and the message in full, so this only has to pin that the tool
+    # *calls* it — rejected before anything runs, so no bwrap is needed.
+    assert {:error, message} = function.function.(%{"command" => "ls | head"}, nil)
+    assert message =~ "will not pipe command output into"
 
-    # The offending command is named, so the model knows which pipe to drop.
-    assert {:error, message} = function.function.(%{"command" => "dmesg | tail"}, nil)
-    assert message =~ "will not pipe command output into `tail`"
-
-    # The guard runs before the background/foreground split, so a backgrounded
-    # command cannot smuggle a discarded pipe past it.
+    # `background: true` does not get a discarded pipe past it either.
     assert {:error, message} =
              function.function.(
                %{"command" => "sort | uniq -c | head", "background" => true},
                nil
              )
 
-    assert message =~ "will not pipe command output into `head`"
+    assert message =~ "will not pipe command output into"
   end
 
   test "the tool rejects a detached-background marker, even with `background: true`", %{ws: ws} do
@@ -422,53 +356,32 @@ defmodule Nest.Tools.ShellCmdTest do
     # The check is a pure function of the command string, so `background: true`
     # does not get a marker past it: a `&` still makes the staged script exit at
     # once (reporting "exited 0" with no output), and bwrap has no controlling
-    # terminal for `nohup`/`setsid`. Rejected before anything runs, so no bwrap
-    # is needed and the tool error is the whole result.
-    for command <- ["setsid sleep 1", "nohup sleep 1", "sleep 1 &"] do
-      for args <- [%{"command" => command}, %{"command" => command, "background" => true}] do
-        assert {:error, message} = function.function.(args, nil)
-        assert message =~ "never runs a command detached"
-        assert message =~ "background: true"
-      end
-    end
-  end
+    # terminal for `nohup`/`setsid`. `Nest.Tools.ShellBackground.check/1`'s own
+    # suite covers the detection, the markers and the false positives; this pins
+    # only that the tool calls it, on the argument combination that could bypass
+    # it.
+    assert {:error, message} =
+             function.function.(%{"command" => "setsid sleep 1", "background" => true}, nil)
 
-  test "the tool rejects a non-string command instead of crashing ShellCmd", %{ws: ws} do
-    function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
-
-    # `Nest.LLM.Tools` only checks that the `command` key is present, so a list
-    # reaches the tool; it must come back as a tool error rather than crashing
-    # in `ShellCmd` (and leaking a staged script).
-    assert {:error, message} = function.function.(%{"command" => ["echo X | head"]}, nil)
-
-    assert message ==
-             ~s{Invalid `command` argument: expected a string, got: ["echo X | head"].}
+    assert message =~ "never runs a command detached"
+    assert message =~ "background: true"
   end
 
   @tag :bwrap
-  test "the tool still runs head/tail/grep directly and pipes into grep or other commands",
-       %{ws: ws} do
+  test "the tool runs a command whose pipe into grep the filter allows (issue #106)", %{ws: ws} do
     function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
     File.write!(Path.join(ws, "sample.txt"), "alpha\nbeta\n")
 
-    # `head`/`grep` as the command word — no pipe into them — run normally.
-    assert {:ok, output} = function.function.(%{"command" => "head -1 sample.txt"}, nil)
-    assert output == "alpha\n"
-
-    assert {:ok, output} = function.function.(%{"command" => "grep beta sample.txt"}, nil)
-    assert output == "beta\n"
-
-    # A pipe into `grep` is a legitimate filter (issue #106) and runs normally.
+    # `ShellPipes`' own suite pins that a pipe into `grep` is allowed (and that
+    # `head`/`grep` used directly are); this is the end-to-end half — the
+    # allowed pipeline really runs under bwrap and its filtered output comes
+    # back.
     assert {:ok, output} = function.function.(%{"command" => "cat sample.txt | grep beta"}, nil)
     assert output == "beta\n"
-
-    # A pipe into a command other than a pager is unaffected.
-    assert {:ok, output} = function.function.(%{"command" => "echo hi | tr a-z A-Z"}, nil)
-    assert output == "HI\n"
   end
 
   @tag :bwrap
-  test "a symlinked workspace is bound at its canonical path; read and write work through the symlink",
+  test "a symlinked workspace is bound at its canonical path, so a write through the symlink lands there",
        %{ws: base} do
     # Include the OS pid so paths are unique across BEAM runs — a
     # previously killed run can leave these behind, and
@@ -491,27 +404,22 @@ defmodule Nest.Tools.ShellCmdTest do
       rm_tmp!(link, "nest_bwrap")
     end)
 
-    File.write!(Path.join(real, "hello.txt"), "symlink-ok\n")
-
     # Default caps bind the canonical workspace read-write; --chdir
-    # targets the user's symlinked path. Reading and writing through
-    # the symlink must resolve to the canonical writable mount.
-    assert {:ok, output} = ShellCmd.execute("cat hello.txt", Mounts.new(link, nil), nil, [])
-    assert output =~ "symlink-ok"
-
+    # targets the user's symlinked path. A write through the symlink must
+    # resolve to the canonical writable mount and land in the real
+    # directory — the read half would pass off the root ro-bind alone, so
+    # the write is what pins the bind.
     assert {:ok, _} = ShellCmd.execute("echo written > out.txt", Mounts.new(link, nil), nil, [])
     assert File.read!(Path.join(real, "out.txt")) =~ "written"
   end
 
-  test "a missing workspace returns an error without bwrap creating it", %{ws: ws} do
+  test "a missing workspace is refused", %{ws: ws} do
     missing = Path.join(ws, "nest_missing_#{System.unique_integer([:positive])}")
 
     # The workspace is validated before bwrap runs, so a missing
-    # directory surfaces as a clean error and is never auto-created.
+    # directory surfaces as a clean error.
     assert {:error, message} = ShellCmd.execute("true", Mounts.new(missing, nil), nil, [])
     assert message =~ "does not exist"
-
-    refute File.exists?(missing)
   end
 
   # The point of staging a script: the shell reads a file, so nothing in the
@@ -571,25 +479,14 @@ defmodule Nest.Tools.ShellCmdTest do
     assert Path.wildcard(Path.join(stage, "nest-cmd-*.sh")) == []
   end
 
-  test "there is no set -e, and the exit code of the last statement is what is reported", %{
-    ws: ws
-  } do
+  test "there is no set -e, so a failing statement does not stop the script", %{ws: ws} do
+    # The staged script runs without `set -e`: the first statement fails, the
+    # next still runs, and the last statement's (zero) status is what the call
+    # reports. The non-zero-exit half is covered by `Nest.ToolsTest` (exit 1,
+    # bwrap) and `Nest.Sandbox.NoneBackendTest` (exit 3), so only the absence of
+    # `set -e` is pinned here.
     assert {:ok, output} = ShellCmd.execute("false\necho survived", Mounts.new(ws, nil), nil, [])
     assert output =~ "survived"
-
-    # A non-zero exit is a deliberate diagnostic — capture it so it
-    # doesn't escape into the test log.
-    log =
-      capture_log(fn ->
-        assert {:error, output} =
-                 ShellCmd.execute("echo before\nexit 3", Mounts.new(ws, nil), nil, [])
-
-        assert output =~ "before"
-        assert output =~ "Exit code 3"
-      end)
-
-    assert log =~ "ShellCmd.execute: bwrap exited non-zero"
-    assert log =~ "exit_code=3"
   end
 
   test "large stdin streams over the pipe and never hits an ARG_MAX ceiling", %{ws: ws} do
@@ -606,23 +503,23 @@ defmodule Nest.Tools.ShellCmdTest do
       # The only per-command gate `docker` and `none` have: `Docker.command/3` and
       # `job_spec/4` build the inner bwrap from `Binds.specs/2` and never reach
       # `Sandbox.build/4`, and `none` builds no sandbox at all. Remove this clause
-      # and the `docker` and `none` iterations fail; the `bwrap` ones still match,
+      # and the `docker` and `none` iterations fail; the `bwrap` one still matches,
       # because `Sandbox.build/4`'s own gate produces the same message. That
       # asymmetry is why the loop covers all three: with only `bwrap` here, two of
       # the three backends could reopen the escalation with a green suite.
-      for {backend, filename} <-
-            Enum.flat_map(
-              ["bwrap", "docker", "none"],
-              &[{&1, ".nest"}, {&1, "AGENTS.md"}]
-            ) do
-        # A fresh workspace per case: `ConfigFile.error/1` reports the *first*
-        # offender, so both files cannot be symlinked in one directory and both
-        # be observed.
-        case_ws = Path.join(ws, "#{backend}-#{filename}")
+      #
+      # One filename is enough: which config file is the offender is
+      # `Nest.ConfigFile`'s business (its own suite covers `.nest` and
+      # `AGENTS.md`), and the clause here matches only the reason.
+      for backend <- ["bwrap", "docker", "none"] do
+        # A fresh workspace per backend: `ConfigFile.refuse/2` logs its warning
+        # once per path for the life of the BEAM, so a shared path would log for
+        # the first iteration only and leave the rest with nothing to assert.
+        case_ws = Path.join(ws, backend)
         File.mkdir_p!(case_ws)
         real = Path.join(case_ws, "real")
         File.write!(real, "")
-        File.ln_s!(real, Path.join(case_ws, filename))
+        File.ln_s!(real, Path.join(case_ws, ".nest"))
 
         log =
           capture_log(fn ->
@@ -630,7 +527,7 @@ defmodule Nest.Tools.ShellCmdTest do
                      ShellCmd.execute("echo hi", Mounts.new(case_ws, nil, backend), nil)
 
             assert msg =~ "not a regular file"
-            assert msg =~ filename
+            assert msg =~ ".nest"
           end)
 
         assert log =~ "Nest cannot protect it from being rewritten"

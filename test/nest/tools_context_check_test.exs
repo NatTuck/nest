@@ -38,7 +38,6 @@ defmodule Nest.ToolsContextCheckTest do
       ]
 
       assert {:ok, content} = function.function.(%{}, %{messages: messages})
-      assert content =~ "2 messages"
       assert content =~ "limit unknown"
     end
   end

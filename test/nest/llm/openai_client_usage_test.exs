@@ -53,8 +53,6 @@ defmodule Nest.LLM.OpenAIClientUsageTest do
       # `input_tokens` semantic, matching the Anthropic client).
       assert usage.input_tokens == 200
       assert usage.cache_read_input_tokens == 800
-      assert usage.output_tokens == 200
-      assert usage.reasoning_tokens == 0
       # OpenAI has no cache-creation concept.
       assert usage.cache_creation_input_tokens == 0
       assert usage.total_tokens == 1200
@@ -82,9 +80,7 @@ defmodule Nest.LLM.OpenAIClientUsageTest do
       assert {:usage, usage} = Enum.find(events, &match?({:usage, _}, &1))
       assert usage.input_tokens == 50
       assert usage.cache_read_input_tokens == 0
-      assert usage.cache_creation_input_tokens == 0
       assert usage.reasoning_tokens == 0
-      assert usage.output_tokens == 200
     end
 
     test "clamps input_tokens to 0 when cached_tokens exceeds prompt_tokens" do

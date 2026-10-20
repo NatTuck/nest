@@ -1,14 +1,14 @@
 defmodule NestWeb.AgentChannelAdvancedTest do
   @moduledoc """
-  AgentChannel advanced tests: agent process isolation, API logs in
-  `chat:message` events, and tool result serialization.
+  AgentChannel advanced tests: the message history across a channel rejoin,
+  the reply debt on the wire, API logs in `chat:message` events and over
+  `chat:api-logs`, and tool result serialization.
   """
   use NestWeb.ChannelCase, async: true
   use NestWeb.AgentChannelTestHelpers
 
   import Mimic
 
-  alias Nest.Agents
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
@@ -24,15 +24,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
   setup :verify_on_exit!
 
-  describe "agent process isolation" do
-    test "agent process does not capture channel pid", %{
-      socket: _socket,
-      agent_id: id,
-      space_id: space_id
-    } do
-      {:ok, _pid} = Agents.Supervisor.get_agent(space_id, id)
-    end
-
+  describe "channel rejoin" do
     test "messages are not lost on channel rejoin", %{
       socket: socket,
       agent_id: id,
@@ -75,54 +67,6 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       Process.unlink(new_socket.channel_pid)
       GenServer.stop(new_socket.channel_pid, :normal)
     end
-
-    test "sync returns correct messages after multiple rejoins", %{
-      socket: socket,
-      agent_id: id,
-      space_id: space_id
-    } do
-      ref1 = push(socket, "chat:message", %{"content" => "Message 1"})
-      assert_reply ref1, :ok, %{}
-
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
-
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
-
-      channel_pid = socket.channel_pid
-      mon = Process.monitor(channel_pid)
-      GenServer.stop(channel_pid, :normal)
-      assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 1_000
-
-      {:ok, socket2_conn} =
-        connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
-
-      {:ok, _, socket2} =
-        subscribe_and_join(socket2_conn, NestWeb.AgentChannel, "agent:#{space_id}:#{id}")
-
-      ref_sync = push(socket2, "chat:sync", %{"lastIndex" => -1})
-      assert_reply ref_sync, :ok, %{"messages" => messages, "messageCount" => last_complete}
-
-      assert messages != []
-      assert last_complete >= 0
-
-      channel_pid = socket2.channel_pid
-      mon = Process.monitor(channel_pid)
-      GenServer.stop(channel_pid, :normal)
-      assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 1_000
-
-      {:ok, socket3_conn} =
-        connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
-
-      {:ok, _, socket3} =
-        subscribe_and_join(socket3_conn, NestWeb.AgentChannel, "agent:#{space_id}:#{id}")
-
-      ref_sync2 = push(socket3, "chat:sync", %{"lastIndex" => -1})
-      assert_reply ref_sync2, :ok, %{"messages" => messages2, "messageCount" => last_complete2}
-
-      assert messages2 != []
-      assert last_complete2 == last_complete
-    end
   end
 
   describe "the reply debt on the wire" do
@@ -163,55 +107,6 @@ defmodule NestWeb.AgentChannelAdvancedTest do
   end
 
   describe "API logs in chat:message events" do
-    test "assistant messages carry response API logs; user messages have empty api_logs in two-round conversation",
-         %{socket: socket} do
-      # === Round 1 ===
-      ref = push(socket, "chat:message", %{"content" => "Hello"})
-      assert_reply ref, :ok, %{}
-
-      # User messages no longer carry request api_logs after finalization
-      # (they're rebuilt on demand when the user expands the API logs widget).
-      assert_push "chat:message",
-                  %{"index" => 1, "role" => "user", "apiLogs" => user1_logs},
-                  1_000
-
-      assert user1_logs == []
-
-      # The assistant message is stored complete: the single broadcast
-      # carries its response log.
-      assert_push "chat:message",
-                  %{"index" => 2, "role" => "assistant", "apiLogs" => [asst1_log]},
-                  500
-
-      assert asst1_log["type"] == "response"
-      assert asst1_log["id"] == "002.000"
-      assert is_map(asst1_log["payload"])
-
-      # Fence round 1 on its own `idle` before starting round 2, so the
-      # round-2 fence below can't match a stale round-1 idle (which would
-      # let the test exit mid-round-2).
-      assert_push "chat:status", %{status: "idle"}, 1_000
-
-      # === Round 2 ===
-      ref2 = push(socket, "chat:message", %{"content" => "How are you?"})
-      assert_reply ref2, :ok, %{}
-
-      assert_push "chat:message",
-                  %{"index" => 3, "role" => "user", "apiLogs" => user2_logs},
-                  1_000
-
-      assert user2_logs == []
-
-      assert_push "chat:message",
-                  %{"index" => 4, "role" => "assistant", "apiLogs" => [asst2_log]},
-                  500
-
-      assert asst2_log["type"] == "response"
-      assert asst2_log["id"] == "004.000"
-
-      assert_push "chat:status", %{status: "idle"}, 1_000
-    end
-
     test "assistant message carries exactly one response log (no request/history payload)",
          %{socket: socket} do
       ref = push(socket, "chat:message", %{"content" => "First message"})
@@ -295,7 +190,6 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       assert log["type"] == "response"
       assert is_map(log["payload"])
-      refute Map.has_key?(log["payload"], "messages")
     end
 
     test "rebuilds a synthetic request log for a user message", %{socket: socket} do
@@ -352,75 +246,16 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       assert payload["index"] == 2
       assert payload["role"] == "tool"
-      assert is_list(payload["parts"])
       assert length(payload["parts"]) == 1
 
       part = List.first(payload["parts"])
 
-      assert is_map(part)
       assert part["kind"] == "tool_result"
       assert part["toolCallId"] == "call_123"
       assert part["name"] == "shell-cmd"
       assert part["content"] == "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 ."
       assert part["arguments"] == %{"command" => "ls -la"}
       assert part["isError"] == false
-    end
-
-    test "chat:sync handles messages with ToolResult structs", %{
-      socket: socket,
-      agent_id: id,
-      space_id: space_id
-    } do
-      ref = push(socket, "chat:message", %{"content" => "Hello"})
-      assert_reply ref, :ok, %{}
-
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
-
-      tool_result_message =
-        {:tool,
-         %Tool{
-           index: 2,
-           timestamp: DateTime.utc_now(),
-           parts: [
-             %Part.ToolResult{
-               tool_call_id: "call_123",
-               name: "shell-cmd",
-               content: "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 .",
-               arguments: %{"command" => "ls -la"},
-               is_error: false
-             }
-           ],
-           api_logs: []
-         }}
-
-      {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
-
-      replace_state(agent_pid, fn state ->
-        %{
-          state
-          | chat_state: %{
-              state.chat_state
-              | messages: [tool_result_message | state.chat_state.messages]
-            }
-        }
-      end)
-
-      sync_ref = push(socket, "chat:sync", %{"lastIndex" => -1})
-      assert_reply sync_ref, :ok, %{"messages" => messages}
-
-      tool_message = Enum.find(messages, fn m -> m["role"] == "tool" end)
-      assert tool_message != nil
-
-      assert is_list(tool_message["parts"])
-      part = List.first(tool_message["parts"])
-      assert is_map(part)
-      assert part["kind"] == "tool_result"
-      assert part["toolCallId"] == "call_123"
-      assert part["content"] == "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 ."
-      assert part["arguments"] == %{"command" => "ls -la"}
-
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
 
     test "chat:sync handles messages with ToolResult structs in api_logs", %{
@@ -481,15 +316,11 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       message = Enum.find(messages, fn m -> m["index"] == 2 end)
       assert message != nil
 
-      assert is_list(message["apiLogs"])
       [api_log] = message["apiLogs"]
       assert api_log["id"] == "api_001"
 
       payload = api_log["payload"]
-      assert is_map(payload)
-      assert is_list(payload["tool_results"])
       tool_result = List.first(payload["tool_results"])
-      refute is_struct(tool_result)
       assert tool_result["tool_call_id"] == "call_456"
       assert tool_result["content"] == "output"
 

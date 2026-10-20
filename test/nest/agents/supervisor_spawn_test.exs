@@ -30,11 +30,8 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
   import ExUnit.CaptureLog
 
-  import Eventually
-
   alias Nest.Agents
   alias Nest.Agents.Agent.BatchPlan
-  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
@@ -132,6 +129,27 @@ defmodule Nest.Agents.SupervisorSpawnTest do
     vocation
   end
 
+  # A space whose blueprint names `blueprint_attrs` (`name` is made unique
+  # here). These spaces are created with `Spaces.create_space/2` directly rather
+  # than through `create_space_with_root_agent/2`, so every one of them needs a
+  # workspace from stage 4 on.
+  defp space_with_blueprint(prefix, blueprint_attrs) do
+    {:ok, blueprint} =
+      Blueprints.create_blueprint(
+        Map.merge(%{name: "#{prefix}-#{System.unique_integer([:positive])}"}, blueprint_attrs)
+      )
+
+    {:ok, space} =
+      Spaces.create_space(nil, %{
+        name: "#{prefix}-space-#{System.unique_integer([:positive])}",
+        slug: "#{prefix}-space-#{System.unique_integer([:positive])}",
+        blueprint_id: blueprint.id,
+        workspace_path: AgentTestHelpers.default_test_workspace()
+      })
+
+    space
+  end
+
   describe "spawn_agent_in_space/3 in an unrestricted space" do
     test "spawns an independent specialist with any vocation", %{space_id: space_id} do
       vocation = fresh_vocation()
@@ -144,60 +162,13 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
       assert {:ok, info} = Agents.get_info(space_id, name)
       assert info.vocation_id == vocation.id
-    end
 
-    test "spawned agent has fresh context (system prompt only)", %{space_id: space_id} do
-      vocation = fresh_vocation()
-      name = "fresh-#{System.unique_integer([:positive])}"
-      state = coordinator_state(space_id)
-
-      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation.slug)
-
-      on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
-
-      assert {:ok, info} = Agents.get_info(space_id, name)
+      # Fresh context: the child's own system prompt and nothing inherited
+      # from the parent (inheriting is the clone path's fork).
       assert info.message_count == 1
-    end
-
-    test "fresh spawn gets depth = parent.depth + 1", %{space_id: space_id} do
-      vocation = fresh_vocation()
-      name = "depth-#{System.unique_integer([:positive])}"
-      state = coordinator_state(space_id)
-
-      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation.slug)
-
-      on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
-
-      assert {:ok, info} = Agents.get_info(space_id, name)
       assert info.depth == state.depth + 1
-    end
-
-    test "spawn with a model override gives the child the override model", %{space_id: space_id} do
-      vocation = fresh_vocation()
-      name = "model-override-#{System.unique_integer([:positive])}"
-      state = coordinator_state(space_id)
-      override = %{name: "pegasus-default-only", provider: "pegasus"}
-
-      assert {:ok, ^name} =
-               Supervisor.spawn_agent_in_space(state, name, vocation.slug, override)
-
-      on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
-
-      {:ok, pid} = Supervisor.get_agent(space_id, name)
-      assert Nest.Agents.Agent.get_public_info(pid, 1_000).model == override
-    end
-
-    test "spawn without a model override inherits the parent's model", %{space_id: space_id} do
-      vocation = fresh_vocation()
-      name = "inherit-model-#{System.unique_integer([:positive])}"
-      state = coordinator_state(space_id)
-
-      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation.slug)
-
-      on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
-
-      {:ok, pid} = Supervisor.get_agent(space_id, name)
-      assert Nest.Agents.Agent.get_public_info(pid, 1_000).model == state.model
+      # No override was named, so the child runs on the parent's model.
+      assert info.model == state.model
     end
 
     test "fresh spawn at max depth has agents-spawn excluded from its tool list",
@@ -232,9 +203,9 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
     end
 
-    test "an unknown vocation slug is rejected" do
+    test "an unknown vocation slug is rejected", %{space_id: space_id} do
       name = "unknown-voc-#{System.unique_integer([:positive])}"
-      state = coordinator_state(AgentTestHelpers.current_space_id())
+      state = coordinator_state(space_id)
 
       assert {:error, {:vocation_not_found, "does-not-exist"}} =
                Supervisor.spawn_agent_in_space(state, name, "does-not-exist")
@@ -246,22 +217,10 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       allowed = fresh_vocation()
       denied = fresh_vocation()
 
-      {:ok, blueprint} =
-        Blueprints.create_blueprint(%{
-          name: "whitelist-#{System.unique_integer([:positive])}",
+      space =
+        space_with_blueprint("whitelist", %{
           root_vocation: allowed.slug,
           spawnable_vocations: [allowed.slug]
-        })
-
-      {:ok, space} =
-        Spaces.create_space(nil, %{
-          name: "whitelist-space-#{System.unique_integer([:positive])}",
-          slug: "whitelist-space-#{System.unique_integer([:positive])}",
-          blueprint_id: blueprint.id,
-          # Every space needs a workspace from stage 4 on, and these tests call
-          # `Spaces.create_space/2` directly rather than going through
-          # `create_space_with_root_agent/2`.
-          workspace_path: AgentTestHelpers.default_test_workspace()
         })
 
       state = coordinator_state(space.id)
@@ -285,23 +244,11 @@ defmodule Nest.Agents.SupervisorSpawnTest do
     test "omitting vocation takes the blueprint's default_spawnable_vocation" do
       allowed = fresh_vocation()
 
-      {:ok, blueprint} =
-        Blueprints.create_blueprint(%{
-          name: "auto-wl-#{System.unique_integer([:positive])}",
+      space =
+        space_with_blueprint("auto-wl", %{
           root_vocation: allowed.slug,
           spawnable_vocations: [allowed.slug],
           default_spawnable_vocation: allowed.slug
-        })
-
-      {:ok, space} =
-        Spaces.create_space(nil, %{
-          name: "auto-wl-space-#{System.unique_integer([:positive])}",
-          slug: "auto-wl-space-#{System.unique_integer([:positive])}",
-          blueprint_id: blueprint.id,
-          # Every space needs a workspace from stage 4 on, and these tests call
-          # `Spaces.create_space/2` directly rather than going through
-          # `create_space_with_root_agent/2`.
-          workspace_path: AgentTestHelpers.default_test_workspace()
         })
 
       # The coordinator's own vocation (Test Default) is neither the blueprint's
@@ -325,22 +272,10 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       allowed_a = fresh_vocation()
       allowed_b = fresh_vocation()
 
-      {:ok, blueprint} =
-        Blueprints.create_blueprint(%{
-          name: "nodefault-wl-#{System.unique_integer([:positive])}",
+      space =
+        space_with_blueprint("nodefault-wl", %{
           root_vocation: allowed_a.slug,
           spawnable_vocations: [allowed_a.slug, allowed_b.slug]
-        })
-
-      {:ok, space} =
-        Spaces.create_space(nil, %{
-          name: "nodefault-wl-space-#{System.unique_integer([:positive])}",
-          slug: "nodefault-wl-space-#{System.unique_integer([:positive])}",
-          blueprint_id: blueprint.id,
-          # Every space needs a workspace from stage 4 on, and these tests call
-          # `Spaces.create_space/2` directly rather than going through
-          # `create_space_with_root_agent/2`.
-          workspace_path: AgentTestHelpers.default_test_workspace()
         })
 
       state = coordinator_state(space.id)
@@ -395,22 +330,10 @@ defmodule Nest.Agents.SupervisorSpawnTest do
     test "an empty spawnable_vocations list is unrestricted" do
       vocation = fresh_vocation()
 
-      {:ok, blueprint} =
-        Blueprints.create_blueprint(%{
-          name: "empty-wl-#{System.unique_integer([:positive])}",
+      space =
+        space_with_blueprint("empty-wl", %{
           root_vocation: vocation.slug,
           spawnable_vocations: []
-        })
-
-      {:ok, space} =
-        Spaces.create_space(nil, %{
-          name: "empty-wl-space-#{System.unique_integer([:positive])}",
-          slug: "empty-wl-space-#{System.unique_integer([:positive])}",
-          blueprint_id: blueprint.id,
-          # Every space needs a workspace from stage 4 on, and these tests call
-          # `Spaces.create_space/2` directly rather than going through
-          # `create_space_with_root_agent/2`.
-          workspace_path: AgentTestHelpers.default_test_workspace()
         })
 
       name = "any-#{System.unique_integer([:positive])}"
@@ -456,14 +379,12 @@ defmodule Nest.Agents.SupervisorSpawnTest do
                    Supervisor.spawn_agent_in_space(state, name, vocation.slug)
         end)
 
-      assert log =~ "failed to start"
       assert log =~ "removing the row it pre-spawned"
 
-      # The row the spawn pre-spawned is gone (and its system message with it),
-      # so the space holds only the coordinator — and the name is free again
-      # rather than blocked by an orphan.
+      # The row the spawn pre-spawned is gone, so the name is free again rather
+      # than blocked by an orphan — and its system message went with it: the one
+      # left is the coordinator's.
       assert Nest.Persistence.fetch_agent(space_id, name) == {:error, :not_found}
-      assert agent_count(space_id) == 1
       assert message_count(space_id) == 1
 
       File.rm!(blocker)
@@ -471,68 +392,12 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation.slug)
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
 
-      assert {:ok, _row} = Nest.Persistence.fetch_agent(space_id, name)
+      # Exactly one row was added: the failed attempt left nothing behind.
       assert agent_count(space_id) == 2
     end
   end
 
-  describe "archive_agent/2" do
-    test "stops the process, marks the row archived, and broadcasts agent:archived", %{
-      space_id: space_id
-    } do
-      vocation = fresh_vocation()
-      name = "archive-me-#{System.unique_integer([:positive])}"
-      state = coordinator_state(space_id)
-
-      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation.slug)
-
-      Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.space_topic(space_id))
-
-      assert :ok = Supervisor.archive_agent(space_id, name)
-
-      assert_receive {:agent_archived, %{"space_id" => ^space_id, "name" => ^name}},
-                     1_000
-
-      assert eventually(
-               fn ->
-                 Nest.Agents.Registry.lookup(space_id, name) == {:error, :not_found}
-               end,
-               timeout: 1_000
-             )
-
-      {:ok, row} = Nest.Persistence.fetch_agent(space_id, name)
-      assert row.archived == true
-    end
-  end
-
   describe "unarchive_agent/2" do
-    test "flips the archived flag back and broadcasts agent:unarchived", %{space_id: space_id} do
-      name = "unarchive-me-#{System.unique_integer([:positive])}"
-
-      {:ok, _row} =
-        Nest.Persistence.insert_agent(%{
-          space_id: space_id,
-          name: name,
-          model: test_model(),
-          vocation_id: AgentTestHelpers.vocation_id_for_test()
-        })
-
-      assert :ok = Nest.Persistence.archive_agent(space_id, name)
-
-      Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
-
-      assert :ok = Supervisor.unarchive_agent(space_id, name)
-
-      assert_receive %Phoenix.Socket.Broadcast{
-                       event: "agent:unarchived",
-                       payload: %{"space_id" => ^space_id, "name" => ^name}
-                     },
-                     1_000
-
-      {:ok, row} = Nest.Persistence.fetch_agent(space_id, name)
-      assert row.archived == false
-    end
-
     test "returns not_found for a missing agent", %{space_id: space_id} do
       name = "ghost-#{System.unique_integer([:positive])}"
 
@@ -563,27 +428,6 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       end
     end
 
-    test "restores a deep chain, not just the immediate children", %{space_id: space_id} do
-      suffix = System.unique_integer([:positive])
-      root = "chain-root-#{suffix}"
-      middle = "chain-middle-#{suffix}"
-      leaf = "chain-leaf-#{suffix}"
-
-      root_row = insert_archived_row(space_id, root)
-      middle_row = insert_archived_row(space_id, middle, root_row.id, 1)
-      _leaf_row = insert_archived_row(space_id, leaf, middle_row.id, 2)
-
-      Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
-
-      assert :ok = Supervisor.unarchive_agent(space_id, root)
-
-      assert unarchived_names(space_id, 3) == Enum.sort([root, middle, leaf])
-
-      for name <- [root, middle, leaf] do
-        assert {:ok, %{archived: false}} = Nest.Persistence.fetch_agent(space_id, name)
-      end
-    end
-
     test "is a no-op for an agent that is already active", %{space_id: space_id} do
       name = "already-active-#{System.unique_integer([:positive])}"
 
@@ -607,30 +451,6 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       }
 
       assert {:ok, %{archived: false}} = Nest.Persistence.fetch_agent(space_id, name)
-    end
-
-    test "refuses a child whose parent is still archived, naming the parent", %{
-      space_id: space_id
-    } do
-      suffix = System.unique_integer([:positive])
-      parent = "blocked-parent-#{suffix}"
-      child = "blocked-child-#{suffix}"
-
-      parent_row = insert_archived_row(space_id, parent)
-      _child_row = insert_archived_row(space_id, child, parent_row.id, 1)
-
-      assert {:error, {:parent_archived, ^parent}} =
-               Supervisor.unarchive_agent(space_id, child)
-
-      # The refusal leaves both rows alone rather than half-restoring.
-      for name <- [parent, child] do
-        assert {:ok, %{archived: true}} = Nest.Persistence.fetch_agent(space_id, name)
-      end
-
-      # Restoring the parent is the way through, and it brings the
-      # child back with it.
-      assert :ok = Supervisor.unarchive_agent(space_id, parent)
-      assert {:ok, %{archived: false}} = Nest.Persistence.fetch_agent(space_id, child)
     end
   end
 

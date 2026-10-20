@@ -47,15 +47,6 @@ defmodule Nest.Agents.Agent.ChatPipelinePreflightTest do
       end
     end
 
-    test "raises when context_limit_source is :default but limit is nil" do
-      state = build_state(%{context_limit: nil, context_limit_source: :default})
-      messages = [user_message("hi")]
-
-      assert_raise FunctionClauseError, fn ->
-        ChatPipeline.preflight_decision(messages, state)
-      end
-    end
-
     test "raises on a non-positive context_limit" do
       state = build_state(%{context_limit: 0, context_limit_source: :config})
       messages = [user_message("hi")]

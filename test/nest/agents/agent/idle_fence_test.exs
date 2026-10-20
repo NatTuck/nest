@@ -37,29 +37,23 @@ defmodule Nest.Agents.Agent.IdleFenceTest do
     :ok
   end
 
-  test "the fence is the idle frame: it fails without one, and passes with one" do
-    {pid, name} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+  test "the fence is the idle frame: a frame that never arrives fails the wait" do
+    {_pid, name} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
     # No turn has run, so no `idle` frame has been broadcast — the agent is
     # nonetheless idle, which is exactly what a state-reading wait would report
     # as success. The fence must not: it burns its bound and fails as a missing
-    # frame, not as a state that was wrong.
+    # frame, not as a state that was wrong. (The passing half of this fence is
+    # every `await_idle/1` call site in the suite, each of which would raise here
+    # if the frame the turn ends on stopped matching; this test owns the
+    # failure.)
     #
-    # The bound is 50 ms rather than the helper's 1000 ms default. The contract
-    # is the *failure*, not the number, and this is the longest single test in
-    # the suite: at 1000 ms it sets the suite's tail, which is not divided by
-    # `max_cases` the way ordinary tests are.
+    # The bound is 50 ms rather than the helper's 1000 ms default: the contract
+    # is the *failure*, not the number, so the wait is as short as the raise
+    # needs.
     assert_raise ExUnit.AssertionError, ~r/no matching message after 50ms/, fn ->
       await_idle(name, 50)
     end
-
-    # The same fence, on the frame the turn ends on: `Agent.chat/2` casts, so the
-    # `idle` broadcast is the turn's last frame and every earlier frame of it
-    # precedes this one in the mailbox.
-    MockClient.set_response("hello")
-    :ok = Agent.chat(pid, "hi")
-
-    assert await_idle(name) == :ok
   end
 
   test "a wait for the settled turn consumes the turns that already ended" do
@@ -78,18 +72,16 @@ defmodule Nest.Agents.Agent.IdleFenceTest do
     assert_receive {:agent_status, %{name: ^name, status: "idle"}}, 1_000
 
     MockClient.set_response("two")
-    assert {:ok, :delivered} = Agent.deliver_internal(pid, "peer", "second", :runtime)
+    # The delivery's own turn ending below is the fence for this call; the
+    # `:delivered` / `:queued` disposition it returns is `InboxTest`'s contract.
+    Agent.deliver_internal(pid, "peer", "second", :runtime)
     assert_receive {:agent_status, %{name: ^name, status: "idle"}}, 1_000
 
     # Both turns are over, so both of this agent's `idle` frames are queued: the
     # first turn's, then the delivery's. The wait has to consume the first (and
     # the delivery's own `{:user, …}` frame) and return on the second.
-    notice = await_delivery("second")
+    await_delivery("second")
     assert_receive {:chat_status, %{name: ^name, status: "idle"}}, 1_000
-
-    # The frame the wait consumed is the delivery: a `:runtime` entry renders bare (the
-    # runtime speaking, not the peer), unlike the test's own chat above it.
-    refute notice =~ "Message from agent"
 
     # The pin: a wait that stopped on the first turn's `idle` frame would leave
     # the delivery's `idle` frame here, unconsumed — and would have reported a
@@ -97,6 +89,5 @@ defmodule Nest.Agents.Agent.IdleFenceTest do
     # has no children, and these mocked responses carry no usage), so this is
     # decided by what the wait consumed, not by the clock.
     refute_received {:chat_status, %{name: ^name, status: "idle"}}
-    assert Agent.get_public_info(pid, 1_000).status == :idle
   end
 end

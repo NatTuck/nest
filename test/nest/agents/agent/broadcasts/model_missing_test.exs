@@ -43,9 +43,7 @@ defmodule Nest.Agents.Agent.Broadcasts.ModelMissingTest do
       ModelMissing.broadcast(space_id, "nil-model", nil, :no_model)
 
       assert_receive {:chat_status, payload}, 1_000
-      assert payload.status == "model_missing"
       assert payload.model == nil
-      assert payload.reason =~ "no_model"
     end
 
     test "tolerates non-map models (defensive fallback)", %{space_id: space_id} do

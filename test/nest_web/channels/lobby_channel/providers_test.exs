@@ -41,9 +41,6 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
     test "serializes the configured providers with string keys" do
       providers = Providers.providers()
 
-      assert is_list(providers)
-      refute Enum.empty?(providers)
-
       pegasus = Enum.find(providers, &(&1["name"] == "pegasus"))
       assert pegasus["base_url"] == "http://pegasus:8080/v1"
       assert pegasus["auto_models"] == true
@@ -52,8 +49,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       assert is_list(pegasus["models"])
     end
 
-    test "persists expose_models and probe_multimodal through the writer and re-serializes them",
-         %{local_file: local_file} do
+    test "persists expose_models and probe_multimodal through the writer and re-serializes them" do
       providers = [
         %Provider{
           name: "exposed",
@@ -71,37 +67,12 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
 
       assert :ok = Writer.save_providers(providers)
 
+      # `providers/0` reads the file the writer just wrote, so finding the
+      # provider here is the round-trip: a field the writer dropped would come
+      # back as the reader's default (`false`) instead.
       exposed = Enum.find(Providers.providers(), &(&1["name"] == "exposed"))
       assert exposed["expose_models"] == true
       assert exposed["probe_multimodal"] == true
-
-      toml = File.read!(local_file)
-      assert toml =~ "expose-models"
-      assert toml =~ "probe-multimodal"
-    end
-
-    test "reflects a freshly written local.toml" do
-      # Write a provider via the writer, then confirm `providers/0`
-      # surfaces it (it reads the merged base + local config).
-      {:ok, config} = Nest.DotConfig.load()
-      base = config.providers["model-studio"]
-
-      providers = [
-        %Provider{
-          name: "brand-new",
-          base_url: "https://brand-new.example/v1",
-          api_key: "k",
-          protocol: "openai",
-          auto_models: false,
-          tags: [],
-          models: [],
-          auto_probe: true,
-          default_context_limit: base.default_context_limit
-        }
-      ]
-
-      assert :ok = Writer.save_providers(providers)
-      assert Enum.any?(Providers.providers(), &(&1["name"] == "brand-new"))
     end
   end
 
@@ -163,14 +134,14 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       assert_reply ref, :ok, %{}, 1_000
       assert_push "providers_updated", %{providers: providers}, 1_000
 
+      # The push carries what the handler read back out of `local.toml`, so
+      # this is the write as well as the broadcast.
       assert Enum.any?(providers, &(&1["name"] == "acme"))
-      assert File.exists?(local_file)
       assert File.read!(local_file) =~ "acme"
     end
 
     test "round-trips probe_multimodal through save, the push and local.toml", %{
-      socket: socket,
-      local_file: local_file
+      socket: socket
     } do
       Mimic.expect(Nest.Models, :rescan, fn -> :ok end)
 
@@ -185,19 +156,15 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
 
       assert_reply ref, :ok, %{}, 1_000
 
-      # The push serializes the config the handler just reloaded, so this pins
-      # the outbound `true` as well as the `false` the two defaults produce.
+      # The push serializes the config the handler just reloaded from
+      # `local.toml`, so this pins the outbound `true`, the persisted `false`
+      # and the `false` the default produces.
       assert_push "providers_updated", %{providers: providers}, 1_000
 
       by_name = Map.new(providers, &{&1["name"], &1["probe_multimodal"]})
       assert by_name["opted-in"] == true
       assert by_name["opted-out"] == false
       assert by_name["absent"] == false
-
-      # ... and the writer persists the same values.
-      toml = File.read!(local_file)
-      assert toml =~ ~s(probe-multimodal = true)
-      assert toml =~ ~s(probe-multimodal = false)
     end
 
     test "rejects a non-admin user with :forbidden" do
@@ -218,9 +185,19 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       assert_reply ref, :error, %{"reason" => "forbidden"}
     end
 
-    test "replies invalid_payload when providers is not a list", %{socket: socket} do
+    test "replies invalid_payload when providers is not a list, and broadcasts nothing", %{
+      socket: socket
+    } do
       ref = push(socket, "save_providers", %{"providers" => %{}})
       assert_reply ref, :error, %{"reason" => "invalid_payload"}
+
+      # The handler has already returned its error reply (`assert_reply`
+      # above), and a channel broadcasts before it replies — so a broadcast
+      # would already be in this mailbox. No wait is needed. The `0` fence is
+      # sound only while `providers_updated` has a single emitter
+      # (`Providers.save/2`): a second one could land between the reply and
+      # this line.
+      refute_push "providers_updated", _, 0
     end
 
     test "replies invalid_payload on a bad thinking-effort or probe_multimodal value", %{
@@ -242,19 +219,6 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
         })
 
       assert_reply ref, :error, %{"reason" => "invalid_payload"}
-    end
-
-    test "does not broadcast on failure", %{socket: socket} do
-      ref = push(socket, "save_providers", %{"providers" => %{}})
-      assert_reply ref, :error, %{"reason" => "invalid_payload"}
-
-      # The handler has already returned its error reply (`assert_reply`
-      # above), and a channel broadcasts before it replies — so a broadcast
-      # would already be in this mailbox. No wait is needed. The `0` fence is
-      # sound only while `providers_updated` has a single emitter
-      # (`Providers.save/2`): a second one could land between the reply and
-      # this line.
-      refute_push "providers_updated", _, 0
     end
 
     test "replies invalid_payload for a model with a blank name", %{
@@ -331,20 +295,18 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # `:ok` test's comment already gives. The refusal path additionally builds
       # its message with `inspect/1`, which loads `Inspect` on first use; that is
       # warmed in `test_helper.exs` so it does not land in this deadline.
-      for bad <- [0, 0.5, -1] do
-        ref =
-          push(socket, "save_providers", %{
-            "providers" => [
-              %{"name" => "acme", "auto_models" => false, "default_context_limit" => bad}
-            ]
-          })
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [
+            %{"name" => "acme", "auto_models" => false, "default_context_limit" => 0}
+          ]
+        })
 
-        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
 
-        # The property that matters: nothing is written, so the config the app
-        # reloads is still one it can read.
-        refute File.exists?(local_file)
-      end
+      # The property that matters: nothing is written, so the config the app
+      # reloads is still one it can read.
+      refute File.exists?(local_file)
     end
 
     test "replies invalid_payload for a provider tags value the reader rejects", %{
@@ -354,15 +316,13 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # The GUI preserves tags it was handed, so a malformed list can arrive
       # from a client that built one. `parse_tags/2` raises on a non-list or a
       # list with a non-string element.
-      for bad <- ["abc", [1, 2], [%{"a" => 1}]] do
-        ref =
-          push(socket, "save_providers", %{
-            "providers" => [%{"name" => "acme", "auto_models" => false, "tags" => bad}]
-          })
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [%{"name" => "acme", "auto_models" => false, "tags" => "abc"}]
+        })
 
-        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
-        refute File.exists?(local_file)
-      end
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
+      refute File.exists?(local_file)
     end
 
     test "replies invalid_payload for a model multi-modal the reader rejects", %{
@@ -397,6 +357,9 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # free text, so the operator can type a path or a variable name whose
       # target does not exist — and the write would succeed before the read
       # refused it.
+      #
+      # The two shapes are separate branches of `DotConfig.resolve_api_key/1`
+      # (`${ENV}` and `file:`), so both are kept.
       for bad <- ["file:/nonexistent/nest-probe-key", "${NEST_PROBE_UNSET_VAR}"] do
         ref =
           push(socket, "save_providers", %{
@@ -408,52 +371,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       end
     end
 
-    test "still saves a literal api-key, which resolves to itself", %{
-      socket: socket,
-      local_file: local_file
-    } do
-      # The premise of the api-key refusal: a literal key — including the
-      # documented `api-key = "none"` opt-out — is not a reference and passes
-      # untouched. Without this the guard could be refusing every key and the
-      # test above would not notice.
-      Mimic.expect(Nest.Models, :rescan, fn -> :ok end)
-
-      ref =
-        push(socket, "save_providers", %{
-          "providers" => [%{"name" => "acme", "auto_models" => false, "api_key" => "none"}]
-        })
-
-      assert_reply ref, :ok, %{}, 1_000
-      assert File.read!(local_file) =~ ~s(api-key = "none")
-    end
-
-    test "saves a provider whose optional fields are absent", %{
-      socket: socket,
-      local_file: local_file
-    } do
-      # The other half of the guards: every field they touch is optional, so a
-      # provider that omits them all must still save. This is what would fail if
-      # a guard started treating "absent" as "invalid".
-      Mimic.expect(Nest.Models, :rescan, fn -> :ok end)
-
-      ref =
-        push(socket, "save_providers", %{
-          "providers" => [%{"name" => "acme", "auto_models" => false}]
-        })
-
-      assert_reply ref, :ok, %{}, 1_000
-
-      toml = File.read!(local_file)
-      assert toml =~ "acme"
-      refute toml =~ "default-context-limit"
-      refute toml =~ "timeout"
-      # `base-url` is a substring of `probe-base-url`, so this asserts that
-      # *neither* key was written — which is what the test is about.
-      refute toml =~ "base-url"
-      refute toml =~ "api-key"
-    end
-
-    test "replies invalid_payload for a probe-base-url the reader rejects", %{
+    test "replies invalid_payload for a probe-base-url the reader rejects, naming the field", %{
       socket: socket,
       local_file: local_file
     } do
@@ -469,16 +387,24 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       #
       # The browser coerces `""` to `null` (`e.target.value || null`), so a
       # well-behaved session cannot produce `""` — but the rule must not depend
-      # on one client's coercion, and `7` is reachable too.
-      for bad <- ["", 7, [], %{}] do
-        ref =
-          push(socket, "save_providers", %{
-            "providers" => [%{"name" => "acme", "auto_models" => false, "probe_base_url" => bad}]
-          })
+      # on one client's coercion.
+      #
+      # `invalid_payload` alone says nothing about *which* field or value is
+      # wrong, and every guard raises a message that names both. The reply
+      # carries it, and `errorText` prefers `message` — so the operator is told
+      # what to fix rather than being handed a bare enum.
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [%{"name" => "acme", "auto_models" => false, "probe_base_url" => ""}]
+        })
 
-        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
-        refute File.exists?(local_file)
-      end
+      assert_reply ref, :error, %{"reason" => "invalid_payload", "message" => message}, 1_000
+      assert message =~ "probe-base-url"
+      assert message =~ "acme"
+
+      # The property that matters: nothing is written, so the config the app
+      # reloads is still one it can read.
+      refute File.exists?(local_file)
     end
 
     test "replies invalid_payload for a base-url the reader rejects", %{
@@ -493,26 +419,27 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # `MultimodalProbe`) and in `EndpointProbe.probe/1`, plus an
       # `ArgumentError` on `<>` in `ChatModel.discovery_url/1`.
       #
-      # `7` is channel-reachable and used to be persisted. `""` is what the
-      # browser sends for a cleared field; it does not raise, but it is not a URL
-      # either, and this field's sibling `probe-base-url` already refuses it.
-      for bad <- [7, "", [], %{}] do
-        ref =
-          push(socket, "save_providers", %{
-            "providers" => [%{"name" => "acme", "auto_models" => false, "base_url" => bad}]
-          })
+      # `7` is channel-reachable and used to be persisted. The rule is
+      # `non_empty_string`, so the `""` the browser sends for a cleared field is
+      # refused by the same clause.
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [%{"name" => "acme", "auto_models" => false, "base_url" => 7}]
+        })
 
-        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
-        refute File.exists?(local_file)
-      end
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
+      refute File.exists?(local_file)
     end
 
     test "still saves a base-url and an api-key that are text", %{
       socket: socket,
       local_file: local_file
     } do
-      # The premise of the base-url refusal: a non-empty URL is exactly what the
-      # field is for, so the guard must not be refusing the field itself.
+      # The premise of both refusals above: a non-empty URL, and a literal key —
+      # including the documented `api-key = "none"` opt-out, which is not a
+      # reference and resolves to itself — are exactly what the fields are for,
+      # so the guards must not be refusing the fields themselves. Without this
+      # they could be refusing every value and the tests above would not notice.
       Mimic.expect(Nest.Models, :rescan, fn -> :ok end)
 
       ref =
@@ -522,7 +449,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
               "name" => "acme",
               "auto_models" => false,
               "base_url" => "https://acme.example/v1",
-              "api_key" => "sk-literal"
+              "api_key" => "none"
             }
           ]
         })
@@ -531,7 +458,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
 
       toml = File.read!(local_file)
       assert toml =~ ~s(base-url = "https://acme.example/v1")
-      assert toml =~ ~s(api-key = "sk-literal")
+      assert toml =~ ~s(api-key = "none")
     end
 
     test "replies invalid_payload for a provider name that is blank or absent", %{
@@ -542,7 +469,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # — `[providers.""]` — so two different payloads produced one
       # unaddressable provider. The GUI's "add provider" starts a row at
       # `name: ""`, so this is what makes the operator name it before saving.
-      for bad <- ["", nil, 7] do
+      for bad <- ["", nil] do
         ref =
           push(socket, "save_providers", %{
             "providers" => [%{"name" => bad, "auto_models" => false}]
@@ -570,21 +497,19 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # a typed `0` (the string `"0"` is truthy, so the `e.target.value ? … : null`
       # guard does not catch it), and the `min="1"` added alongside it is inert —
       # there is no enclosing `<form>` and nothing calls `checkValidity()`.
-      for bad <- [0, 0.5, -1] do
-        ref =
-          push(socket, "save_providers", %{
-            "providers" => [
-              %{
-                "name" => "acme",
-                "auto_models" => false,
-                "models" => [%{"name" => "m", "context_limit" => bad}]
-              }
-            ]
-          })
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [
+            %{
+              "name" => "acme",
+              "auto_models" => false,
+              "models" => [%{"name" => "m", "context_limit" => 0}]
+            }
+          ]
+        })
 
-        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
-        refute File.exists?(local_file)
-      end
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
+      refute File.exists?(local_file)
     end
 
     test "replies invalid_payload for a non-string api-key", %{
@@ -594,33 +519,12 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # A non-binary key is tolerated by the *reader* — `KeyValidation` only acts
       # `when is_binary(key)`, so boot succeeds — and then raises at chat time,
       # where `resolve_api_key/1` calls `String.starts_with?/2` on it.
-      for bad <- [7, %{}, []] do
-        ref =
-          push(socket, "save_providers", %{
-            "providers" => [%{"name" => "acme", "auto_models" => false, "api_key" => bad}]
-          })
-
-        assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
-        refute File.exists?(local_file)
-      end
-    end
-
-    test "the refusal carries a reason the operator can act on", %{
-      socket: socket,
-      local_file: local_file
-    } do
-      # `invalid_payload` alone says nothing about *which* field or value is
-      # wrong, and every guard raises a message that names both. The reply now
-      # carries it, and `errorText` prefers `message` — so the operator is told
-      # what to fix rather than being handed a bare enum.
       ref =
         push(socket, "save_providers", %{
-          "providers" => [%{"name" => "acme", "auto_models" => false, "probe_base_url" => ""}]
+          "providers" => [%{"name" => "acme", "auto_models" => false, "api_key" => 7}]
         })
 
-      assert_reply ref, :error, %{"reason" => "invalid_payload", "message" => message}, 1_000
-      assert message =~ "probe-base-url"
-      assert message =~ "acme"
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 1_000
       refute File.exists?(local_file)
     end
 

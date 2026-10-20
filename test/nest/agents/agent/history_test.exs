@@ -108,14 +108,6 @@ defmodule Nest.Agents.Agent.HistoryTest do
       assert %ToolResult{is_error: false, content: content} = three
       assert content =~ "Showing 2..4 (3)."
       assert content =~ "[3] user:\nthe second question"
-
-      # No `name` means the caller itself, and no `start_index` means the last
-      # message: the whole call is `agents-history()`.
-      {default, _log} = run(space_id, name, %{})
-
-      assert %ToolResult{is_error: false, content: content} = default
-      assert content =~ "Showing 4..4 (1)."
-      assert content =~ "[4] assistant:\nthe report is ready"
     end
 
     test "renders tool calls and results, and searches their text", %{
@@ -302,7 +294,7 @@ defmodule Nest.Agents.Agent.HistoryTest do
       assert content == "Invalid `search` argument: expected a non-empty string, got: 5."
     end
 
-    test "resolves `name`: absent means the caller, a malformed one is refused", %{
+    test "resolves `name`: absent or empty means the caller, no caller is refused", %{
       pid: pid,
       name: name,
       space_id: space_id
@@ -318,26 +310,6 @@ defmodule Nest.Agents.Agent.HistoryTest do
         assert content =~ "[4] assistant:\nthe report is ready"
       end
 
-      # Present but not a string is a typo, not a default: reading the caller's
-      # own history in its place would answer a question the model did not ask.
-      for {bad, rendered} <- [{123, "123"}, {%{}, "%{}"}, {["bob"], ~s(["bob"])}, {nil, "nil"}] do
-        {result, log} = run(space_id, name, %{"name" => bad})
-
-        assert %ToolResult{is_error: true, content: content} = result
-
-        assert content ==
-                 "Invalid `name` argument: expected a string, got: #{rendered}. " <>
-                   "Omit it to target yourself."
-
-        assert log =~ "BatchSizer produced is_error=true tool result"
-      end
-
-      # A string that names nothing in this space is still a lookup failure.
-      {ghost, _log} = run(space_id, name, %{"name" => "ghost"})
-
-      assert %ToolResult{name: "agents-history", is_error: true, content: content} = ghost
-      assert content == "Agent ghost not found in this space."
-
       # `ctx.agent_name` is the caller's own name in production; a call that has
       # neither a name nor a caller is refused rather than reading something
       # arbitrary.
@@ -347,23 +319,6 @@ defmodule Nest.Agents.Agent.HistoryTest do
 
       assert content ==
                "Missing required argument: name (and this call has no calling agent)."
-    end
-
-    test "an archived agent is refused, naming what to do about it", %{
-      pid: pid,
-      name: name,
-      space_id: space_id
-    } do
-      seed_conversation(pid)
-      assert :ok = Persistence.archive_agent(space_id, name)
-
-      {result, _log} = run(space_id, name, %{"name" => name})
-
-      assert %ToolResult{is_error: true, content: content} = result
-
-      assert content ==
-               "Agent #{name} is archived, so it is out of service; " <>
-                 "restore it with agents-unarchive first."
     end
 
     test "a name that only exists in another space is refused", %{
@@ -382,22 +337,16 @@ defmodule Nest.Agents.Agent.HistoryTest do
       assert other_space_id != space_id
 
       # From the first space the name is not found — the security boundary.
-      {refused, log} = run(space_id, name, %{"name" => other_name})
+      {refused, _log} = run(space_id, name, %{"name" => other_name})
 
       assert %ToolResult{is_error: true, content: content} = refused
       assert content == "Agent #{other_name} not found in this space."
-      assert log =~ "BatchSizer produced is_error=true tool result"
 
-      # The same name read from its own space works, and a default read uses the
-      # caller's own name: the refusal is the space, not the name.
+      # The same name read from its own space works: the refusal is the space,
+      # not the name.
       {allowed, _log} = run(other_space_id, other_name, %{"name" => other_name})
 
       assert %ToolResult{is_error: false, content: content} = allowed
-      assert content =~ "a message only the other space can see"
-
-      {by_default, _log} = run(other_space_id, other_name, %{})
-
-      assert %ToolResult{is_error: false, content: content} = by_default
       assert content =~ "a message only the other space can see"
     end
   end

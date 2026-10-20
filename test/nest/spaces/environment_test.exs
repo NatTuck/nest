@@ -16,20 +16,22 @@ defmodule Nest.Spaces.EnvironmentTest do
       (`config/test.exs` installs an inert runner, so the containers themselves
       are not observable here; `Nest.Sandbox.Backend.DockerTest` owns that).
 
+  The workspace refusals are pinned where they are produced rather than here: the
+  edit path's two codes are `NestWeb.LobbyChannelEditSpaceTest`'s (through a real
+  `edit_space` push, which is the same `update_environment/2`), and the tagged
+  `{:config_file_not_regular, path, type}` — with the path, so the user knows
+  which file to replace — is `Nest.SandboxTest`'s, at `workspace_error/1` itself.
+
   The agent side — the notice a live agent gets, and the flag a stopped one keeps
   — is `Nest.Agents.Agent.WorkspaceTest`'s.
   """
 
   use Nest.DataCase, async: true
 
-  import ExUnit.CaptureLog
   import Nest.Test.TmpCleanup
 
-  alias Ecto.Adapters.SQL.Sandbox
-  alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.SpaceGate
-  alias Nest.Persistence
   alias Nest.Sandbox.Paths
   alias Nest.Spaces
   alias Nest.Spaces.Space
@@ -43,7 +45,6 @@ defmodule Nest.Spaces.EnvironmentTest do
                Spaces.update_environment(space.id, %{workspace_path: moved})
 
       assert Spaces.get_space(space.id).workspace_path == moved
-      assert Spaces.workspace_path(space.id) == moved
     end
 
     test "changes the sandbox backend" do
@@ -57,7 +58,6 @@ defmodule Nest.Spaces.EnvironmentTest do
                Spaces.update_environment(space.id, %{sandbox_backend: "none"})
 
       assert Spaces.sandbox_backend(space.id) == "none"
-      assert Spaces.get_space(space.id).workspace_path == space.workspace_path
     end
 
     test "refuses a backend this build does not implement" do
@@ -106,68 +106,6 @@ defmodule Nest.Spaces.EnvironmentTest do
       # directory would still be here.
       refute File.exists?(stage)
     end
-
-    test "a save that names what the row already says is not an edit" do
-      {:ok, space} =
-        space(%{
-          workspace_path: AgentTestHelpers.default_test_workspace(),
-          sandbox_backend: "docker"
-        })
-
-      stage = Paths.docker_stage_dir(space.id)
-      File.mkdir_p!(stage)
-      on_exit(fn -> File.rm_rf(Paths.docker_stage_dir(space.id)) end)
-
-      {:ok, agent_name} = live_agent(space.id)
-
-      assert {:ok, %Space{}} =
-               Spaces.update_environment(space.id, %{
-                 workspace_path: space.workspace_path,
-                 network_access: space.network_access,
-                 sandbox_backend: space.sandbox_backend
-               })
-
-      # Nothing moved, so nothing was released...
-      assert File.exists?(stage)
-      # ...and nobody was told: the flag stays clear, so no agent announces a
-      # change that did not happen.
-      assert pending?(space.id, agent_name) == false
-    end
-
-    test "refuses a workspace whose config file Nest cannot protect" do
-      # A `.nest` or `AGENTS.md` that is not a regular file cannot be masked into
-      # the sandbox, so the workspace is refused — and the reason is *tagged*, with
-      # the path, because the user has to know which file to replace. The same
-      # code the create path produces for the same workspace.
-      {:ok, space} = space(%{workspace_path: AgentTestHelpers.default_test_workspace()})
-      moved = tmp_workspace("env-config-file")
-      path = Path.join(moved, ".nest")
-      File.write!(Path.join(moved, "real.nest"), "")
-      File.ln_s!(Path.join(moved, "real.nest"), path)
-
-      # The refusal is logged (it names the file); capture it and assert on it.
-      log =
-        capture_log(fn ->
-          assert {:error, {:config_file_not_regular, ^path, :symlink}} =
-                   Spaces.update_environment(space.id, %{workspace_path: moved})
-        end)
-
-      assert log =~ "cannot protect it from being rewritten"
-
-      assert Spaces.get_space(space.id).workspace_path == space.workspace_path
-    end
-
-    test "refuses a workspace the sandbox cannot run" do
-      {:ok, space} = space(%{workspace_path: AgentTestHelpers.default_test_workspace()})
-
-      assert {:error, :workspace_under_tmp} =
-               Spaces.update_environment(space.id, %{workspace_path: "/tmp/not-a-workspace"})
-
-      assert {:error, :workspace_missing} =
-               Spaces.update_environment(space.id, %{workspace_path: "/nonexistent/nest-ws"})
-
-      assert Spaces.get_space(space.id).workspace_path == space.workspace_path
-    end
   end
 
   defp space(attrs) do
@@ -175,30 +113,6 @@ defmodule Nest.Spaces.EnvironmentTest do
       AgentTestHelpers.create_test_space(Map.put_new(attrs, :name, unique("env-space")))
 
     {:ok, Spaces.get_space(space_id)}
-  end
-
-  # A live agent in `space_id`, so "nobody was told" has a subject. Started
-  # through the caller interface so it is registered where the edit looks.
-  defp live_agent(space_id) do
-    name = unique("env-agent")
-
-    {:ok, ^name} =
-      Agents.create_agent(
-        space_id,
-        %{name: "qwen3.5-plus", provider: "model-studio"},
-        name: name,
-        vocation_id: AgentTestHelpers.vocation_id_for_test()
-      )
-
-    {:ok, pid} = Agents.Supervisor.get_agent(space_id, name)
-    Sandbox.allow(Nest.Repo, self(), pid)
-    AgentTestHelpers.ensure_cleanup(name)
-    {:ok, name}
-  end
-
-  defp pending?(space_id, name) do
-    {:ok, row} = Persistence.fetch_agent(space_id, name)
-    row.space_notice_pending
   end
 
   defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"

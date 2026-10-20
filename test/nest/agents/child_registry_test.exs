@@ -60,7 +60,6 @@ defmodule Nest.Agents.ChildRegistryTest do
       :ok = ChildRegistry.register(space_id, parent, child)
 
       # One logical entry per child.
-      assert ChildRegistry.parent_of(space_id, child) == parent
       assert ChildRegistry.children_of(space_id, parent) == [child]
 
       on_exit(fn -> safe_unregister(space_id, child) end)
@@ -124,7 +123,7 @@ defmodule Nest.Agents.ChildRegistryTest do
       # Register the test pid itself as the parent so the registry's
       # `GenServer.cast/2` lands in this process's mailbox as a raw
       # `{:"$gen_cast", ...}`. That cast *is* the event that the child was
-      # terminated, so there is nothing to poll: `parent_of/2` is a
+      # terminated, so there is nothing to poll: `children_of/2` is a
       # `GenServer.call`, and it is ordered after the handler that both casts
       # and updates the table.
       {:ok, _} = Registry.register(Nest.Agents.Registry, {space_id, parent}, nil)
@@ -138,37 +137,11 @@ defmodule Nest.Agents.ChildRegistryTest do
 
       :ok = ChildRegistry.register(space_id, parent, child)
 
-      assert child in ChildRegistry.children_of(space_id, parent)
-      assert ChildRegistry.parent_of(space_id, child) == parent
-
       stop_supervised!({AgentsRegistry, child})
 
       assert_receive {:"$gen_cast", {:child_terminated, ^child, _reason}}, 1_000
 
       refute child in ChildRegistry.children_of(space_id, parent)
-    end
-
-    test "casts :child_terminated to the live parent when a child dies", %{space_id: space_id} do
-      parent = unique_name("parent")
-      child = unique_name("child")
-
-      # Register the test pid itself as the parent so the
-      # registry's `GenServer.cast/2` lands in this process's
-      # mailbox as a raw `{:"$gen_cast", ...}`.
-      {:ok, _} = Registry.register(Nest.Agents.Registry, {space_id, parent}, nil)
-
-      start_supervised!(
-        {Agent, fn -> :ok end},
-        id: {AgentsRegistry, child},
-        start:
-          {Agent, :start_link, [fn -> :ok end, [name: AgentsRegistry.via_tuple(space_id, child)]]}
-      )
-
-      :ok = ChildRegistry.register(space_id, parent, child)
-
-      stop_supervised!({AgentsRegistry, child})
-
-      assert_receive {:"$gen_cast", {:child_terminated, ^child, _reason}}, 1_000
     end
   end
 

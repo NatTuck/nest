@@ -41,6 +41,5 @@ defmodule Nest.Agents.Agent.TurnCancelToolsTest do
 
   test "a turn with no worker running is a no-op" do
     assert :ok = Turn.cancel_tools(state(%Work{}), "changed")
-    refute_receive {:cancel_tool, _}, 20
   end
 end

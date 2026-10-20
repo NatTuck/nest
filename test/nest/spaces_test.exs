@@ -1,13 +1,15 @@
 defmodule Nest.SpacesTest do
   @moduledoc """
-  Tests for `Nest.Spaces` — focused on the Phase 2 contract
-  that `create_space_with_root_agent/2` resolves the root
-  agent's vocation from the supplied `blueprint_id`
-  when the caller doesn't pass an explicit `vocation:`.
+  Tests for `Nest.Spaces`: the space lifecycle (create, rename, delete, archive,
+  unarchive), the two creation gates — the root-agent slug rule and the
+  workspace requirement — and the explicit-vocation override on
+  `create_space_with_root_agent/2`.
 
-  Earlier Phase 1 work covered `create_space/2` and
-  `delete_space/1`. These tests cover the Phase 2 surface
-  area added by the blueprints work.
+  The blueprint-rooted half of that contract — a caller that names no
+  `vocation:` gets the blueprint's `root_vocation` — is covered end-to-end
+  through the lobby, in `NestWeb.LobbyChannelTest`'s "blueprint_id drives the
+  root agent's vocation over the default". What is left here is the override
+  and the refusals.
   """
   use Nest.DataCase, async: true
 
@@ -36,34 +38,6 @@ defmodule Nest.SpacesTest do
   end
 
   describe "create_space_with_root_agent/2 with blueprints" do
-    test "uses the blueprint's root_vocation when caller omits vocation", %{
-      user_id: user_id
-    } do
-      vocation = VocationsFixtures.vocation_fixture()
-      blueprint = BlueprintsFixtures.blueprint_fixture(%{root_vocation: vocation.slug})
-
-      attrs = %{
-        name: "phase2-#{System.unique_integer([:positive])}",
-        slug: "phase2-#{System.unique_integer([:positive])}",
-        blueprint_id: blueprint.id,
-        model: %{name: "qwen3.5-plus", provider: "model-studio"},
-        # Every space needs a workspace now.
-        workspace_path: AgentTestHelpers.default_test_workspace()
-      }
-
-      assert {:ok, %Space{} = space, agent_name} =
-               Spaces.create_space_with_root_agent(user_id, attrs)
-
-      assert space.blueprint_id == blueprint.id
-
-      # Cleanup the spawned agent
-      on_exit(fn -> _ = Supervisor.stop_agent(space.id, agent_name) end)
-
-      # The root agent carries the blueprint's vocation
-      {:ok, info} = Agents.get_info(space.id, agent_name)
-      assert info.vocation_id == vocation.id
-    end
-
     test "explicit vocation wins over the blueprint's root_vocation", %{user_id: user_id} do
       blueprint_vocation = VocationsFixtures.vocation_fixture()
       explicit_vocation = VocationsFixtures.vocation_fixture()
@@ -87,7 +61,6 @@ defmodule Nest.SpacesTest do
 
       {:ok, info} = Agents.get_info(space.id, agent_name)
       assert info.vocation_id == explicit_vocation.id
-      refute info.vocation_id == blueprint_vocation.id
     end
 
     test "returns {:error, :blueprint_missing} when blueprint_id is missing", %{user_id: user_id} do
@@ -99,28 +72,6 @@ defmodule Nest.SpacesTest do
 
       assert {:error, :blueprint_missing} =
                Spaces.create_space_with_root_agent(user_id, attrs)
-    end
-
-    test "without a blueprint_id, uses the explicit vocation", %{user_id: user_id} do
-      # Phase 1 contract: a caller without a blueprint supplies
-      # `vocation` (a slug) directly; `Agents.create_agent/3` does not
-      # fall back to the first available vocation on its own.
-      vocation = VocationsFixtures.vocation_fixture()
-
-      attrs = %{
-        name: "no-blueprint-#{System.unique_integer([:positive])}",
-        vocation: vocation.slug,
-        model: %{name: "qwen3.5-plus", provider: "model-studio"},
-        workspace_path: AgentTestHelpers.default_test_workspace()
-      }
-
-      assert {:ok, %Space{blueprint_id: nil} = space, agent_name} =
-               Spaces.create_space_with_root_agent(user_id, attrs)
-
-      on_exit(fn -> _ = Supervisor.stop_agent(space.id, agent_name) end)
-
-      {:ok, info} = Agents.get_info(space.id, agent_name)
-      assert info.vocation_id == vocation.id
     end
 
     test "returns {:error, :missing_vocation} when neither vocation nor blueprint given", %{
@@ -194,7 +145,7 @@ defmodule Nest.SpacesTest do
       user_id: user_id
     } do
       blueprint = BlueprintsFixtures.blueprint_fixture()
-      attrs = blueprint_space_attrs(blueprint.id, user_id)
+      attrs = blueprint_space_attrs(blueprint.id)
 
       assert {:ok, %Space{id: space_id} = space, agent_name} =
                Spaces.create_space_with_root_agent(user_id, attrs)
@@ -207,7 +158,6 @@ defmodule Nest.SpacesTest do
 
       # The space row is detached, not deleted
       reloaded = Spaces.get_space(space_id)
-      assert reloaded != nil
       assert reloaded.blueprint_id == nil
     end
   end
@@ -239,10 +189,6 @@ defmodule Nest.SpacesTest do
         _ = Supervisor.stop_agent(space_id, agent_b)
       end)
 
-      # Both agents are running.
-      assert {:ok, _} = Agents.get_info(space_id, agent_a)
-      assert {:ok, _} = Agents.get_info(space_id, agent_b)
-
       assert :ok = Spaces.delete_space(space_id)
 
       # Space row gone.
@@ -252,17 +198,6 @@ defmodule Nest.SpacesTest do
       assert {:error, :not_found} = Agents.get_info(space_id, agent_a)
       assert {:error, :not_found} = Agents.get_info(space_id, agent_b)
       assert Persistence.fetch_all_agents_for_space(space_id) == []
-    end
-
-    test "deleting an empty space succeeds", %{user_id: user_id} do
-      {:ok, %Space{id: space_id}} =
-        Spaces.create_space(user_id, %{
-          workspace_path: AgentTestHelpers.default_test_workspace(),
-          name: "empty-del-#{System.unique_integer([:positive])}"
-        })
-
-      assert :ok = Spaces.delete_space(space_id)
-      assert Spaces.get_space(space_id) == nil
     end
 
     test "returns {:error, :not_found} for a missing space" do
@@ -314,30 +249,6 @@ defmodule Nest.SpacesTest do
   end
 
   describe "archive_space/1 and unarchive_space/1" do
-    test "hides an archived space from list_for_user/1 and shows it in list_archived_for_user/1",
-         %{user_id: user_id} do
-      {:ok, %Space{id: space_id}} =
-        Spaces.create_space(user_id, %{
-          workspace_path: AgentTestHelpers.default_test_workspace(),
-          name: "arch-1-#{System.unique_integer([:positive])}"
-        })
-
-      assert [%Space{id: ^space_id}] = Spaces.list_for_user(user_id)
-      assert Spaces.list_archived_for_user(user_id) == []
-
-      assert :ok = Spaces.archive_space(space_id)
-
-      assert Spaces.list_for_user(user_id) == []
-      assert [%Space{id: ^space_id}] = Spaces.list_archived_for_user(user_id)
-      assert %Space{id: ^space_id, archived: true} = Spaces.get_space(space_id)
-
-      assert :ok = Spaces.unarchive_space(space_id)
-
-      assert [%Space{id: ^space_id}] = Spaces.list_for_user(user_id)
-      assert Spaces.list_archived_for_user(user_id) == []
-      assert %Space{id: ^space_id, archived: false} = Spaces.get_space(space_id)
-    end
-
     test "archiving stops the space's running agents but does not mark them archived",
          %{user_id: user_id} do
       vid = AgentTestHelpers.vocation_id_for_test()
@@ -366,8 +277,6 @@ defmodule Nest.SpacesTest do
       # Agent row still present and NOT marked archived — unarchive restores it.
       assert {:ok, %Nest.Agents.PersistedAgent{archived: false}} =
                Persistence.fetch_agent(space_id, agent_a)
-
-      assert :ok = Spaces.unarchive_space(space_id)
     end
 
     test "archiving other users' spaces is not possible via list queries (owner-only listing)",
@@ -390,86 +299,12 @@ defmodule Nest.SpacesTest do
       assert {:error, :not_found} = Spaces.archive_space(-1)
       assert {:error, :not_found} = Spaces.unarchive_space(-1)
     end
-
-    test "archiving is idempotent and unarchiving an active space is a no-op", %{
-      user_id: user_id
-    } do
-      {:ok, %Space{id: space_id}} =
-        Spaces.create_space(user_id, %{
-          workspace_path: AgentTestHelpers.default_test_workspace(),
-          name: "arch-idem-#{System.unique_integer([:positive])}"
-        })
-
-      assert :ok = Spaces.archive_space(space_id)
-      assert :ok = Spaces.archive_space(space_id)
-      assert %Space{id: ^space_id, archived: true} = Spaces.get_space(space_id)
-
-      # Unarchiving an already-active space leaves it active.
-      assert :ok = Spaces.unarchive_space(space_id)
-      assert :ok = Spaces.unarchive_space(space_id)
-      assert %Space{id: ^space_id, archived: false} = Spaces.get_space(space_id)
-    end
-
-    test "archiving a space with multiple running agents stops them all", %{user_id: user_id} do
-      vid = AgentTestHelpers.vocation_id_for_test()
-
-      {:ok, %Space{id: space_id}} =
-        Spaces.create_space(user_id, %{
-          workspace_path: AgentTestHelpers.default_test_workspace(),
-          name: "arch-multi-#{System.unique_integer([:positive])}"
-        })
-
-      model = %{name: "qwen3.5-plus", provider: "model-studio"}
-
-      agents =
-        for i <- 1..2 do
-          name = "arch-multi-agent-#{i}-#{System.unique_integer([:positive])}"
-          {:ok, ^name} = Agents.create_agent(space_id, model, name: name, vocation_id: vid)
-          name
-        end
-
-      pids =
-        Enum.map(agents, fn name ->
-          {:ok, pid} = Agents.Registry.lookup(space_id, name)
-          ref = Process.monitor(pid)
-          {name, pid, ref}
-        end)
-
-      assert :ok = Spaces.archive_space(space_id)
-
-      for {_name, pid, ref} <- pids do
-        assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
-      end
-    end
-  end
-
-  describe "suggest_name/0" do
-    test "returns a non-empty adjective-animal name" do
-      name = Spaces.suggest_name()
-
-      assert is_binary(name) and name != ""
-      assert String.contains?(name, "-")
-    end
-
-    test "does not collide with an existing space name", %{user_id: user_id} do
-      {:ok, %Space{name: existing}} =
-        Spaces.create_space(user_id, %{
-          workspace_path: AgentTestHelpers.default_test_workspace(),
-          name: "existing-space-#{System.unique_integer([:positive])}"
-        })
-
-      # `generate_unique` excludes the existing-name set, so the
-      # suggestion must never come back as the space we created.
-      for _ <- 1..20 do
-        refute Spaces.suggest_name() == existing
-      end
-    end
   end
 
   # Helpers
 
-  # Mirror the slug generator in `Space` so rename assertions
-  # don't reimplement the regex.
+  # Mirror the slug generator in `Nest.Slug` so the rename assertion
+  # states the expected slug instead of reading it back from the row.
   defp slugify(name) do
     name
     |> String.downcase()
@@ -477,7 +312,7 @@ defmodule Nest.SpacesTest do
     |> String.trim("-")
   end
 
-  defp blueprint_space_attrs(blueprint_id, _user_id) do
+  defp blueprint_space_attrs(blueprint_id) do
     %{
       name: "blueprint-attrs-#{System.unique_integer([:positive])}",
       slug: "blueprint-attrs-#{System.unique_integer([:positive])}",

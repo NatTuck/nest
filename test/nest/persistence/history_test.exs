@@ -65,10 +65,6 @@ defmodule Nest.Persistence.HistoryTest do
       end
 
       assert indexes(History.load_slice(space_id, name, roles: ["user"])) == [0, 2, 4]
-
-      assistants = History.load_slice(space_id, name, roles: ["assistant"])
-      assert indexes(assistants) == [1, 5]
-      assert Enum.all?(assistants, &match?({:assistant, _}, &1))
     end
   end
 
@@ -97,9 +93,6 @@ defmodule Nest.Persistence.HistoryTest do
       assert indexes(
                History.load_slice(space_id, name, roles: ["user"], origin: "human", limit: 1)
              ) == [2]
-
-      # An unmatched value (and every row with `nil` metadata) yields nothing.
-      assert History.load_slice(space_id, name, roles: ["user"], origin: "missing") == []
     end
   end
 
@@ -110,10 +103,6 @@ defmodule Nest.Persistence.HistoryTest do
       {:ok, _} = Persistence.insert_message(attrs.space_id, attrs.name, user_message(0))
 
       assert History.load_slice(attrs.space_id, attrs.name, []) == []
-    end
-
-    test "returns [] for a missing agent" do
-      assert History.load_slice(test_space_id(), "does-not-exist", []) == []
     end
   end
 

@@ -11,9 +11,13 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
     * `chat:loop-detected-ok` from the JS side invokes
       `Agents.compaction_loop_detected_ok/1`, which clears the
       `:compaction_loop_detected` status on the agent.
-    * `chat:message` is rejected when the agent is in
-      `:compaction_loop_detected` status (frozen state, OK
-      required to resume).
+
+  The `chat:message` refusal in this status is the shared
+  `@broken_statuses` clause, pinned with a real agent in
+  `NestWeb.AgentChannelNeedsRepairTest` and
+  `NestWeb.AgentChannelChatTest`; `:compaction_loop_detected`'s
+  membership in `Machine.blocked_phases/0` is pinned in
+  `Nest.Agents.Agent.InboxTest`.
   """
 
   use NestWeb.ChannelCase, async: true
@@ -49,36 +53,19 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
        }}
     )
 
+    # One exact payload: the handler forwards the broadcast verbatim, so a
+    # dropped or altered field — or one the channel invented — fails here.
+    # Top-level keys stay atoms: the test transport delivers the term the
+    # channel pushed, without a JSON round-trip (the broadcast's shape is
+    # `Broadcasts.compaction_loop/6`'s).
     assert_push "chat:compaction-loop", payload, 200
-    assert payload.content =~ "compaction isn't reducing"
-    assert payload.attempt_count == 3
-    assert payload.max_attempts == 3
-  end
 
-  test "chat:message is rejected while agent is in :compaction_loop_detected status", %{
-    socket: socket,
-    agent_id: agent_id,
-    space_id: space_id
-  } do
-    {:ok, agent_pid} = Supervisor.get_agent(space_id, agent_id)
-
-    replace_state(agent_pid, fn %Agent{live: cs} = state ->
-      %{
-        state
-        | live: %{
-            cs
-            | machine: Machine.status_to_machine(cs.machine, :compaction_loop_detected)
-          }
-      }
-    end)
-
-    ref = push(socket, "chat:message", %{"content" => "trying to send", "mode" => "chat"})
-
-    # `assert_reply/3` defaults to a 100ms receive timeout; the reply
-    # requires a channel→Agent cross-process round-trip, which can
-    # exceed that under parallel test load. See the same note in
-    # `lobby_channel_change_model_test.exs`.
-    assert_reply ref, :error, %{"reason" => "agent_status_compaction_loop_detected"}, 1_000
+    assert payload == %{
+             content:
+               "compaction isn't reducing the conversation — start a new session, change model, or clear history",
+             attempt_count: 3,
+             max_attempts: 3
+           }
   end
 
   test "chat:loop-detected-ok invokes Agent.compaction_loop_detected_ok and transitions to :idle",
@@ -94,10 +81,7 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
         state
         | live: %{
             cs
-            | machine: %{
-                Machine.status_to_machine(cs.machine, :compaction_loop_detected)
-                | loop_count: 4
-              }
+            | machine: Machine.status_to_machine(cs.machine, :compaction_loop_detected)
           }
       }
     end)
@@ -105,12 +89,14 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
     ref = push(socket, "chat:loop-detected-ok", %{})
     assert_reply ref, :ok, %{}, 1_000
 
-    # Status should transition back to :idle after the OK click,
-    # and the counter resets to 0.
-    # allowlist: snapshot — status + loop_count
+    # `:ok` alone cannot fail: `Callbacks.handle_call(:compaction_loop_detected_ok, …)`
+    # answers `:ok` from the wrong-status branch too, without settling anything.
+    # The status leaving `:compaction_loop_detected` is the observable that
+    # proves the ack ran. The `loop_count` reset that comes with it is the
+    # machine's, pinned in `MachineBoundaryDeliveryTest`.
+    # allowlist: snapshot — status
     state = :sys.get_state(agent_pid, 1_000)
 
     assert Machine.status_for(state.live.machine) == :idle
-    assert state.live.machine.loop_count == 0
   end
 end

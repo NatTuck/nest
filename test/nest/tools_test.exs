@@ -11,8 +11,16 @@ defmodule Nest.ToolsTest do
   alias Nest.Tools
 
   describe "get_functions/2" do
-    test "returns empty list for empty tool names" do
+    test "returns Tool structs for known names and an empty list for no names" do
+      # Asking for nothing gets an empty list, not an error.
       assert Tools.get_functions([], Mounts.new("/tmp", nil)) == []
+
+      [function] = Tools.get_functions(["file-read"], Mounts.new("/tmp", nil))
+
+      assert %Function{} = function
+      assert function.name == "file-read"
+      assert is_binary(function.description)
+      assert function.parameters_schema != nil
     end
 
     test "filters unknown names and logs a warning" do
@@ -32,43 +40,22 @@ defmodule Nest.ToolsTest do
 
       assert log =~ "unknown_tool"
     end
-
-    test "returns Nest.LLM.Tool structs" do
-      [function] = Tools.get_functions(["file-read"], Mounts.new("/tmp", nil))
-
-      assert %Function{} = function
-      assert function.name == "file-read"
-      assert is_binary(function.description)
-      assert function.parameters_schema != nil
-    end
   end
 
   describe "get_function/2" do
-    test "returns read_file function" do
-      function = Tools.get_function("file-read", Mounts.new("/tmp", nil))
+    test "returns the function for a known name and nil for an unknown one" do
+      for {name, description_fragment} <- [
+            {"file-read", "Read"},
+            {"file-write", "Write"},
+            {"shell-cmd", "shell"}
+          ] do
+        function = Tools.get_function(name, Mounts.new("/tmp", nil))
 
-      assert %Function{} = function
-      assert function.name == "file-read"
-      assert function.description =~ "Read"
-    end
+        assert %Function{} = function
+        assert function.name == name
+        assert function.description =~ description_fragment
+      end
 
-    test "returns write_file function" do
-      function = Tools.get_function("file-write", Mounts.new("/tmp", nil))
-
-      assert %Function{} = function
-      assert function.name == "file-write"
-      assert function.description =~ "Write"
-    end
-
-    test "returns shell_cmd function" do
-      function = Tools.get_function("shell-cmd", Mounts.new("/tmp", nil))
-
-      assert %Function{} = function
-      assert function.name == "shell-cmd"
-      assert function.description =~ "shell"
-    end
-
-    test "returns nil for unknown tool" do
       assert Tools.get_function("unknown_tool", Mounts.new("/tmp", nil)) == nil
     end
   end
@@ -93,18 +80,15 @@ defmodule Nest.ToolsTest do
       {:ok, workspace: test_workspace}
     end
 
-    test "reads file content successfully", %{workspace: workspace} do
+    test "reads file content and reports a missing file", %{workspace: workspace} do
       test_file = Path.join(workspace, "test.txt")
       File.write!(test_file, "Hello, World!")
 
       function = Tools.get_function("file-read", Mounts.new(workspace, nil))
       assert {:ok, result} = function.function.(%{"path" => "test.txt"}, nil)
       assert result == "Hello, World!"
-    end
 
-    test "returns error for non-existent file", %{workspace: workspace} do
-      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
-
+      # A missing path is an error naming the path, not a crash.
       assert {:error, error_msg} =
                function.function.(%{"path" => "nonexistent.txt"}, nil)
 
@@ -192,7 +176,7 @@ defmodule Nest.ToolsTest do
       {:ok, workspace: test_workspace}
     end
 
-    test "writes file content successfully", %{workspace: workspace} do
+    test "writes new files and overwrites existing ones", %{workspace: workspace} do
       function = Tools.get_function("file-write", Mounts.new(workspace, nil))
 
       assert {:ok, result} =
@@ -206,6 +190,19 @@ defmodule Nest.ToolsTest do
 
       written = File.read!(Path.join(workspace, "output.txt"))
       assert written == "Test content"
+
+      # An existing file is replaced, not appended to.
+      test_file = Path.join(workspace, "existing.txt")
+      File.write!(test_file, "old content")
+
+      assert {:ok, _} =
+               Function.execute(
+                 function,
+                 %{"path" => "existing.txt", "content" => "new content"},
+                 nil
+               )
+
+      assert File.read!(test_file) == "new content"
     end
 
     test "returns error when parent directory does not exist", %{workspace: workspace} do
@@ -228,22 +225,6 @@ defmodule Nest.ToolsTest do
 
       # The wording is the shell's: dash says "Directory nonexistent", bash says "No such file or directory".
       assert log =~ "Directory nonexistent" or log =~ "No such file"
-    end
-
-    test "overwrites existing files", %{workspace: workspace} do
-      test_file = Path.join(workspace, "existing.txt")
-      File.write!(test_file, "old content")
-
-      function = Tools.get_function("file-write", Mounts.new(workspace, nil))
-
-      assert {:ok, _} =
-               Function.execute(
-                 function,
-                 %{"path" => "existing.txt", "content" => "new content"},
-                 nil
-               )
-
-      assert File.read!(test_file) == "new content"
     end
 
     test "returns error when workspace is nil" do
@@ -274,14 +255,32 @@ defmodule Nest.ToolsTest do
       {:ok, workspace: test_workspace}
     end
 
-    test "executes command and returns output", %{workspace: workspace} do
+    test "executes commands and reports stdout, stderr, and empty output", %{
+      workspace: workspace
+    } do
       function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
       assert {:ok, result} = function.function.(%{"command" => "echo hello"}, nil)
       assert result =~ "hello"
+
+      # stderr is captured too, not discarded.
+      assert {:ok, result} = function.function.(%{"command" => "echo error >&2"}, nil)
+      assert result =~ "error"
+
+      # A command with no output still gets a legible result rather than "".
+      assert {:ok, result} =
+               Function.execute(
+                 function,
+                 %{"command" => "true"},
+                 nil
+               )
+
+      assert result == "[Command executed successfully with no output]"
     end
 
-    test "returns error for failed commands", %{workspace: workspace} do
+    test "reports failed commands and refuses writes outside the writable mounts", %{
+      workspace: workspace
+    } do
       function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
       log =
@@ -293,13 +292,21 @@ defmodule Nest.ToolsTest do
       # bwrap's non-zero exit is a deliberate diagnostic.
       assert log =~ "ShellCmd.execute: bwrap exited non-zero"
       assert log =~ "exit_code=1"
-    end
 
-    test "captures stderr", %{workspace: workspace} do
-      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
+      # Try to write to /tmp - this should fail when no tmp_path is provided
+      # (because /tmp is read-only in the sandbox without a bind mount)
+      log =
+        capture_log(fn ->
+          assert {:error, result} =
+                   function.function.(%{"command" => "echo 'test' > /tmp/test_file.txt"}, nil)
 
-      assert {:ok, result} = function.function.(%{"command" => "echo error >&2"}, nil)
-      assert result =~ "error"
+          # Should fail with a read-only filesystem error
+          assert result =~ "Read-only file system" or result =~ "Exit code"
+        end)
+
+      # bwrap's non-zero exit is a deliberate diagnostic.
+      assert log =~ "ShellCmd.execute: bwrap exited non-zero"
+      assert log =~ "Read-only file system"
     end
 
     test "handles command in workspace", %{workspace: workspace} do
@@ -347,40 +354,7 @@ defmodule Nest.ToolsTest do
       assert File.read!(Path.join(agent_tmp, "test_file.txt")) == "test content\n"
     end
 
-    test "returns placeholder message for commands with no output", %{workspace: workspace} do
-      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
-
-      # Command that produces no output
-      assert {:ok, result} =
-               Function.execute(
-                 function,
-                 %{"command" => "true"},
-                 nil
-               )
-
-      assert result == "[Command executed successfully with no output]"
-    end
-
-    test "cannot write to /tmp when tmp_path is not provided", %{workspace: workspace} do
-      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
-
-      # Try to write to /tmp - this should fail when no tmp_path is provided
-      # (because /tmp is read-only in the sandbox without a bind mount)
-      log =
-        capture_log(fn ->
-          assert {:error, result} =
-                   function.function.(%{"command" => "echo 'test' > /tmp/test_file.txt"}, nil)
-
-          # Should fail with a read-only filesystem error
-          assert result =~ "Read-only file system" or result =~ "Exit code"
-        end)
-
-      # bwrap's non-zero exit is a deliberate diagnostic.
-      assert log =~ "ShellCmd.execute: bwrap exited non-zero"
-      assert log =~ "Read-only file system"
-    end
-
-    test "can redirect stdout to /dev/null", %{workspace: workspace} do
+    test "can redirect stdout and stderr to /dev/null", %{workspace: workspace} do
       # Regression: previously the read-only bind of the host root shadowed
       # the devtmpfs at /dev, so `> /dev/null` failed with "Permission denied".
       function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
@@ -394,10 +368,6 @@ defmodule Nest.ToolsTest do
 
       assert result =~ "done"
       refute result =~ "Permission denied"
-    end
-
-    test "can redirect stderr to /dev/null", %{workspace: workspace} do
-      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
       # `ls /nonexistent 2>/dev/null` should suppress the "No such file"
       # error; only the trailing `&& echo done` should appear in output.
@@ -411,13 +381,9 @@ defmodule Nest.ToolsTest do
       assert result =~ "done"
       refute result =~ "No such file"
       refute result =~ "Permission denied"
-    end
 
-    test "handles find with 2>/dev/null redirect", %{workspace: workspace} do
       # Mirrors a user-reported failing command: find a missing path
       # while redirecting stderr to /dev/null, then echo a marker.
-      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
-
       assert {:ok, result} =
                Function.execute(
                  function,
@@ -515,20 +481,17 @@ defmodule Nest.ToolsTest do
       assert result =~ "hello"
     end
 
-    test "tool with nil context falls back to default caps", %{workspace: workspace} do
-      # The legacy path: callers that pass nil context get default caps.
-      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
-      assert {:ok, result} = function.function.(%{"command" => "echo ok"}, nil)
-      assert result =~ "ok"
-    end
-
-    test "tool with context that has no caps key falls back to default caps", %{
+    test "tool falls back to default caps when the context is nil or has no caps key", %{
       workspace: workspace
     } do
-      # The catch-all path in caps_from_context/1: context is a map
-      # but lacks the :caps key.
       function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
+      # The legacy path: callers that pass nil context get default caps.
+      assert {:ok, result} = function.function.(%{"command" => "echo ok"}, nil)
+      assert result =~ "ok"
+
+      # The catch-all path in caps_from_context/1: context is a map
+      # but lacks the :caps key.
       assert {:ok, result} =
                function.function.(%{"command" => "echo ok"}, %{other: "thing"})
 
@@ -552,16 +515,15 @@ defmodule Nest.ToolsTest do
       assert hd(functions).name == "context-check"
     end
 
-    test "max_result_tokens is exposed in the parameters schema" do
+    test "max_result_tokens is an optional integer parameter" do
       function = Tools.get_function("file-read", Mounts.new("/tmp", nil))
       schema = function.parameters_schema
+
       assert Map.has_key?(schema["properties"], "max_result_tokens")
       assert schema["properties"]["max_result_tokens"]["type"] == "integer"
-    end
 
-    test "max_result_tokens is not in the required list (it's optional)" do
-      function = Tools.get_function("file-read", Mounts.new("/tmp", nil))
-      required = function.parameters_schema["required"] || []
+      # It's optional: the caller may leave it out.
+      required = schema["required"] || []
       refute "max_result_tokens" in required
     end
 

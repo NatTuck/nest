@@ -63,40 +63,12 @@ defmodule NestWeb.PageControllerTest do
   end
 
   describe "/*path catch-all" do
+    # Every non-root path takes the same `true -> render(conn, :home)` clause,
+    # so this one (the historical infinite-redirect regression) is the
+    # representative; /login and /chat/* add no distinct branch.
     test "renders the shell for /register?token=first-user with no users (not a redirect loop)",
          %{conn: conn} do
       conn = get(conn, ~p"/register?token=first-user")
-      assert html_response(conn, 200)
-    end
-
-    test "renders the shell for /login when anonymous and users exist",
-         %{conn: conn} do
-      {:ok, _, :admin} =
-        Accounts.create_user(%{username: "alice", password: "password123"}, "first-user")
-
-      conn = get(conn, ~p"/login")
-      assert html_response(conn, 200)
-    end
-
-    test "renders the shell for /login when authenticated",
-         %{conn: conn} do
-      {:ok, user, :admin} =
-        Accounts.create_user(%{username: "alice", password: "password123"}, "first-user")
-
-      token = AuthToken.sign(user.id)
-      conn = put_req_header(conn, "authorization", "Bearer #{token}")
-      conn = get(conn, ~p"/login")
-      assert html_response(conn, 200)
-    end
-
-    test "renders the shell for /chat/anything when authenticated",
-         %{conn: conn} do
-      {:ok, user, :admin} =
-        Accounts.create_user(%{username: "alice", password: "password123"}, "first-user")
-
-      token = AuthToken.sign(user.id)
-      conn = put_req_header(conn, "authorization", "Bearer #{token}")
-      conn = get(conn, ~p"/chat/abc")
       assert html_response(conn, 200)
     end
   end
@@ -118,15 +90,13 @@ defmodule NestWeb.PageControllerTest do
     end
 
     test "serves the favicon that static_paths/0 advertises", %{conn: conn} do
-      assert "favicon.svg" in NestWeb.static_paths()
       # The stock Phoenix icon is gone and must not be advertised again.
       refute "favicon.ico" in NestWeb.static_paths()
 
-      # `Plug.Static` serves from `priv/static`, so the list and the file must
-      # agree; a mismatch makes the request fall through to the React shell.
-      assert File.exists?(Application.app_dir(:nest, "priv/static/favicon.svg"))
-
       # End to end: the icon the shell advertises is really served as an SVG.
+      # This also pins the `favicon.svg` entry in `static_paths/0` and the file
+      # in `priv/static`: if either were missing, `Plug.Static` would fall
+      # through to the `/*path` catch-all, whose HTML shell contains no `<svg`.
       # (Without it the request returns the HTML shell, so `~p"/favicon.svg"`
       # would only ever fail in a browser tab.)
       assert conn |> get(~p"/favicon.svg") |> response(200) =~ "<svg"

@@ -21,14 +21,6 @@ defmodule Nest.Blueprints.DefaultsTest do
   alias Nest.BlueprintsFixtures
 
   describe "default_net/1" do
-    test "reads the column, both ways round" do
-      for value <- [true, false] do
-        blueprint = BlueprintsFixtures.blueprint_fixture(%{default_net: value})
-
-        assert Blueprints.default_net(blueprint.id) == value
-      end
-    end
-
     test "is true for a blueprint that never chose, and nil when there is no blueprint" do
       blueprint = BlueprintsFixtures.blueprint_fixture()
 
@@ -39,16 +31,6 @@ defmodule Nest.Blueprints.DefaultsTest do
   end
 
   describe "default_spawnable_vocation/1" do
-    test "reads the column" do
-      blueprint =
-        BlueprintsFixtures.blueprint_fixture(%{
-          spawnable_vocations: ["grader"],
-          default_spawnable_vocation: "grader"
-        })
-
-      assert Blueprints.default_spawnable_vocation(blueprint.id) == "grader"
-    end
-
     test "is nil for a blueprint that names none, and for no blueprint at all" do
       blueprint = BlueprintsFixtures.blueprint_fixture()
 

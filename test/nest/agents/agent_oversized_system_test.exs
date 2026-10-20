@@ -26,8 +26,6 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
   alias Nest.TextFixtures
   alias Nest.Vocations
 
-  import Nest.Agents.AgentTestHelpers, only: [start_agent: 1, vocation_id_for_test: 0]
-
   setup do
     Process.put(:nest_test_agent_pid, self())
     MockClient.start_link()
@@ -64,17 +62,10 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
     })
   end
 
-  defp normal_vocation do
-    create_vocation(%{})
-  end
-
-  # allowlist: harness — Compaction.stage/2 + Executor.run_all/2 drive on the struct
-  defp agent_state(pid), do: :sys.get_state(pid, 1_000)
-
   # The post-turn compaction entry point: stage a compaction against an
-  # idle machine via the same pure `Compaction.stage/2` the machine uses.
-  # The HTTP spawn is deferred via the mailbox, so a non-GenServer test
-  # process never performs a real call.
+  # idle machine via the same pure `Compaction.stage/2` the machine uses,
+  # then run its actions. On the refusal path those are a broadcast and a
+  # transcript append only, so no worker is started.
   defp post_turn(state) do
     ctx = Turn.build_ctx(state)
     machine = %{state.live.machine | work: %{state.live.machine.work | ctx: ctx}}
@@ -131,21 +122,22 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
   end
 
   describe "Compaction staging refuses compaction when the rendered system exceeds 25% budget" do
-    test "the agent transitions to :context_overflow and spawns no chat worker" do
-      # Two observables of one outcome, so one test. From the first name: the
-      # agent lands in `:context_overflow` and stays there — it does not fall
-      # back to idle, and no turn is started for it. From the second: the
-      # oversized path spawns no chat worker, because the refusal happens before
-      # any compaction request is dispatched.
+    test "the agent blocks in :context_overflow, spawns no chat worker, and broadcasts the oversized wording" do
+      # One outcome, three observables: the phase it blocks in, the worker it
+      # must not have spawned, and the frame a connected UI receives. The
+      # server-side log line is the fourth, asserted for its call site below.
+      #
+      # The under-budget arm of the same check is `within_size_budget?/2`'s own
+      # contract (`system_prompt_size_budget_test.exs`), and staging a
+      # compaction that fits is pinned in `machine_compaction_test.exs` (the
+      # notice tests, which stage with a `nil` vocation through the
+      # `messages[0]` fallback) and end to end in `agent_compaction_test.exs`.
+      # The oversized arm's notice row and its `:context_overflow` phase are
+      # pinned in `machine_compaction_test.exs`.
       vocation = oversized_vocation()
-
-      # Build a minimal state struct (no Agent process): `Compaction.stage/2`
-      # reads only `state.live.machine` and the turn context. Spawning a
-      # real Agent is ~100ms overhead per test; building the struct
-      # directly is <5ms. The test verifies the in-memory state shape,
-      # not the GenServer lifecycle.
       state_before = build_minimal_state(vocation)
-      refute Machine.status_for(state_before.live.machine) == :context_overflow
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state_before.space_id}:#{state_before.name}")
 
       # The `{:overflow, :system_oversized, _}` broadcast → `Overflow.broadcast/5`
       # → `Broadcasts.error/4`, which logs the wording and broadcasts the same
@@ -156,97 +148,29 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
 
       assert Machine.status_for(state_after.live.machine) == :context_overflow
 
+      # The interesting claim of a refusal is that nothing happened: the
+      # oversized path must not have started a chat worker.
       assert is_nil(state_after.live.machine.work.active_worker),
              "the oversized-system path must not have spawned a chat worker"
 
-      assert log =~ "chat:error"
-      assert log =~ "Cannot compact:"
-      assert log =~ "25% safety budget"
-      assert log =~ "source=Turn.Executor"
-    end
-
-    test "the broadcast carries the oversized-system wording" do
-      vocation = oversized_vocation()
-      state = build_minimal_state(vocation)
-
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
-
-      # `Broadcasts.error/4` logs the wording and broadcasts the same text, so
-      # the capture is asserted rather than merely silencing, and the broadcast
-      # below is the other observable (the one the UI sees).
-      log = capture_log(fn -> post_turn(state) end)
-
       assert_receive {:chat_error, %{content: msg}}
 
-      assert msg =~ "Cannot compact:"
+      # This arm's own wording. The shared `"Cannot compact:"` prefix and the
+      # `:reserve_exhausted` wording are `compaction/overflow_test.exs`'s, and
+      # the rendered size in the same sentence is
+      # `agent_overflow_integration_test.exs`'s.
       assert msg =~ "25% safety budget"
+
+      # The state's own context limit is the one interpolated (the budget is a
+      # quarter of it), so a caller passing the budget or the reserve instead
+      # fails here.
       assert msg =~ "8000-token context"
 
-      refute msg =~ "compaction reserve",
-             "oversized path should not use the reserve_exhausted wording"
-
-      # The frame and the log line carry the same wording, and each names the
-      # call site its own way: the broadcast appends a `[Source: …]` tag, the
-      # log line records `source=`.
-      assert msg =~ "[Source: Turn.Executor]"
-      assert log =~ "Cannot compact:"
+      # The call site is `Turn.Executor`'s `{:overflow, …}` clause, and this is
+      # the only test that pins it for this arm. The `[Source: …]` tag on the
+      # broadcast is appended from the same argument (so a nil source would fail
+      # here too) and its formatting is `broadcasts_test.exs`'s.
       assert log =~ "source=Turn.Executor"
-    end
-  end
-
-  describe "Compaction staging still works for normal (under-budget) vocations" do
-    test "does not refuse when the rendered prompt is within 25%" do
-      vocation = normal_vocation()
-
-      # Use a realistic context_limit (above the 8192 response
-      # reserve floor). The 8_000 default used by the oversized
-      # tests is below the reserve floor, which makes `check_messages`
-      # report `:cannot_compact` for ANY message list (reserve alone
-      # exceeds the window) and would wrongly trip the pre-flight
-      # choke point when compaction staging appends its request suffix.
-      state_before = build_minimal_state(vocation, 100_000)
-
-      # No capture: staging a compaction for an under-budget vocation logs
-      # nothing, and a capture nobody asserts on can only hide prints
-      # (`SMELLS.md`), so the one that used to sit here is gone.
-      state_after = post_turn(state_before)
-
-      # A normal vocation should NOT trigger the oversized path —
-      # agent should NOT have transitioned to :context_overflow
-      # (whether or not the summary budget check refuses on its
-      # own — that's a different code path).
-      assert Machine.status_for(state_after.live.machine) != :context_overflow or
-               Machine.status_for(state_after.live.machine) == :compacting
-    end
-  end
-
-  describe "vocation with no system_prompt (state.vocation == nil)" do
-    test "Compaction staging falls back to messages[0] for the rendered size (legacy test fixtures)" do
-      # `agents.vocation_id` is a NOT NULL FK, so we have to
-      # pass a real id (a "Test Default" vocation inserted by
-      # the helper). But `vocation: nil` on the attrs still
-      # leaves `state.vocation` as nil after init — the
-      # helper only loads the struct into the attrs when
-      # `vocation_id` is a non-zero integer AND the helper
-      # wants the struct. Here we override `vocation: nil`
-      # explicitly to exercise the `compose_vocation_config/6`
-      # nil-vocation clause. `Dispatch.compaction_plan/1`'s
-      # `system_prompt/2` falls back to extracting the rendered text
-      # from `messages[0]` so the compaction can still proceed
-      # (preserves the pre-fix behavior for tests that relied
-      # on it).
-      vid = vocation_id_for_test()
-      {pid, _agent_id} = start_agent(%{vocation_id: vid, vocation: nil})
-
-      state = agent_state(pid)
-
-      # No capture: the nil-vocation fallback stages the compaction without
-      # logging, so there is no line to assert and nothing to hide — the
-      # defensive capture that used to sit here is gone (`SMELLS.md`).
-      state_after = post_turn(state)
-
-      assert Machine.status_for(state_after.live.machine) == :compacting,
-             "expected :compacting, got #{inspect(Machine.status_for(state_after.live.machine))}"
     end
   end
 end

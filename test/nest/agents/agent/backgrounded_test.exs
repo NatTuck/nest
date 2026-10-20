@@ -5,9 +5,9 @@ defmodule Nest.Agents.Agent.BackgroundedTest do
   A notice is not one string but a sequence of segments (issue #139): the prose
   the model reads, and the backgrounded command's own output, which the client
   renders verbatim rather than as markdown. `notice/1` is *defined* as the join
-  of those segments, so every case here asserts both halves — the exact
-  segments, and the exact notice string, spelled out rather than derived — and
-  the two together are what make the split a display change and nothing more.
+  of those segments, so a `parts/1` assertion already fixes the notice for that
+  outcome; the one notice assertion below (the multi-result case) spells the
+  joined bytes out exactly, and is the only test that exercises `notice/1`.
   """
 
   use ExUnit.Case, async: true
@@ -21,26 +21,20 @@ defmodule Nest.Agents.Agent.BackgroundedTest do
   @timeout_marker "[Command timed out after 1000ms]"
 
   describe "parts/1" do
-    test "one result is its prose then its output, and the notice is their join" do
+    test "one result is its prose then its output" do
       # The prose is byte-identical to what the notice has always said, spelled
       # out here rather than rebuilt from the code under test — so a change to
-      # the wording, or to how the segments are joined, fails visibly. The
-      # timeout wording is keyed off the command's own marker (decision D4),
-      # whatever the tool is called.
+      # the wording fails visibly. The timeout wording is keyed off the
+      # command's own marker (decision D4), not on the command finishing.
       cases = [
-        {"finished", "shell-cmd", "total 0\n# not a heading\n*not emphasis*\n", @finished},
-        {"timed out", "shell-cmd", "partial line\n" <> @timeout_marker, @timed_out},
-        {"timed out, another tool's name", "other", @timeout_marker,
-         "Your backgrounded command (other) timed out. Its output so far:\n\n"}
+        {"finished", "total 0\n# not a heading\n*not emphasis*\n", @finished},
+        {"timed out", "partial line\n" <> @timeout_marker, @timed_out}
       ]
 
-      for {label, name, output, prose} <- cases do
-        outcome = {:results, [%{name: name, content: output}]}
+      for {label, output, prose} <- cases do
+        outcome = {:results, [%{name: "shell-cmd", content: output}]}
 
         assert Backgrounded.parts(outcome) == [{:text, prose}, {:output, output}], label
-
-        assert Backgrounded.notice(outcome) == prose <> output, label
-        assert joined(outcome) == Backgrounded.notice(outcome), label
       end
     end
 
@@ -62,8 +56,6 @@ defmodule Nest.Agents.Agent.BackgroundedTest do
       assert Backgrounded.notice(outcome) ==
                "Your backgrounded command (first) finished. Its result:\n\none\n\n" <>
                  "Your backgrounded command (second) finished. Its result:\n\ntwo"
-
-      assert joined(outcome) == Backgrounded.notice(outcome)
     end
 
     test "a worker's death is one prose segment: there is no output to show" do
@@ -74,23 +66,12 @@ defmodule Nest.Agents.Agent.BackgroundedTest do
                 "A backgrounded tool call stopped before it finished (:killed), " <>
                   "so its result will not arrive. Call it again if you still need it."}
              ]
-
-      assert Backgrounded.notice(outcome) ==
-               "A backgrounded tool call stopped before it finished (:killed), " <>
-                 "so its result will not arrive. Call it again if you still need it."
-
-      assert joined(outcome) == Backgrounded.notice(outcome)
     end
 
     test "an empty result list renders nothing at all" do
-      # Total on an empty batch: no segments and no text, rather than a stray
-      # separator or a crash inside the agent process.
+      # Total on an empty batch: no segments, rather than a stray separator or a
+      # crash inside the agent process.
       assert Backgrounded.parts({:results, []}) == []
-      assert Backgrounded.notice({:results, []}) == ""
     end
   end
-
-  # The invariant the moduledoc states: the notice is the join of the segments'
-  # texts, in order, with no separator of its own.
-  defp joined(outcome), do: Enum.map_join(Backgrounded.parts(outcome), "", &elem(&1, 1))
 end

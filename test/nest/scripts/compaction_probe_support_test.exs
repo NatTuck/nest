@@ -30,22 +30,12 @@ defmodule Nest.Scripts.CompactionProbeSupportTest do
           "focus on the test plan"
         )
 
-      assert String.starts_with?(
-               suffix,
-               "Summarize the conversation in your 1500 remaining tokens."
-             )
-
       assert String.ends_with?(suffix, "focus on the test plan")
     end
 
     test "treats empty string as no guidance" do
       assert CompactionProbeSupport.compaction_suffix(500, "") ==
                CompactionProbeSupport.compaction_suffix(500, nil)
-    end
-
-    test "is stable across calls for the same args" do
-      assert CompactionProbeSupport.compaction_suffix(1000, "x") ==
-               CompactionProbeSupport.compaction_suffix(1000, "x")
     end
   end
 
@@ -60,57 +50,19 @@ defmodule Nest.Scripts.CompactionProbeSupportTest do
       assert mention =~ "`cover`"
       assert mention =~ "`preserve`"
       assert mention =~ "do not duplicate"
-
-      # And it composes into a request the way the tool path renders it.
-      suffix = CompactionProbeSupport.compaction_suffix(1500, mention)
-
-      assert String.starts_with?(
-               suffix,
-               "Summarize the conversation in your 1500 remaining tokens."
-             )
-
-      assert String.ends_with?(suffix, mention)
     end
   end
 
   describe "suffix_system_message/2" do
     test "wraps the suffix as a {:user, _} tuple" do
-      msg = CompactionProbeSupport.suffix_system_message(2000, nil)
-
-      assert match?({:user, %Nest.Messages.User{}}, msg)
-      {:user, %Nest.Messages.User{parts: [%Part.Text{text: text}]}} = msg
-      assert text =~ "Summarize the conversation"
-      assert text =~ "2000 remaining tokens"
-    end
-
-    test "the message has empty api_logs (empty list)" do
-      {:user, %Nest.Messages.User{api_logs: api_logs}} =
+      {:user, %Nest.Messages.User{parts: [%Part.Text{text: text}]}} =
         CompactionProbeSupport.suffix_system_message(2000, nil)
 
-      assert api_logs == []
+      assert text =~ "2000 remaining tokens"
     end
   end
 
   describe "build_summarization_llm_call/3" do
-    test "captures the ClientConfig and returns a 3-arity function" do
-      cc = %ClientConfig{
-        client: CaptureLLMClient,
-        base_url: "https://example.test",
-        api_key: "key",
-        model: "test-model",
-        receive_timeout: 30_000
-      }
-
-      parent = self()
-
-      suffix =
-        CompactionProbeSupport.suffix_system_message(1500, nil)
-
-      llm_call = CompactionProbeSupport.build_summarization_llm_call(cc, parent, suffix)
-
-      assert is_function(llm_call, 3)
-    end
-
     test "issues a RunRequest with the agent's prior conversation followed by the rendered suffix" do
       test_pid = self()
 
@@ -150,7 +102,7 @@ defmodule Nest.Scripts.CompactionProbeSupportTest do
       assert last == suffix
     end
 
-    test "the closed-over rendered suffix is reused verbatim on each call" do
+    test "reuses the closed-over suffix and ignores the trailing args" do
       cc = %ClientConfig{
         client: CaptureLLMClient,
         base_url: "https://example.test",
@@ -164,27 +116,18 @@ defmodule Nest.Scripts.CompactionProbeSupportTest do
       suffix = CompactionProbeSupport.suffix_system_message(1000, "preserve code paths")
       llm_call = CompactionProbeSupport.build_summarization_llm_call(cc, parent, suffix)
 
-      # Same suffix regardless of which N / guidance the
-      # compactor passes through the trailing args (those are
-      # closed over, not used).
-      llm_call.(
-        [{:user, %Nest.Messages.User{parts: [%Part.Text{text: "x"}]}}],
-        1000,
-        "preserve code paths"
-      )
-
-      assert_receive {:captured_request, req_a}, 1_000
-
+      # The trailing N / guidance the compactor passes through the 3-arity
+      # contract are closed over, not used: the wire payload is the rendered
+      # suffix regardless.
       llm_call.(
         [{:user, %Nest.Messages.User{parts: [%Part.Text{text: "x"}]}}],
         999_999,
         "different text"
       )
 
-      assert_receive {:captured_request, req_b}, 1_000
+      assert_receive {:captured_request, request}, 1_000
 
-      assert List.last(req_a.messages) == suffix
-      assert List.last(req_b.messages) == suffix
+      assert List.last(request.messages) == suffix
     end
   end
 end

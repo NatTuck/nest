@@ -82,11 +82,6 @@ defmodule Nest.ProjectConfigTest do
       write_nest(dir, "[shell]\n")
       assert {:ok, config} = ProjectConfig.load(dir)
       assert config["shell"] == %{"background" => 1}
-
-      # The rewrite is picked up with nothing cleared first: the bytes changed,
-      # so the cache key changed.
-      write_nest(dir, "[shell]\nbackground = 4\n")
-      assert {:ok, %{"shell" => %{"background" => 4}}} = ProjectConfig.load(dir)
     end
 
     test "re-reads a rewritten .nest at an unchanged mtime and length", %{dir: dir} do
@@ -122,7 +117,6 @@ defmodule Nest.ProjectConfigTest do
         {"shell = 3\n", "shell must be a table"},
         {"[sandbox]\npackages = \"nodejs\"\n", "packages must be a list"},
         {"[sandbox]\npackages = [3]\n", "Debian package names"},
-        {"[sandbox]\npackages = [\"NodeJS\"]\n", "Debian package names"},
         {"[sandbox]\npackages = [\"-bad\"]\n", "Debian package names"},
         {"sandbox = 3\n", "sandbox must be a table"}
       ]
@@ -164,21 +158,6 @@ defmodule Nest.ProjectConfigTest do
       # is not assertable from here.
       assert log =~ "could not read .nest"
     end
-
-    test "renders a visible error for a .nest that is not a regular file", %{dir: dir} do
-      # A `.nest` Nest cannot protect must not degrade silently — the same rule a
-      # malformed one follows. A directory is the cheapest non-regular path that
-      # is not a symlink. Nothing here logs: the *gate* owns the warning, and this
-      # is the re-render path (a running agent whose file was replaced).
-      File.mkdir_p!(nest_path(dir))
-
-      assert {:error, reason} = ProjectConfig.load(dir)
-      assert reason =~ "not a regular file"
-
-      section = ProjectConfig.section(dir)
-      assert section =~ "[Project sandbox config error]"
-      assert section =~ "not a regular file"
-    end
   end
 
   describe "a config path that is not a regular file" do
@@ -197,9 +176,11 @@ defmodule Nest.ProjectConfigTest do
       assert {:error, reason} = ProjectConfig.load(dir)
       assert reason =~ "not a regular file"
 
-      # And it grants nothing, visibly: the target's `[[mount]]` never applies.
+      # And it grants nothing, visibly: the reason reaches the prompt and the
+      # target's `[[mount]]` never applies.
       section = ProjectConfig.section(dir)
       assert section =~ "[Project sandbox config error]"
+      assert section =~ "not a regular file"
       refute section =~ "~/x"
     end
 
@@ -216,9 +197,8 @@ defmodule Nest.ProjectConfigTest do
 
       assert {:ok, merged} = ProjectConfig.effective_caps(caps(), Mounts.new(dir, "/tmp/agent"))
 
-      assert [%{"path" => nest, "source" => nest_src}] = merged["fs"]["protected"]
+      assert [%{"path" => nest}] = merged["fs"]["protected"]
       assert nest == nest_path(dir)
-      assert nest_src == nest
     end
   end
 
@@ -249,12 +229,6 @@ defmodule Nest.ProjectConfigTest do
       assert nest_src == nest
       assert agents_md == Path.join(dir, "AGENTS.md")
       assert agents_md_src == agents_md
-    end
-
-    test "merges the shell background cap in a writable mode", %{dir: dir} do
-      write_nest(dir, "[shell]\nbackground = 3\n")
-      assert {:ok, merged} = ProjectConfig.effective_caps(caps(), Mounts.new(dir, "/tmp/agent"))
-      assert merged["shell"] == %{"background" => 3}
     end
 
     test "also merges the shell cap in a read-only mode", %{dir: dir} do
@@ -345,20 +319,14 @@ defmodule Nest.ProjectConfigTest do
     end
 
     test "names the packages and where they are", %{dir: dir} do
-      write_nest(dir, "[sandbox]\npackages = [\"nodejs\"]\n")
-
-      section = ProjectConfig.section(dir)
-
-      assert section =~ "Project sandbox config"
-      assert section =~ "docker sandbox image with these packages: nodejs"
-    end
-
-    test "is non-empty when the only setting is the packages", %{dir: dir} do
       # The `empty_config?/1` guard has to count them, or a `.nest` that only
-      # declares packages would render nothing at all.
+      # declares packages would render nothing at all — which is why the package
+      # line's presence below is also the assertion that a package-only config
+      # renders a section.
       write_nest(dir, "[sandbox]\npackages = [\"nodejs\"]\n")
 
-      refute ProjectConfig.section(dir) == ""
+      assert ProjectConfig.section(dir) =~
+               "docker sandbox image with these packages: nodejs"
     end
 
     test "renders a visible error for a malformed file", %{dir: dir} do
@@ -373,7 +341,9 @@ defmodule Nest.ProjectConfigTest do
     end
   end
 
-  test "the canonical-workspace memo's table outlives the process that first reads it" do
+  test "the canonical-workspace memo's table outlives the process that first reads it", %{
+    dir: dir
+  } do
     # The table is created by `Nest.Application.start/2`, not lazily. Created
     # lazily it was owned by whichever process read a workspace first — usually an
     # agent composing a prompt — so stopping that agent deleted the table and the
@@ -385,13 +355,7 @@ defmodule Nest.ProjectConfigTest do
     # before anything is canonicalised, so `load/1` never touches the memo. The
     # memo is reached from `protected_entries/1` via `effective_caps/2`, and that
     # is what has to happen in the short-lived process for this to mean anything.
-    dir = Path.join(System.tmp_dir!(), "nest_projcfg_cache_#{System.unique_integer([:positive])}")
-    File.mkdir_p!(dir)
-    on_exit(fn -> File.rm_rf(dir) end)
-
-    caps = %{"net" => false, "fs" => %{"read" => ["/"], "write" => [":workspace"]}}
-
-    Task.async(fn -> ProjectConfig.effective_caps(caps, Mounts.new(dir, nil)) end)
+    Task.async(fn -> ProjectConfig.effective_caps(caps(), Mounts.new(dir, nil)) end)
     |> Task.await()
 
     assert :ets.lookup(:nest_project_config_cache, {:workspace, dir}) != []

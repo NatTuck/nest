@@ -59,13 +59,7 @@ defmodule Nest.LLM.ToolsTest do
       tool = tool_with("noop", fn _, _ -> {:ok, ""} end)
       results = Tools.execute([tool], [%ToolCall{id: "c1", name: "noop", arguments: %{}}], %{})
 
-      assert [
-               %ToolResult{
-                 content: "[Command executed successfully with no output]",
-                 arguments: %{},
-                 is_error: false
-               }
-             ] = results
+      assert [%ToolResult{content: "[Command executed successfully with no output]"}] = results
     end
 
     test "propagates {:error, reason} as a result with is_error = true" do
@@ -95,7 +89,6 @@ defmodule Nest.LLM.ToolsTest do
 
       results = Tools.execute([tool_a, tool_b], calls, %{})
 
-      assert length(results) == 3
       assert Enum.map(results, & &1.content) == ["out_a", "out_b", "out_a"]
       assert Enum.map(results, & &1.tool_call_id) == ["1", "2", "3"]
     end
@@ -126,21 +119,6 @@ defmodule Nest.LLM.ToolsTest do
         },
         function: fn args, _ctx -> {:ok, "got #{inspect(args)}"} end
       }
-    end
-
-    test "returns an error when required args are missing entirely (%{})" do
-      tool = tool_with_schema("file-write", ["path", "content"])
-
-      assert {:error, msg} =
-               Tools.execute_one(
-                 [tool],
-                 %ToolCall{id: "c1", name: "file-write", arguments: %{}},
-                 %{}
-               )
-
-      assert msg =~ "Missing required arguments"
-      assert msg =~ "path"
-      assert msg =~ "content"
     end
 
     test "returns an error when only some required args are present" do
@@ -175,7 +153,7 @@ defmodule Nest.LLM.ToolsTest do
       assert content =~ "got"
     end
 
-    test "succeeds when the tool has no required field and args is empty" do
+    test "succeeds when the tool has no required field, for empty and nil args" do
       tool = %Tool{
         name: "noop",
         description: "noop",
@@ -185,22 +163,9 @@ defmodule Nest.LLM.ToolsTest do
 
       assert {:ok, "ok"} =
                Tools.execute_one([tool], %ToolCall{id: "c1", name: "noop", arguments: %{}}, %{})
-    end
-
-    test "succeeds when the tool has no required field and args is nil" do
-      tool = %Tool{
-        name: "noop",
-        description: "noop",
-        parameters_schema: %{"type" => "object", "properties" => %{}},
-        function: fn _, _ -> {:ok, "ok"} end
-      }
 
       assert {:ok, "ok"} =
-               Tools.execute_one(
-                 [tool],
-                 %ToolCall{id: "c1", name: "noop", arguments: nil},
-                 %{}
-               )
+               Tools.execute_one([tool], %ToolCall{id: "c1", name: "noop", arguments: nil}, %{})
     end
   end
 

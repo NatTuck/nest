@@ -7,8 +7,6 @@ defmodule Nest.Agents.AgentToolsSecondChanceTest do
   """
   use Nest.DataCase, async: true
 
-  import ExUnit.CaptureLog
-
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
@@ -55,27 +53,20 @@ defmodule Nest.Agents.AgentToolsSecondChanceTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      capture_log(fn ->
-        send_compaction_done(pid, "Summary", {:tool_call, carried_tool_call_msg(), 5, 5})
+      send_compaction_done(pid, "Summary", {:tool_call, carried_tool_call_msg(), 5, 5})
 
-        # The max-iterations notification fires once.
-        assert_receive {:chat_notification,
-                        %{type: "max_iterations", message: "Max tool iterations reached"}},
-                       750
+      # The chat finalizes with the second-chance forced text.
+      assert_receive {:chat_message,
+                      {:assistant,
+                       %{
+                         parts: [
+                           %Part.Text{text: "Forced final answer after second-chance"}
+                         ]
+                       }}},
+                     750
 
-        # The chat finalizes with the second-chance forced text.
-        assert_receive {:chat_message,
-                        {:assistant,
-                         %{
-                           parts: [
-                             %Part.Text{text: "Forced final answer after second-chance"}
-                           ]
-                         }}},
-                       750
-
-        assert_receive {:chat_status, %{status: "idle"}}, 750
-        refute_received {:chat_error, _}
-      end)
+      assert_receive {:chat_status, %{status: "idle"}}, 750
+      refute_received {:chat_error, _}
 
       # The synthetic error tool results are the evidence that the
       # second-chance path ran at all — without them the turn would have
@@ -97,8 +88,6 @@ defmodule Nest.Agents.AgentToolsSecondChanceTest do
                  false
              end),
              "expected the synthetic max-iterations error tool results"
-
-      MockClient.clear()
     end
   end
 

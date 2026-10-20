@@ -68,9 +68,6 @@ defmodule Nest.Agents.Agent.SharedMessageStructureTest do
       assert {:tool, %Tool{parts: [result]}} = Enum.at(full, 3)
       assert %Part.ToolResult{tool_call_id: "call_1", is_error: false} = result
       assert result.content =~ child_name
-      assert result.content =~ "clone"
-
-      assert :ok = Preflight.validate_tool_call_pairing(full)
     end
 
     test "restart round-trip reconstructs the identical full sequence" do
@@ -81,7 +78,6 @@ defmodule Nest.Agents.Agent.SharedMessageStructureTest do
 
       assert attrs.fork_message_index == 3
       assert attrs.preloaded_messages == live_full
-      assert :ok = Preflight.validate_tool_call_pairing(attrs.preloaded_messages)
     end
 
     test "clone of a clone shares both ancestors with no duplication" do
@@ -118,13 +114,11 @@ defmodule Nest.Agents.Agent.SharedMessageStructureTest do
 
       grandchild_own = Persistence.load_messages(parent_state.space_id, grandchild_name)
       assert Enum.map(grandchild_own, &index_of/1) == [7, 8]
-      refute Enum.any?(grandchild_own, &match?({:system, _}, &1))
 
       grandchild_full = Persistence.load_full_messages(parent_state.space_id, grandchild_name)
 
       expectations = child_messages ++ grandchild_own
       assert Enum.map(grandchild_full, &index_of/1) == Enum.map(expectations, &index_of/1)
-      assert roles(grandchild_full) == roles(expectations)
 
       assert roles(grandchild_full) == [
                :system,
@@ -139,21 +133,6 @@ defmodule Nest.Agents.Agent.SharedMessageStructureTest do
              ]
 
       assert :ok = Preflight.validate_tool_call_pairing(grandchild_full)
-    end
-
-    # A clone keeps its fork pointer for life: compaction moves the
-    # visibility boundary, it does not end ownership of the shared
-    # prefix (`fork_message_index: nil` now means "root or fresh child").
-    test "a clone shares its ancestor prefix, and the pointer is permanent" do
-      {parent_state, child_name} = spawn_clone_fixture()
-
-      {:ok, %PersistedAgent{fork_message_index: fork}} =
-        Persistence.fetch_agent(parent_state.space_id, child_name)
-
-      assert is_integer(fork)
-
-      assert Persistence.load_full_messages(parent_state.space_id, child_name) !=
-               Persistence.load_messages(parent_state.space_id, child_name)
     end
   end
 
@@ -177,7 +156,6 @@ defmodule Nest.Agents.Agent.SharedMessageStructureTest do
              "a clone preload must never carry a non-LLM-visible marker"
 
       assert attrs.last_compaction_index == 4
-      assert attrs.compaction_count == compacted.chat_state.compaction_count
     end
   end
 

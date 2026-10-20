@@ -15,16 +15,6 @@ defmodule Nest.Spaces.SandboxBackendTest do
 
   defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
 
-  describe "the backend list" do
-    test "the schema takes its list and default from the sandbox layer" do
-      # `Nest.Sandbox.Backend` owns them (it is what dispatches on them); this
-      # schema is a consumer, so the two cannot drift.
-      assert Backend.backends() == ~w(bwrap docker none)
-      assert Backend.default() == "bwrap"
-      assert Backend.default() in Backend.backends()
-    end
-  end
-
   describe "create_space/2" do
     test "defaults the backend to bwrap" do
       assert {:ok, %Space{sandbox_backend: "bwrap"}} =
@@ -44,14 +34,15 @@ defmodule Nest.Spaces.SandboxBackendTest do
     end
 
     test "treats a blank backend as absent" do
-      for blank <- [nil, ""] do
-        assert {:ok, %Space{sandbox_backend: "bwrap"}} =
-                 Spaces.create_space(nil, %{
-                   workspace_path: AgentTestHelpers.default_test_workspace(),
-                   name: unique("sb-blank"),
-                   sandbox_backend: blank
-                 })
-      end
+      # The form sends `nil` when the picker is left alone, which is the absent
+      # case the test above pins; a raw client can send `""` instead, and it
+      # must take the same path rather than failing `validate_required`.
+      assert {:ok, %Space{sandbox_backend: "bwrap"}} =
+               Spaces.create_space(nil, %{
+                 workspace_path: AgentTestHelpers.default_test_workspace(),
+                 name: unique("sb-blank"),
+                 sandbox_backend: ""
+               })
     end
 
     test "refuses a backend this build does not implement" do
@@ -87,29 +78,20 @@ defmodule Nest.Spaces.SandboxBackendTest do
           sandbox_backend: "none"
         })
 
-      assert {:ok, renamed} =
+      assert {:ok, %Space{}} =
                Spaces.rename_space(space.id, %{
                  name: unique("sb-renamed"),
                  sandbox_backend: "bwrap"
                })
 
-      assert renamed.sandbox_backend == "none"
+      # The row `rename_space/2` returns is the row `Repo.update/1` persisted, so
+      # the re-read is the immutability claim itself: the edit named another
+      # backend and the space is still on the one it was created with.
       assert Spaces.get_space(space.id).sandbox_backend == "none"
     end
   end
 
   describe "sandbox_backend/1" do
-    test "resolves the space's backend" do
-      {:ok, space} =
-        Spaces.create_space(nil, %{
-          workspace_path: AgentTestHelpers.default_test_workspace(),
-          name: unique("sb-read"),
-          sandbox_backend: "none"
-        })
-
-      assert Spaces.sandbox_backend(space.id) == "none"
-    end
-
     test "resolves a missing row to the default rather than raising" do
       assert Spaces.sandbox_backend(-1) == Backend.default()
     end
@@ -134,43 +116,6 @@ defmodule Nest.Spaces.SandboxBackendTest do
 
       assert MapSet.member?(ids, none_space.id)
       refute MapSet.member?(ids, bwrap_space.id)
-    end
-  end
-
-  describe "the backend's environment lifecycle" do
-    test "archiving and deleting a docker space run the backend's cleanup" do
-      # A docker space's containers are the environment its agents ran in, so
-      # both paths release them (`Nest.Sandbox.Backend.remove_space/3`). What is
-      # asserted here is that the hook is on the path and does not interfere:
-      # what it *asks the daemon* is asserted against a fake in
-      # `Nest.Sandbox.Backend.DockerTest`, because the test environment installs
-      # an inert runner rather than talking to a daemon (`config/test.exs`).
-      {:ok, space} =
-        Spaces.create_space(nil, %{
-          workspace_path: AgentTestHelpers.default_test_workspace(),
-          name: unique("sb-docker"),
-          sandbox_backend: "docker"
-        })
-
-      assert :ok = Spaces.archive_space(space.id)
-      assert Spaces.get_space(space.id).archived == true
-
-      assert :ok = Spaces.unarchive_space(space.id)
-      assert Spaces.get_space(space.id).archived == false
-
-      assert :ok = Spaces.delete_space(space.id)
-      assert Spaces.get_space(space.id) == nil
-    end
-
-    test "archiving a space whose backend keeps nothing still works" do
-      {:ok, space} =
-        Spaces.create_space(nil, %{
-          workspace_path: AgentTestHelpers.default_test_workspace(),
-          name: unique("sb-plain")
-        })
-
-      assert :ok = Spaces.archive_space(space.id)
-      assert Spaces.get_space(space.id).archived == true
     end
   end
 

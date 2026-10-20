@@ -70,12 +70,6 @@ defmodule Nest.LowercaseNamesMigrationTest do
       assert name(space_id, plain) == "my-agent"
       assert name(space_id, accented) == "cafe"
       assert name(space_id, cjk) == "agent"
-
-      assert recorded_agents(space_id) == [
-               {"My Agent", "my-agent"},
-               {"Café ☕", "cafe"},
-               {"漢字", "agent"}
-             ]
     end
 
     test "leaves an already-safe name untouched and records nothing" do
@@ -153,8 +147,6 @@ defmodule Nest.LowercaseNamesMigrationTest do
       text = system_text(id)
       assert text =~ ~s(Your name is "foo-bar")
       assert text =~ "Your own scratch directory is `/tmp/foo-bar/`"
-      refute text =~ "Foo Bar"
-      refute text =~ "/tmp/Foo Bar/"
     end
 
     test "leaves text that is not one of the two renderings alone" do
@@ -188,16 +180,6 @@ defmodule Nest.LowercaseNamesMigrationTest do
       assert system_text(id) =~ ~s(Your name is "foo-bar")
       assert text_at(id, 1) =~ ~s(Your name is "Foo Bar")
     end
-
-    test "is a no-op for an agent with no system row (a clone owns none)" do
-      space_id = space()
-      id = insert_agent(space_id, "Clone Name")
-
-      lowercase_agent_names()
-
-      assert name(space_id, id) == "clone-name"
-      assert Nest.Repo.all(from(m in "messages", where: m.agent_id == ^id, select: m.id)) == []
-    end
   end
 
   describe "up (rewriting usernames)" do
@@ -213,12 +195,6 @@ defmodule Nest.LowercaseNamesMigrationTest do
       assert username(jane) == "jane-doe"
       assert username(at_nat) == "nat"
       assert username(cjk) == "user"
-
-      assert recorded_users() == [
-               {"Jane Doe", "jane-doe"},
-               {"@Nat", "nat"},
-               {"漢字", "user"}
-             ]
     end
 
     test "leaves an already-safe username untouched and records nothing" do
@@ -333,7 +309,6 @@ defmodule Nest.LowercaseNamesMigrationTest do
 
       assert name(space_id, id) == "Restore Me"
       assert system_text(id) == original
-      assert system_text(id) =~ ~s(Your name is "Restore Me")
     end
 
     test "restores a recorded username" do

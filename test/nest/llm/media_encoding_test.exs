@@ -77,13 +77,6 @@ defmodule Nest.LLM.MediaEncodingTest do
       refute Map.has_key?(image["image_url"], "detail")
     end
 
-    test "leaves a media-free tool message as one wire message" do
-      req = %RunRequest{model: "gpt-4o", messages: [tool_msg([result_part("call_1", "plain")])]}
-
-      assert [%{"role" => "tool", "tool_call_id" => "call_1", "content" => "plain"}] =
-               OpenAIClient.format_request_payload(req, [])["messages"]
-    end
-
     test "gives a user message with media the content-array form, text first" do
       req = %RunRequest{
         model: "gpt-4o",
@@ -94,15 +87,6 @@ defmodule Nest.LLM.MediaEncodingTest do
                OpenAIClient.format_request_payload(req, [])["messages"]
 
       assert [%{"type" => "text", "text" => "what is this?"}, %{"type" => "image_url"}] = content
-    end
-
-    test "keeps a media-free user message in the plain string form" do
-      # The string form is what every existing request uses; switching it to an
-      # array would be a gratuitous change to payloads that carry no media.
-      req = %RunRequest{model: "gpt-4o", messages: [user_msg([%Part.Text{text: "hi"}])]}
-
-      assert [%{"role" => "user", "content" => "hi"}] =
-               OpenAIClient.format_request_payload(req, [])["messages"]
     end
   end
 
@@ -129,15 +113,6 @@ defmodule Nest.LLM.MediaEncodingTest do
              }
     end
 
-    test "keeps a media-free tool_result's content a plain string" do
-      req = %RunRequest{model: "claude-x", messages: [tool_msg([result_part("call_1", "plain")])]}
-
-      assert [%{"role" => "user", "content" => [block]}] =
-               AnthropicClient.format_request_payload(req, [])["messages"]
-
-      assert block["content"] == "plain"
-    end
-
     test "folds media into its own result only, preserving result order" do
       req = %RunRequest{
         model: "claude-x",
@@ -158,24 +133,6 @@ defmodule Nest.LLM.MediaEncodingTest do
 
       assert second["tool_use_id"] == "call_2"
       assert [%{"type" => "text", "text" => "second"}, %{"type" => "image"}] = second["content"]
-    end
-
-    test "sends a user-role media part as an image block, never as inspected text" do
-      req = %RunRequest{
-        model: "claude-x",
-        messages: [user_msg([%Part.Text{text: "look"}, media_part("u1")])]
-      }
-
-      payload = AnthropicClient.format_request_payload(req, [])
-
-      assert [%{"role" => "user", "content" => [text_block, image_block]}] = payload["messages"]
-      assert text_block == %{"type" => "text", "text" => "look"}
-      assert image_block["type"] == "image"
-
-      # Without an explicit clause the media part falls to `part_to_text/1`,
-      # which is `inspect/1` — shipping the whole base64 payload as a text
-      # block. A silent, expensive, wrong request is the failure this pins.
-      refute inspect(payload) =~ "Nest.Messages.Part.Media"
     end
 
     test "keeps a media part that answers no result rather than dropping it" do

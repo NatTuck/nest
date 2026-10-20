@@ -81,12 +81,8 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
 
       # The user-facing message in the broadcast is NOT truncated
       # (the UI needs the full text), but the server log entry is.
-      # The content is `long_msg` plus a trailing `\n[Source: Foo.bar/2]`
-      # tag (20 bytes), so the broadcast content is 1,020 bytes.
       assert_receive {:chat_error, %{content: content}}, 1_000
-      assert byte_size(content) == 1_020
       assert String.starts_with?(content, long_msg)
-      assert String.ends_with?(content, "\n[Source: Foo.bar/2]")
 
       # The server log has a `(truncated)` marker — the 1,000-byte
       # message is sliced to 500 bytes plus a 14-byte suffix.
@@ -109,29 +105,19 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
   end
 
   describe "error/4 (backward-compat, no source)" do
-    test "broadcasts the message verbatim (no [Source: ...] tag)", %{
+    test "broadcasts the message verbatim and logs source=unknown", %{
       space_id: space_id,
       agent_id: agent_id
     } do
-      capture_log(fn ->
-        Broadcasts.error(space_id, agent_id, 2, "Plain error")
+      log = capture_log(fn -> Broadcasts.error(space_id, agent_id, 2, "Plain error") end)
 
-        assert_receive {:chat_error, %{index: 2, content: "Plain error"}}, 1_000
-      end)
-    end
+      assert_receive {:chat_error, %{index: 2, content: "Plain error"}}, 1_000
 
-    test "still logs the error at error level", %{space_id: space_id, agent_id: agent_id} do
-      log =
-        capture_log(fn ->
-          Broadcasts.error(space_id, agent_id, 3, "Server-side issue")
-        end)
-
-      assert log =~ "[error]"
-      assert log =~ "chat:error"
-      assert log =~ "msg_index=3"
-      # No source was passed — the log entry says so explicitly.
+      # No source was passed — the log entry says so explicitly rather
+      # than omitting the field. The rest of the log line (`[error]`,
+      # `chat:error`, `msg_index=`, the message) is the same
+      # `log_error/5` shape the sourced form's test pins.
       assert log =~ "source=unknown"
-      assert log =~ "Server-side issue"
     end
   end
 

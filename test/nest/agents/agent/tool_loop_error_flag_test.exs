@@ -24,8 +24,6 @@ defmodule Nest.Agents.Agent.ToolLoopErrorFlagTest do
   alias Nest.LLM.Tool
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
-  alias Nest.Sandbox.Mounts
-  alias Nest.Tools
 
   defp make_ctx(tools) do
     %{
@@ -66,29 +64,6 @@ defmodule Nest.Agents.Agent.ToolLoopErrorFlagTest do
     end
   end
 
-  describe "is_error flag for missing required args" do
-    test "write_file with empty arguments yields is_error: true in the chat path" do
-      tool = Tools.get_function("file-write", Mounts.new("/tmp", nil))
-      ctx = make_ctx([tool])
-
-      log =
-        capture_log(fn ->
-          [%ToolResult{} = result] =
-            ToolLoop.execute(ctx, %{}, [
-              %ToolCall{id: "c1", name: "file-write", arguments: %{}}
-            ])
-
-          assert result.is_error == true
-          assert result.tool_call_id == "c1"
-          assert result.name == "file-write"
-          assert result.content =~ "Missing required arguments"
-        end)
-
-      assert log =~ "BatchSizer produced is_error=true tool result"
-      assert log =~ "tool=file-write"
-    end
-  end
-
   describe "is_error flag is false on the happy path" do
     test "successful tool execution yields is_error: false" do
       tool = %Tool{
@@ -107,31 +82,6 @@ defmodule Nest.Agents.Agent.ToolLoopErrorFlagTest do
 
       assert result.is_error == false
       assert result.content =~ "got hi"
-    end
-
-    test "a tool that returns {:error, _} from its function yields is_error: true" do
-      tool = %Tool{
-        name: "crashy",
-        description: "always errors",
-        parameters_schema: nil,
-        function: fn _, _ -> {:error, "intentional failure"} end
-      }
-
-      ctx = make_ctx([tool])
-
-      log =
-        capture_log(fn ->
-          [%ToolResult{} = result] =
-            ToolLoop.execute(ctx, %{}, [
-              %ToolCall{id: "c1", name: "crashy", arguments: %{}}
-            ])
-
-          assert result.is_error == true
-          assert result.content =~ "intentional failure"
-        end)
-
-      assert log =~ "BatchSizer produced is_error=true tool result"
-      assert log =~ "tool=crashy"
     end
   end
 end

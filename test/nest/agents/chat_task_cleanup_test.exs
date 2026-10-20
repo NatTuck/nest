@@ -70,8 +70,10 @@ defmodule Nest.Agents.ChatTaskCleanupTest do
       # this suite's "tests must not print" rule instead of a log assertion.
       refute_received {:chat_error, _}
 
-      # The agent finalized cleanly — still alive, in :idle.
-      assert Process.alive?(pid)
+      # The agent finalized cleanly — still answering calls, in :idle. (The
+      # `get_public_info/2` call is itself the liveness check: a dead pid exits
+      # with `:noproc`, so a bare `Process.alive?/1` here asserted nothing the
+      # call does not already prove.)
       assert Agent.get_public_info(pid, 1_000).status == :idle
     end
 

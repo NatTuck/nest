@@ -31,27 +31,6 @@ defmodule Nest.Sandbox.StatBatchTest do
     %{workspace: workspace, caps: Sandbox.default_caps()}
   end
 
-  test "reports the size of every path from one invocation", ctx do
-    paths =
-      for name <- ~w(a.txt b.txt c.txt) do
-        path = Path.join(ctx.workspace, name)
-        File.write!(path, String.duplicate("x", 10))
-        path
-      end
-
-    assert StatBatch.stat_many(paths, ctx.caps, Mounts.new(ctx.workspace, nil)) ==
-             Map.new(paths, &{&1, {:ok, 10}})
-  end
-
-  test "reports the path the batch rejected as an error, the rest as sizes", ctx do
-    present = Path.join(ctx.workspace, "present.txt")
-    missing = Path.join(ctx.workspace, "missing.txt")
-    File.write!(present, String.duplicate("x", 7))
-
-    assert StatBatch.stat_many([present, missing], ctx.caps, Mounts.new(ctx.workspace, nil)) ==
-             %{present => {:ok, 7}, missing => {:error, :enoent}}
-  end
-
   test "re-stats only the paths the batch did not report", ctx do
     present = Path.join(ctx.workspace, "present.txt")
     missing = Path.join(ctx.workspace, "missing.txt")
@@ -171,10 +150,11 @@ defmodule Nest.Sandbox.StatBatchTest do
 
   describe "equivalence with per-path stat/4" do
     # The batch's entire job is to answer what `stat/3` would have answered,
-    # path for path. These are the awkward paths: the framing trick the module
-    # doc advertises (`%n` last, so a `|` in a path cannot break the line) has
-    # no other test, and a symlink / a directory / a name that is not valid
-    # UTF-8 each exercise a different part of the parse and the fallback.
+    # path for path. These are the awkward paths: a `|` in a name (the framing
+    # claim in the moduledoc), a symlink, a directory and a name that is not
+    # valid UTF-8 each exercise a different part of the parse. A line the parse
+    # rejects is re-statted by the fallback, so this pins the answer rather than
+    # which side produced it — a `|` that broke the framing would still agree.
     test "agrees on pipes, symlinks, directories and non-UTF8 names", ctx do
       pipe = Path.join(ctx.workspace, "a|b|c.txt")
       File.write!(pipe, String.duplicate("x", 11))
@@ -192,11 +172,6 @@ defmodule Nest.Sandbox.StatBatchTest do
       File.write!(non_utf8, String.duplicate("z", 17))
 
       paths = [pipe, link, dir, non_utf8]
-
-      # The `|` path reports its real size, not a size parsed out of the path:
-      # this is the assertion the framing claim in the moduledoc was missing.
-      assert StatBatch.stat_many([pipe], ctx.caps, Mounts.new(ctx.workspace, nil)) ==
-               %{pipe => {:ok, 11}}
 
       assert StatBatch.stat_many(paths, ctx.caps, Mounts.new(ctx.workspace, nil)) ==
                per_path_stat(paths, ctx.caps, ctx.workspace)

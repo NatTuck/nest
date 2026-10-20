@@ -143,6 +143,9 @@ and not wait for them.
 - Any use of `:sys.get_state` is sketchy. We should be testing external
 behavior, not probing internal state. Further, this is frequently a sketchy
 hack to avoid the ban on message drain loops.
+- Sleeping or intentionally waiting in tests is absolutely prohibited. Fail the
+review if the code includes such sleeps, whether or not they were added in the
+branch being reviewed.
 
 Temp files:
 

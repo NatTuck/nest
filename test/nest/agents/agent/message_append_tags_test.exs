@@ -24,7 +24,6 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.Repair
-  alias Nest.Agents.Agent.Turn
   alias Nest.LLM.Preflight
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
@@ -69,32 +68,10 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
               ]} = Repair.decide(:worker_death, [user(0), assistant_tool_use(1, "a")], nil)
 
       assert :none = Repair.decide(:worker_death, [user(0), assistant_text(1)], nil)
-    end
 
-    test ":terminal heals with the pairing bridge" do
-      assert {:repair, []} = Repair.decide(:terminal, [user(0), assistant_text(1)], user(2))
-
-      assert {:repair, [{:tool, _}, {:assistant, _}]} =
-               Repair.decide(:terminal, [user(0), assistant_tool_use(1, "a")], user(2))
-    end
-
-    test ":load classifies clean, bridged, interrupted, and real violations" do
-      assert :ok = Repair.decide(:load, [system(0), user(1), assistant_text(2)], %{mode: "act"})
-
-      assert {:bridge, [{:assistant, %Assistant{parts: [%Part.Text{text: text}]}}]} =
-               Repair.decide(:load, [system(0), user(1)], %{mode: "act"})
-
-      assert text =~ "interrupted"
-
-      assert {:interrupted, [%Part.ToolUse{id: "a"}]} =
-               Repair.decide(:load, [system(0), user(1), assistant_tool_use(2, "a")], %{
-                 mode: "act"
-               })
-
-      assert {:violations, [_ | _]} =
-               Repair.decide(:load, [user(0), assistant_text(1), assistant_text(2)], %{
-                 mode: "act"
-               })
+      # `load_heal/1` is the append form of the same answer, so it is empty
+      # when there is nothing to answer.
+      assert [] = Repair.load_heal([])
     end
 
     test ":live treats a malformed result as stale and a wire-ignored role as invalid" do
@@ -108,73 +85,9 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
 
       assert reason =~ "nil"
     end
-
-    test "load_heal/1 is empty when there is nothing to answer" do
-      assert [] = Repair.load_heal([])
-    end
-
-    test ":offline defers to the offline authority" do
-      assert :offline_authority = Repair.decide(:offline, [], nil)
-    end
-
-    test "the declared contexts cover every decision path" do
-      assert Repair.contexts() == [:live, :worker_death, :terminal, :load, :offline]
-    end
   end
 
   describe "MessageAppender live-path tags" do
-    test "an invalid live append fails the turn to idle with chat:error" do
-      name = unique_name("live-invalid-turn")
-      {:ok, _} = Persistence.insert_agent(agent_attrs(name))
-
-      initial = [system(0), user(1), assistant_text(2)]
-      insert_messages(name, initial)
-
-      state = state(name, initial) |> live(:streaming)
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{name}")
-
-      assert {:invalid, reason, state} =
-               MessageAppender.append_one(state, assistant_text(nil))
-
-      {final, log} =
-        with_log(fn ->
-          {:ok, final} = Turn.settle(state, {:append_result, :invalid, reason})
-          final
-        end)
-
-      assert Machine.status_for(final.live.machine) == :idle
-      assert log =~ "chat_crashed"
-      assert is_nil(final.live.machine.work.active_worker)
-
-      assert_receive {:chat_error, %{content: content}}
-      assert content =~ "second consecutive"
-    end
-
-    test "a :cannot_compact append is tagged :invalid instead of raising" do
-      # `context_limit: 1` makes `PreFlight.check_passed/2` return
-      # `:cannot_compact` (the reserve alone exceeds the limit), which the
-      # append path surfaces as a tagged `:invalid` rather than an
-      # `ArgumentError`. No rows are inserted: the tripwire returns before
-      # the append persists.
-      state =
-        state(unique_name("cannot-compact"), [system(0), user(1)])
-        |> live(:streaming)
-        |> with_limit(1)
-
-      assert {:invalid, reason, _state} = MessageAppender.append_one(state, assistant_text(nil))
-      assert reason =~ ":cannot_compact"
-
-      # The trusted GenServer append call maps the same tripwire to an error
-      # reply and fails the turn cleanly.
-      {reply, log} =
-        with_log(fn ->
-          Callbacks.handle_call({:append_message, assistant_text(nil)}, nil, state)
-        end)
-
-      assert {:reply, {:error, ^reason}, _state} = reply
-      assert log =~ "chat_crashed"
-    end
-
     test "a live batch halts on the first stale and on the first invalid message" do
       name = unique_name("live-batch")
       {:ok, _} = Persistence.insert_agent(agent_attrs(name))
@@ -247,36 +160,10 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
       assert reason =~ "second consecutive"
       assert Machine.status_for(final.live.machine) == :idle
       assert log =~ "chat_crashed"
-      assert_receive {:chat_error, %{content: _}}
-    end
-  end
 
-  describe "live stream failure tags" do
-    test "the worker's llm_error callback fails the live turn to idle with chat:error" do
-      name = unique_name("llm-error-invalid")
-      {:ok, _} = Persistence.insert_agent(agent_attrs(name))
-
-      initial = [system(0), user(1), assistant_text(2)]
-      insert_messages(name, initial)
-      ref = make_ref()
-
-      state =
-        state(name, initial)
-        |> live(:streaming)
-        |> put_in(
-          [Access.key(:live), Access.key(:machine), Access.key(:work), Access.key(:worker_ref)],
-          ref
-        )
-
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{name}")
-
-      {result, log} = with_log(fn -> Turn.handle({:llm_error, "boom"}, state) end)
-
-      assert {:noreply, final} = result
-      assert Machine.status_for(final.live.machine) == :idle
-      assert log =~ "chat:error"
+      # The reason is what the client is shown, so the failure is not silent.
       assert_receive {:chat_error, %{content: content}}
-      assert content =~ "boom"
+      assert content =~ "second consecutive"
     end
   end
 
@@ -485,10 +372,6 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
           | machine: Machine.status_to_machine(state.live.machine, status)
         }
     }
-  end
-
-  defp with_limit(state, limit) do
-    %{state | llm_metrics: %{state.llm_metrics | context_limit: limit}}
   end
 
   defp insert_messages(name, messages) do

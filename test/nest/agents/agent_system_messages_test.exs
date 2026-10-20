@@ -38,18 +38,6 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
   import Nest.Agents.AgentTestHelpers
 
   describe "initial system message" do
-    test "the agent's messages list always starts with a {:system, _} message" do
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: programmer_vocation_id_for_test()
-        })
-
-      first = hd(Agent.get_messages(pid, 1_000))
-
-      assert match?({:system, %SystemMsg{}}, first)
-    end
-
     test "the system message is in state (transparency)" do
       {pid, _agent_id} = start_agent()
 
@@ -260,36 +248,18 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
           _ -> false
         end)
 
+      # The two attention messages are distinct synthetic
+      # messages in the list. They both have type-specific
+      # attention text — no cross-contamination.
       assert tool_limit_attentions != [],
              "expected a 'Tool limit?' attention message in the back-to-back case"
 
       assert context_attentions != [],
              "expected a 'Context?' attention message in the back-to-back case"
 
-      # The two attention messages are distinct synthetic
-      # messages in the list. They both have type-specific
-      # attention text — no cross-contamination.
-      assert tool_limit_attentions != [],
-             "expected at least one 'Tool limit?' attention"
-
-      assert context_attentions != [],
-             "expected at least one 'Context?' attention"
-
-      # The user messages containing the notices also each
-      # have type-specific content: budget says "tool call rounds",
-      # context says "Context at".
-      budget_user_messages =
-        Enum.filter(messages, fn
-          {:user, %Nest.Messages.User{parts: parts}} ->
-            Enum.any?(parts, fn
-              %Part.Text{text: text} -> String.contains?(text, "tool call rounds")
-              _ -> false
-            end)
-
-          _ ->
-            false
-        end)
-
+      # The context notice row also carries type-specific content
+      # ("Context at", not the budget wording). The budget notice's
+      # own wording is pinned by the budget-warning test above.
       context_user_messages =
         Enum.filter(messages, fn
           {:user, %Nest.Messages.User{parts: parts}} ->
@@ -301,9 +271,6 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
           _ ->
             false
         end)
-
-      assert budget_user_messages != [],
-             "expected at least one user message with budget notice"
 
       assert context_user_messages != [],
              "expected at least one user message with context notice"

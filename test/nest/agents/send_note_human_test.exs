@@ -6,6 +6,11 @@ defmodule Nest.Agents.SendNoteHumanTest do
   to drain and no transcript to append to. A human's note to an agent is the
   same row *plus* the message the model reads — one note, two readers — and it is
   what obliges the agent to answer, keyed on the address it was sent from.
+
+  The row's shape and its broadcast are `Nest.NotesTest`'s, the give-up row's
+  fields are `GiveUpDeliveryTest`'s and the agent-shaped reminder is
+  `ReplyDebtTest`'s; this file is what the *send path* does with a human at one
+  end.
   """
 
   use Nest.DataCase, async: true
@@ -14,7 +19,6 @@ defmodule Nest.Agents.SendNoteHumanTest do
   alias Nest.AddressTestHelpers
   alias Nest.Agents
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
@@ -22,47 +26,23 @@ defmodule Nest.Agents.SendNoteHumanTest do
   alias Nest.Notes
   alias Nest.Notes.UserNote
 
-  test "a note to a human is a row and a frame, and `:delivered` is the honest answer" do
-    # A human has no process that could be busy and no queue to wait in, so the
-    # disposition is `:delivered` — the same answer an idle agent gives, for a
-    # different reason.
-    space = AddressTestHelpers.space_with_human("alice")
-    Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.space_topic(space.id))
-
-    assert {:ok, :delivered} =
-             Agents.send_note(space.id, "crazy-dolphin", "@alice", "the report is ready")
-
-    assert [note] = Notes.list_for(space.id, {:user, "alice"})
-    assert {note.from_kind, note.from_name} == {:agent, "crazy-dolphin"}
-    assert {note.to_kind, note.to_name} == {:user, "alice"}
-    assert note.content == "the report is ready"
-    assert note.kind == :agent
-
-    assert_receive {:user_note, %{id: id}}, 500
-    assert id == note.id
-  end
-
   test "an address that names no user is refused, and nothing is written" do
     space = AddressTestHelpers.space_with_human("alice")
 
     assert {:error, :not_found} = Agents.send_note(space.id, "crazy-dolphin", "@nobody", "hi")
     assert Notes.list_for(space.id, {:user, "nobody"}) == []
-    refute_received {:user_note, _}
   end
 
   test "a bare name that names no agent is refused, and nothing is written" do
-    # Agent-to-agent notes are the inbox's: `record_human_note/5` has nothing to
-    # do for an agent sender, and the row count is the proof. A *human's* note to
-    # a target that does not exist writes nothing either — the note is recorded
-    # only once there is an agent to deliver it to.
+    # A *human's* note to a target that does not exist writes nothing: the row
+    # is recorded only once there is an agent to deliver it to.
     space = AddressTestHelpers.space_with_human("alice")
 
-    assert {:error, :not_found} = Agents.send_note(space.id, "crazy-dolphin", "ghost", "hi")
     assert {:error, :not_found} = Agents.send_note(space.id, "@alice", "ghost", "hi")
     assert Notes.list_for(space.id, {:user, "alice"}) == []
   end
 
-  test "a human's query to an agent is one row and one message, and it owes the address a reply" do
+  test "a human's query to an agent owes the address a reply, and reads as a human's" do
     # The conversation loop's first half. The query reaches the agent as a
     # user-role row naming the address it must answer, and the obligation is
     # keyed on that same string — which is why the reply machinery needs no
@@ -94,21 +74,10 @@ defmodule Nest.Agents.SendNoteHumanTest do
     assert ["[From user @alice, agents-send reply required | mode: act]", "please summarize"] =
              human_row(pid, "please summarize")
 
-    # The human's own copy: the row the feed reads.
-    assert %UserNote{kind: :query, answered_at: nil} = note(space.id, :query)
-
-    # The give-up, delivered as a row: the runtime speaking, about the agent
-    # that did not answer — which is what the feed groups by.
-    assert %UserNote{
-             from_kind: :runtime,
-             from_name: ^name,
-             to_kind: :user,
-             to_name: "alice",
-             kind: :runtime,
-             content: content
-           } = note(space.id, :runtime)
-
-    assert content =~ name
+    # The give-up arrives as a row the feed groups by the agent that did not
+    # answer. Its fields are `GiveUpDeliveryTest`'s; that the gate's give-up
+    # reached this human is this test's.
+    assert %UserNote{content: content} = note(space.id, :runtime)
     assert content =~ "did not reply"
   end
 
@@ -127,6 +96,9 @@ defmodule Nest.Agents.SendNoteHumanTest do
     space = AddressTestHelpers.space_with_human("alice")
     {_pid, name} = start_agent_in(space.id, "bob")
 
+    # A note to a human is a row and `:delivered` — no process to be busy, no
+    # queue to wait in. (The row's shape and its broadcast are `NotesTest`'s;
+    # this is the send path's answer, and the query `answered_at` below clears.)
     assert {:ok, :delivered} = Agents.send_note(space.id, name, "@alice", "which one?", :query)
     assert %UserNote{answered_at: nil} = query = note(space.id, :query)
 

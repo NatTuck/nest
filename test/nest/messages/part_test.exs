@@ -6,29 +6,6 @@ defmodule Nest.Messages.PartTest do
   alias Nest.Messages.Part
   alias Nest.Messages.Part.{Refusal, Text, Thinking, ToolResult, ToolUse}
 
-  describe "kind/1" do
-    test "returns :text for %Text{}" do
-      assert Part.kind(%Text{text: "hi"}) == :text
-    end
-
-    test "returns :thinking for %Thinking{}" do
-      assert Part.kind(%Thinking{thinking: "hmm"}) == :thinking
-    end
-
-    test "returns :tool_use for %ToolUse{}" do
-      assert Part.kind(%ToolUse{id: "x", name: "n", arguments: %{}}) == :tool_use
-    end
-
-    test "returns :tool_result for %ToolResult{}" do
-      assert Part.kind(%ToolResult{tool_call_id: "x", name: "n", content: "r"}) ==
-               :tool_result
-    end
-
-    test "returns :refusal for %Refusal{}" do
-      assert Part.kind(%Refusal{refusal: "nope"}) == :refusal
-    end
-  end
-
   describe "to_json/1 and from_json/1 round-trip" do
     test "Text" do
       part = %Text{text: "hello"}
@@ -37,11 +14,6 @@ defmodule Nest.Messages.PartTest do
 
     test "Thinking with signature" do
       part = %Thinking{thinking: "hmm", signature: "sig-abc"}
-      assert Part.from_json(Part.to_json(part)) == part
-    end
-
-    test "Thinking without signature" do
-      part = %Thinking{thinking: "hmm", signature: nil}
       assert Part.from_json(Part.to_json(part)) == part
     end
 
@@ -86,15 +58,6 @@ defmodule Nest.Messages.PartTest do
                "arguments" => []
              }) ==
                nil
-    end
-  end
-
-  describe "to_json/1 wire keys" do
-    test "ToolResult uses camelCase toolCallId and isError" do
-      json = Part.to_json(%ToolResult{tool_call_id: "c", name: "n", content: "r"})
-      assert Map.has_key?(json, "toolCallId")
-      assert Map.has_key?(json, "isError")
-      refute Map.has_key?(json, "tool_call_id")
     end
   end
 

@@ -33,16 +33,15 @@ defmodule Nest.LLM.OpenAIClientTest do
       assert payload["tool_choice"] == "auto"
     end
 
-    test "applies DeepSeek flash top_p/max_tokens defaults when unset" do
+    test "applies the DeepSeek flash top_p/max_tokens defaults to flash models only" do
       for model <- ["deepseek-v4-flash", "DeepSeek-V4-Flash-2026", "deepseek-flash"] do
         payload = OpenAIClient.format_request_payload(%RunRequest{model: model}, [])
 
         assert payload["top_p"] == 0.95
         assert payload["max_tokens"] == 32_000
       end
-    end
 
-    test "does not apply the DeepSeek flash defaults to other models" do
+      # Models outside the DeepSeek-flash family get neither default.
       for model <- ["deepseek-reasoner", "deepseek-v3", "qwen3.5-plus"] do
         payload = OpenAIClient.format_request_payload(%RunRequest{model: model}, [])
 
@@ -51,33 +50,49 @@ defmodule Nest.LLM.OpenAIClientTest do
       end
     end
 
-    test "maps a leading {:system, _} message in the messages array" do
-      req = %RunRequest{
-        messages: [sys_msg(0, "be brief")]
-      }
+    test "keeps system messages at their positions in the wire messages" do
+      # A leading {:system, _} message maps into the messages array.
+      leading =
+        OpenAIClient.format_request_payload(%RunRequest{messages: [sys_msg(0, "be brief")]}, [])
 
-      payload = OpenAIClient.format_request_payload(req, [])
-
-      assert payload["messages"] == [
+      assert leading["messages"] == [
                %{"role" => "system", "content" => "be brief"}
              ]
-    end
 
-    test "preserves a late {:system, _} reminder at its position" do
-      req = %RunRequest{
-        messages: [
-          sys_msg(0, "be brief"),
-          user_msg("hi"),
-          sys_msg(2, "2 rounds left")
-        ]
-      }
+      # A late {:system, _} reminder is preserved at its position.
+      late =
+        OpenAIClient.format_request_payload(
+          %RunRequest{
+            messages: [
+              sys_msg(0, "be brief"),
+              user_msg("hi"),
+              sys_msg(2, "2 rounds left")
+            ]
+          },
+          []
+        )
 
-      payload = OpenAIClient.format_request_payload(req, [])
-
-      assert payload["messages"] == [
+      assert late["messages"] == [
                %{"role" => "system", "content" => "be brief"},
                %{"role" => "user", "content" => "hi"},
                %{"role" => "system", "content" => "2 rounds left"}
+             ]
+
+      # System messages already in the request history are preserved.
+      history =
+        OpenAIClient.format_request_payload(
+          %RunRequest{
+            messages: [
+              sys_msg(0, "be brief"),
+              user_msg("hi")
+            ]
+          },
+          []
+        )
+
+      assert history["messages"] == [
+               %{"role" => "system", "content" => "be brief"},
+               %{"role" => "user", "content" => "hi"}
              ]
     end
 
@@ -86,6 +101,7 @@ defmodule Nest.LLM.OpenAIClientTest do
       payload = OpenAIClient.format_request_payload(req, [])
 
       assert payload["messages"] == [%{"role" => "user", "content" => "hi"}]
+      assert Enum.all?(payload["messages"], &(&1["role"] != "system"))
     end
 
     test "emits tools as the OpenAI function-tool shape" do
@@ -174,22 +190,29 @@ defmodule Nest.LLM.OpenAIClientTest do
              ]
     end
 
-    test "uses a placeholder for a tool-call-only assistant message" do
-      req = %RunRequest{
-        messages: [
-          {:assistant,
-           %Assistant{
-             index: 2,
-             parts: [
-               %Part.ToolUse{id: "call_1", name: "shell-cmd", arguments: %{"command" => "ls"}}
-             ]
-           }}
-        ]
-      }
+    test "uses a placeholder for blank content across roles" do
+      # A tool-call-only assistant message still gets non-empty content.
+      tool_call_only =
+        OpenAIClient.format_request_payload(
+          %RunRequest{
+            messages: [
+              {:assistant,
+               %Assistant{
+                 index: 2,
+                 parts: [
+                   %Part.ToolUse{
+                     id: "call_1",
+                     name: "shell-cmd",
+                     arguments: %{"command" => "ls"}
+                   }
+                 ]
+               }}
+            ]
+          },
+          []
+        )
 
-      payload = OpenAIClient.format_request_payload(req, [])
-
-      assert payload["messages"] == [
+      assert tool_call_only["messages"] == [
                %{
                  "role" => "assistant",
                  "content" => " ",
@@ -202,51 +225,54 @@ defmodule Nest.LLM.OpenAIClientTest do
                  ]
                }
              ]
-    end
 
-    test "uses a placeholder for an empty assistant message" do
-      req = %RunRequest{
-        messages: [{:assistant, %Assistant{index: 2, parts: []}}]
-      }
+      # An assistant message with no parts at all.
+      empty_assistant =
+        OpenAIClient.format_request_payload(
+          %RunRequest{
+            messages: [{:assistant, %Assistant{index: 2, parts: []}}]
+          },
+          []
+        )
 
-      payload = OpenAIClient.format_request_payload(req, [])
+      assert empty_assistant["messages"] == [%{"role" => "assistant", "content" => " "}]
 
-      assert payload["messages"] == [%{"role" => "assistant", "content" => " "}]
-    end
+      # Empty system and user content.
+      empty_system_and_user =
+        OpenAIClient.format_request_payload(
+          %RunRequest{
+            messages: [
+              {:system, %Nest.Messages.System{index: 0, parts: []}},
+              {:user, %Nest.Messages.User{index: 1, parts: []}}
+            ]
+          },
+          []
+        )
 
-    test "uses a placeholder for empty system and user content" do
-      req = %RunRequest{
-        messages: [
-          {:system, %Nest.Messages.System{index: 0, parts: []}},
-          {:user, %Nest.Messages.User{index: 1, parts: []}}
-        ]
-      }
-
-      payload = OpenAIClient.format_request_payload(req, [])
-
-      assert payload["messages"] == [
+      assert empty_system_and_user["messages"] == [
                %{"role" => "system", "content" => " "},
                %{"role" => "user", "content" => " "}
              ]
-    end
 
-    test "uses a placeholder for empty tool-result content" do
-      req = %RunRequest{
-        messages: [
-          {:tool,
-           %Nest.Messages.Tool{
-             index: 3,
-             parts: [
-               %Part.ToolResult{tool_call_id: "call_1", name: "shell-cmd", content: ""},
-               %Part.ToolResult{tool_call_id: "call_2", name: "file-read", content: nil}
-             ]
-           }}
-        ]
-      }
+      # Empty tool-result content.
+      empty_tool_result =
+        OpenAIClient.format_request_payload(
+          %RunRequest{
+            messages: [
+              {:tool,
+               %Nest.Messages.Tool{
+                 index: 3,
+                 parts: [
+                   %Part.ToolResult{tool_call_id: "call_1", name: "shell-cmd", content: ""},
+                   %Part.ToolResult{tool_call_id: "call_2", name: "file-read", content: nil}
+                 ]
+               }}
+            ]
+          },
+          []
+        )
 
-      payload = OpenAIClient.format_request_payload(req, [])
-
-      assert payload["messages"] == [
+      assert empty_tool_result["messages"] == [
                %{"role" => "tool", "tool_call_id" => "call_1", "content" => " "},
                %{"role" => "tool", "tool_call_id" => "call_2", "content" => " "}
              ]
@@ -271,7 +297,7 @@ defmodule Nest.LLM.OpenAIClientTest do
       assert payload["top_p"] == 0.9
     end
 
-    test "emits reasoning_effort for enabled thinking levels" do
+    test "emits thinking fields according to thinking_effort" do
       for {level, expected} <- [{:low, "low"}, {:medium, "medium"}, {:high, "high"}] do
         payload =
           OpenAIClient.format_request_payload(%RunRequest{thinking_effort: level}, [])
@@ -279,26 +305,23 @@ defmodule Nest.LLM.OpenAIClientTest do
         assert payload["reasoning_effort"] == expected
         refute Map.has_key?(payload, "chat_template_kwargs")
       end
-    end
 
-    test "maps :xhigh to high for OpenAI-compatible servers" do
-      payload = OpenAIClient.format_request_payload(%RunRequest{thinking_effort: :xhigh}, [])
+      # :xhigh maps to high for OpenAI-compatible servers.
+      xhigh = OpenAIClient.format_request_payload(%RunRequest{thinking_effort: :xhigh}, [])
 
-      assert payload["reasoning_effort"] == "high"
-    end
+      assert xhigh["reasoning_effort"] == "high"
 
-    test "disables thinking via chat_template_kwargs for :off" do
-      payload = OpenAIClient.format_request_payload(%RunRequest{thinking_effort: :off}, [])
+      # :off disables thinking via chat_template_kwargs instead.
+      off = OpenAIClient.format_request_payload(%RunRequest{thinking_effort: :off}, [])
 
-      assert payload["chat_template_kwargs"] == %{"enable_thinking" => false}
-      refute Map.has_key?(payload, "reasoning_effort")
-    end
+      assert off["chat_template_kwargs"] == %{"enable_thinking" => false}
+      refute Map.has_key?(off, "reasoning_effort")
 
-    test "emits no thinking fields when thinking_effort is nil" do
-      payload = OpenAIClient.format_request_payload(%RunRequest{thinking_effort: nil}, [])
+      # A nil effort emits no thinking fields at all.
+      unset = OpenAIClient.format_request_payload(%RunRequest{thinking_effort: nil}, [])
 
-      refute Map.has_key?(payload, "reasoning_effort")
-      refute Map.has_key?(payload, "chat_template_kwargs")
+      refute Map.has_key?(unset, "reasoning_effort")
+      refute Map.has_key?(unset, "chat_template_kwargs")
     end
 
     test "translates tool_choice to the OpenAI shape" do
@@ -313,83 +336,53 @@ defmodule Nest.LLM.OpenAIClientTest do
         assert payload["tool_choice"] == expected
       end
     end
-
-    test "drops the system message key from the request when no system message is in history" do
-      req = %RunRequest{
-        messages: [user_msg("hi")]
-      }
-
-      payload = OpenAIClient.format_request_payload(req, [])
-
-      assert Enum.all?(payload["messages"], &(&1["role"] != "system"))
-    end
-
-    test "preserves system messages already in the request history" do
-      req = %RunRequest{
-        messages: [
-          sys_msg(0, "be brief"),
-          user_msg("hi")
-        ]
-      }
-
-      payload = OpenAIClient.format_request_payload(req, [])
-
-      assert payload["messages"] == [
-               %{"role" => "system", "content" => "be brief"},
-               %{"role" => "user", "content" => "hi"}
-             ]
-    end
   end
 
   describe "error handling" do
-    test "parses synthetic http_error chunk into {:error, {type, status, body}} event" do
-      error_chunk =
+    test "parses synthetic error chunks into {:error, {type, status, body}} events" do
+      http_error_chunk =
         "data: " <>
           Jason.encode!(%{error: "http_error", status: 429, body: "rate limited"}) <> "\n\n"
 
-      events = run_with_chunk(error_chunk)
+      http_events = run_with_chunk(http_error_chunk)
 
-      assert {:error, {"http_error", 429, "rate limited"}} in events
-    end
+      assert {:error, {"http_error", 429, "rate limited"}} in http_events
 
-    test "parses synthetic request_failed chunk into {:error, {type, :transport, body}} event" do
-      error_chunk =
+      # A transport-level failure carries `:transport` where a status would be.
+      request_failed_chunk =
         "data: " <>
           Jason.encode!(%{error: "request_failed", status: nil, body: "connection refused"}) <>
           "\n\n"
 
-      events = run_with_chunk(error_chunk)
+      transport_events = run_with_chunk(request_failed_chunk)
 
-      assert {:error, {"request_failed", :transport, "connection refused"}} in events
+      assert {:error, {"request_failed", :transport, "connection refused"}} in transport_events
     end
   end
 
   describe "normalize_endpoint/2" do
-    test "appends endpoint to clean base URL" do
+    test "normalizes base URLs and endpoints" do
+      # Appends the endpoint to a clean base URL.
       assert OpenAIClient.normalize_endpoint("https://api.example.com/v1", "/chat/completions") ==
                "https://api.example.com/v1/chat/completions"
-    end
 
-    test "strips trailing slash before appending" do
+      # Strips a trailing slash before appending.
       assert OpenAIClient.normalize_endpoint("https://api.example.com/v1/", "/chat/completions") ==
                "https://api.example.com/v1/chat/completions"
-    end
 
-    test "strips /v1 suffix before appending endpoint" do
+      # A /v1 suffix is kept rather than stripped twice.
       assert OpenAIClient.normalize_endpoint(
                "https://token-plan.example.com/apps/anthropic/v1",
                "/chat/completions"
              ) == "https://token-plan.example.com/apps/anthropic/v1/chat/completions"
-    end
 
-    test "strips duplicate endpoint before appending" do
+      # Strips a duplicate endpoint before appending.
       assert OpenAIClient.normalize_endpoint(
                "https://api.example.com/v1/chat/completions",
                "/chat/completions"
              ) == "https://api.example.com/v1/chat/completions"
-    end
 
-    test "strips duplicate endpoint with trailing slash" do
+      # Strips a duplicate endpoint that has a trailing slash.
       assert OpenAIClient.normalize_endpoint(
                "https://api.example.com/v1/chat/completions/",
                "/chat/completions"

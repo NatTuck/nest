@@ -45,6 +45,11 @@ defmodule Nest.Sandbox.Backend.DockerProtectedTest do
       # without the spelling mask the write succeeds and the host's canonical
       # `.nest` becomes the written bytes; with it the write is `EACCES` and the
       # host file is untouched. This test asserts the rendered command line.
+      #
+      # The canonical masks are `CommandLineTest`'s ("masks an absent .nest and
+      # AGENTS.md from /dev/null"), and the `/dev/null` mask's shape is
+      # `DockerTest`'s ("the shared bind list"); the spelling-dest'd copy is the
+      # one nothing else renders, so it is the only thing asserted here.
       real = workspace("nest_docker_spelling")
       spelling = real <> "-alias"
       File.ln_s!(real, spelling)
@@ -65,11 +70,9 @@ defmodule Nest.Sandbox.Backend.DockerProtectedTest do
       assert {:ok, %{command: command}} = Docker.command(mounts(spelling), caps, "echo hi")
       command = payload(command)
 
-      # The canonical masks are still there …
-      assert command =~ "--ro-bind /dev/null #{ShellEscape.escape(nest)}"
-
-      # … and so are the spelling ones, after the rw self-bind that would
-      # otherwise be the last word on that path.
+      # … and the spelling ones, after the rw self-bind that would otherwise be
+      # the last word on that path: both files, each re-dest'd at the spelling —
+      # the absent one from `/dev/null`, the present one from itself.
       assert command =~
                "--ro-bind #{ShellEscape.escape("/dev/null")} " <>
                  ShellEscape.escape(Path.join(spelling, ".nest"))
@@ -77,38 +80,29 @@ defmodule Nest.Sandbox.Backend.DockerProtectedTest do
       assert command =~
                "--ro-bind #{ShellEscape.escape(agents_md)} " <>
                  ShellEscape.escape(Path.join(spelling, "AGENTS.md"))
-
-      assert String.split(command, "--bind #{ShellEscape.escape(spelling)}") |> length() == 2
     end
 
-    test "the container binds neither, and the sandbox inside masks both" do
+    test "a present file is neither bound at the container nor masked from /dev/null" do
+      # The absent-file halves are already pinned: that the container binds
+      # neither is `DockerTest`'s "binds the workspace read-write, and neither
+      # config file", and the `/dev/null` mask the sandbox inside makes for an
+      # absent one is `CommandLineTest`'s "masks an absent .nest and AGENTS.md
+      # from /dev/null". What only a *present* file shows is the other branch: the
+      # container still binds it not at all — a container-level copy would shadow
+      # the file a human edits later — and the sandbox inside **self**-binds it
+      # rather than masking it, because the content is already there through the
+      # workspace bind and the bind's job is to set the file's mode.
       ws = workspace("nest_docker_binds")
-      nest = Path.join(ws, ".nest")
       agents_md = Path.join(ws, "AGENTS.md")
       File.write!(agents_md, "policy\n")
 
       dests = for {_source, dest, _mode} <- Docker.container_binds(mounts(ws)), do: dest
-      refute nest in dests
       refute agents_md in dests
 
-      # What `ProjectConfig.effective_caps/2` puts on a *call's* caps: the absent
-      # file masked with `/dev/null`, the present one over itself. Per call they
-      # are masked exactly as the bwrap backend masks them — an absent file bound
-      # from `/dev/null`, which is why reading a masked file fails with `EACCES`
-      # rather than returning empty bytes, and a present one self-bound to set its
-      # mode (its content is already there through the workspace bind).
-      caps =
-        caps_with(%{
-          "protected" => [
-            %{"path" => nest, "source" => "/dev/null"},
-            %{"path" => agents_md, "source" => agents_md}
-          ]
-        })
+      caps = caps_with(%{"protected" => [%{"path" => agents_md, "source" => agents_md}]})
 
       assert {:ok, %{command: command}} = Docker.command(mounts(ws), caps, "echo hi")
       command = payload(command)
-
-      assert command =~ "--ro-bind /dev/null #{ShellEscape.escape(nest)}"
 
       assert command =~
                "--ro-bind #{ShellEscape.escape(agents_md)} #{ShellEscape.escape(agents_md)}"

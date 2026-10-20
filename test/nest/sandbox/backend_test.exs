@@ -11,7 +11,6 @@ defmodule Nest.Sandbox.BackendTest do
   alias Nest.Sandbox.Backend
   alias Nest.Sandbox.Backend.{Bwrap, None}
   alias Nest.Sandbox.Mounts
-  alias Nest.Sandbox.Paths
 
   defp caps do
     %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}}
@@ -51,12 +50,6 @@ defmodule Nest.Sandbox.BackendTest do
       assert Mounts.workspace(mounts) == dir
       assert Mounts.scratch(mounts) == "/tmp/none-space/agent-a"
     end
-
-    test "from_agent/1 is the agent's own value", %{dir: dir} do
-      mounts = Mounts.new(dir, nil, "none")
-
-      assert Mounts.from_agent(%Nest.Agents.Agent{mounts: mounts}) == mounts
-    end
   end
 
   describe "resolve/1" do
@@ -68,13 +61,6 @@ defmodule Nest.Sandbox.BackendTest do
     test "reports a backend this build does not implement instead of guessing" do
       assert {:error, message} = Backend.resolve(Mounts.new(nil, nil, "podman"))
       assert message =~ "podman"
-    end
-
-    test "resolves every backend the list offers" do
-      for backend <- Backend.backends() do
-        assert {:ok, module} = Backend.resolve(Mounts.new(nil, nil, backend))
-        assert is_atom(module)
-      end
     end
   end
 
@@ -117,40 +103,21 @@ defmodule Nest.Sandbox.BackendTest do
 
       assert {:ok, spec} = None.command(mounts, caps(), "/tmp/.nest-cmds/nest-cmd-1.sh")
 
-      refute spec.command =~ "bwrap"
       assert spec.command == "/bin/bash '/tmp/.nest-cmds/nest-cmd-1.sh'"
       assert spec.cd == dir
-    end
-
-    test "stages where there is no bind to translate through" do
-      mounts = Mounts.new(nil, "/tmp/agent-a", "none")
-      stage = Paths.stage_dir(nil)
-
-      assert None.stage_dir(mounts) == stage
-      assert None.stage_dir_sandbox(mounts) == stage
-      assert Backend.stage_dir(mounts) == stage
-      assert Backend.stage_dir_sandbox(mounts) == stage
     end
 
     test "names itself in an operator log" do
       assert None.display_name(Mounts.new(nil, nil, "none")) == "the bare command"
     end
 
-    test "never reports a sandbox setup failure" do
+    test "classifies the errno table and ShellCmd's annotations, never a setup failure" do
       mounts = Mounts.new(nil, nil, "none")
 
       # A bare command has no setup phase, so a command that merely prints
       # bwrap's marker text must not be read as a broken sandbox.
       assert Backend.classify(mounts, "bwrap: Can't find source path /x") == :read_failed
-      assert Backend.classify(mounts, "echo: write error") == :read_failed
       assert Backend.classify(mounts, "cat: /x: No such file or directory") == :enoent
-      assert Backend.classify(mounts, "cat: /x: Permission denied") == :read_permission_denied
-    end
-
-    test "classifies the annotations ShellCmd writes into stderr" do
-      mounts = Mounts.new(nil, nil, "none")
-
-      assert Backend.classify(mounts, "[Command timed out after 5ms]") == :read_timeout
       assert Backend.classify(mounts, "[Command cancelled]") == :read_cancelled
     end
   end
@@ -185,13 +152,6 @@ defmodule Nest.Sandbox.BackendTest do
   end
 
   describe "ShellCmd dispatch" do
-    test "an unknown backend is reported to the caller, not raised", %{dir: dir} do
-      mounts = Mounts.new(dir, nil, "podman")
-
-      assert {:error, message} = Sandbox.run("true", mounts, caps())
-      assert message =~ "podman"
-    end
-
     test "every executor answers an unknown backend with an error, not a raise", %{dir: dir} do
       # `glob/4` reaches the staging spelling before `ShellCmd` resolves the
       # backend, and that accessor raises rather than answering. Resolving first

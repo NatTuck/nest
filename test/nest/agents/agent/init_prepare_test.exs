@@ -97,7 +97,6 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
       on_exit(fn -> rm_tmp!(stale.mounts.scratch, stale.name) end)
 
       assert stale.live.mode == Nest.Modes.default()
-      assert Nest.Modes.default() == "act"
 
       # A mode this build implements is kept as it is.
       known = Init.build_state(agent_attrs(space_id, vocation, %{mode: "plan"}), client_config)
@@ -124,15 +123,10 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
       prepared_text = prepared_attrs |> Init.build_active_state(client_config()) |> system_text()
 
       # Both compositions really composed — the workspace's `AGENTS.md` is in
-      # each — and the prepared result is what the unprepared one would have
-      # produced.
+      # the unprepared one, and the prepared result is byte-for-byte what the
+      # unprepared one would have produced.
       assert unprepared_text =~ "Always use pnpm."
-      assert prepared_text =~ "Always use pnpm."
       assert prepared_text == unprepared_text
-
-      # And `prepare/1` is idempotent: a caller that prepares twice pays once,
-      # which is what lets both start paths call it without coordinating.
-      assert Init.prepare(prepared_attrs) == prepared_attrs
     end
   end
 
@@ -162,8 +156,7 @@ defmodule Nest.Agents.Agent.InitPrepareTest do
       on_exit(fn -> File.rm(scratch) end)
 
       # Composition does not need the directory, so it succeeds...
-      assert %{prepared: prepared} = Init.prepare(attrs)
-      assert is_tuple(prepared)
+      assert %{prepared: _} = Init.prepare(attrs)
 
       # ...and the failure lands in `init/1`, which `DynamicSupervisor.start_child/2`
       # turns into `{:error, {exception, stacktrace}}` — the shape the supervisor

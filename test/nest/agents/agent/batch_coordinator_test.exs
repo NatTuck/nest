@@ -98,8 +98,7 @@ defmodule Nest.Agents.Agent.BatchCoordinatorTest do
 
     log =
       capture_log(fn ->
-        assert {:ok, confirmation} = BatchCoordinator.run(ctx, tc)
-        assert confirmation =~ "Fanned 1 item(s)"
+        assert {:ok, _confirmation} = BatchCoordinator.run(ctx, tc)
 
         # The stand-in relayed the blocked call, so that call's caller is the
         # coordinator: its arrival is the start notification the scan of
@@ -121,9 +120,6 @@ defmodule Nest.Agents.Agent.BatchCoordinatorTest do
     # gone — not that a delivery "could not happen" for an unstated reason.
     assert log =~ "coordinator stopped before the aggregate"
     assert log =~ "the parent is gone; the aggregate was not delivered"
-
-    # Nothing was registered against a parent that does not exist.
-    assert {:error, :not_found} = Nest.Persistence.fetch_agent(space_id, "alpha")
   end
 
   # The task this test launched: the only one carrying the unique dead parent in

@@ -92,24 +92,6 @@ defmodule Nest.Agents.AgentOverflowIntegrationTest do
   end
 
   describe "Overflow.message/4 uses rendered size, not messages[0] fallback" do
-    test "reports the rendered prompt size when messages[0] has no system" do
-      vocation = create_vocation(%{})
-      {pid, _agent_id} = start_agent(%{vocation_id: vocation.id, vocation: vocation})
-
-      drift_messages_to_no_system(pid)
-      # allowlist: harness — render_for/1's argument
-      state = :sys.get_state(pid, 1_000)
-
-      refute match?({:system, _}, Enum.at(state.chat_state.messages, 0))
-
-      {rendered_size, system_prompt} = render_for(state)
-
-      refute rendered_size == 0
-
-      msg = Overflow.message(state.llm_metrics.context_limit, system_prompt, "compact")
-      assert msg =~ "system prompt (~#{rendered_size} tokens)"
-    end
-
     test "reports the rendered prompt size for :system_oversized even with drift" do
       vocation = create_vocation(%{})
       {pid, _agent_id} = start_agent(%{vocation_id: vocation.id, vocation: vocation})
@@ -130,25 +112,6 @@ defmodule Nest.Agents.AgentOverflowIntegrationTest do
 
       assert msg =~ "system prompt is ~#{rendered_size} tokens"
       assert msg =~ "25% safety budget"
-    end
-  end
-
-  describe "messages[0] drift does NOT inflate the Overflow size" do
-    test "the rendered size is independent of state.chat_state.messages contents" do
-      vocation = create_vocation(%{})
-      {pid, _agent_id} = start_agent(%{vocation_id: vocation.id, vocation: vocation})
-
-      # allowlist: harness — render_for/1's argument
-      state = :sys.get_state(pid, 1_000)
-      {before, _} = render_for(state)
-
-      drift_messages_to_no_system(pid)
-      # allowlist: harness — render_for/1's argument
-      drifted_state = :sys.get_state(pid, 1_000)
-      {after_drift, _} = render_for(drifted_state)
-
-      assert before == after_drift,
-             "Overflow.system_size should depend on rendered prompt, not messages[0]"
     end
   end
 end

@@ -80,23 +80,7 @@ defmodule Nest.Agents.AgentChatModeTest do
                        }}},
                      @turn_fence_ms
 
-      await_idle(pid)
-    end
-
-    test "an explicit mode this build implements is preserved" do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-
-      :ok = Agent.chat(pid, "Plan this", "plan", nil, true)
-
-      assert_receive {:chat_message,
-                      {:user,
-                       %{
-                         parts: [%Part.Text{text: "[From user | mode: plan]\nPlan this"}],
-                         metadata: %{"mode" => "plan"}
-                       }}},
-                     @turn_fence_ms
-
-      await_idle(pid)
+      await_idle()
     end
 
     test "an unknown mode falls back to the default" do
@@ -112,33 +96,10 @@ defmodule Nest.Agents.AgentChatModeTest do
                        }}},
                      @turn_fence_ms
 
-      await_idle(pid)
-    end
-
-    test "the status broadcast carries the mode the turn ran in" do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-
-      :ok = Agent.chat(pid, "Plan this", "plan", nil, true)
-
-      assert_receive {:chat_status, %{status: "idle", currentMode: "plan"}}, 1_000
-
-      assert_received {:chat_message,
-                       {:user,
-                        %{
-                          parts: [%Part.Text{text: "[From user | mode: plan]\nPlan this"}],
-                          metadata: %{"mode" => "plan"}
-                        }}}
-    end
-
-    test "the broadcast carries the default an unknown mode resolved to" do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-
-      :ok = Agent.chat(pid, "Hello", "nonexistent", nil, true)
-
       # The fallback is written to `state.live.mode` and so reaches the status
       # frame's `currentMode`, rather than leaving a mode nothing can honour.
-      assert Agent.get_public_info(pid, 1_000).current_mode == "act"
-      assert_receive {:chat_status, %{status: "idle", currentMode: "act"}}, 1_000
+      # The frame is the turn's last, so it is also the fence.
+      assert_receive {:chat_status, %{status: "idle", currentMode: "act"}}, @turn_fence_ms
     end
 
     test "state.live.mode is updated to the resolved mode after a chat (sticky mode)" do
@@ -151,14 +112,14 @@ defmodule Nest.Agents.AgentChatModeTest do
       assert Agent.get_public_info(pid, 1_000).current_mode == "act"
 
       :ok = Agent.chat(pid, "Plan this", "plan", nil, true)
-      await_idle(pid)
+      await_idle()
       assert Agent.get_public_info(pid, 1_000).current_mode == "plan"
 
       # The next chat without an explicit mode uses the updated
       # `state.live.mode` — `handle_chat/4`'s `requested_mode || state.live.mode`
       # fallback.
       :ok = Agent.chat(pid, "And another", nil, nil, true)
-      await_idle(pid)
+      await_idle()
       assert Agent.get_public_info(pid, 1_000).current_mode == "plan"
     end
   end
@@ -177,14 +138,14 @@ defmodule Nest.Agents.AgentChatModeTest do
                       {:user, %{metadata: %{"mode" => "act", "origin" => "human"}}}},
                      @turn_fence_ms
 
-      await_idle(pid)
+      await_idle()
 
       :ok = Agent.chat(pid, "kickoff nobody typed", nil, nil, false)
 
       assert_receive {:chat_message, {:user, %{metadata: metadata}}}, @turn_fence_ms
       refute Map.has_key?(metadata, "origin")
 
-      await_idle(pid)
+      await_idle()
     end
   end
 
@@ -192,9 +153,9 @@ defmodule Nest.Agents.AgentChatModeTest do
   # `"idle"` `chat:status` broadcast is emitted at the end of the turn and every
   # earlier frame of that turn precedes it in this mailbox (the same fence
   # `agent_chat_test.exs` uses). Arrival decides the outcome; `@turn_fence_ms` is
-  # only the failure bound. The pid is not needed: the fence reads the frames the
-  # test pid is subscribed to.
-  defp await_idle(_pid) do
+  # only the failure bound. The fence reads the frames the *test* pid is
+  # subscribed to, so it needs no agent pid.
+  defp await_idle do
     assert_receive {:chat_status, %{status: "idle"}}, @turn_fence_ms
   end
 end

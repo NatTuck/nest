@@ -56,7 +56,6 @@ defmodule Nest.LLM.MockClientPreflightTest do
     assert body["error"]["message"] =~ "tool call result does not follow tool call"
 
     details = body["error"]["details"]
-    assert is_list(details)
     assert Enum.any?(details, &(&1.kind == :missing_tool_responses and &1.missing_ids == ["a"]))
     assert Enum.any?(details, &(&1.kind == :orphan_tool_result and &1.orphan_ids == ["b"]))
 

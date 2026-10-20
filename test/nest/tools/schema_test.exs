@@ -24,20 +24,17 @@ defmodule Nest.Tools.SchemaTest do
 
     test "agents-spawn schema exposes the optional vocation and model arguments" do
       function = Tools.get_function("agents-spawn", Mounts.new("/tmp", nil))
-      assert function.name == "agents-spawn"
-
       props = function.parameters_schema["properties"]
+
       assert props["vocation"]["type"] == "string"
       assert props["vocation"]["description"] =~ "vocation slug"
-      refute "vocation" in (function.parameters_schema["required"] || [])
-
       assert props["model"]["type"] == "string"
       assert props["model"]["description"] =~ "provider/model-name"
-      refute "model" in (function.parameters_schema["required"] || [])
+      # Both are optional: the name is the only required argument.
+      assert function.parameters_schema["required"] == ["name"]
 
-      # Nothing waits any more, so neither the blocking controls nor the
-      # result-size override (the answer is an inbox message now) apply.
-      for gone <- ["async", "timeout", "max_result_tokens"] do
+      # Nothing waits any more, so neither of the blocking controls applies.
+      for gone <- ["async", "timeout"] do
         refute Map.has_key?(props, gone),
                "agents-spawn still offers `#{gone}`, which the async contract removed"
       end
@@ -55,8 +52,6 @@ defmodule Nest.Tools.SchemaTest do
 
     test "agents-query schema takes name, prompt and an optional set_mode" do
       function = Tools.get_function("agents-query", Mounts.new("/tmp", nil))
-      assert function.name == "agents-query"
-
       props = function.parameters_schema["properties"]
       assert Map.keys(props) |> Enum.sort() == ["name", "prompt", "set_mode"]
       assert props["set_mode"]["enum"] == ["mine", "plan", "act"]
@@ -72,8 +67,6 @@ defmodule Nest.Tools.SchemaTest do
 
     test "agents-batch schema exposes items/glob/template with no required args" do
       function = Tools.get_function("agents-batch", Mounts.new("/tmp", nil))
-      assert function.name == "agents-batch"
-
       props = function.parameters_schema["properties"]
       assert props["items"]["type"] == "array"
       assert props["glob"]["type"] == "string"
@@ -85,18 +78,14 @@ defmodule Nest.Tools.SchemaTest do
       assert (function.parameters_schema["required"] || []) == []
 
       # The aggregate is a message now; `timeout` stays as the
-      # coordinator's per-item deadline. The result-size cap is gone
-      # (decision 14, extended to batch): there is no inline result left
-      # to bound.
+      # coordinator's per-item deadline.
       assert function.description =~ "receive the aggregate later as a message"
       refute function.description =~ "get back ONE aggregated result"
       assert props["timeout"]["type"] == "integer"
-      refute Map.has_key?(props, "max_result_tokens")
     end
 
     test "agents-send schema requires name and message" do
       function = Tools.get_function("agents-send", Mounts.new("/tmp", nil))
-      assert function.name == "agents-send"
 
       assert function.parameters_schema["required"] == ["name", "message"]
       assert function.parameters_schema["properties"]["name"]["type"] == "string"
@@ -116,7 +105,6 @@ defmodule Nest.Tools.SchemaTest do
       # `names` is meaningful, so nothing is required.
       wait = Tools.get_function("agents-wait", Mounts.new("/tmp", nil))
       props = wait.parameters_schema["properties"]
-      assert wait.name == "agents-wait"
       assert props["names"]["type"] == "array"
       assert props["names"]["items"]["type"] == "string"
       assert props["timeout"]["type"] == "integer"
@@ -155,7 +143,6 @@ defmodule Nest.Tools.SchemaTest do
       history = Tools.get_function("agents-history", Mounts.new("/tmp", nil))
       props = history.parameters_schema["properties"]
 
-      assert history.name == "agents-history"
       assert Enum.sort(Map.keys(props)) == ["length", "name", "search", "start_index"]
       assert (history.parameters_schema["required"] || []) == []
       assert {props["start_index"]["type"], props["length"]["type"]} == {"integer", "integer"}
@@ -165,8 +152,6 @@ defmodule Nest.Tools.SchemaTest do
       # out; the window runs forward from the resolved index.
       assert props["start_index"]["description"] =~ "Defaults to -1"
       assert props["start_index"]["description"] =~ "Negative counts from the end"
-      assert history.description =~ "counts from the end"
-      assert history.description =~ "-1 is the last message"
       assert history.description =~ "start_index: -5, length: 5"
       assert history.description =~ "runs past the end"
       assert history.description =~ "never a silent truncation"
@@ -183,7 +168,6 @@ defmodule Nest.Tools.SchemaTest do
     test "the status schema reports the count, the boundary and the state" do
       status = Tools.get_function("agents-status", Mounts.new("/tmp", nil))
 
-      assert status.name == "agents-status"
       assert Map.keys(status.parameters_schema["properties"]) == ["name"]
       assert (status.parameters_schema["required"] || []) == []
 
@@ -191,18 +175,6 @@ defmodule Nest.Tools.SchemaTest do
       assert status.description =~ "the index of its last compaction"
       assert status.description =~ "not_running"
       assert status.description =~ "never starts one"
-    end
-
-    test "the history and status tools take no result-size cap" do
-      # A range read is bounded by its own `length` and a status report is a
-      # fixed set of lines, so neither offers a second knob (the default cap
-      # still applies to both results).
-      for name <- ["agents-history", "agents-status"] do
-        function = Tools.get_function(name, Mounts.new("/tmp", nil))
-
-        refute Map.has_key?(function.parameters_schema["properties"], "max_result_tokens"),
-               "#{name} offers `max_result_tokens`, which bounds nothing it needs"
-      end
     end
   end
 
@@ -214,7 +186,6 @@ defmodule Nest.Tools.SchemaTest do
       function = Tools.get_function("context-compact", Mounts.new("/tmp", nil))
       props = function.parameters_schema["properties"]
 
-      assert function.name == "context-compact"
       assert Enum.sort(Map.keys(props)) == ["cover", "preserve"]
       assert (function.parameters_schema["required"] || []) == []
 
@@ -223,7 +194,6 @@ defmodule Nest.Tools.SchemaTest do
       # `Tools.context_compact_cover_limit/0`.
       assert props["cover"]["type"] == "string"
       assert props["cover"]["maxLength"] == Tools.context_compact_cover_limit()
-      assert props["cover"]["maxLength"] == 100
       assert props["cover"]["description"] =~ "100 characters or fewer"
       assert props["cover"]["description"] =~ "`preserve`"
 
@@ -231,9 +201,9 @@ defmodule Nest.Tools.SchemaTest do
       assert props["preserve"]["description"] =~ "verbatim"
       assert props["preserve"]["description"] =~ "not as instructions to the summarizer"
 
-      # `focus` is gone, and a caller still passing it is refused rather than
-      # ignored (`MachineCompactionRequestTest` pins that).
-      refute Map.has_key?(props, "focus")
+      # `focus` is gone; `MachineCompactionRequestTest` pins that a caller
+      # still passing it is refused rather than ignored, and the description
+      # must not point at it either.
       refute function.description =~ "focus"
     end
   end

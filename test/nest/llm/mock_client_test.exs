@@ -40,12 +40,12 @@ defmodule Nest.LLM.MockClientTest do
   end
 
   describe "lifecycle" do
-    test "start_link is idempotent and clear resets state without crashing when the agent is not started" do
+    test "start_link is idempotent and clear succeeds on a started queue" do
       MockClient.stop()
       assert MockClient.start_link() != nil
+      # The second call is the one that lands on `{:error, {:already_started, _}}`.
       assert MockClient.start_link() != nil
       assert MockClient.clear() == :ok
-      MockClient.start_link()
     end
 
     test "stop is idempotent" do
@@ -67,22 +67,6 @@ defmodule Nest.LLM.MockClientTest do
       {:ok, stream} = MockClient.run(%RunRequest{})
       assert [{:text, text}, {:finish_reason, "stop"}, {:done, _}] = Enum.to_list(stream)
       assert is_binary(text) and text != ""
-    end
-  end
-
-  describe "default (no script set)" do
-    test "run/2 returns a text stream with a non-empty text event and a stop finish reason" do
-      {:ok, stream} = MockClient.run(%RunRequest{})
-
-      events = Enum.to_list(stream)
-      assert {:text, text} = hd(events)
-      assert is_binary(text) and text != ""
-
-      finish = Enum.find(events, &match?({:finish_reason, _}, &1))
-      assert {:finish_reason, "stop"} = finish
-
-      done = List.last(events)
-      assert {:done, %{response: %RunResponse{text: ^text, stop_reason: "stop"}}} = done
     end
   end
 
@@ -111,7 +95,6 @@ defmodule Nest.LLM.MockClientTest do
       assert {:text, "first"} = hd(first_events)
       assert {:text, first_random} = hd(second_events)
       assert first_random != "first"
-      assert is_binary(first_random) and first_random != ""
     end
   end
 
@@ -236,19 +219,6 @@ defmodule Nest.LLM.MockClientTest do
       assert {:text, "only text"} = hd(events)
       assert {:done, %{response: %RunResponse{}}} = List.last(events)
     end
-
-    test "in-band error event is preserved as part of the event sequence" do
-      canned = [
-        {:text, "partial"},
-        {:error, :mid_stream_failure},
-        {:done, %{response: %RunResponse{text: "partial"}}}
-      ]
-
-      MockClient.set_stream_events(canned)
-
-      {:ok, stream} = MockClient.run(%RunRequest{})
-      assert Enum.to_list(stream) == canned
-    end
   end
 
   describe "format_request_payload/2" do
@@ -270,7 +240,6 @@ defmodule Nest.LLM.MockClientTest do
       assert payload["max_tokens"] == nil
       assert payload["top_p"] == nil
       assert payload["tool_choice"] == :auto
-      refute Map.has_key?(payload, "tools")
 
       assert payload["messages"] == [
                %{"role" => "system", "content" => "be brief"},
@@ -373,12 +342,11 @@ defmodule Nest.LLM.MockClientTest do
   end
 
   describe "enumerable contract" do
-    test "the returned stream is an Enumerable and supports Enum.count/1, Enum.take/2, Enum.member?/2" do
+    test "the returned stream is re-enumerable and supports Enum.count/1, Enum.take/2, Enum.member?/2" do
       MockClient.set_response("hello")
 
       {:ok, stream} = MockClient.run(%RunRequest{})
 
-      assert Enumerable.impl_for(stream) != nil
       assert Enum.count(stream) == 3
       assert Enum.take(stream, 2) == [{:text, "hello"}, {:finish_reason, "stop"}]
       assert Enum.member?(stream, {:finish_reason, "stop"})

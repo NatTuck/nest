@@ -10,7 +10,6 @@ defmodule MachineCompactionTest do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Response
   alias Nest.Agents.Agent.Machine.Turn
-  alias Nest.Agents.Agent.Repair
   alias Nest.Messages.Part
   alias Nest.Tokens.ConversationSize
 
@@ -79,7 +78,6 @@ defmodule MachineCompactionTest do
       {:ok, actions, next} = Machine.Compaction.stage(m, nil)
 
       assert next.phase == :context_overflow
-      assert Machine.status_for(next) == :context_overflow
 
       notice =
         Enum.find_value(actions, fn
@@ -88,7 +86,10 @@ defmodule MachineCompactionTest do
         end)
 
       assert notice, "expected a notice row for the failed staging"
-      assert notice =~ "Compaction did not start"
+
+      # The shared "Compaction did not start" prefix is pinned on the other
+      # arms in `MachineCompactionRequestTest` and `ExecutorTest`; this arm's
+      # own wording is the part only this test can lose.
       assert notice =~ "system prompt is too large"
     end
 
@@ -108,7 +109,6 @@ defmodule MachineCompactionTest do
       {:ok, actions, next} = Machine.Compaction.resume(m)
 
       assert next.phase == :idle
-      assert Enum.any?(actions, &match?({:append_many, _}, &1))
 
       # The space's flag is cleared by the executor, *after* the append: until
       # this ran, the row was the only record that the agent still owed the
@@ -119,6 +119,9 @@ defmodule MachineCompactionTest do
       assert {:clear_space_notice, values} = List.keyfind(actions, :clear_space_notice, 0)
       assert values == notice_values()
 
+      # The pair is there and it precedes the clear. (`Enum.find_index/2` is
+      # `nil` for a missing action, and an integer is never `< nil`, so this
+      # fails — rather than passing vacuously — if the append is gone.)
       assert Enum.find_index(actions, &match?({:append_many, _}, &1)) <
                Enum.find_index(actions, &match?({:clear_space_notice, _}, &1))
     end
@@ -143,7 +146,13 @@ defmodule MachineCompactionTest do
     #
     # Pure: no agent, no DB, no daemon. The transcript is built from the
     # estimator's own size so the test does not encode a chars-per-token constant.
-    test "a staged compaction carries the values on its entry, and a reserve that cannot hold one stages nothing" do
+    #
+    # The other half of that boundary — the same transcript with one token of
+    # headroom left, where `Compaction.stage/2` cannot fit the request and
+    # *rests* — is `Nest.Agents.AgentWorkspaceTest`'s "a conversation with no
+    # headroom for a compaction keeps the flag, and stages nothing", end to end
+    # (it also pins the space's flag and the overflow banner).
+    test "a staged compaction carries the notice values on its entry" do
       messages = near_limit_conversation()
       size = ConversationSize.size(messages)
 
@@ -154,21 +163,13 @@ defmodule MachineCompactionTest do
 
       assert staged.phase == :generating
       assert staged.kind == :compaction
+      # The pin alone would match a dropped notice (`nil`), so the `is_map/1` is
+      # what makes this fail if the values do not ride the entry.
       assert {:compaction, nil, values} = staged.entry
       assert is_map(values)
 
       # The budget reminder's slot is untouched: it is not the notice's.
       assert staged.work.pending_notice == nil
-
-      # The same transcript with no headroom left at all: the request cannot be
-      # fitted into the reserve, so `Compaction.stage/2` *rests* — and there is no
-      # entry, so there is nothing anywhere for a later compaction to consume.
-      rested = notice_step(messages, size + 1)
-
-      assert rested.phase == :idle
-      assert Machine.status_for(rested) == :idle
-      assert rested.entry == nil
-      assert rested.work.pending_notice == nil
     end
 
     # A model change rides the same three arms as a space-environment change —
@@ -190,13 +191,14 @@ defmodule MachineCompactionTest do
       {:ok, actions, resumed} = Machine.Compaction.resume(staged)
 
       assert resumed.phase == :idle
-      assert {:append_many, [notice_row, ack_row]} = List.keyfind(actions, :append_many, 0)
+      assert {:append_many, [notice_row, _ack_row]} = List.keyfind(actions, :append_many, 0)
 
+      # One identifying line is enough here: the pair's body — the verdict, the
+      # limit and the arithmetic — is `ModelHandler.notice_pair/2`, pinned for
+      # the fits arm in `Nest.Agents.Agent.ModelNoticeTest`, and both arms append
+      # that same pair.
       assert {:user, %{parts: [%Part.Text{text: notice}]}} = notice_row
-      assert notice =~ "Your model changed. It is now \"m\"."
-      assert notice =~ "Nothing declares whether it accepts image input"
-      assert notice =~ "Its context limit is 100000 tokens"
-      assert {:assistant, %{parts: [%Part.Text{text: "Model change confirmed."}]}} = ack_row
+      assert notice =~ ~s(Your model changed. It is now "m".)
 
       # Nothing to clear: the model is the row's own property, so unlike the
       # space's notice there is no "not told yet" flag anywhere.
@@ -226,10 +228,12 @@ defmodule MachineCompactionTest do
       base = state_at(:idle)
 
       noticing = %{base | entry: {:compaction, carried, notice_values()}}
-      {:ok, notice_actions, notice_next} = Machine.Compaction.resume(noticing)
+      {:ok, notice_actions, _notice_next} = Machine.Compaction.resume(noticing)
 
+      # The notice wins over the carried reply — the pair is appended, and the
+      # reply's own resume does not run (no `{:finalize, :clean}`).
       assert Enum.any?(notice_actions, &match?({:append_many, _}, &1))
-      assert notice_next.phase == :idle
+      refute {:finalize, :clean} in notice_actions
 
       plain = %{base | entry: {:compaction, carried, nil}}
       {:ok, actions, next} = Machine.Compaction.resume(plain)
@@ -265,14 +269,12 @@ defmodule MachineCompactionTest do
       assert [{:append_many, [heal]} | _] = actions
       assert {:tool, %{parts: [%Part.ToolResult{tool_call_id: "call_1", is_error: true}]}} = heal
 
-      # intentional: the heal answers the tail, so the request append that
-      # follows is legal — it gets the compaction bridge rather than the
-      # `{:invalid, …}` refusal that wedged the machine.
-      assert {:repair, [bridge]} =
-               Repair.decide(:live, ctx.messages ++ [heal], {:user, compaction_request()})
-
-      assert {:assistant, %{parts: [%Part.Text{text: "Let me pause to summarize."}]}} = bridge
-
+      # The heal answers the tail, which is what makes the request append that
+      # follows legal: it gets the compaction bridge rather than the
+      # `{:invalid, …}` refusal that wedged the machine. Both halves of that are
+      # `Repair`'s own contract, pinned in `MessageAppendTagsTest` (the bridge
+      # for an answered tail) and `AgentCompactionTest` (the bridge's wording),
+      # so only the machine's side is asserted here.
       assert next.kind == :compaction and next.phase == :generating
       assert Enum.any?(actions, &match?({:append, _}, &1))
     end
@@ -291,8 +293,8 @@ defmodule MachineCompactionTest do
 
       # intentional: NOT `:compaction_failed`. A retry re-sends the committed
       # sequence, and this sequence has no request row in it — the compactor
-      # would be asked to summarize with no instruction.
-      refute next.phase == :compaction_failed
+      # would be asked to summarize with no instruction. (`:idle` above is that
+      # claim: `:compaction_failed` is a blocked phase, so the two are exclusive.)
     end
 
     # BLOCKER, found by the same review. `entry` is turn-scoped for a
@@ -323,9 +325,9 @@ defmodule MachineCompactionTest do
       assert acked.entry == nil
 
       # intentional: the observable consequence — the reply to the operator's
-      # next message is a CHAT reply, not a compaction summary.
+      # next message is a CHAT reply, not a compaction summary. (`classify/1`
+      # returns one atom, so `:finalize` is already the whole claim.)
       assert classify(acked.entry) == :finalize
-      refute classify(acked.entry) == :compaction
     end
 
     # BLOCKER, found by the third review of PR #137. The space notice used to
@@ -341,37 +343,29 @@ defmodule MachineCompactionTest do
       staged = %{state_at(:committing) | entry: {:compaction, nil, values}}
 
       # A failure with nothing carried blocks, and the entry stays: a retry
-      # re-sends the same request for the same compaction turn.
+      # re-sends the same request for the same compaction turn. (The blocked
+      # phase itself is `MachineCompactionRequestTest`'s "a retry after a
+      # compaction failure re-renders the same focus"; what is unique here is
+      # that the notice rides along.)
       {:ok, _actions, failed} = Machine.Compaction.compaction_failed(staged, :boom, nil)
-      assert failed.phase == :compaction_failed
       assert {:compaction, nil, ^values} = failed.entry
 
       # Leaving that phase drops the entry — and the notice with it, because the
-      # notice is not anywhere else.
+      # notice is not anywhere else. Nothing in this test ever writes
+      # `work.pending_notice`, so that slot is not asserted on: it would pass
+      # whether or not the entry design held.
       {:ok, _actions, unblocked} = Machine.step(failed, {:unblocked})
       assert unblocked.phase == :idle
       assert unblocked.entry == nil
-      assert unblocked.work.pending_notice == nil
 
       # The next compaction is a different turn with its own carried reply, and
       # it resumes the reply rather than appending anything stale.
       carried = {:assistant_response, %Nest.Messages.Assistant{parts: []}, 0, 5}
       later = %{unblocked | entry: {:compaction, carried, nil}}
-      {:ok, actions, next} = Machine.Compaction.resume(later)
+      {:ok, actions, _next} = Machine.Compaction.resume(later)
 
       refute Enum.any?(actions, &match?({:append_many, _}, &1))
       assert {:finalize, :clean} in actions
-      assert next.phase == :idle
-    end
-
-    test "a compaction entry does not survive an unblock either" do
-      m = %{state_at(:needs_repair, kind: :compaction) | entry: {:compaction, nil, nil}}
-
-      {:ok, _actions, unblocked} = Machine.step(m, {:unblocked})
-
-      assert unblocked.phase == :idle
-      assert unblocked.entry == nil
-      assert classify(unblocked.entry) == :finalize
     end
   end
 
@@ -419,30 +413,6 @@ defmodule MachineCompactionTest do
       assert next.kind == :compaction and next.phase == :generating
 
       assert {:compaction, {:assistant_response, {:assistant, _}, 0, 10}, nil} = next.entry
-    end
-  end
-
-  describe "compaction resume" do
-    test "a deferred assistant_response resume finalizes cleanly instead of casting to the parent" do
-      # intentional: an idle-after-compaction resume must not emit a
-      # malformed parent notification. The old `{:notify_parent, :completed}`
-      # cast a bare `:completed` atom, which no parent `handle_cast/2`
-      # clause matches (a child's parent would crash). It now finalizes
-      # like any clean idle (the executor builds the real payload).
-      carried = {:assistant_response, %Nest.Messages.Assistant{parts: []}, 0, 5}
-
-      machine =
-        Machine.new(
-          phase: :committing,
-          kind: :compaction,
-          entry: {:compaction, carried, nil}
-        )
-
-      {:ok, actions, next} = Machine.step(machine, {:commit_done})
-
-      assert {:finalize, :clean} in actions
-      refute Enum.any?(actions, &match?({:notify_parent, _}, &1))
-      assert next.phase == :idle
     end
   end
 end

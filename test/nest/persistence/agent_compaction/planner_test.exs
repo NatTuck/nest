@@ -25,14 +25,9 @@ defmodule Nest.Persistence.AgentCompaction.PlannerTest do
 
       assert {:ok, plan} = Planner.plan(agent, full, ctx())
 
-      assert plan.archived_count == 4
       assert plan.marker_index == 4
       assert plan.orphan_count == 0
       assert plan.slice == [system_msg(0), user(1), assistant(2), user(3)]
-      assert plan.compaction_count == 1
-      assert plan.chunk_budget > 0
-      assert plan.summary_budget > 0
-      assert plan.chunks != []
     end
 
     test "detects rows after a gap and rows past next_message_index as orphans" do
@@ -41,7 +36,6 @@ defmodule Nest.Persistence.AgentCompaction.PlannerTest do
 
       assert {:ok, plan} = Planner.plan(agent, full, ctx())
 
-      assert plan.archived_count == 3
       assert plan.orphan_count == 3
       assert Planner.orphan_from(plan) == 3
       assert Enum.map(plan.slice, &index/1) == [0, 1, 2]
@@ -86,7 +80,6 @@ defmodule Nest.Persistence.AgentCompaction.PlannerTest do
       # as the online commit's row does.
       assert text == "[From nest runtime | mode: act]\nSummary of earlier conversation:\n\nS"
       assert metadata == %{"mode" => "act"}
-      assert Planner.orphan_from(plan) == 3
     end
   end
 

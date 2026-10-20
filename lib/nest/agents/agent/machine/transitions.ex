@@ -50,7 +50,6 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   defdelegate unwrap_user(entry), to: Phase
   defdelegate held_user(m), to: Phase
   defdelegate init_turn(machine, entry), to: Phase
-  defdelegate put_ctx(m, changes), to: Phase
 
   # --- child events (any phase) ---
 

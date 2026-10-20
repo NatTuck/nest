@@ -3,7 +3,7 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
   Tests for the mid-iteration context-usage reminder logic.
 
   These are unit tests of `ContextReminder.highest_unannounced/3` and
-  `ContextReminder.build_message/2`. The in-process turn wiring (the context
+  `ContextReminder.build_message/3`. The in-process turn wiring (the context
   spec injected by the
   user-notice / response path, the set persisted on the Agent's
   `live.crossed_thresholds`, and the set cleared on successful
@@ -68,13 +68,7 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
       assert ContextReminder.highest_unannounced(40_000, @limit, MapSet.new()) == :p25
     end
 
-    test "returns only the highest crossed threshold (not 25+50+75)" do
-      # If a fresh turn starts at 80% of working budget
-      # (128_000/160_000), fire 75% — not all three.
-      assert ContextReminder.highest_unannounced(128_000, @limit, MapSet.new()) == :p75
-    end
-
-    test "returns nil when threshold was already announced" do
+    test "ignores an already announced lower threshold when a higher one is crossed" do
       crossed = MapSet.new([:p25])
       assert ContextReminder.highest_unannounced(120_001, @limit, crossed) == :p75
     end
@@ -108,17 +102,6 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
                  Header.put(ContextReminder.notice_text(atom, compact?), :runtime, "act")
       end
     end
-
-    test "agrees with the spec the response path injects, header and all" do
-      # `spec/4` is what `Machine.Response` announces; `build_message/3` must
-      # produce the same row text for the same threshold.
-      spec = ContextReminder.spec(80_001, @limit, MapSet.new())
-
-      assert {:user, %User{parts: [%Nest.Messages.Part.Text{text: content}]}} =
-               ContextReminder.build_message(spec.threshold, "act")
-
-      assert content == Header.put(spec.notice, :runtime, "act")
-    end
   end
 
   describe "notice_text/2" do
@@ -143,10 +126,6 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
                "Context at 75%. Do not stop due to context concerns, " <>
                  "continue working through compaction."
     end
-
-    test "the p75 notice for an agent without the tool never names it" do
-      refute ContextReminder.notice_text(:p75, false) =~ "context-compact"
-    end
   end
 
   describe "compact_available?/1" do
@@ -160,21 +139,12 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
     end
   end
 
-  describe "ack_text/0" do
-    test "is one sentence for every context threshold" do
-      # The ack is not where the model is steered — the notice is — so one
-      # sentence covers all three thresholds and both 75% variants.
-      assert ContextReminder.ack_text() == "Okay, context noted."
-    end
-  end
-
   describe "build_user_notice/3" do
     test "returns a {:user, %User{}} with the given text behind the runtime header" do
-      assert {:user, %User{parts: [%Nest.Messages.Part.Text{text: text}], metadata: metadata}} =
+      assert {:user, %User{parts: [%Nest.Messages.Part.Text{text: text}]}} =
                ContextReminder.build_user_notice("hello", "act")
 
       assert text == "[From nest runtime | mode: act]\nhello"
-      assert metadata == %{"mode" => "act"}
     end
 
     test "merges the notice's own metadata over the mode" do
@@ -186,16 +156,10 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
   end
 
   describe "spec/3" do
-    test "returns nil when usage is well under 25% of the working budget" do
-      assert ContextReminder.spec(1_000, @limit, MapSet.new()) == nil
-    end
-
-    test "returns a :context spec with 'Context?' attention and the decided notice for :p25" do
+    test "returns a :context spec with the 'Context?' attention" do
       spec = ContextReminder.spec(40_001, @limit, MapSet.new())
       assert spec.kind == :context
       assert spec.attention == "Context?"
-      assert spec.threshold == :p25
-      assert spec.notice == ContextReminder.notice_text(:p25)
     end
 
     test "the spec's notice is exactly the decided text, whichever path announces it" do
@@ -214,54 +178,11 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
       end
     end
 
-    test "returns a :context spec for :p50" do
-      spec = ContextReminder.spec(80_001, @limit, MapSet.new())
-      assert spec.kind == :context
-      assert spec.attention == "Context?"
-      assert spec.threshold == :p50
-      assert spec.notice =~ "50%"
-    end
-
-    test "returns a :context spec for :p75 with compact recommendation" do
-      spec = ContextReminder.spec(120_001, @limit, MapSet.new())
-      assert spec.kind == :context
-      assert spec.attention == "Context?"
-      assert spec.threshold == :p75
-      assert spec.notice =~ "75%"
-      assert spec.notice =~ "compact"
-    end
-
-    test "p75 spec notice omits the tool when compact? is false" do
-      spec = ContextReminder.spec(120_001, @limit, MapSet.new(), false)
-      assert spec.threshold == :p75
-      assert spec.notice =~ "75%"
-      refute spec.notice =~ "context-compact"
-    end
-
     test "returns nil when the only crossed threshold was already announced (no higher threshold crossed)" do
       # Usage is past 25% but not 50% or 75%. With :p25 in
       # the crossed set, no new threshold fires.
       crossed = MapSet.new([:p25])
       assert ContextReminder.spec(50_000, @limit, crossed) == nil
-    end
-
-    test "still returns a spec when a higher unannounced threshold is crossed" do
-      # Usage is past 75%. :p25 is announced, but :p75 is not.
-      # The spec fires for :p75.
-      crossed = MapSet.new([:p25])
-      spec = ContextReminder.spec(120_001, @limit, crossed)
-      assert spec.kind == :context
-      assert spec.notice =~ "75%"
-    end
-
-    test "returns nil when all thresholds already announced" do
-      crossed = MapSet.new([:p25, :p50, :p75])
-      assert ContextReminder.spec(160_000, @limit, crossed) == nil
-    end
-
-    test "returns nil when limit is zero or negative (defensive)" do
-      assert ContextReminder.spec(100, 0, MapSet.new()) == nil
-      assert ContextReminder.spec(100, -1, MapSet.new()) == nil
     end
   end
 

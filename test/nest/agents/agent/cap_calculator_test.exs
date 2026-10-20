@@ -5,7 +5,8 @@ defmodule Nest.Agents.Agent.CapCalculatorTest do
   `usable_window/1` exists so callers that only need to know *whether* a cap
   applies do not have to handle a raise and a legal zero separately. That
   contract is what these pin: a spent window is `:none`, not an error, and a
-  context missing `:messages` is `:none`, not a `KeyError`.
+  context missing `:messages` still has a window rather than raising a
+  `KeyError`.
   """
 
   use ExUnit.Case, async: true
@@ -26,9 +27,9 @@ defmodule Nest.Agents.Agent.CapCalculatorTest do
       assert CapCalculator.usable_window(%{context_limit: 100}) == :none
 
       # No positive limit at all: the case `usable_remaining/1` does raise on.
-      assert CapCalculator.usable_window(%{}) == :none
+      # A nil limit is the boundary for it; `%{}` and `nil` land in this same
+      # catch-all clause, so they would pin nothing further.
       assert CapCalculator.usable_window(%{context_limit: nil}) == :none
-      assert CapCalculator.usable_window(nil) == :none
     end
   end
 end

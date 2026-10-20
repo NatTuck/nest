@@ -17,45 +17,25 @@ defmodule MachineCompactionRequestTest do
   describe "manual compaction (:compact_request)" do
     test "from :idle it stages a compaction turn and defers an :iterate" do
       # intentional: /compact reuses the exact automatic-compaction path;
-      # the only difference is the user-initiated entry point.
-      {:ok, actions, next} = Machine.step(state_at(:idle), {:compact_request, nil})
+      # the only difference is the user-initiated entry point. The focus rides
+      # on `work.focus` — `Dispatch.compaction_plan/1` renders it into the
+      # `[mode: compact]` request message's own text, which is why
+      # `/compact <focus>` needs no row of its own in the transcript.
+      {:ok, actions, next} =
+        Machine.step(state_at(:idle), {:compact_request, "keep the API decisions"})
 
       assert :iterate in actions
       assert next.kind == :compaction and next.phase == :generating
       assert {:compaction, nil, nil} = next.entry
-
-      # The request is appended before the compactor runs.
-      assert Enum.any?(actions, &match?({:append, {:user, _}}, &1))
-
-      Machine.validate!(next)
-    end
-
-    test "threads the focus onto work and into the compaction request message" do
-      # intentional: `/compact <focus>` carries the operator's guidance
-      # onto `work.focus`; `Dispatch.compaction_plan/1` renders it into the
-      # `[mode: compact]` request message, which the machine then appends.
-      {:ok, actions, next} =
-        Machine.step(state_at(:idle), {:compact_request, "keep the API decisions"})
-
       assert next.work.focus == "keep the API decisions"
-      assert {:compaction, nil, nil} = next.entry
 
-      # The focus rides in the request message's own text, which is why
-      # `/compact <focus>` needs no row of its own in the transcript.
+      # The request is appended before the compactor runs, carrying the focus.
       assert {:append, {:user, %{parts: [%Part.Text{text: text}]}}} =
                Enum.find(actions, &match?({:append, _}, &1))
 
       assert text =~ "keep the API decisions"
-    end
 
-    test "renders no guidance when the focus is nil" do
-      # intentional: a bare `/compact` (nil focus) renders the plain
-      # budget suffix with no trailing guidance.
-      {:ok, request_message} = Dispatch.compaction_plan(state_at(:idle))
-
-      assert {:user, %{parts: [%Part.Text{text: text}]}} = request_message
-      refute text =~ "keep the API decisions"
-      assert text =~ "remaining tokens"
+      Machine.validate!(next)
     end
 
     test "from a non-idle phase it is ignored" do
@@ -113,7 +93,6 @@ defmodule MachineCompactionRequestTest do
              ] = Enum.filter(actions, &match?({:append, _}, &1))
 
       assert {:compaction, {:compact_resume, 0, 10}, nil} = next.entry
-      assert next.work.preserve == "PRESERVED: the task and the state"
 
       # The result is a plain success that says what is true when it is
       # written: the compaction is starting.
@@ -137,7 +116,7 @@ defmodule MachineCompactionRequestTest do
       {:ok, _actions, next} =
         Response.dispatch(state_at(:generating), response(tool_calls: [tool_call(%{})]))
 
-      assert {:compaction, {:compact_resume, 0, 10}, nil} = next.entry
+      assert next.kind == :compaction and next.phase == :generating
       assert next.work.preserve == nil
 
       # The tool path's guidance is the constant clause, so it does not depend
@@ -241,7 +220,9 @@ defmodule MachineCompactionRequestTest do
             response(tool_calls: [tool_call(%{"preserve" => blank})])
           )
 
-        assert {:compaction, {:compact_resume, 0, 10}, nil} = next.entry
+        assert next.kind == :compaction and next.phase == :generating,
+               "expected #{inspect(blank)} to stage a compaction"
+
         assert next.work.preserve == nil, "expected #{inspect(blank)} to normalize to nil"
       end
     end
@@ -320,14 +301,14 @@ defmodule MachineCompactionRequestTest do
       # And the turn boundary drops it, like the focus: a later *automatic*
       # compaction must not re-carry content nobody preserved for it. The
       # `:compact_resume` entry resumes generation, so the machine lands in a
-      # chat turn rather than idling.
+      # chat turn rather than idling. (The focus's own turn-scoped lifetime,
+      # and its observable consequence, are pinned below.)
       {:ok, resumed_actions, resumed} =
         Machine.step(%{staged | phase: :committing}, {:commit_done})
 
       assert resumed.kind == :chat and resumed.phase == :generating
       assert :iterate in resumed_actions
       assert resumed.work.preserve == nil
-      assert resumed.work.focus == nil
     end
   end
 
@@ -339,11 +320,6 @@ defmodule MachineCompactionRequestTest do
     test "the focus does not survive the compaction turn into a later automatic compaction" do
       {:ok, _actions, staged} =
         Machine.step(state_at(:idle), {:compact_request, "keep the API decisions"})
-
-      # intentional: while the compaction turn is staged the operator's
-      # guidance is threaded onto `work.focus` and rendered into the
-      # suffix — this is the sanity check that it IS carried.
-      assert staged.work.focus == "keep the API decisions"
 
       {:ok, _actions, resumed} = Machine.step(%{staged | phase: :committing}, {:commit_done})
 
@@ -386,36 +362,6 @@ defmodule MachineCompactionRequestTest do
       assert {:compaction, nil, nil} = retried.entry
       refute Enum.any?(actions, &match?({:append, _}, &1))
       assert :iterate in actions
-    end
-
-    test "preserve survives the blocked state a retry starts from" do
-      # The retry path (`:retry_compaction` from `:compaction_failed`) is entered
-      # through `enter_blocked/2`, which keeps the work fields — that is the
-      # property that makes `work` the right home for `preserve` rather than the
-      # carried entry, which a retry drops (it comes back from `mid_turn_entry`,
-      # which nothing in `lib/` assigns).
-      #
-      # A tool-triggered compaction cannot actually reach that retry: its
-      # `{:compact_resume, …}` carried entry sends `compaction_failed/3` down the
-      # resume arm instead of the blocking one, and only a blocked machine
-      # retries. The invariant is pinned here anyway, because it is what the
-      # design rests on — and because a future change to the failure arms must
-      # not quietly drop the text.
-      {:ok, _actions, staged} =
-        Response.dispatch(
-          state_at(:generating),
-          response(tool_calls: [tool_call(%{"preserve" => "PRESERVED"})])
-        )
-
-      {:ok, _actions, blocked} = Machine.Compaction.compaction_failed(staged, :boom, nil)
-
-      assert blocked.phase == :compaction_failed
-      assert blocked.work.preserve == "PRESERVED"
-
-      {:ok, _actions, retried} = Machine.step(blocked, :retry_compaction)
-
-      assert retried.kind == :compaction and retried.phase == :generating
-      assert retried.work.preserve == "PRESERVED"
     end
   end
 end

@@ -2461,9 +2461,11 @@ describe("channels", () => {
         errorReason = err?.reason;
       });
 
-      // Wait for the error receive to be processed.
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      assert.strictEqual(errorCalled, true);
+      // The reply lands on a later tick, so wait for the callback having
+      // fired — that event, not a clock, is what the assertion is about.
+      await vi.waitFor(() => {
+        assert.strictEqual(errorCalled, true);
+      });
       assert.strictEqual(errorReason, "not_in_loop");
     });
 
@@ -2484,9 +2486,13 @@ describe("channels", () => {
         error: { reason: "not_in_loop" },
       });
 
-      // Should not throw on the onError-less receive.
+      // Should not throw on the onError-less receive. There is nothing to
+      // assert once that receive lands: a callback that is not called writes
+      // nowhere, so no store or mock observable distinguishes "handled, with
+      // no callback" from "never delivered". The property this test can carry
+      // is the synchronous one — the call is safe with no callback — plus the
+      // `if (onError)` false branch the mock's error reply exercises.
       compactionLoopOk("agent-1");
-      await new Promise((resolve) => setTimeout(resolve, 30));
     });
 
     it("joinLobby is idempotent — calling it twice with the lobby already connected calls onOk immediately", () => {
@@ -2946,7 +2952,16 @@ describe("channels", () => {
         content: "Duplicate",
       });
 
-      await new Promise((r) => setTimeout(r, 10));
+      // The length alone cannot be the barrier: it is already 1, and it stays
+      // 1 if the duplicate is never delivered at all. A same-index frame is
+      // merged into the row it matches, so the row's content becoming the
+      // duplicate's is the store update only a handled duplicate produces.
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.messages?.[0]?.content,
+          "Duplicate",
+        );
+      });
 
       assert.strictEqual(
         useStore.getState().agentsCache["agent-1"]?.messages?.length,
@@ -4252,11 +4267,11 @@ describe("channels", () => {
         assert.strictEqual(useStore.getState().agents.length >= 0, true);
       });
 
-      // Call without onOk callback - should not throw
+      // Call without onOk callback - should not throw. The call is the
+      // assertion: `createSpace` has no store side effect on the reply, and
+      // with no callback there is nothing to observe, so the ok reply (which
+      // the mock still delivers) has no observable of its own.
       createSpace("gpt-4", 1, undefined);
-
-      // Just wait a bit to ensure no errors
-      await new Promise((resolve) => setTimeout(resolve, 50));
     });
 
     it("should work without onError callback on error", async () => {
@@ -4269,11 +4284,10 @@ describe("channels", () => {
         assert.strictEqual(useStore.getState().agents.length >= 0, true);
       });
 
-      // Call without onError callback - should not throw
+      // Call without onError callback - should not throw. Same as above: the
+      // error reply only ever reaches a callback, so with none there is
+      // nothing to assert on it.
       createSpace("gpt-4", 1, undefined, undefined);
-
-      // Just wait a bit to ensure no errors
-      await new Promise((resolve) => setTimeout(resolve, 50));
     });
   });
 

@@ -60,8 +60,10 @@ defmodule Nest.Agents.Agent.BroadcastsLifecycleTest do
 
       # Present and nil, rather than absent: a caller that has nothing to say
       # about a field must not make that field indistinguishable from one the
-      # client has never been told about.
-      assert Map.has_key?(payload, "vocation")
+      # client has never been told about. That every one of these keys is
+      # present at all — for a caller that omits five of them — is pinned by the
+      # key-set assertion in the test above; these pin the *value* it defaults
+      # to.
       assert payload["vocation"] == nil
       assert payload["model"] == nil
       assert payload["parentId"] == nil
@@ -78,7 +80,7 @@ defmodule Nest.Agents.Agent.BroadcastsLifecycleTest do
   end
 
   describe "the agent:stopped frame (#73)" do
-    test "is broadcast when an agent stops" do
+    test "is broadcast when an agent stops, including on an archive" do
       # The agent is linked to this process and the stop ends it, so an
       # untrapped `:shutdown` would take the test with it.
       Process.flag(:trap_exit, true)
@@ -88,32 +90,16 @@ defmodule Nest.Agents.Agent.BroadcastsLifecycleTest do
       Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.space_topic(space_id))
 
       ref = Process.monitor(pid)
-      assert :ok = Supervisor.stop_agent(space_id, name)
-
-      # The `:DOWN` is the fence, and it is sound rather than merely convenient:
-      # the frame is emitted from inside `Agent.terminate/2`, which runs before
-      # the process exits, so it is already in this mailbox by the time the
-      # `:DOWN` arrives. No clock is involved, and no polling is needed — the
-      # assertion below is `assert_received`, not `assert_receive`. The bound on
-      # the `:DOWN` is therefore only a failure detector, and it is the 500 ms
-      # SMELLS.md cap rather than a second.
-      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
-
-      assert_received {:agent_stopped, %{"space_id" => ^space_id, "name" => ^name}}
-    end
-
-    test "is broadcast for an archive as well, because an archive stops the agent" do
-      Process.flag(:trap_exit, true)
-
-      {pid, name} = start_agent(default_attrs())
-      space_id = current_space_id()
-      Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.space_topic(space_id))
-
-      ref = Process.monitor(pid)
+      # An archive stops the agent through the same `Supervisor.stop_one/3` a
+      # plain Stop uses, so this covers both entry points: the frame is emitted
+      # from inside `Agent.terminate/2`, which every stop path runs.
       assert :ok = Supervisor.archive_agent(space_id, name)
-      # The bound is a failure detector only: the frame this test asserts is
-      # emitted inside `terminate/2`, before the exit, so it is in the mailbox by
-      # the time the `:DOWN` arrives. 500 ms is the SMELLS.md cap.
+      # The `:DOWN` is the fence, and it is sound rather than merely convenient:
+      # the frame is emitted inside `terminate/2`, which runs before the process
+      # exits, so it is already in this mailbox by the time the `:DOWN` arrives.
+      # No clock is involved, so the assertions below are `assert_received`, not
+      # `assert_receive`; the bound on the `:DOWN` is only a failure detector and
+      # it is the 500 ms SMELLS.md cap.
       assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
 
       # An archive ends the agent, so it reports the stop *and* the archive.

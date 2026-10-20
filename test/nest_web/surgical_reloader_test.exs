@@ -26,10 +26,11 @@ defmodule NestWeb.SurgicalReloaderTest do
   - `handle_info({:file_event, ...})` accepts a synthetic `.ex`-suffix
     event without crashing and updates `pending_changes` (covers the
     file-extension guard branch).
+  - `handle_info({:file_event, ...})` ignores events for non-Elixir
+    files and events that are neither `:modified` nor `:created`
+    (covers both early-return branches).
   - `handle_info(:do_compile)` with an empty pending set takes the
     no-op branch (covers the guard that returns without compiling).
-  - `handle_info({:file_event, ...})` for a non-Elixir file extension
-    takes the early-return branch (covers the else-if).
 
   Branches not exercised by these tests (and why):
   - Compilation error path (`Mix.Task.run("compile.elixir")` returns
@@ -52,12 +53,9 @@ defmodule NestWeb.SurgicalReloaderTest do
   @test_name :"#{__MODULE__}.Server"
 
   describe "SurgicalReloaderPlug" do
-    test "init/1 returns its argument unchanged" do
+    test "init/1 returns its argument and call/2 passes the conn through" do
       assert SurgicalReloaderPlug.init([:anything]) == [:anything]
-      assert SurgicalReloaderPlug.init([]) == []
-    end
 
-    test "call/2 returns the conn unchanged" do
       conn = %Plug.Conn{}
       assert SurgicalReloaderPlug.call(conn, []) == conn
     end
@@ -74,7 +72,6 @@ defmodule NestWeb.SurgicalReloaderTest do
       # allowlist: dev-only — no introspection API; also the barrier for the call above
       state = :sys.get_state(pid, 500)
 
-      assert is_map(state)
       assert is_map(state.module_map)
       assert state.compiling == false
       assert state.pending_changes == MapSet.new()
@@ -85,22 +82,15 @@ defmodule NestWeb.SurgicalReloaderTest do
   end
 
   describe "handle_info({:file_event, ...})" do
-    test "ignores non-Elixir file extensions" do
+    test "ignores non-Elixir files and unrelated event types" do
       pid = start_supervised_reloader!()
 
       send(pid, {:file_event, make_ref(), {"README.md", [:modified]}})
-
-      # allowlist: dev-only — no introspection API; also the barrier for the call above
-      state = :sys.get_state(pid, 500)
-      assert state.pending_changes == MapSet.new()
-    end
-
-    test "ignores events other than :modified and :created" do
-      pid = start_supervised_reloader!()
-
       send(pid, {:file_event, make_ref(), {"lib/foo.ex", [:removed]}})
 
-      # allowlist: dev-only — no introspection API; also the barrier for the call above
+      # `:sys.get_state/2` is synchronous relative to the server's mailbox and
+      # both events were sent first, so this observes the state after them.
+      # allowlist: dev-only — no introspection API; also the barrier for the calls above
       state = :sys.get_state(pid, 500)
       assert state.pending_changes == MapSet.new()
     end
@@ -123,7 +113,6 @@ defmodule NestWeb.SurgicalReloaderTest do
       state = :sys.get_state(pid, 500)
 
       assert MapSet.member?(state.pending_changes, "lib/example_test.ex")
-      assert is_reference(state.debounce_timer) or is_nil(state.debounce_timer)
     end
   end
 

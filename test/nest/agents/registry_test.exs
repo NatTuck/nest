@@ -8,9 +8,11 @@ defmodule Nest.Agents.RegistryTest do
 
   describe "child_spec/0" do
     test "returns registry child spec" do
-      spec = Registry.child_spec()
-      assert spec.type == :supervisor
-      assert spec.id == Nest.Agents.Registry
+      # `type: :supervisor` is not asserted: `Registry.child_spec/1` sets it for
+      # every option set, so it cannot tell a correct `name:`/`keys:` from a
+      # wrong one. The id is derived from the `name:` option we pass, so it is
+      # the one field this function actually decides.
+      assert Registry.child_spec().id == Nest.Agents.Registry
     end
   end
 
@@ -18,16 +20,7 @@ defmodule Nest.Agents.RegistryTest do
     test "returns via tuple for agent lookup" do
       result = Registry.via_tuple(1, "clever-raven")
       assert elem(result, 0) == :via
-      # The second element is Elixir's Registry module (used for via mechanism)
-      assert is_atom(elem(result, 1))
       assert elem(result, 2) == {Nest.Agents.Registry, {1, "clever-raven"}}
-    end
-  end
-
-  describe "lookup/2" do
-    test "returns :error for non-existent agent" do
-      # Registry is already started by Application
-      assert {:error, :not_found} = Registry.lookup(1, "nonexistent-agent")
     end
   end
 end

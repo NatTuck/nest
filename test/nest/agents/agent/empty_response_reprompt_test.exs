@@ -52,15 +52,12 @@ defmodule Nest.Agents.Agent.EmptyResponseRepromptTest do
 
     :ok = Agent.chat(pid, "Analyze the lab")
 
-    assert_receive {:chat_message, {:user, %{index: 1}}}, 1_000
-
     # The silent assistant (thinking only) is still shown...
     assert_receive {:chat_message, {:assistant, %{index: 2, parts: [%Part.Thinking{}]}}}, 1_000
 
     # ...but the model is asked to actually speak.
     assert_receive {:chat_message, {:user, %{index: 3, parts: [%Part.Text{text: nudge}]}}}, 1_000
     assert nudge =~ "empty response"
-    assert nudge =~ "[From nest runtime"
 
     # And this time it replies with real text.
     assert_receive {:chat_message, {:assistant, %{index: 4, parts: parts}}},
@@ -82,22 +79,12 @@ defmodule Nest.Agents.Agent.EmptyResponseRepromptTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Analyze the lab")
 
-        assert_receive {:chat_message, {:user, %{index: 1}}}, 1_000
-
-        assert_receive {:chat_message, {:assistant, %{index: 2, parts: [%Part.Thinking{}]}}},
-                       1_000
-
-        assert_receive {:chat_message, {:user, %{index: 3}}}, 1_000
-
-        assert_receive {:chat_message, {:assistant, %{index: 4, parts: [%Part.Thinking{}]}}},
-                       1_000
-
+        # Two re-prompts, then give up: the second nudge is index 5, and a
+        # third would land at index 7. The warning is built from
+        # `@max_empty_retries`, so it pins the cap the turn actually enforced.
         assert_receive {:chat_message, {:user, %{index: 5}}}, 1_000
-
-        assert_receive {:chat_message, {:assistant, %{index: 6, parts: [%Part.Thinking{}]}}},
-                       1_000
-
         assert_receive {:chat_status, %{status: "idle"}}, 1_000
+        refute_received {:chat_message, {:user, %{index: 7}}}
       end)
 
     assert log =~ "Empty assistant response finalized after 2 re-prompt(s)"

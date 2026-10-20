@@ -1,20 +1,18 @@
 defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
   @moduledoc """
-  Focused E2E test for the agents-spawn wiring that does NOT
-  drive LLM on the child. We:
-    1. Start a parent under the supervisor.
-    2. Issue a raw `GenServer.call` to the parent (acting as
-       the tool worker) for `:spawn_agent_request`.
-    3. Verify the parent spawns a child, registers it in the
-       ChildRegistry, replies with the child's name, and
-       remembers the worker pid under that child.
+  Focused E2E tests for the parent side of `agents-spawn`, driven by a raw
+  `GenServer.call` for `:spawn_agent_request` so the child's chat turn never
+  runs:
 
-  The point: cover the end-to-end Agent wiring (handle_call
-  → SubAgent → start_agent_with_parent → ChildRegistry →
-  Agents.chat kickoff) without depending on the child's chat
-  task actually running to completion. Full LLM-driven
-  E2E lives in the planned but deferred
-  `clone_agent_flow_test.exs`.
+    1. Stopping the parent tears the pending clone down with it, through the
+       parent's own `terminate/2` cascade.
+    2. A clone at max depth is refused at runtime with
+       `{:error, :max_depth_reached}`, even though it still carries the
+       `agents-spawn` tool it inherited.
+
+  The spawn-and-register success path lives in `clone_agent_chat_stop_test.exs`
+  (the same raw call, followed by a Stop) and in `clone_agent_flow_test.exs`
+  (through the tool loop).
   """
   use Nest.DataCase, async: true
 
@@ -26,8 +24,6 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
-  alias Nest.Persistence
-  alias Nest.Vocations
 
   setup :verify_on_exit!
 
@@ -43,51 +39,12 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     # Allow Mimic to stub `Nest.Agents.chat/2` in this test.
     Mimic.copy(Nest.Agents)
     Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content, _mode, _sender -> :ok end)
-
-    {:ok, vid: upsert_vocation()}
+    :ok
   end
 
-  test "raw :spawn_agent_request to the parent spawns, registers, and replies",
-       %{vid: vid} do
+  test "stopping the parent cascades through to the child" do
     Process.flag(:trap_exit, true)
-    {:ok, parent_name, parent_pid, parent_id} = start_parent(vid)
-    Mimic.allow(MockClient, self(), parent_pid)
-    Mimic.allow(Nest.Agents, self(), parent_pid)
-    :sys.replace_state(parent_pid, &swap_to_mock/1, 1_000)
-    MockClient.start_link(parent_pid)
-
-    # The worker is the test process. The agent should
-    # reply with `{:ok, child_name}` and remember the child
-    # under `pending_children`.
-    {:ok, child_name} =
-      GenServer.call(
-        parent_pid,
-        {:spawn_agent_request, self(), %{query: "do the thing", clone_context: true}},
-        2_000
-      )
-
-    assert is_binary(child_name)
-    assert child_name != parent_name
-
-    # The new child row has the right parent_id / depth.
-    row = fetch_row!(child_name)
-    parent_row = fetch_row!(parent_name)
-    assert row.parent_id == parent_row.id
-    assert row.depth == 1
-    _ = parent_id
-
-    # The parent is waiting on the child's answer. (The entry is the name
-    # alone: the outcome is delivered into the parent's own inbox, so no
-    # worker pid is tracked.)
-    pending_children = GenServer.call(parent_pid, :get_pending_children)
-    assert pending_children == %{child_name => true}
-
-    on_exit_cleanup(parent_name, child_name)
-  end
-
-  test "stopping the parent cascades through to the child", %{vid: vid} do
-    Process.flag(:trap_exit, true)
-    {:ok, parent_name, parent_pid, _parent_id} = start_parent(vid)
+    {parent_pid, parent_name} = AgentTestHelpers.start_agent()
     Mimic.allow(MockClient, self(), parent_pid)
     Mimic.allow(Nest.Agents, self(), parent_pid)
     :sys.replace_state(parent_pid, &swap_to_mock/1, 1_000)
@@ -118,13 +75,11 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
 
     assert_registry_misses(parent_name)
     assert_registry_misses(child_name)
-    assert ChildRegistry.children_of(AgentTestHelpers.current_space_id(), parent_name) == []
   end
 
-  test "spawning from an agent at max depth errors (clone keeps the tool, spawn is rejected)",
-       %{vid: vid} do
+  test "spawning from an agent at max depth errors (clone keeps the tool, spawn is rejected)" do
     Process.flag(:trap_exit, true)
-    {:ok, parent_name, parent_pid, _parent_id} = start_parent(vid)
+    {parent_pid, parent_name} = AgentTestHelpers.start_agent()
     space_id = AgentTestHelpers.current_space_id()
     Mimic.allow(MockClient, self(), parent_pid)
     Mimic.allow(Nest.Agents, self(), parent_pid)
@@ -149,51 +104,8 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
 
   # Helpers
 
-  defp upsert_vocation do
-    {:ok, %Vocations.Vocation{id: vid}} =
-      Vocations.upsert_vocation(%{
-        name: "SubAgentRegistration Vocation #{System.unique_integer([:positive])}",
-        description: "Sub-agent raw-registration test",
-        system_prompt: "x",
-        tools: ["context", "agents"]
-      })
-
-    vid
-  end
-
-  defp start_parent(vid) do
-    # Use the standard helper. The original signature returned
-    # `{:ok, name, pid, row.id}` — the row id is unused in the
-    # test body (only `name` and `pid` are matched), so the
-    # helper's `{pid, name}` return is reshaped into the
-    # legacy tuple with `nil` for the now-unused id.
-    _ = vid
-    {parent_pid, name} = AgentTestHelpers.start_agent()
-    {:ok, name, parent_pid, nil}
-  end
-
   defp swap_to_mock(state) do
     %{state | client_config: %{state.client_config | client: MockClient}}
-  end
-
-  defp fetch_row!(name) do
-    {:ok, row} = Persistence.fetch_agent(AgentTestHelpers.current_space_id(), name)
-    row
-  end
-
-  # Best-effort cleanup. A DB write here would require the
-  # test pid's sandbox checkout, but `on_exit` runs in
-  # `ExUnit.OnExitHandler` — no ownership. Use
-  # `Supervisor.stop_agent/1` (GenServer only;
-  # no DB write) and let the DataCase sandbox rollback handle
-  # row cleanup at test exit.
-  defp on_exit_cleanup(parent_name, child_name) do
-    for name <- [parent_name, child_name] do
-      case AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name) do
-        {:ok, _pid} -> :ok = Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
-        _ -> :ok
-      end
-    end
   end
 
   # The caller has already fenced on the agent's `:DOWN`, so the process is

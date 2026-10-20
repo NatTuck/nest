@@ -21,7 +21,6 @@ defmodule Nest.Tokens.CostTest do
 
     test "ignores non-map input" do
       assert D.equal?(Cost.estimate(nil), D.new(0))
-      assert D.equal?(Cost.estimate("not a map"), D.new(0))
     end
 
     test "one million input tokens at $1/M = $1" do
@@ -29,9 +28,17 @@ defmodule Nest.Tokens.CostTest do
       assert D.equal?(cost, D.new("1.00"))
     end
 
-    test "one million output tokens at $4/M = $4" do
-      cost = Cost.estimate(%{output_tokens: 1_000_000})
-      assert D.equal?(cost, D.new("4.00"))
+    test "one million output tokens at $4/M = $4 (reasoning included, not double-billed)" do
+      assert D.equal?(Cost.estimate(%{output_tokens: 1_000_000}), D.new("4.00"))
+
+      # `output_tokens` already includes `reasoning_tokens` per the
+      # providers' wire formats, so a session with a large reasoning
+      # component costs the same as one with the same total
+      # `output_tokens` and no explicit `reasoning_tokens`.
+      assert D.equal?(
+               Cost.estimate(%{output_tokens: 1_000_000, reasoning_tokens: 800_000}),
+               Cost.estimate(%{output_tokens: 1_000_000, reasoning_tokens: 0})
+             )
     end
 
     test "one million cached input tokens at $0.25/M = $0.25" do
@@ -51,13 +58,6 @@ defmodule Nest.Tokens.CostTest do
       assert D.equal?(cost, D.new("5.25"))
     end
 
-    test "treats missing fields as zero" do
-      assert D.equal?(
-               Cost.estimate(%{total_input_tokens: 500_000}),
-               D.new("0.50")
-             )
-    end
-
     test "treats nil field values as zero" do
       assert D.equal?(
                Cost.estimate(%{
@@ -67,22 +67,6 @@ defmodule Nest.Tokens.CostTest do
                }),
                D.new(0)
              )
-    end
-
-    test "reasoning tokens are included via output_tokens (no separate term)" do
-      # The cost module reads `output_tokens`, which already
-      # includes `reasoning_tokens` per the providers' wire
-      # formats. Verify a session with a large reasoning component
-      # costs the same as a session with the same total
-      # `output_tokens` and no explicit `reasoning_tokens`.
-      with_reasoning =
-        Cost.estimate(%{output_tokens: 1_000_000, reasoning_tokens: 800_000})
-
-      without_reasoning =
-        Cost.estimate(%{output_tokens: 1_000_000, reasoning_tokens: 0})
-
-      assert D.equal?(with_reasoning, without_reasoning)
-      assert D.equal?(with_reasoning, D.new("4.00"))
     end
 
     test "ignores per-call fields (input_tokens, cache_read_input_tokens)" do

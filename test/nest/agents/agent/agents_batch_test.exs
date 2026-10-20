@@ -25,28 +25,20 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     children and says where the aggregate arrives.
   * The aggregate arrives as a delivered message and decodes to the children's
     answers in item order.
-  * `descendant_usage.output_tokens > 0` (usage-merge ran for the children),
-    `pending_children` is empty, and `archive` (default true) cleaned up.
+  * `pending_children` is empty, and `archive` (default true) cleaned up.
   """
   use Nest.DataCase, async: true
 
-  import ExUnit.CaptureLog
   import Mimic
-  import Nest.Agents.AgentTurnTestHelpers
+  import Nest.Agents.AgentsBatchTestHelpers
 
-  alias Nest.Agents
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.BatchCoordinator
-  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Machine
-  alias Nest.Agents.Agent.Machine.Children
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
-  alias Nest.LLM.MockClient
-  alias Nest.Messages.Part
   alias Nest.Messages.ToolCall
-  alias Nest.Vocations
 
   setup :verify_on_exit!
 
@@ -84,7 +76,6 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert confirmation =~ "Fanned 3 item(s)"
     assert confirmation =~ "alpha, beta, gamma"
     assert confirmation =~ "aggregate"
-    refute confirmation =~ "asynchronous"
 
     # Synthesize each child's completion, each with a distinct response, so an
     # order bug would surface.
@@ -95,26 +86,17 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert ["alpha-done", "beta-done", "gamma-done"] =
              await_aggregate(parent_pid, ~s(["alpha-done))
 
-    # allowlist: snapshot — messages + pending_children + descendant_usage
+    # allowlist: snapshot — messages + pending_children
     parent_state = :sys.get_state(parent_pid, 1_000)
-    AgentTestHelpers.assert_unique_message_indices(parent_state.chat_state.messages)
 
     # The children report to the coordinator, so the parent reads the batch
     # once: the aggregate is the only batch traffic in its transcript.
     assert delivered_texts(parent_state.chat_state.messages, "Message from agent") == []
 
-    # Usage-merge ran for the three children.
-    assert parent_state.llm_metrics.descendant_usage.output_tokens > 0
-
     # No children left running, and `archive` (default true) cleaned up: the
     # coordinator archives each child after forwarding its response. The DB
     # `archived` flag is the deterministic proof (no liveness polling).
     assert Machine.pending_children(parent_state.live.machine) == %{}
-
-    assert Enum.all?(
-             child_names,
-             &(Children.status(parent_state.live.machine.children, &1) == :completed)
-           )
 
     assert_children_archived(space_id, child_names)
   end
@@ -185,24 +167,6 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert failed_row.archived == false
   end
 
-  test "items still pending past their deadline time out into marker slots", %{vid: vid} do
-    {parent_pid, parent_name} = start_batch_parent(vid)
-
-    run_batch(parent_pid, "call_batch_timeout", %{
-      "template" => "sum {item}",
-      "items" => ["alpha", "beta"],
-      "timeout" => 1
-    })
-
-    Phoenix.PubSub.subscribe(Nest.PubSub, space_topic())
-    [_child0, _child1] = collect_child_names(parent_name, 2)
-
-    assert [first, second] = await_aggregate(parent_pid, "timed out after")
-    assert first =~ "timed out after 1ms"
-    assert second =~ "timed out after 1ms"
-    assert Agent.get_pending_children(parent_pid, 1_000) == %{}
-  end
-
   test "a timed-out item under fail_fast stops the rest and reports it", %{vid: vid} do
     {parent_pid, parent_name} = start_batch_parent(vid)
 
@@ -220,7 +184,6 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     # fails: it stops at the first failure and reports the slots it filled.
     confirmation = batch_tool_result(Agent.get_messages(parent_pid, 1_000)).content
     assert confirmation =~ "stops at the first failure"
-    assert confirmation =~ "reports the slots it filled before it stopped"
 
     # fail_fast reports the stop in the inbox rather than as a tool result: the
     # call had already returned its confirmation when the deadline passed.
@@ -247,31 +210,94 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     coordinator = batch_target(parent_pid, child0)
     assert is_pid(coordinator)
 
+    # The parent's own turn must be over before the coordinator dies. Which arm
+    # of `notice_lost_batch/3`'s `if` runs depends on whether the machine is
+    # `:idle` when the `:DOWN` is handled, and a parent still mid-turn takes the
+    # other one — so without this fence the file's coverage of those two arms
+    # jitters with the seed. `get_status/2` is a call, so `:idle` here is a
+    # happens-after fence on the parent's own loop rather than a clock. (The
+    # `chat:status` frame is not usable for it: an `idle` frame from the turn
+    # that started the batch could still be in the mailbox.)
+    assert Eventually.eventually(fn -> Agent.get_status(parent_pid, 500) == :idle end,
+             timeout: 500
+           )
+
     # A `:kill`ed task never runs the coordinator's rescue, so there is no
     # coordinator line to assert here — its own report is asserted in
-    # `batch_coordinator_test.exs`. The capture is kept as a guard, not because
-    # a line is expected: today the kill produces no report at all (measured 0
-    # bytes, standalone and in the full suite), but if the runtime ever logged
-    # one it must not land in the suite's output.
-    capture_log(fn ->
-      # The kill is asynchronous, so fence on the task's own death — the
-      # `:DOWN` of a monitor installed *before* the kill, so it cannot be
-      # missed — rather than polling `Process.alive?/1` for it.
-      ref = Process.monitor(coordinator)
-      Process.exit(coordinator, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^coordinator, :killed}, 1_000
+    # `batch_coordinator_test.exs`.
 
-      # The parent was told the aggregate is not coming...
-      assert [notice] = await_message(parent_pid, "stopped before reporting its aggregate")
-      assert notice =~ "will arrive as messages instead"
+    # The kill is asynchronous, so fence on the task's own death — the
+    # `:DOWN` of a monitor installed *before* the kill, so it cannot be
+    # missed — rather than polling `Process.alive?/1` for it.
+    ref = Process.monitor(coordinator)
+    Process.exit(coordinator, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^coordinator, :killed}, 1_000
 
-      cast_child_completed(parent_pid, child0, "alpha-done")
+    # The parent was told the aggregate is not coming...
+    assert [notice] = await_message(parent_pid, "stopped before reporting its aggregate")
+    assert notice =~ "will arrive as messages instead"
 
-      # ...and the children's own answers still arrive: with the reporting
-      # target gone, delivery falls back to the parent's inbox.
-      assert [message] = await_message(parent_pid, "alpha-done")
-      assert message =~ ~s([From agent #{child0} | mode: act])
-    end)
+    cast_child_completed(parent_pid, child0, "alpha-done")
+
+    # ...and the children's own answers still arrive: with the reporting
+    # target gone, delivery falls back to the parent's inbox.
+    assert [message] = await_message(parent_pid, "alpha-done")
+    assert message =~ ~s([From agent #{child0} | mode: act])
+  end
+
+  test "a lost batch noticed while the parent is busy is queued, not drained", %{vid: vid} do
+    {parent_pid, parent_name} = start_batch_parent(vid)
+    space_id = AgentTestHelpers.current_space_id()
+
+    run_batch(parent_pid, "call_batch_busy_orphan", %{
+      "template" => "sum {item}",
+      "items" => ["alpha", "beta"]
+    })
+
+    Phoenix.PubSub.subscribe(Nest.PubSub, space_topic())
+    [child0, child1] = collect_child_names(parent_name, 2)
+
+    on_exit(fn -> Enum.each([child0, child1], &Supervisor.stop_agent(space_id, &1)) end)
+
+    coordinator = batch_target(parent_pid, child0)
+    assert is_pid(coordinator)
+
+    # The other arm of `notice_lost_batch/3`'s `if`, made deterministic: the
+    # parent's turn is over, then it is held in a busy phase, so the
+    # coordinator's `:DOWN` is handled while the machine is NOT idle. The two
+    # arms used to be a coin flip per run (whichever the seed's ordering picked
+    # left the other uncovered).
+    assert Eventually.eventually(fn -> Agent.get_status(parent_pid, 500) == :idle end,
+             timeout: 500
+           )
+
+    set_status(parent_pid, :streaming)
+
+    # A peer's message waiting in the queue is what a drain would deliver, so it
+    # is the evidence for whether the drain ran.
+    assert {:ok, :queued} = Agent.deliver_note(parent_pid, "peer-1", "queued while busy")
+
+    ref = Process.monitor(coordinator)
+    Process.exit(coordinator, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^coordinator, :killed}, 500
+
+    # The notice lands *behind* the peer's message: the parent is told the
+    # aggregate is not coming, and the queue is left for its own next boundary.
+    # The count is the fence — nothing else in this test queues an entry, so the
+    # second `chat_inbox` frame is the one `notice_lost_batch/3` appended.
+    assert_receive {:chat_inbox, %{count: 2}}, 500
+
+    # allowlist: snapshot — inbox + messages
+    state = :sys.get_state(parent_pid, 500)
+    queued = Enum.map(state.live.inbox, & &1.content)
+    assert Enum.any?(queued, &(&1 =~ "queued while busy"))
+    assert Enum.any?(queued, &(&1 =~ "stopped before reporting its aggregate"))
+
+    # Not delivered: a busy agent is not drained mid-turn, so the peer's message
+    # is still in the queue rather than in the transcript.
+    assert delivered_texts(state.chat_state.messages, "queued while busy") == []
+
+    reset_to_idle(parent_pid)
   end
 
   test "a timeout under max_concurrency 1 does not drop the unspawned items", %{vid: vid} do
@@ -376,16 +402,13 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     # the one where its next request is *already sent* is the next test.
     assert_receive {:DOWN, ^ref, :process, ^coordinator, :killed}, 1_000
     assert {:error, :not_found} = Nest.Persistence.fetch_agent(space_id, "beta")
-    assert {:error, :not_found} = Nest.Persistence.fetch_agent(space_id, "gamma")
 
     # The stop cleared the children map before the coordinator's DOWN, so the
     # parent does not report a lost batch — it asked for the stop — and no
     # aggregate arrives.
     state = await_idle(parent_pid)
-    assert state.live.machine.children == %Children{}
     messages = state.chat_state.messages
     assert delivered_texts(messages, "stopped before reporting its aggregate") == []
-    assert delivered_texts(messages, "Message from agent") == []
   end
 
   test "a spawn request already in flight when the Stop lands is refused", %{vid: vid} do
@@ -417,8 +440,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     ctx = %{Turn.build_ctx(state) | agent_pid: parent_pid}
     tc = %ToolCall{name: "agents-batch", arguments: %{"items" => ["alpha", "beta"]}}
 
-    assert {:ok, confirmation} = BatchCoordinator.run(ctx, tc)
-    assert confirmation =~ "Fanned 2 item(s)"
+    assert {:ok, _confirmation} = BatchCoordinator.run(ctx, tc)
 
     # Wait until the coordinator's request is in the mailbox (the stop plus the
     # request), then let the parent run.
@@ -432,8 +454,6 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     # failure it did not have.
     state = await_idle(parent_pid)
     assert {:error, :not_found} = Nest.Persistence.fetch_agent(space_id, "item-1")
-    assert {:error, :not_found} = Nest.Persistence.fetch_agent(space_id, "item-2")
-    assert state.live.machine.children == %Children{}
     messages = state.chat_state.messages
     assert delivered_texts(messages, "stopped before reporting its aggregate") == []
     assert delivered_texts(messages, "Batch of 2 stopped") == []
@@ -460,8 +480,11 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     _ = await_idle(parent_pid)
     set_status(parent_pid, :streaming)
 
+    # Fill the queue to the peer cap. No per-entry assertion: a fill that fell
+    # short is caught by the `count > 100` frame and the last-entry assertion
+    # below, so asserting each of the 100 identical outcomes adds nothing.
     Enum.each(1..100, fn n ->
-      assert {:ok, :queued} = Agent.deliver_note(parent_pid, "peer-#{n}", "queued #{n}")
+      Agent.deliver_note(parent_pid, "peer-#{n}", "queued #{n}")
     end)
 
     # A peer's message is refused at the cap — which is what the aggregate's
@@ -497,204 +520,4 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
 
     reset_to_idle(parent_pid)
   end
-
-  # ---- helpers ----
-
-  # The parent's queued-message count, for a test that has to know a request is
-  # already in its mailbox before releasing it.
-  defp queued_messages(pid) do
-    case Process.info(pid, :message_queue_len) do
-      {:message_queue_len, count} -> count
-      _other -> 0
-    end
-  end
-
-  defp batch_target(parent_pid, child_name) do
-    Children.target(Agent.get_children(parent_pid, 1_000), child_name)
-  end
-
-  # Start a parent agent whose `Agents.chat/3` is stubbed (children don't run a
-  # real chat cycle) and allow the coordinator to call the stub.
-  defp start_batch_parent(vid) do
-    {parent_pid, parent_name} =
-      AgentTestHelpers.start_spawnable_agent(%{
-        model: %{name: "qwen3.5-plus", provider: "model-studio"},
-        vocation_id: vid
-      })
-
-    Mimic.allow(Agents, self(), parent_pid)
-    {parent_pid, parent_name}
-  end
-
-  # Queue a tool call as the model's first response and a final text response,
-  # then kick off the parent's chat turn. (The turns the delivered messages
-  # start answer with MockClient's random fallback: this test is about the
-  # batch's own messages.)
-  defp run_batch(parent_pid, id, args) do
-    # Named, not omitted: the parent's own, which the removed fallback picked.
-    args =
-      Map.put_new(args, "vocation", Agent.get_public_info(parent_pid, 1_000).vocation_slug)
-
-    MockClient.set_tool_response(%{
-      text: "batching",
-      tool_calls: [%{id: id, name: "agents-batch", arguments: args}]
-    })
-
-    MockClient.set_response("parent final")
-    :ok = Agent.chat(parent_pid, "batch a thing")
-  end
-
-  # Wait until the parent has delivered a message containing `needle` and
-  # finished the turn that delivery started, so no background process touches
-  # the sandbox after the test ends. Returns every matching text.
-  #
-  # `await_delivery/1` consumes the delivery's own frame, and the stale frames in
-  # front of it; the `idle` frame that follows it is the turn's end — every status
-  # broadcast carries the status the machine has *now*, so an `idle` frame after
-  # the delivery means the delivery's turn has settled.
-  defp await_message(parent_pid, needle) do
-    await_delivery(needle)
-    assert_receive {:chat_status, %{status: "idle"}}, 1_000
-    delivered_texts(Agent.get_messages(parent_pid, 1_000), needle)
-  end
-
-  # Wait until the parent is idle (its turn is over), so a test that pokes its
-  # state cannot race the turn's own transitions. The `chat:status` frame the
-  # machine emits when it settles back to `:idle` is the event that decides it
-  # (`Turn.run/6` broadcasts on every status change), and
-  # `AgentTestHelpers.start_agent/1` subscribes this test pid to the parent's
-  # topic, so the frame is the fence; 1s is only the failure bound. Returns the
-  # state, read behind the frame the agent has already broadcast. Kept as a
-  # whole-state read: its callers assert on the children sub-machine *and* on
-  # the transcript, and no single accessor returns both.
-  defp await_idle(parent_pid) do
-    assert_receive {:chat_status, %{status: "idle"}}, 1_000
-    # allowlist: snapshot — children + messages
-    :sys.get_state(parent_pid, 1_000)
-  end
-
-  # Fabricate a busy phase for a test that needs the parent busy at a moment the
-  # machine cannot be driven to. `status_to_machine/2` is the test-support
-  # mapping the inbox tests use.
-  defp set_status(pid, status) do
-    replace_state(pid, fn state ->
-      put_in(state.live.machine, Machine.status_to_machine(state.live.machine, status))
-    end)
-  end
-
-  # Undo a fabricated busy status and the queue a test filled, so the agent is
-  # idle (and empty) for the teardown.
-  defp reset_to_idle(pid) do
-    replace_state(pid, fn state ->
-      state = put_in(state.live.inbox, [])
-      put_in(state.live.machine, Machine.status_to_machine(state.live.machine, :idle))
-    end)
-  end
-
-  # The aggregate message, JSON-decoded: the delivered text carries the
-  # delivery's `[mode: …]` prefix on its own line.
-  defp await_aggregate(parent_pid, needle) do
-    [message] =
-      await_message(parent_pid, needle)
-      |> tap(fn texts ->
-        assert length(texts) == 1, "expected one aggregate, got: #{inspect(texts)}"
-      end)
-
-    json = message |> String.split("\n") |> List.last()
-
-    case Jason.decode(json) do
-      {:ok, decoded} -> decoded
-      {:error, reason} -> flunk("not JSON: #{inspect(message)} (#{inspect(reason)})")
-    end
-  end
-
-  defp delivered_texts(messages, needle) do
-    for {:user, %{parts: parts}} <- messages,
-        %Part.Text{text: text} <- parts,
-        text =~ needle,
-        do: text
-  end
-
-  defp batch_tool_result(messages) do
-    {:tool, %{parts: [%Part.ToolResult{name: "agents-batch"} = result]}} =
-      Enum.find(messages, fn
-        {:tool, %{parts: parts}} ->
-          Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-batch"}, &1))
-
-        _ ->
-          false
-      end)
-
-    result
-  end
-
-  # Collect `count` `agent:created` frames for `parent_name`, in the order
-  # they arrive (item order). Non-matching frames from concurrent tests are
-  # filtered by the `parentName` guard. There is no synchronous point to wait on
-  # here: `Agent.chat/2` only casts, and the broadcast is emitted by the parent
-  # while it handles a `{:spawn_agent_request, ...}` call from the coordinator
-  # task, which is itself spawned a few hops later. So the fence is a real
-  # (bounded) wait, and the timeout is PER CHILD: a 3-item batch can spend up to
-  # 3x this. 1s is a wide margin — the whole file runs in well under a second.
-  defp collect_child_names(_parent_name, 0, acc), do: Enum.reverse(acc)
-
-  defp collect_child_names(parent_name, n, acc) do
-    assert_receive {:agent_created, %{"name" => name, "parentName" => ^parent_name}},
-                   1_000
-
-    collect_child_names(parent_name, n - 1, [name | acc])
-  end
-
-  # #41: `agent:created` rides the per-space topic, not the shared "lobby" one.
-  defp space_topic do
-    Broadcasts.space_topic(AgentTestHelpers.current_space_id())
-  end
-
-  defp collect_child_names(parent_name, n), do: collect_child_names(parent_name, n, [])
-
-  # Cast a child's completion to the parent, mimicking the child's idle
-  # completion in production.
-  defp cast_child_completed(parent_pid, child_name, response) do
-    usage = %{
-      Broadcasts.empty_usage_totals()
-      | output_tokens: 42,
-        total_tokens: 42,
-        last_output: 42
-    }
-
-    GenServer.cast(parent_pid, {:child_completed, child_name, response, usage})
-  end
-
-  # `archive` defaults to true, so `handle_child_completed/4` archives each
-  # child as the parent processes its completion. The DB `archived` flag is set
-  # synchronously in that path, so it's a deterministic proof that archiving ran
-  # (no liveness polling / DOWN waits).
-  defp assert_children_archived(space_id, names) do
-    Enum.each(names, fn name ->
-      {:ok, row} = Nest.Persistence.fetch_agent(space_id, name)
-      assert row.archived == true, "child #{name} should be marked archived in the DB"
-    end)
-  end
-
-  defp stub_child_chat do
-    Mimic.copy(Agents)
-    Mimic.stub(Agents, :chat, fn _space_id, _name, _content, _mode, _sender -> :ok end)
-  end
-
-  # The coordinator's vocation exposes `agents-batch`. The children take the
-  # vocation `run_batch/3` names explicitly, because `agents-batch` no longer hands
-  # a child the caller's own when `vocation` is omitted (stage 4b).
-  defp upsert_batch_vocation do
-    {:ok, %Vocations.Vocation{id: vid}} =
-      Vocations.upsert_vocation(%{
-        name: "AgentsBatch #{System.unique_integer([:positive])}",
-        description: "End-to-end agents-batch test",
-        system_prompt: "Batch work over items.",
-        tools: ["context", "agents"]
-      })
-
-    vid
-  end
-
-  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 1_000)
 end

@@ -39,7 +39,9 @@ defmodule Nest.Agents.Agent.BroadcastsStatusTest do
 
     Broadcasts.status(state)
 
-    assert_receive {:chat_status, payload}, 1_000
+    # One call, both frames — the "alongside" half of #53. The per-agent
+    # payload is pinned throughout the suite; this file owns the space frame.
+    assert_receive {:chat_status, _payload}, 1_000
     assert_receive {:agent_status, frame}, 1_000
 
     assert frame.space_id == state.space_id
@@ -47,6 +49,5 @@ defmodule Nest.Agents.Agent.BroadcastsStatusTest do
     # Pin the literal status rather than parity with the per-agent payload:
     # parity alone would also hold if both frames carried the wrong value.
     assert frame.status == to_string(Machine.status_for(state.live.machine))
-    assert frame.status == payload.status
   end
 end

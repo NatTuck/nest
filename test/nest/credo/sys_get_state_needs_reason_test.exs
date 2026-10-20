@@ -25,18 +25,6 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReasonTest do
       assert findings(source) == [{:unmarked, 3}]
     end
 
-    test "a discarded read (the barrier shape)" do
-      source = """
-      defmodule A do
-        def f(pid) do
-          _ = :sys.get_state(pid, 1_000)
-        end
-      end
-      """
-
-      assert findings(source) == [{:unmarked, 3}]
-    end
-
     test "an empty reason is not a reason" do
       source = """
       defmodule A do
@@ -186,27 +174,6 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReasonTest do
       assert findings(source) == [{:stale_marker, 2}, {:unmarked, 4}]
     end
 
-    test "not through `describe`, nor through a `def` body" do
-      source = """
-      defmodule A do
-        # allowlist: snapshot — messages + status
-        describe "d" do
-          test "t" do
-            :sys.get_state(pid, 1_000)
-          end
-        end
-
-        # allowlist: snapshot — messages + status
-        def f(pid) do
-          :sys.get_state(pid, 1_000)
-        end
-      end
-      """
-
-      assert findings(source) ==
-               [{:stale_marker, 2}, {:unmarked, 5}, {:stale_marker, 9}, {:unmarked, 11}]
-    end
-
     test "nor through an `fn` opened between the marker and the read" do
       source = """
       defmodule A do
@@ -311,14 +278,12 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReasonTest do
   end
 
   describe "scope" do
-    test "`test/` is in scope, `test/support/` included" do
-      assert SysGetStateNeedsReason.in_scope?("test/nest/agents/agent_test.exs")
+    test "`test/support/` is in scope" do
       assert SysGetStateNeedsReason.in_scope?("test/support/agent_turn_test_helpers.ex")
     end
 
     test "`lib/` is not, and the check never reads its source" do
       refute SysGetStateNeedsReason.in_scope?("lib/nest/agents/agent.ex")
-      refute SysGetStateNeedsReason.in_scope?("config/config.exs")
 
       # No source is registered in Credo's ETS for this file: if the check read
       # it, this would raise instead of returning `[]`.

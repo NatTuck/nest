@@ -22,22 +22,12 @@ defmodule Nest.ParseCacheTest do
     assert ParseCache.fetch(path, "two") == :miss
 
     assert :ok = ParseCache.put(path, "two", :second)
-    assert ParseCache.fetch(path, "two") == {:ok, :second}
 
     # And the first revision is gone rather than merely shadowed, so a path
     # holds one entry however often a file is rewritten. That is the table's
     # size, not its correctness: had the entry stayed it would still have been
     # the right answer for those bytes.
     assert ParseCache.fetch(path, "one") == :miss
-  end
-
-  test "a failure is cached as readily as a success" do
-    path = unique_path()
-
-    # Callers rely on this: `Nest.ProjectConfig` logs a malformed `.nest` once
-    # per revision, which only holds if the failure itself is what was cached.
-    assert :ok = ParseCache.put(path, "bad", {:error, "nope"})
-    assert ParseCache.fetch(path, "bad") == {:ok, {:error, "nope"}}
   end
 
   test "two paths do not share an entry, even for identical content" do

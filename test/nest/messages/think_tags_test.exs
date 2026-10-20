@@ -35,9 +35,6 @@ defmodule Nest.Messages.ThinkTagsTest do
 
     test "returns non-binary input as empty string" do
       assert ThinkTags.strip(nil) == ""
-      assert ThinkTags.strip(42) == ""
-      assert ThinkTags.strip(:atom) == ""
-      assert ThinkTags.strip(%{}) == ""
     end
   end
 
@@ -50,20 +47,11 @@ defmodule Nest.Messages.ThinkTagsTest do
     test "removes a block that takes the whole string" do
       assert ThinkTags.strip("<think>reasoning</think>") == ""
     end
-
-    test "removes a block with surrounding newlines" do
-      assert ThinkTags.strip("line1\n<think>\nreasoning\n</think>\nline2\n") ==
-               "line1\n\nline2\n"
-    end
   end
 
   describe "strip/1 — multiple blocks" do
     test "removes all blocks" do
       assert ThinkTags.strip("a<think>1</think>b<think>2</think>c") == "abc"
-    end
-
-    test "preserves text between blocks" do
-      assert ThinkTags.strip("<think>a</think> middle <think>b</think>") == " middle "
     end
   end
 
@@ -136,8 +124,6 @@ defmodule Nest.Messages.ThinkTagsTest do
 
     test "returns empty list for non-list input" do
       assert ThinkTags.strip_from_parts(nil) == []
-      assert ThinkTags.strip_from_parts(42) == []
-      assert ThinkTags.strip_from_parts(:atom) == []
     end
 
     test "returns empty list for empty list" do

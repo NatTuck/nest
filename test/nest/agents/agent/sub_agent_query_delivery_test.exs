@@ -42,9 +42,12 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
   batch in flight outlives the fence so a slow host fails a fence (a stuck
   turn) rather than silently flipping the outcome.
 
-  Every assertion of the original test is kept in both: the tool result, the
-  peer framing of the query, the answer arriving as a message, unique message
-  indices, no outstanding reply debt, and no give-up notice.
+  Both tests assert the claims that differ between the outcomes: the tool
+  result (the delivery's confirmation inline, the machine's synthetic notice
+  when backgrounded), the answer arriving exactly once, unique message indices,
+  and no give-up notice. The peer framing of the delivered query is the
+  delivery's own behaviour, identical in both outcomes, so the first test
+  asserts it and the second only consumes that frame as a fence.
   """
 
   use Nest.DataCase, async: true
@@ -55,7 +58,6 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
   import Nest.Agents.SubAgentToolsHelpers
 
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.Machine
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
 
@@ -120,8 +122,6 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     assert_receive {:chat_message, {:user, %{parts: [%Part.Text{text: "[From agent " <> _}]}}},
                    1_000
 
-    assert Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "the specialist answer"))
-
     # Both turns are over, and the reply discharged the obligation the query
     # created (a give-up notice would be in the coordinator's inbox instead).
     #
@@ -139,14 +139,9 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     assert_settled(coordinator_name)
     assert_settled(specialist_name)
 
-    # The fence's claim, read rather than waited on: the coordinator is idle,
-    # which is exactly what the teardown's zero-remaining check demands.
-    assert Agent.get_public_info(coordinator_pid, 1_000).status == :idle
-
-    # allowlist: snapshot — messages + owed_senders
+    # allowlist: snapshot — messages
     state = :sys.get_state(coordinator_pid, 1_000)
     assert_unique_message_indices(state.chat_state.messages)
-    assert Machine.owed_senders(state.live.machine) == []
     refute Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "did not reply"))
 
     # Delivered exactly once: one entry, no duplicate and no loss.
@@ -189,13 +184,11 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # …}}` broadcast (this test pid is subscribed to both agents' topics).
     # Consuming it here keeps the answer's frame below unambiguous: the two
     # deliveries differ only in their sender, and a `chat:message` frame carries
-    # no agent identity.
-    assert_receive {:chat_message, {:user, %{parts: [%Part.Text{text: "[From agent " <> rest}]}}},
+    # no agent identity. Its text — the peer framing of a delivered query — is
+    # the delivery's own behaviour, identical in both outcomes, and the test
+    # above asserts it; here the frame is only a fence.
+    assert_receive {:chat_message, {:user, %{parts: [%Part.Text{text: "[From agent " <> _}]}}},
                    1_000
-
-    assert rest == "#{coordinator_name}, agents-send reply required | mode: act]\nwhat is 2+2?"
-
-    assert Agent.get_public_info(coordinator_pid, 1_000).status == :executing_tools
 
     # Release the answer: it lands while the batch is executing, so the batch is
     # moved to the background and the answer is delivered now.
@@ -229,8 +222,6 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     # is the fence...
     assert_receive {:chat_message, {:user, %{parts: [%Part.Text{text: "[From agent " <> _}]}}},
                    1_000
-
-    assert Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "the specialist answer"))
 
     # The batch returns with no live worker to settle it, so its *real* result
     # arrives as a notice — which is where the confirmation the delivery
@@ -266,11 +257,6 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
 
     assert output =~ "Query delivered to #{specialist_name}"
 
-    assert Enum.any?(
-             agent_texts(coordinator_pid),
-             &(&1 =~ "Query delivered to #{specialist_name}" and &1 =~ "owes you a reply")
-           )
-
     # The release starts *two* coordinator turns — the backgrounded batch's own
     # turn, then the batch's late-result notice — and both `idle` frames are
     # queued by the time the wait runs, so a single fence would match the first
@@ -293,10 +279,9 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
     assert_settled(coordinator_name)
     assert_settled(specialist_name)
 
-    # allowlist: snapshot — messages + owed_senders
+    # allowlist: snapshot — messages
     state = :sys.get_state(coordinator_pid, 1_000)
     assert_unique_message_indices(state.chat_state.messages)
-    assert Machine.owed_senders(state.live.machine) == []
     refute Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "did not reply"))
 
     # Delivered exactly once: the backgrounding did not duplicate the answer and
@@ -310,8 +295,6 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
   # queued idle — `Nest.Agents.Agent.IdleFenceTest` pins that contract, and it is
   # right for a wait that spans a single turn. This is the fence for a wait that
   # spans the drained turn, where that first frame is the transient one.
-  defp assert_settled(names) when is_list(names), do: Enum.each(names, &assert_settled/1)
-
   defp assert_settled(name) do
     assert_receive {:chat_status, %{name: ^name, status: "idle", pendingMessageCount: 0}}, 1_000
   end
