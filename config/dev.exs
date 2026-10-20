@@ -9,14 +9,6 @@ Code.require_file("checkout.exs", __DIR__)
 # running `nest2` and renamed rows in it).
 dev_inst = Nest.Config.Checkout.dev()
 
-# Configure Phoenix.Copy for static assets
-config :phoenix_copy,
-  default: [
-    source: Path.expand("../assets/static/", __DIR__),
-    destination: Path.expand("../priv/static/", __DIR__),
-    debounce: 100
-  ]
-
 # Configure your database
 config :nest, Nest.Repo,
   username: System.fetch_env!("USER"),

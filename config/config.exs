@@ -12,6 +12,20 @@ import Config
 # Import build-time helper for git URL conversion
 import_config "git_remote.exs"
 
+# Configure Phoenix.Copy for static assets.
+#
+# In `config.exs` rather than `dev.exs`: `priv/static` is entirely generated, so
+# the copy has to happen in every environment that runs the app or the tests —
+# the dev watcher, `mix assets.deploy` (which runs `phx.copy default` under
+# MIX_ENV=prod, where a dev-only profile raised "unknown copy profile"), and
+# `test_helper.exs`, so `mix test` works in a clone that has never been built.
+config :phoenix_copy,
+  default: [
+    source: Path.expand("../assets/static/", __DIR__),
+    destination: Path.expand("../priv/static/", __DIR__),
+    debounce: 100
+  ]
+
 config :nest,
   ecto_repos: [Nest.Repo],
   generators: [timestamp_type: :utc_datetime],
