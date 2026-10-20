@@ -7,8 +7,7 @@ defmodule Nest.Persistence.Messages do
   Owns the per-agent reads (`load_messages/2`,
   `load_full_messages/2`, `last_compaction_index/2`), the write path
   (`insert_message/4` and its `record_compaction/7` facade), and the
-  `update_next_message_index_by_id/2` /
-  `update_fork_message_index/3` counter bumps. All functions
+  `update_next_message_index_by_id/2` counter bump. All functions
   take `space_id` as the first argument since agent names are
   unique within a space — except the counter bump, which is
   keyed by `agents.id` so a name that has been taken over
@@ -340,35 +339,6 @@ defmodule Nest.Persistence.Messages do
     )
 
     :ok
-  end
-
-  @doc """
-  Set (or clear, with `nil`) an agent's fork boundary. Clearing is
-  only meaningful for repair: the live path never clears it, since a
-  clone keeps its fork pointer for life (see
-  `notes/shared-message-structure.md`).
-  """
-  @spec update_fork_message_index(integer(), String.t(), non_neg_integer() | nil) ::
-          :ok | {:error, term()}
-  def update_fork_message_index(space_id, agent_name, fork_message_index)
-      when is_integer(fork_message_index) or is_nil(fork_message_index) do
-    case Nest.Persistence.fetch_agent(space_id, agent_name) do
-      {:ok, %PersistedAgent{id: agent_id}} ->
-        now = Nest.Persistence.now()
-
-        from(a in PersistedAgent, where: a.id == ^agent_id)
-        |> Repo.update_all(
-          set: [
-            fork_message_index: fork_message_index,
-            updated_at: now
-          ]
-        )
-
-        :ok
-
-      {:error, :not_found} ->
-        {:error, :agent_not_found}
-    end
   end
 
   # Documented on `Nest.Persistence.insert_message/4`: the facade is the

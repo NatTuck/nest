@@ -7,6 +7,10 @@ defmodule Nest.Agents.Agent.GuardTest do
   action has an executor clause, effects only happen through the executor,
   no module outside `Machine` writes `phase:`, and every resting phase is
   entered through the funnel that gives up the reply debt.
+
+  One of them is a *negative* guard: the HTTP worker does not broadcast
+  `chat:error` itself. No behavioural test can see a duplicate broadcast, so
+  the worker's source is the only witness.
   """
 
   use ExUnit.Case, async: true
@@ -103,6 +107,16 @@ defmodule Nest.Agents.Agent.GuardTest do
           do: path
 
     assert offenders == [], "effect call(s) outside the executor: #{inspect(offenders)}"
+  end
+
+  test "the HTTP worker does not broadcast chat:error directly" do
+    # `chat:error` has one source: the executor, after the machine applied the
+    # error and the turn knows the message index. The worker reporting the same
+    # failure itself would double-broadcast it (two notices for one error), and
+    # no behavioural test can see a *duplicate* broadcast.
+    worker = File.read!("lib/nest/agents/agent/turn/http_worker.ex")
+
+    refute worker =~ "Broadcasts.error("
   end
 
   test "only the Machine namespace writes phase:" do

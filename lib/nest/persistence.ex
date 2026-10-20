@@ -404,14 +404,6 @@ defmodule Nest.Persistence do
     as: :update_next_message_index_by_id
 
   @doc """
-  Set (or clear) the `fork_message_index` column on the agent
-  row. Clearing detaches a clone from its ancestor prefix.
-  """
-  defdelegate update_fork_message_index(space_id, name, fork_message_index),
-    to: Nest.Persistence.Messages,
-    as: :update_fork_message_index
-
-  @doc """
   Load every message for an agent.
   """
   defdelegate load_messages(space_id, name),
