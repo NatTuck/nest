@@ -17,7 +17,7 @@ defmodule Nest.Sandbox.ShellJobs.Info do
   not a timestamp. The manager's `trim/2` sorts the other way on purpose — it
   deletes the oldest — so the two orders are not a shared helper.
   """
-  @spec list(%{optional(String.t()) => map()}, (map() -> boolean())) ::
+  @spec list(%{optional(Nest.Sandbox.ShellJobs.job_id()) => map()}, (map() -> boolean())) ::
           [Nest.Sandbox.ShellJobs.info()]
   def list(jobs, owned?) do
     jobs
