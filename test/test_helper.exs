@@ -179,6 +179,13 @@ Ecto.Adapters.SQL.Sandbox.mode(Nest.Repo, :manual)
 # Start the application for tests
 Application.ensure_all_started(:nest)
 
+# `priv/static` is generated — `phx.copy` puts `assets/static/` there and vite
+# writes `priv/static/assets/` — and nothing in it is tracked except
+# `.gitkeep`. So a fresh clone has no `favicon.svg`, and `PageControllerTest`'s
+# "serves the favicon" would 404 against a directory that has never been built.
+# Running the copy here is two small files and makes `mix test` self-sufficient.
+_ = Phoenix.Copy.run(:default)
+
 # Warm the code server. `interactive` code-loading mode routes every
 # module's FIRST call through the single global code server. Under
 # concurrent async tests, many processes hit lazy module loads (Jason
