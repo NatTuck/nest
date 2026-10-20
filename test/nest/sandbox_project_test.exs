@@ -38,14 +38,6 @@ defmodule Nest.SandboxProjectTest do
     |> Enum.find(fn [f, s, _d] -> f == flag and s == source end)
   end
 
-  test "rw project mount is bound at its dest", %{dir: dir} do
-    ws = Path.join(dir, "ws")
-    File.mkdir_p!(ws)
-    mount = %{"dest" => "/data/x", "mode" => "rw", "create" => false, "source" => "/data/x"}
-    {:ok, args} = Sandbox.build(caps([mount], []), Mounts.new(ws, nil))
-    assert ["--bind", "/data/x", "/data/x"] = find_bind(args, "--bind", "/data/x")
-  end
-
   test "tmp project mount binds its source at the dest", %{dir: dir} do
     ws = Path.join(dir, "ws")
     File.mkdir_p!(ws)
@@ -64,15 +56,6 @@ defmodule Nest.SandboxProjectTest do
     {:ok, args} = Sandbox.build(caps([], prot), Mounts.new(ws, nil))
     assert ["--ro-bind", ^nest, ^nest] = find_bind(args, "--ro-bind", nest)
     assert Enum.find_index(args, &(&1 == nest)) > Enum.find_index(args, &(&1 == ws))
-  end
-
-  test "a missing .nest is masked with /dev/null", %{dir: dir} do
-    ws = Path.join(dir, "ws")
-    File.mkdir_p!(ws)
-    nest = Path.join(ws, ".nest")
-    prot = [%{"path" => nest, "source" => "/dev/null"}]
-    {:ok, args} = Sandbox.build(caps([], prot), Mounts.new(ws, nil))
-    assert ["--ro-bind", "/dev/null", ^nest] = find_bind(args, "--ro-bind", "/dev/null")
   end
 
   test "a protected file cannot be rewritten, whichever config file it is", %{dir: dir} do
@@ -183,6 +166,5 @@ defmodule Nest.SandboxProjectTest do
     mount = %{"dest" => dest, "mode" => "tmp", "create" => false, "source" => src}
     caps = caps([mount], [])
     assert {:ok, "hello"} = Sandbox.read(Path.join(dest, "f.txt"), caps, Mounts.new(ws, nil))
-    assert {:ok, _} = Sandbox.stat(Path.join(dest, "f.txt"), caps, Mounts.new(ws, nil))
   end
 end

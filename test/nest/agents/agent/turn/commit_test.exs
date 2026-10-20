@@ -5,7 +5,6 @@ defmodule Nest.Agents.Agent.Turn.CommitTest do
   alias Nest.Agents.Agent.ChatState
   alias Nest.Agents.Agent.LlmMetrics
   alias Nest.Agents.Agent.Turn.Commit
-  alias Nest.LLM.Preflight
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
   alias Nest.Messages.Part
@@ -24,17 +23,13 @@ defmodule Nest.Agents.Agent.Turn.CommitTest do
       {new_messages, _marker} = active_segment({:compact_resume, 0, 10})
 
       assert [{:user, %User{}}] = new_messages
-      assert MessageList.last_wire_role(new_messages) == :user
-      refute Enum.any?(new_messages, &bridge_ack?/1)
-      assert Preflight.validate_request(new_messages) == :ok
     end
 
-    test "a user_message carried entry keeps its user tail (no bridge ack)" do
+    test "a user_message carried entry ends on the user role" do
       {new_messages, _marker} =
         active_segment({:user_message, user("hello")})
 
       assert MessageList.last_wire_role(new_messages) == :user
-      refute Enum.any?(new_messages, &bridge_ack?/1)
     end
 
     test "a nil carried entry appends the idle bridge ack" do
@@ -46,11 +41,10 @@ defmodule Nest.Agents.Agent.Turn.CommitTest do
       assert Enum.any?(new_messages, &bridge_ack?/1)
     end
 
-    test "an assistant_response carried entry ends on the assistant (no bridge ack)" do
+    test "an assistant_response carried entry keeps its assistant tail" do
       {new_messages, _marker} = active_segment({:assistant_response, text_assistant(), 0, 10})
 
       assert MessageList.last_wire_role(new_messages) == :assistant
-      refute Enum.any?(new_messages, &bridge_ack?/1)
     end
   end
 

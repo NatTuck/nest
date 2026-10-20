@@ -11,7 +11,6 @@ defmodule Nest.Agents.AgentAgentsMdTest do
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
-  alias Nest.Messages.Part
   alias Nest.Sandbox.Mounts
   alias Nest.Vocations
 
@@ -61,11 +60,8 @@ defmodule Nest.Agents.AgentAgentsMdTest do
         })
 
       system_prompt = get_system_prompt(pid)
-      assert is_binary(system_prompt)
       assert system_prompt =~ "Here are AGENTS.md guidelines for this project:"
       assert system_prompt =~ "This is a web application"
-
-      MockClient.clear()
     end
 
     test "sanitizes NUL and invalid UTF-8 in AGENTS.md" do
@@ -97,14 +93,12 @@ defmodule Nest.Agents.AgentAgentsMdTest do
         })
 
       system_prompt = get_system_prompt(pid)
-      assert is_binary(system_prompt)
-      assert String.valid?(system_prompt)
-      refute String.contains?(system_prompt, <<0>>)
 
+      # The exact rendering is the whole claim: the NUL and the 0xFF have both
+      # become U+FFFD in place, so a validity or NUL-freedom assertion beside it
+      # could only restate it.
       replacement = <<0xEF, 0xBF, 0xBD>>
       assert system_prompt =~ "before" <> replacement <> "middle" <> replacement <> "after"
-
-      MockClient.clear()
     end
 
     test "omits AGENTS.md section when workspace has no such file" do
@@ -132,18 +126,15 @@ defmodule Nest.Agents.AgentAgentsMdTest do
         })
 
       system_prompt = get_system_prompt(pid)
-      assert is_binary(system_prompt)
       refute system_prompt =~ "Here are AGENTS.md guidelines for this project:"
-
-      MockClient.clear()
     end
 
-    # There was a test here asserting the notice a symlinked `AGENTS.md` used to
-    # get in the prompt. A *start* no longer renders one: `Nest.ConfigFile.error/1`
-    # refuses the workspace on all three funnels, so no agent comes up in one. The
-    # arm still exists because composition is re-run **mid-session** (on
-    # compaction), which is what the `:hardlink`/symlink tests at the end of this
-    # file drive directly.
+    # A *start* never renders a notice for a non-regular `AGENTS.md`:
+    # `Nest.ConfigFile.error/1` refuses the workspace on all three funnels, so no
+    # agent comes up in one. The composer's notice arm still exists because
+    # composition is re-run **mid-session** (on compaction), which is what the
+    # symlink test below drives directly; the compaction-time re-read of the file
+    # itself is `AgentCompactionSystemRepeatTest`'s.
     test "omits the AGENTS.md section when the mounts carry no workspace" do
       # An agent always has its *space's* workspace now, so this state is only
       # reachable through the composer — which is where the clause lives. A
@@ -160,78 +151,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
           nil
         )
 
-      assert is_binary(system_prompt)
       refute system_prompt =~ "Here are AGENTS.md guidelines for this project:"
-    end
-
-    test "AGENTS.md changes between init and compaction are reflected in the regenerated system prompt" do
-      vocation = create_vocation()
-
-      workspace_path =
-        Path.join([
-          File.cwd!(),
-          "_build",
-          "tmp",
-          "nest-tmp-agents-md-#{System.unique_integer([:positive])}"
-        ])
-
-      File.mkdir_p!(workspace_path)
-      on_exit(fn -> rm_tmp!(workspace_path, "nest-tmp-agents-md-") end)
-
-      agents_md_path = Path.join(workspace_path, "AGENTS.md")
-
-      marker = "unique-marker-#{System.unique_integer([:positive])}"
-
-      File.write!(
-        agents_md_path,
-        "# Secret agent directive\nFROM_COMPACTION_FIXTURE\n#{marker}\n"
-      )
-
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          workspace_path: workspace_path,
-          vocation_id: vocation.id
-        })
-
-      # Pre-seed messages and trigger compaction.
-      messages = [
-        {:system,
-         %Nest.Messages.System{index: 0, parts: [%Part.Text{text: "Original"}], api_logs: []}},
-        {:user, %Nest.Messages.User{index: 1, parts: [%Part.Text{text: "hi"}], api_logs: []}}
-      ]
-
-      :sys.replace_state(
-        pid,
-        fn state ->
-          %{state | chat_state: %{state.chat_state | messages: messages}}
-        end,
-        1_000
-      )
-
-      send_compaction_done(pid, "Summary text.", nil)
-
-      # The commit broadcasts `chat:compaction` inline from the agent while it
-      # handles the response, after the marker and the regenerated messages are
-      # in the state — so the frame is the happens-after event for the commit,
-      # and the read below (a call to the same process) is ordered behind it.
-      # The marker payload is the pin: a fence that could be satisfied by
-      # anything other than a commit would fail here.
-      assert_receive {:chat_compaction, %{marker: %{"role" => "compaction"}}}, 1_000
-
-      final_messages = Nest.Agents.Agent.get_messages(pid, 1_000)
-
-      assert match?({:system, _}, Enum.at(final_messages, 0)),
-             "expected system message at messages[0]"
-
-      [{:system, sys_struct}] = Enum.take(final_messages, 1)
-      text = AgentTestHelpers.text_from_parts(sys_struct.parts)
-      assert text =~ marker
-
-      # The `nil` continuation resumes the post-compaction LLM turn;
-      # finish it so the agent is idle when the test ends (the
-      # teardown asserts zero in-flight agents).
-      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 

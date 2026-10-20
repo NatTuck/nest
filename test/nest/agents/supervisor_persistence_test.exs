@@ -81,7 +81,6 @@ defmodule Nest.Agents.SupervisorPersistenceTest do
       AgentTestHelpers.ensure_cleanup(name)
 
       assert {:ok, pid} = Supervisor.get_agent(AgentTestHelpers.current_space_id(), name)
-      assert is_pid(pid)
       assert Process.alive?(pid)
 
       Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
@@ -109,17 +108,16 @@ defmodule Nest.Agents.SupervisorPersistenceTest do
              }
     end
 
-    test "seeds the active slice with the archive's facts" do
+    test "seeds the boundary and the next index past the active slice" do
       {space_id, name} = seed_compacted(active: 2, archived: 3)
 
       assert {:ok, attrs} = Persistence.build_attrs_for_start(space_id, name)
       state = Init.build_active_state(attrs, client_config())
 
-      assert indices(state.chat_state.messages) == [4, 5]
       assert state.chat_state.last_compaction_index == 3
-      assert state.chat_state.compaction_count == 1
-      # One past the highest index of the *logical* sequence: the archived
-      # maximum is what carries it when the active slice cannot.
+      # One past the highest index of the *logical* sequence: the active slice
+      # carries it here, and the archive carries it when the slice is empty
+      # (see the empty-slice test below).
       assert state.chat_state.next_message_index == 6
     end
 

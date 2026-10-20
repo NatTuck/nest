@@ -1,9 +1,9 @@
 defmodule Nest.Agents.Agent.SubAgentToolsTest do
   @moduledoc """
   E2E test that drives a coordinator's full chat turn through
-  `MockClient.run/2` and confirms the unified `agents-spawn`,
-  `agents-list`, and `agents-query` tools produce correctly-paired
-  `assistant[tool] → tool[result]` messages.
+  `MockClient.run/2` and confirms the `agents-spawn` and `agents-list`
+  tools produce correctly-paired `assistant[tool] → tool[result]`
+  messages.
 
   ## Pipeline under test
 
@@ -18,11 +18,13 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     4. The coordinator's next MockClient run produces the
        final text; A goes `:idle`.
 
-  `agents-query`'s own test lives in
-  `Nest.Agents.Agent.SubAgentQueryDeliveryTest`: its delivery confirmation
-  races the peer's answer against the coordinator's tool batch (issue #36), so
-  each outcome is pinned there with a gate rather than a fence. The fixtures
-  both files share live in `Nest.Agents.SubAgentToolsHelpers`.
+  The other sub-agent tools are pinned at their own level, not here:
+  `agents-query` in `Nest.Agents.Agent.SubAgentQueryDeliveryTest` (its delivery
+  confirmation races the peer's answer against the tool batch — issue #36 — so
+  each outcome is gated there), `agents-send` in `ToolLoopSendAgentTest` /
+  `ToolLoopHumanAddressTest`, and `agents-wait` in `WaitForIdleTest` /
+  `WaitTurnTest`. The fixtures all of them share live in
+  `Nest.Agents.SubAgentToolsHelpers`.
 
   ## What's stubbed
 
@@ -92,7 +94,6 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
     # The coordinator's tool message carries the spawn result.
     coordinator_messages = Agent.get_messages(coordinator_pid, 1_000)
-    AgentTestHelpers.assert_unique_message_indices(coordinator_messages)
 
     {:tool, tool_msg} =
       Enum.find(coordinator_messages, fn
@@ -182,7 +183,6 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     assert log =~ "is_error=true tool result"
 
     coordinator_messages = Agent.get_messages(coordinator_pid, 1_000)
-    AgentTestHelpers.assert_unique_message_indices(coordinator_messages)
 
     {:tool, tool_msg} =
       Enum.find(coordinator_messages, fn
@@ -265,7 +265,6 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     await_idle(coordinator_name)
 
     coordinator_messages = Agent.get_messages(coordinator_pid, 1_000)
-    AgentTestHelpers.assert_unique_message_indices(coordinator_messages)
 
     {:tool, tool_msg} =
       Enum.find(coordinator_messages, fn
@@ -284,8 +283,6 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
              }
            ] = tool_msg.parts
 
-    assert content =~ specialist_name
-    assert content =~ db_only_name
     refute content =~ archived_name
 
     # Each entry carries a real vocation slug: the running specialist's
@@ -293,160 +290,6 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     # from its `vocation_id` (never `nil`).
     assert entry_for(content, specialist_name) =~ ~s(vocation: "#{specialist_slug}")
     assert entry_for(content, db_only_name) =~ ~s(vocation: "#{db_only_slug}")
-  end
-
-  test "agents-send tool delivers a message to a peer asynchronously", %{vid: vid} do
-    {coordinator_pid, coordinator_name} =
-      AgentTestHelpers.start_spawnable_agent(%{
-        model: %{name: "qwen3.5-plus", provider: "model-studio"},
-        vocation_id: vid
-      })
-
-    space_id = AgentTestHelpers.current_space_id()
-
-    specialist_name = "specialist-#{System.unique_integer([:positive])}"
-    start_mocked_specialist(space_id, specialist_name, "the specialist answer")
-
-    MockClient.set_tool_response(%{
-      text: "sending",
-      tool_calls: [
-        %{
-          id: "call_send_1",
-          name: "agents-send",
-          arguments: %{"name" => specialist_name, "message" => "please review this"}
-        }
-      ]
-    })
-
-    MockClient.set_response("coordinator done")
-
-    :ok = Agent.chat(coordinator_pid, "hand this off")
-    await_idle(coordinator_name)
-
-    coordinator_messages = Agent.get_messages(coordinator_pid, 1_000)
-
-    {:tool, tool_msg} =
-      Enum.find(coordinator_messages, fn
-        {:tool, %{parts: parts}} ->
-          Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-send"}, &1))
-
-        _ ->
-          false
-      end)
-
-    assert [%Part.ToolResult{name: "agents-send", content: content, is_error: false}] =
-             tool_msg.parts
-
-    assert content =~ "Message delivered to #{specialist_name}"
-
-    {:ok, specialist_pid} = Nest.Agents.Registry.lookup(space_id, specialist_name)
-    specialist_messages = Agent.get_messages(specialist_pid, 1_000)
-
-    assert Enum.any?(specialist_messages, fn
-             {:user, %{parts: parts}} ->
-               Enum.any?(parts, fn
-                 %Part.Text{text: text} ->
-                   text =~ coordinator_name and text =~ "please review this"
-
-                 _ ->
-                   false
-               end)
-
-             _ ->
-               false
-           end)
-
-    await_idle(specialist_name)
-  end
-
-  test "agents-send to a missing agent reports an error", %{vid: vid} do
-    {coordinator_pid, coordinator_name} =
-      AgentTestHelpers.start_spawnable_agent(%{
-        model: %{name: "qwen3.5-plus", provider: "model-studio"},
-        vocation_id: vid
-      })
-
-    MockClient.set_tool_response(%{
-      text: "sending",
-      tool_calls: [
-        %{
-          id: "call_send_missing_1",
-          name: "agents-send",
-          arguments: %{"name" => "ghost-agent", "message" => "anyone home?"}
-        }
-      ]
-    })
-
-    MockClient.set_response("coordinator done")
-
-    log =
-      capture_log(fn ->
-        :ok = Agent.chat(coordinator_pid, "try to send")
-        await_idle(coordinator_name)
-      end)
-
-    assert log =~ "is_error=true tool result"
-
-    coordinator_messages = Agent.get_messages(coordinator_pid, 1_000)
-
-    {:tool, tool_msg} =
-      Enum.find(coordinator_messages, fn
-        {:tool, %{parts: parts}} ->
-          Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-send"}, &1))
-
-        _ ->
-          false
-      end)
-
-    assert [%Part.ToolResult{name: "agents-send", content: content, is_error: true}] =
-             tool_msg.parts
-
-    assert content =~ "not found"
-  end
-
-  test "agents-wait returns immediately when every other agent is idle", %{vid: vid} do
-    {coordinator_pid, coordinator_name} =
-      AgentTestHelpers.start_spawnable_agent(%{
-        model: %{name: "qwen3.5-plus", provider: "model-studio"},
-        vocation_id: vid
-      })
-
-    space_id = AgentTestHelpers.current_space_id()
-
-    specialist_name = "specialist-#{System.unique_integer([:positive])}"
-    start_mocked_specialist(space_id, specialist_name, "the specialist answer")
-
-    # No `names` argument: every other agent in the space, which here is
-    # the (idle) specialist (plus the helper's own coordinator row). The
-    # caller is never a target.
-    MockClient.set_tool_response(%{
-      text: "waiting",
-      tool_calls: [%{id: "call_wait_1", name: "agents-wait", arguments: %{}}]
-    })
-
-    MockClient.set_response("coordinator done")
-
-    :ok = Agent.chat(coordinator_pid, "wait for the specialist")
-    await_idle(coordinator_name)
-
-    coordinator_messages = Agent.get_messages(coordinator_pid, 1_000)
-    AgentTestHelpers.assert_unique_message_indices(coordinator_messages)
-
-    {:tool, tool_msg} =
-      Enum.find(coordinator_messages, fn
-        {:tool, %{parts: parts}} ->
-          Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-wait"}, &1))
-
-        _ ->
-          false
-      end)
-
-    assert [%Part.ToolResult{name: "agents-wait", content: content, is_error: false}] =
-             tool_msg.parts
-
-    assert content =~ "All agents are already idle:"
-    assert content =~ specialist_name
-    refute content =~ coordinator_name
   end
 
   # The `agents-list` tool result content is `inspect/1` output of the

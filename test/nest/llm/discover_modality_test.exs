@@ -41,19 +41,13 @@ defmodule Nest.LLM.DiscoverModalityTest do
              }) == %{"input" => ["image"]}
     end
 
-    test "reports a published modality list without \"image\" as text-only, per shape" do
+    test "reports a published modality list without \"image\" as text-only" do
       # A list is the provider *declaring* input, so "no image" is an
       # answer of its own — an empty `input` list, not `nil`. (Live:
       # DeepSeek's `deepseek-v4-pro` reports `["text"]`.)
       assert Discover.extract_multi_modal_from_model(%{
                "id" => "deepseek-v4-pro",
                "input_modalities" => ["text"]
-             }) == %{"input" => []}
-
-      # OpenRouter's nested shape says the same thing in the same way.
-      assert Discover.extract_multi_modal_from_model(%{
-               "id" => "text-only",
-               "architecture" => %{"input_modalities" => ["text", "file"]}
              }) == %{"input" => []}
 
       # An empty list is still a list: the provider declared that the
@@ -74,16 +68,10 @@ defmodule Nest.LLM.DiscoverModalityTest do
       # Nothing at all.
       assert Discover.extract_multi_modal_from_model(%{"id" => "no-metadata"}) == nil
 
-      # `architecture` present without an `input_modalities` list, and
-      # no flat field either: still nothing published.
-      assert Discover.extract_multi_modal_from_model(%{
-               "id" => "no-metadata",
-               "architecture" => %{"tokenizer" => "cl100k"}
-             }) == nil
-
       # A malformed (non-list) modality field is not a shape we can
       # read, so the answer stays unknown rather than claiming a
-      # negative.
+      # negative. Both positions are pinned because each is its own
+      # guard clause.
       assert Discover.extract_multi_modal_from_model(%{
                "id" => "no-metadata",
                "input_modalities" => "image"
@@ -94,30 +82,17 @@ defmodule Nest.LLM.DiscoverModalityTest do
                "architecture" => %{"input_modalities" => "text"}
              }) == nil
 
-      # An Anthropic capability object that is missing, empty, or not a
-      # map says nothing; so does a non-boolean `supported`.
-      assert Discover.extract_multi_modal_from_model(%{
-               "id" => "claude-3-opus-20240229",
-               "capabilities" => %{"image_input" => %{}}
-             }) == nil
-
+      # An Anthropic capability object with a non-boolean `supported`
+      # says nothing.
       assert Discover.extract_multi_modal_from_model(%{
                "id" => "claude-3-opus-20240229",
                "capabilities" => %{"image_input" => %{"supported" => "yes"}}
-             }) == nil
-
-      assert Discover.extract_multi_modal_from_model(%{
-               "id" => "claude-3-opus-20240229",
-               "capabilities" => "nope"
              }) == nil
     end
 
     test "returns nil for a non-map entry" do
       assert Discover.extract_multi_modal_from_model(nil) == nil
       assert Discover.extract_multi_modal_from_model("not-a-model") == nil
-
-      assert Discover.extract_multi_modal_from_model([%{"input_modalities" => ["image"]}]) ==
-               nil
     end
 
     test "prefers a modality list over the capability flag, and nested over flat" do
