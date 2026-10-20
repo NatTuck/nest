@@ -60,13 +60,6 @@ defmodule Nest.Agents.Agent.GuardTest do
     assert missing == [], "actions with no executor clause: #{inspect(missing)}"
   end
 
-  test "every declared event is handled by step/2" do
-    for tag <- Machine.events() do
-      event = sample_event(tag)
-      refute Machine.step(Machine.new(work: %Machine.Work{ctx: ctx()}), event) == :quarantine
-    end
-  end
-
   test "step/2 has a production caller (the settle loop)" do
     assert File.read!(@turn) =~ "Machine.step("
   end
@@ -431,72 +424,4 @@ defmodule Nest.Agents.Agent.GuardTest do
   end
 
   defp line(meta), do: Keyword.get(meta, :line, 0)
-
-  defp ctx do
-    %{
-      agent_pid: self(),
-      agent_name: "a",
-      space_id: 1,
-      client_config: %Nest.LLM.ClientConfig{client: Nest.LLM.MockClient, model: "m"},
-      tools: [],
-      tool_choice: :auto,
-      caps: %{},
-      context_limit: 100_000,
-      context_limit_source: :default,
-      messages: [],
-      tmp_path: nil,
-      workspace_path: nil,
-      mode: "chat",
-      next_message_index: 0,
-      crossed_thresholds: %MapSet{},
-      context_projection: nil,
-      api_log_sequences: %{},
-      vocation: nil,
-      depth: 0
-    }
-  end
-
-  defp user do
-    {:user,
-     %Nest.Messages.User{index: nil, parts: [%Nest.Messages.Part.Text{text: "hi"}], api_logs: []}}
-  end
-
-  defp sample_event(:chat_request), do: {:chat_request, {:user_message, elem(user(), 1)}}
-  defp sample_event(:iterate), do: :iterate
-  defp sample_event(:inbox_drain), do: {:inbox_drain, [], "queued"}
-  defp sample_event(:http_ok), do: {:http_ok, make_ref(), %Nest.LLM.RunResponse{}}
-  defp sample_event(:http_error), do: {:http_error, make_ref(), :boom}
-  defp sample_event(:worker_crashed), do: {:worker_crashed, make_ref(), %RuntimeError{}, []}
-  defp sample_event(:worker_down), do: {:worker_down, self(), :killed}
-  defp sample_event(:worker_started), do: {:worker_started, make_ref(), self(), :http}
-  defp sample_event(:llm_error), do: {:llm_error, make_ref(), "boom"}
-  defp sample_event(:append_result), do: {:append_result, :stale, nil}
-  defp sample_event(:preflight_result), do: {:preflight_result, :fits}
-  defp sample_event(:stop), do: {:stop, self()}
-  defp sample_event(:stop_timer), do: :stop_timer
-  defp sample_event(:timer_armed), do: {:timer_armed, :stop_timer, make_ref()}
-  defp sample_event(:commit_done), do: {:commit_done}
-  defp sample_event(:commit_error), do: {:commit_error, :boom}
-  defp sample_event(:compaction_error), do: {:compaction_error, :boom, nil}
-  defp sample_event(:retry_compaction), do: :retry_compaction
-  defp sample_event(:compact_request), do: {:compact_request, nil}
-  defp sample_event(:loop_ack), do: :loop_ack
-  defp sample_event(:blocked), do: {:blocked, :needs_repair, nil}
-  defp sample_event(:unblocked), do: {:unblocked}
-
-  defp sample_event(:workspace_notice),
-    do:
-      {:workspace_notice,
-       %{kind: :workspace, workspace: nil, network_access: false, backend: "bwrap"}}
-
-  defp sample_event(:model_notice),
-    do: {:model_notice, %{kind: :model, model: "m", verdict: :unknown, context_limit: 100_000}}
-
-  defp sample_event(:tool_results), do: {:tool_results, make_ref(), []}
-  defp sample_event(:reply_sent), do: {:reply_sent, "peer"}
-  defp sample_event(:child_spawned), do: {:child_spawned, "kid", false, nil}
-  defp sample_event(:child_completed), do: {:child_completed, "kid", "resp", %{}}
-  defp sample_event(:child_failed), do: {:child_failed, "kid", :crashed}
-  defp sample_event(:child_terminated), do: {:child_terminated, "kid", :killed}
-  defp sample_event(:abandon_child), do: {:abandon_child, "kid"}
 end

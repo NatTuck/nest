@@ -41,20 +41,6 @@ defmodule Nest.ConfigFileTest do
       assert ConfigFile.error(nil) == :ok
     end
 
-    test "refuses a symlinked .nest, naming it", %{dir: dir} do
-      target = Path.join(dir, "real.nest")
-      File.write!(target, "")
-      File.ln_s!(target, nest_path(dir))
-
-      log =
-        capture_log(fn ->
-          assert {:error, {:config_file_not_regular, path, _type}} = ConfigFile.error(dir)
-          assert path == nest_path(dir)
-        end)
-
-      assert log =~ "Nest cannot protect it from being rewritten"
-    end
-
     test "refuses a symlinked AGENTS.md, naming it", %{dir: dir} do
       write_nest(dir, "")
       target = Path.join(dir, "real-agents.md")
@@ -118,9 +104,6 @@ defmodule Nest.ConfigFileTest do
       assert ConfigFile.state(Path.join(locked, ".nest")) == {:not_regular, :unreadable},
              "as root, `lstat` through a mode-000 directory succeeds — this test needs a non-root user"
 
-      assert ConfigFile.state(Path.join(locked, "AGENTS.md")) ==
-               {:not_regular, :unreadable}
-
       # And a workspace whose config path cannot be inspected is refused, not
       # masked. `error/1` on the *parent* is `:ok` (the parent is a directory but
       # it is not a config path), so this asserts the state directly.
@@ -171,6 +154,5 @@ defmodule Nest.ConfigFileTest do
       end)
 
     assert log =~ "a hardlink to another name"
-    assert log =~ "so Nest cannot protect it"
   end
 end

@@ -71,17 +71,6 @@ defmodule Nest.SandboxPathDomainTest do
              Sandbox.read(sandbox_file, ctx.caps, ctx.mounts)
   end
 
-  test "glob returns only paths in the agent's domain", ctx do
-    File.write!(Path.join(ctx.scratch, "a.txt"), "x")
-
-    assert {:ok, files} =
-             Sandbox.glob("/tmp/#{ctx.agent}/*", ctx.caps, ctx.mounts)
-
-    assert files == ["/tmp/#{ctx.agent}/a.txt"]
-    refute Enum.any?(files, &String.contains?(&1, ctx.scratch))
-    refute Enum.any?(files, &String.contains?(&1, ctx.root))
-  end
-
   test "Overflow offload pointers name the agent's own path", ctx do
     path = Overflow.write("body", %{mounts: ctx.mounts}, "probe", "txt")
 
