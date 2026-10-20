@@ -38,6 +38,16 @@ defmodule Nest.Tools.ShellJobsTest do
 
   defp invoke(tool, args, context), do: tool.function.(args, context)
 
+  # A second agent in the caller's space, with its own scratch: the sibling a
+  # space listing has to show and a space kill has to reach.
+  defp sibling_agent(key, tmp, tag) do
+    sibling = {elem(key, 0), "#{tag}-#{System.unique_integer([:positive])}"}
+    scratch = Path.join(Path.dirname(tmp), elem(sibling, 1))
+    File.mkdir_p!(scratch)
+    on_exit(fn -> ShellJobs.stop_all(sibling) end)
+    {sibling, scratch}
+  end
+
   # `echo` is fast, but the OS decides when it exits. Wait for the manager's
   # exit event instead of polling its status; `subscribe/3` sends the frame
   # immediately for a job that has already exited, so nothing can be missed.
@@ -93,6 +103,91 @@ defmodule Nest.Tools.ShellJobsTest do
 
     assert text =~ "Killed background job #{id}"
     assert [%{id: ^id, status: :exited, killed: true}] = ShellJobs.list(key)
+  end
+
+  test "shell-list scope switches between the caller's jobs and the space's", %{
+    key: key,
+    tmp: tmp,
+    context: context
+  } do
+    {sibling, sibling_tmp} = sibling_agent(key, tmp, "list-sibling")
+
+    id = start_job!("sleep 30", tmp, key)
+    sibling_id = start_job!("sleep 30", sibling_tmp, sibling)
+
+    tool = Tools.get_function("shell-list", Mounts.new(nil, nil))
+
+    # The default is unchanged, and still the caller's own jobs only.
+    assert {:ok, own} = invoke(tool, %{}, context)
+    assert own =~ "- #{id}: running"
+    refute own =~ sibling_id
+
+    # The space listing shows both, each with the agent that owns it.
+    assert {:ok, space} = invoke(tool, %{"scope" => "space"}, context)
+    assert space =~ "- #{id} (owner: #{context.agent_name}): running"
+    assert space =~ "- #{sibling_id} (owner: #{elem(sibling, 1)}): running"
+    assert space =~ "sleep 30"
+
+    # Anything else is refused, and the refusal names both values it accepts.
+    assert {:error, message} = invoke(tool, %{"scope" => "agents"}, context)
+    assert message =~ ~s("agent")
+    assert message =~ ~s("space")
+
+    # An empty space says so. A negative id is one no other test's fixture uses
+    # (`System.unique_integer([:positive])`), so this space is really empty.
+    empty = %{context | space_id: -System.unique_integer([:positive])}
+
+    assert {:ok, "No background jobs in this space."} =
+             invoke(tool, %{"scope" => "space"}, empty)
+  end
+
+  test "shell-list scope: space names a job whose key names no agent", %{tmp: tmp} do
+    # `Nest.Tools.agent_key/1` falls back to `{:unknown, :unknown}` for a caller
+    # with neither a space nor a name, so a space listing must render the missing
+    # owner rather than raise on a key that is not `{space_id, name}`.
+    key = {:unknown, :unknown}
+    on_exit(fn -> ShellJobs.stop_all(key) end)
+
+    id = start_job!("sleep 30", tmp, key)
+    assert %{agent: nil} = Enum.find(ShellJobs.list_space(:unknown), &(&1.id == id))
+
+    # No `space_id` in the context, so the tool's own key is the fallback too.
+    assert {:ok, text} =
+             invoke(
+               Tools.get_function("shell-list", Mounts.new(nil, nil)),
+               %{"scope" => "space"},
+               %{agent_pid: self()}
+             )
+
+    assert text =~ "- #{id} (owner: unknown): running"
+  end
+
+  test "shell-kill stops another agent's job in this space, and refuses another space's", %{
+    key: key,
+    tmp: tmp,
+    context: context
+  } do
+    {sibling, sibling_tmp} = sibling_agent(key, tmp, "kill-sibling")
+
+    # A space the caller is not in: a job id from here must not be reachable.
+    outsider = {:other_space, "kill-outsider-#{System.unique_integer([:positive])}"}
+    outsider_tmp = Path.join([Path.dirname(Path.dirname(tmp)), "space-other", elem(outsider, 1)])
+    File.mkdir_p!(outsider_tmp)
+    on_exit(fn -> ShellJobs.stop_all(outsider) end)
+
+    sibling_id = start_job!("sleep 30", sibling_tmp, sibling)
+    outsider_id = start_job!("sleep 30", outsider_tmp, outsider)
+
+    tool = Tools.get_function("shell-kill", Mounts.new(nil, nil))
+
+    assert {:ok, text} = invoke(tool, %{"id" => sibling_id}, context)
+    assert text =~ "Killed background job #{sibling_id}"
+    assert text =~ "owned by #{elem(sibling, 1)}"
+    assert [%{id: ^sibling_id, status: :exited, killed: true}] = ShellJobs.list(sibling)
+
+    assert {:error, message} = invoke(tool, %{"id" => outsider_id}, context)
+    assert message =~ "No such background job: #{outsider_id}"
+    assert [%{id: ^outsider_id, status: :running}] = ShellJobs.list(outsider)
   end
 
   test "unknown ids are reported as errors", %{context: context} do

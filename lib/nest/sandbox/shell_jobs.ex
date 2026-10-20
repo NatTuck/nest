@@ -30,12 +30,19 @@ defmodule Nest.Sandbox.ShellJobs do
   ## Limits and lifetime
 
   At most `caps["shell"]["background"]` jobs (default 1) may run
-  concurrently per agent; `0` disables background jobs. Jobs are keyed
-  by `{space_id, agent_name}` and die when their agent dies — the manager
-  monitors the agent pid and drops the agent's jobs on its `:DOWN` — or
-  when a caller invokes `stop_all/1`/`stop_all_async/2`. A drop also removes
-  the agent's scratch directory, after the jobs are stopped. Finished jobs
-  are kept (bounded) for `shell-wait`/`shell-list`.
+  concurrently per agent; `0` disables background jobs. The cap is per agent
+  and stays that way. Jobs are keyed by `{space_id, agent_name}` and die when
+  their agent dies — the manager monitors the agent pid and drops the agent's
+  jobs on its `:DOWN` — or when a caller invokes `stop_all/1`/
+  `stop_all_async/2`. A drop also removes the agent's scratch directory, after
+  the jobs are stopped. Finished jobs are kept (bounded) for
+  `shell-wait`/`shell-list`.
+
+  Listing and killing are the two space-scoped operations: `list_space/1` and
+  `kill_space/2` reach every job belonging to any agent in one space, so a
+  parent agent can find and stop a job a sibling left holding locks. Nothing
+  else crosses agents — `status/2`, `output/2`, `subscribe/3` and `kill/2` are
+  owner-scoped, and no operation reaches a job in another space.
 
   ## Events
 
@@ -70,7 +77,7 @@ defmodule Nest.Sandbox.ShellJobs do
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.PubSub
   alias Nest.Sandbox.{Backend, Mounts}
-  alias Nest.Sandbox.ShellJobs.{Info, JobLog, Launcher}
+  alias Nest.Sandbox.ShellJobs.{Index, Info, JobLog, Launcher}
   alias Nest.Sandbox.ShellJobs.Waiters
   alias Nest.Tools.ShellCmd
 
@@ -86,6 +93,9 @@ defmodule Nest.Sandbox.ShellJobs do
 
   @type info :: %{
           id: job_id(),
+          # The owning agent's name, for a space-wide listing. `nil` when the
+          # key names no agent (`{:unknown, :unknown}`, the tools' fallback).
+          agent: String.t() | nil,
           command: String.t(),
           status: :running | :exited,
           exit_code: integer() | nil,
@@ -139,9 +149,17 @@ defmodule Nest.Sandbox.ShellJobs do
     GenServer.call(@name, {:start_job, attrs}, 30_000)
   end
 
-  @doc "Metadata for every job belonging to `agent_key`, oldest first."
+  @doc "Metadata for every job belonging to `agent_key`, newest first."
   @spec list(agent_key()) :: [info()]
   def list(agent_key), do: GenServer.call(@name, {:list, agent_key})
+
+  @doc """
+  Metadata for every job belonging to any agent in `space_id`, newest first —
+  the space-wide listing `shell-list scope: "space"` renders, so an agent can
+  see a job a sibling agent left running instead of only its own.
+  """
+  @spec list_space(term()) :: [info()]
+  def list_space(space_id), do: GenServer.call(@name, {:list_space, space_id})
 
   @doc "The status of a single job."
   @spec status(agent_key(), job_id()) ::
@@ -189,6 +207,18 @@ defmodule Nest.Sandbox.ShellJobs do
   @doc "Kill a running job. Its exit code is reported once the process dies."
   @spec kill(agent_key(), job_id()) :: :ok | {:error, :not_found}
   def kill(agent_key, job_id), do: GenServer.call(@name, {:kill, agent_key, job_id})
+
+  @doc """
+  Kill a running job owned by *any* agent in `space_id`, answering with the
+  owner's `agent_key` so the caller can say whose job it stopped.
+
+  The lookup and the kill happen in the same callback, so a job that exits in
+  between cannot be reported as killed from a stale read. `{:error, :not_found}`
+  is a job that belongs to another space, or to nothing.
+  """
+  @spec kill_space(term(), job_id()) :: {:ok, agent_key()} | {:error, :not_found}
+  def kill_space(space_id, job_id),
+    do: GenServer.call(@name, {:kill_space, space_id, job_id})
 
   @doc """
   Stop every job for `agent_key` synchronously, then remove the agent's scratch
@@ -287,36 +317,28 @@ defmodule Nest.Sandbox.ShellJobs do
     end
   end
 
-  def handle_call({:list, agent_key}, _from, state) do
-    jobs =
-      state.jobs
-      |> Map.values()
-      |> Enum.filter(&(&1.agent_key == agent_key))
-      # Most recent first: a listing is read to find what just ran, and a job id
-      # is not a timestamp. `trim/2` sorts the other way on purpose — it deletes
-      # the oldest — so the two orders are not a shared helper.
-      |> Enum.sort_by(& &1.started_at, {:desc, DateTime})
-      |> Enum.map(&Info.to_info/1)
+  def handle_call({:list, agent_key}, _from, state),
+    do: {:reply, Info.list(state.jobs, &(&1.agent_key == agent_key)), state}
 
-    {:reply, jobs, state}
-  end
+  def handle_call({:list_space, space_id}, _from, state),
+    do: {:reply, Info.list(state.jobs, &match?({^space_id, _}, &1.agent_key)), state}
 
   def handle_call({:status, agent_key, job_id}, _from, state) do
-    case fetch_job(state, agent_key, job_id) do
+    case Index.fetch(state, agent_key, job_id) do
       {:ok, job} -> {:reply, {:ok, Info.status(job)}, state}
       :error -> {:reply, {:error, :not_found}, state}
     end
   end
 
   def handle_call({:output, agent_key, job_id}, _from, state) do
-    case fetch_job(state, agent_key, job_id) do
+    case Index.fetch(state, agent_key, job_id) do
       {:ok, job} -> {:reply, {:ok, JobLog.read(job.mounts, job.log_path)}, state}
       :error -> {:reply, {:error, :not_found}, state}
     end
   end
 
   def handle_call({:subscribe, agent_key, job_id, pid}, _from, state) do
-    case fetch_job(state, agent_key, job_id) do
+    case Index.fetch(state, agent_key, job_id) do
       {:ok, %{status: {:exited, code}}} ->
         send(pid, {:shell_job_exit, job_id, code})
         {:reply, :ok, state}
@@ -345,27 +367,16 @@ defmodule Nest.Sandbox.ShellJobs do
   end
 
   def handle_call({:kill, agent_key, job_id}, _from, state) do
-    case fetch_job(state, agent_key, job_id) do
-      {:ok, %{status: :running} = job} ->
-        stop_os_process(job)
+    case Index.fetch(state, agent_key, job_id) do
+      {:ok, job} -> {:reply, :ok, kill_job(job, state)}
+      :error -> {:reply, {:error, :not_found}, state}
+    end
+  end
 
-        # The exec port should send a DOWN that finishes the job. If it
-        # never arrives, `@kill_finalize_ms` later forces a terminal
-        # state so the job can't be stuck "running, killed" forever.
-        Process.send_after(self(), {:kill_finalize, job_id}, @kill_finalize_ms)
-
-        state =
-          state
-          |> put_job(%{job | killed: true})
-          |> broadcast(agent_key)
-
-        {:reply, :ok, state}
-
-      {:ok, _exited} ->
-        {:reply, :ok, state}
-
-      :error ->
-        {:reply, {:error, :not_found}, state}
+  def handle_call({:kill_space, space_id, job_id}, _from, state) do
+    case Index.fetch_in_space(state, space_id, job_id) do
+      {:ok, job} -> {:reply, {:ok, job.agent_key}, kill_job(job, state)}
+      :error -> {:reply, {:error, :not_found}, state}
     end
   end
 
@@ -393,10 +404,10 @@ defmodule Nest.Sandbox.ShellJobs do
 
   def handle_info({:DOWN, _ref, :process, pid, reason}, state) do
     cond do
-      job = job_by_erl_pid(state, pid) ->
+      job = Index.by_erl_pid(state, pid) ->
         {:noreply, finish_job(job, reason, state)}
 
-      agent_key = agent_key_by_monitor(state, pid) ->
+      agent_key = Index.agent_key_by_monitor(state, pid) ->
         {:noreply, drop_agent(agent_key, state, pid)}
 
       true ->
@@ -418,6 +429,25 @@ defmodule Nest.Sandbox.ShellJobs do
 
   def handle_info(_msg, state), do: {:noreply, state}
 
+  # ---- Killing ----
+
+  # Kill a job and broadcast the change. A job that already exited is a no-op
+  # that still reports success, so a repeated kill is harmless.
+  defp kill_job(%{status: :running} = job, state) do
+    stop_os_process(job)
+
+    # The exec port should send a DOWN that finishes the job. If it never
+    # arrives, `@kill_finalize_ms` later forces a terminal state so the job
+    # can't be stuck "running, killed" forever.
+    Process.send_after(self(), {:kill_finalize, job.id}, @kill_finalize_ms)
+
+    state
+    |> put_job(%{job | killed: true})
+    |> broadcast(job.agent_key)
+  end
+
+  defp kill_job(_exited, state), do: state
+
   # ---- Start / cap enforcement ----
 
   defp start_guarded(attrs, agent_key, max_jobs, state) do
@@ -425,7 +455,7 @@ defmodule Nest.Sandbox.ShellJobs do
       max_jobs <= 0 ->
         {:error, background_disabled_msg()}
 
-      running_count(state, agent_key) >= max_jobs ->
+      Index.running_count(state, agent_key) >= max_jobs ->
         {:error, cap_reached_msg(max_jobs)}
 
       true ->
@@ -441,7 +471,7 @@ defmodule Nest.Sandbox.ShellJobs do
   # ---- Output / completion ----
 
   defp write_output(os_pid, data, state) do
-    case job_by_os_pid(state, os_pid) do
+    case Index.by_os_pid(state, os_pid) do
       nil ->
         state
 
@@ -637,36 +667,6 @@ defmodule Nest.Sandbox.ShellJobs do
   end
 
   defp id_number(%{id: "job-" <> n}), do: String.to_integer(n)
-
-  defp fetch_job(state, agent_key, job_id) do
-    case Map.get(state.jobs, job_id) do
-      %{agent_key: ^agent_key} = job -> {:ok, job}
-      _ -> :error
-    end
-  end
-
-  defp job_by_erl_pid(state, pid),
-    do: Enum.find_value(state.jobs, fn {_id, j} -> j.erl_pid == pid && j end)
-
-  # Prefer a running job with this OS pid; fall back to a finished one so
-  # trailing output still lands in its log. PID reuse across a running and
-  # a retained finished job can't misroute output this way.
-  defp job_by_os_pid(state, os_pid) do
-    jobs = Enum.map(state.jobs, fn {_id, j} -> j end)
-
-    Enum.find(jobs, fn j -> j.status == :running and j.os_pid == os_pid end) ||
-      Enum.find(jobs, fn j -> j.os_pid == os_pid end)
-  end
-
-  defp agent_key_by_monitor(state, pid) do
-    Enum.find_value(state.agents, fn {key, %{pid: p}} -> p == pid && key end)
-  end
-
-  defp running_count(state, agent_key) do
-    state.jobs
-    |> Map.values()
-    |> Enum.count(&(&1.agent_key == agent_key and &1.status == :running))
-  end
 
   # ---- Broadcast ----
 

@@ -73,6 +73,13 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   # carry a job's whole log or an arbitrary command string, so they
   # project at the substitute minimum (they are offloaded when over
   # budget). `shell-kill` is a fixed one-liner.
+  #
+  # This is a *minimum*, not a bound, and `shell-list`'s `scope: "space"` is
+  # the case where that matters: it returns up to the per-agent cap of
+  # finished jobs for every agent in the space, so a real result can be
+  # thousands of tokens against a projection of a few dozen. The projection
+  # was already a floor before that scope existed, so nothing regressed —
+  # but do not read this number as an upper bound.
   def project(%ToolCall{name: "shell-wait"}, _ctx), do: summary_baseline_size() * @safety_padding
   def project(%ToolCall{name: "shell-list"}, _ctx), do: summary_baseline_size() * @safety_padding
 
