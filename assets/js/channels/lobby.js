@@ -227,6 +227,10 @@ export function createSpace(model, vocationSlug, onOk, onError, opts = {}) {
     payload.network_access = opts.network_access;
   }
   if (opts.sandbox_backend) payload.sandbox_backend = opts.sandbox_backend;
+  // A workspace is the space's, and `Space.create_changeset/2` requires one, so
+  // dropping this field made every create fail with `workspace_required` no
+  // matter what the form said.
+  if (opts.workspace_path) payload.workspace_path = opts.workspace_path;
   if (opts.shared) payload.shared = true;
 
   lobbyChannel
