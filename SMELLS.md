@@ -4,6 +4,9 @@ Essential rules:
 NOT FOR ANY REASON, NO EXCUSES.
 - **ABSOLUTELY NEVER** re-run the tests a bunch of times for any
 reason.
+- We aren't generally trying to split PRs. Suggesting smaller PRs
+is only a good review note if there's some technical reason why
+a migration should be staged in multiple steps.
 
 ## General stuff to watch for in code reviews:
 
