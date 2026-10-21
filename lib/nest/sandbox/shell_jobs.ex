@@ -77,7 +77,7 @@ defmodule Nest.Sandbox.ShellJobs do
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.PubSub
   alias Nest.Sandbox.{Backend, Mounts}
-  alias Nest.Sandbox.ShellJobs.{Index, Info, JobLog, Launcher}
+  alias Nest.Sandbox.ShellJobs.{ExitNotice, Index, Info, JobLog, Launcher}
   alias Nest.Sandbox.ShellJobs.Waiters
   alias Nest.Tools.ShellCmd
 
@@ -90,22 +90,6 @@ defmodule Nest.Sandbox.ShellJobs do
 
   @type job_id :: String.t()
   @type agent_key :: {term(), term()}
-
-  @type info :: %{
-          id: job_id(),
-          # The owning agent's name, for a space-wide listing. `nil` when the
-          # key names no agent (`{:unknown, :unknown}`, the tools' fallback).
-          agent: String.t() | nil,
-          command: String.t(),
-          status: :running | :exited,
-          exit_code: integer() | nil,
-          killed: boolean(),
-          # The path inside the sandbox
-          # (`/tmp/<agent-name>/shell-jobs/<id>.log`), not the log file
-          # the manager writes the log to.
-          log_path: String.t(),
-          started_at: DateTime.t()
-        }
 
   # ---- Client API ----
 
@@ -150,7 +134,7 @@ defmodule Nest.Sandbox.ShellJobs do
   end
 
   @doc "Metadata for every job belonging to `agent_key`, newest first."
-  @spec list(agent_key()) :: [info()]
+  @spec list(agent_key()) :: [Info.t()]
   def list(agent_key), do: GenServer.call(@name, {:list, agent_key})
 
   @doc """
@@ -158,7 +142,7 @@ defmodule Nest.Sandbox.ShellJobs do
   the space-wide listing `shell-list scope: "space"` renders, so an agent can
   see a job a sibling agent left running instead of only its own.
   """
-  @spec list_space(term()) :: [info()]
+  @spec list_space(term()) :: [Info.t()]
   def list_space(space_id), do: GenServer.call(@name, {:list_space, space_id})
 
   @doc "The status of a single job."
@@ -204,7 +188,13 @@ defmodule Nest.Sandbox.ShellJobs do
   @spec waiters(job_id(), timeout()) :: [pid()]
   def waiters(job_id, timeout \\ 5_000), do: GenServer.call(@name, {:waiters, job_id}, timeout)
 
-  @doc "Kill a running job. Its exit code is reported once the process dies."
+  @doc """
+  Kill a running job. Its exit code is reported once the process dies.
+
+  The owner asked, so its exit is **not** reported back as a notice (issue
+  #163): this call already answers with it. A sibling's `kill_space/2` is not
+  the owner's request and still notifies.
+  """
   @spec kill(agent_key(), job_id()) :: :ok | {:error, :not_found}
   def kill(agent_key, job_id), do: GenServer.call(@name, {:kill, agent_key, job_id})
 
@@ -215,6 +205,10 @@ defmodule Nest.Sandbox.ShellJobs do
   The lookup and the kill happen in the same callback, so a job that exits in
   between cannot be reported as killed from a stale read. `{:error, :not_found}`
   is a job that belongs to another space, or to nothing.
+
+  The owner is told the job exited (issue #163) — it did not ask for this, so
+  the job is one it did not mean to lose — unless it is waiting on it
+  (`shell-wait`).
   """
   @spec kill_space(term(), job_id()) :: {:ok, agent_key()} | {:error, :not_found}
   def kill_space(space_id, job_id),
@@ -368,14 +362,14 @@ defmodule Nest.Sandbox.ShellJobs do
 
   def handle_call({:kill, agent_key, job_id}, _from, state) do
     case Index.fetch(state, agent_key, job_id) do
-      {:ok, job} -> {:reply, :ok, kill_job(job, state)}
+      {:ok, job} -> {:reply, :ok, kill_job(job, state, :owner)}
       :error -> {:reply, {:error, :not_found}, state}
     end
   end
 
   def handle_call({:kill_space, space_id, job_id}, _from, state) do
     case Index.fetch_in_space(state, space_id, job_id) do
-      {:ok, job} -> {:reply, {:ok, job.agent_key}, kill_job(job, state)}
+      {:ok, job} -> {:reply, {:ok, job.agent_key}, kill_job(job, state, :space)}
       :error -> {:reply, {:error, :not_found}, state}
     end
   end
@@ -431,9 +425,11 @@ defmodule Nest.Sandbox.ShellJobs do
 
   # ---- Killing ----
 
-  # Kill a job and broadcast the change. A job that already exited is a no-op
-  # that still reports success, so a repeated kill is harmless.
-  defp kill_job(%{status: :running} = job, state) do
+  # Kill a job and broadcast the change, remembering who asked: the owner's own
+  # `shell-kill` is not reported back as a notice, a sibling's kill is
+  # (issue #163, `ExitNotice`). A job that already exited is a no-op that still
+  # reports success, so a repeated kill is harmless.
+  defp kill_job(%{status: :running} = job, state, by) do
     stop_os_process(job)
 
     # The exec port should send a DOWN that finishes the job. If it never
@@ -442,11 +438,11 @@ defmodule Nest.Sandbox.ShellJobs do
     Process.send_after(self(), {:kill_finalize, job.id}, @kill_finalize_ms)
 
     state
-    |> put_job(%{job | killed: true})
+    |> put_job(%{job | killed: true, killed_by: by})
     |> broadcast(job.agent_key)
   end
 
-  defp kill_job(_exited, state), do: state
+  defp kill_job(_exited, state, _by), do: state
 
   # ---- Start / cap enforcement ----
 
@@ -483,6 +479,11 @@ defmodule Nest.Sandbox.ShellJobs do
 
   defp finish_job(job, reason, state) do
     code = exit_code(reason)
+
+    # Before the waiters are told and forgotten: the notice is suppressed for a
+    # job someone is waiting on, so it has to read the waiter list as it was at
+    # the exit (issue #163).
+    ExitNotice.deliver(job, code, state)
 
     state =
       state

@@ -60,7 +60,20 @@ defmodule Nest.Agents.Agent.Machine.Boundary do
   @spec drain?(Machine.t()) :: boolean()
   def drain?(m) do
     inbox_count(m.work.ctx) > 0 and not m.work.force_finalize and
-      deliverable_tail?(m)
+      deliverable?(m)
+  end
+
+  # A `:runtime` head is the runtime's own outcome — a backgrounded batch's
+  # result, delivered as a notice — and it is not a turn's request. It can
+  # follow a delivered message, which is the tail a backgrounding delivery
+  # leaves, so the `user` row that blocks every other entry does not block it
+  # (issue #161). The append is the live bridge `Repair.classify_live/2` already
+  # owns, so the cost of delivering one here is that bridge's acknowledgement.
+  #
+  # Every other entry is a message to be answered, and only a segment that ends
+  # on `tool`/`assistant` can carry one.
+  defp deliverable?(%{work: %{ctx: ctx}} = m) do
+    ctx[:inbox_head_kind] == :runtime or deliverable_tail?(m)
   end
 
   # Whether a delivered message can become the next turn's request. A segment

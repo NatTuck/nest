@@ -31,10 +31,22 @@ defmodule Nest.Sandbox.ShellJobs.Index do
     end
   end
 
-  @doc "The job whose exec port is `pid`, if any."
+  @doc """
+  The **running** job whose exec port is `pid`, if any.
+
+  Running only, because the one caller is the manager's `:DOWN` handler, whose
+  job is to finish a job. `finish_job/3` leaves `erl_pid` in place, so without
+  this a job already finished by the `{:kill_finalize, …}` fallback would be
+  finished a second time by the port's late `:DOWN` — a second `shell:jobs`
+  frame, and (issue #163) a second notice to the owner, which is a second turn
+  on the same result.
+  """
   @spec by_erl_pid(map(), pid()) :: map() | nil
   def by_erl_pid(state, pid),
-    do: Enum.find_value(state.jobs, fn {_id, j} -> j.erl_pid == pid && j end)
+    do:
+      Enum.find_value(state.jobs, fn {_id, j} ->
+        (j.status == :running and j.erl_pid == pid) && j
+      end)
 
   @doc """
   The job streaming output from OS pid `os_pid`, if any.

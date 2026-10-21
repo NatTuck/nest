@@ -75,7 +75,9 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReason do
 
     * `harness` — the struct is the argument to a pure function under test
       (`Turn.build_ctx/1`, `Machine.step/2`, the `Agent.Timeline` emitters, …),
-      so no accessor can serve the call;
+      or the material for a message the test fabricates — a manager-internal
+      field a test needs to stand in for a frame, where exposing it through
+      `Info` would leak it into the wire shape for one test's sake;
     * `snapshot` — the site reads two or more field families from one atomic
       snapshot, and no single accessor returns all of them;
     * `barrier` — the read is a happens-after anchor for a `refute_*` or a

@@ -319,6 +319,40 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
     end
   end
 
+  # Issue #161. A backgrounded batch's result is queued as a `:runtime` entry.
+  # The two decisions that can deliver it are the turn boundary and the deferral
+  # at a batch's birth, and today neither can tell a notice from a human message:
+  # the context carries `inbox_count` and nothing else. So the boundary refuses —
+  # the tail a backgrounding delivery leaves is a `user` row, the one shape
+  # `deliverable_tail?/1` does not accept — and the deferral fires kind-blind,
+  # which delivers the notice by backgrounding the *next* batch at birth. That
+  # is the permanent one-behind and the one synthetic pair per tool call the
+  # issue reports.
+  #
+  # The contract these pin: a queued notice is delivered at the next decision
+  # point, and it never arms a preemption.
+  describe "a queued backgrounded result (#161)" do
+    test "is delivered by the turn boundary, on the tail a backgrounding delivery leaves" do
+      m = notice_queued_state()
+
+      # The delivery appends the synthetic result, the ack and the delivered
+      # message, so the tail is a `user` row.
+      assert {:user, _} = List.last(m.work.ctx.messages)
+      assert Machine.Boundary.drain?(m)
+    end
+
+    test "does not arm the deferral at the next batch's birth" do
+      assert Machine.Backgrounding.deferred_actions(executing_notice_queued_state()) == []
+    end
+
+    test "but a queued human message still does" do
+      # The rule is narrow: only a notice waits for the boundary. An entry the
+      # context cannot name is treated as one that preempts, so every hand-built
+      # fixture that sets only `inbox_count` keeps its old meaning.
+      assert Machine.Backgrounding.deferred_actions(queued_state()) == [{:drain_inbox}]
+    end
+  end
+
   # --- helpers ---
 
   # Drive the machine through one model turn that asks for a tool batch and
@@ -360,6 +394,41 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
   defp queued_state do
     base = executing_state()
     %{base | work: %{base.work | ctx: Map.put(base.work.ctx, :inbox_count, 1)}}
+  end
+
+  # A queued backgrounded notice (`Inbox.enqueue_runtime/3`'s entry) on the tail
+  # a backgrounding delivery leaves, in a context that can name what is queued.
+  # Nothing is in flight: the delivery that left this tail moved the batch to
+  # `work.backgrounded` and cleared the worker, which is the state the notice is
+  # drained in.
+  defp notice_queued_state do
+    base = put_messages(executing_state(), delivered_tail())
+
+    put_ctx(%{base | work: %{base.work | active_worker: nil}},
+      inbox_count: 1,
+      inbox_head_kind: :runtime
+    )
+  end
+
+  # The same notice queued while a batch is interruptible: the moment the
+  # deferral used to fire and steal the batch.
+  defp executing_notice_queued_state do
+    put_ctx(executing_state(), inbox_count: 1, inbox_head_kind: :runtime)
+  end
+
+  defp put_ctx(m, kv), do: %{m | work: %{m.work | ctx: Enum.into(kv, m.work.ctx)}}
+
+  # The shape a backgrounding delivery leaves: the synthetic result, its ack, and
+  # the delivered message as the tail.
+  defp delivered_tail do
+    [
+      system_message(),
+      user_message(1, "hi"),
+      assistant_tool_call(2, ["call_1"]),
+      backgrounded_result(3, ["call_1"]),
+      assistant_text(4, "ok"),
+      user_message(5, "more")
+    ]
   end
 
   # The same transcript, with the batch's call already answered (so there is

@@ -110,7 +110,6 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     })
 
     MockClient.set_response("parent final")
-    MockClient.set_response("after the answer")
 
     :ok = Agent.chat(parent_pid, "delegate a thing")
 
@@ -143,7 +142,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     # Release the spawn call. The batch returns, and the parent handles the cast.
     send(parent_pid, :release_child_chat)
 
-    {_second, llm2} = next_request()
+    {second, llm2} = next_request()
 
     mid = Agent.get_messages(parent_pid, 1_000)
 
@@ -162,19 +161,14 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     # arrives as a queued notice.
     assert_receive {:chat_inbox, %{count: 1}}, 1_000
 
-    # The response to the request the delivered answer rode in on, then the
-    # notice's own turn.
+    # The notice is delivered at the batch's boundary — not by backgrounding the
+    # next batch to make a landing place for it — so it is already in this turn:
+    # the request the delivered answer started carries it. That is issue #161;
+    # it used to get a turn of its own, one extra model round trip per
+    # backgrounded result.
+    assert Enum.any?(request_texts(second), &String.contains?(&1, "Spawned agent"))
+
     release_llm(llm2)
-
-    # Consume *this* turn's idle frame before the notice's turn starts: the
-    # final `await_idle/0` below must fence on the notice's turn (the one that
-    # answers with "after the answer"), and without this it would match this
-    # earlier, still-pending idle and read the transcript a turn too soon.
-    await_idle()
-
-    {_third, llm3} = next_request()
-    release_llm(llm3)
-
     await_idle()
 
     final = Agent.get_messages(parent_pid, 1_000)
@@ -184,15 +178,14 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     # kept, just not by the tool result the model read mid-batch.
     assert [_notice] = delivered_texts(final, "Spawned agent")
 
-    # The parent's turn really ended: the turn the delivery continued answered
-    # with its final text, and the notice's own turn answered after it.
+    # The parent's turn really ended: one turn, whose single request answered
+    # both the child's answer and the notice it carried.
     texts =
       for {:assistant, %{parts: parts}} <- final,
           %Part.Text{text: text} <- parts,
           do: text
 
     assert "parent final" in texts
-    assert "after the answer" in texts
 
     # The clone's fork notice carries its name and depth (its system message is
     # inherited verbatim from the parent, so this user-visible notice is the
@@ -265,6 +258,14 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     for {:tool, %{parts: parts}} <- messages,
         %Part.ToolResult{name: ^tool_name} = result <- parts,
         do: result
+  end
+
+  # The text parts of a parked request's messages: what the model was actually
+  # asked, as opposed to what landed in the transcript.
+  defp request_texts(messages) do
+    for {_tag, %{parts: parts}} <- messages,
+        %Part.Text{text: text} <- parts,
+        do: text
   end
 
   defp delivered_texts(messages, needle) do

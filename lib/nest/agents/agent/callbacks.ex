@@ -24,6 +24,7 @@ defmodule Nest.Agents.Agent.Callbacks do
   alias Nest.Agents.Agent.IntrospectionHandler
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.MessageAppender
+  alias Nest.Agents.Agent.ShellJobNotice
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Watch
@@ -70,6 +71,21 @@ defmodule Nest.Agents.Agent.Callbacks do
 
   def handle_cast({:unregister_watch, ref}, state) do
     {:noreply, Watch.unregister(state, ref)}
+  end
+
+  # A background shell job exited and nobody was waiting on it (issue #163).
+  # `Nest.Sandbox.ShellJobs.ExitNotice` casts this because the manager must
+  # never block on an agent to finish a job. The notice is a `:runtime` entry
+  # (no agent said this) and an idle agent drains it, so it takes the turn the
+  # notice is for — the same wake `Machine.Backgrounding.delivery_actions/2`
+  # gives a backgrounded batch's result, through the same drain path.
+  def handle_cast({:shell_job_exited, job_id, code, output}, state) do
+    state =
+      state
+      |> Inbox.enqueue_notice(ShellJobNotice.parts(job_id, code, output))
+      |> Turn.drain_if_idle()
+
+    {:noreply, state}
   end
 
   # Sub-agent: child finished its turn. Merge usage, drop the
@@ -379,31 +395,16 @@ defmodule Nest.Agents.Agent.Callbacks do
   end
 
   # The space's latch came down. A turn that arrived while it was up is in the
-  # inbox (`chat_or_queue/5`), so this is the wake-up: the drain is
-  # `Turn.drain_inbox/1`, the single drain path, and not a second one. A busy agent
-  # needs nothing: its next boundary drains.
+  # inbox (`chat_or_queue/5`), so this is the wake-up — the single drain path,
+  # and only when the agent is idle: a busy agent's own boundary drains.
   def handle_info({:space_unlocked, space_id}, state) when space_id == state.space_id do
-    {:noreply, drain_after_unlock(state)}
+    {:noreply, Turn.drain_if_idle(state)}
   end
 
   def handle_info({:space_unlocked, _other_space}, state), do: {:noreply, state}
 
   def handle_info(msg, state) do
     Handlers.handle(msg, state)
-  end
-
-  # `Turn.drain_inbox/1` rather than a peek plus a settle of our own: it is the
-  # documented single drain path, and it owns the mode bookkeeping a hand-rolled
-  # drain loses — it writes down a mode change it delivered (`keep_mode/2`) and
-  # undoes one whose message stayed queued (`restore_undelivered_mode/3`, issue
-  # #103). `Turn.notice_lost_batch/3` drains an idle agent the same way.
-  defp drain_after_unlock(state) do
-    if Machine.status_for(state.live.machine) == :idle do
-      {state, _result} = Turn.drain_inbox(state)
-      state
-    else
-      state
-    end
   end
 
   # The cast carries the space's own names; the handler works in mount names.

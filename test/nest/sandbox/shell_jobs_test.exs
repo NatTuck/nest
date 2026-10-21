@@ -54,7 +54,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     assert :ok = ShellJobs.kill(key, id)
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, _code}, 1_000
+    assert_receive {:shell_job_exit, ^id, _code}, 500
     assert [%{id: ^id, status: :exited, killed: true}] = ShellJobs.list(key)
   end
 
@@ -186,7 +186,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     assert :ok = ShellJobs.kill(key, id)
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, _code}, 1_000
+    assert_receive {:shell_job_exit, ^id, _code}, 500
 
     assert {:ok, _} = start_background("sleep 30", tmp, key)
   end
@@ -247,7 +247,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
     # is queued behind that same callback.
     assert :ok = ShellJobs.subscribe(key, id, self())
     assert :ok = ShellJobs.kill(key, id)
-    assert_receive {:shell_job_exit, ^id, _code}, 1_000
+    assert_receive {:shell_job_exit, ^id, _code}, 500
     refute ShellJobs.live_in_space?(space_id)
 
     # ... and `stop_all/1` drops the agent's jobs, so nothing is live after it.
@@ -397,6 +397,103 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert waiters(id) == []
   end
 
+  # Issue #163: a job's exit used to reach only its waiters (and the UI), so an
+  # agent that did not `shell-wait` was never told its job had ended. The manager
+  # now casts the notice to the owning agent — a cast, because it must never
+  # block on an agent to finish a job. The test process stands in for the agent,
+  # so `GenServer.cast/2`'s `{:"$gen_cast", _}` frame is the observable; what a
+  # real agent does with it is
+  # `test/nest/agents/agent/shell_job_notice_test.exs`'s.
+  describe "the owning agent is told its job exited (issue #163)" do
+    test "a job that exits with no waiter delivers exactly one notice", %{key: key, tmp: tmp} do
+      id = start_owned_job!(tmp, key, "echo done\n")
+
+      assert_receive {:"$gen_cast", {:shell_job_exited, ^id, 0, "done\n"}}, 500
+
+      # A call to the manager: `finish_job/3` has returned, so everything it was
+      # going to send is in the mailbox. One notice, not two.
+      assert [%{id: ^id, status: :exited}] = ShellJobs.list(key)
+      refute_received {:"$gen_cast", {:shell_job_exited, _, _, _}}
+    end
+
+    test "a waiter suppresses the notice: a wait is the agent asking to be told", %{
+      key: key,
+      tmp: tmp
+    } do
+      id = start_owned_job!(tmp, key, "sleep 30\n")
+      assert :ok = ShellJobs.subscribe(key, id, self())
+      # Registered before the kill, so the exit is reached with a waiter — the
+      # waiter list is the manager's own state, so this is not a race.
+      assert self() in waiters(id)
+
+      # A sibling's kill notifies the owner in general (it did not ask, so it is
+      # the one it did not mean to lose); the waiter is what suppresses it here.
+      assert {:ok, _key} = ShellJobs.kill_space(elem(key, 0), id)
+
+      assert_receive {:shell_job_exit, ^id, _code}, 500
+      assert [%{id: ^id, status: :exited}] = ShellJobs.list(key)
+      refute_received {:"$gen_cast", {:shell_job_exited, _, _, _}}
+    end
+
+    test "a sibling's kill still notifies the owner", %{key: key, tmp: tmp} do
+      id = start_owned_job!(tmp, key, "sleep 30\n")
+
+      assert {:ok, _key} = ShellJobs.kill_space(elem(key, 0), id)
+
+      assert_receive {:"$gen_cast", {:shell_job_exited, ^id, code, ""}}, 500
+      assert is_integer(code)
+    end
+
+    test "a job finished by the kill fallback is not finished again by its port's late DOWN",
+         %{key: key, tmp: tmp} do
+      id = start_owned_job!(tmp, key, "sleep 30\n")
+
+      # A sibling's kill is not suppressed, so the notice is the observable.
+      assert {:ok, _key} = ShellJobs.kill_space(elem(key, 0), id)
+
+      # The fallback fires first, because the port's DOWN did not arrive in
+      # time. A call to the manager is the barrier: the fallback has run.
+      send(ShellJobs.name(), {:kill_finalize, id})
+      assert [%{id: ^id, status: :exited}] = ShellJobs.list(key)
+
+      # Then the port's DOWN arrives. `finish_job/3` leaves `erl_pid` in place,
+      # so `by_erl_pid/2` used to match the finished job and finish it again —
+      # a second notice, and a second turn on the same result.
+      # allowlist: harness — the job's exec port, to deliver its late DOWN
+      erl_pid =
+        :sys.get_state(ShellJobs.name(), 500).jobs |> Map.fetch!(id) |> Map.fetch!(:erl_pid)
+
+      send(ShellJobs.name(), {:DOWN, make_ref(), :process, erl_pid, :killed})
+
+      # A call, so the DOWN has been handled when it returns.
+      assert [%{id: ^id, status: :exited}] = ShellJobs.list(key)
+      assert_received {:"$gen_cast", {:shell_job_exited, ^id, _code, _output}}
+      refute_received {:"$gen_cast", {:shell_job_exited, _, _, _}}
+    end
+
+    test "the owner's own kill delivers no notice", %{key: {space_id, name} = key, tmp: tmp} do
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
+      id = start_owned_job!(tmp, key, "sleep 30\n")
+      # `:start_job` broadcasts before it replies, and the local PubSub sends to
+      # its subscribers from the broadcasting process, so the frame is already
+      # here.
+      assert_received {:shell_jobs, %{jobs: [%{id: ^id, status: :running}]}}
+
+      assert :ok = ShellJobs.kill(key, id)
+      assert_received {:shell_jobs, %{jobs: [%{id: ^id, killed: true}]}}
+
+      # The exit frame is `finish_job/3`'s last act — after the notice would have
+      # been sent — so it is the barrier for the absence below, not a clock.
+      assert_receive {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}, 500
+
+      # No waiter, so nothing else could tell the owner anything — and the tool
+      # call that asked for the kill already reports the exit, so the manager
+      # must stay quiet.
+      assert [%{id: ^id, status: :exited, killed: true}] = ShellJobs.list(key)
+      refute_received {:"$gen_cast", {:shell_job_exited, _, _, _}}
+    end
+  end
+
   test "unknown job ids report :not_found", %{key: key} do
     assert {:error, :not_found} = ShellJobs.status(key, "job-999")
     assert {:error, :not_found} = ShellJobs.output(key, "job-999")
@@ -452,14 +549,34 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert ShellJobs.list(key) |> Enum.map(& &1.id) == Enum.reverse(ids)
   end
 
+  # A job started the way `shell-cmd` starts one — a staged script, the caller's
+  # mounts, `self()` as the owning agent — but without the tool's own subscribe
+  # (`ShellCmd.run_background/7` registers its caller as a waiter for the grace
+  # window), so the exit is reached with no waiter: the case issue #163's notice
+  # exists for.
+  defp start_owned_job!(tmp, key, body) do
+    {:ok, id, _log} =
+      ShellJobs.start_job(%{
+        agent_key: key,
+        agent_pid: self(),
+        command: String.trim(body),
+        script_sandbox: stage_script!(tmp, body),
+        script_path: nil,
+        mounts: Mounts.new(nil, tmp),
+        max_jobs: 1
+      })
+
+    id
+  end
+
   # A job's command line is the backend's to build, from the *staged* script
   # (`Nest.Sandbox.Backend.job_spec/4`) — a job's output has to reach a log file
   # inside the environment, which only the backend can arrange. So a test that
   # starts one directly has to have staged one, exactly as `ShellCmd` does.
-  defp stage_script!(tmp) do
+  defp stage_script!(tmp, body \\ "exit 0\n") do
     dir = Paths.stage_dir(tmp)
     File.mkdir_p!(dir)
-    File.write!(Path.join(dir, "run.sh"), "exit 0\n")
+    File.write!(Path.join(dir, "run.sh"), body)
     Path.join(Paths.stage_dir_sandbox(tmp), "run.sh")
   end
 

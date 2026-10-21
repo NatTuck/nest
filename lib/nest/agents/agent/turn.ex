@@ -358,15 +358,7 @@ defmodule Nest.Agents.Agent.Turn do
           :runtime
         )
 
-      state =
-        if Machine.status_for(state.live.machine) == :idle do
-          {state, _result} = drain_inbox(state)
-          state
-        else
-          state
-        end
-
-      {:ok, state}
+      {:ok, drain_if_idle(state)}
     else
       settled
     end
@@ -432,6 +424,30 @@ defmodule Nest.Agents.Agent.Turn do
     end
   end
 
+  @doc """
+  Drain the inbox when the agent is idle, and leave a busy agent's queue alone.
+
+  A producer that appends a `:runtime` entry out of band — the runtime's own
+  notice (a lost batch, a background shell job's exit, a space unlocking a
+  queued message) — must wake an idle agent, because nothing else will: no
+  turn boundary is coming, so the entry would sit in the queue forever. A busy
+  agent needs nothing; its own boundary drains.
+
+  `drain_inbox/1` and not a peek plus a settle of our own: it is the documented
+  single drain path, and it owns the mode bookkeeping a hand-rolled drain loses
+  (it writes down a mode change it delivered and undoes one whose message
+  stayed queued — issue #103).
+  """
+  @spec drain_if_idle(Agent.t()) :: Agent.t()
+  def drain_if_idle(state) do
+    if Machine.status_for(state.live.machine) == :idle do
+      {state, _result} = drain_inbox(state)
+      state
+    else
+      state
+    end
+  end
+
   # --- context preparation ---
 
   # The pure machine reads its world from `work.ctx`. Rebuild the volatile
@@ -478,10 +494,23 @@ defmodule Nest.Agents.Agent.Turn do
       # Read by `Machine.Transitions` to decide whether a queued inbox message
       # is delivered at the turn boundary (issue #15).
       inbox_count: length(state.live.inbox),
+      # The head's kind, so the machine can tell the runtime's own outcome from a
+      # message it has to answer (issue #161): a `:runtime` notice waits for the
+      # boundary instead of preempting a batch, and can be delivered on a tail a
+      # message cannot.
+      inbox_head_kind: inbox_head_kind(state.live.inbox),
       vocation: state.vocation,
       depth: state.depth
     }
   end
+
+  # The queued head's kind, for the two machine decisions that have to tell the
+  # runtime's own outcome from a message to answer (issue #161). `nil` for an
+  # empty queue, and `nil` for an entry that carries no `:kind` — read by both
+  # decisions as "not a notice", which is the meaning they had before the field
+  # existed.
+  defp inbox_head_kind([head | _rest]), do: Map.get(head, :kind)
+  defp inbox_head_kind(_empty), do: nil
 
   defp put_machine(state, machine), do: %{state | live: %{state.live | machine: machine}}
 end

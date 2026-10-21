@@ -135,10 +135,20 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   """
   @spec deferred_actions(Machine.t()) :: [Machine.action()]
   def deferred_actions(m) do
-    if backgroundable?(m) and Boundary.inbox_count(m.work.ctx) > 0,
+    if backgroundable?(m) and Boundary.inbox_count(m.work.ctx) > 0 and preempts?(m),
       do: [{:drain_inbox}],
       else: []
   end
+
+  # A queued `:runtime` entry is the runtime's own outcome, not an instruction:
+  # it waits for the boundary that drains it (`Boundary.drain?/1`) instead of
+  # backgrounding a batch to make a landing place for itself. Firing here for a
+  # notice is issue #161 — it kept the agent a batch behind, one synthetic pair
+  # per tool call, for as long as the chain continued.
+  #
+  # Anything the context cannot name preempts, exactly as it always did: every
+  # producer that predates `inbox_head_kind`, and every hand-built fixture.
+  defp preempts?(%{work: %{ctx: ctx}}), do: ctx[:inbox_head_kind] != :runtime
 
   @doc """
   The transition: background the batch and continue the turn with the

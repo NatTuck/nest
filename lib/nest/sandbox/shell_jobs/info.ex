@@ -5,9 +5,30 @@ defmodule Nest.Sandbox.ShellJobs.Info do
 
   Split out of `Nest.Sandbox.ShellJobs` (which owns the manager's state, and is
   at the source-file line cap) because this is pure shaping: no state, no
-  process, nothing to get wrong. The `%Nest.Sandbox.ShellJobs.info{}` type stays
-  on the manager, which is where the shape is documented.
+  process, nothing to get wrong. The type lives here for the same reason the
+  shaping does — it *is* the shape.
   """
+
+  @typedoc """
+  One job as the wire sees it.
+
+  `agent` is the owning agent's name, so a space-wide listing can show whose job
+  it is; it is `nil` for a job whose key names no agent (`{:unknown, :unknown}`,
+  the tools' fallback).
+
+  `log_path` is the path the *sandbox* sees, not the log file the manager
+  writes: it is what the agent is told and what the UI renders.
+  """
+  @type t :: %{
+          id: Nest.Sandbox.ShellJobs.job_id(),
+          agent: String.t() | nil,
+          command: String.t(),
+          status: :running | :exited,
+          exit_code: integer() | nil,
+          killed: boolean(),
+          log_path: String.t(),
+          started_at: DateTime.t()
+        }
 
   @doc """
   `jobs` — the manager's `id => job` map — as wire shapes, newest first, keeping
@@ -18,7 +39,7 @@ defmodule Nest.Sandbox.ShellJobs.Info do
   deletes the oldest — so the two orders are not a shared helper.
   """
   @spec list(%{optional(Nest.Sandbox.ShellJobs.job_id()) => map()}, (map() -> boolean())) ::
-          [Nest.Sandbox.ShellJobs.info()]
+          [t()]
   def list(jobs, owned?) do
     jobs
     |> Map.values()
@@ -38,7 +59,7 @@ defmodule Nest.Sandbox.ShellJobs.Info do
   `job.sandbox_log_path` so a job already in a live manager's state from before
   that field existed still renders.
   """
-  @spec to_info(map()) :: Nest.Sandbox.ShellJobs.info()
+  @spec to_info(map()) :: t()
   def to_info(job) do
     %{
       id: job.id,
