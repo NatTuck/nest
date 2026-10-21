@@ -37,7 +37,7 @@ defmodule Nest.Agents.AgentChatTest do
     test "broadcasts user message and LLM response via PubSub" do
       {pid, _agent_id} = start_agent()
 
-      :ok = Agent.chat(pid, "Hello", nil, nil, true)
+      :ok = Agent.chat(pid, "Hello", nil, nil, :composed)
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
@@ -54,7 +54,7 @@ defmodule Nest.Agents.AgentChatTest do
 
       log =
         capture_log(fn ->
-          :ok = Agent.chat(pid, "Hello", nil, nil, true)
+          :ok = Agent.chat(pid, "Hello", nil, nil, :composed)
 
           assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
@@ -84,7 +84,7 @@ defmodule Nest.Agents.AgentChatTest do
 
       log =
         capture_log(fn ->
-          :ok = Agent.chat(pid, "Hello", nil, nil, true)
+          :ok = Agent.chat(pid, "Hello", nil, nil, :composed)
           assert_receive {:chat_status, %{status: "idle"}}, 1_000
         end)
 
@@ -105,7 +105,7 @@ defmodule Nest.Agents.AgentChatTest do
     test "accumulates delta content and character positions from the streaming response" do
       {pid, _agent_id} = start_agent()
 
-      :ok = Agent.chat(pid, "Hello", nil, nil, true)
+      :ok = Agent.chat(pid, "Hello", nil, nil, :composed)
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
@@ -166,7 +166,7 @@ defmodule Nest.Agents.AgentChatTest do
 
       MockClient.set_response("Done")
 
-      :ok = Agent.chat(pid, "next question", nil, nil, true)
+      :ok = Agent.chat(pid, "next question", nil, nil, :composed)
 
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
@@ -227,7 +227,7 @@ defmodule Nest.Agents.AgentChatTest do
       assert :ok = Preflight.validate(messages)
 
       MockClient.set_response("Done")
-      :ok = Agent.chat(pid, "next question", nil, nil, true)
+      :ok = Agent.chat(pid, "next question", nil, nil, :composed)
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       refute_received {:chat_error, _}

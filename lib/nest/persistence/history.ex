@@ -63,7 +63,8 @@ defmodule Nest.Persistence.History do
           cap: cap(boundary, before),
           limit: limit,
           roles: Keyword.get(opts, :roles),
-          origin: Keyword.get(opts, :origin)
+          origin: Keyword.get(opts, :origin),
+          composed: Keyword.get(opts, :composed)
         )
 
       _ ->

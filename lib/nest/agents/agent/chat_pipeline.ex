@@ -34,7 +34,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
           String.t() | nil,
           boolean()
         ) :: {:noreply, Nest.Agents.Agent.t()}
-  def handle_chat(state, content, requested_mode, sender, human? \\ false) do
+  def handle_chat(state, content, requested_mode, sender, source \\ false) do
     mode = requested_mode || state.live.mode
 
     {effective_mode, _caps} =
@@ -56,20 +56,13 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # and the only path a spawn kickoff takes on an idle child — unheadered.
     user =
       Dispatch.build_user_message(content, effective_mode,
-        sender: Header.sender(sender, human?),
-        metadata: human_metadata(human?)
+        sender: Header.sender(sender, source != false),
+        metadata: User.source_metadata(source)
       )
 
     {:ok, state} = Turn.settle(state, {:chat_request, {:user_message, user}})
     {:noreply, Turn.keep_mode(state, pre_mode)}
   end
-
-  # `origin: "human"` is added only when `human?` — it marks the message as
-  # the human's own words, which is what the Ctrl/Cmd+Up recall list keys off
-  # (see `Nest.Messages.User.human_metadata/0`). A kickoff nobody typed
-  # (`agents-spawn`'s `query`) is left untagged, so it never reaches that list.
-  defp human_metadata(true), do: User.human_metadata()
-  defp human_metadata(_human?), do: %{}
 
   @doc """
   The user-turn preflight decision, used by callers that need the same

@@ -19,6 +19,9 @@ export const initialState = {
   // between the two is refused.
   lobbyJoined: false,
   agents: [],
+  // What is half-typed in each composer, by key — an agent name, or
+  // `spaceDraftKey(spaceId)` for the feed. See `slices/composer.js`.
+  drafts: {},
   archivedAgents: [],
   spaces: [],
   archivedSpaces: [],

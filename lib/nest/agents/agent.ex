@@ -193,8 +193,8 @@ defmodule Nest.Agents.Agent do
   `origin: "human"` for the Ctrl/Cmd+Up recall list; a spawn's `query` kickoff is not.
   """
   @spec chat(pid(), String.t(), String.t() | nil, String.t() | nil, boolean()) :: :ok
-  def chat(pid, content, mode \\ nil, sender \\ nil, human? \\ false) do
-    GenServer.cast(pid, {:chat, content, mode, sender, human?})
+  def chat(pid, content, mode \\ nil, sender \\ nil, source \\ false) do
+    GenServer.cast(pid, {:chat, content, mode, sender, source})
   end
 
   @doc """

@@ -288,7 +288,7 @@ defmodule NestWeb.AgentChannelPaneTest do
     # been removed and the answer cannot land.
     Mimic.allow(Nest.Agents, self(), socket.channel_pid)
 
-    Mimic.stub(Nest.Agents, :chat, fn _space, _name, _body, _mode, _sender, _human? ->
+    Mimic.stub(Nest.Agents, :chat, fn _space, _name, _body, _mode, _sender, _source ->
       {:error, :not_found}
     end)
 

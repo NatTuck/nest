@@ -2,8 +2,10 @@
  * Tests for `js/utils/chatHistory.js`.
  *
  * The helper powers the Ctrl/Cmd+Up chat-input history. It includes a
- * user-role row only when it carries `origin: "human"` (the rule is
- * fail-closed), pulls those from both the active session and the archived
+ * user-role row only when it carries `origin: "human"` **and** `composed:
+ * true` (the rule is fail-closed) — the first marks the human's words, which
+ * the UI also produces on their behalf, and the second marks the ones they
+ * typed. It pulls those from both the active session and the archived
  * (post-compaction) history, strips the `[mode: X]\n` prefix, orders them
  * most-recent-first, and collapses consecutive duplicates.
  */
@@ -18,6 +20,7 @@ describe("buildChatHistory", () => {
         {
           role: "user",
           origin: "human",
+          composed: true,
           content: "[mode: build]\nsecond",
           mode: "build",
         },
@@ -27,44 +30,66 @@ describe("buildChatHistory", () => {
         {
           role: "user",
           origin: "human",
+          composed: true,
           content: "[mode: plan]\nfirst",
           mode: "plan",
         },
       ],
     );
 
-    expect(result).toEqual([
-      { content: "second", mode: "build" },
-      { content: "first", mode: "plan" },
-    ]);
+    expect(result).toEqual([{ content: "second" }, { content: "first" }]);
   });
 
   it("collapses consecutive duplicate content across the active and archived lists", () => {
     const result = buildChatHistory(
-      [{ role: "user", origin: "human", content: "same prompt" }],
-      [{ role: "user", origin: "human", content: "same prompt" }],
+      [
+        {
+          role: "user",
+          origin: "human",
+          composed: true,
+          content: "same prompt",
+        },
+      ],
+      [
+        {
+          role: "user",
+          origin: "human",
+          composed: true,
+          content: "same prompt",
+        },
+      ],
     );
 
-    expect(result).toEqual([{ content: "same prompt", mode: null }]);
+    expect(result).toEqual([{ content: "same prompt" }]);
   });
 
   it("filters out non-user roles and non-string content in both lists", () => {
     const result = buildChatHistory(
       [
-        { role: "user", origin: "human", content: 42 },
+        { role: "user", origin: "human", composed: true, content: 42 },
         { role: "assistant", content: "not a user message" },
-        { role: "user", origin: "human", content: "active user" },
+        {
+          role: "user",
+          origin: "human",
+          composed: true,
+          content: "active user",
+        },
       ],
       [
-        { role: "user", origin: "human", content: null },
+        { role: "user", origin: "human", composed: true, content: null },
         { role: "tool", content: "tool result" },
-        { role: "user", origin: "human", content: "archived user" },
+        {
+          role: "user",
+          origin: "human",
+          composed: true,
+          content: "archived user",
+        },
       ],
     );
 
     expect(result).toEqual([
-      { content: "active user", mode: null },
-      { content: "archived user", mode: null },
+      { content: "active user" },
+      { content: "archived user" },
     ]);
   });
 
@@ -77,6 +102,7 @@ describe("buildChatHistory", () => {
         {
           role: "user",
           origin: "human",
+          composed: true,
           parts: [{ kind: "text", text: "[mode: build]\nactive" }],
           mode: "build",
         },
@@ -85,16 +111,14 @@ describe("buildChatHistory", () => {
         {
           role: "user",
           origin: "human",
+          composed: true,
           parts: [{ kind: "text", text: "[mode: plan]\narchived" }],
           mode: "plan",
         },
       ],
     );
 
-    expect(result).toEqual([
-      { content: "active", mode: "build" },
-      { content: "archived", mode: "plan" },
-    ]);
+    expect(result).toEqual([{ content: "active" }, { content: "archived" }]);
   });
 
   it("includes a human prompt sent while the agent was busy", () => {
@@ -104,18 +128,24 @@ describe("buildChatHistory", () => {
       {
         role: "user",
         origin: "human",
+        composed: true,
         content: "[mode: build]\nqueued prompt",
         mode: "build",
       },
     ]);
 
-    expect(result).toEqual([{ content: "queued prompt", mode: "build" }]);
+    expect(result).toEqual([{ content: "queued prompt" }]);
   });
 
   it("excludes user rows that are not tagged as human (fail-closed)", () => {
     // Peer deliveries, notices and runtime reminders are user-role rows with
     // no `origin`; legacy rows predate the marker; a stray non-human origin is
     // not human either. None of them is a prompt the human typed.
+    //
+    // The last one is the case this file exists for now: `origin: "human"`
+    // without `composed` is the human's *words* produced by the UI — a decision
+    // answer, an explain request — and recalling one would hand them a
+    // paragraph they never typed.
     const result = buildChatHistory(
       [
         {
@@ -133,6 +163,14 @@ describe("buildChatHistory", () => {
         {
           role: "user",
           origin: "human",
+          content:
+            "[mode: build]\nDecisions answered:\n- Which database?: Postgres",
+          mode: "build",
+        },
+        {
+          role: "user",
+          origin: "human",
+          composed: true,
           content: "[mode: build]\nreal prompt",
           mode: "build",
         },
@@ -146,18 +184,24 @@ describe("buildChatHistory", () => {
       ],
     );
 
-    expect(result).toEqual([{ content: "real prompt", mode: "build" }]);
+    expect(result).toEqual([{ content: "real prompt" }]);
   });
 
-  it("tolerates missing inputs and defaults a missing mode to null", () => {
+  it("tolerates missing inputs, and a row whose mode is absent strips no prefix", () => {
     expect(buildChatHistory()).toEqual([]);
     expect(buildChatHistory(null, null)).toEqual([]);
 
     const result = buildChatHistory([
-      { role: "user", origin: "human", content: "no mode", mode: undefined },
+      {
+        role: "user",
+        origin: "human",
+        composed: true,
+        content: "no mode",
+        mode: undefined,
+      },
     ]);
 
-    expect(result).toEqual([{ content: "no mode", mode: null }]);
+    expect(result).toEqual([{ content: "no mode" }]);
   });
 
   it("strips the header, matching what the bubble showed", () => {
@@ -169,24 +213,24 @@ describe("buildChatHistory", () => {
         {
           role: "user",
           origin: "human",
+          composed: true,
           content: "[From user | mode: act]\ntyped by the human",
           mode: "act",
         },
       ]),
-    ).toEqual([{ content: "typed by the human", mode: "act" }]);
+    ).toEqual([{ content: "typed by the human" }]);
 
     expect(
       buildChatHistory([
         {
           role: "user",
           origin: "human",
+          composed: true,
           content: "[From user | mode: act]\ntyped by the human",
           mode: "plan",
         },
       ]),
-    ).toEqual([
-      { content: "[From user | mode: act]\ntyped by the human", mode: "plan" },
-    ]);
+    ).toEqual([{ content: "[From user | mode: act]\ntyped by the human" }]);
   });
 
   it("strips the `[nest notice]` marker, matching what the bubble showed", () => {
@@ -198,11 +242,12 @@ describe("buildChatHistory", () => {
       {
         role: "user",
         origin: "human",
+        composed: true,
         content: "[mode: build]\n[nest notice]\ntyped by the human",
         mode: "build",
       },
     ]);
 
-    expect(result).toEqual([{ content: "typed by the human", mode: "build" }]);
+    expect(result).toEqual([{ content: "typed by the human" }]);
   });
 });

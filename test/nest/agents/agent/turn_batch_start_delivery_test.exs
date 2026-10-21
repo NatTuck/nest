@@ -211,7 +211,7 @@ defmodule Nest.Agents.Agent.TurnBatchStartDeliveryTest do
     # The human's message — in a mode the agent is not in — arrives while the
     # model is still streaming, so it queues: the streaming arm must queue it.
     # The inbox snapshot below pins that it is still there when the batch starts.
-    :ok = Agent.chat(pid, queued, "plan", "alice", true)
+    :ok = Agent.chat(pid, queued, "plan", "alice", :composed)
 
     # The response asks for the tool batch, whose worker parks inside its call:
     # the batch starts, and the deferral armed there runs the drain — which this

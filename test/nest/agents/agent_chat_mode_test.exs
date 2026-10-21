@@ -70,7 +70,7 @@ defmodule Nest.Agents.AgentChatModeTest do
       # two are one test now.)
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      :ok = Agent.chat(pid, "Hello", nil, nil, true)
+      :ok = Agent.chat(pid, "Hello", nil, nil, :composed)
 
       assert_receive {:chat_message,
                       {:user,
@@ -86,7 +86,7 @@ defmodule Nest.Agents.AgentChatModeTest do
     test "an unknown mode falls back to the default" do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      :ok = Agent.chat(pid, "Hello", "nonexistent-mode", nil, true)
+      :ok = Agent.chat(pid, "Hello", "nonexistent-mode", nil, :composed)
 
       assert_receive {:chat_message,
                       {:user,
@@ -111,32 +111,56 @@ defmodule Nest.Agents.AgentChatModeTest do
       # the permissive one.
       assert Agent.get_public_info(pid, 1_000).current_mode == "act"
 
-      :ok = Agent.chat(pid, "Plan this", "plan", nil, true)
+      :ok = Agent.chat(pid, "Plan this", "plan", nil, :composed)
       await_idle()
       assert Agent.get_public_info(pid, 1_000).current_mode == "plan"
 
       # The next chat without an explicit mode uses the updated
       # `state.live.mode` — `handle_chat/4`'s `requested_mode || state.live.mode`
       # fallback.
-      :ok = Agent.chat(pid, "And another", nil, nil, true)
+      :ok = Agent.chat(pid, "And another", nil, nil, :composed)
       await_idle()
       assert Agent.get_public_info(pid, 1_000).current_mode == "plan"
     end
   end
 
   describe "origin marker" do
-    test "tags a human chat but not a spawn-style kickoff" do
-      # The Ctrl/Cmd+Up recall list shows only rows tagged `origin: "human"`.
-      # The channel passes `human?: true`; `agents-spawn`'s `query` kickoff
-      # passes `false` (`SubAgent.handle_spawn_request/3`), so a prompt nobody
-      # typed can never reach that list.
+    test "tags a composed chat, a synthesized one, and neither for a kickoff" do
+      # Three sources, three answers, and the distinction is the point: the
+      # Ctrl/Cmd+Up recall list requires `composed`, so only the first of these
+      # is recallable.
+      #
+      #   * `:composed` — the human typed it in the composer (`chat:message`);
+      #   * `:synthesized` — the human's words produced by the UI: a decision
+      #     answer, an explain request. Attributed to them, but not recallable;
+      #   * `false` — nobody's words: `agents-spawn`'s `query` kickoff.
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      :ok = Agent.chat(pid, "typed by a human", nil, "alice", true)
+      :ok = Agent.chat(pid, "typed by a human", nil, "alice", :composed)
 
       assert_receive {:chat_message,
-                      {:user, %{metadata: %{"mode" => "act", "origin" => "human"}}}},
+                      {:user,
+                       %{metadata: %{"mode" => "act", "origin" => "human", "composed" => true}}}},
                      @turn_fence_ms
+
+      await_idle()
+
+      :ok =
+        Agent.chat(
+          pid,
+          "Decisions answered: - Which database?: Postgres",
+          nil,
+          "alice",
+          :synthesized
+        )
+
+      assert_receive {:chat_message,
+                      {:user, %{metadata: %{"mode" => "act", "origin" => "human"} = synthesized}}},
+                     @turn_fence_ms
+
+      # The human's words — the header and the model still attribute it to them —
+      # but not something they typed, so it is not recalled.
+      refute Map.has_key?(synthesized, "composed")
 
       await_idle()
 

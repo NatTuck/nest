@@ -84,7 +84,15 @@ export function ChatPage() {
   // background shell jobs. They are separate tabs so a long job list
   // cannot push the message list off screen.
   const [tab, setTab] = useState(CHAT_TAB);
-  const [inputValue, setInputValue] = useState("");
+  // The draft is the store's, not this component's: the route keeps this page
+  // mounted when `:name` changes, so state held here would follow the reader to
+  // the next agent — and would be gone after a visit to another page.
+  const inputValue = useStore((state) => state.drafts[name] ?? "");
+  const setDraft = useStore((state) => state.setDraft);
+  const setInputValue = useCallback(
+    (value) => setDraft(name, value),
+    [setDraft, name],
+  );
   const [sendError, setSendError] = useState(null);
   // Backing state for the model picker modal. Open the
   // picker either from the header chip (always available)
@@ -265,7 +273,7 @@ export function ChatPage() {
   // the message, it does not push a setting — the mode rides the message and
   // the server learns it then. The server's `currentMode` seeds the draft and
   // re-seeds it only when it actually moves.
-  const { currentMode, setCurrentMode, handleModeChange } = useAgentMode({
+  const { currentMode, handleModeChange } = useAgentMode({
     name,
     currentModeFromCache,
     defaultMode,
@@ -595,7 +603,6 @@ export function ChatPage() {
               modes={availableModes}
               mode={currentMode ?? defaultMode}
               onModeChange={handleModeChange}
-              onModeRestore={setCurrentMode}
               history={history}
               commands={SLASH_COMMANDS}
               hasNewContent={hasNewContent}

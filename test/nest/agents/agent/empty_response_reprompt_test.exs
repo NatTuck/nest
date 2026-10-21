@@ -97,7 +97,7 @@ defmodule Nest.Agents.Agent.EmptyResponseRepromptTest do
     # the model speaks — so exactly one nudge is in the transcript.
     MockClient.set_stream_events(silent_response_events())
     MockClient.set_response("First turn's reply.")
-    :ok = Agent.chat(pid, "First", nil, nil, true)
+    :ok = Agent.chat(pid, "First", nil, nil, :composed)
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
     # Turn two asks for `plan`, so its own nudge carries a different mode clause.
@@ -113,7 +113,7 @@ defmodule Nest.Agents.Agent.EmptyResponseRepromptTest do
     # turn one, allows two more, and lands three.
     _log =
       capture_log(fn ->
-        :ok = Agent.chat(pid, "Second", "plan", nil, true)
+        :ok = Agent.chat(pid, "Second", "plan", nil, :composed)
         assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 

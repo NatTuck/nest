@@ -5,9 +5,10 @@
  * "provider: model-name" when both are present, falling back to
  * just the name when only name is available.
  */
+import { useEffect, useReducer } from "react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, act, within } from "@testing-library/react";
-import { MemoryRouter, Routes, Route } from "react-router-dom";
+import { MemoryRouter, Routes, Route, useNavigate } from "react-router-dom";
 
 // Mock zustand store — set the cache directly per test.
 // Provides both `useStore(selector)` (called as a React hook by
@@ -17,6 +18,24 @@ import { MemoryRouter, Routes, Route } from "react-router-dom";
 // scenario flows end-to-end.
 let mockAgentsCache = {};
 let mockSpaces = [];
+// The composer's drafts, by key. The real store keeps them (see
+// `slices/composer.js`) and the composer is controlled through them, so the
+// mock has to be *reactive*: a stub that never re-rendered would swallow every
+// keystroke and the page would look like it refused the text.
+let mockDrafts = {};
+const draftListeners = new Set();
+function setDraft(key, text) {
+  mockDrafts = { ...mockDrafts, [key]: text };
+  for (const notify of draftListeners) notify();
+}
+function useDrafts() {
+  const [, bump] = useReducer((n) => n + 1, 0);
+  useEffect(() => {
+    draftListeners.add(bump);
+    return () => draftListeners.delete(bump);
+  }, []);
+  return mockDrafts;
+}
 // The space edit's latch (`SpacePausedBanner` reads it): no space is paused in
 // these tests.
 const mockPausedSpaces = [];
@@ -25,6 +44,7 @@ const mockPausedSpaces = [];
 let mockPanes = {};
 vi.mock("../store", () => {
   const actions = {
+    setDraft,
     clearAgentError: (id) => {
       const cache = mockAgentsCache[id];
       if (!cache) return;
@@ -41,19 +61,24 @@ vi.mock("../store", () => {
     },
   };
 
-  const useStore = (selector) =>
-    selector({
+  const useStore = (selector) => {
+    const drafts = useDrafts();
+    return selector({
       agentsCache: mockAgentsCache,
       spaces: mockSpaces,
       pausedSpaces: mockPausedSpaces,
       panes: mockPanes,
+      drafts,
+      setDraft: actions.setDraft,
     });
+  };
   useStore.getState = () => ({
     ...actions,
     agentsCache: mockAgentsCache,
     spaces: mockSpaces,
     panes: mockPanes,
     pausedSpaces: mockPausedSpaces,
+    drafts: mockDrafts,
   });
 
   return { useStore };
@@ -141,6 +166,30 @@ vi.mock("../components/EditAgentDialog", () => ({
 import { ChatPage } from "./ChatPage";
 import { SLASH_COMMANDS } from "../utils/slashCommands.js";
 
+// The same page, but with a `navigate` the test can call: the route keeps
+// `ChatPage` mounted when `:name` changes, and that is the case a draft held in
+// the page's own state would leak from.
+function renderChatNavigable(startAgent, spaceSlug = "my-space") {
+  mockSpaces = [{ id: 1, slug: spaceSlug, name: "My Space" }];
+  let navigate;
+  function Nav() {
+    navigate = useNavigate();
+    return null;
+  }
+  const utils = render(
+    <MemoryRouter initialEntries={[`/space/${spaceSlug}/agent/${startAgent}`]}>
+      <Nav />
+      <Routes>
+        <Route path="/space/:spaceSlug/agent/:name" element={<ChatPage />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  return {
+    ...utils,
+    go: (name) => act(() => navigate(`/space/${spaceSlug}/agent/${name}`)),
+  };
+}
+
 function renderChat(agentName = "test-agent", spaceSlug = "my-space") {
   mockSpaces = [{ id: 1, slug: spaceSlug, name: "My Space" }];
   return render(
@@ -161,10 +210,96 @@ beforeEach(() => {
   scroll.jumpToBottom.mockClear();
   // No pane state has arrived for any space in these tests unless one says so.
   mockPanes = {};
+  mockDrafts = {};
   // The host the server injects into `window.NEST_CONFIG`, plus the
   // shell's default title: a page test proves the page *replaces* it.
   window.NEST_CONFIG = { host: "vampire" };
   document.title = "Nest · Phoenix Framework";
+});
+
+describe("ChatPage composer drafts", () => {
+  // The draft is the store's, keyed by agent. Two things follow, and neither
+  // holds if the value lives in the page's own state: leaving the page must not
+  // lose it, and moving to another agent must not carry it along.
+  beforeEach(() => {
+    mockAgentsCache = {
+      "agent-a": { status: "connected", agentState: "idle", messages: [] },
+      "agent-b": { status: "connected", agentState: "idle", messages: [] },
+    };
+  });
+
+  it("restores the draft when the reader comes back to the agent", () => {
+    const first = renderChat("agent-a");
+    fireEvent.change(screen.getByLabelText("Message"), {
+      target: { value: "half a thought" },
+    });
+    expect(screen.getByLabelText("Message").value).toBe("half a thought");
+
+    // Leaving the page unmounts it — which is exactly the case a draft held in
+    // the component would not survive.
+    first.unmount();
+
+    renderChat("agent-a");
+    expect(screen.getByLabelText("Message").value).toBe("half a thought");
+  });
+
+  it("does not carry one agent's draft to another, without unmounting", () => {
+    const { go } = renderChatNavigable("agent-a");
+    fireEvent.change(screen.getByLabelText("Message"), {
+      target: { value: "for agent a only" },
+    });
+
+    // A route change, not a remount: this is the shape that leaked, because
+    // `ChatPage` is the same component before and after.
+    go("agent-b");
+    expect(screen.getByLabelText("Message").value).toBe("");
+
+    go("agent-a");
+    expect(screen.getByLabelText("Message").value).toBe("for agent a only");
+  });
+});
+
+describe("ChatPage history navigation", () => {
+  // Requirement: walking the recall list is a text operation. The mode is the
+  // user's choice — the selector, or Ctrl+M — so an entry sent under "plan"
+  // must not drag the selector back to "plan" when the reader is on "act".
+  beforeEach(() => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        currentMode: "act",
+        defaultMode: "act",
+        modes: ["plan", "act"],
+        model: { name: "qwen3.5-plus" },
+        messages: [
+          {
+            index: 0,
+            role: "user",
+            origin: "human",
+            composed: true,
+            content: "[mode: plan]\nan older prompt",
+            mode: "plan",
+          },
+        ],
+      },
+    };
+  });
+
+  it("fills the box from the entry and leaves the mode alone", () => {
+    renderChat();
+
+    expect(screen.getByLabelText("Mode").value).toBe("act");
+
+    fireEvent.keyDown(screen.getByLabelText("Message"), {
+      key: "ArrowUp",
+      ctrlKey: true,
+    });
+
+    expect(screen.getByLabelText("Message").value).toBe("an older prompt");
+    // The entry was sent under "plan" and the selector still says "act".
+    expect(screen.getByLabelText("Mode").value).toBe("act");
+  });
 });
 
 describe("ChatPage chat header", () => {

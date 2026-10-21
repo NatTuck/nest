@@ -74,7 +74,7 @@ defmodule Nest.Agents.Agent.Turn.ModeTest do
       timestamp: DateTime.utc_now(),
       kind: kind,
       mode: mode,
-      human?: false,
+      source: false,
       fulfilled_ids: []
     }
   end

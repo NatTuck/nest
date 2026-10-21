@@ -202,6 +202,7 @@ defmodule Nest.Persistence.Messages do
     |> cap_index(cap)
     |> filter_roles(roles)
     |> filter_origin(origin)
+    |> filter_metadata(Keyword.get(opts, :composed), "composed")
     |> select_projection(projection)
     |> order_by([m], desc: m.message_index)
     |> cap_rows(limit)
@@ -242,6 +243,18 @@ defmodule Nest.Persistence.Messages do
 
   defp filter_origin(query, origin),
     do: where(query, [m], fragment("? ->> 'origin' = ?", m.metadata, ^origin))
+
+  # Restrict to rows carrying a given `metadata[key]` value — the second half of
+  # the recall projection, which asks for `composed: "true"`. `origin` alone
+  # marks the human's *words*, and the UI produces some of those itself (a
+  # decision answer, an explain request); `composed` marks the ones they typed,
+  # and only those belong in the recall list. `"true"` rather than `true`
+  # because `->>` renders JSON scalars as text. Fail-closed like its sibling: a
+  # missing key never equals the value.
+  defp filter_metadata(query, nil, _key), do: query
+
+  defp filter_metadata(query, value, key),
+    do: where(query, [m], fragment("? ->> ? = ?", m.metadata, ^key, ^value))
 
   defp cap_rows(query, :all), do: query
   defp cap_rows(query, limit), do: limit(query, ^limit)

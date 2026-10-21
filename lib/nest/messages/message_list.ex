@@ -561,7 +561,10 @@ defmodule Nest.Messages.MessageList do
   # means a future entry that claimed `human?` on another kind — a `:runtime`
   # entry, say — batches with its peers and stays untagged, instead of being silently
   # mistagged as the human's own words.
-  defp origin_metadata([%{kind: :user, human?: true} | _]), do: User.human_metadata()
+  defp origin_metadata([%{kind: :user, source: source} | _])
+       when source in [:composed, :synthesized],
+       do: User.source_metadata(source)
+
   defp origin_metadata(_entries), do: %{}
 
   @doc """

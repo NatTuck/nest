@@ -49,7 +49,7 @@ defmodule Nest.Agents.AgentToolsTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      :ok = Agent.chat(pid, "List the files", nil, nil, true)
+      :ok = Agent.chat(pid, "List the files", nil, nil, :composed)
 
       # User message: first broadcast is empty, second carries the
       # request log. Match the second (non-empty api_logs).
@@ -123,14 +123,14 @@ defmodule Nest.Agents.AgentToolsTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      :ok = Agent.chat(pid, "List files", nil, nil, true)
+      :ok = Agent.chat(pid, "List files", nil, nil, :composed)
       assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # drain loop killed with fire, it can *NEVER EVER* come back
 
       MockClient.set_response("Second response received")
 
-      :ok = Agent.chat(pid, "What else is there?", nil, nil, true)
+      :ok = Agent.chat(pid, "What else is there?", nil, nil, :composed)
 
       # Indices shift based on context-notice synthetic pair
       # injections from the first turn. Match by content (first

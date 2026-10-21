@@ -496,7 +496,6 @@ describe("ChatInput", () => {
     function setupWithHistory(props = {}) {
       const onChange = vi.fn();
       const onModeChange = vi.fn();
-      const onModeRestore = vi.fn();
       const utils = render(
         <ChatInput
           value={props.value ?? ""}
@@ -511,7 +510,6 @@ describe("ChatInput", () => {
           modes={["plan", "act"]}
           mode={props.mode ?? "plan"}
           onModeChange={props.onModeChange ?? onModeChange}
-          onModeRestore={props.onModeRestore ?? onModeRestore}
         />,
       );
       const textarea = screen.getByLabelText("Message");
@@ -520,31 +518,25 @@ describe("ChatInput", () => {
         textarea,
         onChange: props.onChange ?? onChange,
         onModeChange: props.onModeChange ?? onModeChange,
-        onModeRestore: props.onModeRestore ?? onModeRestore,
       };
     }
 
-    it("Ctrl+Up loads the most recent entry, then walks to older entries, and restores mode", () => {
-      const { textarea, onChange, onModeChange, onModeRestore } =
-        setupWithHistory();
+    it("Ctrl+Up loads the most recent entry, then walks to older entries, and never touches the mode", () => {
+      const { textarea, onChange, onModeChange } = setupWithHistory();
 
       fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
       expect(onChange).toHaveBeenLastCalledWith("third sent");
-      expect(onModeRestore).toHaveBeenLastCalledWith("plan");
 
       fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
       expect(onChange).toHaveBeenLastCalledWith("second sent");
-      expect(onModeRestore).toHaveBeenLastCalledWith("act");
 
       fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
       expect(onChange).toHaveBeenLastCalledWith("first sent");
-      expect(onModeRestore).toHaveBeenLastCalledWith("plan");
-      expect(onModeRestore).toHaveBeenCalledTimes(3);
 
-      // Walking the history *selects* a mode for the next message; it does not
-      // switch the agent's mode. Switching is `onModeChange`, which only the
-      // selector and Ctrl+M call — otherwise a walk would push a mode change
-      // (and a notice) for every keystroke.
+      // Walking the history changes the text and nothing else. The entries were
+      // sent under "plan", "act" and "plan", so a restore would be visible — and
+      // it is not: the mode is the user's choice (the selector, or Ctrl+M), and
+      // recalling an old prompt is not a request to change it.
       expect(onModeChange).not.toHaveBeenCalled();
 
       // Pressing Up again at the oldest entry is a no-op — onChange

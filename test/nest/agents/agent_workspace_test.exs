@@ -427,7 +427,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       timestamp: DateTime.utc_now(),
       kind: :agent,
       mode: nil,
-      human?: false,
+      source: false,
       fulfilled_ids: []
     }
   end

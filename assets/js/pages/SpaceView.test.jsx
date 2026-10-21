@@ -13,6 +13,7 @@
  * The store is mocked with a selector-based `useStore`; `spaceSlug` comes from
  * the route params via a real MemoryRouter.
  */
+import { useEffect, useReducer } from "react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Routes, Route, useParams } from "react-router-dom";
@@ -35,8 +36,28 @@ vi.mock("../channels", () => ({
   unarchiveSpace: mocks.unarchiveSpace,
 }));
 
+// The drafts are the one store slice a test drives by typing, and the composer
+// is controlled through them — so this stub has to re-render, or every
+// keystroke would vanish and a send would look like it was ignored.
+let mockDrafts = {};
+const draftListeners = new Set();
+function setDraft(key, text) {
+  mockDrafts = { ...mockDrafts, [key]: text };
+  for (const notify of draftListeners) notify();
+}
+function useDrafts() {
+  const [, bump] = useReducer((n) => n + 1, 0);
+  useEffect(() => {
+    draftListeners.add(bump);
+    return () => draftListeners.delete(bump);
+  }, []);
+  return mockDrafts;
+}
 vi.mock("../store", () => ({
-  useStore: (selector) => selector(mockState),
+  useStore: (selector) => {
+    const drafts = useDrafts();
+    return selector({ ...mockState, drafts, setDraft });
+  },
 }));
 
 import { SpaceView } from "./SpaceView";

@@ -19,6 +19,7 @@ import { agentCacheStreamingSetters } from "./slices/agentCacheStreaming";
 import { agentInboxSetters, applyAgentInboxDelta } from "./slices/agentInbox";
 import { paneSetters } from "./slices/pane";
 import { spaceFeedSetters } from "./slices/spaceFeed";
+import { composerSetters } from "./slices/composer";
 import { addChatDelta } from "./slices/agentCacheDeltas";
 import {
   addChatMessage,
@@ -38,6 +39,7 @@ export const useStore = create(
       ...agentInboxSetters(set),
       ...paneSetters(set),
       ...spaceFeedSetters(set),
+      ...composerSetters(set),
       addChatDelta: (id, payload) => addChatDelta(set, get, id, payload),
       applyAgentInboxDelta: (id, payload) =>
         applyAgentInboxDelta(set, get, id, payload),
