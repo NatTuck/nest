@@ -382,16 +382,26 @@ defmodule NestWeb.AgentChannel.Pane do
   defp notify_dropped(space_id, decision) do
     case Supervisor.get_running_agent(space_id, decision.asked_by) do
       {:ok, pid} ->
-        _ =
-          Agent.deliver_internal(
-            pid,
-            nil,
-            "The user dropped your question #{inspect(decision.title)}. " <>
-              "You do not need to wait for an answer.",
-            :runtime
-          )
+        # `get_running_agent/2` is a Registry read and then `Process.alive?/1`, so
+        # an agent stopped a moment ago is still handed back — the same TOCTOU
+        # `Nest.Agents.with_agent/3` documents, and here the call would take the
+        # channel down with it. The notice is best-effort by design ("tell it if
+        # it is live"), so a pid that dies under the call is nothing to report
+        # and nothing to answer.
+        try do
+          _ =
+            Agent.deliver_internal(
+              pid,
+              nil,
+              "The user dropped your question #{inspect(decision.title)}. " <>
+                "You do not need to wait for an answer.",
+              :runtime
+            )
 
-        :ok
+          :ok
+        catch
+          :exit, _ -> :ok
+        end
 
       {:error, _reason} ->
         :ok

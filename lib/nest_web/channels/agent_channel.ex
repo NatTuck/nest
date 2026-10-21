@@ -17,12 +17,12 @@ defmodule NestWeb.AgentChannel do
   alias Nest.Agents
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Machine
-  alias Nest.Agents.PersistedAgent
   alias Nest.Messages.Message
   alias Nest.Messages.Streaming
   alias Nest.Sandbox.ShellJobs
   alias Nest.Spaces
   alias NestWeb.AgentChannel.History
+  alias NestWeb.AgentChannel.Join
   alias NestWeb.AgentChannel.Pane
   alias NestWeb.AgentChannel.Replies
   alias NestWeb.AgentChannel.ShellLog
@@ -42,7 +42,7 @@ defmodule NestWeb.AgentChannel do
     with {:ok, space_id, name} <- parse_topic(rest),
          :ok <- ensure_space_active(space_id),
          {:ok, agent} <- Agents.get_agent(space_id, name),
-         :ok <- authorize_join(space_id, name, current_user) do
+         :ok <- Join.authorize(space_id, name, current_user) do
       joined_join(space_id, name, agent, current_user, socket)
     else
       {:error, reason} -> {:error, join_refusal(rest, reason)}
@@ -88,7 +88,7 @@ defmodule NestWeb.AgentChannel do
     # twice, or every frame would arrive twice), and not the space topic the
     # lobby uses. `Pane.sync` is the resync frame for a client that missed one.
     #
-    # Owner-only, and the join is where it is decided: `authorize_join/3` above
+    # Owner-only, and the join is where it is decided: `Join.authorize/3` above
     # admits a `shared` agent's guest, and the pane belongs to the space rather
     # than to that agent — see `NestWeb.AgentChannel.Pane`'s moduledoc. A guest
     # therefore never subscribes, and every pane handler refuses.
@@ -122,28 +122,6 @@ defmodule NestWeb.AgentChannel do
     end
   end
 
-  # Allow the join when the user owns the agent or the agent
-  # is shared. `Agent.get_public_info/1` is the source of truth
-  # for ownership and visibility — the runtime state carries
-  # the same fields the DB row does, so this avoids a separate
-  # `fetch_agent/2` round-trip.
-  defp authorize_join(space_id, name, current_user) do
-    case Agents.Registry.lookup(space_id, name) do
-      {:ok, pid} ->
-        info = Nest.Agents.Agent.get_public_info(pid)
-        authorize_from(info, current_user)
-
-      _ ->
-        # The supervisor's on-demand loader can hydrate an
-        # agent that's not currently in the Registry. Fall
-        # back to a DB lookup for that case.
-        case Nest.Persistence.fetch_agent(space_id, name) do
-          {:ok, %PersistedAgent{} = row} -> authorize_from(row, current_user)
-          {:error, :not_found} -> {:error, :not_found}
-        end
-    end
-  end
-
   # An archived space cannot be joined for chat. Even an owner
   # must inspect it from the archived-spaces view rather than
   # talk to its agents, which are stopped on archive. A space
@@ -155,19 +133,6 @@ defmodule NestWeb.AgentChannel do
       _ -> :ok
     end
   end
-
-  # Shared predicate for both runtime + persisted rows. The
-  # schema field name `created_by_user_id` matches the runtime
-  # state field name, so we can destructure either uniformly.
-  defp authorize_from(%{created_by_user_id: id, shared: shared}, current_user)
-       when id == current_user.id or shared == true,
-       do: :ok
-
-  defp authorize_from(%PersistedAgent{created_by_user_id: id, shared: shared}, current_user)
-       when id == current_user.id or shared == true,
-       do: :ok
-
-  defp authorize_from(_other, _current_user), do: {:error, :forbidden}
 
   @impl true
   def handle_info({:after_join, agent}, socket) do
