@@ -164,7 +164,7 @@ defmodule Nest.Agents.Agent.InboxTest do
   end
 
   test "delivery is rejected when the inbox is full", %{pid: pid} do
-    # `entry/5` builds the whole documented entry shape (`id`, `human?`,
+    # `entry/5` builds the whole documented entry shape (`id`, `source`,
     # `fulfilled_ids`), which matters now that the count below is read through
     # `get_public_info/2` — that serializes the queue, and a hand-rolled partial
     # entry would crash it.
@@ -225,7 +225,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       # rejected — with the content stored verbatim and the requested mode
       # recorded for the drain.
       #
-      # The cast is the explicit `Agent.chat/5` with `human?: true` (the arity
+      # The cast is the explicit `Agent.chat/5` with `:composed` (the arity
       # the chat channel uses), so this is the busy half of the recall-list
       # wiring: `Callbacks.chat_or_queue/5` -> `Inbox.deliver_user_message/5`
       # lands the flag on the entry, and `build_drained_message/3` turns it into
@@ -235,7 +235,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       for {status, n} <- Enum.with_index([:streaming, :executing_tools, :compacting], 1) do
         set_status(pid, status)
 
-        assert :ok = Agent.chat(pid, "queued while #{status}", "plan", "alice", true)
+        assert :ok = Agent.chat(pid, "queued while #{status}", "plan", "alice", :composed)
 
         assert_receive {:chat_inbox, %{count: ^n}}, 1_000
 
@@ -285,9 +285,9 @@ defmodule Nest.Agents.Agent.InboxTest do
         end)
 
       assert drained_metadata == [
-               %{"mode" => "plan", "origin" => "human"},
-               %{"mode" => "plan", "origin" => "human"},
-               %{"mode" => "plan", "origin" => "human"}
+               %{"mode" => "plan", "origin" => "human", "composed" => true},
+               %{"mode" => "plan", "origin" => "human", "composed" => true},
+               %{"mode" => "plan", "origin" => "human", "composed" => true}
              ]
     end
 
@@ -335,7 +335,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     end)
   end
 
-  defp entry(kind, from, content, mode \\ nil, human? \\ false) do
+  defp entry(kind, from, content, mode \\ nil, source \\ false) do
     %{
       id: Inbox.new_id(),
       from: from,
@@ -343,7 +343,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       timestamp: DateTime.utc_now(),
       kind: kind,
       mode: mode,
-      human?: human?,
+      source: source,
       fulfilled_ids: []
     }
   end

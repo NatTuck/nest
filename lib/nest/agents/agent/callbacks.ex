@@ -137,11 +137,11 @@ defmodule Nest.Agents.Agent.Callbacks do
   # busy status queues the message on the agent's own inbox for the next
   # turn boundary; a broken status drops it (logged — the channel's
   # `agent_status_<status>` reply only covers channel callers).
-  def handle_cast({:chat, content, mode, sender, human?}, state) do
-    chat_or_queue(state, content, mode, sender, human?)
+  def handle_cast({:chat, content, mode, sender, source}, state) do
+    chat_or_queue(state, content, mode, sender, source)
   end
 
-  defp chat_or_queue(state, content, mode, sender, human?) do
+  defp chat_or_queue(state, content, mode, sender, source) do
     status = Machine.status_for(state.live.machine)
 
     cond do
@@ -156,14 +156,14 @@ defmodule Nest.Agents.Agent.Callbacks do
       # drainer at all. A busy agent's own turn boundary takes it (below), and a
       # broken one's drop-and-log is the answer the latch must not pre-empt.
       status == :idle and SpaceGate.held?(state.space_id) ->
-        {state, _disposition} = Inbox.deliver_user_message(state, sender, content, mode, human?)
+        {state, _disposition} = Inbox.deliver_user_message(state, sender, content, mode, source)
         {:noreply, state}
 
       status == :idle ->
-        ChatPipeline.handle_chat(state, content, mode, sender, human?)
+        ChatPipeline.handle_chat(state, content, mode, sender, source)
 
       Inbox.busy_status?(status) ->
-        {state, _disposition} = Inbox.deliver_user_message(state, sender, content, mode, human?)
+        {state, _disposition} = Inbox.deliver_user_message(state, sender, content, mode, source)
         {:noreply, state}
 
       true ->

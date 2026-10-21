@@ -102,7 +102,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       MockClient.set_response("Done")
       MockClient.set_response("After the notes")
 
-      :ok = Agent.chat(pid, "queue some messages", nil, nil, true)
+      :ok = Agent.chat(pid, "queue some messages", nil, nil, :composed)
 
       {_first, llm1} = next_request()
       release_llm(llm1)
@@ -444,7 +444,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       # A human message backgrounds the batch, so it is *still running* — parked
       # inside its call — when the stop lands.
-      :ok = Agent.chat(pid, "human note", nil, nil, true)
+      :ok = Agent.chat(pid, "human note", nil, nil, :composed)
 
       # The delivered message's turn is in flight (its request is parked), so
       # nothing else will move the machine before the stop.

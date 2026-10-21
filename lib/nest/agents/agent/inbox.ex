@@ -14,12 +14,13 @@ defmodule Nest.Agents.Agent.Inbox do
       (`enqueue_internal/6`, W2's async spawn/batch completion).
 
   An entry is
-  `%{id, from, content, timestamp, kind, mode, human?, fulfilled_ids, parts}`.
+  `%{id, from, content, timestamp, kind, mode, source, fulfilled_ids, parts}`.
   `content` is stored **verbatim** (no header — that is added when the entry
   is delivered), `mode` is the mode the entry asks the
   recipient to run under — a human's own, or a peer's `set_mode` — and is `nil`
   for an entry that asks for no change, and the producer-supplied fields are
-  `human?` (the human's own words), `fulfilled_ids` (the tool-call ids a
+  `source` (whose words these are, and whether the human typed them),
+  `fulfilled_ids` (the tool-call ids a
   backgrounded batch's result answers, issue #36), empty for other producers,
   and `parts` (the segment split of `content` a backgrounded batch's notice
   carries, `nil` for every other producer — see `enqueue_runtime/3`).
@@ -177,7 +178,7 @@ defmodule Nest.Agents.Agent.Inbox do
           timestamp: DateTime.t(),
           kind: kind(),
           mode: String.t() | nil,
-          human?: boolean(),
+          source: :composed | :synthesized | false,
           fulfilled_ids: [String.t()],
           parts: [Segment.t()] | nil
         }
@@ -281,8 +282,8 @@ defmodule Nest.Agents.Agent.Inbox do
   # result reads "Message delivered to …"). `mode` is the human's requested mode
   # and `nil` for every other producer; it rides the record, so a reader still
   # sees what the human asked for.
-  defp busy_delivery(state, sender, content, kind, mode, human?) do
-    {state, entry} = put_entry(state, sender, content, kind, mode, human?)
+  defp busy_delivery(state, sender, content, kind, mode, source) do
+    {state, entry} = put_entry(state, sender, content, kind, mode, source)
     state = broadcast_append(state, [entry])
     queued_before = length(state.live.inbox)
     {state, disposition} = drain_backgroundable(state)
@@ -341,7 +342,7 @@ defmodule Nest.Agents.Agent.Inbox do
   the cap exists to bound a runaway *peer* producer, so a human message is
   queued even when the cap is reached instead of being silently dropped.
 
-  `human?` rides the entry so `build_drained_message/3` can tag the delivered
+  `source` rides the entry so `build_drained_message/3` can tag the delivered
   message `origin: "human"` for the Ctrl/Cmd+Up recall list. It defaults to
   `false`: the marker has to be earned, so a caller that forgets leaves the
   message untagged rather than claiming the human typed it.
@@ -354,8 +355,8 @@ defmodule Nest.Agents.Agent.Inbox do
           boolean()
         ) ::
           {Agent.t(), :delivered | :queued}
-  def deliver_user_message(state, from, content, mode, human? \\ false) do
-    busy_delivery(state, from, content, :user, mode, human?)
+  def deliver_user_message(state, from, content, mode, source \\ false) do
+    busy_delivery(state, from, content, :user, mode, source)
   end
 
   # Deliver a just-enqueued entry now when the machine is executing a tool batch
@@ -536,7 +537,9 @@ defmodule Nest.Agents.Agent.Inbox do
         "timestamp" => DateTime.to_iso8601(entry.timestamp),
         "kind" => Atom.to_string(entry.kind),
         "mode" => entry.mode,
-        "human" => entry.human?
+        # The wire keeps `human` as a boolean: it says whose words these are,
+        # which the inbox panel renders — not whether the human typed them.
+        "human" => entry.source != false
       }
     end)
   end
@@ -643,7 +646,7 @@ defmodule Nest.Agents.Agent.Inbox do
          content,
          kind,
          mode,
-         human? \\ false,
+         source \\ false,
          fulfilled_ids \\ [],
          parts \\ nil
        ) do
@@ -654,7 +657,7 @@ defmodule Nest.Agents.Agent.Inbox do
       timestamp: DateTime.utc_now(),
       kind: kind,
       mode: if(is_binary(mode), do: mode, else: nil),
-      human?: human? == true,
+      source: source,
       fulfilled_ids: fulfilled_ids,
       parts: parts
     }

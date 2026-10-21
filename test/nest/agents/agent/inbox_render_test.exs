@@ -90,10 +90,10 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
   end
 
   describe "build_drained_message/3" do
-    test "an entry that claims human? on a non-user kind is not tagged as the human's" do
+    test "an entry that claims a composed source on a non-user kind is not tagged as the human's" do
       # The recall-list marker is fail-closed on the client and needs both
-      # halves — `kind: :user` *and* `human?: true` — so a `:runtime` entry that
-      # claimed `human?` stays untagged instead of being mistagged as the
+      # halves — `kind: :user` *and* a human `source` — so a `:runtime` entry
+      # that claimed one stays untagged instead of being mistagged as the
       # human's own words. (The tagged human batch is `InboxTest`'s; the
       # fulfilled-promise ids that ride this same message are
       # `TurnBackgroundingTest`'s.)
@@ -190,7 +190,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
         {"a peer's message", "[From agent alice",
          fn pid -> assert {:ok, :queued} = Agent.deliver_note(pid, "alice", @oversized) end},
         {"a human's message", "[From user @alice | mode: plan]",
-         fn pid -> assert :ok = Agent.chat(pid, @oversized, "plan", "alice", true) end}
+         fn pid -> assert :ok = Agent.chat(pid, @oversized, "plan", "alice", :composed) end}
       ]
 
       for {{label, header, deliver}, n} <- Enum.with_index(cases, 1) do
@@ -314,7 +314,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
     end
   end
 
-  defp entry(kind, from, content, mode \\ nil, id \\ nil, human? \\ false) do
+  defp entry(kind, from, content, mode \\ nil, id \\ nil, source \\ false) do
     %{
       id: id || Inbox.new_id(),
       from: from,
@@ -322,7 +322,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       timestamp: DateTime.utc_now(),
       kind: kind,
       mode: mode,
-      human?: human?,
+      source: source,
       fulfilled_ids: []
     }
   end

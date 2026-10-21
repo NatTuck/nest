@@ -47,7 +47,7 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
     space_id = AgentTestHelpers.current_space_id()
 
     park_next_llm_request(pid)
-    :ok = Agents.chat(space_id, name, "hi", nil, "tester", true)
+    :ok = Agents.chat(space_id, name, "hi", nil, "tester", :composed)
     {_messages, worker} = next_request()
 
     {space_id, name, worker}
@@ -160,7 +160,7 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
 
     assert :ok = SpaceGate.hold(space_id)
 
-    assert :ok = Agents.chat(space_id, name, "hi", nil, "tester", true)
+    assert :ok = Agents.chat(space_id, name, "hi", nil, "tester", :composed)
 
     # Queued, not running: a turn that had started would have taken the message
     # out of the queue. `get_public_info/2` is a call, so it is also the fence
@@ -188,7 +188,7 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
     space_id = AgentTestHelpers.current_space_id()
 
     assert :ok = SpaceGate.hold(space_id)
-    assert :ok = Agents.chat(space_id, name, "hi", "plan", "tester", true)
+    assert :ok = Agents.chat(space_id, name, "hi", "plan", "tester", :composed)
 
     assert :ok = SpaceGate.release(space_id)
 

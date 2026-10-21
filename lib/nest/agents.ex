@@ -323,9 +323,9 @@ defmodule Nest.Agents do
   """
   @spec chat(integer(), String.t(), String.t(), String.t() | nil, String.t() | nil, boolean()) ::
           :ok | {:error, term()}
-  def chat(space_id, name, content, mode \\ nil, sender \\ nil, human? \\ false) do
+  def chat(space_id, name, content, mode \\ nil, sender \\ nil, source \\ false) do
     with_agent(space_id, name, fn pid ->
-      Agent.chat(pid, content, mode, sender, human?)
+      Agent.chat(pid, content, mode, sender, source)
       :ok
     end)
   end

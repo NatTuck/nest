@@ -2,12 +2,15 @@
  * Build the chat-input history list (Ctrl/Cmd+Up / Down navigation).
  *
  * Only messages the human actually typed are eligible: a user-role row is
- * included **iff** it carries `origin: "human"` (stamped by the server — see
- * `Nest.Messages.User.human_metadata/0`). The user role is overloaded on the
- * wire: peer deliveries (`[Message from agent "X"] …`), runtime notices and
- * synthetic reminders are all persisted as user rows, and none of them is a
- * prompt the human typed. The rule is fail-closed, so anything unmarked is
- * excluded.
+ * included **iff** it carries `origin: "human"` **and** `composed: true`
+ * (stamped by the server — see `Nest.Messages.User.source_metadata/1`). The
+ * user role is overloaded on the wire: peer deliveries
+ * (`[Message from agent "X"] …`), runtime notices and synthetic reminders are
+ * all persisted as user rows, and none of them is a prompt the human typed.
+ * `origin` alone is not enough — it marks the human's *words*, and the UI
+ * produces some of those itself (a decision answer, an explain request), so
+ * those rows are `origin: "human"` without `composed`. The rule is
+ * fail-closed, so anything unmarked is excluded.
  *
  * Consequence: rows persisted before the marker existed are untagged and
  * therefore leave the recall list. Nothing is deleted — the transcript is
@@ -33,9 +36,15 @@ const HUMAN_ORIGIN = "human";
 
 function toHistoryEntry(message) {
   if (message?.role !== "user") return null;
-  // Fail-closed: an untagged user row (peer delivery, notice, runtime
-  // reminder, or a pre-marker row) is not a prompt the human typed.
-  if (message.origin !== HUMAN_ORIGIN) return null;
+  // Two markers, because `origin` alone is not the same thing. It marks the
+  // human's *words*, and the UI produces some of those itself — a decision
+  // answer, an explain request — so it is also stamped on rows nobody typed.
+  // `composed` is the composer's own: it is what makes a prompt recallable.
+  //
+  // Fail-closed, like every other filter here: an untagged user row (peer
+  // delivery, notice, runtime reminder, or a row persisted before either marker
+  // existed) is not a prompt the human typed.
+  if (message.origin !== HUMAN_ORIGIN || message.composed !== true) return null;
 
   const raw =
     typeof message.content === "string"

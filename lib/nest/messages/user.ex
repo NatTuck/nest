@@ -44,6 +44,7 @@ defmodule Nest.Messages.User do
   # The metadata key/value marking a user message as the human's own words.
   @origin_key "origin"
   @human_origin "human"
+  @composed_key "composed"
 
   # The origin marking the runtime's compaction request.
   @compaction_origin "compaction"
@@ -80,6 +81,29 @@ defmodule Nest.Messages.User do
   """
   @spec human_metadata() :: map()
   def human_metadata, do: %{@origin_key => @human_origin}
+
+  @doc """
+  The metadata a user message carries for the `source` that produced it.
+
+    * `:composed` — the human typed it in the composer. `origin: "human"` **and**
+      `composed: true`; the recall list requires both, so a message the human
+      did not type cannot reach it.
+    * `:synthesized` — the human's words, produced by the UI rather than typed:
+      a decision answer, an explain request. `origin: "human"` so the row is
+      attributed to them in the header and to the model, but not recallable.
+    * `false` — nobody's words: an `agents-spawn` `query` kickoff. No metadata.
+
+  Any other value raises. The distinction is the whole point, so a call site
+  that passes a bare `true` must fail loudly here rather than quietly lose the
+  prompt from the recall list.
+  """
+  @spec source_metadata(:composed | :synthesized | false) :: map()
+  def source_metadata(:composed), do: Map.put(human_metadata(), @composed_key, true)
+  def source_metadata(:synthesized), do: human_metadata()
+  def source_metadata(false), do: %{}
+
+  def source_metadata(other),
+    do: raise(ArgumentError, "unknown user-message source: #{inspect(other)}")
 
   @doc """
   The `metadata` marking a user message as the runtime's compaction request.
@@ -149,6 +173,7 @@ defmodule Nest.Messages.User do
       "apiLogs" => Message.format_api_logs(msg.api_logs)
     }
     |> maybe_put_origin(msg.metadata)
+    |> maybe_put_composed(msg.metadata)
     |> maybe_put_command_output_parts(msg.metadata)
     |> Message.maybe_put_tokens(msg.tokens)
   end
@@ -159,6 +184,12 @@ defmodule Nest.Messages.User do
     do: Map.put(json, @origin_key, origin)
 
   defp maybe_put_origin(json, _metadata), do: json
+
+  # The second half of the recall filter, and the same rule: only when the row
+  # carries it, so an untagged row's payload shape is unchanged. `origin` marks
+  # the human's words; this marks the ones they typed.
+  defp maybe_put_composed(json, %{@composed_key => true}), do: Map.put(json, @composed_key, true)
+  defp maybe_put_composed(json, _metadata), do: json
 
   # The command-output indexes ride the wire only when there are some: an empty
   # list is the same fact as no marker, so a row with no command output omits the

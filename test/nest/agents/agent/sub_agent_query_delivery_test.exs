@@ -78,7 +78,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
 
     script_coordinator(specialist_name)
 
-    :ok = Agent.chat(coordinator_pid, "ask the specialist", nil, nil, true)
+    :ok = Agent.chat(coordinator_pid, "ask the specialist", nil, nil, :composed)
 
     # The peer's turn reached the `agents-send` that answers the query and is
     # held there: the query has been delivered, and the answer is still unsent.
@@ -163,7 +163,7 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
 
     script_coordinator(specialist_name)
 
-    :ok = Agent.chat(coordinator_pid, "ask the specialist", nil, nil, true)
+    :ok = Agent.chat(coordinator_pid, "ask the specialist", nil, nil, :composed)
 
     # The batch reached the tool worker, parked before its query.
     assert_receive {:query_blocked, batch}, 1_000

@@ -29,10 +29,11 @@
  * one it is. A read that failed never renders as "nothing has been said".
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useStore } from "../store";
 import { requestSpaceFeed, sendSpaceNote } from "../channels";
 import { ChatInput } from "../components/ChatInput";
+import { spaceDraftKey } from "../store/slices/composer";
 import { JumpToBottomButton } from "../components/JumpToBottomButton";
 import { SendErrorBanner } from "../components/SendErrorBanner";
 import { SpaceEnvironmentCard } from "../components/SpaceEnvironmentCard";
@@ -71,7 +72,15 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
   const me = useStore((state) => state.currentUser?.username ?? null);
   const lobbyJoined = useStore((state) => state.lobbyJoined);
 
-  const [inputValue, setInputValue] = useState("");
+  // Keyed by space, for the same reason the chat composer is keyed by agent:
+  // the draft outlives this component, and must not follow the reader.
+  const draftKey = spaceDraftKey(space.id);
+  const inputValue = useStore((state) => state.drafts[draftKey] ?? "");
+  const setDraft = useStore((state) => state.setDraft);
+  const setInputValue = useCallback(
+    (value) => setDraft(draftKey, value),
+    [setDraft, draftKey],
+  );
   const [sendError, setSendError] = useState(null);
   const [chosenRecipient, setChosenRecipient] = useState(null);
 
@@ -97,7 +106,7 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
   // holds, seeded from the space's default rather than from the agent's current
   // mode: this page has no agent channel to report one (`Nest.Modes` and the
   // space's blueprint are what the server sent with the feed).
-  const { currentMode, setCurrentMode, handleModeChange } = useAgentMode({
+  const { currentMode, handleModeChange } = useAgentMode({
     name: recipient,
     currentModeFromCache: null,
     defaultMode: feed?.defaultMode ?? null,
@@ -216,7 +225,6 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
           modes={feed?.modes ?? NO_MODES}
           mode={mode}
           onModeChange={handleModeChange}
-          onModeRestore={setCurrentMode}
           history={NO_HISTORY}
           commands={NO_COMMANDS}
         />

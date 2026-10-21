@@ -188,7 +188,7 @@ defmodule NestWeb.AgentChannel.Pane do
         {:error, "agent_status_#{status}"}
 
       {:ok, _info} ->
-        case Agents.chat(space_id, decision.asked_by, body, nil, sender, true) do
+        case Agents.chat(space_id, decision.asked_by, body, nil, sender, :synthesized) do
           :ok -> :ok
           {:error, reason} -> {:error, reason}
         end
@@ -348,7 +348,7 @@ defmodule NestWeb.AgentChannel.Pane do
           "- #{decision.title}: #{Map.fetch!(answers, decision.id)}"
         end)
 
-    case Agents.chat(space_id, name, body, nil, sender, true) do
+    case Agents.chat(space_id, name, body, nil, sender, :synthesized) do
       :ok ->
         :ok
 

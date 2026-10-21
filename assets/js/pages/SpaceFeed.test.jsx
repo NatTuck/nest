@@ -9,6 +9,7 @@
  * The store is mocked with a selector-based `useStore`; the transport is mocked
  * so a send can be inspected without a socket.
  */
+import { useEffect, useReducer } from "react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 
@@ -28,8 +29,28 @@ vi.mock("../channels", () => ({
   cancelEditSpace: mocks.cancelEditSpace,
 }));
 
+// The drafts are the one store slice a test drives by typing, and the composer
+// is controlled through them — so this stub has to re-render, or every
+// keystroke would vanish and a send would look like it was ignored.
+let mockDrafts = {};
+const draftListeners = new Set();
+function setDraft(key, text) {
+  mockDrafts = { ...mockDrafts, [key]: text };
+  for (const notify of draftListeners) notify();
+}
+function useDrafts() {
+  const [, bump] = useReducer((n) => n + 1, 0);
+  useEffect(() => {
+    draftListeners.add(bump);
+    return () => draftListeners.delete(bump);
+  }, []);
+  return mockDrafts;
+}
 vi.mock("../store", () => ({
-  useStore: (selector) => selector(mockState),
+  useStore: (selector) => {
+    const drafts = useDrafts();
+    return selector({ ...mockState, drafts, setDraft });
+  },
 }));
 
 // The hook is covered directly by `useScrollToBottom.test.js` (23 tests over
@@ -176,6 +197,38 @@ describe("following new notes", () => {
     expect(
       screen.queryByRole("button", { name: "Jump to latest messages" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("the feed composer's draft", () => {
+  // Keyed by space, like the chat composer is keyed by agent: the note box must
+  // survive leaving the page, and must not follow the reader to another space.
+  beforeEach(() => {
+    withFeed(readyFeed([]));
+  });
+
+  it("restores the draft when the reader comes back to the space", () => {
+    const first = renderFeed();
+    fireEvent.change(screen.getByLabelText("Message"), {
+      target: { value: "a note I was writing" },
+    });
+    expect(screen.getByLabelText("Message").value).toBe("a note I was writing");
+
+    first.unmount();
+
+    renderFeed();
+    expect(screen.getByLabelText("Message").value).toBe("a note I was writing");
+  });
+
+  it("does not carry the draft to another space", () => {
+    const first = renderFeed();
+    fireEvent.change(screen.getByLabelText("Message"), {
+      target: { value: "for space one only" },
+    });
+    first.unmount();
+
+    renderFeed({ space: { ...SPACE, id: 2, name: "Other", slug: "other" } });
+    expect(screen.getByLabelText("Message").value).toBe("");
   });
 });
 

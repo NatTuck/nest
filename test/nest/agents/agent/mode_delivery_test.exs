@@ -110,7 +110,7 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
       # The row also names her (`@alice`), because a direct chat and a note from
       # the same speaker must be the same framing: `Header.sender/3`'s drift
       # guard is in `HeaderTest`, and this is the producer end of it.
-      :ok = Agent.chat(pid, "do the thing", "plan", "alice", true)
+      :ok = Agent.chat(pid, "do the thing", "plan", "alice", :composed)
       wait_idle(pid)
 
       assert delivered(pid, "do the thing") == ["[From user @alice | mode: plan]\ndo the thing"]
@@ -118,7 +118,7 @@ defmodule Nest.Agents.Agent.ModeDeliveryTest do
 
       # ...or a queued delivery, applied when the drain delivers it.
       set_status(pid, :streaming)
-      :ok = Agent.chat(pid, "and another", "act", "alice", true)
+      :ok = Agent.chat(pid, "and another", "act", "alice", :composed)
 
       Agent.stop_chat(pid, self())
       wait_idle(pid)

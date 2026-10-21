@@ -51,19 +51,22 @@ defmodule NestWeb.AgentChannel.History do
     with {:ok, before} <- parse_before(payload["before"]),
          {:ok, limit} <- parse_limit(payload["limit"]),
          {:ok, roles} <- parse_role(payload["role"]) do
-      {:ok, [before: before, limit: limit, roles: roles, origin: recall_origin(roles)]}
+      {:ok, [before: before, limit: limit, roles: roles] ++ recall_filter(roles)}
     end
   end
 
   # The `role: "user"` projection *is* the Ctrl/Cmd+Up recall list — its only
-  # production consumer — so the page is filtered to the human's own prompts
-  # here, not just on the client: delivered peer messages and notices are
-  # user-role rows carrying no `origin` marker, and they must not eat the page
-  # budget. The rule is implicit in the projection on purpose, so a client
-  # cannot forget it and silently get deliveries back; a caller that wants every
-  # user row asks for no role and filters client-side.
-  defp recall_origin(["user"]), do: "human"
-  defp recall_origin(_roles), do: nil
+  # production consumer — so the page is filtered to the prompts the human
+  # *typed* here, not just on the client. Two markers, because one is not
+  # enough: `origin: "human"` marks the human's words (and the UI produces some
+  # of those itself — a decision answer, an explain request), while
+  # `composed: "true"` marks the ones that came from the composer. Delivered
+  # peer messages and notices are user-role rows carrying neither, and they must
+  # not eat the page budget. The rule is implicit in the projection on purpose,
+  # so a client cannot forget it and silently get deliveries back; a caller that
+  # wants every user row asks for no role and filters client-side.
+  defp recall_filter(["user"]), do: [origin: "human", composed: "true"]
+  defp recall_filter(_roles), do: []
 
   defp parse_before(nil), do: {:ok, nil}
   defp parse_before(n) when is_integer(n) and n >= 0, do: {:ok, n}

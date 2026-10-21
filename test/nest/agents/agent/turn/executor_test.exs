@@ -58,7 +58,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
     %{base | live: %{base.live | inbox: entries, mode: mode}}
   end
 
-  defp entry(kind, from, content, mode \\ nil, human? \\ false) do
+  defp entry(kind, from, content, mode \\ nil, source \\ false) do
     # The whole documented entry shape (`Inbox.@type entry`): the removal
     # delta names an entry by its `id` (issue #27), so a fixture without one
     # is not an entry the queue could hold.
@@ -69,7 +69,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       timestamp: DateTime.utc_now(),
       kind: kind,
       mode: mode,
-      human?: human?,
+      source: source,
       fulfilled_ids: []
     }
   end

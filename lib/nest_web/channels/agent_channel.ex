@@ -339,7 +339,7 @@ defmodule NestWeb.AgentChannel do
         {:reply, {:error, %{"reason" => "agent_status_#{status}"}}, socket}
 
       {:ok, _agent} ->
-        Replies.reply_chat(socket, Agents.chat(space_id, name, content, mode, sender, true))
+        Replies.reply_chat(socket, Agents.chat(space_id, name, content, mode, sender, :composed))
 
       # Every refusal, spelled for this channel: `:not_found` is `agent_not_found`
       # here and an archived agent has its own code, because its row must not be

@@ -48,7 +48,7 @@ defmodule NestWeb.AgentChannelTestHelpers do
            %User{
              index: 1,
              parts: [%Part.Text{text: "archived question"}],
-             metadata: User.human_metadata()
+             metadata: User.source_metadata(:composed)
            }},
           {:user,
            %User{

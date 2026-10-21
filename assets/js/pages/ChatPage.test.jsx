@@ -5,6 +5,7 @@
  * "provider: model-name" when both are present, falling back to
  * just the name when only name is available.
  */
+import { useEffect, useReducer } from "react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
@@ -17,6 +18,24 @@ import { MemoryRouter, Routes, Route } from "react-router-dom";
 // scenario flows end-to-end.
 let mockAgentsCache = {};
 let mockSpaces = [];
+// The composer's drafts, by key. The real store keeps them (see
+// `slices/composer.js`) and the composer is controlled through them, so the
+// mock has to be *reactive*: a stub that never re-rendered would swallow every
+// keystroke and the page would look like it refused the text.
+let mockDrafts = {};
+const draftListeners = new Set();
+function setDraft(key, text) {
+  mockDrafts = { ...mockDrafts, [key]: text };
+  for (const notify of draftListeners) notify();
+}
+function useDrafts() {
+  const [, bump] = useReducer((n) => n + 1, 0);
+  useEffect(() => {
+    draftListeners.add(bump);
+    return () => draftListeners.delete(bump);
+  }, []);
+  return mockDrafts;
+}
 // The space edit's latch (`SpacePausedBanner` reads it): no space is paused in
 // these tests.
 const mockPausedSpaces = [];
@@ -25,6 +44,7 @@ const mockPausedSpaces = [];
 let mockPanes = {};
 vi.mock("../store", () => {
   const actions = {
+    setDraft,
     clearAgentError: (id) => {
       const cache = mockAgentsCache[id];
       if (!cache) return;
@@ -41,19 +61,24 @@ vi.mock("../store", () => {
     },
   };
 
-  const useStore = (selector) =>
-    selector({
+  const useStore = (selector) => {
+    const drafts = useDrafts();
+    return selector({
       agentsCache: mockAgentsCache,
       spaces: mockSpaces,
       pausedSpaces: mockPausedSpaces,
       panes: mockPanes,
+      drafts,
+      setDraft: actions.setDraft,
     });
+  };
   useStore.getState = () => ({
     ...actions,
     agentsCache: mockAgentsCache,
     spaces: mockSpaces,
     panes: mockPanes,
     pausedSpaces: mockPausedSpaces,
+    drafts: mockDrafts,
   });
 
   return { useStore };
@@ -161,10 +186,51 @@ beforeEach(() => {
   scroll.jumpToBottom.mockClear();
   // No pane state has arrived for any space in these tests unless one says so.
   mockPanes = {};
+  mockDrafts = {};
   // The host the server injects into `window.NEST_CONFIG`, plus the
   // shell's default title: a page test proves the page *replaces* it.
   window.NEST_CONFIG = { host: "vampire" };
   document.title = "Nest · Phoenix Framework";
+});
+
+describe("ChatPage composer drafts", () => {
+  // The draft is the store's, keyed by agent. Two things follow, and neither
+  // holds if the value lives in the page's own state: leaving the page must not
+  // lose it, and moving to another agent must not carry it along.
+  beforeEach(() => {
+    mockAgentsCache = {
+      "agent-a": { status: "connected", agentState: "idle", messages: [] },
+      "agent-b": { status: "connected", agentState: "idle", messages: [] },
+    };
+  });
+
+  it("restores the draft when the reader comes back to the agent", () => {
+    const first = renderChat("agent-a");
+    fireEvent.change(screen.getByLabelText("Message"), {
+      target: { value: "half a thought" },
+    });
+    expect(screen.getByLabelText("Message").value).toBe("half a thought");
+
+    // Leaving the page unmounts it — which is exactly the case a draft held in
+    // the component would not survive.
+    first.unmount();
+
+    renderChat("agent-a");
+    expect(screen.getByLabelText("Message").value).toBe("half a thought");
+  });
+
+  it("does not carry one agent's draft to another", () => {
+    const first = renderChat("agent-a");
+    fireEvent.change(screen.getByLabelText("Message"), {
+      target: { value: "for agent a only" },
+    });
+    first.unmount();
+
+    // `ChatPage` stays mounted when the route's `:name` changes, so this is the
+    // state a draft in the page would have leaked from.
+    renderChat("agent-b");
+    expect(screen.getByLabelText("Message").value).toBe("");
+  });
 });
 
 describe("ChatPage chat header", () => {

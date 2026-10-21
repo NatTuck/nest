@@ -180,7 +180,8 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   # notice's (issue #139): its own split of `content`, so the command output in
   # it is marked rather than re-derived from the text.
   defp entry_parts(entry, mode) do
-    sender = Header.sender(Map.get(entry, :from), Map.get(entry, :human?, false), entry.kind)
+    human? = Map.get(entry, :source, false) != false
+    sender = Header.sender(Map.get(entry, :from), human?, entry.kind)
     reply? = entry.kind == :query
 
     case Map.get(entry, :parts) do

@@ -34,7 +34,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           timestamp: at,
           kind: :agent,
           mode: nil,
-          human?: false
+          source: false
         },
         %{
           id: "e2",
@@ -43,7 +43,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           timestamp: at,
           kind: :user,
           mode: "plan",
-          human?: true
+          source: :composed
         },
         %{
           id: "e3",
@@ -52,7 +52,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           timestamp: at,
           kind: :user,
           mode: nil,
-          human?: false
+          source: false
         },
         %{
           id: "e4",
@@ -61,7 +61,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           timestamp: at,
           kind: :query,
           mode: nil,
-          human?: false
+          source: false
         },
         %{
           id: "e5",
@@ -70,7 +70,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           timestamp: at,
           kind: :runtime,
           mode: nil,
-          human?: false
+          source: false
         }
       ]
 
@@ -269,7 +269,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       timestamp: DateTime.utc_now(),
       kind: kind,
       mode: mode,
-      human?: false,
+      source: false,
       fulfilled_ids: []
     }
   end
