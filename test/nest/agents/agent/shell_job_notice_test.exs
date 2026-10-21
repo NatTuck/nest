@@ -134,7 +134,11 @@ defmodule Nest.Agents.Agent.ShellJobNoticeTest do
         script_sandbox: stage_script!(Mounts.scratch(mounts), body),
         script_path: nil,
         mounts: mounts,
-        max_jobs: 1
+        max_jobs: 1,
+        # No waiter: this stands in for a job whose tool call walked away, which
+        # is the case the notice exists for. `start_job/1` would otherwise
+        # register this test process, and the notice would be suppressed.
+        waiter: nil
       })
 
     id

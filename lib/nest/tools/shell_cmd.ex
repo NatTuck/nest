@@ -274,19 +274,36 @@ defmodule Nest.Tools.ShellCmd do
   end
 
   defp await_background_start(job_id, log_path, grace, agent_key, command, mounts) do
-    ShellJobs.subscribe(agent_key, job_id, self())
-
+    # No `subscribe/3`: `start_job/1` already registered this process, in the
+    # callback that created the job — subscribing here was the window that
+    # reported one exit twice, inline and as the owner's notice.
     receive do
       {:shell_job_exit, ^job_id, code} ->
         {:ok, output} = ShellJobs.output(agent_key, job_id)
         handle_exit_result(command, code, output, mounts)
     after
       grace ->
-        ShellJobs.unsubscribe(agent_key, job_id, self())
+        # The exit may have been handled between the timeout above and this
+        # call, in which case its message arrives after we stopped listening and
+        # the notice was suppressed because we *were* registered. The reply is
+        # the state at the removal, so that window has one answer rather than
+        # none.
+        case ShellJobs.unsubscribe(agent_key, job_id, self()) do
+          :running ->
+            {:ok,
+             "Started background job #{job_id} (log: #{log_path}). " <>
+               "Use shell-list, shell-wait, or shell-kill to manage it."}
 
-        {:ok,
-         "Started background job #{job_id} (log: #{log_path}). " <>
-           "Use shell-list, shell-wait, or shell-kill to manage it."}
+          {:exited, code} ->
+            {:ok, output} = ShellJobs.output(agent_key, job_id)
+            handle_exit_result(command, code, output, mounts)
+
+          :gone ->
+            {:ok, ShellJobs.gone_text(job_id)}
+
+          :trimmed ->
+            {:ok, ShellJobs.trimmed_text(job_id)}
+        end
     end
   end
 
