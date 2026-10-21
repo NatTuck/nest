@@ -54,7 +54,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     assert :ok = ShellJobs.kill(key, id)
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, _code}, 1_000
+    assert_receive {:shell_job_exit, ^id, _code}, 500
     assert [%{id: ^id, status: :exited, killed: true}] = ShellJobs.list(key)
   end
 
@@ -186,7 +186,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     assert :ok = ShellJobs.kill(key, id)
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, _code}, 1_000
+    assert_receive {:shell_job_exit, ^id, _code}, 500
 
     assert {:ok, _} = start_background("sleep 30", tmp, key)
   end
@@ -247,7 +247,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
     # is queued behind that same callback.
     assert :ok = ShellJobs.subscribe(key, id, self())
     assert :ok = ShellJobs.kill(key, id)
-    assert_receive {:shell_job_exit, ^id, _code}, 1_000
+    assert_receive {:shell_job_exit, ^id, _code}, 500
     refute ShellJobs.live_in_space?(space_id)
 
     # ... and `stop_all/1` drops the agent's jobs, so nothing is live after it.
@@ -408,7 +408,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
     test "a job that exits with no waiter delivers exactly one notice", %{key: key, tmp: tmp} do
       id = start_owned_job!(tmp, key, "echo done\n")
 
-      assert_receive {:"$gen_cast", {:shell_job_exited, ^id, 0, "done\n"}}, 1_000
+      assert_receive {:"$gen_cast", {:shell_job_exited, ^id, 0, "done\n"}}, 500
 
       # A call to the manager: `finish_job/3` has returned, so everything it was
       # going to send is in the mailbox. One notice, not two.
@@ -430,7 +430,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
       # the one it did not mean to lose); the waiter is what suppresses it here.
       assert {:ok, _key} = ShellJobs.kill_space(elem(key, 0), id)
 
-      assert_receive {:shell_job_exit, ^id, _code}, 1_000
+      assert_receive {:shell_job_exit, ^id, _code}, 500
       assert [%{id: ^id, status: :exited}] = ShellJobs.list(key)
       refute_received {:"$gen_cast", {:shell_job_exited, _, _, _}}
     end
@@ -440,8 +440,35 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
       assert {:ok, _key} = ShellJobs.kill_space(elem(key, 0), id)
 
-      assert_receive {:"$gen_cast", {:shell_job_exited, ^id, code, ""}}, 1_000
+      assert_receive {:"$gen_cast", {:shell_job_exited, ^id, code, ""}}, 500
       assert is_integer(code)
+    end
+
+    test "a job finished by the kill fallback is not finished again by its port's late DOWN",
+         %{key: key, tmp: tmp} do
+      id = start_owned_job!(tmp, key, "sleep 30\n")
+
+      # A sibling's kill is not suppressed, so the notice is the observable.
+      assert {:ok, _key} = ShellJobs.kill_space(elem(key, 0), id)
+
+      # The fallback fires first, because the port's DOWN did not arrive in
+      # time. A call to the manager is the barrier: the fallback has run.
+      send(ShellJobs.name(), {:kill_finalize, id})
+      assert [%{id: ^id, status: :exited}] = ShellJobs.list(key)
+
+      # Then the port's DOWN arrives. `finish_job/3` leaves `erl_pid` in place,
+      # so `by_erl_pid/2` used to match the finished job and finish it again —
+      # a second notice, and a second turn on the same result.
+      # allowlist: harness — the job's exec port, to deliver its late DOWN
+      erl_pid =
+        :sys.get_state(ShellJobs.name(), 500).jobs |> Map.fetch!(id) |> Map.fetch!(:erl_pid)
+
+      send(ShellJobs.name(), {:DOWN, make_ref(), :process, erl_pid, :killed})
+
+      # A call, so the DOWN has been handled when it returns.
+      assert [%{id: ^id, status: :exited}] = ShellJobs.list(key)
+      assert_received {:"$gen_cast", {:shell_job_exited, ^id, _code, _output}}
+      refute_received {:"$gen_cast", {:shell_job_exited, _, _, _}}
     end
 
     test "the owner's own kill delivers no notice", %{key: {space_id, name} = key, tmp: tmp} do
@@ -457,7 +484,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
       # The exit frame is `finish_job/3`'s last act — after the notice would have
       # been sent — so it is the barrier for the absence below, not a clock.
-      assert_receive {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}, 1_000
+      assert_receive {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}, 500
 
       # No waiter, so nothing else could tell the owner anything — and the tool
       # call that asked for the kill already reports the exit, so the manager

@@ -46,6 +46,20 @@ defmodule Nest.Agents.Agent.ShellJobNoticeTest do
                [{:text, "Background job job-3 exited with code 2:\n"}]
     end
 
+    test "a multibyte log is split off by bytes, not graphemes" do
+      # `String.split_at/2` counts graphemes, so a byte offset happens to work
+      # only while the prose is ASCII — a multibyte character anywhere in
+      # `result_text/3`'s prose would have shifted the split silently, and two
+      # characters of the log would have been rendered as prose. The log itself
+      # is the case this module exists to carry, so it is the one pinned here.
+      output = "héllo ☃ wörld\n"
+
+      assert [{:text, prose}, {:output, ^output}] =
+               ShellJobNotice.parts("job-3", 3, output)
+
+      assert prose == "Background job job-3 exited with code 3:\n"
+    end
+
     test "notice/3 is exactly the join of parts/3, which is shell-wait's answer" do
       for {code, output} <- [{0, ""}, {0, "done\n"}, {137, "killed\n"}] do
         parts = ShellJobNotice.parts("job-3", code, output)

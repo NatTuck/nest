@@ -49,11 +49,15 @@ defmodule Nest.Agents.Agent.ShellJobNotice do
   @spec parts(String.t(), integer(), binary()) :: [Segment.t()]
   def parts(job_id, code, output) do
     text = ShellJobs.result_text(job_id, code, output)
-    {prose, log} = String.split_at(text, byte_size(text) - byte_size(output))
+    # Bytes, not graphemes: `String.split_at/2` counts graphemes, so a byte
+    # offset happens to work only while the prose is ASCII. `binary_part/3` is
+    # the same answer whatever either half is encoded as, and `result_text/3`
+    # is `prose <> output` by construction.
+    prose = binary_part(text, 0, byte_size(text) - byte_size(output))
 
-    case log do
+    case binary_part(text, byte_size(prose), byte_size(output)) do
       "" -> [{:text, prose}]
-      _output -> [{:text, prose}, {:output, log}]
+      log -> [{:text, prose}, {:output, log}]
     end
   end
 
