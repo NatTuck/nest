@@ -25,7 +25,8 @@
  * content has a `[mode: <name>]\n` prefix, which is stripped here so the
  * recovered prompt is the user-visible text, and a `[nest notice]\n` marker is
  * stripped the same way — the bubble strips both, and the recall list must
- * hand back what the bubble showed.
+ * hand back what the bubble showed. Each entry is `{content}` and nothing else:
+ * the mode is an input to the stripping, not a fact the list carries.
  */
 
 import { messageText } from "./messageText.js";
@@ -52,10 +53,11 @@ function toHistoryEntry(message) {
       : messageText(message);
   if (!raw) return null;
 
-  return {
-    content: stripHeader(raw, message.mode ?? ""),
-    mode: message.mode ?? null,
-  };
+  // `mode` is read here and only here: it is what `stripHeader` needs to take
+  // the `[mode: X]\n` prefix off, so the recalled text is what the bubble
+  // showed. It does not ride the entry — walking the history changes the text
+  // and nothing else, so a mode on the entry would be data no consumer reads.
+  return { content: stripHeader(raw, message.mode ?? "") };
 }
 
 export function buildChatHistory(messages, archivedHistory) {

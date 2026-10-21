@@ -37,10 +37,7 @@ describe("buildChatHistory", () => {
       ],
     );
 
-    expect(result).toEqual([
-      { content: "second", mode: "build" },
-      { content: "first", mode: "plan" },
-    ]);
+    expect(result).toEqual([{ content: "second" }, { content: "first" }]);
   });
 
   it("collapses consecutive duplicate content across the active and archived lists", () => {
@@ -63,7 +60,7 @@ describe("buildChatHistory", () => {
       ],
     );
 
-    expect(result).toEqual([{ content: "same prompt", mode: null }]);
+    expect(result).toEqual([{ content: "same prompt" }]);
   });
 
   it("filters out non-user roles and non-string content in both lists", () => {
@@ -91,8 +88,8 @@ describe("buildChatHistory", () => {
     );
 
     expect(result).toEqual([
-      { content: "active user", mode: null },
-      { content: "archived user", mode: null },
+      { content: "active user" },
+      { content: "archived user" },
     ]);
   });
 
@@ -121,10 +118,7 @@ describe("buildChatHistory", () => {
       ],
     );
 
-    expect(result).toEqual([
-      { content: "active", mode: "build" },
-      { content: "archived", mode: "plan" },
-    ]);
+    expect(result).toEqual([{ content: "active" }, { content: "archived" }]);
   });
 
   it("includes a human prompt sent while the agent was busy", () => {
@@ -140,7 +134,7 @@ describe("buildChatHistory", () => {
       },
     ]);
 
-    expect(result).toEqual([{ content: "queued prompt", mode: "build" }]);
+    expect(result).toEqual([{ content: "queued prompt" }]);
   });
 
   it("excludes user rows that are not tagged as human (fail-closed)", () => {
@@ -190,10 +184,10 @@ describe("buildChatHistory", () => {
       ],
     );
 
-    expect(result).toEqual([{ content: "real prompt", mode: "build" }]);
+    expect(result).toEqual([{ content: "real prompt" }]);
   });
 
-  it("tolerates missing inputs and defaults a missing mode to null", () => {
+  it("tolerates missing inputs, and a row whose mode is absent strips no prefix", () => {
     expect(buildChatHistory()).toEqual([]);
     expect(buildChatHistory(null, null)).toEqual([]);
 
@@ -207,7 +201,7 @@ describe("buildChatHistory", () => {
       },
     ]);
 
-    expect(result).toEqual([{ content: "no mode", mode: null }]);
+    expect(result).toEqual([{ content: "no mode" }]);
   });
 
   it("strips the header, matching what the bubble showed", () => {
@@ -224,7 +218,7 @@ describe("buildChatHistory", () => {
           mode: "act",
         },
       ]),
-    ).toEqual([{ content: "typed by the human", mode: "act" }]);
+    ).toEqual([{ content: "typed by the human" }]);
 
     expect(
       buildChatHistory([
@@ -236,9 +230,7 @@ describe("buildChatHistory", () => {
           mode: "plan",
         },
       ]),
-    ).toEqual([
-      { content: "[From user | mode: act]\ntyped by the human", mode: "plan" },
-    ]);
+    ).toEqual([{ content: "[From user | mode: act]\ntyped by the human" }]);
   });
 
   it("strips the `[nest notice]` marker, matching what the bubble showed", () => {
@@ -256,6 +248,6 @@ describe("buildChatHistory", () => {
       },
     ]);
 
-    expect(result).toEqual([{ content: "typed by the human", mode: "build" }]);
+    expect(result).toEqual([{ content: "typed by the human" }]);
   });
 });

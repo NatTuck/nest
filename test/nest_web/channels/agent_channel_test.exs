@@ -487,14 +487,23 @@ defmodule NestWeb.AgentChannelTest do
               "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
             })
 
-          assert_reply ref, :ok, %{}
-
-          # The agent emits a chat:status broadcast carrying the
-          # new model — the canonical wire signal for the JS to
-          # drop the repair banner. The PubSub payload uses atom
-          # keys (it doesn't transit through JSON encoding — JS
-          # reads those maps via React's normal serialization).
+          # The agent's own frame is the barrier, not the reply. `change_model`
+          # blocks on the agent's `set_model` handler, which broadcasts
+          # `chat:status` from its settle and only then returns — so by the time
+          # this frame lands the handler has finished and the reply is already
+          # on its way. That makes the reply's bound a failure bound instead of
+          # a race, which is what a bare 100 ms `assert_reply` was: the repair
+          # does a DotConfig round trip, a DB write, the `{:unblocked}` settle
+          # and a notice settle behind it, and under the suite's parallel load
+          # that window is occasionally wider than the default. (Same shape as
+          # `LobbyChannelChangeModelTest`'s stop barrier.)
+          #
+          # The canonical wire signal for the JS to drop the repair banner. The
+          # PubSub payload uses atom keys (it doesn't transit through JSON
+          # encoding — JS reads those maps via React's normal serialization).
           assert_receive {:chat_status, payload}, 1_000
+          assert_reply ref, :ok, %{}, 500
+
           assert payload.status == "idle"
           assert payload.model["name"] == "qwen3.5-plus"
         end)

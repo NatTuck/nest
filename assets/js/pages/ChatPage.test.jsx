@@ -8,7 +8,7 @@
 import { useEffect, useReducer } from "react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, act, within } from "@testing-library/react";
-import { MemoryRouter, Routes, Route } from "react-router-dom";
+import { MemoryRouter, Routes, Route, useNavigate } from "react-router-dom";
 
 // Mock zustand store — set the cache directly per test.
 // Provides both `useStore(selector)` (called as a React hook by
@@ -166,6 +166,30 @@ vi.mock("../components/EditAgentDialog", () => ({
 import { ChatPage } from "./ChatPage";
 import { SLASH_COMMANDS } from "../utils/slashCommands.js";
 
+// The same page, but with a `navigate` the test can call: the route keeps
+// `ChatPage` mounted when `:name` changes, and that is the case a draft held in
+// the page's own state would leak from.
+function renderChatNavigable(startAgent, spaceSlug = "my-space") {
+  mockSpaces = [{ id: 1, slug: spaceSlug, name: "My Space" }];
+  let navigate;
+  function Nav() {
+    navigate = useNavigate();
+    return null;
+  }
+  const utils = render(
+    <MemoryRouter initialEntries={[`/space/${spaceSlug}/agent/${startAgent}`]}>
+      <Nav />
+      <Routes>
+        <Route path="/space/:spaceSlug/agent/:name" element={<ChatPage />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  return {
+    ...utils,
+    go: (name) => act(() => navigate(`/space/${spaceSlug}/agent/${name}`)),
+  };
+}
+
 function renderChat(agentName = "test-agent", spaceSlug = "my-space") {
   mockSpaces = [{ id: 1, slug: spaceSlug, name: "My Space" }];
   return render(
@@ -219,17 +243,62 @@ describe("ChatPage composer drafts", () => {
     expect(screen.getByLabelText("Message").value).toBe("half a thought");
   });
 
-  it("does not carry one agent's draft to another", () => {
-    const first = renderChat("agent-a");
+  it("does not carry one agent's draft to another, without unmounting", () => {
+    const { go } = renderChatNavigable("agent-a");
     fireEvent.change(screen.getByLabelText("Message"), {
       target: { value: "for agent a only" },
     });
-    first.unmount();
 
-    // `ChatPage` stays mounted when the route's `:name` changes, so this is the
-    // state a draft in the page would have leaked from.
-    renderChat("agent-b");
+    // A route change, not a remount: this is the shape that leaked, because
+    // `ChatPage` is the same component before and after.
+    go("agent-b");
     expect(screen.getByLabelText("Message").value).toBe("");
+
+    go("agent-a");
+    expect(screen.getByLabelText("Message").value).toBe("for agent a only");
+  });
+});
+
+describe("ChatPage history navigation", () => {
+  // Requirement: walking the recall list is a text operation. The mode is the
+  // user's choice — the selector, or Ctrl+M — so an entry sent under "plan"
+  // must not drag the selector back to "plan" when the reader is on "act".
+  beforeEach(() => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        currentMode: "act",
+        defaultMode: "act",
+        modes: ["plan", "act"],
+        model: { name: "qwen3.5-plus" },
+        messages: [
+          {
+            index: 0,
+            role: "user",
+            origin: "human",
+            composed: true,
+            content: "[mode: plan]\nan older prompt",
+            mode: "plan",
+          },
+        ],
+      },
+    };
+  });
+
+  it("fills the box from the entry and leaves the mode alone", () => {
+    renderChat();
+
+    expect(screen.getByLabelText("Mode").value).toBe("act");
+
+    fireEvent.keyDown(screen.getByLabelText("Message"), {
+      key: "ArrowUp",
+      ctrlKey: true,
+    });
+
+    expect(screen.getByLabelText("Message").value).toBe("an older prompt");
+    // The entry was sent under "plan" and the selector still says "act".
+    expect(screen.getByLabelText("Mode").value).toBe("act");
   });
 });
 

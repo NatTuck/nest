@@ -220,14 +220,23 @@ describe("the feed composer's draft", () => {
     expect(screen.getByLabelText("Message").value).toBe("a note I was writing");
   });
 
-  it("does not carry the draft to another space", () => {
-    const first = renderFeed();
+  it("does not carry the draft to another space, without remounting", () => {
+    const { rerender } = renderFeed();
     fireEvent.change(screen.getByLabelText("Message"), {
       target: { value: "for space one only" },
     });
-    first.unmount();
 
-    renderFeed({ space: { ...SPACE, id: 2, name: "Other", slug: "other" } });
+    // A *rerender* with another space, not a fresh mount: the feed is the same
+    // component before and after, which is the shape a draft held in its own
+    // state would have followed.
+    rerender(
+      <SpaceFeed
+        space={{ ...SPACE, id: 2, name: "Other", slug: "other" }}
+        blueprint={BLUEPRINT}
+        spaceAgents={AGENTS}
+      />,
+    );
+
     expect(screen.getByLabelText("Message").value).toBe("");
   });
 });
