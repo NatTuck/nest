@@ -252,7 +252,16 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
       # The channel started this agent, and it is linked to the test process, so
       # stopping it in the body would take the test down with it.
       Process.unlink(pid)
+
+      # `stop_agent/2` only *signals*: the agent traps exits, so the `:shutdown`
+      # is a message it handles when it next runs, and it is still alive (and
+      # still in the Registry) when the call returns. Monitor it so the two
+      # pushes below cannot race the shutdown — otherwise `get_agent/2` hands
+      # back a pid that is already doomed, the call never reaches the reload path
+      # that produces the refusal, and the client gets no reply at all.
+      ref = Process.monitor(pid)
       :ok = Nest.Agents.Supervisor.stop_agent(space_id, name)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
 
       log =
         capture_log(fn ->

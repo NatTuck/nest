@@ -314,6 +314,30 @@ defmodule NestWeb.AgentChannelPaneTest do
     assert_push "pane:state", %{"decisions" => [], "seq" => 2}
   end
 
+  test "a drop whose asking agent dies under the notice still answers", %{
+    socket: socket,
+    agent_id: name,
+    space_id: space_id
+  } do
+    assert {:ok, id} = ask(space_id, name, "Which database?")
+
+    # `notify_dropped/2` resolves the asking agent and then calls into it, and the
+    # pid can die between the two: the agent traps exits, so `stop_agent/2` only
+    # queues its `:shutdown` and the Registry still names it. The notice is
+    # best-effort, so the drop must still be answered rather than taking the
+    # channel down with it.
+    Mimic.allow(Nest.Agents.Agent, self(), socket.channel_pid)
+
+    Mimic.stub(Nest.Agents.Agent, :deliver_internal, fn _, _, _, _ -> exit(:noproc) end)
+
+    ref = push(socket, "decisions:drop", %{"ids" => [id]})
+    assert_reply ref, :ok, %{}
+
+    # Removed anyway: the notice is a courtesy, the removal is the action.
+    ref = push(socket, "pane:sync", %{})
+    assert_reply ref, :ok, %{"decisions" => []}
+  end
+
   test "a malformed pane payload is refused rather than acted on", %{socket: socket} do
     ref = push(socket, "decisions:answer", %{"answers" => [%{"id" => 1, "answer" => "x"}]})
     assert_reply ref, :error, %{"reason" => "invalid_payload"}

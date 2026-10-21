@@ -561,7 +561,7 @@ defmodule Nest.Agents.Supervisor do
   A caller that must not resurrect a stopped agent wants
   `get_running_agent/2` instead.
   """
-  @spec get_agent(integer(), String.t()) :: {:ok, pid()} | {:error, :not_found}
+  @spec get_agent(integer(), String.t()) :: {:ok, pid()} | {:error, term()}
   def get_agent(space_id, name) do
     case get_running_agent(space_id, name) do
       {:ok, pid} -> {:ok, pid}

@@ -451,11 +451,33 @@ defmodule Nest.AgentsTest do
   end
 
   describe "change_model/2" do
-    test "returns :not_found for an unknown agent" do
-      assert Agents.change_model(AgentTestHelpers.current_space_id(), "nope", %{
-               name: "qwen3.5-plus",
-               provider: "model-studio"
-             }) == {:error, :not_found}
+    test "returns :not_found for an unknown agent and for one that dies under the call" do
+      space_id = AgentTestHelpers.current_space_id()
+      model = %{name: "qwen3.5-plus", provider: "model-studio"}
+
+      assert Agents.change_model(space_id, "nope", model) == {:error, :not_found}
+
+      # `Supervisor.get_agent/2` reads the Registry and then `Process.alive?/1`,
+      # so an agent stopped between the two is handed back as a pid that is
+      # already doomed — the agent traps exits, so `stop_agent/2`'s `:shutdown`
+      # is only queued for it to handle when it next runs. A call on that pid
+      # waits for the death and then exits the caller, which from a channel is a
+      # dead socket and no reply. A pid that has already died is that window's
+      # deterministic shape.
+      dead =
+        spawn(fn ->
+          receive do
+            :never -> :ok
+          end
+        end)
+
+      ref = Process.monitor(dead)
+      Process.exit(dead, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^dead, :killed}
+
+      stub(Supervisor, :get_agent, fn _, _ -> {:ok, dead} end)
+
+      assert Agents.change_model(space_id, "nope", model) == {:error, :not_found}
     end
   end
 

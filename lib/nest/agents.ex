@@ -118,16 +118,38 @@ defmodule Nest.Agents do
           {:ok, map()}
           | {:error, :not_found | {:config_file_not_regular, String.t(), atom()}}
   def get_info(space_id, name) do
+    with_agent(space_id, name, &{:ok, Agent.get_public_info(&1)})
+  end
+
+  # Resolve `{space_id, name}` to a pid and call `fun` on it, reporting a process
+  # that goes away underneath the call as `{:error, :not_found}`.
+  #
+  # `Supervisor.get_agent/2`'s liveness check is a TOCTOU — it reads the Registry
+  # and then `Process.alive?/1` — so an agent stopped between the two is handed
+  # back as a pid that is already doomed. That is the normal case, not a corner
+  # one: the agent traps exits, so `Supervisor.stop_agent/2` only *queues* its
+  # `:shutdown` for the agent to handle when it next runs, and `Agent.set_model/2`
+  # and `Agent.edit_agent/2` call with `:infinity`. A caller that wins the race
+  # therefore waits for the death and then takes an exit; from a channel's
+  # `handle_in` that is a dead socket and no reply at all, which is the one
+  # outcome the lobby's refusal tests exist to rule out. So every call this
+  # context makes into an agent process goes through here.
+  defp with_agent(space_id, name, fun) do
     case Supervisor.get_agent(space_id, name) do
       {:ok, pid} ->
         try do
-          {:ok, Agent.get_public_info(pid)}
+          fun.(pid)
         catch
+          # The reason is deliberately dropped, not swallowed: the agent's own
+          # process logs its crash, so nothing is silent system-wide, and a caller
+          # that reaches this arm has a `{space_id, name}` and no live process
+          # behind it — which is what `:not_found` says. Logging here instead
+          # would print from every test that exercises the window.
           :exit, _ -> {:error, :not_found}
         end
 
-      {:error, _} = err ->
-        err
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -137,11 +159,7 @@ defmodule Nest.Agents do
   @spec get_agent(integer(), String.t()) ::
           {:ok, map()} | {:error, :not_found | term()}
   def get_agent(space_id, name) do
-    case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> build_agent_data(pid)
-      {:error, :not_found} -> {:error, :not_found}
-      {:error, reason} -> {:error, reason}
-    end
+    with_agent(space_id, name, &build_agent_data/1)
   end
 
   defp build_agent_data(pid) do
@@ -188,20 +206,12 @@ defmodule Nest.Agents do
   neither. A client that falls into a sync loop would otherwise
   turn every frame into a `vocations` round-trip.
   """
-  @spec get_agent_sync(integer(), String.t()) :: {:ok, map()} | {:error, :not_found}
+  @spec get_agent_sync(integer(), String.t()) :: {:ok, map()} | {:error, term()}
   def get_agent_sync(space_id, name) do
-    case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} ->
-        try do
-          info = Agent.get_public_info(pid)
-          {:ok, Map.put(info, :messages, Agent.get_messages(pid))}
-        catch
-          :exit, _reason -> {:error, :not_found}
-        end
-
-      {:error, _} = err ->
-        err
-    end
+    with_agent(space_id, name, fn pid ->
+      info = Agent.get_public_info(pid)
+      {:ok, Map.put(info, :messages, Agent.get_messages(pid))}
+    end)
   end
 
   @doc """
@@ -212,17 +222,9 @@ defmodule Nest.Agents do
   @spec get_api_logs(integer(), String.t(), non_neg_integer()) ::
           {:ok, [map()]} | {:error, term()}
   def get_api_logs(space_id, name, index) do
-    case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} ->
-        try do
-          Agent.get_api_logs(pid, index, Nest.Persistence.load_history(space_id, name))
-        catch
-          :exit, _reason -> {:error, :not_found}
-        end
-
-      {:error, _} = err ->
-        err
-    end
+    with_agent(space_id, name, fn pid ->
+      Agent.get_api_logs(pid, index, Nest.Persistence.load_history(space_id, name))
+    end)
   end
 
   defp get_vocation_info(nil), do: nil
@@ -300,12 +302,9 @@ defmodule Nest.Agents do
   @doc """
   Gets the messages for an agent by its `{space_id, name}`.
   """
-  @spec get_messages(integer(), String.t()) :: {:ok, [map()]} | {:error, :not_found}
+  @spec get_messages(integer(), String.t()) :: {:ok, [map()]} | {:error, term()}
   def get_messages(space_id, name) do
-    case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> {:ok, Agent.get_messages(pid)}
-      {:error, _} = err -> err
-    end
+    with_agent(space_id, name, fn pid -> {:ok, Agent.get_messages(pid)} end)
   end
 
   @doc """
@@ -323,19 +322,12 @@ defmodule Nest.Agents do
   Ctrl/Cmd+Up recall list.
   """
   @spec chat(integer(), String.t(), String.t(), String.t() | nil, String.t() | nil, boolean()) ::
-          :ok | {:error, :not_found}
+          :ok | {:error, term()}
   def chat(space_id, name, content, mode \\ nil, sender \\ nil, human? \\ false) do
-    case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} ->
-        Agent.chat(pid, content, mode, sender, human?)
-        :ok
-
-      {:error, :not_found} ->
-        {:error, :not_found}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    with_agent(space_id, name, fn pid ->
+      Agent.chat(pid, content, mode, sender, human?)
+      :ok
+    end)
   end
 
   @doc """
@@ -400,13 +392,19 @@ defmodule Nest.Agents do
   # does not exist writes nothing — nothing was sent, so there is nothing to
   # remember. `answered_at` is marked only after a delivery that actually
   # happened, because a note that never arrived answered nothing.
+  # The pid is resolved *before* the note is recorded, and `with_agent/3` does not
+  # make the pair atomic: a delivery that fails with `{:error, :not_found}` leaves
+  # the row written. That is unchanged from before the helper, and a returned
+  # error still beats the crash this used to be.
   defp deliver_to_agent(space_id, from, name, content, kind, mode) do
-    with {:ok, pid} <- Supervisor.get_agent(space_id, name),
-         :ok <- record_human_note(space_id, from, name, content, kind),
-         {:ok, disposition} <- Agent.deliver_note(pid, Address.format(from), content, kind, mode) do
-      mark_answered(space_id, from, name)
-      {:ok, disposition}
-    end
+    with_agent(space_id, name, fn pid ->
+      with :ok <- record_human_note(space_id, from, name, content, kind),
+           {:ok, disposition} <-
+             Agent.deliver_note(pid, Address.format(from), content, kind, mode) do
+        mark_answered(space_id, from, name)
+        {:ok, disposition}
+      end
+    end)
   end
 
   # The human's side of a note to an agent: the row the feed reads. Nothing to
@@ -490,31 +488,20 @@ defmodule Nest.Agents do
   @doc """
   Signal the in-flight chat task on the named agent to stop.
   """
-  @spec stop_chat(integer(), String.t(), pid()) :: :ok | {:error, :not_found}
+  @spec stop_chat(integer(), String.t(), pid()) :: :ok | {:error, term()}
   def stop_chat(space_id, name, from) do
-    case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} ->
-        Agent.stop_chat(pid, from)
-        :ok
-
-      {:error, :not_found} ->
-        {:error, :not_found}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    with_agent(space_id, name, fn pid ->
+      Agent.stop_chat(pid, from)
+      :ok
+    end)
   end
 
   @doc """
   Retry a compaction that previously failed.
   """
-  @spec retry_compaction(integer(), String.t()) :: :ok | {:error, atom()}
+  @spec retry_compaction(integer(), String.t()) :: :ok | {:error, term()}
   def retry_compaction(space_id, name) do
-    case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> Agent.retry_compaction(pid)
-      {:error, :not_found} -> {:error, :not_found}
-      {:error, reason} -> {:error, reason}
-    end
+    with_agent(space_id, name, &Agent.retry_compaction/1)
   end
 
   @doc """
@@ -526,24 +513,17 @@ defmodule Nest.Agents do
   on the status check (no channel-side pre-check).
   """
   @spec compact(integer(), String.t(), String.t() | nil) ::
-          :ok | {:error, :not_found | {:not_idle, atom()}}
+          :ok | {:error, term()}
   def compact(space_id, name, focus) do
-    case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> Agent.compact(pid, focus)
-      {:error, _} = err -> err
-    end
+    with_agent(space_id, name, &Agent.compact(&1, focus))
   end
 
   @doc """
   Acknowledge a `:compaction_loop_detected` status.
   """
-  @spec compaction_loop_detected_ok(integer(), String.t()) :: :ok | {:error, atom()}
+  @spec compaction_loop_detected_ok(integer(), String.t()) :: :ok | {:error, term()}
   def compaction_loop_detected_ok(space_id, name) do
-    case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> Agent.compaction_loop_detected_ok(pid)
-      {:error, :not_found} -> {:error, :not_found}
-      {:error, reason} -> {:error, reason}
-    end
+    with_agent(space_id, name, &Agent.compaction_loop_detected_ok/1)
   end
 
   @doc """
@@ -551,10 +531,7 @@ defmodule Nest.Agents do
   """
   @spec change_model(integer(), String.t(), map()) :: :ok | {:error, term()}
   def change_model(space_id, name, new_model) when is_map(new_model) do
-    case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> Agent.set_model(pid, new_model)
-      {:error, reason} -> {:error, reason}
-    end
+    with_agent(space_id, name, &Agent.set_model(&1, new_model))
   end
 
   @doc """
@@ -582,10 +559,7 @@ defmodule Nest.Agents do
   """
   @spec edit_agent(integer(), String.t(), map()) :: :ok | {:error, term()}
   def edit_agent(space_id, name, new_model) when is_map(new_model) do
-    case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> Agent.edit_agent(pid, new_model)
-      {:error, reason} -> {:error, reason}
-    end
+    with_agent(space_id, name, &Agent.edit_agent(&1, new_model))
   end
 
   @doc """
