@@ -348,10 +348,20 @@ defmodule Nest.Agents.Agent.Watch do
         {:event, ShellJobs.gone_text(id)}
     after
       timeout ->
-        ShellJobs.unsubscribe(key, id, self())
+        # The exit may have been handled between the timeout and this call, in
+        # which case its message arrived after we stopped listening. The reply
+        # is the state at the removal, so "still running" is never a guess.
+        case ShellJobs.unsubscribe(key, id, self()) do
+          :running ->
+            {:event,
+             "Timed out after #{timeout}ms waiting for background job #{id}; it is still running."}
 
-        {:event,
-         "Timed out after #{timeout}ms waiting for background job #{id}; it is still running."}
+          {:exited, code} ->
+            {:event, shell_result(key, id, code)}
+
+          :gone ->
+            {:event, ShellJobs.gone_text(id)}
+        end
     end
   end
 

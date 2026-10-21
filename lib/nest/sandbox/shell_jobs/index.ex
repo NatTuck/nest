@@ -49,6 +49,23 @@ defmodule Nest.Sandbox.ShellJobs.Index do
       end)
 
   @doc """
+  The state of `job_id` as a waiter leaving it should see it: `:running`,
+  `{:exited, code}`, or `:gone` for a job the manager no longer tracks.
+
+  A waiter that gave up cannot tell whether the exit landed in the window
+  between its own timeout and its `unsubscribe/3` being handled, so this is the
+  one answer it gets — never a guess, and never a state the manager invented.
+  """
+  @spec state(map(), String.t()) :: :running | {:exited, integer()} | :gone
+  def state(state, job_id) do
+    case Map.get(state.jobs, job_id) do
+      %{status: {:exited, code}} -> {:exited, code}
+      %{status: :running} -> :running
+      _untracked -> :gone
+    end
+  end
+
+  @doc """
   The job streaming output from OS pid `os_pid`, if any.
 
   Prefer a running job with that pid; fall back to a finished one so trailing

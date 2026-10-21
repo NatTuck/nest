@@ -77,7 +77,7 @@ defmodule Nest.Sandbox.ShellJobs do
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.PubSub
   alias Nest.Sandbox.{Backend, Mounts}
-  alias Nest.Sandbox.ShellJobs.{ExitNotice, Index, Info, JobLog, Launcher}
+  alias Nest.Sandbox.ShellJobs.{ExitNotice, Index, Info, JobLog, Launcher, Text}
   alias Nest.Sandbox.ShellJobs.Waiters
   alias Nest.Tools.ShellCmd
 
@@ -124,6 +124,11 @@ defmodule Nest.Sandbox.ShellJobs do
       `/tmp/<agent-name>`), and its backend is what decides where that
       scratch directory is when the agent is dropped
     * `:max_jobs` — the per-agent ceiling (default #{@default_max_jobs})
+    * `:waiter` — the pid to register for `{:shell_job_exit, job_id, code}`
+      (default: the caller). Registered in the same callback that creates the
+      job, so a job cannot be observed to exit before its waiter exists —
+      `waiter: nil` opts out, for a job nobody waits on (the case the owner
+      notice, issue #163, exists for)
 
   Returns `{:ok, job_id, log_path}`, where `log_path` is the path inside
   the sandbox, or `{:error, reason}`.
@@ -166,11 +171,23 @@ defmodule Nest.Sandbox.ShellJobs do
     do: GenServer.call(@name, {:subscribe, agent_key, job_id, pid})
 
   @doc """
-  Remove `pid` from `job_id`'s waiter list. Used when a caller abandons a
-  wait (timeout or `:stop_chat`) so a later exit doesn't send it a stray
-  `{:shell_job_exit, ...}` message. Idempotent.
+  Remove `pid` from `job_id`'s waiter list and answer with the job's state at
+  the removal. Used when a caller abandons a wait (a timeout, `:stop_chat`), so
+  a later exit doesn't send it a stray `{:shell_job_exit, ...}` message.
+  Idempotent.
+
+  The state is the point of the reply, not a courtesy. A caller that gave up
+  waiting cannot tell whether the exit landed in the window between its own
+  timeout firing and this call being handled: the exit's
+  `{:shell_job_exit, ...}` would arrive after it stopped listening, and the
+  owner notice is suppressed because it *was* registered. One answer, from the
+  process that owns the ordering, is what stops that exit being lost.
+
+  `:gone` is a job the manager no longer tracks — dropped with its agent — which
+  a waiter can outlive, since a `shell-wait` watcher and a tool worker are
+  siblings of the agent supervisor, not children of the agent.
   """
-  @spec unsubscribe(agent_key(), job_id(), pid()) :: :ok
+  @spec unsubscribe(agent_key(), job_id(), pid()) :: :running | {:exited, integer()} | :gone
   def unsubscribe(agent_key, job_id, pid),
     do: GenServer.call(@name, {:unsubscribe, agent_key, job_id, pid})
 
@@ -266,28 +283,11 @@ defmodule Nest.Sandbox.ShellJobs do
   @spec live_in_space?(integer()) :: boolean()
   def live_in_space?(space_id), do: GenServer.call(@name, {:live_in_space?, space_id})
 
-  @doc """
-  The result text for a finished job, shared by `shell-wait`'s inline answer
-  (issue #54: a job that had already exited) and the watcher that delivers the
-  exit as a message, so the two wordings cannot drift.
-  """
-  @spec result_text(job_id(), integer(), binary()) :: String.t()
-  def result_text(id, 0, ""), do: "Background job #{id} exited 0 with no output."
-
-  def result_text(id, code, output),
-    do: "Background job #{id} exited with code #{code}:\n#{output}"
-
-  @doc """
-  The result text for a job whose agent stopped, delivered by the watcher
-  (`Nest.Agents.Agent.Watch`) — the only place a job can be found gone.
-
-  Deliberately not `result_text/3`'s shape: the job did not exit, it was
-  dropped with its agent (`drop_agent/2`), so there is no exit code to report
-  and the log may already be gone with the agent's tmp directory. Wording it as
-  an exit would be a lie about what happened.
-  """
-  @spec gone_text(job_id()) :: String.t()
-  def gone_text(id), do: "Background job #{id} is gone: the agent that owned it stopped."
+  # The sentences this manager says live in `Text`, so the three places a job's
+  # exit is reported — `shell-wait`'s inline answer, the watcher's message, and
+  # the owner's notice — cannot drift.
+  defdelegate result_text(id, code, output), to: Text
+  defdelegate gone_text(id), to: Text
 
   # ---- Server callbacks ----
 
@@ -297,14 +297,21 @@ defmodule Nest.Sandbox.ShellJobs do
   end
 
   @impl true
-  def handle_call({:start_job, attrs}, _from, state) do
+  def handle_call({:start_job, attrs}, {caller, _ref}, state) do
     agent_key = Map.fetch!(attrs, :agent_key)
     max_jobs = Map.get(attrs, :max_jobs, @default_max_jobs)
 
     case start_guarded(attrs, agent_key, max_jobs, state) do
       {:ok, job_id, log_path, state} ->
-        state = state |> track_agent(agent_key, attrs) |> broadcast(agent_key)
-        {:reply, {:ok, job_id, log_path}, state}
+        waiter = Map.get(attrs, :waiter, caller)
+        state = track_agent(state, agent_key, attrs)
+
+        state =
+          if is_pid(waiter),
+            do: %{state | waiters: Waiters.add(state.waiters, job_id, waiter)},
+            else: state
+
+        {:reply, {:ok, job_id, log_path}, broadcast(state, agent_key)}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -346,7 +353,8 @@ defmodule Nest.Sandbox.ShellJobs do
   end
 
   def handle_call({:unsubscribe, _agent_key, job_id, pid}, _from, state) do
-    {:reply, :ok, %{state | waiters: Waiters.remove(state.waiters, job_id, pid)}}
+    state = %{state | waiters: Waiters.remove(state.waiters, job_id, pid)}
+    {:reply, Index.state(state, job_id), state}
   end
 
   def handle_call({:waiters, job_id}, _from, state) do
@@ -449,10 +457,10 @@ defmodule Nest.Sandbox.ShellJobs do
   defp start_guarded(attrs, agent_key, max_jobs, state) do
     cond do
       max_jobs <= 0 ->
-        {:error, background_disabled_msg()}
+        {:error, Text.background_disabled()}
 
       Index.running_count(state, agent_key) >= max_jobs ->
-        {:error, cap_reached_msg(max_jobs)}
+        {:error, Text.cap_reached(max_jobs)}
 
       true ->
         job_id = "job-#{state.next_id}"
@@ -684,15 +692,4 @@ defmodule Nest.Sandbox.ShellJobs do
   end
 
   defp broadcast(state, _agent_key), do: state
-
-  # ---- Messages ----
-
-  defp background_disabled_msg do
-    "Background shell jobs are disabled for this project (set `[shell] background` above 0 in .nest)."
-  end
-
-  defp cap_reached_msg(max) do
-    "Background shell job limit reached (#{max} per agent). Use shell-list and shell-kill, " <>
-      "or raise `[shell] background` in .nest."
-  end
 end
