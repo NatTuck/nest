@@ -66,6 +66,11 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
         status: :running,
         exit_code: nil,
         killed: false,
+        # Who asked for the kill, once one has (`ShellJobs.kill/2` is the
+        # owner's own `shell-kill`, `kill_space/2` a sibling's). `nil` while the
+        # job is running, and it is what decides whether the exit is reported
+        # back as a notice (`Nest.Sandbox.ShellJobs.ExitNotice`).
+        killed_by: nil,
         started_at: DateTime.utc_now()
       }
 

@@ -358,15 +358,7 @@ defmodule Nest.Agents.Agent.Turn do
           :runtime
         )
 
-      state =
-        if Machine.status_for(state.live.machine) == :idle do
-          {state, _result} = drain_inbox(state)
-          state
-        else
-          state
-        end
-
-      {:ok, state}
+      {:ok, drain_if_idle(state)}
     else
       settled
     end
@@ -429,6 +421,30 @@ defmodule Nest.Agents.Agent.Turn do
 
         delivered? = not Enum.any?(entries, &(&1 in state.live.inbox))
         {state, if(delivered?, do: :delivered, else: :queued)}
+    end
+  end
+
+  @doc """
+  Drain the inbox when the agent is idle, and leave a busy agent's queue alone.
+
+  A producer that appends a `:runtime` entry out of band — the runtime's own
+  notice (a lost batch, a background shell job's exit, a space unlocking a
+  queued message) — must wake an idle agent, because nothing else will: no
+  turn boundary is coming, so the entry would sit in the queue forever. A busy
+  agent needs nothing; its own boundary drains.
+
+  `drain_inbox/1` and not a peek plus a settle of our own: it is the documented
+  single drain path, and it owns the mode bookkeeping a hand-rolled drain loses
+  (it writes down a mode change it delivered and undoes one whose message
+  stayed queued — issue #103).
+  """
+  @spec drain_if_idle(Agent.t()) :: Agent.t()
+  def drain_if_idle(state) do
+    if Machine.status_for(state.live.machine) == :idle do
+      {state, _result} = drain_inbox(state)
+      state
+    else
+      state
     end
   end
 

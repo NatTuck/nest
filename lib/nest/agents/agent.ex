@@ -233,6 +233,20 @@ defmodule Nest.Agents.Agent do
     GenServer.call(pid, {:deliver_internal, sender, content, kind}, 5_000)
   end
 
+  @doc """
+  Tell this agent that one of its background shell jobs exited (issue #163).
+
+  A **cast**, not a call: the sender is `Nest.Sandbox.ShellJobs`, which must
+  never block on an agent to finish a job. The agent enqueues the notice
+  (`Nest.Agents.Agent.ShellJobNotice`, `Inbox.enqueue_notice/2`) as a `:runtime`
+  entry and drains it when it is idle, so an agent that never called
+  `shell-wait` is still woken by its job's result.
+  """
+  @spec shell_job_exited(pid(), String.t(), integer(), binary()) :: :ok
+  def shell_job_exited(pid, job_id, code, output) do
+    GenServer.cast(pid, {:shell_job_exited, job_id, code, output})
+  end
+
   defdelegate register_watch(pid, ref, spec), to: ClientAPI
   defdelegate watch_attached(pid, ref, task_pid), to: ClientAPI
   defdelegate unregister_watch(pid, ref), to: ClientAPI

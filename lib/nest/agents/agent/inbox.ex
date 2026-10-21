@@ -457,6 +457,20 @@ defmodule Nest.Agents.Agent.Inbox do
   end
 
   @doc """
+  Queue caller-supplied `:runtime` segments (issue #163).
+
+  `enqueue_runtime/3`'s sibling for a producer that owns its own wording: a
+  background shell job's exit notice, whose segments are
+  `Nest.Agents.Agent.ShellJobNotice.parts/3`. It carries no `fulfilled_ids` — a
+  job is not a tool call's promise — and the text is derived from the segments,
+  exactly as `enqueue_runtime/3` derives its own.
+  """
+  @spec enqueue_notice(Agent.t(), [Segment.t()]) :: Agent.t()
+  def enqueue_notice(state, parts) do
+    enqueue_internal(state, nil, Enum.map_join(parts, "", &elem(&1, 1)), :runtime, [], parts)
+  end
+
+  @doc """
   Log the reply obligations this agent loses with its process.
 
   Two kinds of loss, both in-process state that goes away with the process:
