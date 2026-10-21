@@ -49,19 +49,32 @@ defmodule Nest.Sandbox.ShellJobs.Index do
       end)
 
   @doc """
-  The state of `job_id` as a waiter leaving it should see it: `:running`,
-  `{:exited, code}`, or `:gone` for a job the manager no longer tracks.
+  The state of `job_id` as a waiter leaving it should see it.
 
   A waiter that gave up cannot tell whether the exit landed in the window
   between its own timeout and its `unsubscribe/3` being handled, so this is the
   one answer it gets — never a guess, and never a state the manager invented.
+
+  `:gone` and `:trimmed` are both "the manager no longer tracks this job", and
+  the difference is *why*, because the two mean different things to the caller:
+  a job dropped with its agent is gone for good, while one evicted by retention
+  (`trim/2` keeps the newest `@max_finished_per_agent`) exited normally and only
+  its exit code went with the record. The agent record is what tells them
+  apart: retention never removes it, and `drop_agent/3` removes both in one
+  callback.
+
+  The one thing it cannot tell is an evicted record from an id the manager never
+  had; both answer `:trimmed` while the agent is tracked. No caller passes an id
+  it did not get from `start_job/1`, so that is a limit on the answer rather
+  than a case to handle.
   """
-  @spec state(map(), String.t()) :: :running | {:exited, integer()} | :gone
-  def state(state, job_id) do
+  @spec state(map(), ShellJobs.agent_key(), String.t()) ::
+          :running | {:exited, integer()} | :trimmed | :gone
+  def state(state, agent_key, job_id) do
     case Map.get(state.jobs, job_id) do
       %{status: {:exited, code}} -> {:exited, code}
       %{status: :running} -> :running
-      _untracked -> :gone
+      _untracked -> if Map.has_key?(state.agents, agent_key), do: :trimmed, else: :gone
     end
   end
 

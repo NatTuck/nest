@@ -183,11 +183,14 @@ defmodule Nest.Sandbox.ShellJobs do
   owner notice is suppressed because it *was* registered. One answer, from the
   process that owns the ordering, is what stops that exit being lost.
 
-  `:gone` is a job the manager no longer tracks — dropped with its agent — which
-  a waiter can outlive, since a `shell-wait` watcher and a tool worker are
-  siblings of the agent supervisor, not children of the agent.
+  `:gone` and `:trimmed` are both a job the manager no longer tracks, and a
+  waiter can outlive either, since a `shell-wait` watcher and a tool worker are
+  siblings of the agent supervisor rather than children of the agent: `:gone` is
+  a job dropped with its agent, `:trimmed` one evicted by retention after it
+  exited (only its exit code went with the record).
   """
-  @spec unsubscribe(agent_key(), job_id(), pid()) :: :running | {:exited, integer()} | :gone
+  @spec unsubscribe(agent_key(), job_id(), pid()) ::
+          :running | {:exited, integer()} | :trimmed | :gone
   def unsubscribe(agent_key, job_id, pid),
     do: GenServer.call(@name, {:unsubscribe, agent_key, job_id, pid})
 
@@ -288,6 +291,7 @@ defmodule Nest.Sandbox.ShellJobs do
   # the owner's notice — cannot drift.
   defdelegate result_text(id, code, output), to: Text
   defdelegate gone_text(id), to: Text
+  defdelegate trimmed_text(id), to: Text
 
   # ---- Server callbacks ----
 
@@ -352,9 +356,9 @@ defmodule Nest.Sandbox.ShellJobs do
     end
   end
 
-  def handle_call({:unsubscribe, _agent_key, job_id, pid}, _from, state) do
+  def handle_call({:unsubscribe, agent_key, job_id, pid}, _from, state) do
     state = %{state | waiters: Waiters.remove(state.waiters, job_id, pid)}
-    {:reply, Index.state(state, job_id), state}
+    {:reply, Index.state(state, agent_key, job_id), state}
   end
 
   def handle_call({:waiters, job_id}, _from, state) do

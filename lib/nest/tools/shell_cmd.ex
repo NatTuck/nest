@@ -274,11 +274,9 @@ defmodule Nest.Tools.ShellCmd do
   end
 
   defp await_background_start(job_id, log_path, grace, agent_key, command, mounts) do
-    # No `subscribe/3`: `ShellJobs.start_job/1` registers its caller as the
-    # waiter in the callback that creates the job, so the waiter already exists
-    # and an exit cannot be observed without it. Subscribing here is the window
-    # that reported one exit twice — the inline result below, and the owner's
-    # notice because no waiter was registered when it happened.
+    # No `subscribe/3`: `start_job/1` already registered this process, in the
+    # callback that created the job — subscribing here was the window that
+    # reported one exit twice, inline and as the owner's notice.
     receive do
       {:shell_job_exit, ^job_id, code} ->
         {:ok, output} = ShellJobs.output(agent_key, job_id)
@@ -302,6 +300,9 @@ defmodule Nest.Tools.ShellCmd do
 
           :gone ->
             {:ok, ShellJobs.gone_text(job_id)}
+
+          :trimmed ->
+            {:ok, ShellJobs.trimmed_text(job_id)}
         end
     end
   end

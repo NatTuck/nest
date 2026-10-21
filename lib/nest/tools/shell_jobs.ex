@@ -171,8 +171,14 @@ defmodule Nest.Tools.ShellJobs do
       {:shell_job_exit, ^id, code} -> {:ok, killed_text(id, owner, code)}
     after
       @kill_wait_ms ->
-        ShellJobs.unsubscribe(key, id, self())
-        {:ok, killed_text(id, owner, nil)}
+        # The exit may have been handled between the timeout and this call, in
+        # which case its message arrived after we stopped listening. The reply
+        # is the state at the removal, so the exit code is not lost — and for
+        # the owner's own kill there is no notice to report it instead.
+        case ShellJobs.unsubscribe(key, id, self()) do
+          {:exited, code} -> {:ok, killed_text(id, owner, code)}
+          _running_trimmed_or_gone -> {:ok, killed_text(id, owner, nil)}
+        end
     end
   end
 

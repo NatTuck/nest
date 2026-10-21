@@ -20,7 +20,10 @@ defmodule Nest.Sandbox.ShellJobsTestHelpers do
       `ShellJobs.start_job/1` otherwise registers *its caller*, which in
       production is the tool worker that will wait for the exit, but in a test is
       the test process. A test that wants a job nobody waits on — the case the
-      owner notice (issue #163) exists for — gets that by saying nothing.
+      owner notice (issue #163) exists for — gets that by saying nothing. This
+      helper always passes the key, so the *default* itself is pinned only
+      end-to-end, by `Nest.Sandbox.ShellJobsTest`'s "a command that exits within
+      the grace window returns its output", which goes through `ShellCmd`.
     * `:max_jobs` — the per-agent ceiling (default 1).
   """
   @spec start_owned_job!(Path.t(), ShellJobs.agent_key(), String.t(), keyword()) ::

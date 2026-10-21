@@ -361,6 +361,9 @@ defmodule Nest.Agents.Agent.Watch do
 
           :gone ->
             {:event, ShellJobs.gone_text(id)}
+
+          :trimmed ->
+            {:event, ShellJobs.trimmed_text(id)}
         end
     end
   end

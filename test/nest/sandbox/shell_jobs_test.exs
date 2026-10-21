@@ -12,6 +12,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
   alias Nest.Sandbox.Backend.Docker
   alias Nest.Sandbox.Mounts
   alias Nest.Sandbox.ShellJobs
+  alias Nest.Sandbox.ShellJobs.Index
   alias Nest.Sandbox.ShellJobs.JobLog
   alias Nest.Tools.ShellCmd
 
@@ -418,8 +419,24 @@ defmodule Nest.Sandbox.ShellJobsTest do
     refute self() in waiters(id)
 
     # Idempotent: a second unsubscribe (or one for an unknown job) is a no-op.
+    # The reply for a job the manager does not track is `:trimmed` while its
+    # agent is still tracked and `:gone` once the agent is not — it cannot tell
+    # an evicted record from an id it never had, and the agent record is the
+    # only thing left to ask.
     assert :running = ShellJobs.unsubscribe(key, id, self())
-    assert :gone = ShellJobs.unsubscribe(key, "job-999", self())
+    assert :trimmed = ShellJobs.unsubscribe(key, "job-999", self())
+  end
+
+  test "Index.state/3 tells an evicted record from a job whose agent is gone" do
+    # The two answers `unsubscribe/3` can give for a job it no longer tracks,
+    # and the reason they differ: retention evicts a *finished* job's record
+    # (`trim/2`), while a drop takes the agent and its jobs together. A caller
+    # words them differently, so the distinction has to be right.
+    key = {1, "agent-state"}
+    state = %{jobs: %{}, agents: %{key => %{pid: self()}}, waiters: %{}}
+
+    assert Index.state(state, key, "job-1") == :trimmed
+    assert Index.state(%{state | agents: %{}}, key, "job-1") == :gone
   end
 
   test "list returns jobs newest-first" do
