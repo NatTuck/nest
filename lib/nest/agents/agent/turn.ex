@@ -478,10 +478,23 @@ defmodule Nest.Agents.Agent.Turn do
       # Read by `Machine.Transitions` to decide whether a queued inbox message
       # is delivered at the turn boundary (issue #15).
       inbox_count: length(state.live.inbox),
+      # The head's kind, so the machine can tell the runtime's own outcome from a
+      # message it has to answer (issue #161): a `:runtime` notice waits for the
+      # boundary instead of preempting a batch, and can be delivered on a tail a
+      # message cannot.
+      inbox_head_kind: inbox_head_kind(state.live.inbox),
       vocation: state.vocation,
       depth: state.depth
     }
   end
+
+  # The queued head's kind, for the two machine decisions that have to tell the
+  # runtime's own outcome from a message to answer (issue #161). `nil` for an
+  # empty queue, and `nil` for an entry that carries no `:kind` — read by both
+  # decisions as "not a notice", which is the meaning they had before the field
+  # existed.
+  defp inbox_head_kind([head | _rest]), do: Map.get(head, :kind)
+  defp inbox_head_kind(_empty), do: nil
 
   defp put_machine(state, machine), do: %{state | live: %{state.live | machine: machine}}
 end
