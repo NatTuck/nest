@@ -219,19 +219,27 @@ defmodule Nest.Agents.Agent.Inbox do
   @spec handle_delivery(Agent.t(), String.t(), String.t(), kind(), String.t() | nil) ::
           {:reply, {:ok, :delivered | :queued} | {:error, term()}, Agent.t()}
   def handle_delivery(state, sender, content, kind \\ :agent, mode \\ nil) do
-    state = satisfy_watch(state, sender, kind)
     status = Machine.status_for(state.live.machine)
 
+    # `satisfy_watch/3` sits in the two arms that *take* the message, never
+    # above the `cond`. It says "the watched agent's own delivery woke me", and
+    # a refused delivery woke nobody: the entry is dropped and the sender is
+    # told so. Satisfying on the way past a refusal silenced the wait entirely —
+    # `Watch.fired/2` skips a satisfied watch, and that arm is the one both the
+    # idle event *and* the timeout go through, so the caller was never told by
+    # anything and the watch was gone.
     cond do
       length(state.live.inbox) >= @max_inbox_size ->
         record_inbox(state, :refused, sender, kind, content, disposition: :inbox_full)
         {:reply, {:error, :inbox_full}, state}
 
       busy_status?(status) ->
+        state = satisfy_watch(state, sender, kind)
         {state, disposition} = busy_delivery(state, sender, content, kind, mode, false)
         {:reply, {:ok, disposition}, state}
 
       status == :idle ->
+        state = satisfy_watch(state, sender, kind)
         idle_delivery(state, sender, content, kind, mode)
 
       true ->

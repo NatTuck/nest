@@ -13,8 +13,10 @@ defmodule Nest.Agents.Agent.WatchTest do
   import Mimic
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.Agents.Agent.Watch
+  alias Nest.Agents.AgentStateHelpers
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
@@ -126,6 +128,58 @@ defmodule Nest.Agents.Agent.WatchTest do
 
     # The watch is dropped on the way out, so a second frame cannot wake it.
     assert watchers(pid) == %{}
+    await_idle(pid)
+  end
+
+  # The satisfaction rule is "the watched agent's own delivery woke me". A
+  # delivery that was *refused* woke nobody: the entry is dropped and the sender
+  # is told so. Marking the watch satisfied on the way past silenced the wait
+  # completely — `Watch.fired/2`'s satisfied arm skips the notice, and that arm
+  # is the one both the idle event *and* the timeout go through, so the caller
+  # was never told by anything.
+  test "a refused delivery does not satisfy the watch", %{
+    pid: pid,
+    name: name,
+    space_id: space_id
+  } do
+    # Four reads, in order: the registration's own partition, the watcher's
+    # reference read, the watcher's authoritative read (still busy, so the wait
+    # blocks), and the re-read the status frame triggers.
+    stub_listing([
+      [agent(name, :idle), agent("bob", :streaming)],
+      [agent(name, :idle), agent("bob", :streaming)],
+      [agent(name, :idle), agent("bob", :streaming)],
+      [agent(name, :idle), agent("bob", :idle)]
+    ])
+
+    _ = wait(pid, name, space_id, %{"names" => ["bob"]})
+    assert [{_ref, %{satisfied: false}}] = Map.to_list(watchers(pid))
+
+    # The caller is broken, so bob's message is refused rather than queued.
+    AgentStateHelpers.set_status(pid, :needs_repair)
+
+    assert {:error, {:status, :needs_repair}} =
+             Agent.deliver_note(pid, "bob", "an answer nobody can take", :agent)
+
+    # The refusal is not a wake: the watch is still outstanding and unsatisfied.
+    assert [{_ref, %{satisfied: false}}] = Map.to_list(watchers(pid))
+
+    # ...so bob going idle still has to fire it.
+    AgentStateHelpers.set_status(pid, :idle)
+    MockClient.set_response("acknowledged")
+
+    Phoenix.PubSub.broadcast(
+      Nest.PubSub,
+      Broadcasts.topic(space_id, "bob"),
+      {:chat_status, %{}}
+    )
+
+    assert_receive {:chat_message, {:user, %{parts: parts}}}, 1_000
+    text = Enum.map_join(parts, "", & &1.text)
+    assert text =~ "Agents now idle: bob"
+
+    # The notice's turn has to finish before the test does (the teardown asserts
+    # no agent is left mid-turn).
     await_idle(pid)
   end
 
