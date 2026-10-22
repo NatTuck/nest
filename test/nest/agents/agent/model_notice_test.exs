@@ -59,6 +59,12 @@ defmodule Nest.Agents.Agent.ModelNoticeTest do
       assert notice =~ "Its context limit is 128000 tokens"
       assert notice =~ "~#{reserve} tokens are reserved for compaction"
       assert notice =~ "working token budget of ~#{128_000 - reserve}"
+      # The same sentence the prompt's context section carries: a model change is
+      # the one moment the limit *moves*, and a decreased limit is the case the
+      # runtime cannot compact its way out of — so the agent is told not to stop
+      # for it.
+      assert notice =~ "Compaction will trigger automatically"
+      assert notice =~ "never stop working due to context concerns"
 
       assert {:assistant, %{parts: [%Part.Text{text: "Model change confirmed."}]}} = ack_row
     end

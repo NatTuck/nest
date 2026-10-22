@@ -144,7 +144,8 @@ defmodule Nest.Agents.Agent.ModelHandler do
     "Your model changed. It is now \"#{name}\". " <>
       SystemPrompt.model_verdict_sentence(verdict) <>
       " Its context limit is #{limit} tokens, of which ~#{reserve} tokens are reserved " <>
-      "for compaction, giving a working token budget of ~#{effective}."
+      "for compaction, giving a working token budget of ~#{effective}. " <>
+      SystemPrompt.compaction_automatic_sentence()
   end
 
   @doc """

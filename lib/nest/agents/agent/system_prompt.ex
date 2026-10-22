@@ -238,10 +238,24 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   end
 
   @doc """
+  The instruction that compaction is the runtime's job, not a reason to stop.
+
+  Public because two places state it and must not drift: the context-limit
+  section below, and the notice a model change appends (`ModelHandler`), which
+  restates the same arithmetic because the prompt's own line is never rebuilt.
+  Rewording one without the other would leave the notice teaching an old rule.
+  """
+  @spec compaction_automatic_sentence() :: String.t()
+  def compaction_automatic_sentence do
+    "Compaction will trigger automatically when the conversation gets too big; " <>
+      "never stop working due to context concerns."
+  end
+
+  @doc """
   The compaction reserve and the working budget it leaves, for a context `limit`.
 
   Public because two places state the same arithmetic and must not drift: the
-  context-limit section above, and the notice a model change appends
+  context-limit section below, and the notice a model change appends
   (`Nest.Agents.Agent.ModelHandler`), which restates the numbers because the
   prompt's own line is never rebuilt.
   """
@@ -399,7 +413,8 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
     "\n\nContext limit: #{limit} tokens (resolved from #{source}). " <>
       "Of this, ~#{reserve} tokens are reserved for compaction, " <>
-      "giving a working token budget of ~#{effective} tokens.\n"
+      "giving a working token budget of ~#{effective} tokens. " <>
+      compaction_automatic_sentence() <> "\n"
   end
 
   defp agents_md_section(%Mounts{workspace: nil}), do: ""
