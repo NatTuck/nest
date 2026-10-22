@@ -145,8 +145,7 @@ defmodule Nest.Agents.Agent.ModelHandler do
       SystemPrompt.model_verdict_sentence(verdict) <>
       " Its context limit is #{limit} tokens, of which ~#{reserve} tokens are reserved " <>
       "for compaction, giving a working token budget of ~#{effective}. " <>
-      "Compaction will trigger automatically when the conversation gets too big; " <>
-      "never stop working due to context concerns."
+      SystemPrompt.compaction_automatic_sentence()
   end
 
   @doc """

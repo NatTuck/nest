@@ -13,7 +13,6 @@ defmodule Nest.Agents.Agent.WatchTest do
   import Mimic
 
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.Agents.Agent.Watch
   alias Nest.Agents.AgentStateHelpers
@@ -168,11 +167,14 @@ defmodule Nest.Agents.Agent.WatchTest do
     AgentStateHelpers.set_status(pid, :idle)
     MockClient.set_response("acknowledged")
 
-    Phoenix.PubSub.broadcast(
-      Nest.PubSub,
-      Broadcasts.topic(space_id, "bob"),
-      {:chat_status, %{}}
-    )
+    # The frame goes to the watcher task directly rather than onto bob's topic.
+    # The watcher subscribes inside its own task, and `start_child` returns
+    # before that body runs, so a broadcast sent from here could land before the
+    # subscription and wake nobody — while a direct frame waits in the task's
+    # mailbox for the loop that matches it (`WaitForIdle.loop/8` matches the
+    # frame, not its sender). The same argument as the test above.
+    [{_ref, %{pid: task}}] = Map.to_list(watchers(pid))
+    send(task, {:chat_status, %{status: "idle"}})
 
     assert_receive {:chat_message, {:user, %{parts: parts}}}, 1_000
     text = Enum.map_join(parts, "", & &1.text)

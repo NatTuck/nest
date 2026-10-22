@@ -278,8 +278,9 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
             # reply is already in this mailbox. The refusal is reached through
             # `Supervisor.get_agent/2` → `Persistence.build_attrs_for_start/2`
             # (a DB read) and `Nest.ConfigFile.error/1` (a stat), so a bare
-            # `assert_reply` was a 100 ms race against both — the shape #160
-            # was, one layer down.
+            # `assert_reply` could still race both. #160's flake was the queued
+            # `:shutdown`, not this bound; this is the same test losing the last
+            # of its clocks rather than a restatement of that diagnosis.
             # allowlist: barrier — the reply to the push above
             _ = :sys.get_state(socket.channel_pid, 1_000)
 

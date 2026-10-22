@@ -60,8 +60,9 @@ defmodule Nest.Agents.Agent.ModelNoticeTest do
       assert notice =~ "~#{reserve} tokens are reserved for compaction"
       assert notice =~ "working token budget of ~#{128_000 - reserve}"
       # The same sentence the prompt's context section carries: a model change is
-      # the one moment the limit moves, and a smaller one is the only way
-      # compaction can be impossible — so the agent is told not to stop for it.
+      # the one moment the limit *moves*, and a decreased limit is the case the
+      # runtime cannot compact its way out of — so the agent is told not to stop
+      # for it.
       assert notice =~ "Compaction will trigger automatically"
       assert notice =~ "never stop working due to context concerns"
 
