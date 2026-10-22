@@ -399,7 +399,9 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
     "\n\nContext limit: #{limit} tokens (resolved from #{source}). " <>
       "Of this, ~#{reserve} tokens are reserved for compaction, " <>
-      "giving a working token budget of ~#{effective} tokens.\n"
+      "giving a working token budget of ~#{effective} tokens. " <>
+      "Compaction will trigger automatically when the conversation gets too big; " <>
+      "never stop working due to context concerns.\n"
   end
 
   defp agents_md_section(%Mounts{workspace: nil}), do: ""

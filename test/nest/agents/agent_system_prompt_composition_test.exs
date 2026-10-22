@@ -172,6 +172,12 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       assert system_prompt =~ "102400"
       assert system_prompt =~ "reserved for compaction"
       assert system_prompt =~ "409600"
+      # The agent is told the arithmetic *and* what it means operationally:
+      # compaction is the runtime's job, not something to stop for. The 75%
+      # notice says the same thing mid-turn; this is the only place it is said
+      # before the first one arrives.
+      assert system_prompt =~ "Compaction will trigger automatically"
+      assert system_prompt =~ "never stop working due to context concerns"
     end
 
     test "falls back to the 128k default when no config and no Models cache hit" do

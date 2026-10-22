@@ -273,13 +273,24 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
                 "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
               })
 
+            # The channel's own process is the barrier: a `:sys` call is queued
+            # behind the push, so when it returns the handler has run and its
+            # reply is already in this mailbox. The refusal is reached through
+            # `Supervisor.get_agent/2` → `Persistence.build_attrs_for_start/2`
+            # (a DB read) and `Nest.ConfigFile.error/1` (a stat), so a bare
+            # `assert_reply` was a 100 ms race against both — the shape #160
+            # was, one layer down.
+            # allowlist: barrier — the reply to the push above
+            _ = :sys.get_state(socket.channel_pid, 1_000)
+
             assert_reply ref,
                          :error,
                          %{
                            "reason" => "config_file_not_regular",
                            "path" => ^path,
                            "type" => "symlink"
-                         }
+                         },
+                         0
           end
         end)
 
