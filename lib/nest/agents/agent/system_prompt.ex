@@ -255,7 +255,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   The compaction reserve and the working budget it leaves, for a context `limit`.
 
   Public because two places state the same arithmetic and must not drift: the
-  context-limit section above, and the notice a model change appends
+  context-limit section below, and the notice a model change appends
   (`Nest.Agents.Agent.ModelHandler`), which restates the numbers because the
   prompt's own line is never rebuilt.
   """
