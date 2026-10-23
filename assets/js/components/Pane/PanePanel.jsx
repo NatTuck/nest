@@ -9,12 +9,17 @@
  * a narrow one it is an overlay over the chat, which is why the page's root is
  * the positioning context.
  *
- * Closing the pane is the user's state and lives in the store, so it survives a
- * navigation. While it is closed, a frame that brings a new question must not
- * reopen it — the count on the indicator changes instead.
+ * The pane starts **closed**, and closing it is the user's state: it lives in
+ * the store, so it survives a navigation. A frame opens it only when a question
+ * arrives that the pane was not already showing — and, on the first frame for a
+ * space, when something is already waiting. A frame that only repeats what is on
+ * screen, or that changes a TODO list, leaves it shut: otherwise closing it
+ * would be undone by the next unrelated frame, and a user who is not ready to
+ * answer could not dismiss the question they can see on the indicator.
  *
  * The toggle is on screen whenever the pane is closed, whether or not anything
- * is waiting. Hiding it when nothing is waiting made closing a one-way door:
+ * is waiting, and it is an **overlay** at every width rather than a column of
+ * its own — a closed pane must not take width from the conversation. Hiding it when nothing is waiting made closing a one-way door:
  * with no questions outstanding there was no control left that could reopen it,
  * and a TODO list written afterwards was invisible and unreachable. What the
  * waiting count buys is the *notification* — the amber pill and the dot — so a
@@ -45,7 +50,7 @@ export function PanePanel({ name, spaceId }) {
         title="Show the pane"
         onClick={() => useStore.getState().setPaneCollapsed(spaceId, false)}
         className={[
-          "absolute right-3 top-3 z-30 flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold shadow-md transition-colors lg:static lg:mr-2 lg:mt-2 lg:self-start",
+          "absolute right-3 top-3 z-30 flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold shadow-md transition-colors",
           waiting
             ? "border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
             : "border-gray-300 bg-white text-gray-600 hover:bg-gray-50",

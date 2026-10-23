@@ -141,7 +141,7 @@ describe("PanePanel", () => {
     expect(screen.getByTestId("todo-missing")).toBeInTheDocument();
   });
 
-  it("closes the pane and counts the outstanding questions in the indicator", () => {
+  it("opens when a question is asked, and stays shut for a frame that only repeats", () => {
     seedPane({ decisions: [first, second] });
 
     renderPane();
@@ -154,22 +154,31 @@ describe("PanePanel", () => {
       screen.getByRole("button", { name: "2 questions" }),
     ).toBeInTheDocument();
 
+    // A frame that only repeats the questions already on screen does not reopen
+    // it — otherwise closing the pane would be undone by the next unrelated
+    // frame, and a user who is not ready to answer could not dismiss it.
     act(() => {
       useStore.getState().setPaneState(SPACE, {
         seq: 2,
-        decisions: [first, second, third],
+        decisions: [first, second],
         todos: {},
       });
     });
 
-    // The count follows the frame, and the pane stays closed: opening it is the
-    // user's decision, never a frame's.
-    expect(
-      screen.getByRole("button", { name: "3 questions" }),
-    ).toBeInTheDocument();
     expect(screen.queryByLabelText("Questions and TODO")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "2 questions" }),
+    ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "3 questions" }));
+    // A question that was not on screen is one being asked now, and that opens
+    // the pane (issue #169).
+    act(() => {
+      useStore.getState().setPaneState(SPACE, {
+        seq: 3,
+        decisions: [first, second, third],
+        todos: {},
+      });
+    });
 
     expect(screen.getByLabelText("Questions and TODO")).toBeInTheDocument();
   });
