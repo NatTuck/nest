@@ -64,6 +64,33 @@ defmodule NestWeb.ChannelCase do
   end
 
   @doc """
+  Block until `socket`'s channel has drained the messages it had already been
+  sent.
+
+  `:sys.get_state/1` is a `GenServer.call`, and `gen_server` drains its mailbox
+  in order, so it is answered only after every frame queued before it. That is
+  what makes a reply or a push deterministic instead of a race against ExUnit's
+  100 ms default: the reply to a `handle_in` is sent *inside* the handler, so it
+  is already in the caller's mailbox when this returns, and a frame the channel
+  pushed from a message that was queued before this call is in it too.
+
+  It fences *this* channel only. A frame another process produces — an agent's
+  `chat:message`, a job's exit — needs its own bound, because no barrier on the
+  channel can order work the channel has not been sent yet.
+
+  Called at the end of a test body it is also that test's drain: the teardown
+  drains the channels the test joined (`Nest.TestSupport.ChannelQuiescence`), and
+  an explicit call is the same drain taken in-body, so a channel is not killed
+  mid-query while this process — the sandbox owner — is the one about to exit.
+  """
+  @spec settle(Phoenix.Socket.t()) :: :ok
+  def settle(socket) do
+    # allowlist: barrier — the channel's own mailbox: its reply and the frames it pushed
+    _ = :sys.get_state(socket.channel_pid, 1_000)
+    :ok
+  end
+
+  @doc """
   `Phoenix.ChannelTest.subscribe_and_join/2`, recording the joined channel.
   """
   def subscribe_and_join(socket, topic) do

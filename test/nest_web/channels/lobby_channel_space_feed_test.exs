@@ -269,10 +269,4 @@ defmodule NestWeb.LobbyChannelSpaceFeedTest do
 
     socket
   end
-
-  # Block until the channel has drained its mailbox, so a frame it has not
-  # pushed yet cannot be mistaken for one it never will — and so nothing it
-  # started is still in flight when the test's sandbox owner exits.
-  # allowlist: barrier — settle/1 orders the channel's frame handling
-  defp settle(socket), do: :sys.get_state(socket.channel_pid, 1_000)
 end

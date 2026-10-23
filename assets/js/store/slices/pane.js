@@ -42,7 +42,10 @@ const EMPTY_PANE = Object.freeze({
   decisions: [],
   todos: {},
   seq: null,
-  collapsed: false,
+  // Closed by default: the pane is a place you go, not a column that is always
+  // there. The first frame overrides it when something is already waiting —
+  // see `setPaneState/2`.
+  collapsed: true,
   // The accordion row the user opened, by id. `null` means "nobody has chosen
   // yet", which the accordion resolves to the first question — never an index,
   // which an appended question would shift.
@@ -232,6 +235,26 @@ export function paneSetters(set) {
 
         const base = prior ?? EMPTY_PANE;
         const decisions = reconcileDecisions(base.decisions, incoming);
+        const marks = prune(base.marks, decisions);
+
+        // Two openings, and no third:
+        //
+        //   * the first frame for a space opens the pane if something is
+        //     already waiting — arriving to an unanswered question and a closed
+        //     pane would make the pane look empty rather than quiet;
+        //   * a later frame opens it when it carries a question the pane was not
+        //     already showing, which is "a question is asked" while you are
+        //     here.
+        //
+        // A frame that only repeats the questions on screen, or that changes a
+        // TODO list, never opens it: otherwise closing the pane would be undone
+        // by the next unrelated frame, and the user could not dismiss it while a
+        // question they are not ready to answer is outstanding.
+        const held = new Set(base.decisions.map((decision) => decision.id));
+        const asked = incoming.some((decision) => !held.has(decision.id));
+        const waiting = decisions.some((decision) => !marks[decision.id]);
+
+        const collapsed = prior ? (asked ? false : base.collapsed) : !waiting;
 
         return {
           panes: {
@@ -244,8 +267,9 @@ export function paneSetters(set) {
               // agent has no TODOs.
               todos: isPlainObject(payload.todos) ? payload.todos : null,
               seq,
+              collapsed,
               drafts: prune(base.drafts, decisions),
-              marks: prune(base.marks, decisions),
+              marks,
               outcomes: prune(base.outcomes, decisions),
             },
           },
@@ -253,7 +277,10 @@ export function paneSetters(set) {
       });
     },
 
-    /** Open or close the pane. User state: a frame never changes it. */
+    /**
+     * Open or close the pane — the user's choice, and the only thing that closes
+     * it. A frame may open it (see `setPaneState/2`), never close it.
+     */
     setPaneCollapsed: (spaceId, collapsed) => {
       set((state) => {
         const pane = state.panes[spaceId];

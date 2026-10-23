@@ -32,6 +32,7 @@ import { ChatTypingIndicator } from "../components/ChatTypingIndicator";
 import { ChatLoading } from "../components/ChatLoading";
 import { InboxPanel } from "../components/InboxPanel";
 import { PanePanel } from "../components/Pane/PanePanel";
+import { PaneToggle } from "../components/Pane/PaneToggle";
 import { ChatChrome } from "../components/ChatChrome";
 import { CHAT_TAB, JOBS_TAB } from "../components/ChatTabs";
 import { AgentEditModal } from "../components/AgentEditModal";
@@ -496,6 +497,7 @@ export function ChatPage() {
           the only thing allowed to scroll; the composer sits outside it, so the
           banners can never carry it off screen. */}
         <ChatChrome
+          paneToggle={<PaneToggle spaceId={spaceId} />}
           name={name}
           vocation={vocation}
           model={model}

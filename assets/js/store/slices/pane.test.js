@@ -4,9 +4,10 @@
  * has to survive a frame, and the answer reply's outcomes.
  *
  * The rules the pane relies on, in one place: a frame never reorders the list on
- * screen, never applies over a newer frame, never loses the user's collapse /
- * open row / drafts / marks, and never removes a question — the server's frame
- * is the only removal.
+ * screen, never applies over a newer frame, keeps the user's collapse across a
+ * frame that asks nothing new (it opens the pane when a question is asked —
+ * #169), keeps the open row / drafts / marks, and never removes a question —
+ * the server's frame is the only removal.
  */
 
 import { describe, it, beforeEach, expect, vi } from "vitest";
@@ -84,6 +85,70 @@ describe("pane slice", () => {
     // A newer frame is applied, so the guard cannot wedge the pane shut.
     useStore.getState().setPaneState(SPACE, frame(7, [decision({ id: "d1" })]));
     expect(ids()).toEqual(["d1"]);
+  });
+
+  // Issue #169: the pane is closed by default, opens when a question is asked,
+  // and never closes itself.
+  describe("when the pane is open", () => {
+    it("starts closed, and opens on the first frame when something is waiting", () => {
+      useStore.getState().setPaneState(SPACE, frame(1, []));
+
+      // Nothing waiting: closed, with the toggle as the way in.
+      expect(pane().collapsed).toBe(true);
+
+      // A space with a question already asked arrives open — a closed pane over
+      // an unanswered question would look empty rather than quiet.
+      useStore.getState()._reset();
+      useStore
+        .getState()
+        .setPaneState(SPACE, frame(1, [decision({ id: "d1" })]));
+
+      expect(pane().collapsed).toBe(false);
+    });
+
+    it("opens when a frame brings a question it was not already showing", () => {
+      useStore
+        .getState()
+        .setPaneState(SPACE, frame(1, [decision({ id: "d1" })]));
+
+      useStore.getState().setPaneCollapsed(SPACE, true);
+      expect(pane().collapsed).toBe(true);
+
+      // A question that was not on screen is one being asked now.
+      useStore
+        .getState()
+        .setPaneState(
+          SPACE,
+          frame(2, [decision({ id: "d1" }), decision({ id: "d2" })]),
+        );
+
+      expect(pane().collapsed).toBe(false);
+    });
+
+    it("stays closed for a frame that only repeats what is on screen", () => {
+      useStore
+        .getState()
+        .setPaneState(SPACE, frame(1, [decision({ id: "d1" })]));
+
+      useStore.getState().setPaneCollapsed(SPACE, true);
+
+      // Same question, new `seq`: nothing was asked, so the user's close stands.
+      useStore
+        .getState()
+        .setPaneState(SPACE, frame(2, [decision({ id: "d1" })]));
+
+      expect(pane().collapsed).toBe(true);
+
+      // A TODO-only change is not a question either.
+      useStore.getState().setPaneState(
+        SPACE,
+        frame(3, [decision({ id: "d1" })], {
+          boss: [{ text: "x", status: "pending" }],
+        }),
+      );
+
+      expect(pane().collapsed).toBe(true);
+    });
   });
 
   it("keeps the browser's own state across a frame and prunes it for the questions the frame dropped", () => {

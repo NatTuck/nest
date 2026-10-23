@@ -20,7 +20,7 @@ function tabClass(active) {
   ].join(" ");
 }
 
-export function ChatTabs({ active, onSelect, jobCount = 0 }) {
+export function ChatTabs({ active, onSelect, jobCount = 0, trailing = null }) {
   const tabs = [
     { id: CHAT_TAB, label: "Chat" },
     { id: JOBS_TAB, label: `Background jobs (${jobCount})` },
@@ -44,6 +44,11 @@ export function ChatTabs({ active, onSelect, jobCount = 0 }) {
           {label}
         </button>
       ))}
+      {/* The pane's toggle (#169): the tab bar's right-hand end is the one band
+          with nothing under it, and it is chrome the conversation cannot scroll
+          away. A closed pane must not cost the conversation a column, and an
+          overlay in the chat's corner would cover the header's live status. */}
+      {trailing && <div className="ml-auto">{trailing}</div>}
     </div>
   );
 }

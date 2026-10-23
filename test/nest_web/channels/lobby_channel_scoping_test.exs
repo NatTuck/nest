@@ -408,24 +408,6 @@ defmodule NestWeb.LobbyChannelScopingTest do
     end
   end
 
-  # Block until the channel process has drained its mailbox, so nothing it
-  # started is still in flight when this test's sandbox owner exits.
-  #
-  # The test process owns the SQL-sandbox connection, so when it exits, any
-  # process still holding a checkout makes Postgrex log
-  # `disconnected: ** (DBConnection.ConnectionError) owner #PID<…> exited` —
-  # test output, which AGENTS.md forbids. Two paths do DB work from the
-  # channel process after the test's last assertion: the space-set reconcile
-  # (`broadcast_spaces_changed/1` -> `Spaces.list_for_user/1` and
-  # `list_archived_for_user/1`), and `handle_in("create_space")`'s own
-  # reconcile. `:sys.get_state/1` is a `GenServer.call`, and `gen_server`
-  # drains its mailbox in order (`gen_server:loop/7` -> `decode_msg/9`), so it
-  # is answered only after every frame queued before it — the same barrier
-  # `NestWeb.LobbyChannelArchiveTest.push_and_settle/3` uses, applied at the
-  # end of the test rather than around a single push.
-  # allowlist: barrier — settle/1 orders the channel's post-assertion DB work
-  defp settle(socket), do: :sys.get_state(socket.channel_pid, 1_000)
-
   # A real space owned by `user` — unlike a fabricated id, this one exists in
   # the owner's visible set, so an over-broad subscription would reach it.
   defp owned_space(user) do

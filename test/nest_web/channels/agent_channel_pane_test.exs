@@ -43,6 +43,8 @@ defmodule NestWeb.AgentChannelPaneTest do
 
     # The join subscribed this channel to the space's pane topic: the ask's
     # broadcast reaches it as a push.
+    settle(socket)
+
     assert_push "pane:state",
                 %{"spaceId" => ^space_id, "seq" => 1, "decisions" => [decision]}
 
@@ -51,6 +53,7 @@ defmodule NestWeb.AgentChannelPaneTest do
     assert decision["askedBy"] == name
 
     ref = push(socket, "pane:sync", %{})
+    settle(socket)
     assert_reply ref, :ok, payload
 
     assert payload["seq"] == 1
@@ -72,14 +75,22 @@ defmodule NestWeb.AgentChannelPaneTest do
         "answers" => [%{"id" => id, "answer" => "Postgres"}]
       })
 
+    settle(socket)
     assert_reply ref, :ok, %{"delivered" => [^id], "orphaned" => [], "failed" => [], "lost" => []}
 
     # Removed, in the same handler that delivered it.
+    settle(socket)
     assert_push "pane:state", %{"decisions" => [], "seq" => 2}
 
     # The answer is the human's own words, through the same path `chat:message`
     # uses: a user row in the transcript, headered with the sender and mode.
-    assert_push "chat:message", %{"role" => "user", "parts" => [%{"text" => text}]}
+    # 500 ms rather than the 100 ms default, and this is the one frame here no
+    # barrier can fence: the answer is delivered to the *agent*, which broadcasts
+    # `chat:message` on its own topic, and only then does this channel push it —
+    # two process hops and a PubSub dispatch, so the delay is whatever the
+    # scheduler does with those, not something `settle/1` can order. A failure
+    # bound at the SMELLS ceiling, not a wait: the frame is pushed once.
+    assert_push "chat:message", %{"role" => "user", "parts" => [%{"text" => text}]}, 500
     assert text =~ "[From user @#{user.username}"
     assert text =~ "Decisions answered:"
     assert text =~ "- Which database?: Postgres"
@@ -106,6 +117,8 @@ defmodule NestWeb.AgentChannelPaneTest do
         ]
       })
 
+    settle(socket)
+
     assert_reply ref, :ok, %{
       "delivered" => [^first, ^second, ^third],
       "orphaned" => [],
@@ -114,7 +127,7 @@ defmodule NestWeb.AgentChannelPaneTest do
 
     # The joined agent's two answers are one row, and it does not carry the
     # peer's answer.
-    assert_push "chat:message", %{"role" => "user", "parts" => [%{"text" => mine}]}
+    assert_push "chat:message", %{"role" => "user", "parts" => [%{"text" => mine}]}, 500
     assert mine =~ "- Mine one: a\n- Mine two: b"
     refute mine =~ "Theirs"
 
@@ -139,6 +152,8 @@ defmodule NestWeb.AgentChannelPaneTest do
     ref =
       push(socket, "decisions:answer", %{"answers" => [%{"id" => id, "answer" => "Postgres"}]})
 
+    settle(socket)
+
     assert_reply ref, :ok, %{
       "delivered" => [],
       "orphaned" => [%{"id" => ^id, "reason" => reason}],
@@ -148,6 +163,8 @@ defmodule NestWeb.AgentChannelPaneTest do
     assert reason =~ "gone"
 
     # The mark comes from the server's broadcast — the pane never guesses.
+    settle(socket)
+
     assert_push "pane:state",
                 %{
                   "seq" => 2,
@@ -159,6 +176,7 @@ defmodule NestWeb.AgentChannelPaneTest do
     # Explaining it has nobody to ask, so it stays drop-only and still succeeds
     # (the client asked, and there is nothing for the user to fix).
     ref = push(socket, "decisions:explain", %{"id" => id})
+    settle(socket)
     assert_reply ref, :ok, %{}
   end
 
@@ -173,6 +191,8 @@ defmodule NestWeb.AgentChannelPaneTest do
     ref =
       push(socket, "decisions:answer", %{"answers" => [%{"id" => id, "answer" => "Postgres"}]})
 
+    settle(socket)
+
     assert_reply ref, :ok, %{
       "delivered" => [],
       "orphaned" => [],
@@ -182,10 +202,12 @@ defmodule NestWeb.AgentChannelPaneTest do
     # Nothing was removed and nothing was marked: `seq` is still 1, so no frame
     # was broadcast at all, and the question is still answerable.
     ref = push(socket, "pane:sync", %{})
+    settle(socket)
     assert_reply ref, :ok, %{"seq" => 1, "decisions" => [%{"id" => ^id, "orphaned" => false}]}
 
     # An explain is refused the same way, rather than silently doing nothing.
     ref = push(socket, "decisions:explain", %{"id" => id})
+    settle(socket)
     assert_reply ref, :error, %{"reason" => "agent_status_needs_repair"}
   end
 
@@ -199,13 +221,15 @@ defmodule NestWeb.AgentChannelPaneTest do
     assert {:ok, ghost_id} = ask(space_id, ghost, "Ghost question")
 
     ref = push(socket, "decisions:drop", %{"ids" => [live_id, ghost_id]})
+    settle(socket)
     assert_reply ref, :ok, %{}
 
+    settle(socket)
     assert_push "pane:state", %{"seq" => 3, "decisions" => []}
 
     # A runtime notice, not a human message: the user dropped the question, and
     # the agent should stop waiting. The orphaned one has nobody to tell.
-    assert_push "chat:message", %{"role" => "user", "parts" => [%{"text" => text}]}
+    assert_push "chat:message", %{"role" => "user", "parts" => [%{"text" => text}]}, 500
     assert text =~ "nest runtime"
     assert text =~ "Live question"
     assert text =~ "dropped your question"
@@ -222,21 +246,23 @@ defmodule NestWeb.AgentChannelPaneTest do
     assert {:ok, id} = ask(space_id, name, "Which database?")
 
     ref = push(socket, "decisions:explain", %{"id" => id})
+    settle(socket)
     assert_reply ref, :ok, %{}
 
-    assert_push "chat:message", %{"role" => "user", "parts" => [%{"text" => text}]}
+    assert_push "chat:message", %{"role" => "user", "parts" => [%{"text" => text}]}, 500
     assert text =~ ~s(Please explain "Which database?" in more detail.)
 
     # Not resolved and not removed: the explain broadcast nothing, and the
     # question is still in the queue.
     ref = push(socket, "pane:sync", %{})
+    settle(socket)
     assert_reply ref, :ok, %{"seq" => 1, "decisions" => [%{"id" => ^id, "obsolete" => false}]}
 
     assert_receive {:chat_status, %{status: "idle"}}, 1_000
   end
 
   test "a guest on a shared agent gets no pane at all", %{
-    socket: _owner_socket,
+    socket: owner_socket,
     agent_id: name,
     space_id: space_id,
     user: user
@@ -258,18 +284,22 @@ defmodule NestWeb.AgentChannelPaneTest do
           {"decisions:explain", %{"id" => "d1"}}
         ] do
       ref = push(guest_socket, event, payload)
+      settle(guest_socket)
       assert_reply ref, :error, %{"reason" => "forbidden"}
     end
 
     # And the join did not subscribe it: the owner's channel receives the frame,
-    # the guest's never does. The `:sys.get_state` is the barrier — it is queued
-    # behind every message the guest's channel had already been sent, so a push
-    # would already be in this mailbox when it returns.
+    # the guest's never does. Two different processes, so two different barriers
+    # — the *owner's* channel is what pushes the frame below, and the *guest's*
+    # is what must not.
     assert {:ok, _id} = ask(space_id, name, "Owner only")
+    settle(owner_socket)
     assert_push "pane:state", %{"spaceId" => ^space_id}
 
-    # allowlist: barrier — anchor for refute_push "pane:state", 0
-    _ = :sys.get_state(guest_socket.channel_pid, 1_000)
+    # The guest's channel is queued behind everything it had already been sent,
+    # so a push from a subscription it should not have would be in this mailbox
+    # by the time this returns.
+    settle(guest_socket)
     refute_push "pane:state", _, 0
 
     Process.unlink(guest_socket.channel_pid)
@@ -299,6 +329,8 @@ defmodule NestWeb.AgentChannelPaneTest do
             "answers" => [%{"id" => id, "answer" => "Postgres"}]
           })
 
+        settle(socket)
+
         assert_reply ref, :ok, %{
           "delivered" => [],
           "orphaned" => [],
@@ -311,6 +343,7 @@ defmodule NestWeb.AgentChannelPaneTest do
 
     # Removed, because the take ran before the delivery attempt: the client's
     # next frame prunes the id, which is why this is `lost` and not `failed`.
+    settle(socket)
     assert_push "pane:state", %{"decisions" => [], "seq" => 2}
   end
 
@@ -331,21 +364,26 @@ defmodule NestWeb.AgentChannelPaneTest do
     Mimic.stub(Nest.Agents.Agent, :deliver_internal, fn _, _, _, _ -> exit(:noproc) end)
 
     ref = push(socket, "decisions:drop", %{"ids" => [id]})
+    settle(socket)
     assert_reply ref, :ok, %{}
 
     # Removed anyway: the notice is a courtesy, the removal is the action.
     ref = push(socket, "pane:sync", %{})
+    settle(socket)
     assert_reply ref, :ok, %{"decisions" => []}
   end
 
   test "a malformed pane payload is refused rather than acted on", %{socket: socket} do
     ref = push(socket, "decisions:answer", %{"answers" => [%{"id" => 1, "answer" => "x"}]})
+    settle(socket)
     assert_reply ref, :error, %{"reason" => "invalid_payload"}
 
     ref = push(socket, "decisions:drop", %{})
+    settle(socket)
     assert_reply ref, :error, %{"reason" => "invalid_payload"}
 
     ref = push(socket, "decisions:explain", %{"id" => "d404"})
+    settle(socket)
     assert_reply ref, :error, %{"reason" => "decision_not_found"}
   end
 
