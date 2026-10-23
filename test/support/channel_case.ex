@@ -77,11 +77,17 @@ defmodule NestWeb.ChannelCase do
   It fences *this* channel only. A frame another process produces — an agent's
   `chat:message`, a job's exit — needs its own bound, because no barrier on the
   channel can order work the channel has not been sent yet.
+
+  Called at the end of a test body it is also that test's drain: the teardown
+  drains the channels the test joined (`Nest.TestSupport.ChannelQuiescence`), and
+  an explicit call is the same drain taken in-body, so a channel is not killed
+  mid-query while this process — the sandbox owner — is the one about to exit.
   """
   @spec settle(Phoenix.Socket.t()) :: :ok
   def settle(socket) do
     # allowlist: barrier — the channel's own mailbox: its reply and the frames it pushed
     _ = :sys.get_state(socket.channel_pid, 1_000)
+    :ok
   end
 
   @doc """

@@ -87,9 +87,9 @@ defmodule NestWeb.AgentChannelPaneTest do
     # 500 ms rather than the 100 ms default, and this is the one frame here no
     # barrier can fence: the answer is delivered to the *agent*, which broadcasts
     # `chat:message` on its own topic, and only then does this channel push it —
-    # two process hops and a PubSub dispatch. Measured: at the default this
-    # assertion missed under the suite's 16-way load, which is the flake this
-    # file is being fixed for. A failure bound at the SMELLS ceiling.
+    # two process hops and a PubSub dispatch, so the delay is whatever the
+    # scheduler does with those, not something `settle/1` can order. A failure
+    # bound at the SMELLS ceiling, not a wait: the frame is pushed once.
     assert_push "chat:message", %{"role" => "user", "parts" => [%{"text" => text}]}, 500
     assert text =~ "[From user @#{user.username}"
     assert text =~ "Decisions answered:"

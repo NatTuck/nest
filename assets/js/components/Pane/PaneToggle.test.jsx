@@ -79,12 +79,21 @@ describe("PaneToggle", () => {
   });
 
   it("counts the questions still waiting, and keeps a way back in when none are", () => {
-    seedPane({ decisions: [first, second], marks: { d1: "save" } });
+    seedPane({ decisions: [first, second] });
 
     renderToggle();
 
-    // The count is the notification: a question the user has already marked is
-    // not waiting for them.
+    // The count is the notification, so it is the number of questions nobody has
+    // answered yet — both of them, here.
+    expect(
+      screen.getByRole("button", { name: "2 questions" }),
+    ).toBeInTheDocument();
+
+    act(() => {
+      useStore.getState().markPaneDecision(SPACE, "d1", "save");
+    });
+
+    // A question the user has already marked is not waiting for them.
     expect(
       screen.getByRole("button", { name: "1 question" }),
     ).toBeInTheDocument();
