@@ -43,7 +43,7 @@ defmodule NestWeb.AgentChannelPaneTest do
 
     # The join subscribed this channel to the space's pane topic: the ask's
     # broadcast reaches it as a push.
-    settle(socket, 2)
+    settle(socket)
 
     assert_push "pane:state",
                 %{"spaceId" => ^space_id, "seq" => 1, "decisions" => [decision]}
@@ -79,11 +79,17 @@ defmodule NestWeb.AgentChannelPaneTest do
     assert_reply ref, :ok, %{"delivered" => [^id], "orphaned" => [], "failed" => [], "lost" => []}
 
     # Removed, in the same handler that delivered it.
-    settle(socket, 2)
+    settle(socket)
     assert_push "pane:state", %{"decisions" => [], "seq" => 2}
 
     # The answer is the human's own words, through the same path `chat:message`
     # uses: a user row in the transcript, headered with the sender and mode.
+    # 500 ms rather than the 100 ms default, and this is the one frame here no
+    # barrier can fence: the answer is delivered to the *agent*, which broadcasts
+    # `chat:message` on its own topic, and only then does this channel push it —
+    # two process hops and a PubSub dispatch. Measured: at the default this
+    # assertion missed under the suite's 16-way load, which is the flake this
+    # file is being fixed for. A failure bound at the SMELLS ceiling.
     assert_push "chat:message", %{"role" => "user", "parts" => [%{"text" => text}]}, 500
     assert text =~ "[From user @#{user.username}"
     assert text =~ "Decisions answered:"
@@ -157,7 +163,7 @@ defmodule NestWeb.AgentChannelPaneTest do
     assert reason =~ "gone"
 
     # The mark comes from the server's broadcast — the pane never guesses.
-    settle(socket, 2)
+    settle(socket)
 
     assert_push "pane:state",
                 %{
@@ -218,7 +224,7 @@ defmodule NestWeb.AgentChannelPaneTest do
     settle(socket)
     assert_reply ref, :ok, %{}
 
-    settle(socket, 2)
+    settle(socket)
     assert_push "pane:state", %{"seq" => 3, "decisions" => []}
 
     # A runtime notice, not a human message: the user dropped the question, and
@@ -256,7 +262,7 @@ defmodule NestWeb.AgentChannelPaneTest do
   end
 
   test "a guest on a shared agent gets no pane at all", %{
-    socket: _owner_socket,
+    socket: owner_socket,
     agent_id: name,
     space_id: space_id,
     user: user
@@ -283,15 +289,17 @@ defmodule NestWeb.AgentChannelPaneTest do
     end
 
     # And the join did not subscribe it: the owner's channel receives the frame,
-    # the guest's never does. The `:sys.get_state` is the barrier — it is queued
-    # behind every message the guest's channel had already been sent, so a push
-    # would already be in this mailbox when it returns.
+    # the guest's never does. Two different processes, so two different barriers
+    # — the *owner's* channel is what pushes the frame below, and the *guest's*
+    # is what must not.
     assert {:ok, _id} = ask(space_id, name, "Owner only")
-    settle(guest_socket)
+    settle(owner_socket)
     assert_push "pane:state", %{"spaceId" => ^space_id}
 
-    # allowlist: barrier — anchor for refute_push "pane:state", 0
-    _ = :sys.get_state(guest_socket.channel_pid, 1_000)
+    # The guest's channel is queued behind everything it had already been sent,
+    # so a push from a subscription it should not have would be in this mailbox
+    # by the time this returns.
+    settle(guest_socket)
     refute_push "pane:state", _, 0
 
     Process.unlink(guest_socket.channel_pid)
@@ -335,7 +343,7 @@ defmodule NestWeb.AgentChannelPaneTest do
 
     # Removed, because the take ran before the delivery attempt: the client's
     # next frame prunes the id, which is why this is `lost` and not `failed`.
-    settle(socket, 2)
+    settle(socket)
     assert_push "pane:state", %{"decisions" => [], "seq" => 2}
   end
 
@@ -380,27 +388,6 @@ defmodule NestWeb.AgentChannelPaneTest do
   end
 
   # ---- helpers ----
-
-  # The channel's own process is the barrier, and it is what makes these
-  # assertions deterministic instead of a race against ExUnit's 100 ms default:
-  # every `decisions:*` handler does `authorize` (a DB read), an
-  # `Agents.get_info` (another, for a ghost) and several `Pane` round trips, so
-  # the default was a bound on how fast the database answers.
-  #
-  # One call fences everything the channel had already been *sent*: the reply is
-  # sent inside `handle_in`, and a frame broadcast before the call is behind it
-  # in the channel's mailbox. A frame broadcast *by* the handler being fenced
-  # needs a second call — that handler runs after the first is queued, so its
-  # broadcast lands behind it.
-  #
-  # With the barrier in place the assertions' timeouts are failure bounds that
-  # are never reached: `assert_receive` checks the mailbox before it waits.
-  defp settle(socket, times \\ 1) do
-    Enum.each(1..times, fn _ ->
-      # allowlist: barrier — the channel's own mailbox, for the reply and the frames below
-      _ = :sys.get_state(socket.channel_pid, 1_000)
-    end)
-  end
 
   # A second, live agent in the *same* space — the peer an answer to another
   # agent's question goes to while the client stays on the first agent's page.

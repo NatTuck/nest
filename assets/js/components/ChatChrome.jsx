@@ -53,6 +53,8 @@ export function ChatChrome({
   // The tab bar.
   tab,
   jobCount,
+  // The pane's toggle, rendered in the tab bar's trailing slot (#169).
+  paneToggle,
   // What the user can do from the chrome.
   onSelectTab,
   onModelPickerOpen,
@@ -158,7 +160,12 @@ export function ChatChrome({
         must not squeeze, and it is what the chrome region above shrinks
         against. */}
       <div className="shrink-0">
-        <ChatTabs active={tab} onSelect={onSelectTab} jobCount={jobCount} />
+        <ChatTabs
+          active={tab}
+          onSelect={onSelectTab}
+          jobCount={jobCount}
+          trailing={paneToggle}
+        />
       </div>
     </>
   );

@@ -17,20 +17,14 @@
  * would be undone by the next unrelated frame, and a user who is not ready to
  * answer could not dismiss the question they can see on the indicator.
  *
- * The toggle is on screen whenever the pane is closed, whether or not anything
- * is waiting, and it is an **overlay** at every width rather than a column of
- * its own — a closed pane must not take width from the conversation. Hiding it when nothing is waiting made closing a one-way door:
- * with no questions outstanding there was no control left that could reopen it,
- * and a TODO list written afterwards was invisible and unreachable. What the
- * waiting count buys is the *notification* — the amber pill and the dot — so a
- * closed pane with nothing outstanding is a quiet grey control instead.
+ * The control that opens it is `PaneToggle`, in the tab bar's trailing slot —
+ * see that module for why it lives there and for what the waiting count means.
  *
  * With no frame for this space there is nothing to show yet, and rendering an
  * empty column would shove the chat sideways the moment the first frame landed.
  */
 
 import { useStore } from "../../store";
-import { outstandingCount } from "../../store/slices/pane";
 import { DecisionsAccordion } from "./DecisionsAccordion";
 import { TodoList } from "./TodoList";
 
@@ -39,35 +33,10 @@ export function PanePanel({ name, spaceId }) {
 
   if (!pane) return null;
 
-  const outstanding = outstandingCount(pane);
-
-  if (pane.collapsed) {
-    const waiting = outstanding > 0;
-
-    return (
-      <button
-        type="button"
-        title="Show the pane"
-        onClick={() => useStore.getState().setPaneCollapsed(spaceId, false)}
-        className={[
-          "absolute right-3 top-3 z-30 flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold shadow-md transition-colors",
-          waiting
-            ? "border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
-            : "border-gray-300 bg-white text-gray-600 hover:bg-gray-50",
-        ].join(" ")}
-      >
-        {waiting && (
-          <span
-            className="h-2 w-2 rounded-full bg-amber-500"
-            aria-hidden="true"
-          />
-        )}
-        {waiting
-          ? `${outstanding} question${outstanding === 1 ? "" : "s"}`
-          : "Pane"}
-      </button>
-    );
-  }
+  // The toggle that opens it is `PaneToggle`, in the tab bar's trailing slot
+  // (#169): a closed pane must not take a column beside the conversation, and an
+  // overlay in the chat's corner would cover the header's live status.
+  if (pane.collapsed) return null;
 
   return (
     <aside

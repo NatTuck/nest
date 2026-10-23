@@ -4,9 +4,10 @@
  * has to survive a frame, and the answer reply's outcomes.
  *
  * The rules the pane relies on, in one place: a frame never reorders the list on
- * screen, never applies over a newer frame, never loses the user's collapse /
- * open row / drafts / marks, and never removes a question — the server's frame
- * is the only removal.
+ * screen, never applies over a newer frame, keeps the user's collapse across a
+ * frame that asks nothing new (it opens the pane when a question is asked —
+ * #169), keeps the open row / drafts / marks, and never removes a question —
+ * the server's frame is the only removal.
  */
 
 import { describe, it, beforeEach, expect, vi } from "vitest";
