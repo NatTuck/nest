@@ -37,6 +37,7 @@ defmodule Nest.Tools.ShellCmd.Transcript do
   from the script, one past the model's numbering.
   """
 
+  alias Nest.FileModes
   alias Nest.Sandbox.{Backend, Mounts}
 
   @doc """
@@ -60,9 +61,9 @@ defmodule Nest.Tools.ShellCmd.Transcript do
   @spec stage(String.t(), Mounts.t()) :: {String.t(), String.t()}
   def stage(command, mounts) do
     dir = Backend.stage_dir(mounts)
-    File.mkdir_p!(dir)
+    FileModes.mkdir_p!(dir)
     path = Path.join(dir, script_name())
-    File.write!(path, "umask #{@umask}\n" <> command)
+    FileModes.write!(path, "umask #{@umask}\n" <> command)
     {path, Path.join(Backend.stage_dir_sandbox(mounts), Path.basename(path))}
   end
 

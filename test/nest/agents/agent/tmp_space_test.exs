@@ -29,6 +29,10 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
   # regressed.
   defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
 
+  # The permission bits, without the file-type bits `File.stat!/1` reports
+  # alongside them.
+  defp mode(path), do: Bitwise.band(File.stat!(path).mode, 0o777)
+
   # A `"none"` scratch is the host's own `/tmp/<name>`, so a test that makes one
   # has to remove it: production leaves them to the agent's `terminate/2`, and a
   # test that never started an agent has no way to reach that.
@@ -86,6 +90,12 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       assert b == Path.join(space_dir, "agent-b")
       assert File.dir?(a)
       assert File.dir?(b)
+
+      # 0755 rather than the launcher's umask: this is the agent's own scratch
+      # directory under /tmp, and a world-writable one is the hazard #178 is about
+      # (this suite's umask makes a plain `mkdir_p` 0775).
+      assert mode(a) == 0o755
+      assert mode(space_dir) == 0o755
     end
   end
 

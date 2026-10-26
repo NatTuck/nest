@@ -97,6 +97,7 @@ defmodule Nest.Sandbox.Mounts do
   """
 
   alias Nest.Agents.Agent.TmpSpace
+  alias Nest.FileModes
   alias Nest.FSPath
   alias Nest.Sandbox.Backend
   alias Nest.Sandbox.Paths
@@ -326,7 +327,7 @@ defmodule Nest.Sandbox.Mounts do
 
   def ensure_scratch!(%__MODULE__{scratch: dir} = mounts) do
     unless File.dir?(dir) do
-      File.mkdir_p!(dir)
+      FileModes.mkdir_p!(dir)
       TmpSpace.mark!(dir, backend(mounts))
     end
 

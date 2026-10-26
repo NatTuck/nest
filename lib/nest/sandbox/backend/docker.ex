@@ -102,6 +102,7 @@ defmodule Nest.Sandbox.Backend.Docker do
     "Error response from daemon"
   ]
 
+  alias Nest.FileModes
   alias Nest.Hardware
   alias Nest.ProjectConfig
   alias Nest.Sandbox
@@ -466,8 +467,8 @@ defmodule Nest.Sandbox.Backend.Docker do
     dir =
       Path.join(System.tmp_dir!(), "#{@build_dir_prefix}#{System.unique_integer([:positive])}")
 
-    File.mkdir_p!(dir)
-    File.write!(Path.join(dir, "Dockerfile"), dockerfile(caps))
+    FileModes.mkdir_p!(dir)
+    FileModes.write!(Path.join(dir, "Dockerfile"), dockerfile(caps))
     dir
   end
 

@@ -93,6 +93,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # by timestamp for a peer's, so each BEAM sweeps its own tree and peers sweep
   # each other by `.alive` age. Nothing here relies on OS `/tmp` cleanup.
 
+  alias Nest.FileModes
   alias Nest.Sandbox.{Mounts, Paths}
 
   # The parent of every BEAM's scratch root. A *process root* is a child of it
@@ -180,7 +181,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
     # prevent. `File.rename/2` within one directory is atomic, so a reader sees the
     # old stamp or the new one. The scratch name is not `.alive`, so a leftover
     # from a crash between the two calls is never mistaken for a marker.
-    with :ok <- File.write(scratch, stamp(now)) do
+    with :ok <- FileModes.write(scratch, stamp(now)) do
       File.rename(scratch, path)
     end
   end
@@ -228,7 +229,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # directory went away between the first and the last, so the whole attempt is
   # worth repeating; anything else is a real failure and is reported once.
   defp create_root(root, attempts, interleave) do
-    with :ok <- File.mkdir_p(root),
+    with :ok <- FileModes.mkdir_p(root),
          :ok <- run_hook(interleave),
          :ok <- write_alive(root) do
       :ok
@@ -300,7 +301,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
     # marked earlier still re-opens idempotently, which is what re-creating a
     # stopped agent's scratch needs.
     if claimable?(path, backend) do
-      File.mkdir_p!(path)
+      FileModes.mkdir_p!(path)
       write_marker(path, backend)
       Logger.info("Created tmp space for agent #{space_id}/#{agent_name}: #{path}")
       path
@@ -326,7 +327,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # A `"none"` scratch is the host's own `/tmp/<name>`, so it has to say it is
   # Nest's before anything will remove it (see the moduledoc). The other backends
   # need nothing: their paths carry `nest/<BEAM pid>/space-<id>`.
-  defp write_marker(path, "none"), do: File.write!(Path.join(path, @marker), "")
+  defp write_marker(path, "none"), do: FileModes.write!(Path.join(path, @marker), "")
   defp write_marker(_path, _backend), do: :ok
 
   @doc """
