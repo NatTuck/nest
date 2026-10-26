@@ -142,7 +142,10 @@ defmodule Nest.Agents.Agent.Broadcasts do
   defp running_jobs(space_id, name) do
     {space_id, name} |> ShellJobs.list() |> Info.running_count()
   catch
-    :exit, _ -> 0
+    # Only the manager being *absent* degrades to 0: a call that times out means
+    # the manager is wedged, which must surface rather than render as an agent
+    # with no jobs.
+    :exit, {:noproc, _} -> 0
   end
 
   @doc """

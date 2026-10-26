@@ -353,7 +353,7 @@ defmodule Nest.Agents.Agent.WatchTest do
     MockClient.set_response("acknowledged")
 
     assert {:waiting, content} = Watch.register_shell_call(ctx(pid, name, space_id), id, 500)
-    assert content =~ "Watching background job #{id}"
+    assert content =~ "Watching shell job #{id}"
 
     # The notice drains into a turn; that turn's own user-message broadcast is
     # the event that says the notice landed.
@@ -393,7 +393,7 @@ defmodule Nest.Agents.Agent.WatchTest do
 
     assert Enum.any?(
              notices(pid),
-             &(&1 =~ "Timed out after 10ms waiting for background job #{id}")
+             &(&1 =~ "Timed out after 10ms waiting for shell job #{id}")
            )
 
     # The watch unsubscribed on the way out, and the job is untouched.

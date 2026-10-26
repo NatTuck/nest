@@ -67,7 +67,7 @@ defmodule Nest.Tools.ShellJobs do
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
-          "id" => %{"type" => "string", "description" => "The background job id."},
+          "id" => %{"type" => "string", "description" => "The shell job id."},
           "timeout" => %{
             "type" => "integer",
             "description" =>
