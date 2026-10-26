@@ -25,6 +25,7 @@ defmodule Nest.Tools.ShellCmdTest do
   import Nest.Test.TmpCleanup
   import Eventually
 
+  alias Nest.Sandbox.Backend
   alias Nest.Sandbox.Mounts
   alias Nest.Tools
   alias Nest.Tools.ShellCmd
@@ -312,12 +313,13 @@ defmodule Nest.Tools.ShellCmdTest do
     refute Map.has_key?(timeout, "maximum")
     assert tool.parameters_schema["required"] == ["command"]
 
-    # The umask the transcript's preamble sets, stated to the model from the
-    # same constant: 0022 is the policy (a directory an agent creates must
-    # never be world-writable), and the description's value cannot drift from
-    # the one the script actually runs with.
-    assert Transcript.umask() == "0022"
-    assert tool.description =~ "umask #{Transcript.umask()}"
+    # The umask the transcript's preamble sets, stated to the model. 0022 is the
+    # policy (a directory an agent creates must never be world-writable) and the
+    # literal is deliberate: the description interpolates `Transcript.umask/0`,
+    # so a change to the constant has to be a visible change to this line rather
+    # than a silent drift between what the model is told and what the script
+    # runs with.
+    assert tool.description =~ "umask 0022"
   end
 
   test "the tool rejects a non-positive or non-integer `timeout` as a tool error", %{ws: ws} do
@@ -488,20 +490,29 @@ defmodule Nest.Tools.ShellCmdTest do
   end
 
   @tag :bwrap
-  test "the transcript's umask makes created modes deterministic, and an explicit umask still wins",
-       %{ws: ws} do
-    # Modes used to be whatever umask the BEAM inherited: the same `mkdir` came
+  test "the transcript carries the umask preamble, so created modes are deterministic", %{ws: ws} do
+    # Modes used to be whatever umask the launcher had: the same `mkdir` came
     # out 0777 under a launcher with umask 000 and 0775 under 002, so a
     # world-writable directory in the workspace was one inherited value away.
-    # The transcript's first line sets it, so these are the modes on any host —
-    # and the last assertion pins that it is a default rather than a lock.
+    #
+    # The transcript's *bytes* are the assertion that can fail on every host: a
+    # launcher with umask 022 already produces 0755/0644, so the mode
+    # assertions below corroborate the effect here rather than pinning it.
+    mounts = Mounts.new(ws, nil)
+    {host, sandbox} = Transcript.stage("mkdir d", mounts)
+    on_exit(fn -> File.rm(host) end)
+
+    assert File.read!(host) == "umask 0022\nmkdir d"
+
+    # The spelling bash is handed is the staging directory's sandbox form; a
+    # wrong one would make every `"docker"` command silently run nothing.
+    assert sandbox ==
+             Path.join(Backend.stage_dir_sandbox(mounts), Path.basename(host))
+
+    # End to end through a real command: the preamble applies to the whole
+    # script, and the command's own `umask` still wins over it.
     assert {:ok, _} =
-             ShellCmd.execute(
-               "mkdir d && touch f && umask 0077 && mkdir priv",
-               Mounts.new(ws, nil),
-               nil,
-               []
-             )
+             ShellCmd.execute("mkdir d && touch f && umask 0077 && mkdir priv", mounts, nil, [])
 
     assert mode(Path.join(ws, "d")) == 0o755
     assert mode(Path.join(ws, "f")) == 0o644

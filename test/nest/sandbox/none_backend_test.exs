@@ -119,6 +119,11 @@ defmodule Nest.Sandbox.NoneBackendTest do
 
       assert {:ok, _output} = Sandbox.write(target, "hello", caps(), mounts)
       assert File.read!(target) == "hello"
+
+      # A new file lands under the transcript's umask, so `file-write` (which is
+      # `Sandbox.write/4`) is `0644` rather than whatever the launcher's umask
+      # would have made it. Nothing else pins that claim.
+      assert Bitwise.band(File.stat!(target).mode, 0o777) == 0o644
     end
 
     test "read, stat and glob all see the host", %{dir: dir, mounts: mounts} do
