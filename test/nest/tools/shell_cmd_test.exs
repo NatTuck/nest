@@ -28,6 +28,7 @@ defmodule Nest.Tools.ShellCmdTest do
   alias Nest.Sandbox.Mounts
   alias Nest.Tools
   alias Nest.Tools.ShellCmd
+  alias Nest.Tools.ShellCmd.Transcript
 
   setup do
     # A workspace outside /tmp: the scratch dir is bound at /tmp, so a
@@ -287,7 +288,7 @@ defmodule Nest.Tools.ShellCmdTest do
     assert output =~ "two"
   end
 
-  test "the tool's schema declares `timeout` in seconds, default 60, no maximum, optional", %{
+  test "the tool's contract: `timeout` in seconds, and the umask every command runs under", %{
     ws: ws
   } do
     tool = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
@@ -310,6 +311,13 @@ defmodule Nest.Tools.ShellCmdTest do
     assert tool.description =~ "default #{default_seconds}"
     refute Map.has_key?(timeout, "maximum")
     assert tool.parameters_schema["required"] == ["command"]
+
+    # The umask the transcript's preamble sets, stated to the model from the
+    # same constant: 0022 is the policy (a directory an agent creates must
+    # never be world-writable), and the description's value cannot drift from
+    # the one the script actually runs with.
+    assert Transcript.umask() == "0022"
+    assert tool.description =~ "umask #{Transcript.umask()}"
   end
 
   test "the tool rejects a non-positive or non-integer `timeout` as a tool error", %{ws: ws} do
@@ -479,6 +487,27 @@ defmodule Nest.Tools.ShellCmdTest do
     assert Path.wildcard(Path.join(stage, "nest-cmd-*.sh")) == []
   end
 
+  @tag :bwrap
+  test "the transcript's umask makes created modes deterministic, and an explicit umask still wins",
+       %{ws: ws} do
+    # Modes used to be whatever umask the BEAM inherited: the same `mkdir` came
+    # out 0777 under a launcher with umask 000 and 0775 under 002, so a
+    # world-writable directory in the workspace was one inherited value away.
+    # The transcript's first line sets it, so these are the modes on any host —
+    # and the last assertion pins that it is a default rather than a lock.
+    assert {:ok, _} =
+             ShellCmd.execute(
+               "mkdir d && touch f && umask 0077 && mkdir priv",
+               Mounts.new(ws, nil),
+               nil,
+               []
+             )
+
+    assert mode(Path.join(ws, "d")) == 0o755
+    assert mode(Path.join(ws, "f")) == 0o644
+    assert mode(Path.join(ws, "priv")) == 0o700
+  end
+
   test "there is no set -e, so a failing statement does not stop the script", %{ws: ws} do
     # The staged script runs without `set -e`: the first statement fails, the
     # next still runs, and the last statement's (zero) status is what the call
@@ -534,4 +563,8 @@ defmodule Nest.Tools.ShellCmdTest do
       end
     end
   end
+
+  # The permission bits of `path`, without the file-type bits `File.stat!/1`
+  # reports alongside them.
+  defp mode(path), do: Bitwise.band(File.stat!(path).mode, 0o777)
 end

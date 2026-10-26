@@ -45,12 +45,16 @@ defmodule Nest.Tools.ShellCmd do
   staged, and what path bash is handed for it, is the backend's business
   (`Backend.stage_dir/1` / `stage_dir_sandbox/1`) — the staging directory is a
   bind source, so its host path and its sandbox spelling are different strings
-  under bwrap and the same string on the bare command.
+  under bwrap and the same string on the bare command. The staging itself is
+  `Nest.Tools.ShellCmd.Transcript`'s, which is also where the one line every
+  command runs before its own first statement lives (the umask — not something
+  a backend can set).
   """
 
   require Logger
 
   alias Nest.Sandbox.{Backend, Mounts, ShellJobs}
+  alias Nest.Tools.ShellCmd.Transcript
 
   @default_timeout_ms 60_000
   @default_grace_ms 200
@@ -191,7 +195,7 @@ defmodule Nest.Tools.ShellCmd do
     case Backend.resolve(mounts) do
       {:ok, _backend} ->
         Mounts.ensure_scratch!(mounts)
-        {script, script_sandbox} = stage_script(command, mounts)
+        {script, script_sandbox} = Transcript.stage(command, mounts)
 
         case Backend.command(mounts, caps, script_sandbox) do
           {:ok, spec} ->
@@ -370,26 +374,6 @@ defmodule Nest.Tools.ShellCmd do
         "workspace=#{Mounts.workspace(mounts) || "none"} " <>
         "scratch=#{Mounts.scratch(mounts) || "none"}"
     )
-  end
-
-  # Stage the command's transcript for bash to read. The staging directory is
-  # the backend's (`Backend.stage_dir/1`): inside the bound space scratch dir
-  # (visible at `/tmp/.cmds`) when a scratch dir exists, else under the system
-  # tmp dir (visible at the same path through the root read-only bind). Keeping
-  # it out of the agent's own scratch dir means a glob over that dir never sees
-  # it. The path handed to bash is the backend's sandbox spelling of the same
-  # file — the two differ whenever the staging directory is reached through a
-  # bind.
-  defp stage_script(command, mounts) do
-    dir = Backend.stage_dir(mounts)
-    File.mkdir_p!(dir)
-    path = Path.join(dir, script_name())
-    File.write!(path, command)
-    {path, Path.join(Backend.stage_dir_sandbox(mounts), Path.basename(path))}
-  end
-
-  defp script_name do
-    "nest-cmd-#{System.unique_integer([:positive])}.sh"
   end
 
   defp normalize_stdin(nil), do: nil

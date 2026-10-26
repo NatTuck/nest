@@ -15,6 +15,7 @@ defmodule Nest.Tools.ShellCmdTool do
   alias Nest.Sandbox.Mounts
   alias Nest.Tools.ShellBackground
   alias Nest.Tools.ShellCmd
+  alias Nest.Tools.ShellCmd.Transcript
   alias Nest.Tools.ShellPipes
 
   @doc """
@@ -57,7 +58,10 @@ defmodule Nest.Tools.ShellCmdTool do
       "a statement that exits non-zero still reports its output and later " <>
       "statements still run, so guard steps explicitly (for example " <>
       "`cmd || exit 1`, or put your own `set -e` on the first line) when a " <>
-      "failure must stop the rest. A command runs under a wall-clock " <>
+      "failure must stop the rest. Every command runs with `umask " <>
+      "#{Transcript.umask()}`, so a directory it creates is 0755 and a file " <>
+      "0644; set your own `umask` in the command to change that. A command " <>
+      "runs under a wall-clock " <>
       "limit of `timeout` seconds (default #{default_timeout_seconds()}): one " <>
       "that outlives it is killed and its output so far is returned. The " <>
       "limit does not apply to `background: true`."
