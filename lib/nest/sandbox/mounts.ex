@@ -86,7 +86,7 @@ defmodule Nest.Sandbox.Mounts do
   Of the modules that write into the scratch directory without going through
   the sandbox, each reports a *sandbox* path back rather than the directory it
   wrote to — except the last, which only creates a directory:
-  `ShellCmd.stage_script/2` stages in the staging dir (`/tmp/.cmds/<script>`
+  `Nest.Tools.ShellCmd.Transcript.stage/2` stages in the staging dir (`/tmp/.cmds/<script>`
   with a scratch bind, `/tmp/.nest-cmds/<script>` without), a sibling of the
   agent's own directory rather than a child of it — deliberately, so a glob
   over the agent's scratch tree never sees it — and hands that path to bash,

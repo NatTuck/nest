@@ -165,8 +165,10 @@ defmodule Nest.Sandbox.ShellJobsTest do
     # and could not fail. This one is pointed at the directory the script is
     # actually staged in, which is unique per test because the scratch root is;
     # the `File.dir?/1` is what keeps it from being vacuous if that ever changes.
-    assert File.dir?(Paths.stage_dir(tmp))
-    assert Path.wildcard(Path.join(Paths.stage_dir(tmp), "nest-cmd-*.sh")) == []
+    # Bound once: each call forks `realpath` (see `Nest.FSPath.canonical/1`).
+    stage = Paths.stage_dir(tmp)
+    assert File.dir?(stage)
+    assert Path.wildcard(Path.join(stage, "nest-cmd-*.sh")) == []
   end
 
   test "a subscribe that lands after the exit still reports it", %{key: key, tmp: tmp} do

@@ -292,7 +292,7 @@ defmodule Nest.Sandbox.Backend.Docker do
 
   # The staging directory is the one thing this backend leaves on the host, and it
   # is per space, so an archive, a delete or a network change takes it along. It is
-  # recreated lazily by `stage_script/2`.
+  # recreated lazily by `Nest.Tools.ShellCmd.Transcript.stage/2`.
   #
   # `File.rm_rf` on a path derived from an id is the shape `SMELLS.md` warns about,
   # so the guard is explicit: the directory has to be a `nest-docker-…` one, which

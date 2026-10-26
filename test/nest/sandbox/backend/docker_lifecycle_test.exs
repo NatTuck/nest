@@ -225,7 +225,7 @@ defmodule Nest.Sandbox.Backend.DockerLifecycleTest do
   describe "remove_space/2" do
     test "removes the space's host staging directory, so nothing is left behind" do
       # The staging directory is the one thing this backend leaves on the host, and
-      # it is per space. `stage_script/2` recreates it lazily.
+      # it is per space. `Nest.Tools.ShellCmd.Transcript.stage/2` recreates it lazily.
       dir = stage_dir()
       File.mkdir_p!(dir)
       on_exit(fn -> File.rm_rf(Path.dirname(dir)) end)
