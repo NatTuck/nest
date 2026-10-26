@@ -418,8 +418,8 @@ defmodule Nest.Agents.Agent.Callbacks do
   end
 
   # The flag means "this agent has not been told". The space edit sets it on every
-  # agent before it casts (`Nest.Spaces.announce_environment/1`), and it is cleared
-  # only when the notice is in the transcript.
+  # agent before it casts (`Nest.Spaces.EnvironmentNotice.announce/1`), and it is
+  # cleared only when the notice is in the transcript.
   #
   # `:deferred` does **not** clear it here. The values are on the compaction's
   # entry at that point, and nothing in the transcript has them yet: a stop,

@@ -133,7 +133,7 @@ defmodule Nest.Tools.ShellJobs do
     key = agent_key(context)
 
     case ShellJobs.status(key, id) do
-      {:error, :not_found} -> {:error, "No such background job: #{id}"}
+      {:error, :not_found} -> {:error, "No such shell job: #{id}"}
       {:ok, {:exited, code}} -> {:ok, ShellJobs.result_text(id, code, output(key, id))}
       {:ok, :running} -> Watch.register_shell_call(context, id, timeout)
     end
@@ -163,7 +163,7 @@ defmodule Nest.Tools.ShellJobs do
   defp kill_in_space(id, context) do
     case ShellJobs.kill_space(space_id(context), id) do
       {:ok, owner} -> await_killed(owner, id, elem(owner, 1))
-      {:error, :not_found} -> {:error, "No such background job: #{id}"}
+      {:error, :not_found} -> {:error, "No such shell job: #{id}"}
     end
   end
 
@@ -185,15 +185,19 @@ defmodule Nest.Tools.ShellJobs do
     end
   end
 
-  # A nil owner is the caller's own job, whose wording is unchanged.
-  defp killed_text(id, nil, nil), do: "Killed background job #{id}."
-  defp killed_text(id, nil, code), do: "Killed background job #{id} (exit code #{code})."
+  # A nil owner is the caller's own job: no owner clause.
+  #
+  # "shell job", not "background job": a foreground `shell-cmd` call is a job
+  # `shell-kill` can stop too (#174), and this sentence is the whole result it
+  # gets.
+  defp killed_text(id, nil, nil), do: "Killed shell job #{id}."
+  defp killed_text(id, nil, code), do: "Killed shell job #{id} (exit code #{code})."
 
   defp killed_text(id, owner, nil),
-    do: "Killed background job #{id}, owned by #{owner}."
+    do: "Killed shell job #{id}, owned by #{owner}."
 
   defp killed_text(id, owner, code),
-    do: "Killed background job #{id}, owned by #{owner} (exit code #{code})."
+    do: "Killed shell job #{id}, owned by #{owner} (exit code #{code})."
 
   defp render([]), do: "No shell jobs."
 

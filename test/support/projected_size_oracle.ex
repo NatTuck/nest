@@ -83,7 +83,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSizeOracle do
   def project(%ToolCall{name: "shell-list"}, _ctx), do: summary_baseline_size() * @safety_padding
 
   def project(%ToolCall{name: "shell-kill"}, _ctx),
-    do: estimator_overhead("Killed background job job-N (exit code N).")
+    do: estimator_overhead("Killed shell job job-N (exit code N).")
 
   # Sub-agent tools. The response-bearing ones project at the substitute
   # minimum; the listing tools are hard-sliced to `@max_list_chars`.

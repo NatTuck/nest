@@ -195,6 +195,58 @@ defmodule Nest.Sandbox.ShellJobsForegroundTest do
     assert [%{id: ^id, status: :exited, killed: true, exit_code: 137}] = ShellJobs.list(key)
   end
 
+  # A tool worker that dies mid-command is a real case: the Stop path kills it
+  # immediately after its `{:stop_chat, _}`. Nothing else would ever finish its
+  # job — the manager holds no exec port for an owned record, so it sees no
+  # `:DOWN` from one — which makes the owner monitor the only thing keeping the
+  # job from staying `:running` forever.
+  test "a worker that dies mid-command does not leave its job running", %{
+    key: {space_id, name} = key,
+    tmp: tmp
+  } do
+    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
+    test_pid = self()
+
+    # Not `Task.async`: the worker is killed on purpose, and a link would take
+    # this test with it.
+    {pid, ref} =
+      spawn_monitor(fn -> run_foreground("echo started; sleep 0.3", tmp, key, test_pid) end)
+
+    assert_receive {:shell_jobs, %{jobs: [%{id: id, status: :running}]}}, 1_000
+
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 1_000
+
+    # The manager's own `:DOWN` for the owner is the finish, and the frame it
+    # broadcasts is the event: killed, at 137 (128 + SIGKILL), the code its kill
+    # fallback records for a job it had to end without an exit.
+    assert_receive {:shell_jobs, %{jobs: [%{id: ^id, status: :exited, killed: true}]}}, 1_000
+    assert [%{id: ^id, status: :exited, killed: true, exit_code: 137}] = ShellJobs.list(key)
+  end
+
+  # A kill that lost its race with this call's own finish is still in the
+  # worker's mailbox when its *next* command starts. Acted on, it would stop a
+  # command nobody asked to stop — the same reasoning as `collect_output/5`'s
+  # `:DOWN` clause, which matches only its own `erl_pid`.
+  test "a kill for an earlier call's job does not stop the next command", %{
+    key: key,
+    tmp: tmp
+  } do
+    assert {:ok, "first\n"} = run_foreground("echo first", tmp, key, self())
+    assert [%{id: old_id, status: :exited}] = ShellJobs.list(key)
+
+    # The manager's own message, already in this process's mailbox before the
+    # next command starts. A plain `send` because that is exactly what the
+    # manager does, and a pre-seeded mailbox for the same reason
+    # `shell_cmd_test.exs` pre-seeds `{:stop_chat, self()}`.
+    send(self(), {:kill_job, old_id})
+
+    assert {:ok, "second\n"} = run_foreground("echo second", tmp, key, self())
+
+    assert [%{command: "echo second", status: :exited, exit_code: 0}, %{id: ^old_id}] =
+             ShellJobs.list(key)
+  end
+
   # `caps.shell.background` is the *background* cap. A foreground call is not a
   # background job, so it must be neither refused by a full cap nor take a slot
   # in it — otherwise a single background job would make `shell-cmd` unusable.

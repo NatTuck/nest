@@ -101,7 +101,7 @@ defmodule Nest.Tools.ShellJobsTest do
                context
              )
 
-    assert text =~ "Killed background job #{id}"
+    assert text =~ "Killed shell job #{id}"
     assert [%{id: ^id, status: :exited, killed: true}] = ShellJobs.list(key)
   end
 
@@ -181,12 +181,12 @@ defmodule Nest.Tools.ShellJobsTest do
     tool = Tools.get_function("shell-kill", Mounts.new(nil, nil))
 
     assert {:ok, text} = invoke(tool, %{"id" => sibling_id}, context)
-    assert text =~ "Killed background job #{sibling_id}"
+    assert text =~ "Killed shell job #{sibling_id}"
     assert text =~ "owned by #{elem(sibling, 1)}"
     assert [%{id: ^sibling_id, status: :exited, killed: true}] = ShellJobs.list(sibling)
 
     assert {:error, message} = invoke(tool, %{"id" => outsider_id}, context)
-    assert message =~ "No such background job: #{outsider_id}"
+    assert message =~ "No such shell job: #{outsider_id}"
     assert [%{id: ^outsider_id, status: :running}] = ShellJobs.list(outsider)
   end
 

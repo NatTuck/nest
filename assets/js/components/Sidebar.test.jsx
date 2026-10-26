@@ -957,10 +957,19 @@ describe("Sidebar tree", () => {
     expect(screen.getByText("old-leaf")).toBeInTheDocument();
   });
 
-  it("shows the child count next to a parent with children", () => {
+  it("shows the child count next to a parent with children, labelled", () => {
     act(() => {
       withStore([
-        { name: "root", parentId: null, parentName: null, depth: 0 },
+        // A row that shows both numbers: the job count is amber and the child
+        // count grey, so each needs its own accessible name for the two not to
+        // be a colour-only distinction.
+        {
+          name: "root",
+          parentId: null,
+          parentName: null,
+          depth: 0,
+          runningJobs: 1,
+        },
         { name: "a", parentId: 1, parentName: "root", depth: 1 },
         { name: "b", parentId: 1, parentName: "root", depth: 1 },
       ]);
@@ -973,6 +982,9 @@ describe("Sidebar tree", () => {
     );
 
     expect(screen.getByText("(2)")).toBeInTheDocument();
+    expect(screen.getByLabelText("2 child agents")).toBeInTheDocument();
+    expect(screen.getByTitle("2 child agents")).toBeInTheDocument();
+    expect(screen.getByLabelText("1 shell job running")).toBeInTheDocument();
   });
 
   it("shows a parenthesised running job count after the agent's name (#175)", () => {
@@ -999,19 +1011,17 @@ describe("Sidebar tree", () => {
     // the badge's accessible name say what it counts — the number alone is the
     // spelling the child count and the space row's agent count already use.
     expect(screen.getByText("busy")).toBeInTheDocument();
-    expect(screen.getByTitle("2 background jobs running")).toBeInTheDocument();
+    expect(screen.getByTitle("2 shell jobs running")).toBeInTheDocument();
+    expect(screen.getByLabelText("2 shell jobs running")).toBeInTheDocument();
     expect(
-      screen.getByLabelText("2 background jobs running"),
-    ).toBeInTheDocument();
-    expect(
-      within(screen.getByTitle("2 background jobs running")).getByText("(2)"),
+      within(screen.getByTitle("2 shell jobs running")).getByText("(2)"),
     ).toBeInTheDocument();
 
     // An agent with no jobs renders its name and nothing else: a `(0)` would
     // claim a fact nobody needs.
     expect(screen.getByText("quiet")).toBeInTheDocument();
     expect(
-      screen.queryByLabelText("0 background jobs running"),
+      screen.queryByLabelText("0 shell jobs running"),
     ).not.toBeInTheDocument();
   });
 

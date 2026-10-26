@@ -21,12 +21,23 @@ import {
 import { StatusDot } from "./StatusDot";
 
 /**
- * The full fact behind a row's job count (#175). The parens are compact, so the
- * tooltip and the accessible name say what the number counts — and a row that
- * also shows a child count needs the two to be distinguishable.
+ * The full fact behind a row's job count (#174/#175). The parens are compact, so
+ * the tooltip and the accessible name say what the number counts. "shell jobs"
+ * rather than "background jobs" because the count includes a foreground
+ * `shell-cmd` call while it runs.
  */
 function runningJobsLabel(count) {
-  return `${count} background ${count === 1 ? "job" : "jobs"} running`;
+  return `${count} shell ${count === 1 ? "job" : "jobs"} running`;
+}
+
+/**
+ * The same for a row's child count. A row can show both numbers, one after the
+ * other (`name (2) (3)`), and without its own label the second is
+ * indistinguishable from the first to a screen reader — and separable only by
+ * colour to everyone else.
+ */
+function directChildrenLabel(count) {
+  return `${count} child ${count === 1 ? "agent" : "agents"}`;
 }
 
 /**
@@ -233,7 +244,12 @@ export function AgentTreeRow({
         </span>
       )}
       {directChildren.length > 0 && (
-        <span className="text-xs text-gray-400 ml-1">
+        <span
+          className="text-xs text-gray-400 ml-1"
+          role="img"
+          aria-label={directChildrenLabel(directChildren.length)}
+          title={directChildrenLabel(directChildren.length)}
+        >
           ({directChildren.length})
         </span>
       )}

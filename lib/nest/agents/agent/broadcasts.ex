@@ -129,12 +129,20 @@ defmodule Nest.Agents.Agent.Broadcasts do
     }
   end
 
-  # How many background jobs the agent has running (#175). The row is a snapshot
+  # How many shell jobs the agent has running (#174/#175). The row is a snapshot
   # of one agent, so this reads that agent's jobs rather than the space's; the
   # live changes arrive as `{:agent_jobs, _}` frames instead, since starting or
   # finishing a job does not change the agent's status.
+  #
+  # Best-effort, because the manager is a *named* global: a restart between the
+  # call and its answer exits the caller with `:noproc`, and this runs in an
+  # agent's start path (`SubAgent`) and in a channel's edit. A frame must never
+  # be able to fail the process that emits it, and a count is the least important
+  # thing on one — `0` is what a row with no manager to ask has.
   defp running_jobs(space_id, name) do
     {space_id, name} |> ShellJobs.list() |> Info.running_count()
+  catch
+    :exit, _ -> 0
   end
 
   @doc """

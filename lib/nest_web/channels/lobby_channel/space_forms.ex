@@ -218,6 +218,12 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
         {:reply, {:ok, edit_reply(space)}, socket}
 
       {:error, reason} ->
+        # The environment landed; only the setting did not. Announce the space
+        # that *did* land before answering the error, or the change exists in the
+        # row and in this session's dialog and nowhere else — the owner's other
+        # sessions would never hear it, and the reply is the only thing this
+        # session gets.
+        broadcast_space_updated(socket, space)
         {:reply, AgentErrors.edit_space_payload(reason), socket}
     end
   end

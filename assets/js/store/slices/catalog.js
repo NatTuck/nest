@@ -335,8 +335,11 @@ function normalizeAgent(agent) {
     ...agent,
     space_id: agent.space_id ?? agent.spaceId ?? null,
     status: agent.status || "idle",
-    // The running background-job count (#175): `runningJobs` on an
-    // `agent:created` payload, `running_jobs` on the lobby's `init` rows.
+    // The running shell-job count (#174/#175): `runningJobs` on an
+    // `agent:created` payload, `running_jobs` on the lobby's `init` rows. Both
+    // producers send it, so the `0` is this slice's shape — a normalized row
+    // always carries a number (`channels.test.js` pins the whole object) — and
+    // not a producer's fallback.
     runningJobs: agent.runningJobs ?? agent.running_jobs ?? 0,
     parentId: agent.parentId ?? agent.parent_id ?? null,
     parentName: agent.parentName ?? agent.parent_name ?? null,
