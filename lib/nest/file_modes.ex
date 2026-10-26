@@ -66,7 +66,8 @@ defmodule Nest.FileModes do
   def mkdir_p(path) do
     # The fast path matters: `Transcript.stage/2` calls this on every `shell-cmd`,
     # and the directory almost always exists by then. One `stat` instead of one
-    # per component.
+    # per component (the creation branch stats the leaf twice, which is fine —
+    # it is the rare one).
     if File.dir?(path) do
       :ok
     else

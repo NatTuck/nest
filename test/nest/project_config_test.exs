@@ -390,6 +390,9 @@ defmodule Nest.ProjectConfigTest do
       assert mode(source) == 0o755
       assert mode(Path.dirname(source)) == 0o755
 
+      # Only that it exists: the destination's mode is not Nest's to set, and
+      # that is not pinnable host-independently — a `FileModes`-forced 0755 and a
+      # umask-022 plain `mkdir_p` are the same observable.
       assert File.dir?(dest)
     end
   end
