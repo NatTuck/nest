@@ -293,10 +293,29 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
         }
       end)
 
-      assert {:ok, _space} = Spaces.update_environment(space_id, %{workspace_path: workspace})
+      # The queued message is one token past the limit, so the drain turn stages a
+      # compaction (`:compacting` below) that cannot reduce this conversation: the
+      # machine retries it until its own loop detector fires. That is this test's
+      # own consequence, so it is captured and asserted rather than left to print —
+      # and the detector's frame is the barrier, because the machine is terminal
+      # after it and nothing can log past the end of the window.
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
 
-      # allowlist: barrier — the cast is the only writer here.
-      state = :sys.get_state(pid, 1_000)
+      log =
+        capture_log(fn ->
+          assert {:ok, _space} =
+                   Spaces.update_environment(space_id, %{workspace_path: workspace})
+
+          # allowlist: barrier — the cast is the only writer here.
+          state = :sys.get_state(pid, 1_000)
+          send(self(), {:state, state})
+
+          assert_receive {:chat_compaction_loop, %{content: loop_msg}}, 1_000
+          send(self(), {:loop_msg, loop_msg})
+        end)
+
+      assert_received {:state, state}
+      assert_received {:loop_msg, loop_msg}
 
       # The settle ended in a compaction turn, not idle...
       assert Machine.status_for(state.live.machine) == :compacting
@@ -307,6 +326,13 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
 
       # Nothing staged the notice: that compaction is the drain's.
       assert {:compaction, _carried, nil} = state.live.machine.entry
+
+      # The loop the tight limit earns — the compaction cannot reduce this
+      # conversation — and the two lines each refused attempt logs: the executor's
+      # crash and the `chat:error` broadcast's own record.
+      assert loop_msg =~ "isn't reducing the conversation"
+      assert log =~ "pre-flight decision is :cannot_compact"
+      assert log =~ "chat_crashed"
 
       # Clean up the compaction this test started, so the leak check sees a
       # stopped agent rather than one mid-compaction.
