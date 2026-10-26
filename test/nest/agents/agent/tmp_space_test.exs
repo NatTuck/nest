@@ -13,6 +13,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
 
   import ExUnit.CaptureLog
 
+  import Nest.Test.FileMode
   import Nest.Test.TmpCleanup
 
   alias Nest.Agents.Agent.TmpSpace
@@ -86,6 +87,12 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       assert b == Path.join(space_dir, "agent-b")
       assert File.dir?(a)
       assert File.dir?(b)
+
+      # 0755 rather than the launcher's umask: this is the agent's own scratch
+      # directory under /tmp, and a world-writable one is the hazard #178 is about
+      # (this suite's umask makes a plain `mkdir_p` 0775).
+      assert mode(a) == 0o755
+      assert mode(space_dir) == 0o755
     end
   end
 

@@ -85,6 +85,7 @@ defmodule Nest.Agents.TmpSweeper do
 
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.Registry
+  alias Nest.FileModes
   alias Nest.Sandbox.ShellJobs
 
   @name __MODULE__
@@ -190,7 +191,7 @@ defmodule Nest.Agents.TmpSweeper do
     # failure and nothing would ever recreate it. `mkdir_p` and *not*
     # `prepare_own_root/0`: that one removes the root first, which here would take
     # live scratch with it.
-    File.mkdir_p(state.root)
+    FileModes.mkdir_p(state.root)
     mark(state.root, now)
     sweep(state.root, now, state.ttl_ms)
     schedule_tick()

@@ -4,6 +4,7 @@ defmodule Nest.DotConfig.WriterTest do
   """
   use ExUnit.Case, async: true
 
+  import Nest.Test.FileMode
   import Nest.Test.TmpCleanup
 
   alias Nest.DotConfig
@@ -21,8 +22,6 @@ defmodule Nest.DotConfig.WriterTest do
     on_exit(fn -> rm_tmp!(path, label) end)
     path
   end
-
-  defp mode(path), do: Bitwise.band(File.stat!(path).mode, 0o777)
 
   describe "save_providers/2" do
     test "round-trips a provider with models back into a loadable local.toml" do

@@ -24,6 +24,7 @@ defmodule Nest.Sandbox.ShellJobs.JobLog do
   docker branch is testable without a daemon.
   """
 
+  alias Nest.FileModes
   alias Nest.Sandbox.Backend.Docker
   alias Nest.Sandbox.Mounts
 
@@ -36,7 +37,7 @@ defmodule Nest.Sandbox.ShellJobs.JobLog do
   @spec prepare(Mounts.t(), String.t()) :: :ok | {:error, term()}
   def prepare(%Mounts{} = mounts, path) do
     if Mounts.host_scratch?(mounts) do
-      with :ok <- path |> Path.dirname() |> File.mkdir_p(), do: File.write(path, "")
+      with :ok <- path |> Path.dirname() |> FileModes.mkdir_p(), do: FileModes.write(path, "")
     else
       :ok
     end
@@ -48,6 +49,10 @@ defmodule Nest.Sandbox.ShellJobs.JobLog do
   A no-op under `"docker"`: the command's own `tee` has already written those
   bytes, and the copy the manager receives on the exec's stream is the same
   output.
+
+  A plain `File.write/3`, not `Nest.FileModes`: `prepare/2` set the mode when it
+  created the file, and this runs once per output chunk — a `chmod` here would be
+  a syscall on the job's hot path for a file that is already Nest's.
   """
   @spec append(Mounts.t(), String.t(), iodata()) :: :ok | {:error, term()}
   def append(%Mounts{} = mounts, path, data) do

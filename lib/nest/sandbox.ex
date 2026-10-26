@@ -134,6 +134,7 @@ defmodule Nest.Sandbox do
 
   import Bitwise
 
+  alias Nest.FileModes
   alias Nest.FSPath
   alias Nest.Hardware
   alias Nest.Sandbox.{Backend, Binds, Caps, Failure, Glob, Mounts, Paths, StatBatch}
@@ -467,7 +468,7 @@ defmodule Nest.Sandbox do
   defp write_scratch_file(%Mounts{} = mounts, path, content) do
     if Mounts.host_scratch?(mounts) do
       try do
-        File.write!(path, content)
+        FileModes.write!(path, content)
         true
       rescue
         _ -> false

@@ -22,6 +22,7 @@ defmodule Nest.Tools.ShellCmdTest do
   use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
+  import Nest.Test.FileMode
   import Nest.Test.TmpCleanup
   import Eventually
 
@@ -593,8 +594,4 @@ defmodule Nest.Tools.ShellCmdTest do
       end
     end
   end
-
-  # The permission bits of `path`, without the file-type bits `File.stat!/1`
-  # reports alongside them.
-  defp mode(path), do: Bitwise.band(File.stat!(path).mode, 0o777)
 end

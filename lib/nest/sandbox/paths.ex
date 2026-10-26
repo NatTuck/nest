@@ -33,7 +33,7 @@ defmodule Nest.Sandbox.Paths do
   for the workspace (which the sandbox binds at that same path). A scratch
   directory is only ever an *input* to that view — what `Nest.Sandbox` binds.
   Every function here that takes one is called from `Nest.Sandbox` or from
-  `Nest.Tools.ShellCmd` (which stages command transcripts through
+  `Nest.Tools.ShellCmd.Transcript` (which stages command transcripts through
   `stage_dir/1`), and its result is either a bind source or the
   `#{@sandbox_root}/<agent>/...` spelling the agent uses. No value from this
   module belongs in a tool description, a tool result, or anything else the
@@ -101,7 +101,7 @@ defmodule Nest.Sandbox.Paths do
   def scratch_dir(name), do: Path.join(@sandbox_root, name)
 
   @doc """
-  The directory `Nest.Tools.ShellCmd` stages command transcripts in.
+  The directory `Nest.Tools.ShellCmd.Transcript` stages command transcripts in.
 
   With a scratch bind, it lives *inside* the bound space dir
   (`<space_dir>/#{@stage_subdir}`) but in its own subdirectory, so a glob over
