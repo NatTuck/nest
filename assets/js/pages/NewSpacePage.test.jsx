@@ -402,7 +402,33 @@ describe("NewSpacePage", () => {
       // Network access is a space property, chosen here and editable later; the
       // toggle defaults to on.
       network_access: true,
+      // ...and so are the context warnings, except that they default to *off*
+      // (issue #176): the notices can read as "stop now".
+      context_warnings: false,
     });
+  });
+
+  it("sends context warnings on when the toggle is checked", () => {
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText("Space Name"), {
+      target: { value: "Warned Project" },
+    });
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "2" },
+    });
+    fireEvent.change(screen.getByLabelText("Select Model"), {
+      target: { value: "gpt-4o" },
+    });
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/home/nat/proj" },
+    });
+
+    fireEvent.click(screen.getByLabelText("Context warnings"));
+    fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
+
+    const opts = mocks.createSpace.mock.calls[0][4];
+    expect(opts.context_warnings).toBe(true);
   });
 
   it("sends network access off when the toggle is cleared", () => {

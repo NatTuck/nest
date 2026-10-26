@@ -484,6 +484,10 @@ defmodule Nest.Agents.Agent.Turn do
       caps: caps,
       context_limit: state.llm_metrics.context_limit,
       context_limit_source: state.llm_metrics.context_limit_source,
+      # The space's setting, read once at init/restore: with it off, neither
+      # notice site produces a context-usage notice (issue #176). Compaction, the
+      # per-tool-result cap and the usage chip do not read it.
+      context_warnings: state.context_warnings,
       messages: Keyword.get(opts, :messages, state.chat_state.messages),
       mounts: mounts,
       mode: mode,

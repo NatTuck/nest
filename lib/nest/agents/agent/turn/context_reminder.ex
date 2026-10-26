@@ -6,6 +6,10 @@ defmodule Nest.Agents.Agent.Turn.ContextReminder do
   (`context_limit - Reserve.compaction_reserve/1`), not the raw
   window. Each threshold fires at most once between compactions; the
   "already announced" set lives on `state.live.crossed_thresholds`.
+
+  A space opts in with `spaces.context_warnings`, off by default (issue #176):
+  with it off nothing is announced *and* nothing is marked announced, because a
+  threshold is only "already announced" if a notice actually said so.
   """
 
   alias Nest.Messages.Header
@@ -19,6 +23,20 @@ defmodule Nest.Agents.Agent.Turn.ContextReminder do
     {0.50, :p50},
     {0.75, :p75}
   ]
+
+  @doc """
+  Whether this space's context-usage notices are on: `spaces.context_warnings`.
+
+  Off by default (issue #176) — a notice can read as "stop now", which is the
+  opposite of what the threshold means — and read from the machine's `ctx`, which
+  carries the value the agent started with. Both notice sites ask here, so there
+  is one answer for "should this conversation be told". Nothing else reads it:
+  compaction, the per-tool-result cap (`Nest.Agents.Agent.CapCalculator`) and the
+  usage chip (`Nest.Agents.Agent.Broadcasts.Usage`) are unaffected by the
+  setting, and a threshold is marked announced only when its notice landed.
+  """
+  @spec enabled?(map()) :: boolean()
+  def enabled?(ctx), do: Map.get(ctx, :context_warnings, false) == true
 
   # The decided notice wording. The 25% notice is a bare statement: models do
   # not start worrying about context until the 50% notice, so only 50% and 75%

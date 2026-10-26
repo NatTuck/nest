@@ -116,6 +116,10 @@ defmodule Nest.Agents.Agent.Machine.Delivery do
   # while its threshold is decided from `projected`, the transcript that
   # includes the delivered message. `build_pair/3` returning `:deferred` leaves
   # the threshold unannounced so a later, safe boundary can still fire it.
+  #
+  # A space with its context warnings off gets no pair (issue #176), and the
+  # threshold stays unannounced — nothing was announced. The projection is still
+  # recorded, because it is not a warning: the usage chip reads it.
   defp notice_actions(m, base, projected) do
     limit = m.work.ctx.context_limit
 
@@ -125,10 +129,18 @@ defmodule Nest.Agents.Agent.Machine.Delivery do
 
       case ContextReminder.highest_unannounced(used, limit, crossed) do
         nil -> {[], m}
-        atom -> build_notice(m, base, atom, used, crossed)
+        atom -> crossed_notice(m, base, atom, used, crossed)
       end
     else
       {[], m}
+    end
+  end
+
+  defp crossed_notice(m, base, atom, used, crossed) do
+    if ContextReminder.enabled?(m.work.ctx) do
+      build_notice(m, base, atom, used, crossed)
+    else
+      {[{:set_context_projection, used}], Phase.put_ctx(m, context_projection: used)}
     end
   end
 

@@ -182,43 +182,44 @@ defmodule Nest.Spaces do
     |> network_or_default()
   end
 
-  # The one fallback for a missing/absent network value, shared with
-  # `environment/1`.
+  # The one fallback for a missing/absent network value, shared with `environment/1`.
   defp network_or_default(value) when is_boolean(value), do: value
   defp network_or_default(_value), do: true
 
   @doc """
-  The three environment values of `space_id`, in **one** read.
+  The space properties an agent inherits from its row, in **one** read.
 
-  The start path needs all three together — an agent's `Nest.Sandbox.Mounts` is
-  built from them — so asking the three readers above costs three round trips
-  for one row. Each value falls back exactly as its own reader does, and the
-  fallbacks are the same code, so the two paths cannot disagree: a missing row
-  is `nil` for the workspace, `Backend.default/0` for the backend and `true` for
-  the network.
+  The start path needs the environment values together — an agent's
+  `Nest.Sandbox.Mounts` is built from them — so asking the readers above costs one
+  round trip per value. Each falls back exactly as its own reader does: a missing
+  row is `nil` for the workspace, `Backend.default/0` for the backend, `true` for
+  the network and `false` for the context warnings (`Nest.Spaces.ContextWarnings`).
   """
   @spec environment(integer()) :: %{
           workspace_path: String.t() | nil,
           network_access: boolean(),
-          sandbox_backend: String.t()
+          sandbox_backend: String.t(),
+          context_warnings: boolean()
         }
   def environment(space_id) when is_integer(space_id) do
     from(s in Space,
       where: s.id == ^space_id,
-      select: {s.workspace_path, s.sandbox_backend, s.network_access}
+      select: {s.workspace_path, s.sandbox_backend, s.network_access, s.context_warnings}
     )
     |> Repo.one()
-    |> case do
-      {workspace, backend, network} ->
-        %{
-          workspace_path: workspace,
-          sandbox_backend: backend_or_default(backend),
-          network_access: network_or_default(network)
-        }
+    |> environment_or_default()
+  end
 
-      nil ->
-        %{workspace_path: nil, sandbox_backend: Backend.default(), network_access: true}
-    end
+  # A missing row takes each reader's own fallback — the same code, so the two agree.
+  defp environment_or_default(nil), do: environment_or_default({nil, nil, nil, nil})
+
+  defp environment_or_default({workspace, backend, network, warnings}) do
+    %{
+      workspace_path: workspace,
+      sandbox_backend: backend_or_default(backend),
+      network_access: network_or_default(network),
+      context_warnings: warnings == true
+    }
   end
 
   @doc """

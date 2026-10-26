@@ -235,6 +235,9 @@ export function createSpace(model, vocationSlug, onOk, onError, opts = {}) {
   if (typeof opts.network_access === "boolean") {
     payload.network_access = opts.network_access;
   }
+  if (typeof opts.context_warnings === "boolean") {
+    payload.context_warnings = opts.context_warnings;
+  }
   if (opts.sandbox_backend) payload.sandbox_backend = opts.sandbox_backend;
   // A workspace is the space's, and `Space.create_changeset/2` requires one, so
   // dropping this field made every create fail with `workspace_required` no
@@ -269,18 +272,22 @@ export function archiveSpace(spaceId, onOk, onError) {
 
 /**
  * Edit a space's **environment**: its workspace, its network access and its
- * sandbox backend.
+ * sandbox backend — plus the one setting the same dialog carries that is not
+ * the environment, its context warnings.
  *
- * One push for all three because they are one decision: every agent in the
+ * One push for the three because they are one decision: every agent in the
  * space inherits them, and the server tells the live ones about the change
  * (`Agent.space_changed/2`). Nothing is restarted; a *backend* change releases
  * this space's container, so its agents' `/tmp` (offloads, background-job logs)
  * and any running background job go with it — the dialog says so before the
  * save.
  *
- * The reply is the environment that is now in force, with string keys. The
- * whole space arrives separately, as a `space:updated` frame, and that is what
- * updates the store.
+ * `context_warnings` is written on its own server-side (nothing about it reaches
+ * the sandbox), and takes effect as each agent starts.
+ *
+ * The reply is the values that are now in force, with string keys. The whole
+ * space arrives separately, as a `space:updated` frame, and that is what updates
+ * the store.
  */
 export function editSpace(spaceId, values, onOk, onError) {
   if (!lobbyChannel) {
@@ -293,6 +300,7 @@ export function editSpace(spaceId, values, onOk, onError) {
     workspace_path: values.workspace_path,
     network_access: values.network_access,
     sandbox_backend: values.sandbox_backend,
+    context_warnings: values.context_warnings,
   };
 
   // The second push of a two-phase edit: the user has seen what the first one

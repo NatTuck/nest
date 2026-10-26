@@ -1,7 +1,9 @@
 defmodule NestWeb.LobbyChannelEditSpaceTest do
   @moduledoc """
   The lobby's `edit_space` action: one push for a space's whole environment —
-  its workspace, its network access and its sandbox backend.
+  its workspace, its network access and its sandbox backend — plus the one
+  setting the same dialog carries that is not the environment, its context
+  warnings.
 
   Split from `NestWeb.LobbyChannelTest` the way the other lobby subjects are
   (`change_model`, `archive`, `scoping`): one file per action, each with the
@@ -88,12 +90,50 @@ defmodule NestWeb.LobbyChannelEditSpaceTest do
       _ = :sys.get_state(agent_pid)
     end
 
+    test "writes the context-warnings setting on its own, leaving the environment alone", %{
+      socket: socket,
+      user: user
+    } do
+      # The setting is not part of the environment (it never reaches a sandbox),
+      # so a push that names only it must write only it: no latch, no quiesce, no
+      # environment notice, and the three environment values exactly as they were.
+      {:ok, space} =
+        Spaces.create_space(user.id, %{
+          name: "edit-warnings-#{System.unique_integer([:positive])}",
+          workspace_path: AgentTestHelpers.default_test_workspace()
+        })
+
+      assert space.context_warnings == false
+
+      assert_reply push(socket, "edit_space", %{
+                     "space_id" => space.id,
+                     "context_warnings" => true
+                   }),
+                   :ok,
+                   reply,
+                   500
+
+      assert reply["context_warnings"] == true
+      assert reply["workspace_path"] == space.workspace_path
+      assert reply["sandbox_backend"] == space.sandbox_backend
+
+      assert_push "space:updated",
+                  %{"space" => %Spaces.Space{id: _, context_warnings: true}},
+                  500
+
+      row = Spaces.get_space(space.id)
+      assert row.context_warnings == true
+      assert row.workspace_path == space.workspace_path
+      assert row.sandbox_backend == space.sandbox_backend
+    end
+
     test "refuses a payload that is not a boolean, or names no space", %{socket: socket} do
-      # Three arms: a `network_access` that is not a boolean, no environment
-      # field at all, and a payload the environment validator would accept but
-      # that names no space (`handle_in/3`'s own head).
+      # Four arms: a `network_access` or a `context_warnings` that is not a
+      # boolean, no editable field at all, and a payload the validator would
+      # accept but that names no space (`handle_in/3`'s own head).
       for payload <- [
             %{"space_id" => 1, "network_access" => "yes"},
+            %{"space_id" => 1, "context_warnings" => "yes"},
             %{"space_id" => 1},
             %{"network_access" => true}
           ] do

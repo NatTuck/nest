@@ -525,10 +525,13 @@ defmodule Nest.Agents.Agent.Machine.Response do
     |> Enum.map(&Map.put(&1, :mode, m.work.ctx.mode))
   end
 
+  # A space with its context warnings off has no spec to inject (issue #176).
+  # `context_bookkeeping/2` is gated by the same setting, so a threshold this
+  # skips is not marked announced either.
   defp compute_context_spec(m, projected) do
     limit = m.work.ctx.context_limit
 
-    if not is_integer(limit) or limit <= 0 do
+    if not ContextReminder.enabled?(m.work.ctx) or not is_integer(limit) or limit <= 0 do
       nil
     else
       crossed = m.work.ctx.crossed_thresholds
@@ -537,21 +540,27 @@ defmodule Nest.Agents.Agent.Machine.Response do
     end
   end
 
+  # The projection is *not* a warning: it feeds the usage chip
+  # (`Broadcasts.Usage`), so it is recorded whether or not the notices are on.
   defp context_bookkeeping(m, projected) do
     limit = m.work.ctx.context_limit
 
     if is_integer(limit) and limit > 0 do
-      crossed = m.work.ctx.crossed_thresholds
-
-      crossed =
-        case ContextReminder.highest_unannounced(projected, limit, crossed) do
-          nil -> crossed
-          atom -> MapSet.put(crossed, atom)
-        end
-
-      {crossed, projected}
+      {advance_crossed(m, projected, limit), projected}
     else
       {m.work.ctx.crossed_thresholds, nil}
+    end
+  end
+
+  defp advance_crossed(m, projected, limit) do
+    crossed = m.work.ctx.crossed_thresholds
+
+    case ContextReminder.highest_unannounced(projected, limit, crossed) do
+      nil ->
+        crossed
+
+      atom ->
+        if ContextReminder.enabled?(m.work.ctx), do: MapSet.put(crossed, atom), else: crossed
     end
   end
 

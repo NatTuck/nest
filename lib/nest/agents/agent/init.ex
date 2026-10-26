@@ -87,16 +87,24 @@ defmodule Nest.Agents.Agent.Init do
       mounts: mounts,
       tools: tools,
       llm_metrics: llm_metrics,
-      tree_position: %TreePosition{
-        parent_id: Map.get(attrs, :parent_id),
-        parent_name: Map.get(attrs, :parent_name),
-        fork_message_index: Map.get(attrs, :fork_message_index)
-      },
+      tree_position: tree_position(attrs),
       created_by_user_id: Map.get(attrs, :created_by_user_id),
       shared: Map.get(attrs, :shared, false),
       depth: Map.get(attrs, :depth, 0),
+      # Put on the attrs by both attrs builders (`Persistence.put_space_properties/1`
+      # and its start path). The default is the column's: off.
+      context_warnings: Map.get(attrs, :context_warnings, false),
       chat_state: build_chat_state(initial_messages, next_index, Map.get(attrs, :agent_row_id)),
       live: build_live_state(mode)
+    }
+  end
+
+  # The agent's place in its tree: both `nil` for a root agent.
+  defp tree_position(attrs) do
+    %TreePosition{
+      parent_id: Map.get(attrs, :parent_id),
+      parent_name: Map.get(attrs, :parent_name),
+      fork_message_index: Map.get(attrs, :fork_message_index)
     }
   end
 

@@ -63,11 +63,13 @@ defmodule Nest.Agents.Agent do
     # inherit their parent's `shared` value (see
     # `PreSpawn.build_child_attrs/5`).
     shared: false,
-    # `tree_position` is `%__MODULE__.TreePosition{}` for
-    # child agents (carrying `parent_id` + `parent_name`) and
-    # the default (both fields `nil`) for root agents. Extracted
-    # into a sub-struct so the top-level `Agent` stays under
-    # the 16-field cap (credo's `Modules#MODULE_DOC`).
+    # The space's context-warnings setting, read at init into the machine's `ctx`
+    # and never onto the mounts: nothing about it reaches a command.
+    context_warnings: false,
+    # `tree_position` is `%__MODULE__.TreePosition{}` for child agents
+    # (carrying `parent_id` + `parent_name`) and the default (both `nil`)
+    # for root agents: a sub-struct, so the top-level `Agent` stays within
+    # the 16-field cap (`Credo.Check.Warning.StructFieldAmount`).
     tree_position: %__MODULE__.TreePosition{},
     chat_state: %__MODULE__.ChatState{},
     live: %__MODULE__.ChatState.Live{}
@@ -98,6 +100,7 @@ defmodule Nest.Agents.Agent do
           created_by_user_id: integer() | nil,
           shared: boolean(),
           depth: non_neg_integer(),
+          context_warnings: boolean(),
           chat_state: __MODULE__.ChatState.t(),
           live: __MODULE__.ChatState.Live.t()
         }
