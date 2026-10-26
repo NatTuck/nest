@@ -33,7 +33,7 @@ defmodule Nest.Tools.ShellCmd.Transcript do
 
   The cost is one line of preamble, so the script bash reads is one line longer
   than the command text the model sent: `$LINENO`, a re-read of `$0`, and the
-  `…/nest-cmd-N.sh: line N:` prefixes bash puts on its own diagnostics all count
+  `…/nest-cmd-….sh: line N:` prefixes bash puts on its own diagnostics all count
   from the script, one past the model's numbering.
   """
 

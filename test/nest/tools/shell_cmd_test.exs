@@ -25,7 +25,6 @@ defmodule Nest.Tools.ShellCmdTest do
   import Nest.Test.TmpCleanup
   import Eventually
 
-  alias Nest.Sandbox.Backend
   alias Nest.Sandbox.Mounts
   alias Nest.Tools
   alias Nest.Tools.ShellCmd
@@ -498,16 +497,36 @@ defmodule Nest.Tools.ShellCmdTest do
     # The transcript's *bytes* are the assertion that can fail on every host: a
     # launcher with umask 022 already produces 0755/0644, so the mode
     # assertions below corroborate the effect here rather than pinning it.
-    mounts = Mounts.new(ws, nil)
+    #
+    # The scratch is what makes the two spellings different strings — with no
+    # scratch bind `stage_dir_sandbox/1` *is* `stage_dir/1`, and the assertion
+    # below would pass for the bug it names.
+    scratch =
+      Path.join([
+        System.tmp_dir!(),
+        "nest_umask_stage_#{System.unique_integer([:positive])}",
+        "space-1",
+        "agent"
+      ])
+
+    File.mkdir_p!(scratch)
+
+    on_exit(fn ->
+      if String.contains?(scratch, "nest_umask_stage"),
+        do: File.rm_rf(Path.dirname(Path.dirname(scratch)))
+    end)
+
+    mounts = Mounts.new(ws, scratch)
     {host, sandbox} = Transcript.stage("mkdir d", mounts)
     on_exit(fn -> File.rm(host) end)
 
     assert File.read!(host) == "umask 0022\nmkdir d"
 
-    # The spelling bash is handed is the staging directory's sandbox form; a
-    # wrong one would make every `"docker"` command silently run nothing.
-    assert sandbox ==
-             Path.join(Backend.stage_dir_sandbox(mounts), Path.basename(host))
+    # The spelling bash is handed is the sandbox's, not the host's: with a
+    # scratch bind the staging directory is `<space>/.cmds` on the host and
+    # `/tmp/.cmds` inside. Handing bash the host path would make every command
+    # fail to open its own script.
+    assert sandbox == Path.join("/tmp/.cmds", Path.basename(host))
 
     # End to end through a real command: the preamble applies to the whole
     # script, and the command's own `umask` still wins over it.
