@@ -1,10 +1,11 @@
 /**
- * Background shell-job panel.
+ * Shell-job panel.
  *
- * Renders the agent's `shell-cmd background: true` jobs (from the
- * `shell:jobs` channel event / init payload), with kill and refresh
- * actions and an expandable log viewer. Renders nothing when there are
- * no jobs (there is nothing the agent did to show).
+ * Renders the agent's shell jobs (from the `shell:jobs` channel event /
+ * init payload): every `shell-cmd` call while it runs, and each
+ * `background: true` job after the call that started it returned. Kill and
+ * refresh actions, and an expandable log viewer. Renders nothing when there
+ * are no jobs (there is nothing the agent did to show).
  *
  * `showTitle` is turned off when the panel is embedded in the chat
  * page's jobs tab, where the tab label already carries the title and
@@ -89,7 +90,7 @@ export function ShellJobsPanel({
       >
         {showTitle && (
           <span className="text-sm font-medium text-gray-700">
-            Background jobs ({jobs.length})
+            Shell jobs ({jobs.length})
           </span>
         )}
         <button

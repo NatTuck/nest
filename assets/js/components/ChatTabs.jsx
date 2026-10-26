@@ -1,6 +1,7 @@
 /**
  * Tab bar for the chat page: the conversation and the agent's
- * background shell jobs are separate views. The jobs panel used to
+ * shell jobs (every `shell-cmd` call while it runs, plus any background
+ * job it started) are separate views. The jobs panel used to
  * render inline above the message list, where a handful of jobs pushed
  * the conversation off screen; as a tab it no longer competes with the
  * message list for height.
@@ -23,7 +24,7 @@ function tabClass(active) {
 export function ChatTabs({ active, onSelect, jobCount = 0, trailing = null }) {
   const tabs = [
     { id: CHAT_TAB, label: "Chat" },
-    { id: JOBS_TAB, label: `Background jobs (${jobCount})` },
+    { id: JOBS_TAB, label: `Shell jobs (${jobCount})` },
   ];
 
   return (

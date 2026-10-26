@@ -71,7 +71,14 @@ defmodule NestWeb.AgentChannelConfigGateTest do
             # pinned in `NestWeb.ErrorPayloadTest`, and once through a channel by
             # the join test below. What each handler owes here is an answer
             # instead of a raise.
-            assert_reply ref, :error, %{"reason" => "config_file_not_regular"}
+            #
+            # The 1s fence is the suite's own (`test/test_helper.exs`), not
+            # `assert_reply`'s 100 ms default: every reply here carries a full
+            # agent payload, which includes a `GenServer.call` to the
+            # process-global `Nest.Sandbox.ShellJobs` manager, so its latency
+            # includes that manager's queue — the same shared rendezvous
+            # `ShellJobs.stop_all_async/2` documents.
+            assert_reply ref, :error, %{"reason" => "config_file_not_regular"}, 1_000
           end
         end)
 
@@ -87,7 +94,7 @@ defmodule NestWeb.AgentChannelConfigGateTest do
 
       stub(Agents, :get_info, fn _space, _name -> {:error, :not_found} end)
       ref = push(socket, "chat:message", %{"content" => "hi"})
-      assert_reply ref, :error, %{"reason" => "agent_not_found"}
+      assert_reply ref, :error, %{"reason" => "agent_not_found"}, 1_000
     end
 
     test "the join names the file, rather than answering agent_unavailable" do

@@ -35,7 +35,7 @@ describe("ShellJobsPanel", () => {
       />,
     );
 
-    expect(screen.getByText("Background jobs (1)")).toBeInTheDocument();
+    expect(screen.getByText("Shell jobs (1)")).toBeInTheDocument();
     expect(screen.getByText("running")).toBeInTheDocument();
     expect(screen.getByText("sleep 30")).toBeInTheDocument();
     expect(screen.getByText("job-1")).toBeInTheDocument();
@@ -51,7 +51,7 @@ describe("ShellJobsPanel", () => {
       />,
     );
 
-    expect(screen.queryByText("Background jobs (1)")).toBeNull();
+    expect(screen.queryByText("Shell jobs (1)")).toBeNull();
     expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
     expect(screen.getByText("sleep 30")).toBeInTheDocument();
   });

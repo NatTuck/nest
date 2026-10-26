@@ -1,6 +1,6 @@
 defmodule Nest.Sandbox.ShellJobs do
   @moduledoc """
-  Per-agent manager for background shell jobs.
+  Per-agent manager for shell jobs.
 
   A `shell-cmd` call with `background: true` hands its sandbox command to
   this manager instead of waiting for it. The manager owns the `:exec`
@@ -11,6 +11,14 @@ defmodule Nest.Sandbox.ShellJobs do
   agent's backend (see `Nest.Sandbox.Backend`), so its isolation is
   identical to a foreground call. It survives only because the manager
   outlives the tool call.
+
+  A *foreground* `shell-cmd` call is a shell job here too while it runs (issue
+  #174): `Nest.Tools.ShellCmd` registers it when its command starts and finishes
+  it when it ends, and the tool worker keeps the process
+  (`Nest.Sandbox.ShellJobs.Owned`). So `shell-list` shows a call while it runs, a
+  batch moved to the background is already listed rather than needing a
+  promotion, and `shell-kill` reaches either kind. Only a background job counts
+  against `caps["shell"]["background"]`.
 
   A job's log has two names. Under every backend whose environment is the host,
   the manager reads and writes it under the agent's scratch directory
@@ -29,7 +37,7 @@ defmodule Nest.Sandbox.ShellJobs do
 
   ## Limits and lifetime
 
-  At most `caps["shell"]["background"]` jobs (default 1) may run
+  At most `caps["shell"]["background"]` *background* jobs (default 1) may run
   concurrently per agent; `0` disables background jobs. The cap is per agent
   and stays that way. Jobs are keyed by `{space_id, agent_name}` and die when
   their agent dies — the manager monitors the agent pid and drops the agent's
@@ -76,15 +84,12 @@ defmodule Nest.Sandbox.ShellJobs do
 
   use GenServer
 
-  alias Nest.Agents.Agent.TmpSpace
-  alias Nest.Sandbox.{Backend, Mounts}
-  alias Nest.Sandbox.ShellJobs.{ExitNotice, Frames, Index, Info, JobLog, Launcher, Text}
-  alias Nest.Sandbox.ShellJobs.Waiters
+  alias Nest.Sandbox.ShellJobs.{Agents, ExitNotice, Frames, Index, Info, JobLog, Launcher}
+  alias Nest.Sandbox.ShellJobs.{Owned, Records, Text, Waiters}
   alias Nest.Tools.ShellCmd
 
   @name __MODULE__
   @default_max_jobs 1
-  @max_finished_per_agent 50
   # How long after a kill to force a terminal state if the exec port's
   # DOWN never arrives (SIGKILL + monitor should make it prompt).
   @kill_finalize_ms 5_000
@@ -139,14 +144,40 @@ defmodule Nest.Sandbox.ShellJobs do
     GenServer.call(@name, {:start_job, attrs}, 30_000)
   end
 
-  @doc "Metadata for every job belonging to `agent_key`, newest first."
+  @doc """
+  Register a foreground `shell-cmd` call as a shell job for its duration (#174).
+
+  `attrs` carries `:agent_key`, `:agent_pid`, `:command`, `:mounts` and `:os_pid`.
+  The caller becomes the job's owner: it keeps the `:exec` process, appends the
+  job's output and finishes it, and a kill reaches it as a `{:kill_job, id}`
+  message. Returns `{:ok, job}` — the record the worker appends through and
+  finishes — or `{:error, reason}` when no log can be prepared; a call that
+  cannot register still runs.
+  """
+  @spec register_owned(map()) :: {:ok, map()} | {:error, String.t()}
+  def register_owned(attrs), do: GenServer.call(@name, {:register_owned, attrs}, 30_000)
+
+  @doc """
+  Finish the foreground call's job `job_id` with `code`, from its owner.
+
+  Called on every terminal path — exit, timeout, Stop, kill and cancellation — so
+  a job never outlives its call. It delivers no `ExitNotice`: the call's own
+  result is the agent's report.
+  """
+  @spec finish_owned(job_id(), integer()) :: :ok
+  def finish_owned(job_id, code), do: GenServer.call(@name, {:finish_owned, job_id, code})
+
+  @doc """
+  Metadata for every job belonging to `agent_key`: running first, then finished,
+  each newest first (`Nest.Sandbox.ShellJobs.Info.list/2`).
+  """
   @spec list(agent_key()) :: [Info.t()]
   def list(agent_key), do: GenServer.call(@name, {:list, agent_key})
 
   @doc """
-  Metadata for every job belonging to any agent in `space_id`, newest first —
-  the space-wide listing `shell-list scope: "space"` renders, so an agent can
-  see a job a sibling agent left running instead of only its own.
+  Metadata for every job belonging to any agent in `space_id`, ordered like
+  `list/1` — the space-wide listing `shell-list scope: "space"` renders, so an
+  agent can see a job a sibling agent left running instead of only its own.
   """
   @spec list_space(term()) :: [Info.t()]
   def list_space(space_id), do: GenServer.call(@name, {:list_space, space_id})
@@ -292,8 +323,9 @@ defmodule Nest.Sandbox.ShellJobs do
   `Nest.Agents.TmpSweeper` asks before removing a space's scratch directory.
 
   Finished jobs are kept for `shell-wait`/`shell-list`, so they are not live and
-  do not count; `false` when nothing is tracked. A foreground `shell-cmd` is not
-  a job at all — its agent is registered while it runs.
+  do not count; `false` when nothing is tracked. A foreground `shell-cmd` is a job
+  too while it runs (#174), so a call in flight keeps its space live — which is
+  what its own scratch directory needs.
   """
   @spec live_in_space?(integer()) :: boolean()
   def live_in_space?(space_id), do: GenServer.call(@name, {:live_in_space?, space_id})
@@ -320,7 +352,7 @@ defmodule Nest.Sandbox.ShellJobs do
     case start_guarded(attrs, agent_key, max_jobs, state) do
       {:ok, job_id, log_path, state} ->
         waiter = Map.get(attrs, :waiter, caller)
-        state = track_agent(state, agent_key, attrs)
+        state = Agents.track(state, agent_key, attrs)
 
         state =
           if is_pid(waiter),
@@ -333,6 +365,20 @@ defmodule Nest.Sandbox.ShellJobs do
         {:reply, {:error, reason}, state}
     end
   end
+
+  def handle_call({:register_owned, attrs}, {owner, _ref}, state) do
+    case Owned.new(attrs, "job-#{state.next_id}", owner) do
+      {:ok, job} ->
+        state = state |> Agents.track(Map.fetch!(attrs, :agent_key), attrs) |> Records.put(job)
+        {:reply, {:ok, job}, Frames.broadcast(state, job.agent_key)}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:finish_owned, job_id, code}, _from, state),
+    do: {:reply, :ok, Owned.finish(state, job_id, code)}
 
   def handle_call({:list, agent_key}, _from, state),
     do: {:reply, Info.list(state.jobs, &(&1.agent_key == agent_key)), state}
@@ -399,34 +445,36 @@ defmodule Nest.Sandbox.ShellJobs do
   end
 
   def handle_call({:stop_jobs, agent_key}, _from, state),
-    do: {:reply, :ok, stop_running_jobs(agent_key, state)}
+    do: {:reply, :ok, Agents.stop_running(agent_key, state)}
 
   def handle_call({:stop_all, agent_key}, _from, state) do
     # No incarnation to name: the sync form is a caller that only wants the
     # jobs gone (in this tree, the shell-jobs tests), so any live owner of the
     # key refuses the scratch removal. See `TmpSpace.cleanup_agent_key/2`.
-    {:reply, :ok, drop_agent(agent_key, state, nil)}
+    {:reply, :ok, Agents.drop(agent_key, state, nil)}
   end
 
   @impl true
   def handle_cast({:stop_all, agent_key, owner}, state) do
-    {:noreply, drop_agent(agent_key, state, owner)}
+    {:noreply, Agents.drop(agent_key, state, owner)}
   end
 
   @impl true
-  def handle_info({:stdout, os_pid, data}, state),
-    do: {:noreply, write_output(os_pid, data, state)}
+  def handle_info({stream, os_pid, data}, state) when stream in [:stdout, :stderr],
+    do: {:noreply, Records.append_output(state, os_pid, data)}
 
-  def handle_info({:stderr, os_pid, data}, state),
-    do: {:noreply, write_output(os_pid, data, state)}
-
-  def handle_info({:DOWN, _ref, :process, pid, reason}, state) do
+  def handle_info({:DOWN, ref, :process, pid, reason}, state) do
     cond do
       job = Index.by_erl_pid(state, pid) ->
         {:noreply, finish_job(job, reason, state)}
 
+      # The tool worker behind a foreground call (#174) died mid-command, and its
+      # port with it: the job is marked killed so it cannot stay `:running`.
+      job = Index.by_owner_ref(state, ref) ->
+        {:noreply, finish_job(%{job | killed: true}, {:killed, 137}, state)}
+
       agent_key = Index.agent_key_by_monitor(state, pid) ->
-        {:noreply, drop_agent(agent_key, state, pid)}
+        {:noreply, Agents.drop(agent_key, state, pid)}
 
       true ->
         {:noreply, state}
@@ -454,15 +502,16 @@ defmodule Nest.Sandbox.ShellJobs do
   # (issue #163, `ExitNotice`). A job that already exited is a no-op that still
   # reports success, so a repeated kill is harmless.
   defp kill_job(%{status: :running} = job, state, by) do
-    stop_os_process(job)
+    Agents.request_stop(job)
 
     # The exec port should send a DOWN that finishes the job. If it never
     # arrives, `@kill_finalize_ms` later forces a terminal state so the job
-    # can't be stuck "running, killed" forever.
+    # can't be stuck "running, killed" forever. For a foreground call that is
+    # also the fallback for an owner that never answers its `{:kill_job, id}`.
     Process.send_after(self(), {:kill_finalize, job.id}, @kill_finalize_ms)
 
     state
-    |> put_job(%{job | killed: true, killed_by: by})
+    |> Records.put(%{job | killed: true, killed_by: by})
     |> Frames.broadcast(job.agent_key)
   end
 
@@ -482,7 +531,7 @@ defmodule Nest.Sandbox.ShellJobs do
         job_id = "job-#{state.next_id}"
 
         case Launcher.launch(attrs, agent_key, job_id) do
-          {:ok, job, log_path} -> {:ok, job_id, log_path, put_job(state, job)}
+          {:ok, job, log_path} -> {:ok, job_id, log_path, Records.put(state, job)}
           {:error, reason} -> {:error, reason}
         end
     end
@@ -490,206 +539,27 @@ defmodule Nest.Sandbox.ShellJobs do
 
   # ---- Output / completion ----
 
-  defp write_output(os_pid, data, state) do
-    case Index.by_os_pid(state, os_pid) do
-      nil ->
-        state
-
-      job ->
-        JobLog.append(job.mounts, job.log_path, data)
-        state
-    end
-  end
-
   defp finish_job(job, reason, state) do
     code = exit_code(reason)
 
     # Before the waiters are told and forgotten: the notice is suppressed for a
     # job someone is waiting on, so it has to read the waiter list as it was at
-    # the exit (issue #163).
-    ExitNotice.deliver(job, code, state)
+    # the exit (issue #163). A job with an `owner` is a foreground call (#174),
+    # whose own result is already the agent's report — a notice would be a second
+    # turn on the same call.
+    unless job.owner, do: ExitNotice.deliver(job, code, state)
 
     state =
       state
       |> Map.update!(:waiters, &Waiters.notify_exit(&1, job.id, code))
-      |> put_job(%{job | status: {:exited, code}, exit_code: code})
-      |> trim(job.agent_key)
+      |> Records.put(%{job | status: {:exited, code}, exit_code: code})
+      |> Records.trim(job.agent_key)
 
-    remove_script(job)
+    Records.remove_script(job)
     Frames.broadcast(state, job.agent_key)
   end
 
   defp exit_code(:normal), do: 0
   defp exit_code({:killed, code}), do: code
   defp exit_code(reason), do: ShellCmd.exit_code(reason)
-
-  # ---- Agent tracking ----
-
-  # Monitor the agent pid the first time we see an agent, so its jobs die
-  # with it, and remember the agent's `mounts` so dropping the agent knows
-  # which backend's scratch directory to remove. On DOWN we drop every job
-  # under the key.
-  defp track_agent(state, agent_key, attrs) do
-    case Map.get(state.agents, agent_key) do
-      nil ->
-        %{
-          state
-          | agents: Map.put(state.agents, agent_key, agent_record(attrs))
-        }
-
-      _existing ->
-        state
-    end
-  end
-
-  # A key that is already tracked keeps its first record: a space's backend is
-  # fixed at creation, so a later job cannot bring a different one.
-  defp agent_record(attrs) do
-    pid = Map.get(attrs, :agent_pid)
-
-    %{
-      pid: pid,
-      ref: monitor_agent_pid(pid),
-      mounts: Map.fetch!(attrs, :mounts)
-    }
-  end
-
-  defp monitor_agent_pid(pid) when is_pid(pid), do: Process.monitor(pid)
-  defp monitor_agent_pid(_pid), do: nil
-
-  # Stop this agent's running jobs, keeping its key, finished jobs and scratch.
-  defp stop_running_jobs(agent_key, state) do
-    jobs =
-      for job <- Map.values(state.jobs),
-          job.agent_key == agent_key and job.status == :running,
-          do: job
-
-    Enum.each(jobs, &stop_job/1)
-
-    # A waiter that outlives the kill would wait out its timeout.
-    Waiters.notify_gone(state.waiters, Enum.map(jobs, & &1.id))
-
-    state
-  end
-
-  defp drop_agent(agent_key, state, owner) do
-    jobs = state.jobs |> Map.values() |> Enum.filter(&(&1.agent_key == agent_key))
-    ids = Enum.map(jobs, & &1.id)
-
-    Enum.each(jobs, &stop_job/1)
-
-    # Say so before the waiter lists go with the jobs: this is the only path
-    # that ends a job without an exit, and a waiter that outlives its agent
-    # would otherwise wait out its whole timeout and then report the job as
-    # still running. See `Waiters.notify_gone/2`.
-    Waiters.notify_gone(state.waiters, ids)
-
-    # The jobs above are stopped, so the scratch directory can go now; removing
-    # it first would let a running job recreate files under a deleted path.
-    # `owner` is the incarnation this drop is for, so a stale monitor for a
-    # previous one cannot delete the scratch a live agent is using, and the
-    # backend comes from the agent's own record because a `"none"` space's
-    # scratch is the host's `/tmp/<agent-name>` rather than a per-space dir.
-    TmpSpace.cleanup_agent_key(agent_key, owner, tracked_backend(state, agent_key))
-
-    demonitor_agent(state, agent_key)
-
-    state = %{
-      state
-      | jobs: Map.drop(state.jobs, ids),
-        agents: Map.delete(state.agents, agent_key),
-        waiters: Map.drop(state.waiters, ids)
-    }
-
-    # The agent's jobs are gone, so the frame that says so is this one: every
-    # other state change broadcasts, and a client watching this agent would
-    # otherwise keep rendering jobs that were just killed. A no-op for an
-    # `agent_key` that is not `{space_id, name}`.
-    Frames.broadcast(state, agent_key)
-  end
-
-  defp stop_job(%{status: :running} = job) do
-    stop_os_process(job)
-    remove_script(job)
-  end
-
-  defp stop_job(job), do: remove_script(job)
-
-  # SIGKILL the running external process. Plain `:exec.stop/1` sends
-  # SIGTERM first and only escalates to SIGKILL after ~5s; bwrap (PID 1 in
-  # its namespace) can ignore SIGTERM, which made kills flaky-slow. We want
-  # an immediate teardown.
-  defp stop_os_process(%{os_pid: os_pid}) do
-    :exec.kill(os_pid, :sigkill)
-  catch
-    _kind, _ -> :ok
-  end
-
-  # Stop monitoring the dropped agent. A key with no record, or a record with
-  # no pid (an agent the manager never saw a pid for), has no monitor to
-  # cancel.
-  defp demonitor_agent(state, agent_key) do
-    case Map.get(state.agents, agent_key) do
-      %{ref: ref} when is_reference(ref) -> Process.demonitor(ref, [:flush])
-      _ -> :ok
-    end
-  end
-
-  # The backend the dropped agent's jobs ran on, from the record
-  # `track_agent/3` kept. An untracked key falls back to the default backend:
-  # a drop with no record is a key that never started a job, and the default is
-  # the only backend that can have one.
-  defp tracked_backend(state, agent_key) do
-    case Map.get(state.agents, agent_key) do
-      %{mounts: mounts} -> Mounts.backend(mounts)
-      _ -> Backend.default()
-    end
-  end
-
-  # ---- Retention / cleanup ----
-
-  # Remove the job's staged script. `script_path` is the staging path
-  # `Nest.Tools.ShellCmd.Transcript.stage/2` writes to; the spelling the backend's command line
-  # uses is a different thing and must never be passed here.
-  defp remove_script(%{script_path: nil}), do: :ok
-
-  defp remove_script(%{script_path: path}) do
-    File.rm(path)
-    :ok
-  end
-
-  # Keep at most @max_finished_per_agent finished jobs per agent; evict
-  # the oldest (deleting its log file).
-  defp trim(state, agent_key) do
-    finished =
-      state.jobs
-      |> Map.values()
-      |> Enum.filter(&(&1.agent_key == agent_key and match?({:exited, _}, &1.status)))
-      |> Enum.sort_by(& &1.started_at, DateTime)
-
-    excess = length(finished) - @max_finished_per_agent
-
-    if excess > 0 do
-      finished
-      |> Enum.take(excess)
-      |> Enum.reduce(state, fn job, acc ->
-        JobLog.remove(job.mounts, job.log_path)
-        %{acc | jobs: Map.delete(acc.jobs, job.id), waiters: Map.delete(acc.waiters, job.id)}
-      end)
-    else
-      state
-    end
-  end
-
-  # ---- Lookups / shaping ----
-
-  defp put_job(state, job) do
-    %{
-      state
-      | jobs: Map.put(state.jobs, job.id, job),
-        next_id: max(state.next_id, id_number(job) + 1)
-    }
-  end
-
-  defp id_number(%{id: "job-" <> n}), do: String.to_integer(n)
 end

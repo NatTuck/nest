@@ -57,7 +57,7 @@ defmodule Nest.Tools.ShellJobsTest do
   end
 
   test "shell-list reports the agent's jobs", %{key: key, tmp: tmp, context: context} do
-    assert {:ok, "No background jobs."} =
+    assert {:ok, "No shell jobs."} =
              invoke(Tools.get_function("shell-list", Mounts.new(nil, nil)), %{}, context)
 
     id = start_job!("sleep 30", tmp, key)
@@ -137,7 +137,7 @@ defmodule Nest.Tools.ShellJobsTest do
     # (`System.unique_integer([:positive])`), so this space is really empty.
     empty = %{context | space_id: -System.unique_integer([:positive])}
 
-    assert {:ok, "No background jobs in this space."} =
+    assert {:ok, "No shell jobs in this space."} =
              invoke(tool, %{"scope" => "space"}, empty)
   end
 

@@ -44,11 +44,7 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
           {:ok, map(), String.t()} | {:error, String.t()}
   def launch(attrs, agent_key, job_id) do
     mounts = Map.fetch!(attrs, :mounts)
-    scratch = Mounts.scratch(mounts)
-    log_path = Path.join([scratch, @log_subdir, "#{job_id}.log"])
-
-    sandbox_log_path =
-      Path.join([Sandbox.sandbox_tmp_path(scratch), @log_subdir, "#{job_id}.log"])
+    {log_path, sandbox_log_path} = log_paths(mounts, job_id)
 
     with :ok <- JobLog.prepare(mounts, log_path),
          {:ok, spec} <- job_spec(attrs, mounts, sandbox_log_path),
@@ -71,6 +67,11 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
         # job is running, and it is what decides whether the exit is reported
         # back as a notice (`Nest.Sandbox.ShellJobs.ExitNotice`).
         killed_by: nil,
+        # The manager owns this job's process and its exit, so there is no
+        # separate owner to tell or monitor. A foreground call's record carries
+        # both (`Nest.Sandbox.ShellJobs.Owned`).
+        owner: nil,
+        owner_ref: nil,
         started_at: DateTime.utc_now()
       }
 
@@ -82,6 +83,25 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
         JobLog.remove(mounts, log_path)
         {:error, start_error(reason)}
     end
+  end
+
+  @doc """
+  The job log's two names for `job_id` under `mounts`: the host path the manager
+  writes and reads, and the spelling the sandbox sees.
+
+  Shared with `Nest.Sandbox.ShellJobs.Owned`, which gives a foreground call the
+  same log in the same place — so `shell-list`'s log path means one thing.
+  """
+  @spec log_paths(Mounts.t(), String.t()) :: {String.t(), String.t()}
+  def log_paths(mounts, job_id) do
+    scratch = Mounts.scratch(mounts)
+
+    log_path = Path.join([scratch, @log_subdir, "#{job_id}.log"])
+
+    sandbox_log_path =
+      Path.join([Sandbox.sandbox_tmp_path(scratch), @log_subdir, "#{job_id}.log"])
+
+    {log_path, sandbox_log_path}
   end
 
   defp job_spec(attrs, mounts, sandbox_log_path) do

@@ -1,6 +1,7 @@
 defmodule Nest.Sandbox.ShellJobs.Info do
   @moduledoc """
-  The wire shape of a background job: what `shell-list` shows an agent, what the
+  The wire shape of a shell job — a background one, or a foreground `shell-cmd`
+  call while it runs (#174): what `shell-list` shows an agent, what the
   `shell:jobs` broadcast sends the UI, and the running count the sidebar shows
   after an agent's name (#175).
 
@@ -32,12 +33,14 @@ defmodule Nest.Sandbox.ShellJobs.Info do
         }
 
   @doc """
-  `jobs` — the manager's `id => job` map — as wire shapes, newest first, keeping
-  only the jobs `owned?` accepts.
+  `jobs` — the manager's `id => job` map — as wire shapes, keeping only the jobs
+  `owned?` accepts: **running first, then finished**, each newest first.
 
-  Newest first because a listing is read to find what just ran, and a job id is
-  not a timestamp. The manager's `trim/2` sorts the other way on purpose — it
-  deletes the oldest — so the two orders are not a shared helper.
+  A listing is read to find what is happening now, and a long tail of finished
+  jobs must not bury the live one (issue #174), so liveness outranks recency. The
+  second key is the start time descending because a job id is not a timestamp.
+  `Records.trim/2` sorts the other way on purpose — it deletes the oldest — so the
+  two orders are not a shared helper.
   """
   @spec list(%{optional(Nest.Sandbox.ShellJobs.job_id()) => map()}, (map() -> boolean())) ::
           [t()]
@@ -45,7 +48,7 @@ defmodule Nest.Sandbox.ShellJobs.Info do
     jobs
     |> Map.values()
     |> Enum.filter(owned?)
-    |> Enum.sort_by(& &1.started_at, {:desc, DateTime})
+    |> Enum.sort_by(&{&1.status != :running, -DateTime.to_unix(&1.started_at, :microsecond)})
     |> Enum.map(&to_info/1)
   end
 
@@ -109,7 +112,7 @@ defmodule Nest.Sandbox.ShellJobs.Info do
   end
 
   @doc """
-  A job's status, as `shell-wait`/`shell-status` report it.
+  A job's status, as `shell-wait` reports it.
   """
   @spec status(map()) :: :running | {:exited, integer()}
   def status(%{status: :running}), do: :running

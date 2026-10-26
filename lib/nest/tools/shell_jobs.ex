@@ -1,7 +1,7 @@
 defmodule Nest.Tools.ShellJobs do
   @moduledoc """
-  Tools for managing background shell jobs started by
-  `shell-cmd background: true`.
+  Tools for managing shell jobs: every `shell-cmd` call while it runs, and a
+  background one (`shell-cmd background: true`) after it returns.
 
   The job manager itself is `Nest.Sandbox.ShellJobs`. These tools read
   the per-call context (`space_id` + `agent_name`) to scope every
@@ -24,9 +24,11 @@ defmodule Nest.Tools.ShellJobs do
     %Tool{
       name: "shell-list",
       description:
-        "List background shell jobs (started with `shell-cmd`'s " <>
-          "`background: true`), with each job's status, exit code, and log " <>
-          "path. `scope` is \"agent\" (the default: your own jobs) or " <>
+        "List shell jobs with each job's status, exit code and log path. " <>
+          "Every `shell-cmd` call is a job while it runs; a call with " <>
+          "`background: true` returns a job id and keeps running after the " <>
+          "call returns. Running jobs are listed first. `scope` is " <>
+          "\"agent\" (the default: your own jobs) or " <>
           "\"space\" (every job in this space, including other agents' jobs, " <>
           "each labelled with the agent that owns it). Use `shell-wait` to " <>
           "watch for one of your own to finish and `shell-kill` to stop one — " <>
@@ -81,19 +83,20 @@ defmodule Nest.Tools.ShellJobs do
     }
   end
 
-  @doc "The `shell-kill` tool: stop a background job."
+  @doc "The `shell-kill` tool: stop a running shell job."
   @spec kill_function() :: Tool.t()
   def kill_function do
     %Tool{
       name: "shell-kill",
       description:
-        "Stop a running background shell job by id. The id may be one of your " <>
-          "own jobs or another agent's job in your space; when it is another " <>
-          "agent's, the result says whose it was.",
+        "Stop a running shell job by id — a background job, or a `shell-cmd` " <>
+          "call that is still running. The id may be one of your own jobs or " <>
+          "another agent's job in your space; when it is another agent's, the " <>
+          "result says whose it was.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
-          "id" => %{"type" => "string", "description" => "The background job id."}
+          "id" => %{"type" => "string", "description" => "The shell job id."}
         },
         "required" => ["id"]
       },
@@ -192,7 +195,7 @@ defmodule Nest.Tools.ShellJobs do
   defp killed_text(id, owner, code),
     do: "Killed background job #{id}, owned by #{owner} (exit code #{code})."
 
-  defp render([]), do: "No background jobs."
+  defp render([]), do: "No shell jobs."
 
   defp render(jobs), do: Enum.map_join(jobs, "\n", &render_job/1)
 
@@ -201,7 +204,7 @@ defmodule Nest.Tools.ShellJobs do
       status_suffix(job) <> " — #{job.command} (log: #{job.log_path})"
   end
 
-  defp render_space([]), do: "No background jobs in this space."
+  defp render_space([]), do: "No shell jobs in this space."
 
   defp render_space(jobs), do: Enum.map_join(jobs, "\n", &render_space_job/1)
 

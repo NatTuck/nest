@@ -520,6 +520,13 @@ defmodule Nest.Sandbox.ShellJobsTest do
         id
       end
 
+    # Every job has finished before the order is read. `start_job/1` registered
+    # this process as each job's waiter, so its exit is an event to wait for; and
+    # `Info.list/2` puts *running* jobs first (#174), so a half-exited set would
+    # be ordered by liveness rather than by start time — which is the other
+    # test's subject, not this one's.
+    for id <- ids, do: assert_receive({:shell_job_exit, ^id, 0}, 1_000)
+
     # Newest first: a listing is read to find what just ran. `trim/2` sorts the
     # other way on purpose, because it deletes the oldest.
     assert ShellJobs.list(key) |> Enum.map(& &1.id) == Enum.reverse(ids)

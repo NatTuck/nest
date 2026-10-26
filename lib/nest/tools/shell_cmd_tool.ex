@@ -64,7 +64,10 @@ defmodule Nest.Tools.ShellCmdTool do
       "runs under a wall-clock " <>
       "limit of `timeout` seconds (default #{default_timeout_seconds()}): one " <>
       "that outlives it is killed and its output so far is returned. The " <>
-      "limit does not apply to `background: true`."
+      "limit does not apply to `background: true`. Every call is a shell job " <>
+      "while it runs, so it is listed by `shell-list` and `shell-kill` can stop " <>
+      "it; `background: true` returns a job id instead of waiting, and the job " <>
+      "outlives the call."
   end
 
   defp shell_background_property do
@@ -76,7 +79,7 @@ defmodule Nest.Tools.ShellCmdTool do
           "shell-list, shell-wait, and shell-kill. A command that exits " <>
           "within the first 200ms is reported as its normal output " <>
           "instead of a job id. Limited to a small number of concurrent " <>
-          "jobs per agent."
+          "background jobs per agent; a foreground call is not one of them."
     }
   end
 
@@ -108,9 +111,13 @@ defmodule Nest.Tools.ShellCmdTool do
           "scratch: #{Mounts.scratch(mounts) || "none"}, background: #{args["background"] == true})"
       )
 
+      # `register_job` is set here and nowhere else: every `shell-cmd` call is a
+      # shell job while it runs (#174). The file tools' and the sandbox helpers'
+      # commands are short internal steps and are not registered.
       opts =
         [
           background: args["background"] == true,
+          register_job: true,
           agent_key: Nest.Tools.agent_key(context),
           agent_pid: Map.get(context, :agent_pid)
         ]
