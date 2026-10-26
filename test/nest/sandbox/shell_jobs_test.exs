@@ -11,6 +11,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Sandbox.Backend.Docker
   alias Nest.Sandbox.Mounts
+  alias Nest.Sandbox.Paths
   alias Nest.Sandbox.ShellJobs
   alias Nest.Sandbox.ShellJobs.Index
   alias Nest.Sandbox.ShellJobs.JobLog
@@ -158,7 +159,16 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert [%{id: ^id, status: :exited}] = ShellJobs.list(key)
     assert_received {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}
 
-    assert Path.wildcard(Path.join(tmp, ".nest-cmd-*.sh"), match_dot: true) == []
+    # The staged script lives in the backend's staging directory — a *sibling*
+    # of the agent's scratch dir (`<space>/.cmds`), never inside it — so the
+    # wildcard this replaces searched `tmp`, matched nothing the code produces,
+    # and could not fail. This one is pointed at the directory the script is
+    # actually staged in, which is unique per test because the scratch root is;
+    # the `File.dir?/1` is what keeps it from being vacuous if that ever changes.
+    # Bound once: each call forks `realpath` (see `Nest.FSPath.canonical/1`).
+    stage = Paths.stage_dir(tmp)
+    assert File.dir?(stage)
+    assert Path.wildcard(Path.join(stage, "nest-cmd-*.sh")) == []
   end
 
   test "a subscribe that lands after the exit still reports it", %{key: key, tmp: tmp} do

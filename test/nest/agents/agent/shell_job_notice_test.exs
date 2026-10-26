@@ -144,7 +144,7 @@ defmodule Nest.Agents.Agent.ShellJobNoticeTest do
     id
   end
 
-  # `ShellCmd.stage_script/2`'s layout: the script's host path and its
+  # `Nest.Tools.ShellCmd.Transcript.stage/2`'s layout: the script's host path and its
   # in-sandbox spelling, which is what the backend's command line runs.
   defp stage_script!(scratch, body) do
     dir = Paths.stage_dir(scratch)

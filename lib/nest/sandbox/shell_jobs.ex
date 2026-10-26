@@ -637,7 +637,7 @@ defmodule Nest.Sandbox.ShellJobs do
   # ---- Retention / cleanup ----
 
   # Remove the job's staged script. `script_path` is the staging path
-  # `ShellCmd.stage_script/2` writes to; the spelling the backend's command line
+  # `Nest.Tools.ShellCmd.Transcript.stage/2` writes to; the spelling the backend's command line
   # uses is a different thing and must never be passed here.
   defp remove_script(%{script_path: nil}), do: :ok
 

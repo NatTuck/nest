@@ -28,6 +28,7 @@ defmodule Nest.Tools.ShellCmdTest do
   alias Nest.Sandbox.Mounts
   alias Nest.Tools
   alias Nest.Tools.ShellCmd
+  alias Nest.Tools.ShellCmd.Transcript
 
   setup do
     # A workspace outside /tmp: the scratch dir is bound at /tmp, so a
@@ -287,7 +288,7 @@ defmodule Nest.Tools.ShellCmdTest do
     assert output =~ "two"
   end
 
-  test "the tool's schema declares `timeout` in seconds, default 60, no maximum, optional", %{
+  test "the tool's contract: `timeout` in seconds, and the umask every command runs under", %{
     ws: ws
   } do
     tool = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
@@ -310,6 +311,14 @@ defmodule Nest.Tools.ShellCmdTest do
     assert tool.description =~ "default #{default_seconds}"
     refute Map.has_key?(timeout, "maximum")
     assert tool.parameters_schema["required"] == ["command"]
+
+    # The umask the transcript's preamble sets, stated to the model. 0022 is the
+    # policy (a directory an agent creates must never be world-writable) and the
+    # literal is deliberate: the description interpolates `Transcript.umask/0`,
+    # so a change to the constant has to be a visible change to this line rather
+    # than a silent drift between what the model is told and what the script
+    # runs with.
+    assert tool.description =~ "umask 0022"
   end
 
   test "the tool rejects a non-positive or non-integer `timeout` as a tool error", %{ws: ws} do
@@ -479,6 +488,56 @@ defmodule Nest.Tools.ShellCmdTest do
     assert Path.wildcard(Path.join(stage, "nest-cmd-*.sh")) == []
   end
 
+  @tag :bwrap
+  test "the transcript carries the umask preamble, so created modes are deterministic", %{ws: ws} do
+    # Modes used to be whatever umask the launcher had: the same `mkdir` came
+    # out 0777 under a launcher with umask 000 and 0775 under 002, so a
+    # world-writable directory in the workspace was one inherited value away.
+    #
+    # The transcript's *bytes* are the assertion that can fail on every host: a
+    # launcher with umask 022 already produces 0755/0644, so the mode
+    # assertions below corroborate the effect here rather than pinning it.
+    #
+    # The scratch is what makes the two spellings different strings — with no
+    # scratch bind `stage_dir_sandbox/1` *is* `stage_dir/1`, and the assertion
+    # below would pass for the bug it names.
+    scratch =
+      Path.join([
+        System.tmp_dir!(),
+        "nest_umask_stage_#{System.unique_integer([:positive])}",
+        "space-1",
+        "agent"
+      ])
+
+    File.mkdir_p!(scratch)
+
+    on_exit(fn ->
+      if String.contains?(scratch, "nest_umask_stage"),
+        do: File.rm_rf(Path.dirname(Path.dirname(scratch)))
+    end)
+
+    mounts = Mounts.new(ws, scratch)
+    {host, sandbox} = Transcript.stage("mkdir d", mounts)
+    on_exit(fn -> File.rm(host) end)
+
+    assert File.read!(host) == "umask 0022\nmkdir d"
+
+    # The spelling bash is handed is the sandbox's, not the host's: with a
+    # scratch bind the staging directory is `<space>/.cmds` on the host and
+    # `/tmp/.cmds` inside. Handing bash the host path would make every command
+    # fail to open its own script.
+    assert sandbox == Path.join("/tmp/.cmds", Path.basename(host))
+
+    # End to end through a real command: the preamble applies to the whole
+    # script, and the command's own `umask` still wins over it.
+    assert {:ok, _} =
+             ShellCmd.execute("mkdir d && touch f && umask 0077 && mkdir priv", mounts, nil, [])
+
+    assert mode(Path.join(ws, "d")) == 0o755
+    assert mode(Path.join(ws, "f")) == 0o644
+    assert mode(Path.join(ws, "priv")) == 0o700
+  end
+
   test "there is no set -e, so a failing statement does not stop the script", %{ws: ws} do
     # The staged script runs without `set -e`: the first statement fails, the
     # next still runs, and the last statement's (zero) status is what the call
@@ -534,4 +593,8 @@ defmodule Nest.Tools.ShellCmdTest do
       end
     end
   end
+
+  # The permission bits of `path`, without the file-type bits `File.stat!/1`
+  # reports alongside them.
+  defp mode(path), do: Bitwise.band(File.stat!(path).mode, 0o777)
 end
