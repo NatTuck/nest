@@ -13,6 +13,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
 
   import ExUnit.CaptureLog
 
+  import Nest.Test.FileMode
   import Nest.Test.TmpCleanup
 
   alias Nest.Agents.Agent.TmpSpace
@@ -28,10 +29,6 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
   # a test that used one would delete the host's own directory if the guard ever
   # regressed.
   defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
-
-  # The permission bits, without the file-type bits `File.stat!/1` reports
-  # alongside them.
-  defp mode(path), do: Bitwise.band(File.stat!(path).mode, 0o777)
 
   # A `"none"` scratch is the host's own `/tmp/<name>`, so a test that makes one
   # has to remove it: production leaves them to the agent's `terminate/2`, and a

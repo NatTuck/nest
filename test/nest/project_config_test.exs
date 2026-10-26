@@ -2,6 +2,7 @@ defmodule Nest.ProjectConfigTest do
   use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
+  import Nest.Test.FileMode
 
   alias Nest.ProjectConfig
   alias Nest.Sandbox.Mounts
@@ -359,5 +360,37 @@ defmodule Nest.ProjectConfigTest do
     |> Task.await()
 
     assert :ets.lookup(:nest_project_config_cache, {:workspace, dir}) != []
+  end
+
+  describe "ensure_dirs/1" do
+    test "the tmp source is Nest's, so it is 0755; an rw destination is the user's", %{dir: dir} do
+      # A `tmp` mount's source is `<scratch>/project/<slug>` — Nest's own
+      # directory, bound *read-write* into the agent's sandbox — so it gets
+      # `Nest.FileModes`. An `rw` destination is a path the user named in
+      # `.nest`: it is created, and its mode is not ours to set.
+      source = Path.join([dir, "scratch", "project", "0123456789abcdef"])
+      dest = Path.join([dir, "user", "mount"])
+
+      caps = %{
+        "net" => false,
+        "fs" => %{
+          "read" => ["/"],
+          "write" => [":workspace"],
+          "project" => [
+            %{"mode" => "tmp", "dest" => "~/scratch", "source" => source},
+            %{"mode" => "rw", "dest" => dest, "create" => true}
+          ]
+        }
+      }
+
+      assert :ok = ProjectConfig.ensure_dirs(caps)
+
+      # Both new levels are the helper's; a 022 launcher would give the same
+      # answer, so the assertion earns its keep on this host's 002.
+      assert mode(source) == 0o755
+      assert mode(Path.dirname(source)) == 0o755
+
+      assert File.dir?(dest)
+    end
   end
 end

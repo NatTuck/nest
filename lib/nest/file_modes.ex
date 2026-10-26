@@ -22,10 +22,13 @@ defmodule Nest.FileModes do
   docker staging directory, and the files inside them (markers, stamps, job logs,
   offloads, staged transcripts).
 
-  Not in scope, deliberately: paths a *user* configured (`:timeline_dir`, a
-  `.nest` mount source or destination) and vendor paths (the HPU log directory).
-  Those belong to whoever named them, and Nest narrowing or widening them would be
-  a surprise — a caller that wants a mode there should set it itself.
+  Not in scope, deliberately: paths a *user* named — a `.nest` mount's `rw`
+  destination, the base of `:timeline_dir` (whose per-run directory is created
+  under it, but under a path the user chose) — and vendor paths (the HPU log
+  directory). Those belong to whoever named them, and Nest narrowing or widening
+  them would be a surprise. A `.nest` mount's `tmp` *source* is the opposite case
+  and is in scope: it is `<scratch>/project/<slug>`, Nest's own directory, bound
+  read-write into the sandbox (`Nest.ProjectConfig.ensure_dirs/1`).
 
   ## Existing entries
 
@@ -33,6 +36,21 @@ defmodule Nest.FileModes do
   leave an existing one alone, so a caller's own `0700` is never widened. A file
   the write helpers touch is Nest's own by construction, so its mode is always
   set.
+
+  Two consequences worth stating, since both are visible from outside:
+
+    * a directory that already existed keeps its mode, so this does not heal one
+      created before it existed — an adopted `"none"` scratch at `/tmp/<name>`
+      keeps whatever mode it had;
+    * the "created" list is computed before the `mkdir_p`, so a level a
+      concurrent caller creates in that window is chmod'd too. Harmless here
+      (every caller of a given path wants `0755`), but it is why the promise is
+      "a caller's own `0700` is not widened" rather than "nothing else is
+      touched".
+
+  A `mkdir_p` that succeeds but whose `chmod` fails raises `File.Error` from both
+  forms: the directory exists but cannot be made usable, which no caller can act
+  on differently from a failure to make it.
   """
 
   @dir_mode 0o755
@@ -46,25 +64,32 @@ defmodule Nest.FileModes do
   """
   @spec mkdir_p(Path.t()) :: :ok | {:error, File.posix()}
   def mkdir_p(path) do
-    created = missing(path)
+    # The fast path matters: `Transcript.stage/2` calls this on every `shell-cmd`,
+    # and the directory almost always exists by then. One `stat` instead of one
+    # per component.
+    if File.dir?(path) do
+      :ok
+    else
+      created = missing(path)
 
-    with :ok <- File.mkdir_p(path) do
-      Enum.each(created, &File.chmod!(&1, @dir_mode))
+      with :ok <- File.mkdir_p(path) do
+        Enum.each(created, &File.chmod!(&1, @dir_mode))
+      end
     end
   end
 
   @doc """
   `File.mkdir_p!/1`, with `0755` on every directory the call created.
 
-  Raises `File.Error` exactly as `File.mkdir_p!/1` does — callers and tests pin
-  that shape — and returns `path` rather than `:ok`, because every caller here is
-  making a directory it is about to hand back or join onto.
+  Returns `:ok`, and raises `File.Error` for a failure to make the directory
+  exactly as `File.mkdir_p!/1` does: callers and tests pin that shape, and the
+  idiom it trains (`:ok = mkdir_p!(…)`) must not get a `MatchError` instead.
   """
-  @spec mkdir_p!(Path.t()) :: Path.t()
+  @spec mkdir_p!(Path.t()) :: :ok
   def mkdir_p!(path) do
     case mkdir_p(path) do
       :ok ->
-        path
+        :ok
 
       {:error, reason} ->
         raise File.Error,

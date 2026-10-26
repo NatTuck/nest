@@ -6,6 +6,8 @@ defmodule Nest.FileModesTest do
   """
   use ExUnit.Case, async: true
 
+  import Nest.Test.FileMode
+
   alias Nest.FileModes
 
   setup do
@@ -35,10 +37,13 @@ defmodule Nest.FileModesTest do
   } do
     nested = Path.join([root, "space-1", "agent"])
 
-    assert FileModes.mkdir_p!(nested) == nested
+    assert :ok = FileModes.mkdir_p!(nested)
 
     # Both levels are new, so both are the helper's to set; the root predates the
-    # call, so its 0700 is not widened to 0755.
+    # call, so its 0700 is not widened to 0755. The positive half is
+    # host-dependent — on a launcher with umask 022 a plain `mkdir_p` also reads
+    # 0755 — and no host-independent form exists, because the BEAM cannot set a
+    # umask. The negative half below is the host-independent one.
     assert mode(nested) == 0o755
     assert mode(Path.dirname(nested)) == 0o755
     assert mode(root) == 0o700
@@ -76,11 +81,15 @@ defmodule Nest.FileModesTest do
 
     assert {:error, reason} = FileModes.mkdir_p(Path.join(locked, "nope"))
     assert {:error, ^reason} = FileModes.write(Path.join(locked, "f"), "x")
-    assert_raise File.Error, fn -> FileModes.mkdir_p!(Path.join(locked, "nope")) end
-    assert_raise File.Error, fn -> FileModes.write!(Path.join(locked, "f"), "x") end
-  end
 
-  # The permission bits, without the file-type bits `File.stat!/1` reports
-  # alongside them.
-  defp mode(path), do: Bitwise.band(File.stat!(path).mode, 0o777)
+    # The action strings are the stdlib's own, which is the whole reason the bang
+    # forms build the error rather than raising `MatchError`.
+    assert_raise File.Error, ~r/make directory \(with -p\)/, fn ->
+      FileModes.mkdir_p!(Path.join(locked, "nope"))
+    end
+
+    assert_raise File.Error, ~r/write to file/, fn ->
+      FileModes.write!(Path.join(locked, "f"), "x")
+    end
+  end
 end

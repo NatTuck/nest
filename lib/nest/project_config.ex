@@ -92,6 +92,7 @@ defmodule Nest.ProjectConfig do
 
   require Logger
 
+  alias Nest.FileModes
   alias Nest.FSPath
   alias Nest.ParseCache
   alias Nest.Sandbox.Mounts
@@ -525,12 +526,18 @@ defmodule Nest.ProjectConfig do
   `mkdir_p` project-mount backing dirs before the sandbox starts: `tmp` sources
   must exist to be bind sources, and `create = true` dirs must exist to
   be mount points.
+
+  The two are not the same kind of path. A `tmp` source is Nest's own
+  (`<scratch>/project/<slug>`, from `source_for/2`) and is bound **read-write**
+  into the agent's sandbox, so it is created through `Nest.FileModes`. An `rw`
+  destination is a path the user named in `.nest`, so it is only created — its
+  mode is whoever named it to decide.
   """
   @spec ensure_dirs(map()) :: :ok
   def ensure_dirs(caps) do
     Enum.each(project_mounts(caps), fn
       %{"mode" => "tmp", "source" => source} when is_binary(source) ->
-        File.mkdir_p!(source)
+        FileModes.mkdir_p!(source)
 
       %{"mode" => "rw", "create" => true, "dest" => dest} ->
         File.mkdir_p!(dest)
