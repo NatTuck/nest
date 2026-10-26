@@ -25,6 +25,8 @@ defmodule Nest.Agents.Agent.Broadcasts do
   alias Nest.Messages.Compaction
   alias Nest.PubSub
   alias Nest.Sandbox.Mounts
+  alias Nest.Sandbox.ShellJobs
+  alias Nest.Sandbox.ShellJobs.Info
 
   # The chunk of the error message that we include in the
   # server log. We log the full message at server side, but
@@ -96,6 +98,11 @@ defmodule Nest.Agents.Agent.Broadcasts do
   `attrs` keys: `:name` (required), `:model`, `:status` (default `"idle"`),
   `:vocation`, `:parent_id`, `:parent_name`, `:depth`
   (default `0`).
+
+  One key is not an attr: `"runningJobs"` is read from the job manager (#175),
+  because the count belongs to `Nest.Sandbox.ShellJobs` rather than to whatever
+  spawned the agent. A freshly created agent has none, but the key is always
+  there, for the same reason as every other.
   """
   @spec agent_created(integer(), keyword()) :: :ok
   def agent_created(space_id, attrs) do
@@ -107,16 +114,27 @@ defmodule Nest.Agents.Agent.Broadcasts do
   # only so a test can pin the shape without going through PubSub.
   @spec created_payload(integer(), keyword()) :: map()
   def created_payload(space_id, attrs) do
+    name = Keyword.fetch!(attrs, :name)
+
     %{
-      "name" => Keyword.fetch!(attrs, :name),
+      "name" => name,
       "space_id" => space_id,
       "model" => model_payload(Keyword.get(attrs, :model)),
       "status" => Keyword.get(attrs, :status, "idle"),
       "vocation" => Keyword.get(attrs, :vocation),
       "parentId" => Keyword.get(attrs, :parent_id),
       "parentName" => Keyword.get(attrs, :parent_name),
-      "depth" => Keyword.get(attrs, :depth, 0)
+      "depth" => Keyword.get(attrs, :depth, 0),
+      "runningJobs" => running_jobs(space_id, name)
     }
+  end
+
+  # How many background jobs the agent has running (#175). The row is a snapshot
+  # of one agent, so this reads that agent's jobs rather than the space's; the
+  # live changes arrive as `{:agent_jobs, _}` frames instead, since starting or
+  # finishing a job does not change the agent's status.
+  defp running_jobs(space_id, name) do
+    {space_id, name} |> ShellJobs.list() |> Info.running_count()
   end
 
   @doc """

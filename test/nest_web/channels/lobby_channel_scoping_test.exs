@@ -13,6 +13,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
   use NestWeb.ChannelCase, async: true
 
   import ExUnit.CaptureLog
+  import Nest.Sandbox.ShellJobsTestHelpers
+  import Nest.Test.TmpCleanup
 
   import NestWeb.LobbyChannelTestHelpers
 
@@ -22,6 +24,7 @@ defmodule NestWeb.LobbyChannelScopingTest do
   alias Nest.Accounts.User, as: UserSchema
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Repo
+  alias Nest.Sandbox.ShellJobs
   alias Nest.Spaces
   alias Nest.Spaces.Space
   alias NestWeb.LobbyChannel
@@ -121,6 +124,46 @@ defmodule NestWeb.LobbyChannelScopingTest do
       )
 
       assert_push "agent:status", %{space_id: ^new_space_id, name: ^new_name}
+
+      settle(socket)
+    end
+  end
+
+  describe "space-scoped background-job count (#175)" do
+    # The sidebar's agent row shows how many jobs the agent has running. A job
+    # starting or finishing does not change the agent's status, so the count
+    # rides its own frame — and it is a space-topic frame for the same reason
+    # `agent:status` is: only clients that can see the space should hear it.
+    test "forwards a job starting and finishing as agent:jobs frames with the count" do
+      space_id = owned_space_id()
+      {socket, _payload} = join_lobby()
+      name = "job-owner-#{System.unique_integer([:positive])}"
+      key = {space_id, name}
+      # The real scratch shape, `<root>/space-<id>/<agent-name>`: the space dir
+      # is what the sandbox binds at `/tmp`, and staging a command transcript
+      # under a flat dir is refused (`Paths.scratch_root/1`).
+      root =
+        Path.join(System.tmp_dir!(), "nest_lobby_jobs_#{System.unique_integer([:positive])}")
+
+      tmp = Path.join([root, "space-#{space_id}", name])
+      File.mkdir_p!(tmp)
+
+      on_exit(fn ->
+        ShellJobs.stop_all(key)
+        rm_tmp!(root, "nest_lobby_jobs_")
+      end)
+
+      id = start_owned_job!(tmp, key, "sleep 30\n")
+      assert_push "agent:jobs", %{space_id: ^space_id, name: ^name, count: 1}
+
+      assert :ok = ShellJobs.kill(key, id)
+
+      # Killed, but its process has not died yet, so it is still a *running*
+      # job; the exit is the change that takes the count to zero. That one is
+      # bounded at a second because it waits on a real process dying, not on a
+      # frame already in flight.
+      assert_push "agent:jobs", %{space_id: ^space_id, name: ^name, count: 1}
+      assert_push "agent:jobs", %{space_id: ^space_id, name: ^name, count: 0}, 1_000
 
       settle(socket)
     end

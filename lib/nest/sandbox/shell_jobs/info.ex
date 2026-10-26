@@ -1,7 +1,8 @@
 defmodule Nest.Sandbox.ShellJobs.Info do
   @moduledoc """
-  The wire shape of a background job: what `shell-list` shows an agent and what
-  the `shell:jobs` broadcast sends the UI.
+  The wire shape of a background job: what `shell-list` shows an agent, what the
+  `shell:jobs` broadcast sends the UI, and the running count the sidebar shows
+  after an agent's name (#175).
 
   Split out of `Nest.Sandbox.ShellJobs` (which owns the manager's state, and is
   at the source-file line cap) because this is pure shaping: no state, no
@@ -80,6 +81,31 @@ defmodule Nest.Sandbox.ShellJobs.Info do
       {_space_id, name} when is_binary(name) -> name
       _ -> nil
     end
+  end
+
+  @doc """
+  How many of `jobs` are still running (#175).
+
+  Finished jobs are kept for `shell-list`/`shell-wait`, so they are not live and
+  do not count. This is the number the sidebar shows after an agent's name.
+  """
+  @spec running_count([t()]) :: non_neg_integer()
+  def running_count(jobs), do: Enum.count(jobs, &(&1.status == :running))
+
+  @doc """
+  The running-job count per agent name across one space's `jobs` (#175), as the
+  lobby's `init` annotates every agent row with.
+
+  A space at a time rather than an agent at a time: `init` renders every row of
+  every space it lists, and one read per space is one call to the manager
+  instead of one per row. A job whose key names no agent is not any agent's and
+  is left out rather than counted under `nil`.
+  """
+  @spec running_counts([t()]) :: %{String.t() => non_neg_integer()}
+  def running_counts(jobs) do
+    jobs
+    |> Enum.filter(&(&1.status == :running and is_binary(&1.agent)))
+    |> Enum.frequencies_by(& &1.agent)
   end
 
   @doc """

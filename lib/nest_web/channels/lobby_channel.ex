@@ -33,6 +33,7 @@ defmodule NestWeb.LobbyChannel do
   alias Nest.Agents.SpaceGate
   alias Nest.Blueprints
   alias Nest.Models
+  alias Nest.Sandbox.ShellJobs
   alias Nest.Spaces
   alias Nest.Vocations
   alias NestWeb.ErrorPayload
@@ -97,6 +98,16 @@ defmodule NestWeb.LobbyChannel do
   @impl true
   def handle_info({:agent_status, payload}, socket) do
     push(socket, "agent:status", payload)
+    {:noreply, socket}
+  end
+
+  # An agent's running background-job count changed (#175). Its own frame
+  # rather than a status field, because starting or finishing a job does not
+  # change the agent's status — so no status frame would carry the news, and a
+  # client would keep rendering a count that went stale.
+  @impl true
+  def handle_info({:agent_jobs, payload}, socket) do
+    push(socket, "agent:jobs", payload)
     {:noreply, socket}
   end
 
@@ -509,9 +520,16 @@ defmodule NestWeb.LobbyChannel do
   # flattened into one list. The sidebar renders a per-space agent
   # tree, so the init payload carries every space's agents rather
   # than a single "primary" space's.
+  #
+  # Each row carries its agent's running background-job count (#175), because
+  # a page load is exactly when the user cannot yet have seen an `agent:jobs`
+  # frame. One read per space, not one per row.
   defp visible_agents_across_spaces(spaces, user_id) do
     Enum.flat_map(spaces, fn %Spaces.Space{id: space_id} ->
+      counts = ShellJobs.running_counts(space_id)
+
       Agents.list_visible_agents_for(space_id, user_id)
+      |> Enum.map(&Map.put(&1, :running_jobs, Map.get(counts, &1.name, 0)))
     end)
   end
 

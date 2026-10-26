@@ -21,6 +21,15 @@ import {
 import { StatusDot } from "./StatusDot";
 
 /**
+ * The full fact behind a row's job count (#175). The parens are compact, so the
+ * tooltip and the accessible name say what the number counts — and a row that
+ * also shows a child count needs the two to be distinguishable.
+ */
+function runningJobsLabel(count) {
+  return `${count} background ${count === 1 ? "job" : "jobs"} running`;
+}
+
+/**
  * The message shown when a restore is refused. The backend names the
  * still-archived parent (`parent_archived`) — the case the user can act
  * on — and anything else falls back to the raw reason.
@@ -202,6 +211,11 @@ export function AgentTreeRow({
   const joining =
     cacheStatus === "connecting" || (isCurrent && cacheStatus === undefined);
 
+  // The agent's running background jobs (#175). An archived agent has none —
+  // its process is stopped — so its row shows no count even when the copy of
+  // the row kept one from before it was archived.
+  const runningJobs = isArchived ? 0 : (agent.runningJobs ?? 0);
+
   const label = (
     <>
       <StatusDot
@@ -209,6 +223,15 @@ export function AgentTreeRow({
         className="w-2 h-2"
       />
       <span className="truncate text-sm font-medium">{agent.name}</span>
+      {runningJobs > 0 && (
+        <span
+          className="text-xs font-medium text-amber-600 ml-1"
+          role="img"
+          aria-label={runningJobsLabel(runningJobs)}
+        >
+          ({runningJobs})
+        </span>
+      )}
       {directChildren.length > 0 && (
         <span className="text-xs text-gray-400 ml-1">
           ({directChildren.length})
@@ -272,6 +295,7 @@ export function AgentTreeRow({
           <Link
             to={`/space/${spaceSlug}/agent/${encodeURIComponent(agent.name)}`}
             className="flex items-center gap-2 min-w-0 flex-1 py-2 pr-3"
+            title={runningJobs > 0 ? runningJobsLabel(runningJobs) : undefined}
           >
             {label}
           </Link>

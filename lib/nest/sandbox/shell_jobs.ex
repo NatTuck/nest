@@ -46,9 +46,11 @@ defmodule Nest.Sandbox.ShellJobs do
 
   ## Events
 
-  When an agent topic is known, the manager broadcasts
-  `{:shell_jobs, %{jobs: [...]}}` on `"agent:<space_id>:<name>"` when a
-  job starts, exits, or is killed, so the UI can render the running set.
+  When an agent topic is known, every change to an agent's jobs — a start, an
+  exit, a kill, a trim, or the whole set being dropped with its agent —
+  broadcasts `{:shell_jobs, %{jobs: [...]}}` on `"agent:<space_id>:<name>"` for
+  the job panel, and `{:agent_jobs, %{space_id, name, count}}` on the space's
+  topic for the sidebar's agent row (#175). `Frames` builds both.
 
   ## Blocking
 
@@ -75,9 +77,8 @@ defmodule Nest.Sandbox.ShellJobs do
   use GenServer
 
   alias Nest.Agents.Agent.TmpSpace
-  alias Nest.PubSub
   alias Nest.Sandbox.{Backend, Mounts}
-  alias Nest.Sandbox.ShellJobs.{ExitNotice, Index, Info, JobLog, Launcher, Text}
+  alias Nest.Sandbox.ShellJobs.{ExitNotice, Frames, Index, Info, JobLog, Launcher, Text}
   alias Nest.Sandbox.ShellJobs.Waiters
   alias Nest.Tools.ShellCmd
 
@@ -149,6 +150,17 @@ defmodule Nest.Sandbox.ShellJobs do
   """
   @spec list_space(term()) :: [Info.t()]
   def list_space(space_id), do: GenServer.call(@name, {:list_space, space_id})
+
+  @doc """
+  The number of *running* jobs per agent name in `space_id` (#175) — what the
+  sidebar shows after each agent's name, and `0` for a name it does not mention.
+
+  One call per space rather than one per agent: the lobby's `init` annotates
+  every row of a space at once. Finished jobs are kept for
+  `shell-list`/`shell-wait`, so they are not live and do not count.
+  """
+  @spec running_counts(term()) :: %{String.t() => non_neg_integer()}
+  def running_counts(space_id), do: space_id |> list_space() |> Info.running_counts()
 
   @doc "The status of a single job."
   @spec status(agent_key(), job_id()) ::
@@ -315,7 +327,7 @@ defmodule Nest.Sandbox.ShellJobs do
             do: %{state | waiters: Waiters.add(state.waiters, job_id, waiter)},
             else: state
 
-        {:reply, {:ok, job_id, log_path}, broadcast(state, agent_key)}
+        {:reply, {:ok, job_id, log_path}, Frames.broadcast(state, agent_key)}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -451,7 +463,7 @@ defmodule Nest.Sandbox.ShellJobs do
 
     state
     |> put_job(%{job | killed: true, killed_by: by})
-    |> broadcast(job.agent_key)
+    |> Frames.broadcast(job.agent_key)
   end
 
   defp kill_job(_exited, state, _by), do: state
@@ -504,7 +516,7 @@ defmodule Nest.Sandbox.ShellJobs do
       |> trim(job.agent_key)
 
     remove_script(job)
-    broadcast(state, job.agent_key)
+    Frames.broadcast(state, job.agent_key)
   end
 
   defp exit_code(:normal), do: 0
@@ -593,7 +605,7 @@ defmodule Nest.Sandbox.ShellJobs do
     # other state change broadcasts, and a client watching this agent would
     # otherwise keep rendering jobs that were just killed. A no-op for an
     # `agent_key` that is not `{space_id, name}`.
-    broadcast(state, agent_key)
+    Frames.broadcast(state, agent_key)
   end
 
   defp stop_job(%{status: :running} = job) do
@@ -680,20 +692,4 @@ defmodule Nest.Sandbox.ShellJobs do
   end
 
   defp id_number(%{id: "job-" <> n}), do: String.to_integer(n)
-
-  # ---- Broadcast ----
-
-  defp broadcast(state, {space_id, name} = agent_key)
-       when is_integer(space_id) and is_binary(name) do
-    jobs =
-      state.jobs
-      |> Map.values()
-      |> Enum.filter(&(&1.agent_key == agent_key))
-      |> Enum.map(&Info.to_info/1)
-
-    Phoenix.PubSub.broadcast(PubSub, "agent:#{space_id}:#{name}", {:shell_jobs, %{jobs: jobs}})
-    state
-  end
-
-  defp broadcast(state, _agent_key), do: state
 end

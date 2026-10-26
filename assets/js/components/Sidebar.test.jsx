@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, act, fireEvent } from "@testing-library/react";
+import { render, screen, act, fireEvent, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 
 import { Sidebar } from "./Sidebar";
@@ -973,6 +973,46 @@ describe("Sidebar tree", () => {
     );
 
     expect(screen.getByText("(2)")).toBeInTheDocument();
+  });
+
+  it("shows a parenthesised running job count after the agent's name (#175)", () => {
+    act(() => {
+      withStore([
+        {
+          name: "busy",
+          parentId: null,
+          parentName: null,
+          depth: 0,
+          runningJobs: 2,
+        },
+        { name: "quiet", parentId: null, parentName: null, depth: 0 },
+      ]);
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    // The count is a number in parens after the name, and the row's tooltip and
+    // the badge's accessible name say what it counts — the number alone is the
+    // spelling the child count and the space row's agent count already use.
+    expect(screen.getByText("busy")).toBeInTheDocument();
+    expect(screen.getByTitle("2 background jobs running")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("2 background jobs running"),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByTitle("2 background jobs running")).getByText("(2)"),
+    ).toBeInTheDocument();
+
+    // An agent with no jobs renders its name and nothing else: a `(0)` would
+    // claim a fact nobody needs.
+    expect(screen.getByText("quiet")).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("0 background jobs running"),
+    ).not.toBeInTheDocument();
   });
 
   it("treats an agent whose parentName doesn't resolve as a root", () => {

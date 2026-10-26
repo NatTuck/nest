@@ -14,6 +14,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
   alias Nest.Sandbox.Paths
   alias Nest.Sandbox.ShellJobs
   alias Nest.Sandbox.ShellJobs.Index
+  alias Nest.Sandbox.ShellJobs.Info
   alias Nest.Sandbox.ShellJobs.JobLog
   alias Nest.Tools.ShellCmd
 
@@ -60,6 +61,47 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert :ok = ShellJobs.subscribe(key, id, self())
     assert_receive {:shell_job_exit, ^id, _code}, 500
     assert [%{id: ^id, status: :exited, killed: true}] = ShellJobs.list(key)
+  end
+
+  # #175: the sidebar's agent row shows how many jobs the agent has running, so
+  # every change to a job set is also announced on the *space* topic. The two
+  # topics are asserted together because they come from one read of the
+  # manager's state — the count the row shows and the list the panel shows
+  # cannot disagree.
+  test "broadcasts the running count on the space topic", %{key: key, tmp: tmp} do
+    {space_id, name} = key
+    Phoenix.PubSub.subscribe(Nest.PubSub, "space:#{space_id}")
+
+    id = start_running!("sleep 30", tmp, key)
+    assert_received {:agent_jobs, %{space_id: ^space_id, name: ^name, count: 1}}
+
+    assert :ok = ShellJobs.subscribe(key, id, self())
+    assert :ok = ShellJobs.kill(key, id)
+
+    # Killed, but the process has not died yet, so it is still a *running* job:
+    # the count is the running set, not the set of jobs that have not been
+    # asked to stop.
+    assert_received {:agent_jobs, %{space_id: ^space_id, name: ^name, count: 1}}
+
+    assert_receive {:shell_job_exit, ^id, _code}, 500
+
+    # The exit is the change the sidebar needs: 0, even though the finished job
+    # is still in `list/1` for `shell-wait`/`shell-list`.
+    assert [%{id: ^id, status: :exited}] = ShellJobs.list(key)
+    assert_received {:agent_jobs, %{space_id: ^space_id, name: ^name, count: 0}}
+  end
+
+  # The tools' fallback key (`{:unknown, :unknown}`) names no agent, so a job
+  # under it has no sidebar row to count against and no topic to announce it
+  # on. The job itself still runs and lists — it is the *frames* that need an
+  # agent to speak about.
+  test "a job whose key names no agent has no count", %{tmp: tmp} do
+    key = {:unknown, :unknown}
+    id = start_owned_job!(tmp, key, "sleep 30\n")
+    on_exit(fn -> ShellJobs.stop_all(key) end)
+
+    assert [%{id: ^id, agent: nil, status: :running}] = ShellJobs.list(key)
+    assert Info.running_counts(ShellJobs.list(key)) == %{}
   end
 
   # `kill/2` also arms the manager's five-second fallback for a job whose

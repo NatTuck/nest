@@ -156,6 +156,15 @@ export function joinLobby(onOk, onError) {
     }
   });
 
+  // An agent's running background-job count (#175). A space-scoped frame like
+  // `agent:status`, and separate from it because a job starting or finishing
+  // does not change the agent's status.
+  lobbyChannel.on("agent:jobs", (payload) => {
+    if (payload?.name != null && payload?.space_id != null) {
+      getStore().applyAgentJobs(payload);
+    }
+  });
+
   // One note with a human at one end (`Nest.Notes`), which every `user_notes`
   // insert broadcasts on its space's topic — the topic this channel subscribed
   // to for every space the user can see, so a frame for another space never
