@@ -311,6 +311,11 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
           send(self(), {:state, state})
 
           assert_receive {:chat_compaction_loop, %{content: loop_msg}}, 1_000
+
+          # The epilogue's own frame: `Turn.run/2` broadcasts status after the
+          # loop frame, so waiting for it puts the end of the window after the
+          # whole turn, not just after the breaker.
+          assert_receive {:chat_status, %{status: "compaction_loop_detected"}}, 1_000
           send(self(), {:loop_msg, loop_msg})
         end)
 
