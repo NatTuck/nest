@@ -13,6 +13,8 @@ defmodule Nest.Sandbox.ShellJobs.Index do
   half, so neither can reach a job in another space.
   """
 
+  alias Nest.Sandbox.ShellJobs
+
   @doc "The job `job_id`, if `agent_key` owns it."
   @spec fetch(map(), term(), String.t()) :: {:ok, map()} | :error
   def fetch(state, agent_key, job_id) do
@@ -29,6 +31,20 @@ defmodule Nest.Sandbox.ShellJobs.Index do
       %{agent_key: {^space_id, _}} = job -> {:ok, job}
       _ -> :error
     end
+  end
+
+  @doc """
+  The **running** job whose tool worker is monitored by `ref`, if any (#174).
+
+  By ref rather than by pid: the ref is unique per registration, so a `:DOWN` for
+  a *finished* foreground call's worker — one whose job a kill's fallback already
+  ended — cannot match a later job's owner.
+  """
+  @spec by_owner_ref(map(), reference()) :: map() | nil
+  def by_owner_ref(state, ref) do
+    Enum.find_value(state.jobs, fn {_id, j} ->
+      (j.status == :running and j.owner_ref == ref) && j
+    end)
   end
 
   @doc """
@@ -99,11 +115,18 @@ defmodule Nest.Sandbox.ShellJobs.Index do
     Enum.find_value(state.agents, fn {key, %{pid: p}} -> p == pid && key end)
   end
 
-  @doc "How many of `agent_key`'s jobs are running — the per-agent cap's count."
+  @doc """
+  How many of `agent_key`'s jobs the manager is running — the per-agent cap's
+  count.
+
+  Only the jobs this manager started count. A foreground `shell-cmd` call is a
+  job too (#174), but it is not a background job: it must neither be refused by
+  `caps.shell.background` nor take one of its slots, so it is not counted.
+  """
   @spec running_count(map(), term()) :: non_neg_integer()
   def running_count(state, agent_key) do
     state.jobs
     |> Map.values()
-    |> Enum.count(&(&1.agent_key == agent_key and &1.status == :running))
+    |> Enum.count(&(&1.agent_key == agent_key and &1.status == :running and &1.owner == nil))
   end
 end

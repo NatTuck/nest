@@ -12,13 +12,16 @@ defmodule Nest.Agents.Agent.BroadcastsLifecycleTest do
   use Nest.DataCase, async: true
 
   import Nest.Agents.AgentTestHelpers
+  import Nest.Sandbox.ShellJobsTestHelpers
+  import Nest.Test.TmpCleanup
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Supervisor
+  alias Nest.Sandbox.ShellJobs
 
   # The keys `Broadcasts.created_payload/2` promises, as the client reads them
   # (`assets/js/store/slices/catalog.js`'s `normalizeAgent/1`).
-  @created_keys ~w(name space_id model status vocation parentId parentName depth)
+  @created_keys ~w(name space_id model status vocation parentId parentName depth runningJobs)
 
   describe "the agent:created payload (#72)" do
     test "carries the same keys whichever caller built it" do
@@ -79,6 +82,44 @@ defmodule Nest.Agents.Agent.BroadcastsLifecycleTest do
     end
   end
 
+  describe "the running background-job count (#175)" do
+    test "is 0 with no jobs, the running count with some, and 0 again once they exit" do
+      # A real space id and a real job: the count is read from the job manager
+      # (#175), so a payload test that never starts one would pass against a
+      # hardcoded zero.
+      space_id = System.unique_integer([:positive])
+      name = "worker-#{System.unique_integer([:positive])}"
+      key = {space_id, name}
+      # The real scratch shape, `<root>/space-<id>/<agent-name>`: the space dir
+      # is what the sandbox binds at `/tmp`, and staging a command transcript
+      # under a flat dir is refused (`Paths.scratch_root/1`).
+      root = unique_tmp("nest_jobs_created_")
+      tmp = Path.join([root, "space-#{space_id}", name])
+      File.mkdir_p!(tmp)
+
+      on_exit(fn ->
+        ShellJobs.stop_all(key)
+        rm_tmp!(root, "nest_jobs_created_")
+      end)
+
+      # A new agent has no jobs, and the key is present anyway — the whole
+      # point of building every row from one place (#72).
+      assert %{"runningJobs" => 0} = Broadcasts.created_payload(space_id, name: name)
+
+      id = start_owned_job!(tmp, key, "sleep 30\n")
+      assert %{"runningJobs" => 1} = Broadcasts.created_payload(space_id, name: name)
+
+      assert :ok = ShellJobs.subscribe(key, id, self())
+      assert :ok = ShellJobs.kill(key, id)
+      assert_receive {:shell_job_exit, ^id, _code}, 500
+
+      # A finished job is kept for `shell-list`/`shell-wait`, so it is still
+      # listed — but it is not running, and the sidebar shows running ones.
+      assert [%{id: ^id, status: :exited}] = ShellJobs.list(key)
+      assert %{"runningJobs" => 0} = Broadcasts.created_payload(space_id, name: name)
+    end
+  end
+
   describe "the agent:stopped frame (#73)" do
     test "is broadcast when an agent stops, including on an archive" do
       # The agent is linked to this process and the stop ends it, so an
@@ -111,6 +152,11 @@ defmodule Nest.Agents.Agent.BroadcastsLifecycleTest do
       assert_received {:agent_stopped, %{"space_id" => ^space_id, "name" => ^name}}
       assert_received {:agent_archived, %{"space_id" => ^space_id, "name" => ^name}}
     end
+  end
+
+  # A fresh path under the OS temp dir, tagged so `rm_tmp!/2` can recognise it.
+  defp unique_tmp(marker) do
+    Path.join(System.tmp_dir!(), "#{marker}#{System.unique_integer([:positive])}")
   end
 
   defp default_attrs do

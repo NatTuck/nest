@@ -168,12 +168,12 @@ defmodule Nest.Agents.AgentTestHelpers do
     # `Agents.create_agent/3`.
     agent_name = "agent#{System.unique_integer([:positive])}"
 
-    # A workspace is the *space's*, so a test that names one is naming its
-    # space's. Popping it keeps every existing `workspace_path: dir` call site
-    # meaning what it always meant, now that `Agents.create_agent/3` has no such
-    # option.
-    {workspace, attrs} = Map.pop(attrs, :workspace_path)
-    space_attrs = if workspace, do: %{workspace_path: workspace}, else: %{}
+    # A workspace and the context-warnings setting are the *space's*, so a test
+    # that names one is naming its space's — `Agents.create_agent/3` has no such
+    # option. The setting is off unless a test says otherwise (the column's
+    # default, issue #176), so a test that pins a notice opts in with
+    # `start_agent(%{context_warnings: true})`.
+    {space_attrs, attrs} = Map.split(attrs, [:workspace_path, :context_warnings])
 
     # Create a fresh space for this agent. The space_id is the
     # first positional arg to `Agents.create_agent/3`; everything

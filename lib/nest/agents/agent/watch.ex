@@ -270,7 +270,7 @@ defmodule Nest.Agents.Agent.Watch do
     case start(ctx.agent_pid, ref, spec) do
       {:ok, pid} ->
         Agent.watch_attached(ctx.agent_pid, ref, pid)
-        {:waiting, "Watching background job #{id}; its result will arrive as a message."}
+        {:waiting, "Watching shell job #{id}; its result will arrive as a message."}
 
       {:error, reason} ->
         Agent.unregister_watch(ctx.agent_pid, ref)
@@ -354,7 +354,7 @@ defmodule Nest.Agents.Agent.Watch do
         case ShellJobs.unsubscribe(key, id, self()) do
           :running ->
             {:event,
-             "Timed out after #{timeout}ms waiting for background job #{id}; it is still running."}
+             "Timed out after #{timeout}ms waiting for shell job #{id}; it is still running."}
 
           {:exited, code} ->
             {:event, shell_result(key, id, code)}

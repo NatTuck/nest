@@ -97,9 +97,10 @@ defmodule Nest.Agents.Agent.SubAgent do
       model: model_override || parent_state.model,
       vocation_id: vocation_id,
       # The child lives in its parent's space, so it shares the space's
-      # sandbox backend and its network access.
+      # sandbox backend, its network access and its context-warnings setting.
       sandbox_backend: Mounts.backend(parent_state.mounts),
       network_access: Mounts.network_access(parent_state.mounts),
+      context_warnings: parent_state.context_warnings,
       parent_id: parent_id,
       parent_name: parent_state.name,
       created_by_user_id: parent_state.created_by_user_id,

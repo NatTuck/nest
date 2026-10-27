@@ -5171,6 +5171,49 @@ describe("store", () => {
     });
   });
 
+  describe("applyAgentJobs (#175)", () => {
+    // The lobby's `agent:jobs` frame is the only live source for the sidebar's
+    // job count: starting or finishing a job does not change the agent's
+    // status, so no status frame carries it.
+    const seed = () =>
+      useStore.getState().setAgents([
+        { name: "a", space_id: 1, status: "idle" },
+        { name: "b", space_id: 1, status: "idle" },
+        { name: "a", space_id: 2, status: "idle" },
+      ]);
+
+    it("sets the count on only the matching {space_id, name} row", () => {
+      seed();
+      const before = useStore.getState().agents;
+
+      useStore.getState().applyAgentJobs({ space_id: 1, name: "a", count: 2 });
+
+      const after = useStore.getState().agents;
+      expect(after).not.toBe(before);
+      expect(after[0].runningJobs).toBe(2);
+      // Untouched rows keep their identity, so the tree can skip them.
+      expect(after[1]).toBe(before[1]);
+      expect(after[2]).toBe(before[2]);
+
+      // A frame for an agent this client cannot see changes nothing.
+      useStore.getState().applyAgentJobs({
+        space_id: 9,
+        name: "ghost",
+        count: 5,
+      });
+      expect(useStore.getState().agents.map((a) => a.runningJobs)).toEqual([
+        2, 0, 0,
+      ]);
+
+      // The lobby's `init` rows spell the count in snake_case; `normalizeAgent`
+      // is what makes them the same row as a live frame's.
+      useStore
+        .getState()
+        .setAgents([{ name: "c", space_id: 1, running_jobs: 3 }]);
+      expect(useStore.getState().agents[0].runningJobs).toBe(3);
+    });
+  });
+
   describe("applyAgentStatuses (#53)", () => {
     // The lobby's `broken_agents` payload names the reason an agent cannot
     // start. Stamping it onto the flat list is what turns a persisted

@@ -188,7 +188,12 @@ export function catalogSetters(set) {
         const alreadyActive = state.agents.some(match);
         const agents = alreadyActive
           ? state.agents
-          : [...state.agents, { ...agent, archived: false, status: "idle" }];
+          : [
+              ...state.agents,
+              // A restored agent starts as a new process, so the job count the
+              // row was archived with is stale: no job of its is still running.
+              { ...agent, archived: false, status: "idle", runningJobs: 0 },
+            ];
         return {
           agents,
           archivedAgents: state.archivedAgents.filter((a) => !match(a)),
@@ -207,6 +212,26 @@ export function catalogSetters(set) {
       set((state) => ({
         agents: state.agents.map((a) =>
           a.name === name && a.space_id === space_id ? { ...a, status } : a,
+        ),
+      }));
+    },
+
+    /**
+     * Apply a live background-job count from the lobby's `agent:jobs` frame
+     * (#175). The sidebar renders it after the agent's name.
+     *
+     * A frame of its own rather than a field on `agent:status`: starting or
+     * finishing a job does not change the agent's status, so no status frame
+     * would carry a count that had changed. Only the matching
+     * `{space_id, name}` row is replaced (with a new object, so the tree
+     * re-renders); a frame for an agent this client cannot see is a no-op.
+     */
+    applyAgentJobs: ({ space_id, name, count }) => {
+      set((state) => ({
+        agents: state.agents.map((a) =>
+          a.name === name && a.space_id === space_id
+            ? { ...a, runningJobs: count }
+            : a,
         ),
       }));
     },
@@ -310,6 +335,12 @@ function normalizeAgent(agent) {
     ...agent,
     space_id: agent.space_id ?? agent.spaceId ?? null,
     status: agent.status || "idle",
+    // The running shell-job count (#174/#175): `runningJobs` on an
+    // `agent:created` payload, `running_jobs` on the lobby's `init` rows. Both
+    // producers send it, so the `0` is this slice's shape — a normalized row
+    // always carries a number (`channels.test.js` pins the whole object) — and
+    // not a producer's fallback.
+    runningJobs: agent.runningJobs ?? agent.running_jobs ?? 0,
     parentId: agent.parentId ?? agent.parent_id ?? null,
     parentName: agent.parentName ?? agent.parent_name ?? null,
     depth: agent.depth ?? 0,

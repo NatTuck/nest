@@ -185,10 +185,13 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
 
       MockClient.set_response("All done")
 
+      # The space opts in to context warnings: they are off by default
+      # (issue #176), and this test is about the notice's own pair.
       {pid, _agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
-          vocation_id: programmer_vocation_id_for_test()
+          vocation_id: programmer_vocation_id_for_test(),
+          context_warnings: true
         })
 
       # Force the context threshold to cross by seeding a

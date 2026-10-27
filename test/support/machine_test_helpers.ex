@@ -105,7 +105,12 @@ defmodule Nest.TestSupport.MachineTestHelpers do
       context_projection: nil,
       api_log_sequences: %{},
       vocation: nil,
-      depth: 0
+      depth: 0,
+      # A space that opted in, which is what makes the notice paths this fixture
+      # is used to drive reachable at all: the setting is off by default
+      # (issue #176), and the tests that pin "nothing is announced" say so by
+      # overriding this one key.
+      context_warnings: true
     }
   end
 

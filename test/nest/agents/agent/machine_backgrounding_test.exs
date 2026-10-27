@@ -588,7 +588,10 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       context_projection: nil,
       api_log_sequences: %{},
       vocation: nil,
-      depth: 0
+      depth: 0,
+      # A space that opted in: the notices are off by default (issue #176), and
+      # one test here is about the notice the delivery path appends.
+      context_warnings: true
     }
   end
 end

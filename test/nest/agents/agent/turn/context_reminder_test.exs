@@ -186,6 +186,17 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
     end
   end
 
+  describe "enabled?/1" do
+    test "is off unless the space opted in" do
+      # The setting is the space's, and off by default (issue #176): a ctx with
+      # no value at all — an agent built before the setting existed, or a fixture
+      # that predates it — announces nothing.
+      refute ContextReminder.enabled?(%{})
+      refute ContextReminder.enabled?(%{context_warnings: false})
+      assert ContextReminder.enabled?(%{context_warnings: true})
+    end
+  end
+
   describe "context_metadata/1" do
     test "stamps a context spec with its threshold name" do
       spec = ContextReminder.spec(120_001, @limit, MapSet.new())

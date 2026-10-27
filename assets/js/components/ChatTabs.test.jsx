@@ -17,16 +17,17 @@ describe("ChatTabs", () => {
 
     expect(screen.getByRole("tab", { name: "Chat" })).toBeInTheDocument();
     expect(
-      screen.getByRole("tab", { name: "Background jobs (3)" }),
+      screen.getByRole("tab", { name: "Shell jobs (3)" }),
     ).toBeInTheDocument();
   });
 
   it("marks the active tab as selected", () => {
     render(<ChatTabs active={JOBS_TAB} onSelect={() => {}} jobCount={1} />);
 
-    expect(
-      screen.getByRole("tab", { name: "Background jobs (1)" }),
-    ).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Shell jobs (1)" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     expect(screen.getByRole("tab", { name: "Chat" })).toHaveAttribute(
       "aria-selected",
       "false",
@@ -38,7 +39,7 @@ describe("ChatTabs", () => {
 
     render(<ChatTabs active={CHAT_TAB} onSelect={onSelect} jobCount={0} />);
 
-    fireEvent.click(screen.getByRole("tab", { name: "Background jobs (0)" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Shell jobs (0)" }));
     expect(onSelect).toHaveBeenCalledWith(JOBS_TAB);
   });
 

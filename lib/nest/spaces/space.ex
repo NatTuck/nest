@@ -52,6 +52,17 @@ defmodule Nest.Spaces.Space do
     (`Nest.Sandbox.with_network_access/2`), which is what
     `Nest.Sandbox.build/2` and both backends read. A `"none"` space cannot
     enforce it, like every other cap.
+
+  ## Context warnings
+
+  * `context_warnings` — whether the runtime appends its 25/50/75% context-usage
+    notices to this space's agents (`Nest.Agents.Agent.Turn.ContextReminder`).
+    Off by default: a notice that arrives before compaction can read as "stop
+    now" (issue #176), so a space opts in. Also a **space** property, and
+    **not** part of the sandbox environment: nothing about it reaches a command,
+    so it is not on `Nest.Sandbox.Mounts` and an edit to it is written on its own
+    (`Nest.Spaces.ContextWarnings`) rather than through
+    `Nest.Spaces.update_environment/2`.
   """
 
   use Ecto.Schema
@@ -77,6 +88,7 @@ defmodule Nest.Spaces.Space do
              :workspace_path,
              :sandbox_backend,
              :network_access,
+             :context_warnings,
              :created_by_user_id,
              :archived,
              :inserted_at,
@@ -91,6 +103,7 @@ defmodule Nest.Spaces.Space do
     field :workspace_path, :string
     field :sandbox_backend, :string, default: @default_sandbox_backend
     field :network_access, :boolean, default: true
+    field :context_warnings, :boolean, default: false
     field :created_by_user_id, :integer
 
     # Lifecycle. `archived` soft-hides the space from the main
@@ -113,9 +126,11 @@ defmodule Nest.Spaces.Space do
   `:sandbox_backend` is deliberately absent from *this* cast list: it moves only
   through `environment_changeset/2`, which owns the three environment properties
   together because an edit to any of them releases the space's sandbox
-  environment. `:network_access` *is* cast here — but the edit path is that same
-  changeset; this one is the rename path, and its cast of the column only keeps a
-  rename from tripping over it.
+  environment. The two booleans *are* cast here, because `create_changeset/2`
+  builds on this one: `:network_access`'s edit path is that same environment
+  changeset, and `:context_warnings` is written on its own
+  (`Nest.Spaces.ContextWarnings`). This is the rename path, and its cast of them
+  only keeps a rename from tripping over a value it did not name.
 
   `:slug` must be usable as the root agent's name (`<slug>-root`), so it
   is held to `PersistedAgent`'s filename-safe rule. A client-supplied
@@ -131,6 +146,7 @@ defmodule Nest.Spaces.Space do
       :blueprint_id,
       :workspace_path,
       :network_access,
+      :context_warnings,
       :created_by_user_id
     ])
     |> validate_required([:name])
@@ -188,6 +204,8 @@ defmodule Nest.Spaces.Space do
   An absent or blank backend takes `Nest.Sandbox.Backend.default/0`; anything
   outside `Nest.Sandbox.Backend.backends/0` is refused with an error on the
   field, so a client cannot introduce a backend this build does not implement.
+  An absent or blank `:context_warnings` takes `false`, the column's default: the
+  notices are opt-in (issue #176).
 
   `:workspace_path` is required **here and not in `changeset/2`**. Every space has
   a workspace — its agents inherit it, and the `act` mode writes it — so a space
@@ -201,7 +219,8 @@ defmodule Nest.Spaces.Space do
     params =
       params
       |> Map.put(:sandbox_backend, sandbox_backend_param(params))
-      |> Map.put(:network_access, network_access_param(params))
+      |> Map.put(:network_access, boolean_param(params, :network_access, true))
+      |> Map.put(:context_warnings, boolean_param(params, :context_warnings, false))
 
     source
     |> changeset(params)
@@ -229,17 +248,20 @@ defmodule Nest.Spaces.Space do
 
   defp present?(value), do: value not in [nil, ""]
 
-  # The network value the caller asked for, from either key shape, falling back to
-  # the column's default when neither names one. `false` is a value, not an
-  # absence — which is why this cannot be a `||` — and an unknown shape is passed
-  # through so `cast/4` refuses it by name rather than the default quietly
-  # replacing it.
-  defp network_access_param(params) do
+  # A boolean value the caller asked for, from either key shape, falling back to
+  # `default` when neither names one. `false` is a value, not an absence — which
+  # is why this cannot be a `||` — and an unknown shape is passed through so
+  # `cast/4` refuses it by name rather than the default quietly replacing it.
+  #
+  # `default` is passed rather than read from the column because the two columns
+  # differ: a new space reaches the network unless told otherwise, and gets no
+  # context-usage notices unless told otherwise (issue #176).
+  defp boolean_param(params, field, default) do
     case Enum.find(
-           [Map.get(params, :network_access), Map.get(params, "network_access")],
+           [Map.get(params, field), Map.get(params, to_string(field))],
            &present?/1
          ) do
-      nil -> true
+      nil -> default
       value -> value
     end
   end

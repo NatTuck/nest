@@ -1,7 +1,9 @@
 defmodule Nest.Sandbox.ShellJobs.Info do
   @moduledoc """
-  The wire shape of a background job: what `shell-list` shows an agent and what
-  the `shell:jobs` broadcast sends the UI.
+  The wire shape of a shell job — a background one, or a foreground `shell-cmd`
+  call while it runs (#174): what `shell-list` shows an agent, what the
+  `shell:jobs` broadcast sends the UI, and the running count the sidebar shows
+  after an agent's name (#175).
 
   Split out of `Nest.Sandbox.ShellJobs` (which owns the manager's state, and is
   at the source-file line cap) because this is pure shaping: no state, no
@@ -31,12 +33,14 @@ defmodule Nest.Sandbox.ShellJobs.Info do
         }
 
   @doc """
-  `jobs` — the manager's `id => job` map — as wire shapes, newest first, keeping
-  only the jobs `owned?` accepts.
+  `jobs` — the manager's `id => job` map — as wire shapes, keeping only the jobs
+  `owned?` accepts: **running first, then finished**, each newest first.
 
-  Newest first because a listing is read to find what just ran, and a job id is
-  not a timestamp. The manager's `trim/2` sorts the other way on purpose — it
-  deletes the oldest — so the two orders are not a shared helper.
+  A listing is read to find what is happening now, and a long tail of finished
+  jobs must not bury the live one (issue #174), so liveness outranks recency. The
+  second key is the start time descending because a job id is not a timestamp.
+  `Records.trim/2` sorts the other way on purpose — it deletes the oldest — so the
+  two orders are not a shared helper.
   """
   @spec list(%{optional(Nest.Sandbox.ShellJobs.job_id()) => map()}, (map() -> boolean())) ::
           [t()]
@@ -44,7 +48,7 @@ defmodule Nest.Sandbox.ShellJobs.Info do
     jobs
     |> Map.values()
     |> Enum.filter(owned?)
-    |> Enum.sort_by(& &1.started_at, {:desc, DateTime})
+    |> Enum.sort_by(&{&1.status != :running, -DateTime.to_unix(&1.started_at, :microsecond)})
     |> Enum.map(&to_info/1)
   end
 
@@ -83,7 +87,32 @@ defmodule Nest.Sandbox.ShellJobs.Info do
   end
 
   @doc """
-  A job's status, as `shell-wait`/`shell-status` report it.
+  How many of `jobs` are still running (#175).
+
+  Finished jobs are kept for `shell-list`/`shell-wait`, so they are not live and
+  do not count. This is the number the sidebar shows after an agent's name.
+  """
+  @spec running_count([t()]) :: non_neg_integer()
+  def running_count(jobs), do: Enum.count(jobs, &(&1.status == :running))
+
+  @doc """
+  The running-job count per agent name across one space's `jobs` (#175), as the
+  lobby's `init` annotates every agent row with.
+
+  A space at a time rather than an agent at a time: `init` renders every row of
+  every space it lists, and one read per space is one call to the manager
+  instead of one per row. A job whose key names no agent is not any agent's and
+  is left out rather than counted under `nil`.
+  """
+  @spec running_counts([t()]) :: %{String.t() => non_neg_integer()}
+  def running_counts(jobs) do
+    jobs
+    |> Enum.filter(&(&1.status == :running and is_binary(&1.agent)))
+    |> Enum.frequencies_by(& &1.agent)
+  end
+
+  @doc """
+  A job's status, as `shell-wait` reports it.
   """
   @spec status(map()) :: :running | {:exited, integer()}
   def status(%{status: :running}), do: :running

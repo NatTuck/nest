@@ -54,10 +54,10 @@ defmodule Nest.Tools.ShellCmd do
   require Logger
 
   alias Nest.Sandbox.{Backend, Mounts, ShellJobs}
-  alias Nest.Tools.ShellCmd.Transcript
+  alias Nest.Sandbox.ShellJobs.Owned
+  alias Nest.Tools.ShellCmd.{Background, Diagnostics, Result, Transcript}
 
   @default_timeout_ms 60_000
-  @default_grace_ms 200
 
   # The largest value `receive ... after` accepts; anything above it raises
   # `ErlangError: :timeout_value` at the `receive`. `:timeout` itself has no
@@ -97,6 +97,12 @@ defmodule Nest.Tools.ShellCmd do
       opts: `:agent_key` (`{space_id, agent_name}`), `:agent_pid`, and
       `:grace_ms` (how long to wait for an immediate exit before reporting
       the job as running).
+    * `:register_job` - when `true`, the call is registered as a shell job for
+      as long as it runs (#174), so `shell-list`, the job panel and `shell-kill`
+      see it. Set only by `Nest.Tools.ShellCmdTool`; the file tools' and the
+      sandbox helpers' commands (`execute_raw/4`, `Nest.Sandbox.write/4`) are
+      short internal steps and are not jobs. A call with no scratch directory,
+      or one whose `:agent_key` names no agent, runs unregistered.
 
   ## Returns
 
@@ -129,19 +135,48 @@ defmodule Nest.Tools.ShellCmd do
   # `execute/4` to hold its ABC size down.
   defp dispatch(command, spec, script, script_sandbox, mounts, caps, opts) do
     if Keyword.get(opts, :background, false) do
-      run_background(command, script, script_sandbox, mounts, caps, opts)
+      Background.run(command, script, script_sandbox, mounts, caps, opts)
     else
-      timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
-      stdin = normalize_stdin(Keyword.get(opts, :stdin))
-
-      Logger.info(
-        "Executing sandboxed script #{script} in #{Mounts.workspace(mounts) || "/"}: " <>
-          truncate_log(command)
-      )
-
-      exec_staged(script, spec, timeout, stdin, command, mounts)
+      run_foreground(command, spec, script, mounts, opts)
     end
   end
+
+  defp run_foreground(command, spec, script, mounts, opts) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
+    stdin = normalize_stdin(Keyword.get(opts, :stdin))
+
+    Logger.info(
+      "Executing sandboxed script #{script} in #{Mounts.workspace(mounts) || "/"}: " <>
+        Diagnostics.truncate(command)
+    )
+
+    exec_staged(script, spec, timeout, stdin, command, mounts, job_attrs(command, mounts, opts))
+  end
+
+  # The registration attrs for a call that opted in (`:register_job`), or `nil`.
+  #
+  # Two calls are not registered, and neither loses anything by it: a call with no
+  # scratch directory has nowhere to put the job's log, and a call whose key names
+  # no agent — `Nest.Tools.agent_key/1`'s `:unknown` fallback, for a tool run
+  # outside an agent — has no reader, because every listing, the panel and the
+  # sidebar are keyed by `{space_id, name}` (`Frames` and `ExitNotice` skip such a
+  # key). Either way the command still runs, with the result it would have had.
+  defp job_attrs(command, mounts, opts) do
+    agent_key = Keyword.get(opts, :agent_key, {:unknown, :unknown})
+
+    if Keyword.get(opts, :register_job, false) && Mounts.scratch(mounts) &&
+         names_agent?(agent_key) do
+      %{
+        command: command,
+        mounts: mounts,
+        agent_key: agent_key,
+        agent_pid: Keyword.get(opts, :agent_pid)
+      }
+    end
+  end
+
+  defp names_agent?({_space_id, name}) when is_binary(name), do: true
+  defp names_agent?(_key), do: false
 
   @doc """
   Low-level sibling of `execute/4` for callers that need the raw exit code and
@@ -214,10 +249,10 @@ defmodule Nest.Tools.ShellCmd do
   # Run the staged script and remove it afterwards: it is only a transcript of
   # the command, and all the caller keeps is the output, so it goes on every
   # path - success, failure, timeout or crash.
-  defp exec_staged(script, spec, timeout, stdin, command, mounts) do
-    case run_with_erlexec(spec, timeout, stdin) do
+  defp exec_staged(script, spec, timeout, stdin, command, mounts, job_attrs) do
+    case run_with_erlexec(spec, timeout, stdin, job_attrs) do
       {:ok, exit_code, output} ->
-        handle_exit_result(command, exit_code, output, mounts)
+        Result.from_exit(command, exit_code, output, mounts)
 
       # The space's environment changed under the command and the space edit
       # called it off (`cancel_tools/2`). Not a failure to start and not a
@@ -228,152 +263,10 @@ defmodule Nest.Tools.ShellCmd do
         {:cancelled, reason}
 
       {:error, reason} ->
-        handle_startup_failure(command, reason, mounts)
+        Result.from_start_failure(command, reason, mounts)
     end
   after
     File.rm(script)
-  end
-
-  # Start the command as a background job and either report an immediate
-  # exit (within the grace window) as a normal result, or hand the caller a
-  # job handle. `ShellJobs` removes the job's staged script when the job ends.
-  #
-  # The command line is the *launcher's* to build rather than this module's: a
-  # job's output also has to reach its log file inside the environment, and for
-  # the docker backend that means the command itself writes it — which needs the
-  # log path, which the manager allocates. So the launcher is handed what the
-  # backend needs (`caps` and the script's sandbox spelling) and asks for a job
-  # spec (`Nest.Sandbox.Backend.job_spec/4`).
-  defp run_background(command, script, script_sandbox, mounts, caps, opts) do
-    if is_nil(Mounts.scratch(mounts)) do
-      File.rm(script)
-      {:error, "Background jobs require a tmp directory"}
-    else
-      grace = Keyword.get(opts, :grace_ms, @default_grace_ms)
-      agent_key = Keyword.get(opts, :agent_key, {:unknown, :unknown})
-
-      Logger.info(
-        "Starting background shell job in #{Mounts.workspace(mounts) || "/"}: " <>
-          truncate_log(command)
-      )
-
-      case ShellJobs.start_job(%{
-             agent_key: agent_key,
-             agent_pid: Keyword.get(opts, :agent_pid),
-             command: command,
-             caps: caps,
-             script_sandbox: script_sandbox,
-             script_path: script,
-             mounts: mounts,
-             max_jobs: background_cap(caps)
-           }) do
-        {:ok, job_id, log_path} ->
-          await_background_start(job_id, log_path, grace, agent_key, command, mounts)
-
-        {:error, reason} ->
-          File.rm(script)
-          {:error, reason}
-      end
-    end
-  end
-
-  defp await_background_start(job_id, log_path, grace, agent_key, command, mounts) do
-    # No `subscribe/3`: `start_job/1` already registered this process, in the
-    # callback that created the job — subscribing here was the window that
-    # reported one exit twice, inline and as the owner's notice.
-    receive do
-      {:shell_job_exit, ^job_id, code} ->
-        {:ok, output} = ShellJobs.output(agent_key, job_id)
-        handle_exit_result(command, code, output, mounts)
-    after
-      grace ->
-        # The exit may have been handled between the timeout above and this
-        # call, in which case its message arrives after we stopped listening and
-        # the notice was suppressed because we *were* registered. The reply is
-        # the state at the removal, so that window has one answer rather than
-        # none.
-        case ShellJobs.unsubscribe(agent_key, job_id, self()) do
-          :running ->
-            {:ok,
-             "Started background job #{job_id} (log: #{log_path}). " <>
-               "Use shell-list, shell-wait, or shell-kill to manage it."}
-
-          {:exited, code} ->
-            {:ok, output} = ShellJobs.output(agent_key, job_id)
-            handle_exit_result(command, code, output, mounts)
-
-          :gone ->
-            {:ok, ShellJobs.gone_text(job_id)}
-
-          :trimmed ->
-            {:ok, ShellJobs.trimmed_text(job_id)}
-        end
-    end
-  end
-
-  # The per-agent background-job ceiling: `caps.shell.background` when set,
-  # otherwise the always-on default of 1.
-  defp background_cap(nil), do: 1
-
-  defp background_cap(caps) do
-    case get_in(caps, ["shell", "background"]) do
-      n when is_integer(n) and n >= 0 -> n
-      _ -> 1
-    end
-  end
-
-  defp handle_exit_result(_command, 0, "", _mounts) do
-    {:ok, "[Command executed successfully with no output]"}
-  end
-
-  defp handle_exit_result(_command, 0, output, _mounts) do
-    {:ok, output}
-  end
-
-  defp handle_exit_result(command, exit_code, output, mounts) do
-    log_sandbox_failure(command, exit_code, output, mounts)
-    {:error, "Exit code #{exit_code}:\n#{output}"}
-  end
-
-  defp handle_startup_failure(command, reason, mounts) do
-    log_erlexec_start_failure(command, reason, mounts)
-    {:error, "Execution failed: #{reason}"}
-  end
-
-  # Permanent diagnostic. The sandbox command exiting non-zero is the rare
-  # path; under heavy parallel load it can fire intermittently
-  # for reasons we don't fully understand yet. We want the
-  # server log to capture every occurrence with enough detail
-  # to diagnose a flake from the log alone.
-  #
-  # Printing the directories is deliberate here, as it is on the two `info`
-  # lines above: a flake is diagnosed by asking *which* directories the
-  # failing invocation was given, and the agent's own `/tmp/<agent-name>/...`
-  # spelling is not what the backend was handed. None of it reaches the agent —
-  # this is the operator's log — so it is not the leak the sandbox-spelling
-  # rule is about.
-  #
-  # The backend's display name leads the line, so a `"docker"` or `"none"`
-  # space's failure is not reported as bwrap's. `Nest.Sandbox.Backend.Bwrap`
-  # answers `"bwrap"`, which is why this reads exactly as it did when bwrap was
-  # the only backend.
-  defp log_sandbox_failure(command, exit_code, output, mounts) do
-    Logger.error(
-      "ShellCmd.execute: #{Backend.display_name(mounts)} exited non-zero " <>
-        "(exit_code=#{exit_code}) for command=#{truncate_log(command)} " <>
-        "workspace=#{Mounts.workspace(mounts) || "none"} " <>
-        "scratch=#{Mounts.scratch(mounts) || "none"} " <>
-        "output=#{inspect(output)}"
-    )
-  end
-
-  defp log_erlexec_start_failure(command, reason, mounts) do
-    Logger.error(
-      "ShellCmd.execute: erlexec failed to start process " <>
-        "(reason=#{inspect(reason)}) for command=#{truncate_log(command)} " <>
-        "workspace=#{Mounts.workspace(mounts) || "none"} " <>
-        "scratch=#{Mounts.scratch(mounts) || "none"}"
-    )
   end
 
   defp normalize_stdin(nil), do: nil
@@ -414,10 +307,10 @@ defmodule Nest.Tools.ShellCmd do
     end
   end
 
-  defp run_with_erlexec(spec, timeout, stdin) do
-    case run_with_erlexec_streams(spec, timeout, stdin) do
+  defp run_with_erlexec(spec, timeout, stdin, job_attrs) do
+    case run_with_erlexec_streams(spec, timeout, stdin, job_attrs) do
       {:ok, exit_code, combined, _stdout, _stderr} -> {:ok, exit_code, combined}
-      # A cancellation is passed through as its own shape: `exec_staged/6` must
+      # A cancellation is passed through as its own shape: `exec_staged/7` must
       # not report it as a failure to *start* the process, which is what the
       # `{:error, _}` clause means (nothing was started, and nothing ran).
       {:cancelled, reason} -> {:cancelled, reason}
@@ -426,7 +319,9 @@ defmodule Nest.Tools.ShellCmd do
   end
 
   defp run_with_erlexec_raw(spec, timeout, stdin) do
-    case run_with_erlexec_streams(spec, timeout, stdin) do
+    # `nil`: the raw helper is the sandbox's own short read/stat/glob step, not a
+    # job. Only `shell-cmd` calls register (see `run_foreground/5`).
+    case run_with_erlexec_streams(spec, timeout, stdin, nil) do
       {:ok, exit_code, _combined, stdout, stderr} -> {:ok, exit_code, stdout, stderr}
       {:cancelled, reason} -> {:cancelled, reason}
       {:error, reason} -> {:error, reason}
@@ -446,7 +341,7 @@ defmodule Nest.Tools.ShellCmd do
     end
   end
 
-  defp run_with_erlexec_streams(spec, timeout, stdin) do
+  defp run_with_erlexec_streams(spec, timeout, stdin, job_attrs) do
     stdin_opt = if stdin, do: :stdin, else: {:stdin, :null}
 
     # The deadline is computed once, when the command starts, and never
@@ -480,11 +375,13 @@ defmodule Nest.Tools.ShellCmd do
         send_stdin(os_pid, stdin)
 
         # Buffers are IO lists (prepend in O(1)); the terminal handler
-        # flattens each stream to a binary.
+        # flattens each stream to a binary. `job` is the shell job this call
+        # registered (#174), or `nil` for a call that is not one.
         collect_output(erl_pid, os_pid, deadline, timeout, %{
           stdout: [],
           stderr: [],
-          exit_code: nil
+          exit_code: nil,
+          job: register_job(job_attrs, os_pid)
         })
 
       {:error, reason} ->
@@ -502,6 +399,22 @@ defmodule Nest.Tools.ShellCmd do
       {:cancel_tool, _reason} -> flush_cancel_tool()
     after
       0 -> :ok
+    end
+  end
+
+  # Register this call as a shell job (#174). A registration that fails must not
+  # stop the command: the call runs unregistered, with the result it would have
+  # had, and the operator log says why the job list is missing it.
+  defp register_job(nil, _os_pid), do: nil
+
+  defp register_job(attrs, os_pid) do
+    case ShellJobs.register_owned(Map.put(attrs, :os_pid, os_pid)) do
+      {:ok, job} ->
+        job
+
+      {:error, reason} ->
+        Logger.warning("shell-cmd: could not register the call as a shell job: #{reason}")
+        nil
     end
   end
 
@@ -541,7 +454,10 @@ defmodule Nest.Tools.ShellCmd do
         handle_stop_chat(os_pid, acc)
 
       {:cancel_tool, reason} ->
-        handle_cancel_tool(os_pid, reason)
+        handle_cancel_tool(os_pid, reason, acc)
+
+      {:kill_job, job_id} ->
+        handle_kill_job(erl_pid, os_pid, deadline, timeout, job_id, acc)
 
       {:DOWN, _ref, :process, ^erl_pid, reason} ->
         handle_down(acc, reason)
@@ -577,11 +493,26 @@ defmodule Nest.Tools.ShellCmd do
     |> min(@max_after_ms)
   end
 
-  defp append_stdout(acc, data),
-    do: %{acc | stdout: [to_string(data) | acc.stdout]}
+  defp append_stdout(acc, data) do
+    log_chunk(acc, data)
+    %{acc | stdout: [to_string(data) | acc.stdout]}
+  end
 
-  defp append_stderr(acc, data),
-    do: %{acc | stderr: [to_string(data) | acc.stderr]}
+  defp append_stderr(acc, data) do
+    log_chunk(acc, data)
+    %{acc | stderr: [to_string(data) | acc.stderr]}
+  end
+
+  # A registered call's job log is written as its output arrives, so a
+  # `shell-list`/log read mid-run — or a killed job's — sees what has been
+  # written so far. A call that is not a job has no log to write.
+  defp log_chunk(%{job: nil}, _data), do: :ok
+  defp log_chunk(%{job: job}, data), do: Owned.append(job, data)
+
+  # The job is finished by whoever ends the call, on every terminal path below,
+  # so it never outlives the call that started it (#174).
+  defp finish_job(%{job: nil}, _code), do: :ok
+  defp finish_job(%{job: job}, code), do: ShellJobs.finish_owned(job.id, code)
 
   # The user clicked Stop. `Agent.stop_chat/2` forwards
   # `{:stop_chat, _}` to the tool worker before
@@ -596,6 +527,9 @@ defmodule Nest.Tools.ShellCmd do
     # `combine_output/1`) and `execute_raw/3,4` (which classifies stderr) see
     # it; appending it to the combined output dropped it for raw callers.
     acc = append_stderr(acc, "[Command cancelled]")
+    # Finished after the marker, so the job's log is complete before the record
+    # says the call ended (and before retention could evict its log).
+    finish_job(acc, 130)
     # 130 = 128 + SIGINT(2), the conventional shell cancellation
     # exit code (Ctrl-C).
     {:ok, 130, combine_output(acc), stdout_bin(acc), stderr_bin(acc)}
@@ -617,13 +551,37 @@ defmodule Nest.Tools.ShellCmd do
   # and a command is the one tool shape that does. A short tool waits at the gate
   # instead (`Nest.Agents.SpaceGate`'s moduledoc states it), so it needs no clause
   # and burns no retry.
-  defp handle_cancel_tool(os_pid, reason) do
+  defp handle_cancel_tool(os_pid, reason, acc) do
     :exec.stop(os_pid)
+    finish_job(acc, 130)
     {:cancelled, reason}
   end
 
+  # The manager's kill of *this* call's job — a `shell-kill` (or a space kill, or
+  # a space edit's quiesce) on a foreground call (#174). The worker owns the
+  # process, so it stops it and finishes the job here; the manager's
+  # `{:kill_finalize, _}` timer is the fallback for an owner that never answers.
+  # 137 is 128 + SIGKILL, the code the manager's own fallback records.
+  #
+  # A kill for another job id is skipped, not acted on: this worker runs one
+  # command at a time, and a kill that lost its race with this call's own finish
+  # would otherwise stop the *next* command. (Same reasoning as the `:DOWN`
+  # clause's `^erl_pid`.)
+  defp handle_kill_job(erl_pid, os_pid, deadline, timeout, id, %{job: job} = acc) do
+    if job && job.id == id do
+      :exec.stop(os_pid)
+      acc = append_stderr(acc, "[Command killed]")
+      finish_job(acc, 137)
+      {:ok, 137, combine_output(acc), stdout_bin(acc), stderr_bin(acc)}
+    else
+      collect_output(erl_pid, os_pid, deadline, timeout, acc)
+    end
+  end
+
   defp handle_down(acc, reason) do
-    {:ok, exit_code(reason), combine_output(acc), stdout_bin(acc), stderr_bin(acc)}
+    code = exit_code(reason)
+    finish_job(acc, code)
+    {:ok, code, combine_output(acc), stdout_bin(acc), stderr_bin(acc)}
   end
 
   @doc """
@@ -657,6 +615,7 @@ defmodule Nest.Tools.ShellCmd do
     # it as its own result.
     # Stderr, like `handle_stop_chat/2`, so `execute_raw/3,4` sees the marker.
     acc = append_stderr(acc, "[Command timed out after #{timeout}ms]")
+    finish_job(acc, 1)
     {:ok, 1, combine_output(acc), stdout_bin(acc), stderr_bin(acc)}
   end
 
@@ -673,12 +632,4 @@ defmodule Nest.Tools.ShellCmd do
   defp stdout_bin(acc), do: acc.stdout |> Enum.reverse() |> IO.iodata_to_binary()
 
   defp stderr_bin(acc), do: acc.stderr |> Enum.reverse() |> IO.iodata_to_binary()
-
-  defp truncate_log(command) do
-    if String.length(command) > 100 do
-      String.slice(command, 0, 100) <> "..."
-    else
-      command
-    end
-  end
 end

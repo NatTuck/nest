@@ -12,18 +12,14 @@ defmodule Nest.Spaces do
 
   import Ecto.Query, warn: false
 
-  alias Nest.Agents
   alias Nest.Agents.NameGenerator
-  alias Nest.Agents.PersistedAgent
   alias Nest.Agents.Supervisor
   alias Nest.Blueprints
   alias Nest.Persistence
   alias Nest.Repo
   alias Nest.Sandbox
   alias Nest.Sandbox.Backend
-  alias Nest.Spaces.Creation
-  alias Nest.Spaces.Environment
-  alias Nest.Spaces.Space
+  alias Nest.Spaces.{Creation, Environment, EnvironmentNotice, Space}
 
   # The per-user PubSub topic: "this user's space *set* changed" (a space
   # was created/archived/unarchived/deleted — and, once space sharing
@@ -182,43 +178,44 @@ defmodule Nest.Spaces do
     |> network_or_default()
   end
 
-  # The one fallback for a missing/absent network value, shared with
-  # `environment/1`.
+  # The one fallback for a missing/absent network value, shared with `environment/1`.
   defp network_or_default(value) when is_boolean(value), do: value
   defp network_or_default(_value), do: true
 
   @doc """
-  The three environment values of `space_id`, in **one** read.
+  The space properties an agent inherits from its row, in **one** read.
 
-  The start path needs all three together — an agent's `Nest.Sandbox.Mounts` is
-  built from them — so asking the three readers above costs three round trips
-  for one row. Each value falls back exactly as its own reader does, and the
-  fallbacks are the same code, so the two paths cannot disagree: a missing row
-  is `nil` for the workspace, `Backend.default/0` for the backend and `true` for
-  the network.
+  The start path needs the environment values together — an agent's
+  `Nest.Sandbox.Mounts` is built from them — so asking the readers above costs one
+  round trip per value. Each falls back exactly as its own reader does: a missing
+  row is `nil` for the workspace, `Backend.default/0` for the backend, `true` for
+  the network and `false` for the context warnings (`Nest.Spaces.ContextWarnings`).
   """
   @spec environment(integer()) :: %{
           workspace_path: String.t() | nil,
           network_access: boolean(),
-          sandbox_backend: String.t()
+          sandbox_backend: String.t(),
+          context_warnings: boolean()
         }
   def environment(space_id) when is_integer(space_id) do
     from(s in Space,
       where: s.id == ^space_id,
-      select: {s.workspace_path, s.sandbox_backend, s.network_access}
+      select: {s.workspace_path, s.sandbox_backend, s.network_access, s.context_warnings}
     )
     |> Repo.one()
-    |> case do
-      {workspace, backend, network} ->
-        %{
-          workspace_path: workspace,
-          sandbox_backend: backend_or_default(backend),
-          network_access: network_or_default(network)
-        }
+    |> environment_or_default()
+  end
 
-      nil ->
-        %{workspace_path: nil, sandbox_backend: Backend.default(), network_access: true}
-    end
+  # A missing row takes each reader's own fallback — the same code, so the two agree.
+  defp environment_or_default(nil), do: environment_or_default({nil, nil, nil, nil})
+
+  defp environment_or_default({workspace, backend, network, warnings}) do
+    %{
+      workspace_path: workspace,
+      sandbox_backend: backend_or_default(backend),
+      network_access: network_or_default(network),
+      context_warnings: warnings == true
+    }
   end
 
   @doc """
@@ -306,7 +303,7 @@ defmodule Nest.Spaces do
       {:ok, updated} ->
         # The *old* backend: the containers to release are the ones it made.
         remove_sandbox(%{updated | sandbox_backend: old_backend})
-        announce_environment(updated)
+        EnvironmentNotice.announce(updated)
         {:ok, updated}
 
       {:error, changeset} ->
@@ -333,75 +330,6 @@ defmodule Nest.Spaces do
       network_access: space.network_access,
       sandbox_backend: space.sandbox_backend
     }
-  end
-
-  # Every agent in the space is owed the notice, and the flag is what records it
-  # for an agent that cannot be told now.
-  #
-  # Mark *every* agent first, in one statement, then cast the live ones. A live
-  # agent answers the cast by appending the pair and clearing its own flag, so it
-  # ends up clear; a stopped agent, and a **mid-turn** one — the cast cannot
-  # deliver the notice to a machine that is `:generating` or `:executing_tools`
-  # (`Nest.Agents.Agent.WorkspaceHandler`) — keeps the flag and announces the
-  # change at its next start.
-  #
-  # Marking every agent rather than only the ones with no process is what makes
-  # the mid-turn case recoverable at all: an agent that is *cast* cannot be
-  # excluded from the mark, because the cast is a request it may refuse.
-  #
-  # ## The one window this does not close
-  #
-  # The mark and the clear are both plain writes to one boolean, so an edit that
-  # lands *inside* an agent's start can still be erased: the start path reads the
-  # flag from its attrs snapshot, appends its notice and then writes `false`
-  # unconditionally. If edit 1 marked the agent before that snapshot (so the start
-  # has a notice to append) and edit 2 marks it after the snapshot but before the
-  # clear, edit 2's mark is overwritten — and if edit 2's cast is then refused
-  # because the agent is busy, edit 2's notice is lost until a later edit.
-  #
-  # Closing it needs a compare-and-set, which needs a mark stamp on the row (a
-  # migration) — more machinery than a window this narrow justifies: it takes two
-  # edits and a start interleaved to the message, and the agent still announces
-  # the *first* edit's values. It is recorded here rather than implied away: the
-  # duplicate pair below is the harmless half of the trade, this is the half that
-  # is a loss.
-  #
-  # The harmless half: an agent that starts inside the window announces at start
-  # and then finds the cast in its mailbox, so it appends the pair twice. The pair
-  # reconciles the values now in force, so a duplicate is not misleading.
-  defp announce_environment(%Space{id: id} = space) do
-    mark_notice_pending(id)
-    tell_agents(space)
-  end
-
-  defp mark_notice_pending(id) do
-    from(a in PersistedAgent, where: a.space_id == ^id)
-    |> Repo.update_all(set: [space_notice_pending: true])
-
-    :ok
-  end
-
-  # Hand the space's new environment to every live agent in it. The values travel
-  # on an agent's `Nest.Sandbox.Mounts`, which is what its caps are resolved from
-  # and what its tool closures were built with, so an agent that started before
-  # the change would otherwise keep the old values for the rest of its life —
-  # this is the only thing that closes that window short of a restart.
-  #
-  # A cast, not a call: the values are the *space's*, so there is nothing an agent
-  # could refuse, and an edit must not wait on a turn. A name in the registry with
-  # no live process behind it is skipped; that agent's `space_notice_pending` flag
-  # is what tells it on its next start.
-  defp tell_agents(%Space{id: id} = space) do
-    values = environment_values(space)
-
-    id
-    |> Agents.Registry.list_for_space()
-    |> Enum.each(fn name ->
-      case Agents.Registry.lookup(id, name) do
-        {:ok, pid} -> Agents.Agent.space_changed(pid, values)
-        {:error, :not_found} -> :ok
-      end
-    end)
   end
 
   @doc """

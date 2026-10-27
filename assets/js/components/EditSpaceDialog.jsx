@@ -1,15 +1,20 @@
 /**
  * EditSpaceDialog — modal form for a space's **environment**: the workspace it
  * binds, whether its agents may reach the network, and which sandbox backend
- * runs them.
+ * runs them — plus whether the runtime's context-usage notices are on.
  *
- * One dialog for all three because they are one decision: every agent in the
- * space inherits them, and a save tells the live ones (`Agent.space_changed/2`)
- * rather than restarting anything. The consequence sentence is not decoration —
- * all three properties are part of the container's identity, so *any* change
- * releases it and everything that lived only there goes with it — and it is
- * stated before the save, not after. A save that changes nothing releases
- * nothing (the server skips it), which is why the sentence says "a change".
+ * One dialog for the three environment properties because they are one
+ * decision: every agent in the space inherits them, and a save tells the live
+ * ones (`Agent.space_changed/2`) rather than restarting anything. The
+ * consequence sentence is not decoration — all three are part of the
+ * container's identity, so *any* change releases it and everything that lived
+ * only there goes with it — and it is stated before the save, not after. A save
+ * that changes nothing releases nothing (the server skips it), which is why the
+ * sentence says "a change".
+ *
+ * The context-warnings toggle is the exception the help text spells out: it is
+ * not part of the container, so a save stops and releases nothing, and each
+ * agent picks the value up as it starts.
  *
  * The per-backend help text is the New Space form's (`sandboxBackendHelp/1`),
  * reused rather than restated: the two forms offer the same three backends and
@@ -21,7 +26,8 @@
  *   - `open`    — show/hide the modal.
  *   - `onClose` — close the modal (Escape / backdrop / X, and after a save).
  *   - `space`   — the space being edited; its `workspace_path`,
- *                 `network_access` and `sandbox_backend` initialize the form.
+ *                 `network_access`, `sandbox_backend` and `context_warnings`
+ *                 initialize the form.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -51,6 +57,7 @@ export const EDIT_SPACE_STOPS_WORK =
 export function EditSpaceDialog({ open, onClose, space }) {
   const [workspacePath, setWorkspacePath] = useState("");
   const [networkAccess, setNetworkAccess] = useState(true);
+  const [contextWarnings, setContextWarnings] = useState(false);
   const [sandboxBackend, setSandboxBackend] = useState(DEFAULT_SANDBOX_BACKEND);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
@@ -78,6 +85,7 @@ export function EditSpaceDialog({ open, onClose, space }) {
     const row = latest.current;
     setWorkspacePath(row?.workspace_path ?? "");
     setNetworkAccess(row?.network_access === true);
+    setContextWarnings(row?.context_warnings === true);
     setSandboxBackend(row?.sandbox_backend ?? DEFAULT_SANDBOX_BACKEND);
     setSaving(false);
     setSaveError(null);
@@ -146,6 +154,7 @@ export function EditSpaceDialog({ open, onClose, space }) {
       workspace_path: workspace,
       network_access: networkAccess,
       sandbox_backend: sandboxBackend,
+      context_warnings: contextWarnings,
     };
 
     // Only the confirmation carries the flag; the first push is the one the
@@ -262,6 +271,31 @@ export function EditSpaceDialog({ open, onClose, space }) {
                   <p className="text-sm text-gray-500">
                     Whether this space's agents may reach the network. A space
                     with no sandbox cannot enforce this.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3">
+                <input
+                  id="edit-space-context-warnings"
+                  type="checkbox"
+                  checked={contextWarnings}
+                  onChange={(e) => setContextWarnings(e.target.checked)}
+                  disabled={saving}
+                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+                />
+                <div>
+                  <label
+                    htmlFor="edit-space-context-warnings"
+                    className="text-sm font-medium text-gray-700"
+                  >
+                    Context warnings
+                  </label>
+                  <p className="text-sm text-gray-500">
+                    Whether the runtime tells these agents when their context is
+                    25%, 50% or 75% full. Off by default: a warning can read as
+                    "stop now". Nothing is stopped or released by this, and each
+                    agent picks it up as it starts.
                   </p>
                 </div>
               </div>

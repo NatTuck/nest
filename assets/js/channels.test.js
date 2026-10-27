@@ -47,13 +47,16 @@ import {
 } from "./channels";
 
 describe("editSpace", () => {
+  // The three environment properties plus the one setting the same dialog
+  // carries that is not the environment (`context_warnings`).
   const environment = {
     workspace_path: "/home/nat/ws",
     network_access: false,
     sandbox_backend: "docker",
+    context_warnings: true,
   };
 
-  it("pushes all three environment fields, and forwards the reply", async () => {
+  it("pushes the environment and the context-warnings setting, and forwards the reply", async () => {
     setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
     joinLobby();
     setNextPushResult("lobby", "edit_space", {
@@ -329,6 +332,7 @@ describe("channels", () => {
           model: { name: "Test Agent" },
           space_id: null,
           status: "idle",
+          runningJobs: 0,
           parentId: null,
           parentName: null,
           depth: 0,
@@ -711,6 +715,39 @@ describe("channels", () => {
 
       await vi.waitFor(() => {
         assert.strictEqual(useStore.getState().agents[0].status, "idle");
+      });
+    });
+
+    it("should apply an agent:jobs frame to the flat list (#175)", async () => {
+      // The sidebar's job count has no other live source: a job starting or
+      // finishing does not change the agent's status, so no status frame
+      // carries it.
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [
+            { name: "child", space_id: 1, status: "idle" },
+            { name: "other", space_id: 1, status: "idle" },
+          ],
+          models: [],
+          broken_agents: [],
+        },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length, 2);
+      });
+
+      simulateServerEvent("lobby", "agent:jobs", {
+        space_id: 1,
+        name: "child",
+        count: 2,
+      });
+
+      await vi.waitFor(() => {
+        const agents = useStore.getState().agents;
+        assert.strictEqual(agents[0].runningJobs, 2);
+        assert.strictEqual(agents[1].runningJobs, 0);
       });
     });
 

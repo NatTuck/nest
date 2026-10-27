@@ -1,11 +1,12 @@
 /**
  * Tests for `EditSpaceDialog` — the one form that edits a space's environment.
  *
- * It pins the three fields (a save sends all of them, because they are one
- * decision), the consequence sentence (any change releases the container, which
- * is not something the user can discover afterwards), the per-backend help
- * text it borrows from the New Space form, and a refused save: the server's
- * reason has to reach the user with the dialog still open.
+ * It pins the three environment fields (a save sends all of them, because they
+ * are one decision) and the context-warnings toggle that rides the same save,
+ * the consequence sentence (any change releases the container, which is not
+ * something the user can discover afterwards), the per-backend help text it
+ * borrows from the New Space form, and a refused save: the server's reason has
+ * to reach the user with the dialog still open.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
@@ -33,6 +34,7 @@ const space = {
   workspace_path: "/home/nat/ws",
   network_access: true,
   sandbox_backend: "bwrap",
+  context_warnings: false,
 };
 
 function setup(overrides = {}) {
@@ -57,15 +59,24 @@ const STOPPING_PLAN = {
 };
 
 describe("EditSpaceDialog", () => {
-  it("initializes all three fields from the space", () => {
+  it("initializes every field from the space", () => {
     setup();
 
     expect(screen.getByLabelText("Workspace Path").value).toBe("/home/nat/ws");
     expect(screen.getByLabelText("Network access").checked).toBe(true);
     expect(screen.getByLabelText("Sandbox").value).toBe("bwrap");
+    expect(screen.getByLabelText("Context warnings").checked).toBe(false);
   });
 
-  it("saves all three fields in one push and closes on success", () => {
+  it("starts the context-warnings toggle off when the space has never set it", () => {
+    // The column is off by default (issue #176), and a row from a server that
+    // does not carry the key at all must read as off rather than as checked.
+    setup({ space: { ...space, context_warnings: undefined } });
+
+    expect(screen.getByLabelText("Context warnings").checked).toBe(false);
+  });
+
+  it("saves every field in one push and closes on success", () => {
     mocks.editSpace.mockImplementation((_id, _values, onOk) => onOk({}));
     const { onClose } = setup();
 
@@ -76,6 +87,7 @@ describe("EditSpaceDialog", () => {
     fireEvent.change(screen.getByLabelText("Sandbox"), {
       target: { value: "docker" },
     });
+    fireEvent.click(screen.getByLabelText("Context warnings"));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect(mocks.editSpace).toHaveBeenCalledWith(
@@ -84,6 +96,7 @@ describe("EditSpaceDialog", () => {
         workspace_path: "/home/nat/other",
         network_access: false,
         sandbox_backend: "docker",
+        context_warnings: true,
       },
       expect.any(Function),
       expect.any(Function),

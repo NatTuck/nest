@@ -541,7 +541,7 @@ export function ChatPage() {
           <div className="mb-4 flex-1 min-h-0 overflow-y-auto">
             {jobs.length === 0 ? (
               <p className="py-12 text-center text-sm text-gray-400">
-                No background jobs.
+                No shell jobs.
               </p>
             ) : (
               <ShellJobsPanel

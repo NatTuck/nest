@@ -73,6 +73,8 @@ const SPACE = {
   workspace_path: "/home/nat/ws",
   network_access: true,
   sandbox_backend: "bwrap",
+  // Off, the column's default (issue #176).
+  context_warnings: false,
 };
 
 const BLUEPRINT = { id: 10, name: "Tabletop RPG" };
@@ -553,6 +555,13 @@ describe("SpaceFeed", () => {
       screen.getByText("Agents in this space can reach the network."),
     ).toBeInTheDocument();
     expect(screen.getByText("bwrap")).toBeInTheDocument();
+    // The context-warnings setting is the space's too, and it is stated rather
+    // than left out when it is off — off is a value, not missing data.
+    expect(
+      screen.getByText(
+        "These agents are not told when their context fills up.",
+      ),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Edit space" }));
 
@@ -594,6 +603,24 @@ describe("SpaceFeed", () => {
     expandEnvironment();
 
     expect(screen.getByText(/nothing enforces that/i)).toBeInTheDocument();
+  });
+
+  it("states that the context warnings are on when the space opted in", () => {
+    // The setting is the space's, and a reader has to be able to tell the two
+    // states apart from the card rather than from a notice's absence.
+    renderFeed({ space: { ...SPACE, context_warnings: true } });
+    expandEnvironment();
+
+    expect(
+      screen.getByText(
+        "These agents are told when their context is 25%, 50% or 75% full.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "These agents are not told when their context fills up.",
+      ),
+    ).not.toBeInTheDocument();
   });
 
   it("says the space is paused, once, because a held space is held for every page", () => {

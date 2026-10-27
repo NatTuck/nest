@@ -400,7 +400,7 @@ describe("ChatPage background jobs tab", () => {
       "true",
     );
     expect(
-      screen.getByRole("tab", { name: "Background jobs (1)" }),
+      screen.getByRole("tab", { name: "Shell jobs (1)" }),
     ).toBeInTheDocument();
     // The panel is not in the message flow, so the command is not
     // rendered until its tab is selected.
@@ -414,7 +414,7 @@ describe("ChatPage background jobs tab", () => {
   it("swaps the message list for the jobs panel when its tab is selected", () => {
     renderChat();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Background jobs (1)" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Shell jobs (1)" }));
 
     expect(screen.getByText("sleep 30")).toBeInTheDocument();
     // The message area is unmounted, whatever state it was in.
@@ -425,9 +425,9 @@ describe("ChatPage background jobs tab", () => {
     mockAgentsCache["test-agent"].jobs = [];
     renderChat();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Background jobs (0)" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Shell jobs (0)" }));
 
-    expect(screen.getByText("No background jobs.")).toBeInTheDocument();
+    expect(screen.getByText("No shell jobs.")).toBeInTheDocument();
   });
 });
 
@@ -2660,7 +2660,7 @@ describe("ChatPage scroll containers (issue #86)", () => {
     // The tab bar is chrome the conversation must not squeeze: it is the
     // `shrink-0` block the chrome region above shrinks against.
     const tabBar = screen
-      .getByRole("tab", { name: /Background jobs/ })
+      .getByRole("tab", { name: /Shell jobs/ })
       .closest(".shrink-0");
     expect(tabBar).not.toBeNull();
     expect(column.contains(tabBar)).toBe(true);
@@ -2668,7 +2668,7 @@ describe("ChatPage scroll containers (issue #86)", () => {
 
     // The jobs tab is a pane too — same rule, one scroll region, still no
     // second one on the page.
-    fireEvent.click(screen.getByRole("tab", { name: /Background jobs/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Shell jobs/ }));
 
     expect(panes(column)).toHaveLength(1);
     expect(panes(column)[0].className).toContain("overflow-y-auto");

@@ -11,17 +11,14 @@ defmodule Nest.Agents.Agent do
 
   require Logger
 
-  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Callbacks
   alias Nest.Agents.Agent.ClientAPI
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Init
-  alias Nest.Agents.Agent.Machine.Backgrounding
-  alias Nest.Agents.Agent.Machine.Children
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.PreSpawn
-  alias Nest.Agents.Agent.SubAgent
+  alias Nest.Agents.Agent.Shutdown
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.Registry
   alias Nest.Agents.SpaceGate
@@ -31,7 +28,6 @@ defmodule Nest.Agents.Agent do
   alias Nest.Messages.Tool
   alias Nest.Messages.User
   alias Nest.Sandbox.Mounts
-  alias Nest.Sandbox.ShellJobs
 
   defstruct [
     :name,
@@ -63,11 +59,13 @@ defmodule Nest.Agents.Agent do
     # inherit their parent's `shared` value (see
     # `PreSpawn.build_child_attrs/5`).
     shared: false,
-    # `tree_position` is `%__MODULE__.TreePosition{}` for
-    # child agents (carrying `parent_id` + `parent_name`) and
-    # the default (both fields `nil`) for root agents. Extracted
-    # into a sub-struct so the top-level `Agent` stays under
-    # the 16-field cap (credo's `Modules#MODULE_DOC`).
+    # The space's context-warnings setting, read at init into the machine's `ctx`
+    # and never onto the mounts: nothing about it reaches a command.
+    context_warnings: false,
+    # `tree_position` is `%__MODULE__.TreePosition{}` for child agents
+    # (carrying `parent_id` + `parent_name`) and the default (both `nil`)
+    # for root agents: a sub-struct, so the top-level `Agent` stays within
+    # the 16-field cap (`Credo.Check.Warning.StructFieldAmount`).
     tree_position: %__MODULE__.TreePosition{},
     chat_state: %__MODULE__.ChatState{},
     live: %__MODULE__.ChatState.Live{}
@@ -98,6 +96,7 @@ defmodule Nest.Agents.Agent do
           created_by_user_id: integer() | nil,
           shared: boolean(),
           depth: non_neg_integer(),
+          context_warnings: boolean(),
           chat_state: __MODULE__.ChatState.t(),
           live: __MODULE__.ChatState.Live.t()
         }
@@ -528,101 +527,7 @@ defmodule Nest.Agents.Agent do
   end
 
   @impl true
-  def terminate(_reason, state) do
-    # This callback runs inside the exit handshake the test teardown uses as
-    # its idle detector (`Nest.Agents.AgentTestLifecycle.stop_pid/2`): the
-    # test's `:DOWN` only arrives once this returns, so time spent here is
-    # charged to the handshake and loosens the detector. Keep every step local
-    # and cheap, and hand anything that is not needed for the process to die to
-    # the process that needs it.
-
-    # An owed reply cannot be given up from here (the notices need a live
-    # settle): it is lost with the process, so say so in the log.
-    Inbox.log_lost_replies(state)
-
-    # Stop the workers this process's turn is running. They are Tasks under the
-    # application-wide `Nest.Agents.TaskSupervisor`, not children of this
-    # process, so nothing else here reaches them — `SubAgent.cascade_terminate`
-    # below stops children and watchers, and the shell-jobs cast stops jobs.
-    # A worker left running past this process keeps doing the turn's work with
-    # nothing left to consume it: it runs tool calls of its own, and one of them
-    # — `agents-send`/`agents-query` → `Agents.send_note/5` →
-    # `Supervisor.get_agent/2`'s on-demand load → `Init.LoadHeal.heal/2` —
-    # *appends* a message for the agent it loads, in the worker's own DB
-    # context. In a test that context is the test process's sandbox connection,
-    # which is checked in as the test process exits: the append then fails with
-    # `DBConnection.ConnectionError: owner … exited`, long after the teardown
-    # stopped every agent it could see. Death bypasses the turn's Stop
-    # transition, which is the only place that kills these today
-    # (`Machine.Stopping`'s `{:kill, active_worker}` and
-    # `Machine.Backgrounding.kill_actions/1`), so it must stop them itself.
-    stop_turn_workers(state)
-
-    # Stop any outstanding queries (children in
-    # `pending_children`) before teardown. Defensive against
-    # the case where the supervisor gave up because we
-    # crashed: we still want in-flight queries cut off. Idle
-    # specialists are left running.
-    SubAgent.cascade_terminate(state)
-
-    # Ask the shell-jobs manager to stop this agent's jobs. Deliberately the
-    # non-blocking form: the manager is a process-global rendezvous that every
-    # agent's teardown passes through, so waiting on it here would put a shared
-    # process's queue latency inside every agent's exit — the same rendezvous
-    # that can leave a dying agent unable to answer a call for hundreds of
-    # milliseconds. The manager already monitors this pid (`track_agent/3`), so
-    # this cast is not what keeps a job from outliving its agent; it asks for
-    # the stop without making the exit wait.
-    ShellJobs.stop_all_async({state.space_id, state.name}, self())
-
-    # Cleanup /tmp per design specification. This removal is the *fence* the
-    # tmp-path tests rely on — the directory is gone by the time this process's
-    # `:DOWN` arrives. It is not the ordering guarantee against a running job:
-    # the cast above can still be processed after this line. That guarantee is
-    # the manager's, in `ShellJobs.drop_agent/2`: it removes the same directory
-    # *after* it has stopped this agent's jobs, so a job cannot recreate files
-    # under a just-deleted path and leave them behind.
-    cleanup_tmp(state.mounts, state.space_id, state.name)
-
-    # Note: workspace is preserved for review/debugging (per design)
-
-    # Announce the stop (#73) before the process goes away, so a peer session
-    # learns that it stopped instead of inferring it from a status that will
-    # never change again. Emitted from here because this callback is the only
-    # place that knows the agent has *actually* stopped — `Supervisor.stop_agent/2`
-    # fires an exit signal and returns — and because every death path reaches
-    # here: a plain stop, an archive, a crash, a reload.
-    _ = announce_stop(state)
-
-    # Give up this agent's registry name *before* the process dies, rather than
-    # leaving it to the registry's own cleanup. See
-    # `Nest.Agents.Registry.release/2`: that cleanup runs a scheduling hop after
-    # death, and inside that hop a start under this name is refused with an
-    # `:already_started` that `Supervisor.start_under_supervisor/2` reports as
-    # success — a running agent that does not exist.
-    #
-    # Deliberately the last act of this callback. Releasing it earlier would let
-    # a replacement take the name while this process is still stopping workers
-    # and removing its tmp directory, which is worse than the hop we are closing.
-    # The result is ignored because a registry that is already gone is not a
-    # reason for a dying agent to crash.
-    _ = Registry.release(state.space_id, state.name)
-
-    :ok
-  end
-
-  # Announce this agent's stop from inside the exit handshake (#73), tolerating
-  # a PubSub that is already gone: an application shutdown stops every agent,
-  # and a dying agent must not crash over it — the same reason
-  # `Registry.release/2` above reports its own failure instead of raising.
-  defp announce_stop(state) do
-    Broadcasts.agent_stopped(state.space_id, %{
-      "space_id" => state.space_id,
-      "name" => state.name
-    })
-  rescue
-    ArgumentError -> :error
-  end
+  def terminate(reason, state), do: Shutdown.run(reason, state)
 
   @impl true
   def handle_cast(msg, state), do: Callbacks.handle_cast(msg, state)
@@ -632,46 +537,6 @@ defmodule Nest.Agents.Agent do
 
   @impl true
   def handle_info(msg, state), do: Callbacks.handle_info(msg, state)
-
-  # Private functions
-
-  # Clean up this agent's own tmp sub-directory. Never touches the
-  # space directory or a sibling's files. Delegates to
-  # `Nest.Agents.Agent.TmpSpace.cleanup/3` so this module doesn't carry
-  # the boilerplate; the backend comes from the agent's own mounts, because
-  # it decides which root the scratch directory is under.
-  defp cleanup_tmp(%Mounts{} = mounts, space_id, agent_name),
-    do: TmpSpace.cleanup(space_id, agent_name, Mounts.backend(mounts))
-
-  # Every worker this process's turn is running: the live one, the batches it
-  # moved to the background (`Machine.Backgrounding.pids/1`), and the batch
-  # coordinators (`Machine.Children.reporting_targets/1`). All are tasks under
-  # the application-wide `Nest.Agents.TaskSupervisor`, not children of this
-  # process, and the turn's Stop transition is the only other thing that kills
-  # them — a death runs no transition. Distinct pids — one batch can be recorded
-  # under two refs, and one coordinator reports for many children.
-  #
-  # `stop_worker/1` sends the same `{:stop_chat, self()}` handshake the
-  # executor's `{:kill, pid}` action does (see `Backgrounding.kill_actions/1`):
-  # it is what lets a worker parked in a foreground `shell-cmd` `:exec.stop/1`
-  # its bwrap process before it goes. Without it the signal kills the worker
-  # while its sandbox process is still running. No wait: this runs inside the
-  # exit handshake (see `terminate/2`).
-  defp stop_turn_workers(state) do
-    machine = state.live.machine
-
-    ([machine.work.active_worker | Backgrounding.pids(machine)] ++
-       Children.reporting_targets(machine.children))
-    |> Enum.uniq()
-    |> Enum.each(&stop_worker/1)
-  end
-
-  defp stop_worker(pid) when is_pid(pid) do
-    send(pid, {:stop_chat, self()})
-    Process.exit(pid, :shutdown)
-  end
-
-  defp stop_worker(_none), do: :ok
 
   # Public-for-Handlers: message-construction logic. The
   # canonical impl lives in `Nest.Agents.Agent.TmpSpace`; the

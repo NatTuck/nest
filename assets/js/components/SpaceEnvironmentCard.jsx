@@ -1,11 +1,10 @@
 /**
  * The space's environment: its workspace, its network access, its sandbox
- * backend, and the way to edit them.
+ * backend, its context-warnings setting, and the way to edit them.
  *
- * A workspace, the network and the backend are the *space's* — every agent in it
- * inherits them — so they are shown and edited on the space rather than on one
- * of its agents. Read-only here, edited through `EditSpaceDialog`; the dialog is
- * the only writer.
+ * All four are the *space's* — every agent in it inherits them — so they are
+ * shown and edited on the space rather than on one of its agents. Read-only
+ * here, edited through `EditSpaceDialog`; the dialog is the only writer.
  *
  * Extracted from the retired overview page (`/space/:slug/overview`), which the
  * feed replaced: the feed carries this card, and a campaign space's Main View
@@ -95,6 +94,12 @@ export function SpaceEnvironmentCard({ space }) {
                 : "Agents in this space cannot reach the network."}
               {space.sandbox_backend === "none" &&
                 " This space has no sandbox, so nothing enforces that."}
+            </dd>
+            <dt className="font-medium text-gray-700">Context warnings</dt>
+            <dd className="text-gray-600">
+              {space.context_warnings === true
+                ? "These agents are told when their context is 25%, 50% or 75% full."
+                : "These agents are not told when their context fills up."}
             </dd>
             <dt className="font-medium text-gray-700">Sandbox</dt>
             <dd className="text-gray-600">

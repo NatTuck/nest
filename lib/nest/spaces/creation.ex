@@ -88,7 +88,8 @@ defmodule Nest.Spaces.Creation do
                :blueprint_id,
                :workspace_path,
                :sandbox_backend,
-               :network_access
+               :network_access,
+               :context_warnings
              ])
            ),
          agent_opts = build_root_agent_opts(user_id, attrs, space, root_vocation_id),

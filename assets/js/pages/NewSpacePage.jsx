@@ -53,6 +53,9 @@ export function NewSpacePage() {
   // their choice wins, so picking another blueprint cannot stomp it — which is
   // why this stores the *choice* rather than the value.
   const [networkChoice, setNetworkChoice] = useState(null);
+  // Off by default and not derived from anything (issue #176): the notices can
+  // read as "stop now", so a space opts in, here or later in the edit dialog.
+  const [contextWarnings, setContextWarnings] = useState(false);
   const [sandboxBackend, setSandboxBackend] = useState(DEFAULT_SANDBOX_BACKEND);
   const [isCreating, setIsCreating] = useState(false);
   const [isRescanning, setIsRescanning] = useState(false);
@@ -152,6 +155,7 @@ export function NewSpacePage() {
         workspace_path: requiresWorkspace ? workspacePath.trim() : undefined,
         sandbox_backend: sandboxBackend,
         network_access: networkAccess,
+        context_warnings: contextWarnings,
       },
     );
   };
@@ -365,6 +369,31 @@ export function NewSpacePage() {
               Whether this space's agents may reach the network. Starts from the
               selected blueprint's choice; a space with no sandbox cannot
               enforce this.
+            </p>
+          </div>
+        </div>
+
+        {/* Context warnings (a space property, off by default) */}
+        <div className="mb-6 flex items-start gap-3">
+          <input
+            id="space-context-warnings"
+            type="checkbox"
+            checked={contextWarnings}
+            onChange={(e) => setContextWarnings(e.target.checked)}
+            disabled={isCreating}
+            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+          />
+          <div>
+            <label
+              htmlFor="space-context-warnings"
+              className="text-sm font-medium text-gray-700"
+            >
+              Context warnings
+            </label>
+            <p className="text-sm text-gray-500">
+              Whether the runtime tells this space's agents when their context
+              is 25%, 50% or 75% full. Off by default: a warning can read as
+              "stop now". Editable later on the space's own page.
             </p>
           </div>
         </div>

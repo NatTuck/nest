@@ -21,6 +21,26 @@ import {
 import { StatusDot } from "./StatusDot";
 
 /**
+ * The full fact behind a row's job count (#174/#175). The parens are compact, so
+ * the tooltip and the accessible name say what the number counts. "shell jobs"
+ * rather than "background jobs" because the count includes a foreground
+ * `shell-cmd` call while it runs.
+ */
+function runningJobsLabel(count) {
+  return `${count} shell ${count === 1 ? "job" : "jobs"} running`;
+}
+
+/**
+ * The same for a row's child count. A row can show both numbers, one after the
+ * other (`name (2) (3)`), and without its own label the second is
+ * indistinguishable from the first to a screen reader — and separable only by
+ * colour to everyone else.
+ */
+function directChildrenLabel(count) {
+  return `${count} child ${count === 1 ? "agent" : "agents"}`;
+}
+
+/**
  * The message shown when a restore is refused. The backend names the
  * still-archived parent (`parent_archived`) — the case the user can act
  * on — and anything else falls back to the raw reason.
@@ -202,6 +222,11 @@ export function AgentTreeRow({
   const joining =
     cacheStatus === "connecting" || (isCurrent && cacheStatus === undefined);
 
+  // The agent's running background jobs (#175). An archived agent has none —
+  // its process is stopped — so its row shows no count even when the copy of
+  // the row kept one from before it was archived.
+  const runningJobs = isArchived ? 0 : (agent.runningJobs ?? 0);
+
   const label = (
     <>
       <StatusDot
@@ -209,8 +234,22 @@ export function AgentTreeRow({
         className="w-2 h-2"
       />
       <span className="truncate text-sm font-medium">{agent.name}</span>
+      {runningJobs > 0 && (
+        <span
+          className="text-xs font-medium text-amber-600 ml-1"
+          role="img"
+          aria-label={runningJobsLabel(runningJobs)}
+        >
+          ({runningJobs})
+        </span>
+      )}
       {directChildren.length > 0 && (
-        <span className="text-xs text-gray-400 ml-1">
+        <span
+          className="text-xs text-gray-400 ml-1"
+          role="img"
+          aria-label={directChildrenLabel(directChildren.length)}
+          title={directChildrenLabel(directChildren.length)}
+        >
           ({directChildren.length})
         </span>
       )}
@@ -272,6 +311,7 @@ export function AgentTreeRow({
           <Link
             to={`/space/${spaceSlug}/agent/${encodeURIComponent(agent.name)}`}
             className="flex items-center gap-2 min-w-0 flex-1 py-2 pr-3"
+            title={runningJobs > 0 ? runningJobsLabel(runningJobs) : undefined}
           >
             {label}
           </Link>

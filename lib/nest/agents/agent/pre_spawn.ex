@@ -445,9 +445,10 @@ defmodule Nest.Agents.Agent.PreSpawn do
   end
 
   # Everything a clone takes from its parent: identity, space, model, vocation,
-  # the space-level properties it shares (sandbox backend, network access), and
-  # the parent's user identity and visibility — a private agent always spawns
-  # private children, and a shared parent may spawn shared children.
+  # the space-level properties it shares (sandbox backend, network access, and the
+  # context-warnings setting), and the parent's user identity and visibility — a
+  # private agent always spawns private children, and a shared parent may spawn
+  # shared children.
   defp inherited_attrs(parent_state, child_name, parent_id, model_override) do
     %{
       name: child_name,
@@ -457,6 +458,7 @@ defmodule Nest.Agents.Agent.PreSpawn do
       vocation: parent_state.vocation,
       sandbox_backend: Mounts.backend(parent_state.mounts),
       network_access: Mounts.network_access(parent_state.mounts),
+      context_warnings: parent_state.context_warnings,
       parent_id: parent_id,
       parent_name: parent_state.name,
       created_by_user_id: parent_state.created_by_user_id,

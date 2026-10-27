@@ -66,9 +66,8 @@ defmodule Nest.Persistence do
   alias Nest.Spaces.Space
   alias Nest.Vocations
 
-  # The three space properties an agent's attrs carry (see
-  # `put_space_properties/1`).
-  @space_properties [:sandbox_backend, :network_access, :workspace_path]
+  # The space properties an agent's attrs carry (see `put_space_properties/1`).
+  @space_properties [:sandbox_backend, :network_access, :workspace_path, :context_warnings]
 
   @doc """
   Resolve a `vocation_id` to a loaded `Vocations.Vocation`
@@ -102,7 +101,8 @@ defmodule Nest.Persistence do
   # once per start and carried on the attrs so `Nest.Agents.Agent.Init` never
   # has to read the DB for it. All three are space properties; the workspace is
   # here for the same reason the other two are, and `agents.workspace_path` no
-  # longer exists.
+  # longer exists. The space's context-warnings setting rides along on the same
+  # read (`Nest.Spaces.ContextWarnings`).
   #
   # A caller that already named one keeps it, and no query runs for it: a
   # spawned child's attrs are built from its parent's mounts, and those came
@@ -116,7 +116,7 @@ defmodule Nest.Persistence do
   @doc false
   def put_space_properties(%{space_id: space_id} = attrs) when is_integer(space_id) do
     # A spawned child's attrs are built from its parent's mounts and already
-    # carry all three, so for every backend but `"none"` the common path is no
+    # carry every property, so for every backend but `"none"` the common path is no
     # query at all; anything else is one read for the environment rather than one
     # per missing property.
     #
@@ -132,6 +132,7 @@ defmodule Nest.Persistence do
       |> Map.put_new(:sandbox_backend, environment.sandbox_backend)
       |> Map.put_new(:network_access, environment.network_access)
       |> Map.put_new(:workspace_path, environment.workspace_path)
+      |> Map.put_new(:context_warnings, environment.context_warnings)
       |> Map.put(:space_name, prompt_space_name(space_id, environment.sandbox_backend))
     end
   end
@@ -534,6 +535,7 @@ defmodule Nest.Persistence do
       workspace_path: environment.workspace_path,
       sandbox_backend: environment.sandbox_backend,
       network_access: environment.network_access,
+      context_warnings: environment.context_warnings,
       # Only a `"none"` space's prompt reads it; see `prompt_space_name/2`.
       space_name: prompt_space_name(row.space_id, environment.sandbox_backend),
       space_notice_pending: row.space_notice_pending == true,
