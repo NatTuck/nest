@@ -195,9 +195,11 @@ defmodule Nest.Tools.ShellJobsTest do
              invoke(tool, %{"scope" => "space"}, empty)
   end
 
-  # The space scope renders the same decision (#181): a sibling's finished job is
-  # not a row either, and its count is what the sentence names.
-  test "shell-list scope: space lists only running jobs", %{
+  # The space scope lists the running jobs only too (#181), but it words the
+  # finished ones differently: `shell-wait` is owner-scoped, so a sibling's
+  # finished id is not retrievable by the caller — the sentence must not claim
+  # it is.
+  test "shell-list scope: space lists only running jobs, and promises no retrieval", %{
     key: key,
     tmp: tmp,
     context: context
@@ -215,15 +217,26 @@ defmodule Nest.Tools.ShellJobsTest do
 
     assert text ==
              "No shell jobs running in this space.\n" <>
-               "1 finished shell job is still retrievable by id (shell-wait)."
+               "1 finished shell job is not listed."
 
     refute text =~ "echo done"
+    # The agent scope's promise would be false here: no id was offered and
+    # `shell-wait` would not answer for the sibling's job anyway.
+    refute text =~ "retrievable"
+
+    # Two finished jobs, and the count is a count.
+    second = start_job!("echo again", sibling_tmp, sibling)
+    wait_until_exited(sibling, second)
+
+    assert {:ok, text} = invoke(tool, %{"scope" => "space"}, context)
+    assert text =~ "2 finished shell jobs are not listed."
 
     # A sibling's *running* job is still a row, owner column and all.
     running = start_job!("sleep 30", sibling_tmp, sibling)
 
     assert {:ok, text} = invoke(tool, %{"scope" => "space"}, context)
     assert text =~ "- #{running} (owner: #{elem(sibling, 1)}): running"
+    assert text =~ "2 finished shell jobs are not listed."
     refute text =~ "echo done"
   end
 

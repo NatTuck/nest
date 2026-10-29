@@ -202,36 +202,50 @@ defmodule Nest.Tools.ShellJobs do
     do: "Killed shell job #{id}, owned by #{owner} (exit code #{code})."
 
   # `shell-list` answers "what is running now" (#181): a finished job is a
-  # transcript entry, and the retained tail of them buries the live one. The
-  # finished jobs are still retrievable by id, so the result names how many
-  # there are in one sentence instead of rendering them.
-  defp render(jobs), do: render_listing(jobs, "No shell jobs running.", &render_job/1)
+  # transcript entry, and the retained tail of them buries the live one. Both
+  # scopes therefore list the running jobs only — what the result *says* about
+  # the finished ones is the one thing they do not share, so each words it for
+  # itself (`finished_note/2`).
+  defp render(jobs), do: render_listing(:agent, jobs)
 
-  defp render_space(jobs),
-    do: render_listing(jobs, "No shell jobs running in this space.", &render_space_job/1)
+  defp render_space(jobs), do: render_listing(:space, jobs)
 
-  defp render_listing(jobs, empty, render_job) do
+  defp render_listing(scope, jobs) do
     {running, finished} = Enum.split_with(jobs, &(&1.status == :running))
 
-    [running_rows(running, empty, render_job), finished_note(finished)]
+    [running_rows(scope, running), finished_note(scope, finished)]
     |> Enum.reject(&(&1 == ""))
     |> Enum.join("\n")
   end
 
-  defp running_rows([], empty, _render_job), do: empty
+  defp running_rows(:agent, []), do: "No shell jobs running."
+  defp running_rows(:space, []), do: "No shell jobs running in this space."
 
-  defp running_rows(running, _empty, render_job),
-    do: Enum.map_join(running, "\n", render_job)
+  defp running_rows(:agent, running), do: Enum.map_join(running, "\n", &render_job/1)
 
-  defp finished_note([]), do: ""
+  defp running_rows(:space, running), do: Enum.map_join(running, "\n", &render_space_job/1)
 
-  defp finished_note([_one]),
+  defp finished_note(_scope, []), do: ""
+
+  # The caller's own finished jobs are one `shell-wait` away by id, so this
+  # sentence points at the tool.
+  defp finished_note(:agent, [_one]),
     do: "1 finished shell job is still retrievable by id (shell-wait)."
 
-  defp finished_note(finished) do
+  defp finished_note(:agent, finished) do
     "#{length(finished)} finished shell jobs are still retrievable by id " <>
       "(shell-wait)."
   end
+
+  # A space listing cannot make that promise: `shell-wait` is owner-scoped
+  # (`ShellJobs.status/2` matches the whole `{space_id, agent_name}` key), so a
+  # sibling's finished id answers "No such shell job" — and the caller has no id
+  # to pass anyway. So the space sentence names the omission and claims nothing
+  # about retrieval.
+  defp finished_note(:space, [_one]), do: "1 finished shell job is not listed."
+
+  defp finished_note(:space, finished),
+    do: "#{length(finished)} finished shell jobs are not listed."
 
   defp render_job(job) do
     "- #{job.id}: #{job.status}" <>

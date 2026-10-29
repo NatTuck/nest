@@ -72,6 +72,58 @@ defmodule Nest.LLM.HttpWorkerTest do
     end
   end
 
+  describe "watchdog_ms/1 and timeout_event/1" do
+    # Which of the two silence bounds applies is decided here and nowhere else:
+    # before the first chunk the provider may legitimately be silent for the
+    # whole prefill, and once chunks are arriving a gap of the idle bound is a
+    # dead connection. The clients only arm a watchdog with this, so these four
+    # cases are the whole decision — and the integration tests below corroborate
+    # it, they do not replace it.
+    test "the first-byte bound applies until the first chunk arrives" do
+      state = %{had_chunk: false, first_byte_timeout: 900_000, stream_idle_timeout: 120_000}
+
+      assert HttpWorker.watchdog_ms(state) == 900_000
+      assert HttpWorker.timeout_event(state) == {:stream_idle_timeout, {:first_byte, 900_000}}
+    end
+
+    test "the stream-idle bound applies once chunks are arriving" do
+      state = %{had_chunk: true, first_byte_timeout: 900_000, stream_idle_timeout: 120_000}
+
+      assert HttpWorker.watchdog_ms(state) == 120_000
+      assert HttpWorker.timeout_event(state) == {:stream_idle_timeout, {:stream_idle, 120_000}}
+    end
+
+    test ":infinity opts out of the watchdog, whichever bound is in force" do
+      no_first_byte = %{
+        had_chunk: false,
+        first_byte_timeout: :infinity,
+        stream_idle_timeout: 120_000
+      }
+
+      no_idle = %{had_chunk: true, first_byte_timeout: 900_000, stream_idle_timeout: :infinity}
+
+      assert HttpWorker.watchdog_ms(no_first_byte) == :infinity
+      assert HttpWorker.watchdog_ms(no_idle) == :infinity
+
+      # The event still names which bound it is and carries that bound's value,
+      # so a report of an opted-out bound says `:infinity` rather than a number
+      # nothing waited for.
+      assert HttpWorker.timeout_event(no_first_byte) ==
+               {:stream_idle_timeout, {:first_byte, :infinity}}
+
+      assert HttpWorker.timeout_event(no_idle) ==
+               {:stream_idle_timeout, {:stream_idle, :infinity}}
+    end
+
+    test "a value that is not a timeout reads as :infinity" do
+      # `finite/1`'s last clause: an unusable bound must not reach `receive`'s
+      # `after` and take the consumer down.
+      state = %{had_chunk: false, first_byte_timeout: nil, stream_idle_timeout: 120_000}
+
+      assert HttpWorker.watchdog_ms(state) == :infinity
+    end
+  end
+
   describe "handle_response/5 failure descriptions" do
     test "a closed connection names the cause, endpoint and attempt budget" do
       assert :ok =
