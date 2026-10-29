@@ -167,6 +167,73 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       assert by_name["absent"] == false
     end
 
+    test "round-trips both silence bounds through save, the push and local.toml", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      Mimic.expect(Nest.Models, :rescan, fn -> :ok end)
+
+      ref =
+        push(socket, "save_providers", %{
+          "providers" => [
+            %{
+              "name" => "tuned",
+              "first_byte_timeout_seconds" => 1_800,
+              "stream_idle_timeout_seconds" => 30
+            },
+            %{"name" => "untuned"}
+          ]
+        })
+
+      assert_reply ref, :ok, %{}, 1_000
+      assert_push "providers_updated", %{providers: providers}, 1_000
+
+      # The push is what the handler read back out of `local.toml`, so this is
+      # the round-trip: a field the writer dropped would come back as the
+      # reader's default, and a field the reader ignored would too.
+      by_name = Map.new(providers, &{&1["name"], &1})
+      assert by_name["tuned"]["first_byte_timeout_seconds"] == 1_800
+      assert by_name["tuned"]["stream_idle_timeout_seconds"] == 30
+
+      # Absent means "keep the default", which the reader fills in.
+      assert by_name["untuned"]["first_byte_timeout_seconds"] == 900
+      assert by_name["untuned"]["stream_idle_timeout_seconds"] == 120
+
+      toml = File.read!(local_file)
+      assert toml =~ "first_byte_timeout = 1800"
+      assert toml =~ "stream_idle_timeout = 30"
+    end
+
+    test "replies invalid_payload for a silence bound the reader rejects", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # Both are `type="number"` inputs, so a typed `0` arrives as `0` (the
+      # string `"0"` is truthy, so the `? … : null` guard does not catch it) and
+      # a cleared field is coerced to `null` by a well-behaved browser — but the
+      # rule must not rest on one client's coercion, so `""` is refused too.
+      # The reader raises on all of these, and the write must not land first.
+      for {field, value} <- [
+            {"first_byte_timeout_seconds", 0},
+            {"first_byte_timeout_seconds", "900"},
+            {"first_byte_timeout_seconds", ""},
+            {"stream_idle_timeout_seconds", -1},
+            {"stream_idle_timeout_seconds", "120"},
+            {"stream_idle_timeout_seconds", ""}
+          ] do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [%{"name" => "acme", field => value}]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload", "message" => message}, 1_000
+
+        # The message names the field, because there are two of these now.
+        assert message =~ field
+        refute File.exists?(local_file)
+      end
+    end
+
     test "rejects a non-admin user with :forbidden" do
       admin_id = Process.get(:providers_admin_id)
 

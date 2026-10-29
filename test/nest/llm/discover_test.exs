@@ -23,7 +23,8 @@ defmodule Nest.LLM.DiscoverTest do
       base_url: Keyword.get(opts, :base_url, "http://localhost:8080/v1"),
       api_key: Keyword.get(opts, :api_key, "test-key"),
       model: Keyword.get(opts, :model, "test-model"),
-      receive_timeout: 5000
+      first_byte_timeout: 5000,
+      stream_idle_timeout: 5000
     }
   end
 

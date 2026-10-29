@@ -110,6 +110,23 @@ defmodule Nest.LLM.HttpWorkerTest do
       assert body =~ "could not connect to the provider"
     end
 
+    test "a transport timeout names the bound it came from and how long it was" do
+      # Req's socket `receive_timeout` carries the *first-byte* bound, so a
+      # transport timeout is the prefill window running out. Saying only "the
+      # receive timeout" left the reader unable to tell this from the SSE
+      # watchdog's message, and neither said how long the wait was.
+      HttpWorker.handle_response(
+        {:error, %Req.TransportError{reason: :timeout}},
+        self(),
+        "OpenAIClient",
+        &chunk/3,
+        Map.put(ctx(), :first_byte_timeout, 900_000)
+      )
+
+      assert_receive {:req_chunk, body}
+      assert body =~ "the provider sent nothing for 900000ms (first-byte timeout)"
+    end
+
     test "a non-200 carries the provider's body and the context" do
       HttpWorker.handle_response(
         {:ok, %Req.Response{status: 429, body: "rate limited"}},

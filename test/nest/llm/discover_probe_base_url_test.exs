@@ -34,7 +34,8 @@ defmodule Nest.LLM.Discover.ProbeBaseUrlTest do
       probe_base_url: "http://probe.example.com/olla",
       api_key: "test-key",
       model: "test-model",
-      receive_timeout: 5000
+      first_byte_timeout: 5000,
+      stream_idle_timeout: 5000
     }
 
     assert Discover.context_limit(config) == {:vllm, 4096}

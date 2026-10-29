@@ -71,7 +71,8 @@ defmodule Nest.Scripts.CompactionProbeSupportTest do
         base_url: "https://example.test",
         api_key: "key",
         model: "test-model",
-        receive_timeout: 30_000
+        first_byte_timeout: 30_000,
+        stream_idle_timeout: 5_000
       }
 
       suffix =
@@ -108,7 +109,8 @@ defmodule Nest.Scripts.CompactionProbeSupportTest do
         base_url: "https://example.test",
         api_key: "key",
         model: "test-model",
-        receive_timeout: 30_000
+        first_byte_timeout: 30_000,
+        stream_idle_timeout: 5_000
       }
 
       parent = self()

@@ -48,7 +48,7 @@ defmodule Nest.Models.MultiModalTest do
         base_url: "http://provider.test",
         api_key: "sk-test-key",
         protocol: "openai",
-        timeout_seconds: 30,
+        first_byte_timeout_seconds: 30,
         probe_multimodal: true
       },
       overrides

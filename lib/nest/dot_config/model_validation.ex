@@ -190,18 +190,22 @@ defmodule Nest.DotConfig.ModelValidation do
   end
 
   @doc """
-  The provider's `timeout` in seconds, or a raise. `nil` means unset.
+  A provider silence bound in seconds, or a raise. `nil` means unset.
 
-  Also called on the write side. The GUI does not expose a timeout field today,
-  so this is the one rule with no live GUI path to it; it is here so the two
-  sides stay defined in one place rather than drifting apart the moment a field
-  is added.
+  Called on both sides: the reader (`Nest.DotConfig.parse_first_byte_timeout/2`,
+  `parse_stream_idle_timeout/2`) and the writer
+  (`NestWeb.LobbyChannel.Providers`), which validates the GUI payload before
+  `Writer.save_providers/1` so a refused save writes nothing. `field` names the
+  key in the error message, because the provider now has two of these bounds and
+  "invalid timeout" would not say which.
   """
-  @spec validate_timeout(term(), String.t() | nil) :: pos_integer() | nil
-  def validate_timeout(nil, _provider_name), do: nil
+  @spec validate_timeout(term(), String.t() | nil, String.t()) :: pos_integer() | nil
+  def validate_timeout(seconds, provider_name, field \\ "timeout")
 
-  def validate_timeout(seconds, provider_name) do
-    FieldValidation.positive_integer(seconds, provider_name, "timeout", " (seconds)")
+  def validate_timeout(nil, _provider_name, _field), do: nil
+
+  def validate_timeout(seconds, provider_name, field) do
+    FieldValidation.positive_integer(seconds, provider_name, field, " (seconds)")
   end
 
   @doc """

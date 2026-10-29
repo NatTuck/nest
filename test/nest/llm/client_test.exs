@@ -1,6 +1,7 @@
 defmodule Nest.LLM.ClientTest do
   use ExUnit.Case, async: true
 
+  alias Nest.DotConfig
   alias Nest.LLM.Client
   alias Nest.LLM.OpenAIClient
 
@@ -168,20 +169,34 @@ defmodule Nest.LLM.ClientTest do
     end
   end
 
-  describe "receive_timeout/1" do
-    test "falls back to a finite default when the provider leaves it unset" do
-      # `ClientConfig.receive_timeout` defaults to nil, which used to become
-      # `:infinity` — unbounded socket read *and* unbounded SSE idle watchdog,
-      # so a silently dropped connection hung the turn forever and no retry
-      # could fire. A missing key is the same `nil` clause.
-      assert Client.receive_timeout(receive_timeout: nil) ==
-               Client.default_receive_timeout_ms()
+  describe "the two silence bounds" do
+    test "both fall back to a finite default when the provider leaves them unset" do
+      # `ClientConfig` fields default to nil, which used to become `:infinity` —
+      # unbounded socket read *and* unbounded SSE watchdog, so a silently dropped
+      # connection hung the turn forever and no retry could fire. A missing key
+      # is the same `nil` clause.
+      assert Client.first_byte_timeout(first_byte_timeout: nil) ==
+               Client.default_first_byte_timeout_ms()
 
-      assert Client.default_receive_timeout_ms() == 600_000
+      assert Client.stream_idle_timeout(stream_idle_timeout: nil) ==
+               Client.default_stream_idle_timeout_ms()
+
+      # The defaults are the config module's, in milliseconds: a long prefill
+      # window and a much tighter post-first-chunk one.
+      assert Client.default_first_byte_timeout_ms() ==
+               DotConfig.default_first_byte_timeout_seconds() * 1_000
+
+      assert Client.default_stream_idle_timeout_ms() ==
+               DotConfig.default_stream_idle_timeout_seconds() * 1_000
+
+      assert Client.default_first_byte_timeout_ms() > Client.default_stream_idle_timeout_ms()
     end
 
     test "an explicit value wins, including :infinity to opt out" do
-      assert Client.receive_timeout(receive_timeout: :infinity) == :infinity
+      assert Client.first_byte_timeout(first_byte_timeout: :infinity) == :infinity
+      assert Client.stream_idle_timeout(stream_idle_timeout: 42) == 42
+      assert Client.first_byte_timeout(first_byte_timeout: 42) == 42
+      assert Client.stream_idle_timeout(stream_idle_timeout: :infinity) == :infinity
     end
   end
 

@@ -69,7 +69,8 @@ defmodule Nest.Persistence.AgentCompaction.Summarizer do
       opts = [
         base_url: config.base_url,
         api_key: config.api_key,
-        receive_timeout: config.receive_timeout
+        first_byte_timeout: config.first_byte_timeout,
+        stream_idle_timeout: config.stream_idle_timeout
       ]
 
       case config.client.run(request, opts) do

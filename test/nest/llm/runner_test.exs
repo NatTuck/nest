@@ -58,6 +58,23 @@ defmodule Nest.LLM.RunnerTest do
       assert Runner.format_error(:something_else) ==
                "Error: :something_else"
     end
+
+    test "names which silence bound fired, and for how long" do
+      # The provider has two bounds now, and they mean opposite things: a
+      # first-byte timeout is a prefill that ran too long (raise the bound),
+      # a stream idle timeout is a connection that died mid-stream (retry).
+      # A bare duration would not say which, so the text does.
+      assert Runner.format_error({:stream_idle_timeout, {:first_byte, 900_000}}) ==
+               "Error: the provider sent nothing for 900000ms (first-byte timeout)"
+
+      assert Runner.format_error({:stream_idle_timeout, {:stream_idle, 120_000}}) ==
+               "Error: the provider sent nothing for 120000ms (stream idle timeout)"
+    end
+
+    test "a timeout event with no bound name still says the provider was silent" do
+      assert Runner.format_error({:stream_idle_timeout, :something_else}) ==
+               "Error: the provider sent nothing; request aborted"
+    end
   end
 
   describe "consume/2 forwards tool-call hooks" do

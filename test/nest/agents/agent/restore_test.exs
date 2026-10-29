@@ -68,7 +68,8 @@ defmodule Nest.Agents.Agent.RestoreTest do
       client: MockClient,
       base_url: "https://test/api",
       api_key: "test-key",
-      receive_timeout: 5_000,
+      first_byte_timeout: 5_000,
+      stream_idle_timeout: 5_000,
       model: "test-model",
       thinking_effort: :high
     }

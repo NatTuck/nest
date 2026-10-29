@@ -93,7 +93,8 @@ defmodule Nest.LLM.Runner do
     [
       base_url: ctx.client_config.base_url,
       api_key: ctx.client_config.api_key,
-      receive_timeout: ctx.client_config.receive_timeout,
+      first_byte_timeout: ctx.client_config.first_byte_timeout,
+      stream_idle_timeout: ctx.client_config.stream_idle_timeout,
       agent_pid: ctx.agent_pid
     ]
   end
@@ -254,15 +255,16 @@ defmodule Nest.LLM.Runner do
     "Error: #{type}#{formatted_body}"
   end
 
-  # The upstream went silent past the provider's receive timeout. Lead
-  # with the human-meaningful duration so the user knows it was a stall,
-  # not a model refusal.
-  def format_error({:stream_idle_timeout, ms}) when is_integer(ms) do
-    "Error: no output from the model for #{div(ms, 1_000)}s; request aborted"
+  # The upstream went silent past one of the provider's two silence bounds.
+  # Lead with the duration *and* name the bound, so the reader knows whether a
+  # slow prefill ran out (first-byte) or a live stream died (stream idle) —
+  # they mean opposite things and the fix differs.
+  def format_error({:stream_idle_timeout, {bound, ms}}) when is_integer(ms) do
+    "Error: the provider sent nothing for #{ms}ms (#{timeout_bound(bound)} timeout)"
   end
 
-  def format_error({:stream_idle_timeout, _ms}) do
-    "Error: no output from the model; request aborted"
+  def format_error({:stream_idle_timeout, _other}) do
+    "Error: the provider sent nothing; request aborted"
   end
 
   # The body ended without a terminator (`[DONE]` / `message_stop` /
@@ -274,6 +276,10 @@ defmodule Nest.LLM.Runner do
   end
 
   def format_error(error), do: "Error: #{inspect(error)}"
+
+  defp timeout_bound(:first_byte), do: "first-byte"
+  defp timeout_bound(:stream_idle), do: "stream idle"
+  defp timeout_bound(_other), do: "unspecified"
 
   @body_truncate_bytes 500
 

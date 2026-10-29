@@ -198,7 +198,8 @@ defmodule Nest.Scripts.CompactionProbeSupport do
       opts = [
         base_url: client_config.base_url,
         api_key: client_config.api_key,
-        receive_timeout: client_config.receive_timeout
+        first_byte_timeout: client_config.first_byte_timeout,
+        stream_idle_timeout: client_config.stream_idle_timeout
       ]
 
       case client_config.client.run(request, opts) do

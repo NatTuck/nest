@@ -47,7 +47,7 @@ defmodule Nest.LLM.MultimodalProbeTest do
         base_url: "http://openai.test",
         api_key: "sk-test-key",
         protocol: "openai",
-        timeout_seconds: 30
+        first_byte_timeout_seconds: 30
       },
       overrides
     )
@@ -204,7 +204,7 @@ defmodule Nest.LLM.MultimodalProbeTest do
           protocol: "anthropic",
           base_url: "https://api.anthropic.com/v1",
           api_key: "sk-ant-key",
-          timeout_seconds: 5
+          first_byte_timeout_seconds: 5
         )
 
       assert MultimodalProbe.probe(p, "claude-vision") == :positive
@@ -413,13 +413,13 @@ defmodule Nest.LLM.MultimodalProbeTest do
       assert MultimodalProbe.probe(provider(base_url: ""), "m") == :unknown
     end
 
-    test "a provider with no API key or timeout -> no auth header, and the probe's own timeout" do
+    test "a provider with no API key or first-byte bound uses the probe's own timeout" do
       Mimic.expect(Req, :post, 1, fn _url, opts ->
         assert opts[:headers] == []
 
-        # `timeout_seconds` can be absent on a provider built from a map (the
-        # lobby channel builds one that way), so the probe's own ceiling stands
-        # in rather than crashing on `nil`.
+        # `first_byte_timeout_seconds` can be absent on a provider built from a
+        # map (the lobby channel builds one that way), so the probe's own
+        # ceiling stands in rather than crashing on `nil`.
         assert opts[:receive_timeout] == 20_000
         assert opts[:connect_options] == [timeout: 20_000]
 
@@ -431,7 +431,7 @@ defmodule Nest.LLM.MultimodalProbeTest do
         failed(404, @rejection_body)
       end)
 
-      unconfigured = provider(api_key: nil, timeout_seconds: nil)
+      unconfigured = provider(api_key: nil, first_byte_timeout_seconds: nil)
 
       assert MultimodalProbe.probe(unconfigured, "m") == :negative
 

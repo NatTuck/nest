@@ -55,9 +55,9 @@ defmodule Nest.LLM.MultimodalProbe do
   ## Cost and latency
 
   Every request carries a short receive/connect timeout (20 s, or the
-  provider's own `timeout_seconds` when smaller) and Req's retries are
-  disabled, because a scan runs this and must never hang startup. A timeout
-  is `:unknown`, never `:negative`.
+  provider's own `first_byte_timeout_seconds` when smaller) and Req's retries
+  are disabled, because a scan runs this and must never hang startup. A
+  timeout is `:unknown`, never `:negative`.
 
   A scan does not, however, wait for a probe. `Nest.Models` runs each
   provider's query under its own Task and caps the *first* broadcast at its
@@ -383,7 +383,7 @@ defmodule Nest.LLM.MultimodalProbe do
   end
 
   defp probe_timeout_ms(provider) do
-    case provider.timeout_seconds do
+    case provider.first_byte_timeout_seconds do
       seconds when is_integer(seconds) and seconds > 0 ->
         min(seconds * 1_000, @probe_timeout_ms)
 

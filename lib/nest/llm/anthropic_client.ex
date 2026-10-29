@@ -23,11 +23,11 @@ defmodule Nest.LLM.AnthropicClient do
 
   @behaviour Nest.LLM.Client
 
+  alias Nest.LLM.AnthropicStream
   alias Nest.LLM.Client
   alias Nest.LLM.GenerationDefaults
   alias Nest.LLM.HttpWorker
   alias Nest.LLM.RunRequest
-  alias Nest.LLM.RunResponse
   alias Nest.LLM.SSE.Parser
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
@@ -47,7 +47,7 @@ defmodule Nest.LLM.AnthropicClient do
   def run(%RunRequest{} = request, opts) do
     url = normalize_endpoint(opts[:base_url], "/v1/messages")
     api_key = Keyword.fetch!(opts, :api_key)
-    timeout = Client.receive_timeout(opts)
+    timeout = Client.first_byte_timeout(opts)
     parent = self()
 
     headers =
@@ -59,7 +59,12 @@ defmodule Nest.LLM.AnthropicClient do
 
     worker = spawn_link(fn -> http_worker(parent, url, headers, request, opts, timeout) end)
 
-    {:ok, consume_sse_from_mailbox(worker: worker, timeout: timeout)}
+    {:ok,
+     consume_sse_from_mailbox(
+       worker: worker,
+       first_byte_timeout: timeout,
+       stream_idle_timeout: Client.stream_idle_timeout(opts)
+     )}
   end
 
   # The HTTP call and the body iteration both run in the worker
@@ -72,7 +77,7 @@ defmodule Nest.LLM.AnthropicClient do
   # uniform event stream. The dispatch logic lives in
   # `Nest.LLM.HttpWorker.handle_response/4`; this function only
   # owns the Anthropic-specific Req options.
-  defp http_worker(parent, url, headers, request, opts, timeout) do
+  defp http_worker(parent, url, headers, request, opts, first_byte_timeout) do
     ctx = HttpWorker.context(url, request.model, request.messages, opts)
 
     result =
@@ -81,7 +86,7 @@ defmodule Nest.LLM.AnthropicClient do
         [
           headers: headers,
           json: format_request_payload(request, opts),
-          receive_timeout: timeout,
+          receive_timeout: first_byte_timeout,
           into: :self,
           http_errors: :return
         ] ++ HttpWorker.retry_opts(opts)
@@ -104,11 +109,16 @@ defmodule Nest.LLM.AnthropicClient do
   # The stream terminates with a single `{:done, %{response: _}}`
   # event carrying the accumulated response state, or with an
   # `{:error, _}` event when the connection was dropped or stalled.
+  #
+  # Options: `:worker` (the socket-reading pid to kill on a stall),
+  # `:first_byte_timeout` (ms of allowed silence before the first chunk) and
+  # `:stream_idle_timeout` (ms of allowed silence between chunks). Both default
+  # to `:infinity`, which disables the watchdog.
   @doc false
   @spec consume_sse_from_mailbox(keyword()) :: Enumerable.t()
   def consume_sse_from_mailbox(opts \\ []) do
     Stream.resource(
-      fn -> {Parser.new(), false, initial_state(opts)} end,
+      fn -> {Parser.new(), false, AnthropicStream.new(opts)} end,
       &next_chunk_or_halt/1,
       fn _ -> :ok end
     )
@@ -133,16 +143,16 @@ defmodule Nest.LLM.AnthropicClient do
       {:stop_chat, from} ->
         handle_stop_chat(parser, state, from)
     after
-      state.watchdog -> timeout_result(parser, state)
+      HttpWorker.watchdog_ms(state) -> timeout_result(parser, state)
     end
   end
 
   defp handle_req_chunk(parser, chunk, state) do
     {frames, parser} = Parser.feed(parser, chunk)
-    {events, state} = frames_to_canonical_events(frames, state)
+    {events, state} = AnthropicStream.frames_to_events(frames, state)
+    error_seen = state.error_seen or Enum.any?(events, &match?({:error, _}, &1))
 
-    state = %{state | error_seen: state.error_seen or Enum.any?(events, &match?({:error, _}, &1))}
-    {events, {parser, false, state}}
+    {events, {parser, false, %{state | had_chunk: true, error_seen: error_seen}}}
   end
 
   # The body ended. A response is complete only when Anthropic sent a
@@ -155,13 +165,17 @@ defmodule Nest.LLM.AnthropicClient do
     {events, final_state} = flush_and_finish(parser, state)
 
     error_here? = final_state.error_seen or Enum.any?(events, &match?({:error, _}, &1))
-    complete? = final_state.terminator or not is_nil(final_state.stop_reason)
 
     events =
       cond do
-        error_here? -> events
-        complete? -> events ++ [{:done, %{response: build_done_response(final_state)}}]
-        true -> events ++ [{:error, {:stream_incomplete, :no_terminator}}]
+        error_here? ->
+          events
+
+        AnthropicStream.complete?(final_state) ->
+          events ++ [{:done, %{response: AnthropicStream.done_response(final_state)}}]
+
+        true ->
+          events ++ [{:error, {:stream_incomplete, :no_terminator}}]
       end
 
     {events, {parser, true, final_state}}
@@ -173,18 +187,19 @@ defmodule Nest.LLM.AnthropicClient do
     {:halt, {parser, true, state}}
   end
 
-  # The upstream went silent for longer than the provider's
-  # `receive_timeout`. Abandon the socket (kill the worker) and
-  # surface a concrete error so the agent can finalize.
+  # The upstream went silent past whichever bound applies: the first-byte
+  # bound if no chunk has arrived yet (a prefill that ran too long), the
+  # stream idle bound once streaming. Abandon the socket (kill the worker)
+  # and surface a concrete error so the agent can finalize.
   defp timeout_result(parser, state) do
     HttpWorker.kill_worker(state.worker)
-    event = {:error, {:stream_idle_timeout, state.idle_timeout}}
+    event = {:error, HttpWorker.timeout_event(state)}
     {[event], {parser, true, %{state | error_seen: true}}}
   end
 
   defp flush_and_finish(parser, state) do
     {frames, _} = Parser.flush(parser)
-    frames_to_canonical_events(frames, state)
+    AnthropicStream.frames_to_events(frames, state)
   end
 
   @impl Nest.LLM.Client
@@ -498,187 +513,6 @@ defmodule Nest.LLM.AnthropicClient do
   # this is a defensive fallback for malformed data.
   defp part_to_text(%Part.Text{text: text}), do: text
   defp part_to_text(other), do: inspect(other)
-
-  defp initial_state(opts) do
-    timeout = Keyword.get(opts, :timeout, :infinity)
-
-    %{
-      model: nil,
-      message_id: nil,
-      stop_reason: nil,
-      terminator: false,
-      error_seen: false,
-      input_tokens: 0,
-      output_tokens: 0,
-      cache_read_input_tokens: 0,
-      cache_creation_input_tokens: 0,
-      worker: Keyword.get(opts, :worker),
-      idle_timeout: timeout,
-      watchdog: HttpWorker.watchdog_ms(timeout)
-    }
-  end
-
-  defp build_done_response(state) do
-    %RunResponse{
-      model: state.model,
-      stop_reason: state.stop_reason,
-      usage: build_usage(state)
-    }
-  end
-
-  defp build_usage(state) do
-    %{
-      input_tokens: state.input_tokens,
-      output_tokens: state.output_tokens,
-      cache_read_input_tokens: state.cache_read_input_tokens,
-      cache_creation_input_tokens: state.cache_creation_input_tokens,
-      total_tokens: state.input_tokens + state.output_tokens
-    }
-  end
-
-  defp frames_to_canonical_events(frames, state) do
-    Enum.flat_map_reduce(frames, state, fn frame, state -> frame_to_events(frame, state) end)
-  end
-
-  defp frame_to_events({:event, "message_start", data}, state) do
-    case Jason.decode(data) do
-      {:ok, %{"message" => msg}} when is_map(msg) ->
-        state =
-          state
-          |> put_field(:model, msg["model"])
-          |> put_field(:message_id, msg["id"])
-          |> put_field(:input_tokens, get_in(msg, ["usage", "input_tokens"]) || 0)
-          |> put_field(
-            :cache_read_input_tokens,
-            get_in(msg, ["usage", "cache_read_input_tokens"]) || 0
-          )
-          |> put_field(
-            :cache_creation_input_tokens,
-            get_in(msg, ["usage", "cache_creation_input_tokens"]) || 0
-          )
-
-        {[], state}
-
-      _ ->
-        {[], state}
-    end
-  end
-
-  defp frame_to_events({:event, "content_block_start", data}, state) do
-    case Jason.decode(data) do
-      {:ok, %{"content_block" => %{"type" => "tool_use"} = block, "index" => idx}} ->
-        {[
-           {:tool_call_start, %{id: block["id"], name: block["name"], index: idx}}
-         ], state}
-
-      {:ok, %{"content_block" => %{"type" => "thinking", "signature" => sig}}}
-      when is_binary(sig) ->
-        {[
-           {:thinking_signature, sig}
-         ], state}
-
-      _ ->
-        {[], state}
-    end
-  end
-
-  defp frame_to_events({:event, "content_block_delta", data}, state) do
-    case Jason.decode(data) do
-      {:ok, %{"delta" => %{"type" => "text_delta", "text" => text}}} ->
-        {[{:text, text}], state}
-
-      {:ok, %{"delta" => %{"type" => "thinking_delta", "thinking" => text}}} ->
-        {[{:thinking, text}], state}
-
-      {:ok, %{"delta" => %{"type" => "signature_delta", "signature" => sig}}} ->
-        {[
-           {:thinking_signature, sig}
-         ], state}
-
-      {:ok, %{"delta" => %{"type" => "input_json_delta", "partial_json" => json}, "index" => idx}} ->
-        {[
-           {:tool_call_delta, %{id: :by_index, index: idx, arguments_delta: json}}
-         ], state}
-
-      _ ->
-        {[], state}
-    end
-  end
-
-  defp frame_to_events({:event, "message_delta", data}, state) do
-    decoded = Jason.decode(data)
-    usage = usage_from_decoded(decoded)
-
-    {state, events} = apply_stop_reason(state, decoded)
-    state = apply_usage_field(state, usage, :output_tokens)
-    state = apply_usage_field(state, usage, :cache_read_input_tokens)
-    state = apply_usage_field(state, usage, :cache_creation_input_tokens)
-
-    {events, state}
-  end
-
-  # The canonical end-of-message terminator. Its absence (with no
-  # `stop_reason` either) is how `handle_req_done/2` detects a dropped
-  # connection.
-  defp frame_to_events({:event, "message_stop", _data}, state) do
-    {[], %{state | terminator: true}}
-  end
-
-  defp frame_to_events({:event, "error", data}, state) do
-    error =
-      case Jason.decode(data) do
-        {:ok, %{"error" => error_type, "status" => status, "body" => body}}
-        when is_integer(status) ->
-          {error_type, status, body}
-
-        # Transport failures (connection reset, Finch timeout, etc.)
-        # carry a nil status and the inspected reason in `body`. Tag
-        # them `:transport` so `Runner.format_error/1` renders the
-        # reason instead of the bare SSE error type.
-        {:ok, %{"error" => error_type, "status" => nil, "body" => body}} ->
-          {error_type, :transport, body}
-
-        {:ok, %{"error" => error}} ->
-          error
-
-        _ ->
-          data
-      end
-
-    {[{:error, error}], %{state | error_seen: true}}
-  end
-
-  defp frame_to_events(_other, state), do: {[], state}
-
-  defp apply_stop_reason(state, {:ok, %{"delta" => %{"stop_reason" => reason}}})
-       when not is_nil(reason) do
-    {put_field(state, :stop_reason, reason), [{:finish_reason, reason}]}
-  end
-
-  defp apply_stop_reason(state, _), do: {state, []}
-
-  defp usage_from_decoded({:ok, %{"usage" => usage}}) when is_map(usage), do: usage
-  defp usage_from_decoded(_), do: %{}
-
-  # The final `message_delta.usage` block is the authoritative
-  # source for the cache fields — it carries the up-to-date
-  # `cache_read_input_tokens` and `cache_creation_input_tokens`
-  # totals for the completed request. Override the
-  # `message_start` values when present; leave the prior
-  # values in place when the API didn't report the field on
-  # this delta.
-  #
-  # `usage` is a JSON map with string keys; the state struct
-  # uses atom keys. We look up by string and write the value
-  # into the state by atom.
-  defp apply_usage_field(state, usage, key) do
-    case Map.get(usage, Atom.to_string(key)) do
-      n when is_integer(n) -> put_field(state, key, n)
-      _ -> state
-    end
-  end
-
-  defp put_field(state, key, value), do: Map.put(state, key, value)
 
   @doc false
   def normalize_endpoint(base_url, endpoint) do

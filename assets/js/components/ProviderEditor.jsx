@@ -5,7 +5,13 @@
  * `onChange`; the page owns the list and the Save action.
  */
 
-import { emptyModel, PROTOCOLS, THINKING_LEVELS } from "./providerConstants";
+import {
+  DEFAULT_FIRST_BYTE_TIMEOUT_SECONDS,
+  DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
+  emptyModel,
+  PROTOCOLS,
+  THINKING_LEVELS,
+} from "./providerConstants";
 import { ProviderModelRow } from "./ProviderModelRow";
 
 function Field({ label, children }) {
@@ -144,6 +150,40 @@ export function ProviderEditor({ provider, onChange, onRemove }) {
             onChange={(e) => set("probe_base_url", e.target.value || null)}
             className={inputCls}
             aria-label="Probe base URL"
+          />
+        </Field>
+        <Field label="First Byte Timeout (seconds)">
+          <input
+            type="number"
+            min="1"
+            step="1"
+            value={provider.first_byte_timeout_seconds ?? ""}
+            onChange={(e) =>
+              set(
+                "first_byte_timeout_seconds",
+                e.target.value ? Number(e.target.value) : null,
+              )
+            }
+            placeholder={`${DEFAULT_FIRST_BYTE_TIMEOUT_SECONDS} (default)`}
+            className={inputCls}
+            aria-label="First byte timeout"
+          />
+        </Field>
+        <Field label="Stream Idle Timeout (seconds)">
+          <input
+            type="number"
+            min="1"
+            step="1"
+            value={provider.stream_idle_timeout_seconds ?? ""}
+            onChange={(e) =>
+              set(
+                "stream_idle_timeout_seconds",
+                e.target.value ? Number(e.target.value) : null,
+              )
+            }
+            placeholder={`${DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS} (default)`}
+            className={inputCls}
+            aria-label="Stream idle timeout"
           />
         </Field>
       </div>

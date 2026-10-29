@@ -100,7 +100,7 @@ defmodule Nest.Agents.AgentStreamErrorTest do
     end
 
     test "an error with no streamed content produces an error-only message" do
-      MockClient.set_error({:stream_idle_timeout, 300_000})
+      MockClient.set_error({:stream_idle_timeout, {:first_byte, 900_000}})
 
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
@@ -117,7 +117,7 @@ defmodule Nest.Agents.AgentStreamErrorTest do
                               metadata: %{"error" => true}
                             }}}
 
-          assert text =~ "no output from the model for 300s"
+          assert text =~ "the provider sent nothing for 900000ms (first-byte timeout)"
         end)
 
       assert log =~ "chat:error"
