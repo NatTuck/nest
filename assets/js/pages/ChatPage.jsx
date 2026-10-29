@@ -44,6 +44,7 @@ import { buildChatHistory } from "../utils/chatHistory.js";
 import { describeEditError, getStatusLabel } from "../utils/chatErrors.js";
 import { errorText } from "../utils/errorText";
 import { parseSlashCommand, SLASH_COMMANDS } from "../utils/slashCommands.js";
+import { runningJobCount } from "../utils/shellJobs.js";
 
 // Stable empty fallbacks so selector return values are
 // reference-stable across renders when the underlying slice
@@ -524,7 +525,7 @@ export function ChatPage() {
           spaceId={spaceId}
           spaceName={space?.name}
           tab={tab}
-          jobCount={jobs.length}
+          jobCount={runningJobCount(jobs)}
           onSelectTab={setTab}
           onModelPickerOpen={() => setModelPickerOpen(true)}
           onRetry={handleRetry}

@@ -43,8 +43,8 @@ defmodule Nest.Sandbox.ShellJobs do
   their agent dies — the manager monitors the agent pid and drops the agent's
   jobs on its `:DOWN` — or when a caller invokes `stop_all/1`/
   `stop_all_async/2`. A drop also removes the agent's scratch directory, after
-  the jobs are stopped. Finished jobs are kept (bounded) for
-  `shell-wait`/`shell-list`.
+  the jobs are stopped. Finished jobs are kept (bounded) so `shell-wait` can
+  still answer for one — `shell-list` lists only what is running (#181).
 
   Listing and killing are the two space-scoped operations: `list_space/1` and
   `kill_space/2` reach every job belonging to any agent in one space, so a
@@ -187,8 +187,8 @@ defmodule Nest.Sandbox.ShellJobs do
   sidebar shows after each agent's name, and `0` for a name it does not mention.
 
   One call per space rather than one per agent: the lobby's `init` annotates
-  every row of a space at once. Finished jobs are kept for
-  `shell-list`/`shell-wait`, so they are not live and do not count.
+  every row of a space at once. Finished jobs are kept for `shell-wait`, so
+  they are not live and do not count.
   """
   @spec running_counts(term()) :: %{String.t() => non_neg_integer()}
   def running_counts(space_id), do: space_id |> list_space() |> Info.running_counts()
@@ -322,8 +322,8 @@ defmodule Nest.Sandbox.ShellJobs do
   Whether any *running* job belongs to space `space_id` — the question
   `Nest.Agents.TmpSweeper` asks before removing a space's scratch directory.
 
-  Finished jobs are kept for `shell-wait`/`shell-list`, so they are not live and
-  do not count; `false` when nothing is tracked. A foreground `shell-cmd` is a job
+  Finished jobs are kept for `shell-wait`, so they are not live and do not
+  count; `false` when nothing is tracked. A foreground `shell-cmd` is a job
   too while it runs (#174), so a call in flight keeps its space live — which is
   what its own scratch directory needs.
   """

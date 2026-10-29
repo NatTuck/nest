@@ -89,8 +89,9 @@ defmodule Nest.Sandbox.ShellJobs.Info do
   @doc """
   How many of `jobs` are still running (#175).
 
-  Finished jobs are kept for `shell-list`/`shell-wait`, so they are not live and
-  do not count. This is the number the sidebar shows after an agent's name.
+  Finished jobs are kept for `shell-wait`, so they are not live and do not
+  count. This is the number the sidebar shows after an agent's name, and the
+  jobs tab counts the same way (#181).
   """
   @spec running_count([t()]) :: non_neg_integer()
   def running_count(jobs), do: Enum.count(jobs, &(&1.status == :running))

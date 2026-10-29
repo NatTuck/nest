@@ -10,7 +10,9 @@ import { render, screen, act, fireEvent, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 
 import { Sidebar } from "./Sidebar";
+import { ChatTabs, CHAT_TAB } from "./ChatTabs";
 import { useStore } from "../store";
+import { runningJobCount } from "../utils/shellJobs";
 import { joinLobby } from "../channels";
 import {
   resetMockSocket,
@@ -1023,6 +1025,49 @@ describe("Sidebar tree", () => {
     expect(
       screen.queryByLabelText("0 shell jobs running"),
     ).not.toBeInTheDocument();
+  });
+
+  it("counts the same running jobs as the agent's jobs tab (#181)", () => {
+    // One state: one running job and three finished ones. The badge's number
+    // comes from the server (`Info.running_count/1`, over the same list) and the
+    // tab's from the cache, so both have to count the running jobs only — a tab
+    // that counted the whole list would read `(4)` here.
+    const jobs = [
+      { id: "job-1", status: "running" },
+      { id: "job-2", status: "exited" },
+      { id: "job-3", status: "exited" },
+      { id: "job-4", status: "exited" },
+    ];
+
+    act(() => {
+      withStore([
+        {
+          name: "busy",
+          parentId: null,
+          parentName: null,
+          depth: 0,
+          runningJobs: runningJobCount(jobs),
+        },
+      ]);
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+        <ChatTabs
+          active={CHAT_TAB}
+          onSelect={() => {}}
+          jobCount={runningJobCount(jobs)}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(
+      within(screen.getByTitle("1 shell job running")).getByText("(1)"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: "Shell jobs (1)" }),
+    ).toBeInTheDocument();
   });
 
   it("treats an agent whose parentName doesn't resolve as a root", () => {
