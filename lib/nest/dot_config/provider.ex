@@ -9,18 +9,19 @@ defmodule Nest.DotConfig.Provider do
     * `first_byte_timeout_seconds` bounds the silence *before the first
       streamed chunk* — prefill of a long context after a cache miss, a cold
       model, provider-side queueing. Defaults to
-      `Nest.DotConfig.@default_first_byte_timeout_seconds` (900s = 15
+      `Nest.DotConfig.default_first_byte_timeout_seconds/0` (900s = 15
       minutes) when not set in the config file.
     * `stream_idle_timeout_seconds` bounds the silence *between chunks once
       streaming*. Defaults to
-      `Nest.DotConfig.@default_stream_idle_timeout_seconds` (120s = 2
+      `Nest.DotConfig.default_stream_idle_timeout_seconds/0` (120s = 2
       minutes) when not set.
 
   The old `timeout` key is a back-compat alias for `first_byte_timeout`: an
   existing `timeout = 600` keeps meaning "the prefill may take 10 minutes",
   and does *not* become the idle bound (which would make every dead-connection
   failure take 10 minutes to notice). `first_byte_timeout` wins when both keys
-  are present.
+  are present, and the parse logs a warning naming the key in force — the one
+  case where the file says something the app does not do.
 
   `default_context_limit` is the optional provider-wide fallback for
   `context-window` size, used when neither the per-model
@@ -73,16 +74,5 @@ defmodule Nest.DotConfig.Provider do
     :expose_models,
     probe_multimodal: false,
     auto_probe: true
-  ]
-end
-
-defmodule Nest.DotConfig.Model do
-  @moduledoc "Model configuration struct"
-  defstruct [
-    :name,
-    :provider_name,
-    :context_limit,
-    :multi_modal,
-    :thinking_effort
   ]
 end

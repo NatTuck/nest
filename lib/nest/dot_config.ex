@@ -10,6 +10,8 @@ defmodule Nest.DotConfig do
   alias Nest.DotConfig.Provider
   alias Nest.ParseCache
 
+  require Logger
+
   @config_dir :filename.basedir(:user_config, "nest")
   @config_file Path.join(@config_dir, "config.toml")
 
@@ -555,16 +557,40 @@ defmodule Nest.DotConfig do
   # bound — an existing `timeout = 600` must not make every dead connection take
   # ten minutes to notice.
   defp parse_first_byte_timeout(data, provider_name) do
-    case Map.get(data, "first_byte_timeout") do
-      nil ->
-        case Map.get(data, "timeout") do
-          nil -> @default_first_byte_timeout_seconds
-          seconds -> ModelValidation.validate_timeout(seconds, provider_name)
-        end
+    case {Map.get(data, "first_byte_timeout"), Map.get(data, "timeout")} do
+      {nil, nil} ->
+        @default_first_byte_timeout_seconds
 
-      seconds ->
+      {nil, seconds} ->
+        ModelValidation.validate_timeout(seconds, provider_name)
+
+      {seconds, nil} ->
         ModelValidation.validate_timeout(seconds, provider_name, "first_byte_timeout")
+
+      {seconds, legacy} ->
+        first_byte =
+          ModelValidation.validate_timeout(seconds, provider_name, "first_byte_timeout")
+
+        warn_both_first_byte_keys(provider_name, first_byte, legacy)
+        first_byte
     end
+  end
+
+  # Both keys set is not an error — `first_byte_timeout` wins, as documented —
+  # but it is the one case where an operator's config says something the app
+  # does not do, so it is said out loud once: here, in the parse, and not on a
+  # read, because `Nest.ParseCache` keeps the parsed config and a reload of
+  # unchanged bytes never re-parses.
+  #
+  # The ignored value is `inspect`ed rather than assumed to be a number: a
+  # `timeout` that is not one is exactly the case where the operator needs to be
+  # told which key the app believed.
+  defp warn_both_first_byte_keys(provider_name, first_byte, legacy) do
+    Logger.warning(
+      "Provider #{provider_name}: both `timeout` (#{inspect(legacy)}) and " <>
+        "`first_byte_timeout` (#{first_byte}s) are set; `first_byte_timeout` is in " <>
+        "force and `timeout` is ignored. Remove `timeout` to silence this."
+    )
   end
 
   # Parses and validates the provider's stream-idle bound (seconds). Returns the
