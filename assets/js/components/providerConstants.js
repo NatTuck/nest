@@ -8,6 +8,17 @@ export const THINKING_LEVELS = ["off", "low", "medium", "high", "xhigh"];
 export const PROTOCOLS = ["openai", "anthropic"];
 
 /**
+ * The two per-provider silence bounds, in seconds, that
+ * `Nest.DotConfig` uses when a provider sets neither. Shown as the
+ * placeholders of the editor's timeout inputs so an operator sees
+ * what leaving a field blank means. The numbers must match
+ * `@default_first_byte_timeout_seconds` and
+ * `@default_stream_idle_timeout_seconds` in `lib/nest/dot_config.ex`.
+ */
+export const DEFAULT_FIRST_BYTE_TIMEOUT_SECONDS = 900;
+export const DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS = 120;
+
+/**
  * Generate a stable client-side id used only as a React key for list
  * items (providers/models). It never leaves the browser — `id` is
  * stripped from the save payload before it's sent to the server.
@@ -35,7 +46,8 @@ export function emptyProvider() {
     protocol: "openai",
     auto_models: false,
     tags: [],
-    timeout_seconds: null,
+    first_byte_timeout_seconds: null,
+    stream_idle_timeout_seconds: null,
     default_context_limit: null,
     default_thinking_effort: null,
     probe_base_url: null,

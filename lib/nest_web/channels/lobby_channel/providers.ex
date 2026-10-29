@@ -89,7 +89,8 @@ defmodule NestWeb.LobbyChannel.Providers do
       "protocol" => p.protocol,
       "auto_models" => p.auto_models,
       "tags" => p.tags || [],
-      "timeout_seconds" => p.timeout_seconds,
+      "first_byte_timeout_seconds" => p.first_byte_timeout_seconds,
+      "stream_idle_timeout_seconds" => p.stream_idle_timeout_seconds,
       "default_context_limit" => p.default_context_limit,
       "default_thinking_effort" => effort_to_string(p.default_thinking_effort),
       "probe_base_url" => p.probe_base_url,
@@ -138,8 +139,11 @@ defmodule NestWeb.LobbyChannel.Providers do
   #     `step="1"`, but that is a courtesy only: there is no enclosing `<form>`
   #     and nothing calls `checkValidity()`, so the attribute does not stop the
   #     value from being submitted. The refusal here is the guarantee.
-  #   * `timeout_seconds` — no GUI field today; kept here so the two sides stay
-  #     defined in one place rather than drifting apart when one is added.
+  #   * `first_byte_timeout_seconds` / `stream_idle_timeout_seconds` — two
+  #     `type="number"` inputs, so a typed `0` arrives as `0` (the string `"0"`
+  #     is truthy, so the `? … : null` guard does not catch it) and `min="1"` is
+  #     a courtesy, exactly as for `default_context_limit`. The reader raises on
+  #     anything that is not a positive integer, so the write side must too.
   #   * `tags` — preserved by the GUI, so a malformed list can arrive from a
   #     client that built one itself.
   #   * `base_url` — a text field that sends the raw string, so a cleared field
@@ -158,7 +162,10 @@ defmodule NestWeb.LobbyChannel.Providers do
     %{
       base_url: base_url(m["base_url"], name),
       tags: tags(m["tags"], name),
-      timeout_seconds: timeout_seconds(m["timeout_seconds"], name),
+      first_byte_timeout_seconds:
+        timeout_seconds(m["first_byte_timeout_seconds"], name, "first_byte_timeout_seconds"),
+      stream_idle_timeout_seconds:
+        timeout_seconds(m["stream_idle_timeout_seconds"], name, "stream_idle_timeout_seconds"),
       default_context_limit: default_context_limit(m["default_context_limit"], name),
       default_thinking_effort: parse_effort(m["default_thinking_effort"]),
       probe_base_url: probe_base_url(m["probe_base_url"], name),
@@ -269,10 +276,16 @@ defmodule NestWeb.LobbyChannel.Providers do
     ModelValidation.validate_default_context_limit(limit, provider_name)
   end
 
-  defp timeout_seconds(nil, _provider_name), do: nil
+  # Both of the provider's silence bounds, validated by the same rule the reader
+  # uses. `nil` (the GUI's blank field) means "omit the key", so the provider
+  # keeps `Nest.DotConfig`'s default; anything else must be a positive integer.
+  # `field` names the payload key in the error message because there are two of
+  # these now, and "invalid timeout" would not say which one the operator has to
+  # fix.
+  defp timeout_seconds(nil, _provider_name, _field), do: nil
 
-  defp timeout_seconds(seconds, provider_name) do
-    ModelValidation.validate_timeout(seconds, provider_name)
+  defp timeout_seconds(seconds, provider_name, field) do
+    ModelValidation.validate_timeout(seconds, provider_name, field)
   end
 
   defp tags(nil, _provider_name), do: []

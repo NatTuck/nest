@@ -421,6 +421,23 @@ describe("ChatPage background jobs tab", () => {
     expect(screen.queryByText("Loading conversation...")).toBeNull();
   });
 
+  it("counts only the running jobs on the jobs tab (#181)", () => {
+    // One state, four jobs: the tab's number is what is live. The three
+    // finished jobs are still in the panel, behind its collapsed row — the
+    // split is a rendering concern, not a smaller payload.
+    mockAgentsCache["test-agent"].jobs = [
+      job,
+      { ...job, id: "job-2", status: "exited", exit_code: 0 },
+      { ...job, id: "job-3", status: "exited", exit_code: 1 },
+      { ...job, id: "job-4", status: "exited", exit_code: 0, killed: true },
+    ];
+    renderChat();
+
+    expect(
+      screen.getByRole("tab", { name: "Shell jobs (1)" }),
+    ).toBeInTheDocument();
+  });
+
   it("shows an empty state on the jobs tab when there are no jobs", () => {
     mockAgentsCache["test-agent"].jobs = [];
     renderChat();

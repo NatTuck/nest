@@ -35,7 +35,8 @@ defmodule Nest.DotConfig.WriterTest do
           protocol: "openai",
           auto_models: false,
           tags: ["primary"],
-          timeout_seconds: 120,
+          first_byte_timeout_seconds: 120,
+          stream_idle_timeout_seconds: 45,
           default_context_limit: 200_000,
           default_thinking_effort: :high,
           probe_base_url: "https://probe.example/v1",
@@ -62,7 +63,8 @@ defmodule Nest.DotConfig.WriterTest do
       assert provider.protocol == "openai"
       assert provider.auto_models == false
       assert provider.tags == ["primary"]
-      assert provider.timeout_seconds == 120
+      assert provider.first_byte_timeout_seconds == 120
+      assert provider.stream_idle_timeout_seconds == 45
       assert provider.default_context_limit == 200_000
       assert provider.default_thinking_effort == :high
       assert provider.probe_base_url == "https://probe.example/v1"

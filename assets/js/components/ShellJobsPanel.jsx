@@ -7,12 +7,18 @@
  * refresh actions, and an expandable log viewer. Renders nothing when there
  * are no jobs (there is nothing the agent did to show).
  *
+ * Only the running jobs are shown up front (#181): a finished job is a
+ * transcript entry, and a tail of them pushed the live one off the top. They
+ * are collapsed behind one `▸ N finished` row rather than hidden — expanding
+ * it shows the same rows, with the same log viewer.
+ *
  * `showTitle` is turned off when the panel is embedded in the chat
  * page's jobs tab, where the tab label already carries the title and
  * the job count; the refresh action stays.
  */
 
 import { useEffect, useState } from "react";
+import { finishedJobs, runningJobs } from "../utils/shellJobs";
 
 function statusLabel(job) {
   if (job.status === "running") return "running";
@@ -26,6 +32,55 @@ function statusColor(job) {
   return job.exit_code === 0 ? "text-green-700" : "text-red-700";
 }
 
+function JobRow({ job, open, log, logError, onToggleLog, onKill }) {
+  return (
+    <li className="px-3 py-2 text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <span className={`font-medium ${statusColor(job)}`}>
+            {statusLabel(job)}
+          </span>
+          <span className="ml-2 font-mono text-xs text-gray-500">{job.id}</span>
+          <span className="ml-2 break-all font-mono text-xs text-gray-800">
+            {job.command}
+          </span>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onToggleLog(job.id)}
+            className="rounded px-2 py-0.5 text-xs text-blue-600 hover:bg-blue-50"
+          >
+            {open ? "Hide log" : "View log"}
+          </button>
+          {job.status === "running" && (
+            <button
+              type="button"
+              onClick={() => onKill(job.id)}
+              className="rounded px-2 py-0.5 text-xs text-red-600 hover:bg-red-50"
+            >
+              Kill
+            </button>
+          )}
+        </div>
+      </div>
+      {open && (
+        <div className="mt-2">
+          {logError ? (
+            <p className="text-xs text-red-600">{logError}</p>
+          ) : log === null ? (
+            <p className="text-xs text-gray-500">Loading log…</p>
+          ) : (
+            <pre className="max-h-48 overflow-auto rounded bg-white p-2 text-xs whitespace-pre-wrap">
+              {log || "[no output]"}
+            </pre>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
 export function ShellJobsPanel({
   jobs = [],
   onKill,
@@ -37,6 +92,7 @@ export function ShellJobsPanel({
   const [log, setLog] = useState(null);
   const [logError, setLogError] = useState(null);
   const [actionError, setActionError] = useState(null);
+  const [showFinished, setShowFinished] = useState(false);
 
   // When the job whose log is open disappears (trimmed, killed, agent
   // stopped), drop the now-dangling viewer state.
@@ -49,6 +105,9 @@ export function ShellJobsPanel({
   }, [jobs, openId]);
 
   if (jobs.length === 0) return null;
+
+  const running = runningJobs(jobs);
+  const finished = finishedJobs(jobs);
 
   const toggleLog = (id) => {
     if (openId === id) {
@@ -81,6 +140,18 @@ export function ShellJobsPanel({
     );
   };
 
+  const row = (job) => (
+    <JobRow
+      key={job.id}
+      job={job}
+      open={openId === job.id}
+      log={log}
+      logError={logError}
+      onToggleLog={toggleLog}
+      onKill={handleKill}
+    />
+  );
+
   return (
     <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50">
       <div
@@ -90,7 +161,7 @@ export function ShellJobsPanel({
       >
         {showTitle && (
           <span className="text-sm font-medium text-gray-700">
-            Shell jobs ({jobs.length})
+            Shell jobs ({running.length})
           </span>
         )}
         <button
@@ -105,54 +176,20 @@ export function ShellJobsPanel({
         <p className="px-3 pb-2 text-xs text-red-600">{actionError}</p>
       )}
       <ul className="divide-y divide-gray-200">
-        {jobs.map((job) => (
-          <li key={job.id} className="px-3 py-2 text-sm">
-            <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0">
-                <span className={`font-medium ${statusColor(job)}`}>
-                  {statusLabel(job)}
-                </span>
-                <span className="ml-2 font-mono text-xs text-gray-500">
-                  {job.id}
-                </span>
-                <span className="ml-2 break-all font-mono text-xs text-gray-800">
-                  {job.command}
-                </span>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => toggleLog(job.id)}
-                  className="rounded px-2 py-0.5 text-xs text-blue-600 hover:bg-blue-50"
-                >
-                  {openId === job.id ? "Hide log" : "View log"}
-                </button>
-                {job.status === "running" && (
-                  <button
-                    type="button"
-                    onClick={() => handleKill(job.id)}
-                    className="rounded px-2 py-0.5 text-xs text-red-600 hover:bg-red-50"
-                  >
-                    Kill
-                  </button>
-                )}
-              </div>
-            </div>
-            {openId === job.id && (
-              <div className="mt-2">
-                {logError ? (
-                  <p className="text-xs text-red-600">{logError}</p>
-                ) : log === null ? (
-                  <p className="text-xs text-gray-500">Loading log…</p>
-                ) : (
-                  <pre className="max-h-48 overflow-auto rounded bg-white p-2 text-xs whitespace-pre-wrap">
-                    {log || "[no output]"}
-                  </pre>
-                )}
-              </div>
-            )}
+        {running.map(row)}
+        {finished.length > 0 && (
+          <li className="px-3 py-1.5">
+            <button
+              type="button"
+              onClick={() => setShowFinished((shown) => !shown)}
+              aria-expanded={showFinished}
+              className="w-full rounded text-left text-xs font-medium text-gray-600 hover:text-gray-900"
+            >
+              {showFinished ? "▾" : "▸"} {finished.length} finished
+            </button>
           </li>
-        ))}
+        )}
+        {showFinished && finished.map(row)}
       </ul>
     </div>
   );

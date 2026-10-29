@@ -36,12 +36,18 @@ defmodule Nest.LLM.OpenAIClient do
   def run(%RunRequest{} = request, opts) do
     url = normalize_endpoint(opts[:base_url], "/chat/completions")
     api_key = Keyword.fetch!(opts, :api_key)
-    timeout = Client.receive_timeout(opts)
+    first_byte_timeout = Client.first_byte_timeout(opts)
     parent = self()
 
-    worker = spawn_link(fn -> http_worker(parent, url, api_key, request, opts, timeout) end)
+    worker =
+      spawn_link(fn -> http_worker(parent, url, api_key, request, opts, first_byte_timeout) end)
 
-    {:ok, consume_sse_from_mailbox(worker: worker, timeout: timeout)}
+    {:ok,
+     consume_sse_from_mailbox(
+       worker: worker,
+       first_byte_timeout: first_byte_timeout,
+       stream_idle_timeout: Client.stream_idle_timeout(opts)
+     )}
   end
 
   # The HTTP call and the body iteration both run in the worker
@@ -54,7 +60,7 @@ defmodule Nest.LLM.OpenAIClient do
   # uniform event stream. The dispatch logic lives in
   # `Nest.LLM.HttpWorker.handle_response/4`; this function only
   # owns the OpenAI-specific Req options.
-  defp http_worker(parent, url, api_key, request, opts, timeout) do
+  defp http_worker(parent, url, api_key, request, opts, first_byte_timeout) do
     ctx = HttpWorker.context(url, request.model, request.messages, opts)
 
     result =
@@ -62,7 +68,7 @@ defmodule Nest.LLM.OpenAIClient do
         url,
         [
           json: build_payload(request, opts),
-          receive_timeout: timeout,
+          receive_timeout: first_byte_timeout,
           into: :self,
           http_errors: :return
         ] ++ Client.bearer_auth_opts(api_key) ++ HttpWorker.retry_opts(opts)
@@ -287,6 +293,11 @@ defmodule Nest.LLM.OpenAIClient do
   # consumer's process and pulls from that mailbox, so the
   # consumer can stop early (e.g. via `Stream.take/2` or the
   # agent's iteration loop) by simply halting this resource.
+  #
+  # Options: `:worker` (the socket-reading pid to kill on a stall),
+  # `:first_byte_timeout` (ms of allowed silence before the first chunk) and
+  # `:stream_idle_timeout` (ms of allowed silence between chunks). Both default
+  # to `:infinity`, which disables the watchdog.
   @spec consume_sse_from_mailbox(keyword()) :: Enumerable.t()
   def consume_sse_from_mailbox(opts \\ []) do
     build_event_stream(opts)
@@ -297,20 +308,21 @@ defmodule Nest.LLM.OpenAIClient do
   # `handle_req_chunk_openai/2` already processed), whether a
   # `finish_reason` was seen (some providers close without `[DONE]`), and
   # whether an error was already emitted (so we never synthesize a clean
-  # `:done` on top of a failure). `worker`/`watchdog` let the idle-timeout
-  # branch kill the socket read when the upstream goes silent.
+  # `:done` on top of a failure). `worker` lets the idle-timeout branch kill
+  # the socket read when the upstream goes silent; `had_chunk` decides which
+  # of the two silence bounds that branch is measuring (see
+  # `Nest.LLM.HttpWorker.watchdog_ms/1`).
   defp build_event_stream(opts) do
-    timeout = Keyword.get(opts, :timeout, :infinity)
-
     state = %{
       parser: Parser.new(),
       halted: false,
       had_done: false,
       finish_seen: false,
       error_seen: false,
+      had_chunk: false,
       worker: Keyword.get(opts, :worker),
-      idle_timeout: timeout,
-      watchdog: HttpWorker.watchdog_ms(timeout)
+      first_byte_timeout: Keyword.get(opts, :first_byte_timeout, :infinity),
+      stream_idle_timeout: Keyword.get(opts, :stream_idle_timeout, :infinity)
     }
 
     Stream.resource(
@@ -340,16 +352,17 @@ defmodule Nest.LLM.OpenAIClient do
       {:stop_chat, from} ->
         handle_stop_chat_openai(state, from)
     after
-      state.watchdog -> idle_timeout_openai(state)
+      HttpWorker.watchdog_ms(state) -> idle_timeout_openai(state)
     end
   end
 
-  # The upstream went silent for longer than the provider's
-  # `receive_timeout`. Abandon the socket (kill the worker) and
-  # surface a concrete error so the agent can finalize.
+  # The upstream went silent past whichever bound applies: the first-byte
+  # bound if no chunk has arrived yet (a prefill that ran too long), the
+  # stream idle bound once streaming. Abandon the socket (kill the worker)
+  # and surface a concrete error so the agent can finalize.
   defp idle_timeout_openai(state) do
     HttpWorker.kill_worker(state.worker)
-    event = {:error, {:stream_idle_timeout, state.idle_timeout}}
+    event = {:error, HttpWorker.timeout_event(state)}
     {[event], %{state | halted: true, error_seen: true}}
   end
 
@@ -360,6 +373,7 @@ defmodule Nest.LLM.OpenAIClient do
     state = %{
       state
       | parser: parser,
+        had_chunk: true,
         had_done: state.had_done or Enum.any?(events, &match?({:done, _}, &1)),
         finish_seen: state.finish_seen or Enum.any?(events, &match?({:finish_reason, _}, &1)),
         error_seen: state.error_seen or Enum.any?(events, &match?({:error, _}, &1))

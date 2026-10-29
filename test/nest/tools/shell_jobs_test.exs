@@ -24,7 +24,12 @@ defmodule Nest.Tools.ShellJobsTest do
     %{key: key, tmp: tmp, context: context}
   end
 
+  # The id of the job this call started. The manager may already hold others
+  # (a finished job is retained), so the new id is the one that was not there
+  # before — and there must be exactly one.
   defp start_job!(command, tmp, key) do
+    before = key |> ShellJobs.list() |> Enum.map(& &1.id)
+
     {:ok, _} =
       ShellCmd.execute(command, Mounts.new(File.cwd!(), tmp), nil,
         background: true,
@@ -32,7 +37,7 @@ defmodule Nest.Tools.ShellJobsTest do
         grace_ms: 0
       )
 
-    assert [%{id: id}] = ShellJobs.list(key)
+    assert [%{id: id}] = Enum.reject(ShellJobs.list(key), &(&1.id in before))
     id
   end
 
@@ -56,17 +61,66 @@ defmodule Nest.Tools.ShellJobsTest do
     assert_receive {:shell_job_exit, ^id, _code}, 1_000
   end
 
-  test "shell-list reports the agent's jobs", %{key: key, tmp: tmp, context: context} do
-    assert {:ok, "No shell jobs."} =
-             invoke(Tools.get_function("shell-list", Mounts.new(nil, nil)), %{}, context)
+  # Issue #181: `shell-list` answers "what is running now". A finished job is a
+  # transcript entry — the manager retains a bounded tail of them — and rendering
+  # that tail buried the live one.
+  test "shell-list lists only the running jobs and names the finished ones", %{
+    key: key,
+    tmp: tmp,
+    context: context
+  } do
+    tool = Tools.get_function("shell-list", Mounts.new(nil, nil))
 
-    id = start_job!("sleep 30", tmp, key)
+    assert {:ok, "No shell jobs running."} = invoke(tool, %{}, context)
 
-    assert {:ok, text} =
-             invoke(Tools.get_function("shell-list", Mounts.new(nil, nil)), %{}, context)
+    # A finished job is not a row. It is still retrievable by id, so the count
+    # is named in one sentence instead.
+    finished = start_job!("echo done", tmp, key)
+    wait_until_exited(key, finished)
 
-    assert text =~ "- #{id}: running"
+    assert {:ok, text} = invoke(tool, %{}, context)
+
+    # The empty answer first, then the sentence: the rows and the note are
+    # separate lines so a row can never be glued onto the sentence.
+    assert text ==
+             "No shell jobs running.\n" <>
+               "1 finished shell job is still retrievable by id (shell-wait)."
+
+    refute text =~ "echo done"
+
+    # The count is a count, and one is not "1 finished shell jobs". Two
+    # finished jobs before anything runs: `caps["shell"]["background"]` allows
+    # one *running* job at a time, and these are not running.
+    second = start_job!("echo again", tmp, key)
+    wait_until_exited(key, second)
+
+    assert {:ok, text} = invoke(tool, %{}, context)
+
+    assert text ==
+             "No shell jobs running.\n" <>
+               "2 finished shell jobs are still retrievable by id (shell-wait)."
+
+    refute text =~ "echo again"
+
+    # A running job is a row, and the sentence follows it on its own line.
+    running = start_job!("sleep 30", tmp, key)
+
+    assert {:ok, text} = invoke(tool, %{}, context)
+    assert text =~ "- #{running}: running"
     assert text =~ "sleep 30"
+    refute text =~ "echo done"
+
+    assert text =~ "2 finished shell jobs are still retrievable by id (shell-wait)."
+
+    # With nothing finished the sentence is absent, not "0 finished ...".
+    {fresh, fresh_tmp} = sibling_agent(key, tmp, "list-fresh")
+    fresh_id = start_job!("sleep 30", fresh_tmp, fresh)
+
+    assert {:ok, fresh_text} =
+             invoke(tool, %{}, %{context | agent_name: elem(fresh, 1)})
+
+    assert fresh_text =~ "- #{fresh_id}: running"
+    refute fresh_text =~ "finished"
   end
 
   test "shell-wait returns the output and exit code of a finished job", %{
@@ -137,8 +191,40 @@ defmodule Nest.Tools.ShellJobsTest do
     # (`System.unique_integer([:positive])`), so this space is really empty.
     empty = %{context | space_id: -System.unique_integer([:positive])}
 
-    assert {:ok, "No shell jobs in this space."} =
+    assert {:ok, "No shell jobs running in this space."} =
              invoke(tool, %{"scope" => "space"}, empty)
+  end
+
+  # The space scope renders the same decision (#181): a sibling's finished job is
+  # not a row either, and its count is what the sentence names.
+  test "shell-list scope: space lists only running jobs", %{
+    key: key,
+    tmp: tmp,
+    context: context
+  } do
+    {sibling, sibling_tmp} = sibling_agent(key, tmp, "list-space-finished")
+
+    finished = start_job!("echo done", sibling_tmp, sibling)
+    wait_until_exited(sibling, finished)
+
+    tool = Tools.get_function("shell-list", Mounts.new(nil, nil))
+
+    # The caller has no jobs of its own, so the space listing is the only place
+    # the finished job could appear — and it does not.
+    assert {:ok, text} = invoke(tool, %{"scope" => "space"}, context)
+
+    assert text ==
+             "No shell jobs running in this space.\n" <>
+               "1 finished shell job is still retrievable by id (shell-wait)."
+
+    refute text =~ "echo done"
+
+    # A sibling's *running* job is still a row, owner column and all.
+    running = start_job!("sleep 30", sibling_tmp, sibling)
+
+    assert {:ok, text} = invoke(tool, %{"scope" => "space"}, context)
+    assert text =~ "- #{running} (owner: #{elem(sibling, 1)}): running"
+    refute text =~ "echo done"
   end
 
   test "shell-list scope: space names a job whose key names no agent", %{tmp: tmp} do

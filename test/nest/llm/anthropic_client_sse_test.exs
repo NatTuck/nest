@@ -299,7 +299,7 @@ defmodule Nest.LLM.AnthropicClientSSETest do
   end
 
   describe "idle watchdog" do
-    test "emits {:stream_idle_timeout, ms} and kills the worker when no chunk arrives" do
+    test "before the first chunk it fires at the first-byte bound" do
       worker =
         spawn_link(fn ->
           receive do
@@ -310,10 +310,76 @@ defmodule Nest.LLM.AnthropicClientSSETest do
       ref = Process.monitor(worker)
 
       events =
-        AnthropicClient.consume_sse_from_mailbox(worker: worker, timeout: 50) |> Enum.to_list()
+        AnthropicClient.consume_sse_from_mailbox(
+          worker: worker,
+          first_byte_timeout: 50,
+          stream_idle_timeout: 5_000
+        )
+        |> Enum.to_list()
 
-      assert events == [{:error, {:stream_idle_timeout, 50}}]
+      # Nothing has been streamed yet, so the prefill bound applies: the provider
+      # is allowed to be silent for the whole first-byte window.
+      assert events == [{:error, {:stream_idle_timeout, {:first_byte, 50}}}]
       assert_receive {:DOWN, ^ref, :process, ^worker, :killed}
+    end
+
+    test "a stall after the first chunk fires at the idle bound, not the first-byte bound" do
+      worker =
+        spawn_link(fn ->
+          receive do
+            :never -> :ok
+          end
+        end)
+
+      ref = Process.monitor(worker)
+      parent = self()
+
+      # One chunk, then silence. The first-byte bound is the *looser* of the two,
+      # so an implementation that kept using it would not fire inside this test's
+      # timeout — and the tuple would name the wrong bound anyway.
+      spawn_link(fn ->
+        send(parent, {:req_chunk, "event: message_start\ndata: {\"type\":\"message_start\"}\n\n"})
+      end)
+
+      events =
+        AnthropicClient.consume_sse_from_mailbox(
+          worker: worker,
+          first_byte_timeout: 1_000,
+          stream_idle_timeout: 50
+        )
+        |> Enum.to_list()
+
+      assert events == [{:error, {:stream_idle_timeout, {:stream_idle, 50}}}]
+      assert_receive {:DOWN, ^ref, :process, ^worker, :killed}
+    end
+
+    test "silence longer than the idle bound before the first chunk still succeeds" do
+      # The prefill case: a cache-miss prefill is silence *before* the first
+      # chunk, and the idle bound must not be measuring it. The chunk arrives at
+      # 100ms — 2.5x the idle bound and far inside the first-byte bound — so an
+      # implementation that armed the idle bound first always fails this.
+      parent = self()
+
+      spawn_link(fn ->
+        Process.send_after(
+          parent,
+          {:req_chunk,
+           ~s(event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n)},
+          100
+        )
+
+        Process.send_after(parent, :req_done, 100)
+      end)
+
+      events =
+        AnthropicClient.consume_sse_from_mailbox(
+          first_byte_timeout: 2_000,
+          stream_idle_timeout: 40
+        )
+        |> Enum.to_list()
+
+      assert {:done, _} = List.last(events)
+      refute Enum.any?(events, &match?({:error, _}, &1))
     end
   end
 

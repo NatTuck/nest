@@ -89,49 +89,68 @@ defmodule Nest.DotConfigTest do
     end
   end
 
-  describe "provider timeout" do
-    test "defaults to 300 seconds when absent and uses configured timeouts when specified" do
+  describe "provider silence bounds" do
+    test "defaults both bounds, and reads the legacy `timeout` as the first-byte bound" do
       {:ok, config} = DotConfig.load()
-      assert config.providers["model-studio"].timeout_seconds == 300
-      assert config.providers["pegasus"].timeout_seconds == 60
-      assert config.providers["anthropic-provider"].timeout_seconds == 600
+
+      # No key at all: both defaults.
+      model_studio = config.providers["model-studio"]
+      assert model_studio.first_byte_timeout_seconds == 900
+      assert model_studio.stream_idle_timeout_seconds == 120
+
+      # The pre-split `timeout` key keeps its meaning — "the prefill may take
+      # this long" — and does *not* become the idle bound: an existing
+      # `timeout = 600` must not make every dead connection take ten minutes to
+      # notice.
+      pegasus = config.providers["pegasus"]
+      assert pegasus.first_byte_timeout_seconds == 60
+      assert pegasus.stream_idle_timeout_seconds == 120
+
+      anthropic = config.providers["anthropic-provider"]
+      assert anthropic.first_byte_timeout_seconds == 600
+      assert anthropic.stream_idle_timeout_seconds == 120
     end
 
-    test "raises on invalid (non-positive-integer) timeout" do
-      bad_toml = """
-      [providers.bad]
+    test "parses both keys, and first_byte_timeout wins over the legacy timeout" do
+      toml = """
+      [providers.both]
       base-url = "http://example.com/v1"
       api-key = "x"
-      timeout = 0
+      timeout = 60
+      first_byte_timeout = 900
+      stream_idle_timeout = 15
       """
 
-      tmp_path =
-        Path.join(System.tmp_dir!(), "bad_timeout_#{System.unique_integer([:positive])}.toml")
+      {:ok, config} = DotConfig.load(write_toml!(toml, "silence_bounds"))
+      provider = config.providers["both"]
 
-      File.write!(tmp_path, bad_toml)
-      on_exit(fn -> File.rm(tmp_path) end)
-
-      assert_raise RuntimeError, ~r/invalid timeout/, fn ->
-        DotConfig.load(tmp_path)
-      end
+      assert provider.first_byte_timeout_seconds == 900
+      assert provider.stream_idle_timeout_seconds == 15
     end
 
-    test "raises on non-integer timeout" do
-      bad_toml = """
-      [providers.bad]
-      base-url = "http://example.com/v1"
-      api-key = "x"
-      timeout = "300"
-      """
+    test "raises on an invalid bound, naming the key" do
+      # Both keys are validated by the same rule (`ModelValidation.validate_timeout/3`),
+      # and the message names the key because there are two of them now.
+      for {key, value, field} <- [
+            {"timeout", "0", "timeout"},
+            {"timeout", ~s("300"), "timeout"},
+            {"first_byte_timeout", "0", "first_byte_timeout"},
+            {"first_byte_timeout", ~s("900"), "first_byte_timeout"},
+            {"stream_idle_timeout", "-1", "stream_idle_timeout"},
+            {"stream_idle_timeout", "1.5", "stream_idle_timeout"}
+          ] do
+        toml = """
+        [providers.bad]
+        base-url = "http://example.com/v1"
+        api-key = "x"
+        #{key} = #{value}
+        """
 
-      tmp_path =
-        Path.join(System.tmp_dir!(), "bad_timeout_#{System.unique_integer([:positive])}.toml")
+        path = write_toml!(toml, "bad_#{key}")
 
-      File.write!(tmp_path, bad_toml)
-      on_exit(fn -> File.rm(tmp_path) end)
-
-      assert_raise RuntimeError, ~r/invalid timeout/, fn ->
-        DotConfig.load(tmp_path)
+        assert_raise RuntimeError, ~r/invalid #{field}/, fn ->
+          DotConfig.load(path)
+        end
       end
     end
   end

@@ -492,7 +492,7 @@ defmodule Nest.LLM.OpenAIClientTest do
   end
 
   describe "idle watchdog" do
-    test "emits {:stream_idle_timeout, ms} and kills the worker when no chunk arrives" do
+    test "before the first chunk it fires at the first-byte bound" do
       worker =
         spawn_link(fn ->
           receive do
@@ -503,10 +503,72 @@ defmodule Nest.LLM.OpenAIClientTest do
       ref = Process.monitor(worker)
 
       events =
-        OpenAIClient.consume_sse_from_mailbox(worker: worker, timeout: 50) |> Enum.to_list()
+        OpenAIClient.consume_sse_from_mailbox(
+          worker: worker,
+          first_byte_timeout: 50,
+          stream_idle_timeout: 5_000
+        )
+        |> Enum.to_list()
 
-      assert events == [{:error, {:stream_idle_timeout, 50}}]
+      # The prefill bound, not the idle bound: nothing has been streamed yet, so
+      # the provider is allowed to be silent for the whole first-byte window.
+      assert events == [{:error, {:stream_idle_timeout, {:first_byte, 50}}}]
       assert_receive {:DOWN, ^ref, :process, ^worker, :killed}
+    end
+
+    test "a stall after the first chunk fires at the idle bound, not the first-byte bound" do
+      worker =
+        spawn_link(fn ->
+          receive do
+            :never -> :ok
+          end
+        end)
+
+      ref = Process.monitor(worker)
+      parent = self()
+
+      # One chunk, then silence. The first-byte bound is the *looser* of the two
+      # (1_000ms), so an implementation that kept using it would not fire inside
+      # this test's timeout — and the tuple would name the wrong bound anyway.
+      spawn_link(fn ->
+        send(parent, {:req_chunk, "data: {\"choices\":[]}\n\n"})
+      end)
+
+      events =
+        OpenAIClient.consume_sse_from_mailbox(
+          worker: worker,
+          first_byte_timeout: 1_000,
+          stream_idle_timeout: 50
+        )
+        |> Enum.to_list()
+
+      assert events == [{:error, {:stream_idle_timeout, {:stream_idle, 50}}}]
+      assert_receive {:DOWN, ^ref, :process, ^worker, :killed}
+    end
+
+    test "silence longer than the idle bound before the first chunk still succeeds" do
+      # The prefill case this split exists for: a long-context cache miss is
+      # silence, and it happens *before* the first chunk. The idle bound must not
+      # be measuring it. The chunk arrives at 100ms — 2.5x the idle bound and far
+      # inside the first-byte bound — so an implementation that armed the idle
+      # bound before the first chunk always fails this, and one that armed the
+      # first-byte bound always passes.
+      parent = self()
+
+      spawn_link(fn ->
+        Process.send_after(parent, {:req_chunk, "data: [DONE]\n\n"}, 100)
+        Process.send_after(parent, :req_done, 100)
+      end)
+
+      events =
+        OpenAIClient.consume_sse_from_mailbox(
+          first_byte_timeout: 2_000,
+          stream_idle_timeout: 40
+        )
+        |> Enum.to_list()
+
+      assert {:done, _} = List.last(events)
+      refute Enum.any?(events, &match?({:error, _}, &1))
     end
   end
 

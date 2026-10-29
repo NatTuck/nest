@@ -64,6 +64,7 @@ defmodule Nest.LLM.HttpWorker do
       model: model,
       messages: length(messages || []),
       retries: Keyword.get(retry_opts(opts), :max_retries),
+      first_byte_timeout: Keyword.get(opts, :first_byte_timeout),
       started_at: System.monotonic_time(:millisecond)
     }
   end
@@ -137,18 +138,52 @@ defmodule Nest.LLM.HttpWorker do
   end
 
   # The idle watchdog a client's SSE consumer arms while it waits for the
-  # next `{:req_chunk, _}` from this worker. It fires at the provider's
-  # socket `receive_timeout` (Finch's per-chunk timeout). Whichever fires
-  # first, the consumer surfaces a concrete error and kills the worker;
-  # when Finch wins we get its richer `stream_terminated` reason, and when
-  # the watchdog wins we report `{:stream_idle_timeout, timeout}`. Keeping
-  # the two at the same value (rather than adding a grace) means tests can
-  # drive a tiny timeout without waiting seconds. `:infinity` stays
-  # `:infinity` so a caller can opt out of the watchdog entirely.
-  @spec watchdog_ms(timeout()) :: timeout()
-  def watchdog_ms(:infinity), do: :infinity
-  def watchdog_ms(timeout) when is_integer(timeout), do: timeout
-  def watchdog_ms(_other), do: :infinity
+  # next `{:req_chunk, _}` from this worker. Which bound applies depends on
+  # how far the response has got:
+  #
+  #   * before the first chunk, the provider may legitimately be silent for the
+  #     whole prefill (a long-context cache miss, a cold model, queueing), so
+  #     `first_byte_timeout` applies;
+  #   * once chunks are arriving, a gap of `stream_idle_timeout` is a dead
+  #     connection, not a slow prefill.
+  #
+  # The watchdog is re-armed on every chunk, so reading `had_chunk` here is what
+  # makes the second bound start applying exactly at the first chunk. Whichever
+  # of this watchdog and Finch's socket `receive_timeout` fires first, the
+  # consumer surfaces a concrete error and kills the worker; when Finch wins we
+  # get its richer `stream_terminated` reason, and when the watchdog wins we
+  # report `timeout_event/1`. `:infinity` stays `:infinity` so a caller can opt
+  # out of the watchdog entirely.
+  @spec watchdog_ms(%{
+          had_chunk: boolean(),
+          first_byte_timeout: timeout(),
+          stream_idle_timeout: timeout()
+        }) :: timeout()
+  def watchdog_ms(%{had_chunk: true, stream_idle_timeout: idle}), do: finite(idle)
+  def watchdog_ms(%{first_byte_timeout: first_byte}), do: finite(first_byte)
+
+  @doc """
+  The error event for a fired watchdog: which bound fired, and how long it was.
+
+  An agent and a human both read this, so it says `:first_byte` or
+  `:stream_idle` rather than leaving the reader to infer which of the two
+  silence bounds a bare duration meant.
+  """
+  @spec timeout_event(%{
+          had_chunk: boolean(),
+          first_byte_timeout: term(),
+          stream_idle_timeout: term()
+        }) ::
+          {:stream_idle_timeout, {:first_byte | :stream_idle, term()}}
+  def timeout_event(%{had_chunk: true} = state),
+    do: {:stream_idle_timeout, {:stream_idle, state.stream_idle_timeout}}
+
+  def timeout_event(state),
+    do: {:stream_idle_timeout, {:first_byte, state.first_byte_timeout}}
+
+  defp finite(:infinity), do: :infinity
+  defp finite(timeout) when is_integer(timeout), do: timeout
+  defp finite(_other), do: :infinity
 
   # Kill a spawned Req worker whose socket read we're abandoning (idle
   # watchdog or cooperative stop). A linked `:normal` exit does not stop a
@@ -224,7 +259,7 @@ defmodule Nest.LLM.HttpWorker do
   # failed but not *where*, *how far* it got, or *how many attempts* were spent.
 
   defp describe_transport(reason, ctx) do
-    join_lines([transport_phrase(reason), context_line(ctx), inspect(reason)])
+    join_lines([transport_phrase(reason, ctx), context_line(ctx), inspect(reason)])
   end
 
   defp describe_stream_failure(kind, reason, bytes, ctx) do
@@ -241,19 +276,29 @@ defmodule Nest.LLM.HttpWorker do
 
   # One plain-English line for the transport reasons Req treats as transient, so
   # the reader does not have to decode a Mint reason atom.
-  defp transport_phrase(%Req.TransportError{reason: :closed}),
+  defp transport_phrase(%Req.TransportError{reason: :closed}, _ctx),
     do: "the provider closed the connection before responding"
 
-  defp transport_phrase(%Req.TransportError{reason: :econnrefused}),
+  defp transport_phrase(%Req.TransportError{reason: :econnrefused}, _ctx),
     do: "could not connect to the provider"
 
-  defp transport_phrase(%Req.TransportError{reason: :timeout}),
-    do: "the provider did not respond within the receive timeout"
+  # Req's socket `receive_timeout` carries the *first-byte* bound (the socket may
+  # legitimately be silent for the whole prefill), so a transport timeout says
+  # so, and says for how long. Without the duration and the bound's name this
+  # line was indistinguishable from the SSE watchdog's, and neither said which
+  # of the provider's two silence bounds had just fired.
+  defp transport_phrase(%Req.TransportError{reason: :timeout}, ctx) do
+    case ctx[:first_byte_timeout] do
+      ms when is_integer(ms) -> "the provider sent nothing for #{ms}ms (first-byte timeout)"
+      _unset -> "the provider did not respond within the first-byte timeout"
+    end
+  end
 
-  defp transport_phrase(%Req.TransportError{reason: reason}),
+  defp transport_phrase(%Req.TransportError{reason: reason}, _ctx),
     do: "the request to the provider failed (#{inspect(reason)})"
 
-  defp transport_phrase(reason), do: "the request to the provider failed: #{inspect(reason)}"
+  defp transport_phrase(reason, _ctx),
+    do: "the request to the provider failed: #{inspect(reason)}"
 
   defp context_line(ctx) when map_size(ctx) == 0, do: nil
 

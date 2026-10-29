@@ -23,7 +23,8 @@ const provider = {
   protocol: "openai",
   auto_models: false,
   tags: [],
-  timeout_seconds: 300,
+  first_byte_timeout_seconds: 900,
+  stream_idle_timeout_seconds: 120,
   default_context_limit: 200000,
   default_thinking_effort: "high",
   probe_base_url: "https://probe.example/v1",
@@ -197,6 +198,54 @@ describe("ProviderEditor", () => {
 
     const [updated] = onChange.mock.calls[0];
     expect(updated.default_context_limit).toBe(null);
+  });
+
+  it("renders, edits and clears both silence bounds", () => {
+    // The two bounds that used to be one config.toml-only number. The
+    // placeholders are the `Nest.DotConfig` defaults, so a blank field says
+    // what blank means rather than looking like "0" or "unlimited".
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <ProviderEditor
+        provider={provider}
+        onChange={onChange}
+        onRemove={() => {}}
+      />,
+    );
+
+    const firstByte = screen.getByLabelText(/first byte timeout/i);
+    const idle = screen.getByLabelText(/stream idle timeout/i);
+
+    expect(firstByte).toHaveValue(900);
+    expect(idle).toHaveValue(120);
+
+    fireEvent.change(firstByte, { target: { value: "1800" } });
+    expect(onChange.mock.calls[0][0].first_byte_timeout_seconds).toBe(1800);
+
+    fireEvent.change(idle, { target: { value: "30" } });
+    expect(onChange.mock.calls[1][0].stream_idle_timeout_seconds).toBe(30);
+
+    // A blank field sends `null` — "unset", so the server omits the key and the
+    // provider keeps the default. `""` would be refused as a non-integer.
+    fireEvent.change(firstByte, { target: { value: "" } });
+    expect(onChange.mock.calls[2][0].first_byte_timeout_seconds).toBe(null);
+
+    fireEvent.change(idle, { target: { value: "" } });
+    expect(onChange.mock.calls[3][0].stream_idle_timeout_seconds).toBe(null);
+
+    // With no value of its own, each field shows the default it would fall back
+    // to, so the editor never looks like it means zero seconds.
+    rerender(
+      <ProviderEditor provider={{}} onChange={() => {}} onRemove={() => {}} />,
+    );
+    expect(screen.getByLabelText(/first byte timeout/i)).toHaveAttribute(
+      "placeholder",
+      "900 (default)",
+    );
+    expect(screen.getByLabelText(/stream idle timeout/i)).toHaveAttribute(
+      "placeholder",
+      "120 (default)",
+    );
   });
 
   it("clears base url when the input is emptied", () => {

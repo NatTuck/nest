@@ -5,16 +5,25 @@ defmodule Nest.DotConfig do
 
   alias Nest.DotConfig.FieldValidation
   alias Nest.DotConfig.KeyValidation
+  alias Nest.DotConfig.Model
   alias Nest.DotConfig.ModelValidation
+  alias Nest.DotConfig.Provider
   alias Nest.ParseCache
 
   @config_dir :filename.basedir(:user_config, "nest")
   @config_file Path.join(@config_dir, "config.toml")
 
-  # Default LLM call timeout, in seconds. LLM responses can be slow (large
-  # prompts, complex tool use), so we default to a generous 5 minutes. Each
-  # provider can override this via the `timeout` key in config.toml.
-  @default_timeout_seconds 300
+  # Default bound on silence *before the first streamed chunk*, in seconds.
+  # A long-context cache miss has to prefill the whole prompt before it can
+  # emit anything, and the provider may queue the request first, so this is
+  # the one bound that has to be generous: 15 minutes.
+  @default_first_byte_timeout_seconds 900
+
+  # Default bound on silence *between* chunks once the stream has started, in
+  # seconds. Once the provider is streaming, a two-minute gap is a dead
+  # connection, not a slow prefill — and this is the bound that decides how
+  # quickly a hang is noticed and retried.
+  @default_stream_idle_timeout_seconds 120
 
   # Default cap on consecutive tool-call iterations per agent chat turn.
   # Override with the top-level `max-tool-iterations` key in config.toml.
@@ -50,88 +59,22 @@ defmodule Nest.DotConfig do
   }
   @default_thinking_effort :medium
 
-  defmodule Provider do
-    @moduledoc """
-    Provider configuration struct.
-
-    `timeout_seconds` is the per-provider LLM call receive timeout. Defaults
-    to `Nest.DotConfig.@default_timeout_seconds` (300s = 5 minutes) if not
-    set in the config file.
-
-    `default_context_limit` is the optional provider-wide fallback for
-    `context-window` size, used when neither the per-model
-    `[[providers.<name>.models]]` block nor the auto-discovery cache
-    carries a value. Parsed from the optional `default-context-limit`
-    TOML key on `[providers.<name>]`. `nil` when absent.
-
-    `probe_base_url` is the optional URL used for *model discovery*
-    only (`GET <base>/models`). Defaults to `nil`, in which case
-    `base_url` is used for both chat and discovery. Set this on
-    providers whose chat base and discovery base diverge — e.g. an
-    Olla-style discovery listing at one path and OpenAI-compatible
-    chat at another. Parsed from the optional `probe-base-url`
-    TOML key. See `Nest.LLM.Discover` and `Nest.ChatModel`.
-
-    `auto_probe` is the optional flag that enables endpoint probing
-    (`Nest.EndpointProbe` + `Nest.EndpointCache`) for this provider.
-    Defaults to `true`. When enabled, the chat protocol, chat base
-    URL, and discovery `/models` path are auto-detected at startup
-    and re-detected when a cached endpoint starts returning `404`.
-    Set `auto-probe = false` on a provider you'd rather configure
-    fully by hand. Parsed from the optional `auto-probe` TOML key.
-
-    `expose_models` is the optional flag that makes this provider's
-    models visible in the `models-list` tool output. Defaults to
-    `false`. Set `expose-models = true` on providers whose models
-    should be discoverable by agents via the `models-list` tool.
-
-    `probe_multimodal` is the optional opt-in that lets discovery
-    probe a model's image-input support (`Nest.LLM.MultimodalProbe`)
-    when the provider's `/models` body leaves it unknown. Defaults to
-    `false`. It never overrides a definite answer from the metadata:
-    a provider that publishes a modality list, or an Anthropic-style
-    capability flag, is believed as-is. Parsed from the optional
-    `probe-multimodal` TOML key.
-    """
-    defstruct [
-      :name,
-      :base_url,
-      :api_key,
-      :protocol,
-      :auto_models,
-      :tags,
-      :models,
-      :timeout_seconds,
-      :default_context_limit,
-      :default_thinking_effort,
-      :probe_base_url,
-      :expose_models,
-      probe_multimodal: false,
-      auto_probe: true
-    ]
-  end
-
-  defmodule Model do
-    @moduledoc "Model configuration struct"
-    defstruct [
-      :name,
-      :provider_name,
-      :context_limit,
-      :multi_modal,
-      :thinking_effort
-    ]
-  end
-
   @doc """
   Returns the XDG config directory path
   """
   def config_dir, do: @config_dir
 
   @doc """
-  Returns the default LLM call timeout in seconds. Used when a provider
-  has no explicit `timeout` configured.
+  Returns the default first-byte timeout in seconds. Used when a provider
+  has no explicit `first_byte_timeout` (or legacy `timeout`) configured.
   """
-  def default_timeout_seconds, do: @default_timeout_seconds
+  def default_first_byte_timeout_seconds, do: @default_first_byte_timeout_seconds
+
+  @doc """
+  Returns the default stream idle timeout in seconds. Used when a provider
+  has no explicit `stream_idle_timeout` configured.
+  """
+  def default_stream_idle_timeout_seconds, do: @default_stream_idle_timeout_seconds
 
   @doc """
   Returns the full path to local.toml — the user's overlay config edited
@@ -517,7 +460,8 @@ defmodule Nest.DotConfig do
       auto_models: Map.get(data, "auto-models", false),
       tags: parse_tags(Map.get(data, "tags"), name),
       models: parse_provider_models(data, name),
-      timeout_seconds: parse_timeout(Map.get(data, "timeout"), name),
+      first_byte_timeout_seconds: parse_first_byte_timeout(data, name),
+      stream_idle_timeout_seconds: parse_stream_idle_timeout(data, name),
       default_context_limit:
         parse_default_context_limit(Map.get(data, "default-context-limit"), name),
       default_thinking_effort: parse_thinking_effort(Map.get(data, "default-thinking-effort")),
@@ -600,13 +544,41 @@ defmodule Nest.DotConfig do
     raise "Provider #{provider_name}: invalid probe-multimodal #{inspect(value)}: must be a boolean"
   end
 
-  # Parses and validates the optional `timeout` (in seconds) for a provider.
-  # Returns the default if the key is absent. Raises on invalid values so
-  # config errors surface at startup, not on the first LLM call.
-  defp parse_timeout(nil, _provider_name), do: @default_timeout_seconds
+  # Parses and validates the provider's first-byte bound (seconds). Returns the
+  # default if neither key is present. Raises on invalid values so config
+  # errors surface at startup, not on the first LLM call.
+  #
+  # `timeout` is the pre-split name for this bound and is still honoured: before
+  # the split it was the *only* silence bound, so the silence it actually
+  # defended against in practice was the prefill (a 350k-token cache miss), and
+  # that is what it keeps meaning. It deliberately does not become the idle
+  # bound — an existing `timeout = 600` must not make every dead connection take
+  # ten minutes to notice.
+  defp parse_first_byte_timeout(data, provider_name) do
+    case Map.get(data, "first_byte_timeout") do
+      nil ->
+        case Map.get(data, "timeout") do
+          nil -> @default_first_byte_timeout_seconds
+          seconds -> ModelValidation.validate_timeout(seconds, provider_name)
+        end
 
-  defp parse_timeout(seconds, provider_name),
-    do: ModelValidation.validate_timeout(seconds, provider_name)
+      seconds ->
+        ModelValidation.validate_timeout(seconds, provider_name, "first_byte_timeout")
+    end
+  end
+
+  # Parses and validates the provider's stream-idle bound (seconds). Returns the
+  # default if the key is absent. Raises on invalid values so config errors
+  # surface at startup, not on the first LLM call.
+  defp parse_stream_idle_timeout(data, provider_name) do
+    case Map.get(data, "stream_idle_timeout") do
+      nil ->
+        @default_stream_idle_timeout_seconds
+
+      seconds ->
+        ModelValidation.validate_timeout(seconds, provider_name, "stream_idle_timeout")
+    end
+  end
 
   # Parses and validates the optional `default-context-limit` for a
   # provider. Returns `nil` when the key is absent (no provider-wide

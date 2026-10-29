@@ -18,21 +18,23 @@ defmodule Nest.Tools.ShellJobs do
   @default_wait_ms 300_000
   @kill_wait_ms 2_000
 
-  @doc "The `shell-list` tool: enumerate background jobs, per agent or per space."
+  @doc "The `shell-list` tool: enumerate the running jobs, per agent or per space."
   @spec list_function() :: Tool.t()
   def list_function do
     %Tool{
       name: "shell-list",
       description:
-        "List shell jobs with each job's status, exit code and log path. " <>
-          "Every `shell-cmd` call is a job while it runs; a call with " <>
-          "`background: true` returns a job id and keeps running after the " <>
-          "call returns. Running jobs are listed first. `scope` is " <>
-          "\"agent\" (the default: your own jobs) or " <>
-          "\"space\" (every job in this space, including other agents' jobs, " <>
-          "each labelled with the agent that owns it). Use `shell-wait` to " <>
-          "watch for one of your own to finish and `shell-kill` to stop one — " <>
-          "your own, or another agent's in this space.",
+        "List the shell jobs that are running now, with each job's status and " <>
+          "log path. Every `shell-cmd` call is a job while it runs; a call " <>
+          "with `background: true` returns a job id and keeps running after " <>
+          "the call returns. A job that has finished is not listed — it is " <>
+          "still retrievable by id with `shell-wait` — and the result says how " <>
+          "many finished ones there are. `scope` is \"agent\" (the default: " <>
+          "your own jobs) or \"space\" (every job in this space, including " <>
+          "other agents' jobs, each labelled with the agent that owns it). Use " <>
+          "`shell-wait` to watch for one of your own to finish and " <>
+          "`shell-kill` to stop one — your own, or another agent's in this " <>
+          "space.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
@@ -199,18 +201,42 @@ defmodule Nest.Tools.ShellJobs do
   defp killed_text(id, owner, code),
     do: "Killed shell job #{id}, owned by #{owner} (exit code #{code})."
 
-  defp render([]), do: "No shell jobs."
+  # `shell-list` answers "what is running now" (#181): a finished job is a
+  # transcript entry, and the retained tail of them buries the live one. The
+  # finished jobs are still retrievable by id, so the result names how many
+  # there are in one sentence instead of rendering them.
+  defp render(jobs), do: render_listing(jobs, "No shell jobs running.", &render_job/1)
 
-  defp render(jobs), do: Enum.map_join(jobs, "\n", &render_job/1)
+  defp render_space(jobs),
+    do: render_listing(jobs, "No shell jobs running in this space.", &render_space_job/1)
+
+  defp render_listing(jobs, empty, render_job) do
+    {running, finished} = Enum.split_with(jobs, &(&1.status == :running))
+
+    [running_rows(running, empty, render_job), finished_note(finished)]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n")
+  end
+
+  defp running_rows([], empty, _render_job), do: empty
+
+  defp running_rows(running, _empty, render_job),
+    do: Enum.map_join(running, "\n", render_job)
+
+  defp finished_note([]), do: ""
+
+  defp finished_note([_one]),
+    do: "1 finished shell job is still retrievable by id (shell-wait)."
+
+  defp finished_note(finished) do
+    "#{length(finished)} finished shell jobs are still retrievable by id " <>
+      "(shell-wait)."
+  end
 
   defp render_job(job) do
     "- #{job.id}: #{job.status}" <>
       status_suffix(job) <> " — #{job.command} (log: #{job.log_path})"
   end
-
-  defp render_space([]), do: "No shell jobs in this space."
-
-  defp render_space(jobs), do: Enum.map_join(jobs, "\n", &render_space_job/1)
 
   # The owner column is the point of the space listing: an agent looks because
   # the job it needs is not its own. A job whose key names no agent says so

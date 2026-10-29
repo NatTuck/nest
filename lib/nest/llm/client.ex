@@ -14,6 +14,7 @@ defmodule Nest.LLM.Client do
   and endpoint URL normalization).
   """
 
+  alias Nest.DotConfig
   alias Nest.LLM.RunRequest
   alias Nest.LLM.RunResponse
   alias Nest.Messages.Part
@@ -41,33 +42,56 @@ defmodule Nest.LLM.Client do
           {:system_prompt, String.t()}
           | {:api_key, String.t() | nil}
           | {:base_url, String.t()}
-          | {:receive_timeout, non_neg_integer() | :infinity}
+          | {:first_byte_timeout, non_neg_integer() | :infinity}
+          | {:stream_idle_timeout, non_neg_integer() | :infinity}
           | {:headers, [{String.t(), String.t()}]}
           | {atom(), any()}
 
-  # Applied when a provider's config leaves `receive_timeout` unset. It bounds a
-  # *silent* connection: with `:infinity` both the socket read and the SSE idle
-  # watchdog are unbounded, so a connection dropped without a FIN/RST hangs the
-  # turn forever — and no retry can fire, because a retry needs a failure to
-  # react to. 10 minutes is well past any legitimate first-token latency we have
-  # seen (a ~350k-token prefill is the slow case) while still being finite.
-  @default_receive_timeout_ms 600_000
+  # Applied when a provider's config leaves `first_byte_timeout` unset. It bounds
+  # a *silent* connection: with `:infinity` both the socket read and the SSE
+  # first-byte watchdog are unbounded, so a connection dropped without a FIN/RST
+  # hangs the turn forever — and no retry can fire, because a retry needs a
+  # failure to react to. The value is the same one `Nest.DotConfig` uses for a
+  # provider that sets nothing: 15 minutes, well past any legitimate prefill we
+  # have seen (a ~350k-token cache miss is the slow case) while still finite.
+  #
+  # The idle default is much tighter: once chunks are arriving, two minutes of
+  # silence is a dead connection rather than a slow prefill.
+  @doc "The first-byte timeout used when a provider config does not set one."
+  @spec default_first_byte_timeout_ms() :: pos_integer()
+  def default_first_byte_timeout_ms, do: DotConfig.default_first_byte_timeout_seconds() * 1_000
 
-  @doc "The receive timeout used when a provider config does not set one."
-  @spec default_receive_timeout_ms() :: pos_integer()
-  def default_receive_timeout_ms, do: @default_receive_timeout_ms
+  @doc "The stream idle timeout used when a provider config does not set one."
+  @spec default_stream_idle_timeout_ms() :: pos_integer()
+  def default_stream_idle_timeout_ms,
+    do: DotConfig.default_stream_idle_timeout_seconds() * 1_000
 
   @doc """
-  Resolve the receive timeout from call opts.
+  Resolve the first-byte timeout from call opts.
 
   An explicit integer — or `:infinity`, to opt out — wins. A missing or `nil`
-  value, which is what an unset `ClientConfig.receive_timeout` produces, falls
-  back to `default_receive_timeout_ms/0`.
+  value, which is what an unset `ClientConfig.first_byte_timeout` produces,
+  falls back to `default_first_byte_timeout_ms/0`.
   """
-  @spec receive_timeout(keyword()) :: pos_integer() | :infinity
-  def receive_timeout(opts) do
-    case Keyword.get(opts, :receive_timeout) do
-      nil -> @default_receive_timeout_ms
+  @spec first_byte_timeout(keyword()) :: pos_integer() | :infinity
+  def first_byte_timeout(opts) do
+    case Keyword.get(opts, :first_byte_timeout) do
+      nil -> default_first_byte_timeout_ms()
+      value -> value
+    end
+  end
+
+  @doc """
+  Resolve the stream idle timeout from call opts.
+
+  Same rules as `first_byte_timeout/1`: an explicit value wins (including
+  `:infinity`), and a missing one falls back to
+  `default_stream_idle_timeout_ms/0`.
+  """
+  @spec stream_idle_timeout(keyword()) :: pos_integer() | :infinity
+  def stream_idle_timeout(opts) do
+    case Keyword.get(opts, :stream_idle_timeout) do
+      nil -> default_stream_idle_timeout_ms()
       value -> value
     end
   end

@@ -122,18 +122,39 @@ defmodule Nest.ChatModelTest do
     end
   end
 
-  describe "LLM receive timeout" do
-    test "OpenAI-compatible models receive the provider's timeout in milliseconds" do
-      # model-studio has no explicit timeout in test config -> default 300s = 300_000 ms
+  describe "LLM silence bounds" do
+    test "both bounds are filled from the provider, in milliseconds" do
+      # model-studio sets neither key in the test config -> 900s / 120s.
       {:ok, config} = ChatModel.from_provider("model-studio", "qwen3.5-plus")
-      assert config.receive_timeout == 300_000
+      assert config.first_byte_timeout == 900_000
+      assert config.stream_idle_timeout == 120_000
     end
 
-    test "providers with a custom timeout use that value" do
-      # pegasus has timeout = 60 in test config -> 60_000 ms
-      # pegasus uses auto-models, so we need to pass a model name explicitly
+    test "a provider's legacy `timeout` fills only the first-byte bound" do
+      # pegasus has `timeout = 60` in the test config -> 60_000 ms first byte,
+      # and the idle bound stays at its own default. pegasus uses auto-models, so
+      # we need to pass a model name explicitly.
       {:ok, config} = ChatModel.from_provider("pegasus", "some-model")
-      assert config.receive_timeout == 60_000
+      assert config.first_byte_timeout == 60_000
+      assert config.stream_idle_timeout == 120_000
+    end
+
+    test "an explicit stream_idle_timeout is carried through" do
+      provider = %DotConfig.Provider{
+        name: "explicit",
+        base_url: "http://explicit.example/v1",
+        api_key: "k",
+        protocol: "openai",
+        auto_models: false,
+        tags: [],
+        models: [],
+        first_byte_timeout_seconds: 1_800,
+        stream_idle_timeout_seconds: 30
+      }
+
+      {:ok, config} = ChatModel.build_client_config(provider, "some-model")
+      assert config.first_byte_timeout == 1_800_000
+      assert config.stream_idle_timeout == 30_000
     end
   end
 

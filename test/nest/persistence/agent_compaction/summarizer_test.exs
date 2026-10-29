@@ -102,7 +102,8 @@ defmodule Nest.Persistence.AgentCompaction.SummarizerTest do
       base_url: "http://test",
       api_key: "k",
       model: "m",
-      receive_timeout: 1_000
+      first_byte_timeout: 1_000,
+      stream_idle_timeout: 500
     }
 
     assert {:ok, "mocked summary"} = Summarizer.llm_call(config).([user_msg(1, "a")])
@@ -114,7 +115,8 @@ defmodule Nest.Persistence.AgentCompaction.SummarizerTest do
       base_url: "http://test",
       api_key: "k",
       model: "m",
-      receive_timeout: 1_000
+      first_byte_timeout: 1_000,
+      stream_idle_timeout: 500
     }
 
     assert {:error, :transport_error} = Summarizer.llm_call(config).([user_msg(1, "a")])

@@ -143,7 +143,8 @@ defmodule Nest.ChatModel do
       base_url: structure.chat_base_url,
       api_key: api_key,
       model: actual,
-      receive_timeout: receive_timeout_ms(provider),
+      first_byte_timeout: first_byte_timeout_ms(provider),
+      stream_idle_timeout: stream_idle_timeout_ms(provider),
       probe_base_url: provider.probe_base_url
     }
     |> wrap_ok()
@@ -158,7 +159,8 @@ defmodule Nest.ChatModel do
       base_url: structure.chat_base_url,
       api_key: api_key,
       model: actual,
-      receive_timeout: receive_timeout_ms(provider),
+      first_byte_timeout: first_byte_timeout_ms(provider),
+      stream_idle_timeout: stream_idle_timeout_ms(provider),
       probe_base_url: provider.probe_base_url
     }
     |> wrap_ok()
@@ -459,8 +461,13 @@ defmodule Nest.ChatModel do
     end
   end
 
-  defp receive_timeout_ms(provider) do
-    seconds = provider.timeout_seconds || DotConfig.default_timeout_seconds()
-    seconds * 1000
+  defp first_byte_timeout_ms(provider) do
+    default = DotConfig.default_first_byte_timeout_seconds()
+    (provider.first_byte_timeout_seconds || default) * 1000
+  end
+
+  defp stream_idle_timeout_ms(provider) do
+    default = DotConfig.default_stream_idle_timeout_seconds()
+    (provider.stream_idle_timeout_seconds || default) * 1000
   end
 end

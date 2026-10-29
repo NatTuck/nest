@@ -53,7 +53,7 @@ defmodule Nest.LLM.MultimodalCacheTest do
         base_url: "http://provider.test/v1",
         api_key: "sk-secret-value",
         protocol: "openai",
-        timeout_seconds: 30,
+        first_byte_timeout_seconds: 30,
         probe_multimodal: true
       },
       overrides
