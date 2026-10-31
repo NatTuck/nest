@@ -11,9 +11,13 @@ export const PROTOCOLS = ["openai", "anthropic"];
  * The two per-provider silence bounds, in seconds, that
  * `Nest.DotConfig` uses when a provider sets neither. Shown as the
  * placeholders of the editor's timeout inputs so an operator sees
- * what leaving a field blank means. The numbers must match
- * `@default_first_byte_timeout_seconds` and
- * `@default_stream_idle_timeout_seconds` in `lib/nest/dot_config.ex`.
+ * what leaving a field blank means.
+ *
+ * The numbers duplicate `Nest.DotConfig.default_first_byte_timeout_seconds/0`
+ * and `default_stream_idle_timeout_seconds/0` — the browser cannot read the
+ * config file — and `test/nest/dot_config_js_defaults_test.exs` pins the two
+ * together, so changing one without the other fails a test rather than leaving
+ * the GUI quoting a stale default.
  */
 export const DEFAULT_FIRST_BYTE_TIMEOUT_SECONDS = 900;
 export const DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS = 120;

@@ -4,6 +4,8 @@ defmodule Nest.DotConfigTest do
   """
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Nest.DotConfig
 
   describe "load/0" do
@@ -121,11 +123,23 @@ defmodule Nest.DotConfigTest do
       stream_idle_timeout = 15
       """
 
-      {:ok, config} = DotConfig.load(write_toml!(toml, "silence_bounds"))
-      provider = config.providers["both"]
+      log =
+        capture_log(fn ->
+          {:ok, config} = DotConfig.load(write_toml!(toml, "silence_bounds"))
+          provider = config.providers["both"]
 
-      assert provider.first_byte_timeout_seconds == 900
-      assert provider.stream_idle_timeout_seconds == 15
+          assert provider.first_byte_timeout_seconds == 900
+          assert provider.stream_idle_timeout_seconds == 15
+        end)
+
+      # Both keys is ambiguous, and preferring the new one silently left a
+      # `timeout = 60` in the file looking live. The warning names the provider,
+      # the key in force and the value it ignored.
+      assert log =~ "Provider both"
+      assert log =~ "`timeout` (60)"
+      assert log =~ "`first_byte_timeout` (900s) are set"
+      assert log =~ "`first_byte_timeout` is in force"
+      assert log =~ "`timeout` is ignored"
     end
 
     test "raises on an invalid bound, naming the key" do
