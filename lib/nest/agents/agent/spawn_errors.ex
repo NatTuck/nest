@@ -13,6 +13,12 @@ defmodule Nest.Agents.Agent.SpawnErrors do
   whole call's, and says so ("Could not spawn batch children: ...").
   """
 
+  # The `Nest.Sandbox.workspace_error/1` refusals a spawn can carry; see
+  # `workspace_message/1`. `:workspace_required` is deliberately absent: a space
+  # cannot exist without a workspace (`Space.create_changeset/2` requires it), so
+  # no spawn can be refused for lacking one.
+  @workspace_reasons [:workspace_missing, :workspace_under_tmp]
+
   @doc """
   The model-facing text for a spawn failure.
   """
@@ -82,5 +88,32 @@ defmodule Nest.Agents.Agent.SpawnErrors do
   def message({:config_file_not_regular, _path, _type} = reason),
     do: "Could not spawn agent: #{Nest.ConfigFile.error_message(reason)}"
 
+  # The two `Nest.Sandbox.workspace_error/1` refusals a *spawn* can carry: the
+  # space's workspace is gone, or it is under `/tmp` where the sandbox scratch
+  # bind would shadow it. Neither is something the spawning agent can fix, so the
+  # sentence says so — the next move is to tell the user, not to retry. The
+  # `BatchPlan` renderer reuses `workspace_message/1` under its own prefix.
+  def message(reason) when reason in @workspace_reasons,
+    do: "Could not spawn agent: " <> workspace_message(reason)
+
   def message(reason), do: "Could not spawn agent: #{inspect(reason)}"
+
+  @doc """
+  The sentence for a `Nest.Sandbox.workspace_error/1` refusal, without the
+  renderer's prefix.
+
+  Shared with `Nest.Agents.Agent.BatchPlan.spawn_error_message/1` so the two
+  model-facing renderers cannot drift, the same way the config-file refusal
+  shares `Nest.ConfigFile.error_message/1`.
+  """
+  @spec workspace_message(:workspace_missing | :workspace_under_tmp) :: String.t()
+  def workspace_message(:workspace_missing) do
+    "this space's workspace directory does not exist, so the child could not be " <>
+      "given one. Report this to the user; a retry will fail the same way."
+  end
+
+  def workspace_message(:workspace_under_tmp) do
+    "this space's workspace is under /tmp, where the sandbox scratch directory " <>
+      "would shadow it. Report this to the user; a retry will fail the same way."
+  end
 end
