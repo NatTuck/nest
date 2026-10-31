@@ -53,6 +53,7 @@ import {
   thinkingFor,
   messageContentPartsFor,
   toolCallsFromParts,
+  toolResultsFromParts,
   mediaFromParts,
 } from "../utils/messageParts.js";
 
@@ -62,14 +63,25 @@ function Message({ message, agentName }) {
   const isTool = message.role === "tool";
   const isPartial = message.isPartial ?? false;
 
-  // Derive tool calls from the canonical `parts` shape so
-  // streaming partials (whose `message.toolCalls` is never
-  // populated — only the finalized message sets that field)
-  // render in-flight tool calls as soon as the BEAM broadcasts
-  // them. For finalized messages the derived value matches
-  // `message.toolCalls`, so this is just a more robust read.
+  // Derive the tool call/result shapes from the canonical `parts` — the same
+  // derivation `CollapsedHistory` uses, so the two lists read a row the same
+  // way. Two reasons the derived value is the primary read:
+  //
+  //   * a streaming partial has no legacy fields at all — only the finalized
+  //     message sets them — so this is what renders an in-flight tool call;
+  //   * a row that arrived through `chat:sync` is the wire message verbatim
+  //     (`syncAgentMessages` adds it as the server sent it), and that wire
+  //     carries no legacy `toolCalls`/`toolResults`/`content`: reading
+  //     `message.toolResults` alone left every sync-loaded tool row with no
+  //     results on screen.
+  //
+  // The legacy field stays as this list's fallback for a row persisted before
+  // `parts`; the archive has no such fallback, so a pre-`parts` row shows its
+  // results here and not there.
   const toolCalls =
     toolCallsFromParts(message.parts) ?? message.toolCalls ?? [];
+  const toolResults =
+    toolResultsFromParts(message.parts) ?? message.toolResults ?? [];
 
   // A user row's identity comes from its bodies' headers, not from the role: the
   // role is overloaded on the wire (a drained batch, a peer's note, a runtime
@@ -169,7 +181,7 @@ function Message({ message, agentName }) {
         )}
         <ToolCalls toolCalls={toolCalls} />
         <DelegatedTask message={message} agentName={agentName} />
-        <ToolResults toolResults={message.toolResults} />
+        <ToolResults toolResults={toolResults} />
         {/* The media for a row that is not the user's own: `UserMessageParts`
             renders a user row's attachments itself, and every other role
             either gets parts with the media filtered out

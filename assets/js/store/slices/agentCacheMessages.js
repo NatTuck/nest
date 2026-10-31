@@ -64,7 +64,21 @@ export function addChatMessage(set, get, id, message) {
       });
     }
 
-    const mergedThinking = computeMergedThinking(message, streaming);
+    // The accumulator only belongs to this message when the index matches. The
+    // store can hold one for a *different* message: a `chat:status` reply or a
+    // `chat:sync` installs the server's live `partial` (`setAgentConnected`,
+    // `syncAgentMessages`), and that partial is the assistant turn's — it
+    // survives until the turn ends, i.e. across the tool execution that follows
+    // it. Unguarded, the assistant's reasoning was stamped on the tool row as
+    // `thinking`, and `Message.jsx` rendered it as a Thinking block above that
+    // row's results.
+    //
+    // No role check on top: the index is the precise fact, and a row that
+    // carries its own accumulator is entitled to the fallback whatever its
+    // role (the fallback exists for a broadcast whose thinking is shorter than
+    // what streamed in).
+    const ownStreaming = streamingIndex === message.index ? streaming : null;
+    const mergedThinking = computeMergedThinking(message, ownStreaming);
 
     const newMessages =
       matchedIndex === -1

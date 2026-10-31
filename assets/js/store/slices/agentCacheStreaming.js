@@ -52,11 +52,17 @@ export function agentCacheStreamingSetters(set, get) {
 
         const newMessages = payload.messages || [];
         const existingMessages = cache.messages || [];
+        // The reply is the server's authoritative view of the rows it carries,
+        // so a row it re-sends **replaces** the cached copy for that index: a
+        // sync exists to repair a cache the client can no longer trust, and
+        // letting the cached row win let a phantom survive the very request
+        // that should have fixed it. Rows the reply does not carry are kept.
+        const byIndex = new Map(newMessages.map((m) => [m.index, m]));
         const existingIndices = new Set(existingMessages.map((m) => m.index));
-        const messagesToAdd = newMessages.filter(
-          (m) => !existingIndices.has(m.index),
-        );
-        const mergedMessages = [...existingMessages, ...messagesToAdd];
+        const mergedMessages = [
+          ...existingMessages.map((m) => byIndex.get(m.index) ?? m),
+          ...newMessages.filter((m) => !existingIndices.has(m.index)),
+        ];
         mergedMessages.sort((a, b) => a.index - b.index);
         const lastIndex =
           mergedMessages.length > 0

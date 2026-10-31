@@ -131,25 +131,31 @@ export function computeMergedThinking(message, streaming) {
 }
 
 export function buildMerged(m, message, mergedThinking) {
+  // The `m` fallbacks exist for a re-broadcast of the *same* row: a message
+  // that arrives without a legacy field must not wipe the one the cached copy
+  // already has. Across indices — the user-content match that reconciles the
+  // optimistic echo with a renumbered server copy — `m` is a different row, and
+  // carrying any of its fields would show one message's data on another.
+  const carried = m.index === message.index ? m : {};
   const mergedApiLogs = message.apiLogs?.length
     ? message.apiLogs
-    : m.apiLogs || [];
+    : carried.apiLogs || [];
   const newToolCalls = toolCallsFromParts(message.parts) || [];
   const mergedToolCalls = newToolCalls.length
     ? newToolCalls
-    : toolCallsFromParts(partsShape(m)) || [];
+    : toolCallsFromParts(partsShape(carried)) || [];
   const newToolResults = toolResultsFromParts(message.parts) || [];
   const mergedToolResults = newToolResults.length
     ? newToolResults
-    : toolResultsFromParts(partsShape(m)) || [];
+    : toolResultsFromParts(partsShape(carried)) || [];
   const newMedia = mediaFromParts(message.parts) || [];
   const mergedMedia = newMedia.length
     ? newMedia
-    : mediaFromParts(partsShape(m)) || [];
+    : mediaFromParts(partsShape(carried)) || [];
 
   return {
     ...message,
-    content: messageText(message) || m.content || "",
+    content: messageText(message) || carried.content || "",
     thinking: mergedThinking,
     apiLogs: mergedApiLogs,
     toolCalls: mergedToolCalls,

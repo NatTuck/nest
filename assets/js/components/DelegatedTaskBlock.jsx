@@ -38,6 +38,10 @@
 
 import { Link, useParams } from "react-router-dom";
 import { useStore } from "../store";
+import {
+  toolCallsFromParts,
+  toolResultsFromParts,
+} from "../utils/messageParts.js";
 
 const EMPTY_MESSAGES = [];
 
@@ -160,18 +164,27 @@ function ChildNameLink({ childName, spaceSlug }) {
  * Returns null when the message has no `agents-spawn` calls,
  * so there's no rendering cost for the common case.
  *
- * Tolerates either snake_case (`tool_calls`,
- * `tool_results`, `tool_call_id`, `is_error`) or camelCase
- * (`toolCalls`, `toolResults`, `toolCallId`, `isError`) keys
- * — both shapes exist in the cache depending on which
- * message batch populated it.
+ * Reads the calls and results from the message's canonical
+ * `parts` first, the way `Message.jsx` does, and falls back to
+ * the legacy fields. The wire carries no legacy
+ * `toolCalls`/`toolResults` at all, so a row that arrived through
+ * `chat:sync` — every row on a fresh page load — has only `parts`,
+ * and a row whose legacy fields were dropped when the server's copy
+ * replaced it would otherwise lose its card. The legacy shapes stay
+ * as the fallback for a row persisted before `parts`, and for the
+ * snake_case spelling some batches use: `tool_calls`,
+ * `tool_results`, `tool_call_id`, `is_error`.
  */
 export function DelegatedTask({ message, agentName }) {
   const messages = useStore(
     (state) => state.agentsCache[agentName]?.messages ?? EMPTY_MESSAGES,
   );
 
-  const calls = message.toolCalls || message.tool_calls || [];
+  const calls =
+    toolCallsFromParts(message.parts) ??
+    message.toolCalls ??
+    message.tool_calls ??
+    [];
   const cloneCalls = [];
   for (const c of calls) {
     if (c && c.name === "agents-spawn") {
@@ -186,7 +199,8 @@ export function DelegatedTask({ message, agentName }) {
   // enough for the tool-call pairing wire format.
   const resultById = new Map();
   for (const m of messages) {
-    const results = m.toolResults || m.tool_results || [];
+    const results =
+      toolResultsFromParts(m.parts) ?? m.toolResults ?? m.tool_results ?? [];
     for (const r of results) {
       const id = r.tool_call_id ?? r.toolCallId;
       if (id) resultById.set(id, r);
