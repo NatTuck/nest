@@ -323,6 +323,63 @@ describe("DelegatedTask", () => {
     expect(screen.getByText("Awaiting reply")).toBeInTheDocument();
   });
 
+  it("renders from `parts` alone, the shape every row has after a page load", () => {
+    // The wire carries no legacy `toolCalls`/`toolResults`: a row that arrived
+    // through `chat:sync` — which is how the whole active list loads on every
+    // page load — has `parts` and nothing else. Reading only the legacy fields
+    // meant the card never rendered for a reloaded conversation, and a row
+    // whose legacy fields were dropped when the server's copy replaced it lost
+    // its card while still in the list.
+    seedCache({
+      messages: [
+        {
+          index: 2,
+          role: "tool",
+          parts: [
+            {
+              kind: "tool_result",
+              toolCallId: "call-1",
+              name: "agents-spawn",
+              content:
+                "Spawned agent worker-1. Its answer will arrive as a message.",
+              isError: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const message = {
+      index: 1,
+      role: "assistant",
+      parts: [
+        {
+          kind: "tool_use",
+          id: "call-1",
+          name: "agents-spawn",
+          arguments: { name: "worker-1", query: "do X" },
+        },
+      ],
+    };
+
+    render(
+      <MemoryRouter>
+        <DelegatedTask message={message} agentName={AGENT_NAME} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getAllByTestId("delegated-task-block")).toHaveLength(1);
+    // The result paired, so the card is past "Running" — which also proves the
+    // pairing map reads `parts` of the *other* row, not just this one.
+    expect(screen.getByText("Awaiting reply")).toBeInTheDocument();
+    expect(screen.getByTestId("delegated-task-confirmation")).toHaveTextContent(
+      "Spawned agent worker-1",
+    );
+    expect(screen.getByTestId("delegated-task-instruction")).toHaveTextContent(
+      "do X",
+    );
+  });
+
   it("reads a query from object, parsed-JSON, and partial-buffer arguments", () => {
     seedCache({
       messages: [

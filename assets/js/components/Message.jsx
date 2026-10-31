@@ -63,18 +63,21 @@ function Message({ message, agentName }) {
   const isTool = message.role === "tool";
   const isPartial = message.isPartial ?? false;
 
-  // Derive the tool call/result shapes from the canonical `parts`, exactly as
-  // `CollapsedHistory` does, so the two lists cannot disagree about what a row
-  // shows. Two reasons the derived value is the primary read:
+  // Derive the tool call/result shapes from the canonical `parts` — the same
+  // derivation `CollapsedHistory` uses, so the two lists read a row the same
+  // way. Two reasons the derived value is the primary read:
   //
   //   * a streaming partial has no legacy fields at all — only the finalized
   //     message sets them — so this is what renders an in-flight tool call;
   //   * a row that arrived through `chat:sync` is the wire message verbatim
-  //     (`syncAgentMessages` adds it as the server sent it), and the wire has
-  //     `parts` and nothing else: reading `message.toolResults` alone left
-  //     every sync-loaded tool row with no results on screen.
+  //     (`syncAgentMessages` adds it as the server sent it), and that wire
+  //     carries no legacy `toolCalls`/`toolResults`/`content`: reading
+  //     `message.toolResults` alone left every sync-loaded tool row with no
+  //     results on screen.
   //
-  // The legacy fields stay as the fallback for a row persisted before `parts`.
+  // The legacy field stays as this list's fallback for a row persisted before
+  // `parts`; the archive has no such fallback, so a pre-`parts` row shows its
+  // results here and not there.
   const toolCalls =
     toolCallsFromParts(message.parts) ?? message.toolCalls ?? [];
   const toolResults =
