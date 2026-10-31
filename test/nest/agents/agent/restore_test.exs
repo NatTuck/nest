@@ -3,50 +3,71 @@ defmodule Nest.Agents.Agent.RestoreTest do
   Tests for `Nest.Agents.Agent.Restore` — the on-demand request-log
   rebuild helper.
 
-  Covers `rebuild_request_api_logs/4`: the wire-format request
-  payload is built with the same
-  `client_config.client.format_request_payload/2` the live path
-  uses (asserted by comparing against `MockClient`'s own output
-  for an equivalent `RunRequest`), and that `{:compaction, _}`
-  markers in the preloaded sequence never reach the wire.
+  Covers `rebuild_request_api_logs/4`: the caller supplies the slice (the
+  active message list through the target message's index, never the
+  archive), the wire-format request payload is built with the same
+  `client_config.client.format_request_payload/2` the live path uses
+  (asserted by comparing against `MockClient`'s own output for an
+  equivalent `RunRequest`), and the log's timestamp and `max_tokens` are
+  the message's and the request's rather than the fetch's.
   """
 
   use ExUnit.Case, async: true
 
   alias Nest.Agents.Agent.ChatState
+  alias Nest.Agents.Agent.LlmMetrics
   alias Nest.Agents.Agent.Restore
   alias Nest.LLM.ClientConfig
   alias Nest.LLM.MockClient
   alias Nest.LLM.RunRequest
   alias Nest.LLM.Tool, as: ToolDef
   alias Nest.Messages.Assistant
-  alias Nest.Messages.Compaction, as: CompactionMessage
   alias Nest.Messages.Part
   alias Nest.Messages.System, as: MsgSystem
-  alias Nest.Messages.Tool, as: ToolMsg
   alias Nest.Messages.User
+
+  # A distinct, fixed timestamp per message index: the rebuild has to carry the
+  # *message's* time, so the test must be able to tell the two apart.
+  defp at(index), do: DateTime.from_unix!(1_700_000_000 + index)
+
+  # The caller's cut, exactly as `IntrospectionHandler` makes it: the active
+  # list through the target message's index, and nothing after it.
+  defp slice_through(messages, index) do
+    Enum.take_while(messages, fn {_role, %{index: i}} -> i <= index end)
+  end
 
   defp fixture_messages do
     [
-      {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "sys prompt"}], api_logs: []}},
-      {:user, %User{index: 1, parts: [%Part.Text{text: "first turn"}], api_logs: []}},
+      {:system,
+       %MsgSystem{
+         index: 0,
+         timestamp: at(0),
+         parts: [%Part.Text{text: "sys prompt"}],
+         api_logs: []
+       }},
+      {:user,
+       %User{index: 1, timestamp: at(1), parts: [%Part.Text{text: "first turn"}], api_logs: []}},
       {:assistant,
        %Assistant{
          index: 2,
+         timestamp: at(2),
          parts: [%Part.Text{text: "first reply"}],
          api_logs: [],
          finish_reason: "stop"
        }},
-      {:user, %User{index: 3, parts: [%Part.Text{text: "second turn"}], api_logs: []}},
+      {:user,
+       %User{index: 3, timestamp: at(3), parts: [%Part.Text{text: "second turn"}], api_logs: []}},
       {:tool,
        %Nest.Messages.Tool{
          index: 4,
+         timestamp: at(4),
          parts: [%Part.ToolResult{tool_call_id: "c1", name: "shell-cmd", content: "ok"}],
          api_logs: []
        }},
       {:assistant,
        %Assistant{
          index: 5,
+         timestamp: at(5),
          parts: [%Part.Text{text: "second reply"}],
          api_logs: [],
          finish_reason: "stop"
@@ -54,6 +75,9 @@ defmodule Nest.Agents.Agent.RestoreTest do
     ]
   end
 
+  # A resolved context limit, so `max_tokens` is the `min(model_default, 0.20L)`
+  # arm the live turn uses (20 000 here) and cannot be confused with the
+  # encoder's 32 000 fallback.
   defp fixture_state do
     tools = [
       %ToolDef{
@@ -80,157 +104,114 @@ defmodule Nest.Agents.Agent.RestoreTest do
       client_config: client_config,
       tools: tools,
       chat_state: %ChatState{messages: fixture_messages()},
+      llm_metrics: %LlmMetrics{context_limit: 100_000},
       live: %ChatState.Live{api_log_sequences: %{}}
     }
   end
 
   describe "rebuild_request_api_logs/4" do
-    test "id is formatted as '<message_index>.<sequence>' to match Broadcasts.next_api_log_id/2" do
+    test "the log is the message's own request: id, timestamp and the live wire payload" do
       state = fixture_state()
+      slice = slice_through(fixture_messages(), 3)
 
-      rebuilt =
-        Restore.rebuild_request_api_logs(state, fixture_messages(), 3, state.client_config)
+      rebuilt = Restore.rebuild_request_api_logs(state, slice, 3, state.client_config)
 
       assert rebuilt.type == :request
       assert rebuilt.id == "003.000"
-      assert is_struct(rebuilt.timestamp, DateTime)
-    end
+      # Not the fetch's clock: the widget shows when the request happened.
+      assert rebuilt.timestamp == at(3)
 
-    test "payload matches the client's wire format for the same RunRequest slice" do
-      # Compare to what MockClient would produce for the same
-      # `messages[0..3]` slice (system + first user + first
-      # assistant + target user). This pins that the rebuild
-      # uses the SAME wire format the live path uses — no
-      # deviation possible.
-      messages = fixture_messages()
-      state = fixture_state()
-
-      rebuilt = Restore.rebuild_request_api_logs(state, messages, 3, state.client_config)
-      slice = Enum.take(messages, 4)
-
+      # The same wire format the live path uses for that slice — including the
+      # cap the live request would have used (`min(32 000, 0.20 * 100 000)`),
+      # not the encoder's 32 000 fallback.
       expected_request = %RunRequest{
         messages: slice,
         tools: state.tools,
         tool_choice: :auto,
         model: state.client_config.model,
         thinking_effort: state.client_config.thinking_effort,
+        max_tokens: 20_000,
         stream: true,
         metadata: %{}
       }
 
       assert rebuilt.payload == MockClient.format_request_payload(expected_request, [])
+      assert rebuilt.payload["max_tokens"] == 20_000
     end
 
-    test "a tool-less agent rebuilds with no tools and tool_choice :none" do
-      state = %{fixture_state() | tools: []}
-      messages = fixture_messages()
+    test "a tool-less agent with no resolved limit rebuilds with no tools, :none and the default cap" do
+      state = %{
+        fixture_state()
+        | tools: [],
+          llm_metrics: %LlmMetrics{context_limit: nil}
+      }
 
-      rebuilt = Restore.rebuild_request_api_logs(state, messages, 1, state.client_config)
+      rebuilt =
+        Restore.rebuild_request_api_logs(
+          state,
+          slice_through(fixture_messages(), 1),
+          1,
+          state.client_config
+        )
 
       refute Map.has_key?(rebuilt.payload, "tools")
       assert rebuilt.payload["tool_choice"] == :none
+      # Nothing to take 20% of, so the model default stands alone — `test-model`
+      # has none, and the sane default is 32 000.
+      assert rebuilt.payload["max_tokens"] == 32_000
+      assert rebuilt.timestamp == at(1)
     end
 
-    # Regression: the `entire-ox` BEAM-restart crash. The
-    # preloaded sequence carried `{:compaction, _}` tuples
-    # mid-stream, and `OpenAIClient.message_to_wire/1` has no
-    # clause for `:compaction`. The live path doesn't see this
-    # because `state.chat_state.messages` excludes compaction
-    # markers; the rebuild path draws from the full sequence
-    # and must filter.
-    test "rebuilt payload does NOT include compaction marker rows (entire-ox regression)" do
-      preloaded_with_compaction = [
-        {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "sys"}]}},
-        {:user, %User{index: 1, parts: [%Part.Text{text: "u1"}], api_logs: []}},
-        {:assistant, %Assistant{index: 2, parts: [%Part.Text{text: "a1"}]}},
-        {:user, %User{index: 3, parts: [%Part.Text{text: "u2"}], api_logs: []}},
-        {:tool,
-         %ToolMsg{
-           index: 4,
-           parts: [
-             %Part.ToolResult{tool_call_id: "c1", name: "shell-cmd", content: "ok"}
-           ],
-           api_logs: []
-         }},
-        {:assistant, %Assistant{index: 5, parts: [%Part.Text{text: "a2"}]}},
-        {:compaction,
-         %CompactionMessage{
-           index: 6,
-           archived_count: 6,
-           occurred_at: nil,
-           metadata: nil
+    # The `entire-ox` production regression was a rebuild that cut a preloaded
+    # sequence positionally and then stripped the `{:compaction, _}` markers it
+    # crossed: with N compactions the log ran N messages past the message it
+    # described, and it carried pre-compaction rows. The fix removed both the
+    # cut and the strip — the caller passes the slice, and the active list has
+    # no markers to cross.
+    test "the payload is exactly the caller's slice (entire-ox regression)" do
+      state = fixture_state()
+
+      # The post-compaction active list: a fresh system row, the summary, the
+      # compactor's reply, then a human turn. Everything below the boundary is
+      # archived and is not in this list at all.
+      active = [
+        {:system,
+         %MsgSystem{index: 6, timestamp: at(6), parts: [%Part.Text{text: "fresh system"}]}},
+        {:user,
+         %User{index: 7, timestamp: at(7), parts: [%Part.Text{text: "summary"}], api_logs: []}},
+        {:assistant,
+         %Assistant{
+           index: 8,
+           timestamp: at(8),
+           parts: [%Part.Text{text: "compactor reply"}]
          }},
         {:user,
          %User{
-           index: 7,
-           parts: [%Part.Text{text: "u3 after compaction"}],
+           index: 9,
+           timestamp: at(9),
+           parts: [%Part.Text{text: "after compaction"}],
            api_logs: []
          }}
       ]
 
-      state = fixture_state()
-
-      # The crucial assertion: calling rebuild_request_api_logs
-      # for index 7 (which would otherwise include the
-      # compaction at 6 in its slice) must NOT crash and must
-      # NOT include the compaction row in the wire payload.
       rebuilt =
-        Restore.rebuild_request_api_logs(state, preloaded_with_compaction, 7, state.client_config)
+        Restore.rebuild_request_api_logs(state, slice_through(active, 9), 9, state.client_config)
 
-      # Flatten the wire messages (MockClient's `message_to_wire/1`
-      # is inconsistent — system/assistant/tool return lists,
-      # user returns a single map; the real OpenAI client
-      # `flat_map`s everything). The flatten normalizes the
-      # assertion without depending on MockClient's quirks.
-      wire_messages =
-        rebuilt.payload["messages"]
-        |> List.flatten()
-        |> Enum.filter(&is_map/1)
+      wire = rebuilt.payload["messages"]
 
-      # The compaction marker must NOT appear in the wire payload.
-      # (Without the fix, `OpenAIClient.message_to_wire({:compaction, _})`
-      # has no clause and the rebuild crashes with a CaseClauseError.)
-      refute Enum.any?(wire_messages, &(&1["role"] == "compaction"))
+      # One wire message per slice element, in order, ending at the target: no
+      # marker role (the encoder has no clause for one) and nothing past it.
+      assert Enum.map(wire, & &1["role"]) == ["system", "user", "assistant", "user"]
+      assert List.last(wire)["content"] == "after compaction"
+      assert rebuilt.timestamp == at(9)
 
-      # Compactness: 8 preloaded elements minus the compaction
-      # marker = 7 wire messages (1 system + 4 user + 2 assistant,
-      # in order — the {:tool, _} maps to role "user" in the
-      # Anthropic/Mock wire format).
-      assert Enum.count(wire_messages) == 7
+      # An earlier index gets an earlier slice — the caller's cut, not a re-cut
+      # of it — which is what keeps the log aligned with the message it is for.
+      earlier =
+        Restore.rebuild_request_api_logs(state, slice_through(active, 7), 7, state.client_config)
 
-      # 3 user messages (u1, u2, u3) + 1 tool-result user = 4 user
-      assert Enum.count(wire_messages, &(&1["role"] == "user")) == 4
-      assert Enum.count(wire_messages, &(&1["role"] == "assistant")) == 2
-      assert Enum.count(wire_messages, &(&1["role"] == "system")) == 1
-    end
-
-    test "rebuild works for an index BEFORE a compaction marker (negative case)" do
-      # Same preloaded sequence as the regression test above.
-      # Rebuilding for user@1 (slice = [system@0, user@1])
-      # doesn't cross the marker at index 6, so no filter
-      # fires. The slice stays at length 2.
-      preloaded_with_compaction = [
-        {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "sys"}]}},
-        {:user, %User{index: 1, parts: [%Part.Text{text: "u1"}], api_logs: []}},
-        {:assistant, %Assistant{index: 2, parts: [%Part.Text{text: "a1"}]}},
-        {:compaction,
-         %CompactionMessage{
-           index: 3,
-           archived_count: 3,
-           occurred_at: nil,
-           metadata: nil
-         }}
-      ]
-
-      state = fixture_state()
-
-      rebuilt =
-        Restore.rebuild_request_api_logs(state, preloaded_with_compaction, 1, state.client_config)
-
-      wire_messages = rebuilt.payload["messages"]
-      assert Enum.count(wire_messages) == 2
-      assert hd(wire_messages)["role"] == "system"
-      assert Enum.at(wire_messages, 1)["role"] == "user"
+      assert Enum.map(earlier.payload["messages"], & &1["role"]) == ["system", "user"]
+      assert earlier.timestamp == at(7)
     end
   end
 end
