@@ -11,8 +11,9 @@
  */
 
 import { leadingThinkBlock } from "./thinkTags.js";
-import { stripHeader } from "./stripHeader.js";
+import { splitFraming } from "./stripHeader.js";
 import { stripAgentHeaderMode } from "./agentHeader.js";
+import { commandOutputIndexes } from "./commandOutput.js";
 import { messageText } from "./messageText.js";
 
 // A message's reasoning channel and its prose, decided **once** for both the
@@ -91,21 +92,24 @@ export function thinkingFor(message) {
 // mid-text.
 export function textPartsFor(message) {
   const { parts } = splitReasoning(message);
-  return stripHeaderFromParts(
+  return stripFramingFromParts(
     parts.filter((part) => part?.kind !== "thinking"),
     message,
   );
 }
 
-function stripHeaderFromParts(parts, message) {
+// Strip the wire framing from the first text part of a non-user row. A header
+// heads a body and a row has one body, so only the first text part can carry
+// one.
+function stripFramingFromParts(parts, message) {
   const index = parts.findIndex((part) => part?.kind === "text");
   if (index === -1) return parts;
 
-  const stripped = stripHeader(parts[index].text, message?.mode);
-  if (stripped === parts[index].text) return parts;
+  const { text } = splitFraming(parts[index].text, message?.mode);
+  if (text === parts[index].text) return parts;
 
   const next = parts.slice();
-  next[index] = { ...parts[index], text: stripped };
+  next[index] = { ...parts[index], text };
   return next;
 }
 
@@ -128,7 +132,9 @@ export function messageContentPartsFor(message) {
 }
 
 // A user-role row's renderable blocks, in wire order, as
-// `{kind: "text" | "output", text, index}`.
+// `{kind: "text" | "output", text, header, index}`. `header` is the parsed
+// `[From … | mode: …]` header that was removed from that block, or `null`
+// (always `null` for an output block) — see `utils/header.js`.
 //
 // A user row's `parts` can hold more than one `text` part. A backgrounded
 // command's result is the prose that announces it plus the command's own
@@ -146,7 +152,7 @@ export function messageContentPartsFor(message) {
 // An `:output` part is the exception, and it is why the kind has to be decided
 // before the text is touched: a command's output is the **tail** of a body, not
 // a head — the header is on the part before it — so its text is exactly the
-// bytes the command printed. `stripHeader` treats the first line of whatever
+// bytes the command printed. `splitFraming` treats the first line of whatever
 // string it is given as a body head (`kept` starts empty), so stripping an
 // output part would delete a first line that merely looks like wire framing: a
 // command that prints `[nest notice]`, or a line that happens to match this
@@ -167,10 +173,13 @@ export function userPartsFor(message) {
   const blocks = [];
   for (const [index, part] of parts.entries()) {
     if (!part || part.kind !== "text") continue;
-    const isOutput = outputIndexes.has(index);
+    if (outputIndexes.has(index)) {
+      blocks.push({ kind: "output", text: part.text, header: null, index });
+      continue;
+    }
     blocks.push({
-      kind: isOutput ? "output" : "text",
-      text: isOutput ? part.text : stripFraming(part.text, message?.mode),
+      kind: "text",
+      ...stripFraming(part.text, message?.mode),
       index,
     });
   }
@@ -182,66 +191,22 @@ export function userPartsFor(message) {
   return [
     {
       kind: "text",
-      text: stripFraming(messageText(message), message?.mode),
+      ...stripFraming(messageText(message), message?.mode),
       index: 0,
     },
   ];
 }
 
-// The wire framing a user row's body carries and the operator must not see:
-// the `[From … | mode: …]` header, and the retired label's mode clause (the
-// row's badge already shows the mode).
+// A prose part's text with the wire framing removed, and the header that was
+// removed. `header` is the parsed `{sender, replyRequired, mode}` of the body's
+// head — the caption's content — so the block carries the facts the removal
+// took, and a caller cannot delete without them.
+//
+// The retired `[Message from agent …]` label's mode clause goes too: the row's
+// badge already shows the mode.
 function stripFraming(text, mode) {
-  return stripAgentHeaderMode(stripHeader(text, mode), mode);
-}
-
-// The set of `message.parts` indexes `commandOutputParts` names.
-//
-// The value decides how text is rendered, so a malformed one is a server bug
-// that has to be loud rather than silently ignored — this project does not
-// hide what it cannot render (AGENTS.md, "UI Transparency"). Anything other
-// than an array of non-negative integers, or an index that is not a `text`
-// part, throws naming the offending value. `null` is not "absent": the wire
-// contract omits the key when there is no command output, so a `null` is a
-// disagreement with it and is reported like any other wrong value.
-//
-// Exported because the clipboard needs the same rule: a command's output is
-// copied byte for byte (issue #139), and `formatMessage.js` may not strip wire
-// framing from a part this set names.
-export function commandOutputIndexes(message, parts) {
-  const raw = message?.commandOutputParts;
-  if (raw === undefined) return new Set();
-
-  if (!Array.isArray(raw)) {
-    throw new Error(
-      `commandOutputParts must be an array of parts indexes, got ${JSON.stringify(raw)}`,
-    );
-  }
-
-  const indexes = new Set();
-  for (const value of raw) {
-    if (!Number.isInteger(value) || value < 0) {
-      throw new Error(
-        `commandOutputParts must name non-negative integer indexes into parts, got ${JSON.stringify(value)}`,
-      );
-    }
-
-    const part = parts[value];
-    if (!part || part.kind !== "text") {
-      // Name what was found rather than the whole part: a `media` part carries
-      // its base64 payload, which does not belong in an error message.
-      const found = part
-        ? `a part whose kind is ${JSON.stringify(part.kind ?? null)}`
-        : `no part at all (parts has ${parts.length} entries)`;
-      throw new Error(
-        `commandOutputParts names parts[${value}], which is not a text part: found ${found}`,
-      );
-    }
-
-    indexes.add(value);
-  }
-
-  return indexes;
+  const { text: kept, headers } = splitFraming(text, mode);
+  return { text: stripAgentHeaderMode(kept, mode), header: headers[0] ?? null };
 }
 
 // Derive the legacy `toolCalls` shape from a message's `parts`

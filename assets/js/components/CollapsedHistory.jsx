@@ -38,30 +38,32 @@ import {
   mediaFromParts,
 } from "../utils/messageParts.js";
 import { formatTimestamp } from "../utils/formatTimestamp";
+import { rowAppearance } from "../utils/header.js";
+import { ReplyRequiredChip } from "./SenderCaption.jsx";
 
+// Non-user rows keep their role label. A user row's label, tint and avatar come
+// from `rowAppearance` (its bodies' headers), because the role alone cannot say
+// who spoke — a drained batch, a peer's note and a runtime notice are all user
+// rows.
 const ROLE_LABELS = {
-  user: "You",
   assistant: "Assistant",
   system: "System",
   tool: "Tool Result",
 };
 
 const ROLE_STYLES = {
-  user: "bg-blue-50/60 border-blue-200/60",
   assistant: "bg-gray-50 border-gray-200",
   system: "bg-amber-50/60 border-amber-200/60",
   tool: "bg-green-50/60 border-green-200/60",
 };
 
 const AVATAR_STYLES = {
-  user: "bg-blue-600 text-white",
   assistant: "bg-gray-600 text-white",
   system: "bg-amber-500 text-white",
   tool: "bg-green-500 text-white",
 };
 
 const AVATAR_LETTER = {
-  user: "U",
   assistant: "AI",
   system: "S",
   tool: "T",
@@ -76,10 +78,14 @@ const AVATAR_LETTER = {
 
 function MessageBubble({ message }) {
   const role = message.role;
-  const label = ROLE_LABELS[role] || role;
-  const className = ROLE_STYLES[role] || "bg-gray-50 border-gray-200";
-  const avatarClass = AVATAR_STYLES[role] || "bg-gray-600 text-white";
-  const letter = AVATAR_LETTER[role] || "?";
+  const sender = role === "user" ? rowAppearance(message) : null;
+  const label = sender?.label ?? ROLE_LABELS[role] ?? role;
+  const className = sender
+    ? `${sender.bubble} border`
+    : (ROLE_STYLES[role] ?? "bg-gray-50 border-gray-200");
+  const avatarClass =
+    sender?.avatar ?? AVATAR_STYLES[role] ?? "bg-gray-600 text-white";
+  const letter = sender?.avatarLabel ?? AVATAR_LETTER[role] ?? "?";
 
   return (
     <div
@@ -95,6 +101,7 @@ function MessageBubble({ message }) {
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline gap-2 mb-1">
           <span className="font-medium text-xs text-gray-700">{label}</span>
+          {sender?.replyRequired && <ReplyRequiredChip />}
           {message.timestamp && (
             <span className="text-[10px] text-gray-400">
               {formatTimestamp(message.timestamp)}

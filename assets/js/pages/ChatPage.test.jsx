@@ -838,22 +838,33 @@ describe("ChatPage message rendering", () => {
     mockAgentsCache = {};
   });
 
-  it("renders a user message with the 'You' label and a blue background", () => {
+  it("renders the human's own message with the 'You' label and a blue background", () => {
+    // `origin: "human"` is what makes it the reader's own words — the server
+    // stamps it, and the optimistic echo carries it too. A user row without it
+    // is somebody else's body (a peer's note, a notice, a spawn kickoff) and
+    // must not be drawn as the human's.
     mockAgentsCache = {
       "test-agent": {
         status: "connected",
         agentState: "idle",
         messages: [
-          { index: 0, role: "user", parts: [{ kind: "text", text: "Hello" }] },
+          {
+            index: 0,
+            role: "user",
+            origin: "human",
+            parts: [{ kind: "text", text: "Hello" }],
+          },
         ],
         model: { name: "qwen3.5-plus" },
       },
     };
 
-    renderChat();
+    const { container } = renderChat();
 
     expect(screen.getByText("You")).toBeInTheDocument();
     expect(screen.getByText("Hello")).toBeInTheDocument();
+    // The human's own bubble is the blue one.
+    expect(container.querySelector(".bg-blue-50")).not.toBeNull();
   });
 
   it("renders a user message with the mode badge when present", () => {

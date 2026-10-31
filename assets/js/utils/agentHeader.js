@@ -9,7 +9,7 @@
  * who spoke — so the label itself stays on screen and only its ` | mode: X`
  * clause goes, because the row's badge already shows the mode.
  *
- * The guard is the one `stripHeader` uses, and for the same reason: `mode` is
+ * The guard is the one `splitFraming` uses, and for the same reason: `mode` is
  * untrusted. Only the clause that *agrees* with the message's own `mode` is
  * removed, so a label that disagrees — a bug, or a row written by an older
  * build — keeps its text and the disagreement stays visible rather than being

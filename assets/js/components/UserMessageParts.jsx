@@ -19,6 +19,15 @@
  * and the header stripping) marks which are which; the output block is not
  * necessarily last, so nothing here may assume a position.
  *
+ * ## Who spoke
+ *
+ * A block also carries the `[From … | mode: …]` header that was removed from it
+ * (`utils/header.js`), and a row with **more than one block** captions each
+ * block with its sender — the senders differ, so the row label cannot state
+ * them. A single-body row shows no caption: the row label names the one sender,
+ * and nothing is shown twice. The reply marker follows the same rule (it is
+ * row-level for a single body, per caption here).
+ *
  * `"output"` is a **render-time** kind this component synthesises. It is never
  * on the wire and never appears in `message.parts` — the wire says which parts
  * are output with the top-level `commandOutputParts` index list, and
@@ -29,12 +38,16 @@
  * no attachment needs no guard here.
  */
 import { MessageContent } from "./MessageContent.jsx";
+import { SenderCaption } from "./SenderCaption.jsx";
 import { ToolMedia } from "./ToolMedia.jsx";
 import { TruncatedResult } from "./TruncatedResult.jsx";
 import { mediaFromParts, userPartsFor } from "../utils/messageParts.js";
 
 export function UserMessageParts({ message, className = "" }) {
   const blocks = userPartsFor(message);
+  // One body needs no caption: the row label already names its sender. Several
+  // bodies do, because they can have different senders.
+  const caption = blocks.length > 1;
 
   return (
     <>
@@ -48,6 +61,7 @@ export function UserMessageParts({ message, className = "" }) {
           block={block}
           className={className}
           spaced={index > 0}
+          caption={caption}
         />
       ))}
       <ToolMedia media={mediaFromParts(message?.parts)} />
@@ -55,7 +69,7 @@ export function UserMessageParts({ message, className = "" }) {
   );
 }
 
-function Block({ block, className, spaced }) {
+function Block({ block, className, spaced, caption }) {
   if (block.kind === "output") {
     return <TruncatedResult content={block.text} />;
   }
@@ -73,5 +87,12 @@ function Block({ block, className, spaced }) {
   // it, so the gap between two bodies has to come from the block that follows —
   // otherwise they run together. `TruncatedResult` already brings its own
   // `mt-2`, so only a text block needs the wrapper.
-  return spaced ? <div className="mt-2">{content}</div> : content;
+  const body = (
+    <>
+      {caption && block.header && <SenderCaption header={block.header} />}
+      {content}
+    </>
+  );
+
+  return spaced ? <div className="mt-2">{body}</div> : body;
 }

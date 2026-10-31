@@ -303,10 +303,12 @@ describe("messageContentPartsFor", () => {
 });
 
 describe("userPartsFor", () => {
-  it("returns one text block per text part, with the framing stripped from each", () => {
+  it("returns one text block per text part, with the framing stripped and its facts kept", () => {
     // A drained batch is one user row holding one body per entry, and each body
     // carries its own header. Per part is the same removal the joined renderer
-    // performed: a header heads a body and every part starts a body.
+    // performed: a header heads a body and every part starts a body. The
+    // block carries the parsed header too, so the caption has the sender
+    // without a second parse — and a caller cannot delete without the facts.
     expect(
       userPartsFor({
         role: "user",
@@ -320,11 +322,31 @@ describe("userPartsFor", () => {
         ],
       }),
     ).toEqual([
-      { kind: "text", text: "first body", index: 0 },
-      { kind: "text", text: "\n\nsecond body", index: 1 },
+      {
+        kind: "text",
+        text: "first body",
+        header: {
+          sender: { kind: "agent", name: "peer" },
+          replyRequired: false,
+          mode: "act",
+        },
+        index: 0,
+      },
+      {
+        kind: "text",
+        text: "\n\nsecond body",
+        header: {
+          sender: { kind: "agent", name: "other" },
+          replyRequired: false,
+          mode: "act",
+        },
+        index: 1,
+      },
     ]);
 
-    // The retired label's mode clause goes too (the row's badge shows the mode).
+    // The retired label's mode clause goes too (the row's badge shows the mode),
+    // and the label itself is not a `[From …]` header, so there is no header to
+    // attach — `rowSenders` reads it.
     expect(
       userPartsFor({
         role: "user",
@@ -340,6 +362,7 @@ describe("userPartsFor", () => {
       {
         kind: "text",
         text: '[Message from agent "peer"]\nmay I ask?',
+        header: null,
         index: 0,
       },
     ]);
@@ -363,8 +386,18 @@ describe("userPartsFor", () => {
     ).toEqual([
       // `index` is the part's index in `parts` (2), not its index among the
       // blocks (1) — that is the mapping the wire's `commandOutputParts` uses.
-      { kind: "text", text: "finished:", index: 1 },
-      { kind: "output", text: "# output", index: 2 },
+      {
+        kind: "text",
+        text: "finished:",
+        header: {
+          sender: { kind: "runtime", name: null },
+          replyRequired: false,
+          mode: "act",
+        },
+        index: 1,
+      },
+      // An output block never carries a header: its bytes are a body's tail.
+      { kind: "output", text: "# output", header: null, index: 2 },
     ]);
   });
 
@@ -383,9 +416,27 @@ describe("userPartsFor", () => {
         commandOutputParts: [1],
       }),
     ).toEqual([
-      { kind: "text", text: "finished:", index: 0 },
-      { kind: "output", text: "out", index: 1 },
-      { kind: "text", text: "\n\nhi", index: 2 },
+      {
+        kind: "text",
+        text: "finished:",
+        header: {
+          sender: { kind: "runtime", name: null },
+          replyRequired: false,
+          mode: "act",
+        },
+        index: 0,
+      },
+      { kind: "output", text: "out", header: null, index: 1 },
+      {
+        kind: "text",
+        text: "\n\nhi",
+        header: {
+          sender: { kind: "agent", name: "peer" },
+          replyRequired: false,
+          mode: "act",
+        },
+        index: 2,
+      },
     ]);
   });
 
@@ -396,15 +447,28 @@ describe("userPartsFor", () => {
         mode: "act",
         content: "[From user | mode: act]\nlegacy body",
       }),
-    ).toEqual([{ kind: "text", text: "legacy body", index: 0 }]);
+    ).toEqual([
+      {
+        kind: "text",
+        text: "legacy body",
+        header: {
+          sender: { kind: "human", name: null },
+          replyRequired: false,
+          mode: "act",
+        },
+        index: 0,
+      },
+    ]);
 
     // `parts` without a text part reads `content` too — that fallback lives in
     // `messageText`, and the row must not render blank.
     expect(
       userPartsFor({ role: "user", parts: [], content: "only content" }),
-    ).toEqual([{ kind: "text", text: "only content", index: 0 }]);
+    ).toEqual([{ kind: "text", text: "only content", header: null, index: 0 }]);
 
-    expect(userPartsFor(null)).toEqual([{ kind: "text", text: "", index: 0 }]);
+    expect(userPartsFor(null)).toEqual([
+      { kind: "text", text: "", header: null, index: 0 },
+    ]);
   });
 
   it("throws when commandOutputParts is not an array of non-negative integers", () => {

@@ -201,6 +201,55 @@ describe("UserMessageParts", () => {
     expect(pres[0].textContent).toBe(OUTPUT);
   });
 
+  it("captions each body of a multi-body row with its sender and reply marker", () => {
+    // A drained batch holds one body per entry and the senders differ, so the
+    // row label cannot state them: each body carries its own caption. This is
+    // the same removal as before — the header line is gone — but the facts it
+    // carried are now on screen.
+    render(
+      <UserMessageParts
+        message={{
+          role: "user",
+          mode: "act",
+          parts: [
+            { kind: "text", text: "[From agent a | mode: act]\nfirst body" },
+            {
+              kind: "text",
+              text: "[From agent b, agents-send reply required | mode: act]\nsecond body",
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText("a")).toBeInTheDocument();
+    expect(screen.getByText("b")).toBeInTheDocument();
+    expect(screen.getByText("reply required")).toBeInTheDocument();
+    expect(screen.queryByText(/\[From /)).toBeNull();
+  });
+
+  it("shows no caption for a single-body row", () => {
+    // The row label names the one sender; a caption here would show it twice.
+    render(
+      <UserMessageParts
+        message={{
+          role: "user",
+          mode: "act",
+          parts: [
+            {
+              kind: "text",
+              text: "[From agent peer, agents-send reply required | mode: act]\nonly body",
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText("only body")).toBeInTheDocument();
+    expect(screen.queryByText("peer")).toBeNull();
+    expect(screen.queryByText("reply required")).toBeNull();
+  });
+
   it("renders a row persisted before the parts model (content only)", () => {
     render(
       <UserMessageParts

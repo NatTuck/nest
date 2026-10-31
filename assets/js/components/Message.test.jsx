@@ -287,6 +287,129 @@ describe("Message backgrounded command output", () => {
   });
 });
 
+describe("Message sender affordances", () => {
+  // The header states three facts — sender, reply-required, mode — and the
+  // mode already has the badge. The sender and the reply marker get their own
+  // home here, because deleting the whole line on the ground that "the sender
+  // is the row's own author" is false for a batch, a peer's note, a runtime
+  // notice and a spawn kickoff — every one of which used to be drawn as the
+  // human's own "You".
+
+  const userRow = (overrides = {}) => ({
+    index: 1,
+    role: "user",
+    mode: "act",
+    metadata: { mode: "act" },
+    ...overrides,
+  });
+
+  it("shows both senders of a two-body batch, and deletes neither header", () => {
+    const { container } = render(
+      <MessageBubble
+        agentName="test-agent"
+        message={userRow({
+          parts: [
+            { kind: "text", text: "[From agent a | mode: act]\nfirst body" },
+            {
+              kind: "text",
+              text: "[From agent b, agents-send reply required | mode: act]\nsecond body",
+            },
+          ],
+        })}
+      />,
+    );
+
+    // Both senders are visible — as per-body captions, since the row holds two
+    // bodies with different senders.
+    expect(screen.getByText("a")).toBeInTheDocument();
+    expect(screen.getByText("b")).toBeInTheDocument();
+
+    // The reply marker survived as an affordance.
+    expect(screen.getByText("reply required")).toBeInTheDocument();
+
+    // Neither header line is rendered...
+    expect(container.textContent).not.toContain("[From agent a");
+    expect(container.textContent).not.toContain("[From agent b");
+
+    // ...the row label does not claim the human wrote it, and neither does the
+    // bubble's tint.
+    expect(screen.queryByText("You")).toBeNull();
+    expect(screen.getByText("2 notes")).toBeInTheDocument();
+    expect(container.querySelector(".bg-blue-50")).toBeNull();
+    // Several senders get the neutral "N notes" tint, not the human's blue.
+    expect(container.querySelector(".bg-gray-50")).not.toBeNull();
+  });
+
+  it("labels a runtime notice row with the runtime, not the human", () => {
+    render(
+      <MessageBubble
+        agentName="test-agent"
+        message={userRow({
+          parts: [
+            {
+              kind: "text",
+              text: "[From nest runtime | mode: act]\nContext at 50%.",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("nest runtime")).toBeInTheDocument();
+    expect(screen.queryByText("You")).toBeNull();
+  });
+
+  it("labels a spawn kickoff with the spawning agent, not the human", () => {
+    // A spawn kickoff is a `kind: :user` entry nobody typed: no `origin`
+    // metadata, and the header says which agent it came from.
+    render(
+      <MessageBubble
+        agentName="test-agent"
+        message={userRow({
+          parts: [{ kind: "text", text: "[From agent x | mode: act]\nDo it." }],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("x")).toBeInTheDocument();
+    expect(screen.queryByText("You")).toBeNull();
+  });
+
+  it("keeps the human's own row as 'You', with one body and no caption", () => {
+    const { container } = render(
+      <MessageBubble
+        agentName="test-agent"
+        message={userRow({
+          origin: "human",
+          parts: [
+            { kind: "text", text: "[From user @nat | mode: act]\nHello" },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("You")).toBeInTheDocument();
+    // The human's blue bubble is unchanged.
+    expect(container.querySelector(".bg-blue-50")).not.toBeNull();
+    // One body states its sender in the row label, so there is no caption and
+    // nothing is shown twice.
+    expect(screen.queryByText("@nat")).toBeNull();
+    expect(container.textContent).not.toContain("[From user");
+  });
+
+  it("says 'unknown sender' rather than 'You' when the row names nobody", () => {
+    render(
+      <MessageBubble
+        agentName="test-agent"
+        message={userRow({ parts: [{ kind: "text", text: "no framing" }] })}
+      />,
+    );
+
+    expect(screen.getByText("unknown sender")).toBeInTheDocument();
+    expect(screen.queryByText("You")).toBeNull();
+  });
+});
+
 describe("Message peer deliveries", () => {
   const peerMessage = (overrides = {}) => ({
     index: 1,
@@ -330,7 +453,7 @@ describe("Message peer deliveries", () => {
     // recipient's mode in the old `[Message from agent "peer" | mode: act]`
     // label, which is how an agent whose inbox is all peer traffic learned its
     // own mode. The bubble already renders the same value as the mode badge, so
-    // the label's copy is dropped from the display (exactly as `stripHeader`
+    // the label's copy is dropped from the display (exactly as `splitFraming`
     // drops the header the badge also shows).
     render(<MessageBubble agentName="test-agent" message={peerMessage()} />);
 

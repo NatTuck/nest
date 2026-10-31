@@ -44,9 +44,14 @@ defmodule Nest.Messages.Header do
   `Nest.Messages` (`MessageList.continuation_prompt/1`).
 
   The client removes the header at render time
-  (`assets/js/utils/stripHeader.js`, which also still removes the markers this
-  replaced from rows recorded before it), so the operator reads the body and the
-  badge, never the framing.
+  (`assets/js/utils/stripHeader.js`), so the operator reads the body, never the
+  wire line — but **not** at the cost of its facts: the sender and the reply
+  marker have their own affordances (`assets/js/utils/header.js` — the row label,
+  and a caption per body when a row holds several), and the mode is the row's
+  badge. A header line is dropped only after that same parse has read it, and
+  only when its mode clause agrees with the row's own, so a disagreement stays
+  visible. The clipboard keeps the line verbatim: plain text has no badge, so
+  there the sender is content.
   """
 
   @type sender :: :user | :runtime | {:user, String.t()} | {:agent, String.t() | nil}

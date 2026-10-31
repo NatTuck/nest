@@ -126,7 +126,7 @@ describe("CollapsedHistory", () => {
 
     it("uses the correct role label per message", () => {
       const history = buildHistory([
-        { role: "user", parts: [{ kind: "text", text: "u" }] },
+        { role: "user", origin: "human", parts: [{ kind: "text", text: "u" }] },
         { role: "assistant", parts: [{ kind: "text", text: "a" }] },
         { role: "system", parts: [{ kind: "text", text: "s" }] },
         {

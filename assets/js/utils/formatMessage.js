@@ -14,7 +14,10 @@
  *     separately in the UI; the user does not want it re-pasted), and a
  *     runtime notice has its `[nest notice]\n` marker stripped wherever it
  *     sits (its user row, or the fused assistant row an older transcript
- *     still carries). Tool
+ *     still carries). The `[From … | mode: …]` header, by contrast, is copied
+ *     **verbatim**: on screen the sender has its own affordance (the row label
+ *     and the per-body caption), but plain text has no badge, so there the
+ *     sender is content — deleting it would lose who spoke. Tool
  *     calls and tool results have no natural markdown form, so they are
  *     rendered as a bold header plus a fenced code block; a part kind this
  *     build does not recognise is called out in the output rather than
@@ -40,9 +43,10 @@
  */
 
 import { stripAgentHeaderMode } from "./agentHeader.js";
-import { stripHeader } from "./stripHeader.js";
+import { stripRetiredMarkers } from "./stripHeader.js";
 import { mediaSummary } from "./media.js";
-import { commandOutputIndexes, splitReasoning } from "./messageParts.js";
+import { splitReasoning } from "./messageParts.js";
+import { commandOutputIndexes } from "./commandOutput.js";
 
 // The clipboard omits reasoning on purpose (issue #51). When a message
 // carries *only* reasoning, the copy would otherwise be empty — which reads
@@ -170,16 +174,17 @@ function mediaToMarkdown(part) {
 }
 
 /**
- * The body text for a role, with the wire framing removed and nothing else
- * done to it: reasoning was already taken out by `splitReasoning`, so a
- * `<think>` that is still in the text is prose and is copied verbatim.
+ * The body text for a role, with the **retired** framing removed and nothing
+ * else done to it: reasoning was already taken out by `splitReasoning`, so a
+ * `<think>` that is still in the text is prose and is copied verbatim, and the
+ * `[From … | mode: …]` header stays because the copy has no badge to carry the
+ * sender.
  *
- * A user row is a body with its mode prefix stripped (the row's badge shows
- * it) and, for a transcript recorded before the header, the legacy label's
- * mode clause. A synthetic runtime notice carries the `[nest notice]` marker at
- * the head of its text (on its user row, or on the fused
- * `assistant(notice + ack)` row a transcript recorded before the alternation
- * bridge still carries), which `stripHeader` removes for every role.
+ * A user row also loses the retired `[mode: <mode>]` prefix and the legacy
+ * label's mode clause, exactly as before. A synthetic runtime notice carries
+ * the `[nest notice]` marker at the head of its text (on its user row, or on
+ * the fused `assistant(notice + ack)` row a transcript recorded before the
+ * alternation bridge still carries), which goes for every role.
  *
  * The one exception is a part the wire marks as a command's output, which is
  * copied byte for byte (`isCommandOutput`): it is a body's tail, not its head,
@@ -194,9 +199,9 @@ function visibleForRole(text, role, mode, isCommandOutput = false) {
   if (isCommandOutput) return text;
 
   if (role === "user") {
-    return stripAgentHeaderMode(stripHeader(text, mode), mode);
+    return stripAgentHeaderMode(stripRetiredMarkers(text, mode), mode);
   }
-  return stripHeader(text, mode);
+  return stripRetiredMarkers(text, mode);
 }
 
 /** A tool call: a bold header naming the tool, then its arguments. */
