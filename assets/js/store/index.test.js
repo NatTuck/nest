@@ -2165,6 +2165,73 @@ describe("store", () => {
       consoleErrorSpy.mockRestore();
       warnSpy.mockRestore();
     });
+
+    it("does not give a tool row the thinking of an accumulator that is not its own", () => {
+      // The store can hold an accumulator for a *different* message: a
+      // `chat:status` reply or a `chat:sync` installs the server's live
+      // `partial`, which is the assistant turn's and survives until that turn
+      // ends — i.e. across the tool execution that follows it. The tool row
+      // then arrived with the assistant's reasoning stamped on it, and
+      // `Message.jsx` rendered a Thinking block above its results.
+      //
+      // The fallback's own case (an assistant row whose broadcast thinking is
+      // shorter than its accumulator's) is the test above; it is index-matched,
+      // so it still falls back.
+      const consoleErrorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      useStore.setState((state) => ({
+        agentsCache: {
+          ...state.agentsCache,
+          "agent-1": {
+            ...state.agentsCache["agent-1"],
+            streaming: {
+              messageIndex: 1,
+              parts: [
+                { kind: "thinking", thinking: "the assistant's reasoning" },
+              ],
+            },
+          },
+        },
+      }));
+
+      useStore.getState().addChatMessage("agent-1", {
+        index: 2,
+        role: "tool",
+        parts: [
+          {
+            kind: "tool_result",
+            toolCallId: "c1",
+            name: "shell-cmd",
+            content: "a",
+            isError: false,
+          },
+          {
+            kind: "tool_result",
+            toolCallId: "c2",
+            name: "shell-cmd",
+            content: "b",
+            isError: false,
+          },
+        ],
+      });
+
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+      expect(messages[0].thinking).toBeNull();
+      // Its own results are still derived.
+      expect(messages[0].toolResults).toHaveLength(2);
+      // The accumulator is consumed all the same: it belonged to another row,
+      // and that row's own broadcast has already arrived.
+      expect(useStore.getState().agentsCache["agent-1"].streaming).toBeNull();
+      // Nothing to report: the broadcast has no thinking, and the accumulator
+      // was never this row's.
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+
+      consoleErrorSpy.mockRestore();
+      warnSpy.mockRestore();
+    });
   });
 
   describe("addChatMessage index-mismatch reconcile (regression: optimistic/server race)", () => {
@@ -2366,6 +2433,39 @@ describe("store", () => {
       expect(messages).toHaveLength(2);
       expect(messages[0].index).toBe(0);
       expect(messages[1].index).toBe(3);
+    });
+
+    it("does not carry the cached row's fields onto a renumbered copy", () => {
+      // The content match reconciles a *different* row: the optimistic echo at
+      // one index with the server's copy at another. The cached row's legacy
+      // fields belong to it alone, so carrying them would show one message's
+      // data on another.
+      const timestamp = new Date().toISOString();
+
+      useStore.getState().addChatMessage("agent-1", {
+        index: 0,
+        role: "user",
+        origin: "human",
+        timestamp,
+        parts: [{ kind: "text", text: "Hello" }],
+        apiLogs: [{ id: "000.000", type: "request", payload: {} }],
+      });
+
+      // The server's copy of the same words, renumbered (e.g. after a notice
+      // pair moved it).
+      useStore.getState().addChatMessage("agent-1", {
+        index: 3,
+        role: "user",
+        origin: "human",
+        timestamp,
+        parts: [{ kind: "text", text: "Hello" }],
+      });
+
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].index).toBe(3);
+      expect(messages[0].content).toBe("Hello");
+      expect(messages[0].apiLogs).toEqual([]);
     });
   });
 
@@ -2904,23 +3004,26 @@ describe("store", () => {
       expect(cache.lastIndex).toBe(1);
     });
 
-    it("preserves existing messages when syncing duplicates", () => {
+    it("lets the server's row win for an index the reply re-sends", () => {
+      // A sync exists to repair a cache the client can no longer trust (a gap,
+      // a phantom row, a missed compaction). Letting the cached row win by
+      // index let a phantom survive the very request that should have fixed
+      // it, so the reply's row is authoritative for the indices it carries.
       useStore.getState().agentsCache["agent-1"].messages = [
-        { index: 0, role: "user", content: "Existing" },
+        { index: 0, role: "user", content: "Phantom" },
+        { index: 1, role: "assistant", content: "Kept" },
       ];
 
       useStore.getState().syncAgentMessages("agent-1", {
-        messages: [
-          { index: 0, role: "user", content: "Duplicate" },
-          { index: 1, role: "assistant", content: "New" },
-        ],
-        messageCount: 1,
+        messages: [{ index: 0, role: "user", content: "Authoritative" }],
+        messageCount: 2,
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
       expect(cache.messages).toHaveLength(2);
-      // Should keep original message at index 0
-      expect(cache.messages[0].content).toBe("Existing");
+      expect(cache.messages[0].content).toBe("Authoritative");
+      // A row the reply does not carry is kept.
+      expect(cache.messages[1].content).toBe("Kept");
     });
 
     it("handles sync when cache has no messages array", () => {

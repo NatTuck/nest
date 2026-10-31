@@ -10,6 +10,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import { MessageBubble } from "./Message";
+import { CollapsedHistory } from "./CollapsedHistory";
+import { useStore } from "../store";
 
 vi.mock("../channels/state", () => ({
   agentChannels: new Map(),
@@ -481,6 +483,95 @@ describe("Message sender affordances", () => {
 
     expect(screen.getByText("unknown sender")).toBeInTheDocument();
     expect(screen.queryByText("You")).toBeNull();
+  });
+});
+
+describe("Message tool rows", () => {
+  // Two `shell-cmd` results, as the wire carries them: `parts` and nothing
+  // else. A row that arrived through `chat:sync` is the wire message verbatim
+  // (`syncAgentMessages` adds it as the server sent it), so it has no legacy
+  // `toolResults` field at all.
+  const twoResults = [
+    {
+      kind: "tool_result",
+      toolCallId: "c1",
+      name: "shell-cmd",
+      content: "first output",
+      isError: false,
+    },
+    {
+      kind: "tool_result",
+      toolCallId: "c2",
+      name: "shell-cmd",
+      content: "second output",
+      isError: false,
+    },
+  ];
+
+  it("renders a parts-only tool row's results, in both lists", () => {
+    // The live list used to read `message.toolResults` only, so a sync-loaded
+    // tool row rendered no results at all while the archive — which derives
+    // from `parts` — showed them. Both lists now derive the same way.
+    const row = { index: 3, role: "tool", parts: twoResults };
+
+    const { unmount } = render(
+      <MessageBubble agentName="test-agent" message={row} />,
+    );
+    expect(screen.getAllByText("Success: shell-cmd")).toHaveLength(2);
+    expect(screen.getByText("first output")).toBeInTheDocument();
+    expect(screen.getByText("second output")).toBeInTheDocument();
+    unmount();
+
+    render(<CollapsedHistory history={[row]} />);
+    expect(screen.getAllByText("Success: shell-cmd")).toHaveLength(2);
+    expect(screen.getByText("first output")).toBeInTheDocument();
+    expect(screen.getByText("second output")).toBeInTheDocument();
+  });
+
+  it("renders no Thinking block for a tool row the store left without one", () => {
+    // The store can hold an accumulator for a *different* message (a
+    // `chat:status` reply or a `chat:sync` installs the server's live
+    // `partial`, which is the assistant turn's and survives across the tool
+    // execution that follows it). Before the store guarded the fallback by
+    // index, the assistant's reasoning was stamped on this row and rendered
+    // here as a Thinking block above the results.
+    const store = useStore;
+    store.getState()._reset();
+    store.getState().setAgentConnecting("agent-1");
+    store.getState().setAgentConnected("agent-1", {
+      model: { name: "m" },
+      messageCount: 0,
+    });
+    store.setState((state) => ({
+      agentsCache: {
+        ...state.agentsCache,
+        "agent-1": {
+          ...state.agentsCache["agent-1"],
+          streaming: {
+            messageIndex: 1,
+            parts: [
+              { kind: "thinking", thinking: "the assistant's reasoning" },
+            ],
+          },
+        },
+      },
+    }));
+
+    store.getState().addChatMessage("agent-1", {
+      index: 2,
+      role: "tool",
+      parts: twoResults,
+    });
+
+    const row = store.getState().agentsCache["agent-1"].messages[0];
+    const { container } = render(
+      <MessageBubble agentName="test-agent" message={row} />,
+    );
+
+    expect(screen.queryByText("Thinking")).toBeNull();
+    expect(container.textContent).not.toContain("the assistant's reasoning");
+    // The row's own content is untouched.
+    expect(screen.getAllByText("Success: shell-cmd")).toHaveLength(2);
   });
 });
 

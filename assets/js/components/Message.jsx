@@ -53,6 +53,7 @@ import {
   thinkingFor,
   messageContentPartsFor,
   toolCallsFromParts,
+  toolResultsFromParts,
   mediaFromParts,
 } from "../utils/messageParts.js";
 
@@ -62,14 +63,22 @@ function Message({ message, agentName }) {
   const isTool = message.role === "tool";
   const isPartial = message.isPartial ?? false;
 
-  // Derive tool calls from the canonical `parts` shape so
-  // streaming partials (whose `message.toolCalls` is never
-  // populated — only the finalized message sets that field)
-  // render in-flight tool calls as soon as the BEAM broadcasts
-  // them. For finalized messages the derived value matches
-  // `message.toolCalls`, so this is just a more robust read.
+  // Derive the tool call/result shapes from the canonical `parts`, exactly as
+  // `CollapsedHistory` does, so the two lists cannot disagree about what a row
+  // shows. Two reasons the derived value is the primary read:
+  //
+  //   * a streaming partial has no legacy fields at all — only the finalized
+  //     message sets them — so this is what renders an in-flight tool call;
+  //   * a row that arrived through `chat:sync` is the wire message verbatim
+  //     (`syncAgentMessages` adds it as the server sent it), and the wire has
+  //     `parts` and nothing else: reading `message.toolResults` alone left
+  //     every sync-loaded tool row with no results on screen.
+  //
+  // The legacy fields stay as the fallback for a row persisted before `parts`.
   const toolCalls =
     toolCallsFromParts(message.parts) ?? message.toolCalls ?? [];
+  const toolResults =
+    toolResultsFromParts(message.parts) ?? message.toolResults ?? [];
 
   // A user row's identity comes from its bodies' headers, not from the role: the
   // role is overloaded on the wire (a drained batch, a peer's note, a runtime
@@ -169,7 +178,7 @@ function Message({ message, agentName }) {
         )}
         <ToolCalls toolCalls={toolCalls} />
         <DelegatedTask message={message} agentName={agentName} />
-        <ToolResults toolResults={message.toolResults} />
+        <ToolResults toolResults={toolResults} />
         {/* The media for a row that is not the user's own: `UserMessageParts`
             renders a user row's attachments itself, and every other role
             either gets parts with the media filtered out
