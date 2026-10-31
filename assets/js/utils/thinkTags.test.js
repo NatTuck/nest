@@ -1,205 +1,82 @@
+/**
+ * Tests for `leadingThinkBlock` — the one `<think>` rule the display still
+ * applies.
+ *
+ * A marker is wire framing only when the fact it carries has a home elsewhere
+ * in the row, and the only home left is a **leading matched** block on an
+ * assistant row (the server writes at most one `Part.Thinking`, first). So the
+ * function must look at the head of the string and nowhere else: a `<think>` in
+ * the middle of prose is prose, and that is the regression these tests pin — an
+ * assistant message reading "see `<think>` for details" must come through
+ * untouched.
+ */
 import { describe, expect, it } from "vitest";
-import { splitThinkTags, splitThinkFromParts } from "./thinkTags.js";
+import { leadingThinkBlock } from "./thinkTags.js";
 
-describe("splitThinkTags", () => {
-  it("returns no segments for empty / non-string input", () => {
-    expect(splitThinkTags("")).toEqual([]);
-    expect(splitThinkTags(null)).toEqual([]);
-    expect(splitThinkTags(undefined)).toEqual([]);
-    expect(splitThinkTags(42)).toEqual([]);
-  });
-
-  it("returns a single text segment when there are no markers", () => {
-    expect(splitThinkTags("hello world")).toEqual([
-      { kind: "text", text: "hello world" },
-    ]);
-  });
-
-  it("splits a single <think>...</think> block", () => {
-    expect(splitThinkTags("before<think>reasoning</think>after")).toEqual([
-      { kind: "text", text: "before" },
-      { kind: "thinking", text: "reasoning" },
-      { kind: "text", text: "after" },
-    ]);
-  });
-
-  it("splits multiple blocks in the same string", () => {
-    expect(splitThinkTags("a<think>1</think>b<think>2</think>c")).toEqual([
-      { kind: "text", text: "a" },
-      { kind: "thinking", text: "1" },
-      { kind: "text", text: "b" },
-      { kind: "thinking", text: "2" },
-      { kind: "text", text: "c" },
-    ]);
-  });
-
-  it("handles an empty think block (<think></think>)", () => {
-    expect(splitThinkTags("before<think></think>after")).toEqual([
-      { kind: "text", text: "before" },
-      { kind: "thinking", text: "" },
-      { kind: "text", text: "after" },
-    ]);
-  });
-
-  it("handles an orphan closing </think> (no matching <think>)", () => {
-    // Stray `</think>` in the response is treated as a thinking
-    // marker — the orphan text and everything after is routed
-    // to the thinking channel. The orphan itself is consumed
-    // (so the user doesn't see raw `</think>` characters).
-    expect(splitThinkTags("before</think>after")).toEqual([
-      { kind: "text", text: "before" },
-      { kind: "thinking", text: "after" },
-    ]);
-  });
-
-  it("handles an orphan <think> (no matching </think>)", () => {
-    // The open `<think>` is consumed and everything from there
-    // to the end of the string is routed to the thinking
-    // channel (an incomplete think block).
-    expect(splitThinkTags("before<think>reasoning")).toEqual([
-      { kind: "text", text: "before" },
-      { kind: "thinking", text: "reasoning" },
-    ]);
-  });
-
-  it("does not recurse into a nested <think> inside a think block", () => {
-    // The inner `<think>` is just text inside the outer think
-    // block — we don't open a new thinking segment.
-    expect(
-      splitThinkTags("a<think>outer<think>inner</think>end</think>b"),
-    ).toEqual([
-      { kind: "text", text: "a" },
-      { kind: "thinking", text: "outer<think>inner</think>end" },
-      { kind: "text", text: "b" },
-    ]);
-  });
-
-  it("preserves whitespace and newlines in segments", () => {
-    expect(
-      splitThinkTags("line1\n<think>\nreasoning\n\nmore\n</think>\nline2\n"),
-    ).toEqual([
-      { kind: "text", text: "line1\n" },
-      { kind: "thinking", text: "\nreasoning\n\nmore\n" },
-      { kind: "text", text: "\nline2\n" },
-    ]);
-  });
-
-  it("treats </think>\\n\\n as thinking (orphan closing)", () => {
-    // The exact stray-text pattern from the regression:
-    // </think>\n\n leaking into the assistant's reply.
-    expect(splitThinkTags("hello</think>\n\nworld")).toEqual([
-      { kind: "text", text: "hello" },
-      { kind: "thinking", text: "\n\nworld" },
-    ]);
-  });
-});
-
-describe("splitThinkFromParts", () => {
-  it("returns null/empty for non-array input", () => {
-    expect(splitThinkFromParts(null)).toEqual({
-      thinking: null,
-      textParts: [],
-    });
-    expect(splitThinkFromParts(undefined)).toEqual({
-      thinking: null,
-      textParts: [],
-    });
-  });
-
-  it("returns the parts unchanged when no think markers are present", () => {
-    const parts = [
-      { kind: "thinking", thinking: "reasoning" },
-      { kind: "text", text: "hello" },
-    ];
-    expect(splitThinkFromParts(parts)).toEqual({
+describe("leadingThinkBlock", () => {
+  it("splits a leading matched block into its content and the rest", () => {
+    expect(leadingThinkBlock("<think>reasoning</think>Answer.")).toEqual({
       thinking: "reasoning",
-      textParts: [{ kind: "text", text: "hello" }],
+      rest: "Answer.",
     });
   });
 
-  it("concatenates multiple Part.Thinking entries with a blank-line separator", () => {
-    const parts = [
-      { kind: "thinking", thinking: "first" },
-      { kind: "thinking", thinking: "second" },
-    ];
-    expect(splitThinkFromParts(parts)).toEqual({
-      thinking: "first\n\nsecond",
-      textParts: [],
+  it("returns the remainder after the first closer, keeping it verbatim", () => {
+    // Newlines and whitespace after the block are the body's, not the block's.
+    expect(leadingThinkBlock("<think>\nwhy\n</think>\n\nAnswer\n")).toEqual({
+      thinking: "\nwhy\n",
+      rest: "\n\nAnswer\n",
     });
   });
 
-  it("splits a <think> block inside a Part.Text", () => {
-    const parts = [
-      { kind: "text", text: "before<think>reasoning</think>after" },
-    ];
-    const result = splitThinkFromParts(parts);
-    expect(result.thinking).toBe("reasoning");
-    expect(result.textParts).toEqual([
-      { kind: "text", text: "before" },
-      { kind: "text", text: "after" },
-    ]);
+  it("returns an empty rest for a block that is the whole string", () => {
+    expect(leadingThinkBlock("<think>only reasoning</think>")).toEqual({
+      thinking: "only reasoning",
+      rest: "",
+    });
   });
 
-  it("combines a Part.Thinking and a <think> in Part.Text", () => {
-    const parts = [
-      { kind: "thinking", thinking: "alpha" },
-      { kind: "text", text: "before<think>beta</think>after" },
-    ];
-    const result = splitThinkFromParts(parts);
-    expect(result.thinking).toBe("alpha\n\nbeta");
-    expect(result.textParts).toEqual([
-      { kind: "text", text: "before" },
-      { kind: "text", text: "after" },
-    ]);
+  it("returns an empty thinking string for an empty block", () => {
+    // `<think></think>after` carries no reasoning; the caller decides that an
+    // empty block is "no thinking" rather than inventing an empty box.
+    expect(leadingThinkBlock("<think></think>after")).toEqual({
+      thinking: "",
+      rest: "after",
+    });
   });
 
-  it("preserves non-text/non-thinking parts unchanged", () => {
-    const toolUse = { kind: "tool_use", id: "1", name: "x", arguments: {} };
-    const toolResult = {
-      kind: "tool_result",
-      toolCallId: "1",
-      content: "ok",
-    };
-    const parts = [
-      { kind: "text", text: "before" },
-      toolUse,
-      { kind: "text", text: "<think>r</think>after" },
-      toolResult,
-    ];
-    const result = splitThinkFromParts(parts);
-    expect(result.thinking).toBe("r");
-    expect(result.textParts).toEqual([
-      { kind: "text", text: "before" },
-      toolUse,
-      { kind: "text", text: "after" },
-      toolResult,
-    ]);
+  it("ends at the first closer (nesting is not supported)", () => {
+    expect(
+      leadingThinkBlock("<think>outer<think>inner</think>rest</think>tail"),
+    ).toEqual({ thinking: "outer<think>inner", rest: "rest</think>tail" });
   });
 
-  it("returns null thinking when no think content is present", () => {
-    const parts = [
-      { kind: "text", text: "hello" },
-      { kind: "text", text: "world" },
-    ];
-    const result = splitThinkFromParts(parts);
-    expect(result.thinking).toBeNull();
-    expect(result.textParts).toEqual([
-      { kind: "text", text: "hello" },
-      { kind: "text", text: "world" },
-    ]);
+  it("returns null for a leading <think> with no closer", () => {
+    expect(leadingThinkBlock("<think>reasoning")).toBeNull();
+    expect(leadingThinkBlock("<think>")).toBeNull();
   });
 
-  it("skips null/undefined entries in the parts array", () => {
-    const parts = [
-      null,
-      { kind: "text", text: "before<think>r</think>after" },
-      undefined,
-    ];
-    const result = splitThinkFromParts(parts);
-    expect(result.thinking).toBe("r");
-    expect(result.textParts).toEqual([
-      { kind: "text", text: "before" },
-      { kind: "text", text: "after" },
-    ]);
+  it("returns null for a <think> in the middle of prose", () => {
+    // The exact regression: the old splitter treated this as an opener and
+    // routed the rest of the message into the thinking channel, so the text
+    // was truncated mid-sentence.
+    expect(leadingThinkBlock("see <think> for details")).toBeNull();
+    expect(leadingThinkBlock("before<think>reasoning</think>after")).toBeNull();
+  });
+
+  it("returns null for a closer with no opener", () => {
+    expect(leadingThinkBlock("</think>after")).toBeNull();
+    expect(leadingThinkBlock("hello</think>\n\nworld")).toBeNull();
+  });
+
+  it("returns null for text with no markers at all", () => {
+    expect(leadingThinkBlock("hello world")).toBeNull();
+    expect(leadingThinkBlock("")).toBeNull();
+  });
+
+  it("returns null for a non-string", () => {
+    expect(leadingThinkBlock(null)).toBeNull();
+    expect(leadingThinkBlock(undefined)).toBeNull();
+    expect(leadingThinkBlock(42)).toBeNull();
   });
 });

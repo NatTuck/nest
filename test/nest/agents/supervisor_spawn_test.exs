@@ -30,6 +30,8 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
   import ExUnit.CaptureLog
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Agents
   alias Nest.Agents.Agent.BatchPlan
   alias Nest.Agents.Agent.Config
@@ -68,6 +70,35 @@ defmodule Nest.Agents.SupervisorSpawnTest do
   end
 
   defp test_model, do: %{name: "qwen3.5-plus", provider: "model-studio"}
+
+  # A parent started straight from attrs, in a space whose workspace
+  # `Nest.Sandbox.workspace_error/1` refuses. `Agents.create_agent/3` runs that
+  # gate itself, so this is the only way to reach the spawn path's workspace
+  # refusals with a running parent behind them.
+  defp start_parent_in(space_id, workspace) do
+    name = "coord-#{System.unique_integer([:positive])}"
+    vocation_id = AgentTestHelpers.vocation_id_for_test()
+
+    attrs =
+      %{
+        name: name,
+        space_id: space_id,
+        model: test_model(),
+        vocation_id: vocation_id,
+        vocation: Vocations.get_vocation(vocation_id),
+        depth: 0,
+        sandbox_backend: "bwrap",
+        network_access: true,
+        workspace_path: workspace
+      }
+      |> Nest.Persistence.build_agent_attrs()
+
+    {:ok, _row} = Nest.Persistence.insert_agent(attrs)
+    {:ok, pid} = Supervisor.start_under_test(attrs)
+    AgentTestHelpers.ensure_cleanup(name)
+    # allowlist: harness — spawn_agent_in_space/3's state argument
+    :sys.get_state(pid, 1_000)
+  end
 
   defp agent_count(space_id) do
     Nest.Repo.one(from(a in "agents", where: a.space_id == ^space_id, select: count(a.id)))
@@ -455,33 +486,67 @@ defmodule Nest.Agents.SupervisorSpawnTest do
   end
 
   describe "spawn workspace validation" do
-    test "rejects a child whose inherited workspace is under /tmp", %{space_id: space_id} do
-      {:ok, vocation} =
-        Vocations.upsert_vocation(%{
-          name: "WSSpawn-#{System.unique_integer([:positive])}",
-          description: "needs a workspace",
-          system_prompt: "ws",
-          tools: []
-        })
-
-      name = "ws-child-#{System.unique_integer([:positive])}"
+    # The child's workspace is the **space's** (`spaces.workspace_path`), which is
+    # what `Persistence.build_agent_attrs/1` puts on its attrs. This used to read
+    # the parent's *cached* mounts instead and refuse with `:workspace_required` —
+    # a reason for a state a space cannot be in (both space changesets
+    # `validate_required/2` a workspace). That is what made a context clone, whose
+    # own mounts had no workspace, unable to spawn anything at all.
+    test "a parent whose mounts lost the workspace can still spawn", %{space_id: space_id} do
       state = coordinator_state(space_id)
+      name = "ws-child-#{System.unique_integer([:positive])}"
+      workspace = Spaces.environment(space_id).workspace_path
 
-      # The parent inherited a /tmp-rooted workspace; a child that needs one
-      # must not start against it.
-      state = %{state | mounts: %{state.mounts | workspace: "/tmp/ws"}}
-
-      assert {:error, :workspace_under_tmp} =
-               Supervisor.spawn_agent_in_space(state, name, vocation.slug)
-
-      # A parent with no workspace and a workspace-requiring child is the
-      # pre-existing `:workspace_required` case.
-      assert {:error, :workspace_required} =
+      assert {:ok, ^name} =
                Supervisor.spawn_agent_in_space(
                  %{state | mounts: %{state.mounts | workspace: nil}},
                  name,
-                 vocation.slug
+                 fresh_vocation().slug
                )
+
+      on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
+
+      # And the child really carries it: this is the value its tools resolve
+      # against and its prompt states.
+      assert {:ok, %{workspace_path: ^workspace}} = Agents.get_info(space_id, name)
+    end
+
+    test "refuses a space whose workspace directory is gone", %{space_id: space_id} do
+      state = coordinator_state(space_id)
+      workspace = Spaces.environment(space_id).workspace_path
+      name = "ws-child-#{System.unique_integer([:positive])}"
+
+      # A workspace deleted out from under a running space is the reachable way
+      # to be refused here; the identifying string is the `rm_rf!` guard.
+      assert workspace =~ "agent-ws-"
+      File.rm_rf!(workspace)
+
+      assert {:error, :workspace_missing} =
+               Supervisor.spawn_agent_in_space(state, name, fresh_vocation().slug)
+
+      # Nothing was inserted: the refusal is before the row write.
+      assert {:error, :not_found} = Nest.Persistence.fetch_agent(space_id, name)
+    end
+
+    test "refuses a space whose workspace is under /tmp", %{} do
+      workspace =
+        Path.join(System.tmp_dir!(), "nest-spawn-ws-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(workspace)
+      on_exit(fn -> rm_tmp!(workspace, "nest-spawn-ws-") end)
+      {:ok, space_id} = AgentTestHelpers.create_test_space(%{workspace_path: workspace})
+
+      # The lobby's create path refuses a /tmp workspace before the row is
+      # written (`Nest.Spaces.Creation.ensure_root_workspace/1`), so a space like
+      # this can only be a legacy row or a context caller's — and the spawn path
+      # still has to answer with a sentence rather than an atom.
+      state = start_parent_in(space_id, workspace)
+      name = "ws-child-#{System.unique_integer([:positive])}"
+
+      assert {:error, :workspace_under_tmp} =
+               Supervisor.spawn_agent_in_space(state, name, fresh_vocation().slug)
+
+      assert {:error, :not_found} = Nest.Persistence.fetch_agent(space_id, name)
     end
   end
 end

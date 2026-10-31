@@ -22,6 +22,17 @@ defmodule NestWeb.AgentChannelAdvancedTest do
   # a test timeout (#21).
   defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 1_000)
 
+  # The joined text of a wire message's parts, for finding a row by what it
+  # says rather than by an index the compaction renumbers.
+  defp text_of(%{"parts" => parts}) when is_list(parts) do
+    Enum.map_join(parts, "", fn
+      %{"text" => text} when is_binary(text) -> text
+      _other -> ""
+    end)
+  end
+
+  defp text_of(_message), do: ""
+
   setup :verify_on_exit!
 
   describe "channel rejoin" do
@@ -218,6 +229,98 @@ defmodule NestWeb.AgentChannelAdvancedTest do
     test "returns not_found for a missing message index", %{socket: socket} do
       logs_ref = push(socket, "chat:api-logs", %{"index" => 999})
       assert_reply logs_ref, :error, %{"reason" => "not_found"}
+    end
+
+    test "rebuilds from the active list only, and an archived index says so", %{
+      socket: socket
+    } do
+      # No api-log fetch may read the archive. The two history readers are the
+      # only way to reach it and neither is on this path (the active list is
+      # everything since the last compaction), so a call here fails the test
+      # instead of quietly producing a log built from rows no request carried.
+      stub(Nest.Persistence, :load_history, fn _space_id, _name ->
+        raise "chat:api-logs must not read the archived slice"
+      end)
+
+      stub(Nest.Persistence, :load_history_slice, fn _space_id, _name, _opts ->
+        raise "chat:api-logs must not read the archived slice"
+      end)
+
+      # Turn 1 triggers a compaction, so everything typed before it is archived.
+      # The scripts after the tool call are, in order: the compactor's summary,
+      # the reply the resumed turn produces once the summary is in place, and
+      # the reply to the human turn below.
+      MockClient.set_tool_response(%{
+        text: "compacting",
+        tool_calls: [
+          %{id: "call_compact", name: "context-compact", arguments: %{"cover" => "recent"}}
+        ]
+      })
+
+      MockClient.set_response("SUMMARY-OF-ARCHIVE")
+      MockClient.set_response("RESUMED-REPLY")
+      MockClient.set_response("POST-COMPACTION-REPLY")
+
+      ref = push(socket, "chat:message", %{"content" => "PRE-COMPACTION-TURN"})
+      assert_reply ref, :ok, %{}
+
+      # The resumed turn's reply is the fence, not a status: it is produced only
+      # after the compaction is committed and the summary is in the active list,
+      # and there is more than one `idle` broadcast along the way.
+      assert_push "chat:message",
+                  %{
+                    "role" => "assistant",
+                    "parts" => [%{"kind" => "text", "text" => "RESUMED-REPLY"}]
+                  },
+                  1_000
+
+      post_ref = push(socket, "chat:message", %{"content" => "POST-COMPACTION-TURN"})
+      assert_reply post_ref, :ok, %{}
+
+      assert_push "chat:message",
+                  %{
+                    "role" => "assistant",
+                    "parts" => [%{"kind" => "text", "text" => "POST-COMPACTION-REPLY"}]
+                  },
+                  1_000
+
+      # The active list as the client sees it: the fresh system row, the
+      # summary, the resumed turn's reply, this user row, and its reply.
+      sync_ref = push(socket, "chat:sync", %{"lastIndex" => -1})
+      assert_reply sync_ref, :ok, %{"messages" => active}
+
+      target = Enum.find(active, &String.contains?(text_of(&1), "POST-COMPACTION-TURN"))
+      assert target["role"] == "user"
+      index = target["index"]
+
+      # The reply to that user row is in the list, so a cut that ran past the
+      # message — the positional one this replaces — would have carried it.
+      assert Enum.any?(active, &(&1["index"] > index and &1["role"] == "assistant"))
+
+      logs_ref = push(socket, "chat:api-logs", %{"index" => index})
+      assert_reply logs_ref, :ok, %{"apiLogs" => [log]}
+
+      assert log["type"] == "request"
+      wire = log["payload"]["messages"]
+
+      # The log ends at the user row, not at the reply that came after it.
+      assert List.last(wire)["role"] == "user"
+      assert List.last(wire)["content"] =~ "POST-COMPACTION-TURN"
+
+      # Nothing from before the compaction.
+      refute inspect(wire) =~ "PRE-COMPACTION-TURN"
+
+      # Exactly the active slice through that row, one wire message each.
+      assert length(wire) == Enum.count(active, &(&1["index"] <= index))
+
+      # The first human turn is archived now, so it is not in the active list —
+      # and its request log is not something this process can rebuild. It says
+      # so: an archived index is not a fetch failure and not an empty log, and
+      # (per the stub above) the answer comes without touching the archive.
+      refute Enum.any?(active, &(&1["index"] == 1))
+
+      archived_ref = push(socket, "chat:api-logs", %{"index" => 1})
+      assert_reply archived_ref, :error, %{"reason" => "archived"}
     end
   end
 

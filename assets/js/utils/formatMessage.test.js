@@ -24,27 +24,43 @@ describe("messageToMarkdown — user messages", () => {
     ).toBe("What's up?");
   });
 
-  it("strips the header from a user message, matching the row's mode", () => {
-    // The header the server writes now: `[From … | mode: <mode>]`. The mode it
-    // names must be the message's own, or the guard leaves it on screen — which
-    // is the point of the disagreement case below.
+  it("keeps the `[From …]` header verbatim, for every role", () => {
+    // The clipboard is plain text: on screen the sender has its own affordance
+    // (the row label and the per-body caption), but a copy has no badge, so
+    // deleting the header would lose who spoke. This is the one place the
+    // display's framing removal must NOT be copied.
     expect(
       messageToMarkdown({
         role: "user",
         content: "[From user | mode: act]\nHello",
         mode: "act",
       }),
-    ).toBe("Hello");
+    ).toBe("[From user | mode: act]\nHello");
 
     expect(
       messageToMarkdown({
-        role: "agent",
+        role: "user",
+        mode: "act",
+        parts: [
+          {
+            kind: "text",
+            text: "[From agent peer, agents-send reply required | mode: act]\nhi there",
+          },
+        ],
+      }),
+    ).toBe(
+      "[From agent peer, agents-send reply required | mode: act]\nhi there",
+    );
+
+    expect(
+      messageToMarkdown({
+        role: "assistant",
         mode: "plan",
         parts: [
           { kind: "text", text: "[From agent peer | mode: plan]\nhi there" },
         ],
       }),
-    ).toBe("hi there");
+    ).toBe("[From agent peer | mode: plan]\nhi there");
   });
 
   it("strips the prefix from a user message's text part too", () => {
@@ -60,7 +76,7 @@ describe("messageToMarkdown — user messages", () => {
   it("returns the user content as-is when the mode prefix disagrees with the message mode", () => {
     // Server is the source of truth — leave the prefix alone if
     // it doesn't match the explicit `mode` field. See
-    // `stripHeader` for the rationale.
+    // `splitFraming` for the rationale.
     expect(
       messageToMarkdown({
         role: "user",
@@ -160,7 +176,7 @@ describe("messageToMarkdown — user messages", () => {
         commandOutputParts: [1],
       }),
     ).toBe(
-      "Your backgrounded command (shell-cmd) finished. Its result:\n\n\n\n[nest notice]\n[From nest runtime | mode: act]\nthe command's own bytes",
+      "[From nest runtime | mode: act]\nYour backgrounded command (shell-cmd) finished. Its result:\n\n\n\n[nest notice]\n[From nest runtime | mode: act]\nthe command's own bytes",
     );
   });
 });
@@ -222,17 +238,20 @@ describe("messageToMarkdown — whole message from parts", () => {
     ).toBe("visible");
   });
 
-  it("excludes <think> tags embedded in an assistant text part", () => {
-    // The UI routes reasoning buried in a text part to the
-    // ThinkingBlock (see `splitThinkFromParts`), so the clipboard
-    // must not leak it.
+  it("excludes an assistant's leading <think> block, matching the bubble", () => {
+    // The UI moves an assistant's leading block into the ThinkingBlock
+    // (`splitReasoning`), so the clipboard must not leak it.
     expect(
       messageToMarkdown({
         role: "assistant",
         parts: [{ kind: "text", text: "<think>secret</think>Answer." }],
       }),
     ).toBe("Answer.");
+  });
 
+  it("copies a mid-text <think> verbatim once the row has a thinking part", () => {
+    // A `Part.Thinking` is the row's reasoning channel, so its text is prose
+    // and is never scanned: the tag is something the model wrote, not framing.
     expect(
       messageToMarkdown({
         role: "assistant",
@@ -241,36 +260,35 @@ describe("messageToMarkdown — whole message from parts", () => {
           { kind: "text", text: "A<think>also hidden</think>B" },
         ],
       }),
-    ).toBe("AB");
+    ).toBe("A<think>also hidden</think>B");
   });
 
-  it("treats an orphan </think> in a text part as reasoning", () => {
-    // Mirrors `splitThinkTags`: an unmatched closing tag starts a
-    // thinking run to the end of the string.
+  it("copies a stray </think> and an unclosed <think> verbatim", () => {
+    // Only a *leading matched* pair is reasoning. A stray closer or an
+    // unclosed opener is text, and deleting the rest of the string is exactly
+    // the truncation this rule exists to prevent.
     expect(
       messageToMarkdown({
         role: "assistant",
         parts: [{ kind: "text", text: "Visible.</think>Hidden." }],
       }),
-    ).toBe("Visible.");
-  });
+    ).toBe("Visible.</think>Hidden.");
 
-  it("returns the marker for a text part that is entirely <think> reasoning", () => {
-    // A text part whose whole content is reasoning is omitted like a
-    // `thinking` part, so the copy must be legible rather than empty.
-    expect(
-      messageToMarkdown({
-        role: "assistant",
-        parts: [{ kind: "text", text: "<think>only reasoning</think>" }],
-      }),
-    ).toBe("*[thinking omitted from copy]*");
-
-    // An unclosed `<think>` runs to the end of the string — also
-    // reasoning.
     expect(
       messageToMarkdown({
         role: "assistant",
         parts: [{ kind: "text", text: "<think>only reasoning" }],
+      }),
+    ).toBe("<think>only reasoning");
+  });
+
+  it("returns the marker for a text part that is entirely <think> reasoning", () => {
+    // A leading matched block that is the whole body leaves nothing to copy, so
+    // the output is legible rather than empty.
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        parts: [{ kind: "text", text: "<think>only reasoning</think>" }],
       }),
     ).toBe("*[thinking omitted from copy]*");
   });
@@ -289,15 +307,15 @@ describe("messageToMarkdown — whole message from parts", () => {
     ).toBe("Use <think>tags</think> for reasoning.");
   });
 
-  it("strips <think> tags from a tool message's text part", () => {
-    // A tool message's body goes through `textPartsFor`, which splits,
-    // so the clipboard splits too.
+  it("copies a tool message's <think> tags verbatim", () => {
+    // Only an assistant row can have reasoning behind a tag: a tool row's text
+    // is the tool's own output, so nothing in it is framing.
     expect(
       messageToMarkdown({
         role: "tool",
         parts: [{ kind: "text", text: "A<think>hidden</think>B" }],
       }),
-    ).toBe("AB");
+    ).toBe("A<think>hidden</think>B");
   });
 
   it("serialises a refusal part", () => {

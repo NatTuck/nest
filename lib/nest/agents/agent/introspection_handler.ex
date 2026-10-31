@@ -91,9 +91,9 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   # Response logs live on the message (assistant/system messages are
   # persisted with their real response log). User/tool messages never
   # carry stored request logs — their request log is synthetic and is
-  # rebuilt on demand here.
-  def handle({:get_api_logs, index, history}, _from, state) do
-    {:reply, api_logs_for(state, index, history), state}
+  # rebuilt on demand here, from the active list only.
+  def handle({:get_api_logs, index}, _from, state) do
+    {:reply, api_logs_for(state, index), state}
   end
 
   def handle(:get_crossed_thresholds, _from, state) do
@@ -206,49 +206,57 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
     ModelHandler.handle(msg, from, state)
   end
 
-  # Pre-call gate for `file-write`. Looks up the cache entry
-  # for `path`; if absent → the agent has not yet called
-  # `file-read` (or the path has been cleared by a post-
-  # compaction reset). If present, re-stat the file at the
-  # full path; the on-disk mtime/size must equal the recorded
-  # pair — otherwise the file has been modified since the
-  # read or since the last `file-write`. Both error cases map
-  # to a stable atom (`:never_read` / `:contents_changed`)
-  # the worker translates to user-facing strings.
-  #
-  # Path resolution mirrors the read-tracking write at
-  # `LLMStreamHandler` so the cache keys match the lookup
-  # keys. Both treat absolute paths as-is and join relative
-  # ones onto the per-agent workspace root.
   # Fetch the API logs for a specific message. Response logs live on
   # the message (assistant/system messages are persisted with their real
   # response log). User/tool messages never carry a stored request log —
   # theirs is synthetic and rebuilt on demand here.
-  defp api_logs_for(state, index, history) do
-    messages = history ++ state.chat_state.messages
-
-    case find_message(messages, index) do
+  #
+  # The active list is the whole story: `state.chat_state.messages` is
+  # everything since the last compaction, so a request log is rebuilt from it
+  # and nothing else. No DB query, no history snapshot, no attempt to reach
+  # archived rows — a request log built from the archive would not be a request
+  # that was ever sent (and, positionally, would run past the message it is
+  # supposed to describe).
+  defp api_logs_for(state, index) do
+    case find_message(state.chat_state.messages, index) do
       nil ->
-        {:error, :not_found}
+        {:error, active_list_miss(state.chat_state, index)}
 
       {_role, %{api_logs: logs}} when is_list(logs) and logs != [] ->
         {:ok, Message.format_api_logs(logs)}
 
-      {role, %{index: idx}} when role in [:user, :tool] ->
-        {:ok, rebuild_request_logs(state, messages, idx)}
+      {role, _message} = target when role in [:user, :tool] ->
+        {:ok, rebuild_request_logs(state, target)}
 
       _message ->
         {:error, :no_logs}
     end
   end
 
-  defp rebuild_request_logs(state, messages, idx) do
-    preloaded = Enum.reject(messages, &match?({:compaction, _}, &1))
+  # An index the active list does not hold is archived when it is at or below
+  # the compaction boundary — the process genuinely has no request to show for
+  # it, and says so instead of answering an empty log. Anything above the
+  # boundary is simply not a message this agent has (a bogus index).
+  defp active_list_miss(chat_state, index) do
+    if index <= chat_state.last_compaction_index, do: :archived, else: :not_found
+  end
 
-    api_log = Restore.rebuild_request_api_logs(state, preloaded, idx, state.client_config)
+  # `target` is the message `find_message/2` matched — the request this log is
+  # for. It is passed through rather than re-derived from the slice's shape, so
+  # the log's id and timestamp are the message's own.
+  defp rebuild_request_logs(state, {_role, %{index: idx}} = target) do
+    # The active list holds no `{:compaction, _}` markers (they land on the
+    # archived side of the boundary), so the cut is by index and there is
+    # nothing to strip afterwards.
+    slice = Enum.take_while(state.chat_state.messages, &index_at_or_before?(&1, idx))
+
+    api_log = Restore.rebuild_request_api_logs(state, slice, target, state.client_config)
 
     Message.format_api_logs([api_log])
   end
+
+  defp index_at_or_before?({_, %{index: i}}, idx), do: i <= idx
+  defp index_at_or_before?(_message, _idx), do: false
 
   # Use the cached Vocation struct from state — no DB work
   # in the handler. The struct was loaded by the calling

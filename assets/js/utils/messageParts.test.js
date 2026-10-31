@@ -20,6 +20,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  splitReasoning,
   thinkingFor,
   textPartsFor,
   messageContentPartsFor,
@@ -31,43 +32,159 @@ import {
   LONG_FIELD_THRESHOLD,
 } from "./messageParts.js";
 
+describe("splitReasoning", () => {
+  // The rule, in order: a `Part.Thinking` is the reasoning channel and the text
+  // is never scanned; else an assistant's leading matched `<think>` block is
+  // legacy reasoning; else the text is prose.
+
+  it("takes a Part.Thinking as the reasoning channel and leaves the text alone", () => {
+    const text = { kind: "text", text: "<think>still prose</think>after" };
+    const result = splitReasoning({
+      role: "assistant",
+      parts: [{ kind: "thinking", thinking: "real reasoning" }, text],
+    });
+
+    expect(result.thinking).toBe("real reasoning");
+    // The text is not scanned at all: the tag stays, because the row already
+    // said where its reasoning lives.
+    expect(result.parts[1]).toBe(text);
+  });
+
+  it("throws when a message carries more than one Part.Thinking", () => {
+    // `build_assistant_parts/1` is the only producer and emits at most one,
+    // first. A second is a server bug; concatenating them would invent
+    // reasoning the row does not have.
+    expect(() =>
+      splitReasoning({
+        role: "assistant",
+        parts: [
+          { kind: "thinking", thinking: "first" },
+          { kind: "thinking", thinking: "second" },
+        ],
+      }),
+    ).toThrow(/at most one thinking part, got 2/);
+  });
+
+  it("takes an assistant's leading matched block as legacy reasoning", () => {
+    const result = splitReasoning({
+      role: "assistant",
+      parts: [{ kind: "text", text: "<think>secret</think>Answer." }],
+    });
+
+    expect(result.thinking).toBe("secret");
+    expect(result.parts).toEqual([{ kind: "text", text: "Answer." }]);
+  });
+
+  it("keeps the parts' indexes so commandOutputParts still lines up", () => {
+    const result = splitReasoning({
+      role: "assistant",
+      parts: [
+        { kind: "text", text: "<think>secret</think>Answer." },
+        { kind: "tool_use", id: "x", name: "shell-cmd" },
+      ],
+    });
+
+    expect(result.parts).toHaveLength(2);
+    expect(result.parts[1]).toEqual({
+      kind: "tool_use",
+      id: "x",
+      name: "shell-cmd",
+    });
+  });
+
+  it("does not scan a user's or a system's text", () => {
+    for (const role of ["user", "system", "tool"]) {
+      const parts = [{ kind: "text", text: "<think>mine</think>hi" }];
+      expect(splitReasoning({ role, parts })).toEqual({
+        thinking: null,
+        parts,
+      });
+    }
+  });
+
+  it("does not scan text that only mentions the tag", () => {
+    // The regression: a message reading "see <think> for details" lost the rest
+    // of its text to the thinking channel.
+    const parts = [{ kind: "text", text: "see <think> for details" }];
+    expect(splitReasoning({ role: "assistant", parts })).toEqual({
+      thinking: null,
+      parts,
+    });
+  });
+
+  it("tolerates a missing message or parts", () => {
+    expect(splitReasoning(null)).toEqual({ thinking: null, parts: [] });
+    expect(splitReasoning({})).toEqual({ thinking: null, parts: [] });
+  });
+});
+
 describe("thinkingFor", () => {
   it("returns null for null/undefined messages", () => {
     expect(thinkingFor(null)).toBeNull();
     expect(thinkingFor(undefined)).toBeNull();
   });
 
-  it("concatenates Part.Thinking entries with blank-line separators", () => {
+  it("returns the single Part.Thinking's content", () => {
     expect(
       thinkingFor({
-        parts: [
-          { kind: "thinking", thinking: "first" },
-          { kind: "thinking", thinking: "second" },
-        ],
+        parts: [{ kind: "thinking", thinking: "reasoning" }],
       }),
-    ).toBe("first\n\nsecond");
+    ).toBe("reasoning");
   });
 
   it("falls back to message.thinking when parts has no thinking entries", () => {
     expect(thinkingFor({ thinking: "legacy" })).toBe("legacy");
   });
+
+  it("finds an assistant's legacy leading block", () => {
+    expect(
+      thinkingFor({
+        role: "assistant",
+        parts: [{ kind: "text", text: "<think>legacy reasoning</think>hi" }],
+      }),
+    ).toBe("legacy reasoning");
+  });
+
+  it("never invents a box for a user row that mentions the tag", () => {
+    expect(
+      thinkingFor({
+        role: "user",
+        parts: [{ kind: "text", text: "<think>mine</think>hi" }],
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("textPartsFor", () => {
-  it("splits think tags out of Part.Text entries", () => {
+  it("takes an assistant's legacy leading block out of the body", () => {
     expect(
       textPartsFor({
+        role: "assistant",
+        parts: [{ kind: "text", text: "<think>reasoning</think>after" }],
+      }),
+    ).toEqual([{ kind: "text", text: "after" }]);
+  });
+
+  it("leaves a mid-text tag in the body", () => {
+    // Copied verbatim: it is prose, not framing.
+    expect(
+      textPartsFor({
+        role: "assistant",
+        parts: [{ kind: "text", text: "before<think>r</think>after" }],
+      }),
+    ).toEqual([{ kind: "text", text: "before<think>r</think>after" }]);
+  });
+
+  it("drops the thinking part from the body", () => {
+    expect(
+      textPartsFor({
+        role: "assistant",
         parts: [
-          {
-            kind: "text",
-            text: "before<think>reasoning</think>after",
-          },
+          { kind: "thinking", thinking: "r" },
+          { kind: "text", text: "hi" },
         ],
       }),
-    ).toEqual([
-      { kind: "text", text: "before" },
-      { kind: "text", text: "after" },
-    ]);
+    ).toEqual([{ kind: "text", text: "hi" }]);
   });
   it("preserves non-text/non-thinking parts (e.g. tool_use) for downstream renderers", () => {
     const toolUse = { kind: "tool_use", id: "x", name: "shell-cmd" };
@@ -186,10 +303,12 @@ describe("messageContentPartsFor", () => {
 });
 
 describe("userPartsFor", () => {
-  it("returns one text block per text part, with the framing stripped from each", () => {
+  it("returns one text block per text part, with the framing stripped and its facts kept", () => {
     // A drained batch is one user row holding one body per entry, and each body
     // carries its own header. Per part is the same removal the joined renderer
-    // performed: a header heads a body and every part starts a body.
+    // performed: a header heads a body and every part starts a body. The
+    // block carries the parsed header too, so the caption has the sender
+    // without a second parse — and a caller cannot delete without the facts.
     expect(
       userPartsFor({
         role: "user",
@@ -203,11 +322,31 @@ describe("userPartsFor", () => {
         ],
       }),
     ).toEqual([
-      { kind: "text", text: "first body", index: 0 },
-      { kind: "text", text: "\n\nsecond body", index: 1 },
+      {
+        kind: "text",
+        text: "first body",
+        header: {
+          sender: { kind: "agent", name: "peer" },
+          replyRequired: false,
+          mode: "act",
+        },
+        key: "0",
+      },
+      {
+        kind: "text",
+        text: "\n\nsecond body",
+        header: {
+          sender: { kind: "agent", name: "other" },
+          replyRequired: false,
+          mode: "act",
+        },
+        key: "1",
+      },
     ]);
 
-    // The retired label's mode clause goes too (the row's badge shows the mode).
+    // The retired label's mode clause goes too (the row's badge shows the mode),
+    // and the label itself is not a `[From …]` header, so there is no header to
+    // attach — `rowSenders` reads it.
     expect(
       userPartsFor({
         role: "user",
@@ -223,9 +362,78 @@ describe("userPartsFor", () => {
       {
         kind: "text",
         text: '[Message from agent "peer"]\nmay I ask?',
-        index: 0,
+        // The label wraps a body rather than heading one, so a single-body
+        // part keeps it on screen — but the sender it names is a fact the
+        // block carries, which is what the row label reads.
+        header: {
+          sender: { kind: "agent", name: "peer" },
+          replyRequired: false,
+          mode: null,
+        },
+        key: "0",
       },
     ]);
+  });
+
+  it("splits a content-only row into one block per body, each with its own header", () => {
+    // The FAIL this covers: one block per part meant the *second* body's header
+    // was deleted with no affordance to carry it — `splitFraming` removes every
+    // body head, but the block only kept `headers[0]`. Splitting before
+    // stripping gives each body its own block, and so its own caption.
+    const blocks = userPartsFor({
+      role: "user",
+      mode: "act",
+      content:
+        "[From agent alpha | mode: act]\nfirst body\n\n[From agent beta | mode: act]\nsecond body",
+    });
+
+    expect(blocks).toEqual([
+      {
+        kind: "text",
+        // The wire leaves the joining blank line at the end of the body.
+        text: "first body\n",
+        header: {
+          sender: { kind: "agent", name: "alpha" },
+          replyRequired: false,
+          mode: "act",
+        },
+        key: "0",
+      },
+      {
+        kind: "text",
+        text: "second body",
+        header: {
+          sender: { kind: "agent", name: "beta" },
+          replyRequired: false,
+          mode: "act",
+        },
+        key: "0.1",
+      },
+    ]);
+
+    // No header line survives in any block.
+    expect(blocks.map((b) => b.text).join("")).not.toContain("[From ");
+  });
+
+  it("splits a single text part that holds two bodies", () => {
+    const blocks = userPartsFor({
+      role: "user",
+      mode: "act",
+      parts: [
+        {
+          kind: "text",
+          text: "[From agent alpha | mode: act]\nfirst body\n\n[From agent beta, agents-send reply required | mode: act]\nsecond body",
+        },
+      ],
+    });
+
+    expect(blocks.map((b) => b.header.sender)).toEqual([
+      { kind: "agent", name: "alpha" },
+      { kind: "agent", name: "beta" },
+    ]);
+    expect(blocks.map((b) => b.header.replyRequired)).toEqual([false, true]);
+    // Keys are unique: a bare part index would collide.
+    expect(blocks.map((b) => b.key)).toEqual(["0", "0.1"]);
   });
 
   it("marks the part `commandOutputParts` names by its index in `parts`", () => {
@@ -244,10 +452,20 @@ describe("userPartsFor", () => {
         commandOutputParts: [2],
       }),
     ).toEqual([
-      // `index` is the part's index in `parts` (2), not its index among the
+      // `key` is the part's own index in `parts` (2), not its index among the
       // blocks (1) — that is the mapping the wire's `commandOutputParts` uses.
-      { kind: "text", text: "finished:", index: 1 },
-      { kind: "output", text: "# output", index: 2 },
+      {
+        kind: "text",
+        text: "finished:",
+        header: {
+          sender: { kind: "runtime", name: null },
+          replyRequired: false,
+          mode: "act",
+        },
+        key: "1",
+      },
+      // An output block never carries a header: its bytes are a body's tail.
+      { kind: "output", text: "# output", header: null, key: "2" },
     ]);
   });
 
@@ -266,9 +484,27 @@ describe("userPartsFor", () => {
         commandOutputParts: [1],
       }),
     ).toEqual([
-      { kind: "text", text: "finished:", index: 0 },
-      { kind: "output", text: "out", index: 1 },
-      { kind: "text", text: "\n\nhi", index: 2 },
+      {
+        kind: "text",
+        text: "finished:",
+        header: {
+          sender: { kind: "runtime", name: null },
+          replyRequired: false,
+          mode: "act",
+        },
+        key: "0",
+      },
+      { kind: "output", text: "out", header: null, key: "1" },
+      {
+        kind: "text",
+        text: "\n\nhi",
+        header: {
+          sender: { kind: "agent", name: "peer" },
+          replyRequired: false,
+          mode: "act",
+        },
+        key: "2",
+      },
     ]);
   });
 
@@ -279,15 +515,28 @@ describe("userPartsFor", () => {
         mode: "act",
         content: "[From user | mode: act]\nlegacy body",
       }),
-    ).toEqual([{ kind: "text", text: "legacy body", index: 0 }]);
+    ).toEqual([
+      {
+        kind: "text",
+        text: "legacy body",
+        header: {
+          sender: { kind: "human", name: null },
+          replyRequired: false,
+          mode: "act",
+        },
+        key: "0",
+      },
+    ]);
 
     // `parts` without a text part reads `content` too — that fallback lives in
     // `messageText`, and the row must not render blank.
     expect(
       userPartsFor({ role: "user", parts: [], content: "only content" }),
-    ).toEqual([{ kind: "text", text: "only content", index: 0 }]);
+    ).toEqual([{ kind: "text", text: "only content", header: null, key: "0" }]);
 
-    expect(userPartsFor(null)).toEqual([{ kind: "text", text: "", index: 0 }]);
+    expect(userPartsFor(null)).toEqual([
+      { kind: "text", text: "", header: null, key: "0" },
+    ]);
   });
 
   it("throws when commandOutputParts is not an array of non-negative integers", () => {

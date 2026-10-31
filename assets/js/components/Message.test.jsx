@@ -287,6 +287,203 @@ describe("Message backgrounded command output", () => {
   });
 });
 
+describe("Message sender affordances", () => {
+  // The header states three facts — sender, reply-required, mode — and the
+  // mode already has the badge. The sender and the reply marker get their own
+  // home here, because deleting the whole line on the ground that "the sender
+  // is the row's own author" is false for a batch, a peer's note, a runtime
+  // notice and a spawn kickoff — every one of which used to be drawn as the
+  // human's own "You".
+
+  const userRow = (overrides = {}) => ({
+    index: 1,
+    role: "user",
+    mode: "act",
+    metadata: { mode: "act" },
+    ...overrides,
+  });
+
+  it("shows both senders of a two-body batch, and deletes neither header", () => {
+    const { container } = render(
+      <MessageBubble
+        agentName="test-agent"
+        message={userRow({
+          parts: [
+            { kind: "text", text: "[From agent a | mode: act]\nfirst body" },
+            {
+              kind: "text",
+              text: "[From agent b, agents-send reply required | mode: act]\nsecond body",
+            },
+          ],
+        })}
+      />,
+    );
+
+    // Both senders are visible — as per-body captions, since the row holds two
+    // bodies with different senders.
+    expect(screen.getByText("a")).toBeInTheDocument();
+    expect(screen.getByText("b")).toBeInTheDocument();
+
+    // The reply marker survived as an affordance.
+    expect(screen.getByText("reply required")).toBeInTheDocument();
+
+    // Neither header line is rendered...
+    expect(container.textContent).not.toContain("[From agent a");
+    expect(container.textContent).not.toContain("[From agent b");
+
+    // ...the row label does not claim the human wrote it, and neither does the
+    // bubble's tint.
+    expect(screen.queryByText("You")).toBeNull();
+    expect(screen.getByText("2 notes")).toBeInTheDocument();
+    expect(container.querySelector(".bg-blue-50")).toBeNull();
+    // Several senders get the neutral "N notes" tint, not the human's blue.
+    expect(container.querySelector(".bg-gray-50")).not.toBeNull();
+  });
+
+  it("labels a runtime notice row with the runtime, not the human", () => {
+    render(
+      <MessageBubble
+        agentName="test-agent"
+        message={userRow({
+          parts: [
+            {
+              kind: "text",
+              text: "[From nest runtime | mode: act]\nContext at 50%.",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("nest runtime")).toBeInTheDocument();
+    expect(screen.queryByText("You")).toBeNull();
+  });
+
+  it("labels a spawn kickoff with the spawning agent, not the human", () => {
+    // A spawn kickoff is a `kind: :user` entry nobody typed: no `origin`
+    // metadata, and the header says which agent it came from.
+    render(
+      <MessageBubble
+        agentName="test-agent"
+        message={userRow({
+          parts: [{ kind: "text", text: "[From agent x | mode: act]\nDo it." }],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("x")).toBeInTheDocument();
+    expect(screen.queryByText("You")).toBeNull();
+  });
+
+  it("keeps the human's own row as 'You', with one body and no caption", () => {
+    const { container } = render(
+      <MessageBubble
+        agentName="test-agent"
+        message={userRow({
+          origin: "human",
+          parts: [
+            { kind: "text", text: "[From user @nat | mode: act]\nHello" },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("You")).toBeInTheDocument();
+    // The human's blue bubble is unchanged.
+    expect(container.querySelector(".bg-blue-50")).not.toBeNull();
+    // One body states its sender in the row label, so there is no caption and
+    // nothing is shown twice.
+    expect(screen.queryByText("@nat")).toBeNull();
+    expect(container.textContent).not.toContain("[From user");
+  });
+
+  it("renders a three-paragraph peer note as one note, not three", () => {
+    // Bodies are joined by a blank line and a body *contains* blank lines
+    // (markdown paragraphs), so a blank line delimits nothing on its own. One
+    // peer note with three paragraphs used to render as "3 notes" in a grey
+    // bubble — worse than the bug this all fixes.
+    const { container } = render(
+      <MessageBubble
+        agentName="test-agent"
+        message={userRow({
+          parts: [
+            {
+              kind: "text",
+              text: "[From agent peer | mode: act]\npara one\n\npara two\n\npara three",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("peer")).toBeInTheDocument();
+    expect(screen.queryByText("3 notes")).toBeNull();
+    // The avatar is the sender's initial, not a count.
+    expect(screen.queryByText("3")).toBeNull();
+    expect(container.textContent).not.toContain("[From agent peer");
+  });
+
+  it("captions every body of a content-only row that holds two bodies", () => {
+    // A row persisted before the parts model holds its bodies joined in one
+    // string. One block per part meant the second body's header was deleted
+    // with no affordance to carry it: the row said "2 notes" and named only the
+    // first sender.
+    const { container } = render(
+      <MessageBubble
+        agentName="test-agent"
+        message={userRow({
+          content:
+            "[From agent alpha | mode: act]\nfirst body\n\n[From agent beta | mode: act]\nsecond body",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("2 notes")).toBeInTheDocument();
+    expect(screen.getByText("alpha")).toBeInTheDocument();
+    expect(screen.getByText("beta")).toBeInTheDocument();
+    expect(screen.getByText(/first body/)).toBeInTheDocument();
+    expect(screen.getByText(/second body/)).toBeInTheDocument();
+    // No wire line survives in the body.
+    expect(container.textContent).not.toContain("[From ");
+  });
+
+  it("does not say 'You' for a mixed batch that carries origin: human", () => {
+    // The server stamps `origin: "human"` from the row's *first* entry, so a
+    // batch holding the human's message and a peer's note carries it. The
+    // shortcut drew the peer's words as the human's.
+    render(
+      <MessageBubble
+        agentName="test-agent"
+        message={userRow({
+          origin: "human",
+          parts: [
+            { kind: "text", text: "[From user @nat | mode: act]\nmine" },
+            { kind: "text", text: "[From agent peer | mode: act]\ntheirs" },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.queryByText("You")).toBeNull();
+    expect(screen.getByText("2 notes")).toBeInTheDocument();
+    // The per-body captions carry the identities.
+    expect(screen.getByText("@nat")).toBeInTheDocument();
+    expect(screen.getByText("peer")).toBeInTheDocument();
+  });
+
+  it("says 'unknown sender' rather than 'You' when the row names nobody", () => {
+    render(
+      <MessageBubble
+        agentName="test-agent"
+        message={userRow({ parts: [{ kind: "text", text: "no framing" }] })}
+      />,
+    );
+
+    expect(screen.getByText("unknown sender")).toBeInTheDocument();
+    expect(screen.queryByText("You")).toBeNull();
+  });
+});
+
 describe("Message peer deliveries", () => {
   const peerMessage = (overrides = {}) => ({
     index: 1,
@@ -330,7 +527,7 @@ describe("Message peer deliveries", () => {
     // recipient's mode in the old `[Message from agent "peer" | mode: act]`
     // label, which is how an agent whose inbox is all peer traffic learned its
     // own mode. The bubble already renders the same value as the mode badge, so
-    // the label's copy is dropped from the display (exactly as `stripHeader`
+    // the label's copy is dropped from the display (exactly as `splitFraming`
     // drops the header the badge also shows).
     render(<MessageBubble agentName="test-agent" message={peerMessage()} />);
 

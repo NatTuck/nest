@@ -13,31 +13,37 @@ defmodule Nest.Agents.Agent.Restore do
   (`client.format_request_payload/2`) to reconstruct what the API
   request would have looked like at that point.
 
-  ## Compaction markers
+  ## The slice is the caller's
 
-  The preloaded sequence returned by `Persistence.load_messages/1`
-  carries `{:compaction, _}` markers inline — the partition into
-  `history` vs `messages` happens at agent-init, not at load.
-  The rebuild path filters `{:compaction, _}` tuples out of
-  the slice before passing to `client.format_request_payload/2`
-  because `OpenAIClient.message_to_wire/1` has no clause for
-  `:compaction` (the live path avoids this because it draws
-  requests from `state.chat_state.messages`, which excludes
-  compaction markers). See `rebuild_request_api_logs/4`.
+  This module does **not** cut a message list. The caller passes the
+  slice of `state.chat_state.messages` through the target message
+  (`Enum.take_while/2` on `index`), and that is the whole input: the
+  active list is everything since the last compaction, it holds no
+  `{:compaction, _}` markers (the marker lands on the archived side of
+  the boundary), and the archive is never part of a request. A caller
+  that reaches an archived index has no request to show and answers
+  `{:error, :archived}` rather than rebuilding from rows no request
+  ever carried — see `Nest.Agents.Agent.IntrospectionHandler`.
   """
 
+  alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.LLM.ClientConfig
   alias Nest.LLM.Runner
   alias Nest.Messages.Message
 
   @doc """
-  Rebuild the request api_log for the user/tool message at the
-  given index. Walks the slice `Enum.take(messages, idx + 1)`
-  from the preloaded sequence to construct the request
-  payload, then defers to the agent's configured client.
+  Rebuild the request api_log for the user/tool message at
+  `message_index`, from the caller's `slice` of the active message list.
 
   The returned log entry has the wire shape
-  `%{id, timestamp, type: :request, payload}`.
+  `%{id, timestamp, type: :request, payload}`. Two fields are the
+  message's, not the fetch's:
+
+    * `timestamp` is the target message's own timestamp — the widget shows when
+      the request happened, not when it was re-read. The caller passes the
+      message it matched, so this function never re-derives it from a position.
+    * `max_tokens` is the cap the request *would* have used
+      (`Dispatch.ordinary_max_tokens/2`), not the encoder's fallback.
 
   ## RunRequest defaults
 
@@ -55,35 +61,33 @@ defmodule Nest.Agents.Agent.Restore do
   @spec rebuild_request_api_logs(
           Nest.Agents.Agent.t(),
           [Message.t()],
-          non_neg_integer(),
+          Message.t(),
           ClientConfig.t()
         ) :: %{
           id: String.t(),
-          timestamp: DateTime.t(),
+          timestamp: DateTime.t() | nil,
           type: :request,
           payload: map()
         }
-  def rebuild_request_api_logs(state, messages, message_index, %ClientConfig{} = client_config) do
-    # Filter `{:compaction, _}` markers out of the slice before
-    # the wire-format call. Compaction markers are runtime
-    # bookkeeping (they live in `state.chat_state.history`,
-    # never in `state.chat_state.messages`) and never reach
-    # the LLM in the live path. The preloaded sequence we get
-    # here is the full DB sequence (compaction markers inline),
-    # so a user/tool index whose slice crosses a marker would
-    # otherwise crash `OpenAIClient.message_to_wire/1` — that
-    # was the `entire-ox` production regression on BEAM restart.
-    slice =
-      messages
-      |> Enum.take(message_index + 1)
-      |> Enum.reject(&match?({:compaction, _}, &1))
+  def rebuild_request_api_logs(
+        state,
+        slice,
+        {_role, %{index: message_index, timestamp: at}},
+        %ClientConfig{} = client_config
+      ) do
+    # The cap the live request would have used. `machine.work.ctx` — where the
+    # turn keeps the model/limit pair — is reset at the end of every turn, so it
+    # is rebuilt from the same two values in state.
+    max_tokens =
+      Dispatch.ordinary_max_tokens(client_config.model, state.llm_metrics.context_limit)
 
     request =
       Runner.build_request(%{
         messages: slice,
         tools: state.tools,
         tool_choice: :auto,
-        client_config: client_config
+        client_config: client_config,
+        max_tokens: max_tokens
       })
 
     # Wire format only — `opts` is for http concerns (base_url,
@@ -94,11 +98,19 @@ defmodule Nest.Agents.Agent.Restore do
 
     %{
       id: format_sequence_id(message_index, 0),
-      timestamp: DateTime.utc_now(),
+      timestamp: at,
       type: :request,
       payload: payload
     }
   end
+
+  # The log is stamped with the *message's* time: it is a reconstruction of the
+  # request that carried that message, and the widget renders it as when that
+  # request happened. The target comes in as the message the caller matched, so
+  # there is nothing to recover from the slice's shape and no raise: every
+  # appended row is stamped (`Turn.Messages`, `Turn.Dispatch`, `Turn.Commit`), so
+  # an unstamped one is a caller bug that shows as a blank time rather than as a
+  # time nobody can tell from a real one.
 
   # Request api_logs for user/tool messages are never attached or stored —
   # they're synthetic and rebuilt on demand via `get_api_logs` when the user

@@ -81,13 +81,38 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
   @doc "The ordinary-turn output cap: `min(model_default, 0.20L)`, at least 1."
   @spec ordinary_max_tokens(Machine.t()) :: pos_integer()
   def ordinary_max_tokens(%Machine{work: work}) do
-    max(1, min(sane_default(work.ctx), round(0.20 * work.ctx.context_limit)))
+    ordinary_max_tokens(work.ctx.client_config.model, work.ctx.context_limit)
   end
+
+  @doc """
+  The ordinary-turn output cap for a model and a context limit:
+  `min(model_default, 0.20 * limit)`, at least 1.
+
+  Public because the request-log rebuild (`Nest.Agents.Agent.Restore`) has to
+  show the cap the request *would* have used, and the pair it comes from —
+  `machine.work.ctx` — is reset at the end of every turn. One formula, so the
+  rebuilt log and the live request cannot disagree.
+
+  A `nil` limit (a fixture, or an agent whose limit never resolved) leaves
+  nothing to take 20% of, so the model default stands alone.
+  """
+  @spec ordinary_max_tokens(String.t() | nil, integer() | nil) :: pos_integer()
+  def ordinary_max_tokens(model, context_limit) when is_integer(context_limit) do
+    max(1, min(sane_default(model), round(0.20 * context_limit)))
+  end
+
+  def ordinary_max_tokens(model, _no_limit), do: sane_default(model)
 
   @doc "The compactor output cap: `min(L - size(input), model_default)`, at least 1."
   @spec compactor_max_tokens(Machine.t(), [term()]) :: pos_integer()
   def compactor_max_tokens(%Machine{work: work}, input) do
-    max(1, min(work.ctx.context_limit - Budget.size(input), sane_default(work.ctx)))
+    max(
+      1,
+      min(
+        work.ctx.context_limit - Budget.size(input),
+        sane_default(work.ctx.client_config.model)
+      )
+    )
   end
 
   @doc """
@@ -261,7 +286,5 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
   defp text_or_empty(%Part.Text{text: text}), do: text || ""
   defp text_or_empty(_), do: ""
 
-  defp sane_default(ctx) do
-    GenerationDefaults.default_max_tokens(ctx.client_config.model) || 32_000
-  end
+  defp sane_default(model), do: GenerationDefaults.default_max_tokens(model) || 32_000
 end

@@ -210,7 +210,13 @@ defmodule Nest.Agents.Agent.SubAgent do
             state,
             Map.get(opts, :query, ""),
             model_override,
-            mode: Map.get(opts, :mode)
+            mode: Map.get(opts, :mode),
+            # A clone inherits the parent's vocation unless one is named here;
+            # the supervisor resolves and whitelists a named one, and refuses
+            # one it cannot honour. Dropping the argument (as this did) made
+            # `agents-spawn` report a child of the parent's vocation while the
+            # model believed it had asked for a specialist.
+            vocation: Map.get(opts, :vocation)
           )
         else
           # The supervisor resolves `vocation` (a slug) against the

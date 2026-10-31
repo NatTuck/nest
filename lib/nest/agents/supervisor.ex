@@ -22,9 +22,7 @@ defmodule Nest.Agents.Supervisor do
   alias Nest.Agents.Agent.Turn.GiveUpDelivery
   alias Nest.Agents.PersistedAgent
   alias Nest.Persistence
-  alias Nest.Sandbox.Mounts
   alias Nest.Spaces
-  alias Nest.Vocations
 
   @supervisor_name __MODULE__
 
@@ -180,20 +178,6 @@ defmodule Nest.Agents.Supervisor do
       {:error, reason}
   end
 
-  # The clone's attrs: its forked message prefix, tree position, and inherited
-  # config. Kept as a function so `start_agent_with_parent/3` stays under the
-  # ABC cap.
-  defp clone_attrs(parent_state, instruction, child_name, parent_id, model_override, mode) do
-    Agent.build_child_attrs(
-      parent_state,
-      instruction,
-      child_name,
-      parent_id,
-      model_override,
-      mode
-    )
-  end
-
   # `start_pre_spawned/3` bound to this module's own start call. Kept as a
   # function so the `with` in the spawn paths stays under the ABC cap.
   #
@@ -254,12 +238,17 @@ defmodule Nest.Agents.Supervisor do
   Spawn a child agent as a descendant of `parent_state`. The
   child inherits `parent_state.space_id` so cascade-termination
   scoped to that space will find it.
+
+  `opts[:mode]` is the child's mode (omitted: the parent's). `opts[:vocation]` is
+  a vocation slug: a clone inherits the parent's vocation when it is omitted or
+  blank, and a named one is resolved and whitelisted exactly as a fresh spawn's
+  is (`Nest.Agents.SpawnVocation.resolve/2`) — refused if it cannot be honoured,
+  never dropped.
   """
   @spec start_agent_with_parent(Nest.Agents.Agent.t(), String.t(), map() | nil, keyword()) ::
           {:ok, String.t()} | {:error, term()}
   def start_agent_with_parent(parent_state, instruction, model_override \\ nil, opts \\ [])
       when is_map(parent_state) and is_binary(instruction) do
-    parent_name = parent_state.name
     space_id = parent_state.space_id
 
     # A spawn reads the space's environment (`Persistence.build_agent_attrs/1`
@@ -271,23 +260,72 @@ defmodule Nest.Agents.Supervisor do
     # child is new: nothing casts it the change, and no mark exists for it yet.
     :ok = SpaceGate.await(space_id)
 
-    with {:ok, %PersistedAgent{id: parent_id}} <- Persistence.fetch_agent(space_id, parent_name),
-         child_name <- generate_unique_name_for_space(space_id),
-         attrs =
-           clone_attrs(
-             parent_state,
-             instruction,
-             child_name,
-             parent_id,
-             model_override,
-             Keyword.get(opts, :mode)
-           ),
+    with {:ok, child_name, attrs} <- build_clone(parent_state, instruction, model_override, opts),
          {:ok, agent_id} <- Agent.pre_spawn(attrs),
          {:ok, _pid} <- start_pre_spawned_child(attrs, agent_id, child_name),
-         :ok <- ChildRegistry.register(space_id, parent_name, child_name) do
+         :ok <- ChildRegistry.register(space_id, parent_state.name, child_name) do
       {:ok, child_name}
     end
   end
+
+  # A clone's name, row position and attrs, resolved in the caller's pid before
+  # anything is written: the vocation (named or inherited), the parent's row, the
+  # unique name, the forked prefix, and the space's environment.
+  #
+  # `Persistence.build_agent_attrs/1` is what gives the child the *space's*
+  # environment: it resolves `:workspace_path` (and a `"none"` space's
+  # `:space_name`) from the row, as the fresh-spawn path does
+  # (`start_fresh_child/6`). `PreSpawn.inherited_attrs/4` copies the backend and
+  # the network access from the parent's mounts but not the workspace, and
+  # `PreSpawn.pre_spawn/1` derives it only into its own copy of the attrs — so a
+  # clone used to start with no workspace: it could not spawn (see
+  # `ensure_spawn_workspace/1`), every command ran in the sandbox's `/tmp`, and
+  # `start_under_supervisor/2`'s `workspace_gate/1` had no path to gate.
+  defp build_clone(parent_state, instruction, model_override, opts) do
+    with {:ok, vocation_id} <- resolve_clone_vocation(parent_state, Keyword.get(opts, :vocation)),
+         {:ok, %PersistedAgent{id: parent_id}} <-
+           Persistence.fetch_agent(parent_state.space_id, parent_state.name) do
+      child_name = generate_unique_name_for_space(parent_state.space_id)
+
+      attrs =
+        parent_state
+        |> Agent.build_child_attrs(
+          instruction,
+          child_name,
+          parent_id,
+          model_override,
+          Keyword.get(opts, :mode)
+        )
+        |> put_vocation(vocation_id)
+        |> Persistence.build_agent_attrs()
+
+      {:ok, child_name, attrs}
+    end
+  end
+
+  # A named vocation is the child's, and the inherited *struct* has to go with
+  # the id: `Init` composes the child's prompt and tool list from the struct, so
+  # leaving the parent's in place would give the child one vocation's identity
+  # and another's tools. Dropping it lets `build_agent_attrs/1` load the row's
+  # (`Persistence.maybe_load_vocation/1`).
+  defp put_vocation(attrs, nil), do: attrs
+
+  defp put_vocation(attrs, vocation_id) do
+    attrs
+    |> Map.put(:vocation_id, vocation_id)
+    |> Map.delete(:vocation)
+  end
+
+  # A clone with no `vocation` inherits the parent's — unlike a fresh spawn,
+  # whose omitted vocation means the space's blueprint default. A *named* one is
+  # resolved and whitelisted exactly as a fresh spawn's is: the blueprint's
+  # policy is the space's, and it does not stop applying because the child
+  # forked a context. A name that is not allowed is refused, never dropped.
+  defp resolve_clone_vocation(parent_state, slug) when is_binary(slug) and slug != "" do
+    resolve_spawn_vocation(parent_state, slug)
+  end
+
+  defp resolve_clone_vocation(_parent_state, _omitted), do: {:ok, nil}
 
   @doc """
   Spawn a fresh-context sub-agent in the coordinator's space.
@@ -345,7 +383,7 @@ defmodule Nest.Agents.Supervisor do
     :ok = SpaceGate.await(parent_state.space_id)
 
     with {:ok, resolved} <- resolve_spawn_vocation(parent_state, vocation),
-         :ok <- ensure_spawn_workspace(parent_state, resolved),
+         :ok <- ensure_spawn_workspace(parent_state),
          {:ok, %PersistedAgent{id: parent_id}} <-
            Persistence.fetch_agent(parent_state.space_id, parent_state.name),
          :ok <-
@@ -402,25 +440,21 @@ defmodule Nest.Agents.Supervisor do
     child_depth >= Config.configured_max_depth()
   end
 
-  # A sub-agent whose vocation expects a workspace can't be spawned if
-  # the parent has no workspace to inherit (e.g. a Chat parent spawning
-  # a Programmer child). Reject immediately rather than starting a child
-  # whose file/shell tools would fail at runtime.
-  defp ensure_spawn_workspace(parent_state, vocation_id) do
-    case Vocations.get_vocation(vocation_id) do
-      nil ->
-        :ok
-
-      _vocation ->
-        # Every vocation requires a workspace now
-        # (`Vocations.requires_workspace?/1` is a constant), so the child's
-        # inheritance is all that is left to check.
-        if is_nil(Mounts.workspace(parent_state.mounts)) do
-          {:error, :workspace_required}
-        else
-          Nest.Sandbox.workspace_error(Mounts.workspace(parent_state.mounts))
-        end
-    end
+  # A spawned child's workspace is the **space's** (`spaces.workspace_path`), not
+  # the parent's cached mounts: every spawn resolves the environment from the row
+  # (`Persistence.build_agent_attrs/1`). Reading the parent here answered a
+  # question nobody asked — and answered it wrongly for a clone, which had no
+  # workspace of its own and so could never spawn.
+  #
+  # There is no "the space has no workspace" case to report: both space changesets
+  # `validate_required/2` it. A space row that is *gone* reads as `nil`, which
+  # `workspace_error/1` allows through — `Persistence.fetch_agent/2` then answers
+  # `:not_found`, the true reason.
+  defp ensure_spawn_workspace(parent_state) do
+    parent_state.space_id
+    |> Spaces.environment()
+    |> Map.fetch!(:workspace_path)
+    |> Nest.Sandbox.workspace_error()
   end
 
   @doc """

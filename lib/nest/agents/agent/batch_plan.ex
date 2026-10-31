@@ -51,6 +51,7 @@ defmodule Nest.Agents.Agent.BatchPlan do
   alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Agents.Agent.CapCalculator
   alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.SpawnErrors
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
   alias Nest.Sandbox
@@ -471,8 +472,8 @@ defmodule Nest.Agents.Agent.BatchPlan do
 
   # Format a spawn failure for the model. `:vocation_not_spawnable`
   # carries the whitelisted `{name, slug}` vocations; other reasons
-  # (max depth, duplicate name, workspace required) are rendered
-  # directly.
+  # (max depth, duplicate name, a workspace the sandbox refuses) are rendered
+  # directly — and the workspace ones as sentences, see `SpawnErrors`.
   def spawn_error_message({:vocation_not_spawnable, allowed}) do
     labels = Enum.map_join(allowed, ", ", fn {name, slug} -> "#{name} (#{slug})" end)
     "Could not spawn batch children: vocation not allowed in this space. Allowed: #{labels}."
@@ -513,6 +514,12 @@ defmodule Nest.Agents.Agent.BatchPlan do
 
   def spawn_error_message({:config_file_not_regular, _path, _type} = reason),
     do: "Could not spawn batch children: #{Nest.ConfigFile.error_message(reason)}"
+
+  # The two `Nest.Sandbox.workspace_error/1` refusals a spawn can carry. One
+  # wording, in `SpawnErrors`, under this renderer's prefix.
+  def spawn_error_message(reason)
+      when reason in [:workspace_missing, :workspace_under_tmp],
+      do: "Could not spawn batch children: " <> SpawnErrors.workspace_message(reason)
 
   def spawn_error_message(reason), do: "Could not spawn batch children: #{inspect(reason)}"
 end

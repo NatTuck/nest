@@ -105,6 +105,20 @@ export const accumulatePart = (parts, _currentKind, content, partType) => {
     return { parts: updated, currentKind: kind };
   }
 
+  // A message has exactly one reasoning channel: the server emits at most one
+  // `Part.Thinking`, first (`build_assistant_parts/1`). A provider that
+  // interleaves reasoning after content would otherwise open a second thinking
+  // part here, and the display throws on that (it is a shape no server
+  // produces). So a resumed thinking run appends to the existing part.
+  if (kind === "thinking") {
+    const index = parts.findIndex((p) => p && p.kind === "thinking");
+    if (index !== -1) {
+      const updated = [...parts];
+      updated[index] = appendPart(parts[index], content);
+      return { parts: updated, currentKind: kind };
+    }
+  }
+
   return { parts: [...parts, newPart(kind, content)], currentKind: kind };
 };
 

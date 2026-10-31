@@ -40,9 +40,10 @@ defmodule Nest.Tools.SpawnAgent do
       "nothing, a runtime notice naming the reason instead. Nothing waits: " <>
       "the spawn is confirmed right away (a bad spawn still comes back as an " <>
       "error you can fix). `vocation` (a slug like \"programmer\") names the " <>
-      "specialist's role and tools; when omitted, the space's blueprint " <>
-      "default is used, and a space whose blueprint names no default refuses " <>
-      "the spawn — set it to spawn a specialist with a different role. " <>
+      "specialist's role and tools; when omitted, a fresh spawn takes the " <>
+      "space's blueprint default, and a space whose blueprint names no default " <>
+      "refuses the spawn — set it to spawn a specialist with a different role. " <>
+      "A `clone_context` clone inherits your own vocation when it is omitted. " <>
       "Set `clone_context` to true to spawn the agent with a copy of " <>
       "this conversation instead of a fresh context. Set `archive` to true " <>
       "(with `query`) to stop and archive the agent after it responds " <>
@@ -69,9 +70,11 @@ defmodule Nest.Tools.SpawnAgent do
           "type" => "string",
           "description" =>
             "The vocation slug defining the specialist's role and tools " <>
-              "(for example \"programmer\"). When omitted, the space's blueprint " <>
-              "default is used; a space whose blueprint names no default refuses " <>
-              "the spawn, so pass one."
+              "(for example \"programmer\"). When omitted, a fresh spawn takes " <>
+              "the space's blueprint default (and a space whose blueprint names " <>
+              "no default refuses the spawn, so pass one), while a " <>
+              "`clone_context` clone inherits your own vocation — pass one to " <>
+              "give the clone a different role."
         },
         "clone_context" => %{
           "type" => "boolean",

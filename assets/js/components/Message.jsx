@@ -47,6 +47,8 @@ import { StreamingDots } from "./StreamingDots";
 
 import { messageToMarkdown } from "../utils/formatMessage.js";
 import { messageText } from "../utils/messageText.js";
+import { rowAppearance } from "../utils/header.js";
+import { ReplyRequiredChip } from "./SenderCaption.jsx";
 import {
   thinkingFor,
   messageContentPartsFor,
@@ -69,26 +71,40 @@ function Message({ message, agentName }) {
   const toolCalls =
     toolCallsFromParts(message.parts) ?? message.toolCalls ?? [];
 
-  const bubbleClass = isUser
-    ? "bg-blue-50 ml-12"
+  // A user row's identity comes from its bodies' headers, not from the role: the
+  // role is overloaded on the wire (a drained batch, a peer's note, a runtime
+  // notice and a spawn kickoff are all user rows), so "You" is only right when
+  // the server says these are the human's own words (`origin: "human"`).
+  // `rowAppearance` decides the label, the tint and the avatar from
+  // `rowSenders`, so the row and its per-body captions cannot disagree.
+  const sender = isUser ? rowAppearance(message) : null;
+
+  const bubbleClass = sender
+    ? `${sender.bubble} ml-12`
     : isSystem
       ? "bg-amber-50 border border-amber-200 mx-8"
       : isTool
         ? "bg-green-50 border border-green-200 mx-8"
         : "bg-gray-50 mr-12";
 
-  const avatarClass = isUser
-    ? "bg-blue-600 text-white"
+  const avatarClass = sender
+    ? sender.avatar
     : isSystem
       ? "bg-amber-500 text-white"
       : isTool
         ? "bg-green-500 text-white"
         : "bg-gray-600 text-white";
 
-  const avatarLabel = isUser ? "U" : isSystem ? "S" : isTool ? "T" : "AI";
+  const avatarLabel = sender
+    ? sender.avatarLabel
+    : isSystem
+      ? "S"
+      : isTool
+        ? "T"
+        : "AI";
 
-  const roleLabel = isUser
-    ? "You"
+  const roleLabel = sender
+    ? sender.label
     : isSystem
       ? "System"
       : isTool
@@ -115,6 +131,10 @@ function Message({ message, agentName }) {
               mode: {message.mode}
             </span>
           )}
+          {/* The reply marker is row-level only when the row holds one body: a
+              multi-body row carries it in each body's caption
+              (`UserMessageParts`), so nothing is shown twice. */}
+          {sender?.replyRequired && <ReplyRequiredChip />}
           {isPartial && (
             <span className="text-xs text-gray-400">(typing...)</span>
           )}

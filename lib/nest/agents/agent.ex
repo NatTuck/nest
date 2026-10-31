@@ -430,11 +430,11 @@ defmodule Nest.Agents.Agent do
   defdelegate get_watches(pid, timeout \\ 5_000), to: ClientAPI
 
   @doc """
-  Fetch API logs for a specific message by index, given the agent's
-  derived archive (`Persistence.load_history/2`, resolved by the
-  caller so the agent process never reads the DB for display).
+  Fetch API logs for a specific message by index, from the agent's own
+  active message list. An index in the archived slice answers
+  `{:error, :archived}`.
   """
-  defdelegate get_api_logs(pid, index, history), to: ClientAPI
+  defdelegate get_api_logs(pid, index), to: ClientAPI
 
   # Server Callbacks
 

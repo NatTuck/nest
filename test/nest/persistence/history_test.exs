@@ -44,7 +44,7 @@ defmodule Nest.Persistence.HistoryTest do
 
       assert indexes(History.load_slice(space_id, name, [])) == [0, 1, 2]
 
-      # `load/2` is the unbounded form (used by chat:api-logs audit).
+      # `load/2` is the unbounded form (the whole archive in one call).
       assert indexes(History.load(space_id, name)) == [0, 1, 2]
     end
   end

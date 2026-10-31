@@ -217,14 +217,17 @@ defmodule Nest.Agents do
   @doc """
   Fetch API logs for a specific message by index. Returns the
   response logs for assistant and system messages (persisted),
-  or rebuilds request logs for user and tool messages on demand.
+  or rebuilds request logs for user and tool messages on demand
+  from the agent's active message list.
+
+  An index in the archived (pre-compaction) slice answers
+  `{:error, :archived}`: that request log would have to be rebuilt from
+  rows the process does not hold, and the archive is not a request.
   """
   @spec get_api_logs(integer(), String.t(), non_neg_integer()) ::
           {:ok, [map()]} | {:error, term()}
   def get_api_logs(space_id, name, index) do
-    with_agent(space_id, name, fn pid ->
-      Agent.get_api_logs(pid, index, Nest.Persistence.load_history(space_id, name))
-    end)
+    with_agent(space_id, name, fn pid -> Agent.get_api_logs(pid, index) end)
   end
 
   defp get_vocation_info(nil), do: nil

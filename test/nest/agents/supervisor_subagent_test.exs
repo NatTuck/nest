@@ -28,6 +28,8 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
   import Nest.Test.TmpCleanup
 
+  alias Ecto.Adapters.SQL.Sandbox
+  alias Nest.Agents
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.AgentTestLifecycle
@@ -36,6 +38,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   alias Nest.Agents.Supervisor
   alias Nest.Persistence
   alias Nest.Sandbox.Mounts
+  alias Nest.Spaces
   alias Nest.Vocations
 
   setup do
@@ -130,6 +133,109 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       space_id = AgentTestHelpers.current_space_id()
       on_exit(fn -> safe_stop(space_id, child_name) end)
     end
+
+    # The clone's environment is the *space's*, resolved from the row like every
+    # other start (`Persistence.build_agent_attrs/1`). `PreSpawn.inherited_attrs/4`
+    # copies the backend and the network access from the parent's mounts but not
+    # the workspace, so without that call the clone started with no workspace at
+    # all: its own spawn check read the missing value and refused every child with
+    # `:workspace_required`, and every command it ran began in the sandbox's
+    # `/tmp`. A clone therefore could not do the one thing a clone is for.
+    test "a clone carries the space's workspace, so it can spawn a child", %{vid: vid} do
+      {:ok, parent_name, parent_pid, _parent_id} = start_root_parent(vid)
+      parent_state = read_parent_state(parent_name, parent_pid)
+      space_id = AgentTestHelpers.current_space_id()
+      workspace = Spaces.environment(space_id).workspace_path
+
+      {:ok, clone} = Supervisor.start_agent_with_parent(parent_state, "carry on")
+      on_exit(fn -> safe_stop(space_id, clone) end)
+
+      # The value its tools resolve against and its prompt states — nil before
+      # the fix, which is what the UI's `init` frame carries too.
+      assert {:ok, %{workspace_path: ^workspace}} = Agents.get_info(space_id, clone)
+
+      # The clone's own spawn request: the funnel both `agents-spawn` and
+      # `agents-batch` reach (`{:spawn_agent_request, pid, opts}`). It runs in the
+      # clone's process, which needs this test's sandbox connection for its DB
+      # writes. The bound is the suite's test-side one (see
+      # `SubAgentToolsHelpers`).
+      {:ok, clone_pid} = Supervisor.get_agent(space_id, clone)
+      Sandbox.allow(Nest.Repo, self(), clone_pid)
+      grandchild = "grandchild-#{System.unique_integer([:positive])}"
+
+      assert {:ok, ^grandchild} =
+               GenServer.call(
+                 clone_pid,
+                 {:spawn_agent_request, self(),
+                  %{
+                    name: grandchild,
+                    vocation: AgentTestHelpers.vocation_slug_for_test(),
+                    query: ""
+                  }},
+                 1_000
+               )
+
+      on_exit(fn -> safe_stop(space_id, grandchild) end)
+
+      assert {:ok, %{workspace_path: ^workspace}} = Agents.get_info(space_id, grandchild)
+    end
+  end
+
+  describe "a clone's vocation" do
+    # `agents-spawn`'s `vocation` is a documented argument for every spawn, and
+    # the clone branch used to drop it: the model asked for a specialist and got
+    # a copy of itself, while the tool reported success. An *omitted* vocation is
+    # the clone's own case — it inherits the parent's, which is what makes a
+    # clone a clone (a fresh spawn's omitted vocation means the blueprint's
+    # default instead).
+    test "a named vocation is the child's, and an omitted one is the parent's", %{vid: vid} do
+      {:ok, parent_name, parent_pid, _parent_id} = start_root_parent(vid)
+      parent_state = read_parent_state(parent_name, parent_pid)
+      space_id = AgentTestHelpers.current_space_id()
+      {:ok, specialist} = upsert_specialist_vocation()
+
+      {:ok, inherited} = Supervisor.start_agent_with_parent(parent_state, "carry on")
+      on_exit(fn -> safe_stop(space_id, inherited) end)
+
+      assert {:ok, %{vocation_id: ^vid}} = Persistence.fetch_agent(space_id, inherited)
+
+      assert %{vocation_id: ^vid} =
+               Nest.Agents.Agent.get_public_info(via_registry(inherited), 1_000)
+
+      {:ok, named} =
+        Supervisor.start_agent_with_parent(parent_state, "carry on", nil,
+          vocation: specialist.slug
+        )
+
+      on_exit(fn -> safe_stop(space_id, named) end)
+
+      # The row and the live state agree: the live vocation is what composes the
+      # child's prompt and tool list, so a row-only assertion would let a child
+      # run with one vocation's identity and another's tools.
+      specialist_id = specialist.id
+      assert {:ok, %{vocation_id: ^specialist_id}} = Persistence.fetch_agent(space_id, named)
+
+      assert %{vocation_id: ^specialist_id} =
+               Nest.Agents.Agent.get_public_info(via_registry(named), 1_000)
+    end
+
+    test "a vocation that cannot be honoured is refused, and no row is written", %{vid: vid} do
+      {:ok, parent_name, parent_pid, _parent_id} = start_root_parent(vid)
+      parent_state = read_parent_state(parent_name, parent_pid)
+      space_id = AgentTestHelpers.current_space_id()
+
+      # A clone's named vocation goes through the same resolution (and so the same
+      # blueprint whitelist) as a fresh spawn's — `SpawnVocation.resolve/2` — and a
+      # name that cannot be honoured is refused rather than dropped, which is what
+      # the clone branch used to do with every name.
+      assert {:error, {:vocation_not_found, "no-such-vocation"}} =
+               Supervisor.start_agent_with_parent(parent_state, "carry on", nil,
+                 vocation: "no-such-vocation"
+               )
+
+      # Refused before the row: only the parent exists.
+      assert agent_count(space_id) == 1
+    end
   end
 
   describe "stop_agent/2" do
@@ -202,6 +308,18 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       })
 
     {:ok, vid}
+  end
+
+  # A distinct vocation for a clone that names one. Its tools differ from the
+  # parent's on purpose: the live vocation is what composes the child's tool
+  # list, so the assertion has to see the specialist, not just its id.
+  defp upsert_specialist_vocation do
+    Vocations.upsert_vocation(%{
+      name: "Subagent Clone Specialist #{System.unique_integer([:positive])}",
+      description: "A specialist a clone can be given",
+      system_prompt: "You are a specialist.",
+      tools: ["context"]
+    })
   end
 
   defp start_root_parent(vid) do

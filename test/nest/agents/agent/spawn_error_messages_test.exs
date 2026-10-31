@@ -22,4 +22,23 @@ defmodule Nest.Agents.Agent.SpawnErrorMessagesTest do
     assert BatchPlan.spawn_error_message(reason) ==
              "Could not spawn batch children: #{sentence}"
   end
+
+  # The two `Nest.Sandbox.workspace_error/1` refusals a spawn can carry. Both used
+  # to reach the model as `inspect(atom)`, the way the `grandchild-glitch` spawn
+  # failures reached it as `:workspace_required` — an atom naming a state a space
+  # cannot be in, and nothing the agent could act on. Neither of these is
+  # something the spawning agent can fix, so the sentence has to say so: the move
+  # is to report it, not to retry.
+  test "renders a workspace refusal as a sentence the agent can act on, in both renderers" do
+    for reason <- [:workspace_missing, :workspace_under_tmp] do
+      sentence = SpawnErrors.workspace_message(reason)
+
+      assert sentence =~ "Report this to the user"
+
+      assert SpawnErrors.message(reason) == "Could not spawn agent: " <> sentence
+
+      assert BatchPlan.spawn_error_message(reason) ==
+               "Could not spawn batch children: " <> sentence
+    end
+  end
 end

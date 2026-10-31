@@ -30,7 +30,7 @@
  */
 
 import { messageText } from "./messageText.js";
-import { stripHeader } from "./stripHeader.js";
+import { splitFraming } from "./stripHeader.js";
 
 // The `metadata.origin` value the server stamps on the human's own message.
 const HUMAN_ORIGIN = "human";
@@ -53,11 +53,16 @@ function toHistoryEntry(message) {
       : messageText(message);
   if (!raw) return null;
 
-  // `mode` is read here and only here: it is what `stripHeader` needs to take
+  // `mode` is read here and only here: it is what `splitFraming` needs to take
   // the `[mode: X]\n` prefix off, so the recalled text is what the bubble
   // showed. It does not ride the entry — walking the history changes the text
   // and nothing else, so a mode on the entry would be data no consumer reads.
-  return { content: stripHeader(raw, message.mode ?? "") };
+  //
+  // The `[From …]` header is stripped too, and that is justified here in a way
+  // it is not for the clipboard: this list is filtered to `origin: "human"` &&
+  // `composed`, so the sender is provably the human themself and the recalled
+  // text is what they typed.
+  return { content: splitFraming(raw, message.mode ?? "").text };
 }
 
 export function buildChatHistory(messages, archivedHistory) {
