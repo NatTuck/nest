@@ -1224,12 +1224,13 @@ describe("ChatPage thinking-before-content order", () => {
     expect(screen.getByLabelText("Streaming thinking")).toBeInTheDocument();
   });
 
-  it("concatenates multiple thinking segments from the partial's segments list", () => {
-    // Defends against the (rare) case of `[thinking, text,
-    // thinking, text]` interleaving within a single turn: the
-    // current providers don't emit it, but the partial→final
-    // data shape supports it and the helper should be
-    // robust to it.
+  it("shows the whole reasoning run in one box when a partial resumes thinking after text", () => {
+    // A message has exactly one reasoning channel: the server emits at most one
+    // `Part.Thinking`, first, and the store's accumulator keeps that shape when a
+    // provider interleaves reasoning after content (`accumulatePart` appends to
+    // the existing part rather than opening a second — a second is what the
+    // display throws on, see `messageParts.test.js`). So this is the shape the
+    // bubble can actually receive, and the box shows the whole run.
     mockAgentsCache = {
       "test-agent": {
         status: "connected",
@@ -1243,10 +1244,8 @@ describe("ChatPage thinking-before-content order", () => {
           content: "Visible answer",
           isPartial: true,
           parts: [
-            { kind: "thinking", thinking: "First thought " },
-            { kind: "text", text: "Visible " },
-            { kind: "thinking", thinking: "second thought" },
-            { kind: "text", text: "answer" },
+            { kind: "thinking", thinking: "First thought second thought" },
+            { kind: "text", text: "Visible answer" },
           ],
         },
         model: { name: "qwen3.5-plus" },
@@ -1255,13 +1254,11 @@ describe("ChatPage thinking-before-content order", () => {
 
     renderChat();
 
-    // Both thinking segments appear, concatenated as one
-    // string in the Thinking box.
     expect(
       screen.getByText("First thought second thought"),
     ).toBeInTheDocument();
 
-    // The visible body shows only the text segments.
+    // The visible body shows only the text part.
     expect(screen.getByText("Visible answer")).toBeInTheDocument();
   });
 
@@ -1329,13 +1326,12 @@ describe("ChatPage thinking-before-content order", () => {
     ).toBeInTheDocument();
   });
 
-  it("splits <think>...</think> blocks buried in Part.Text into the Thinking box", () => {
-    // Some models emit the reasoning inline as
-    // `<think>...</think>` text inside a `Part.Text` rather
-    // than as a separate `Part.Thinking` entry. The active
-    // message list splits the text, routes the inner content
-    // to the Thinking box, and renders only the surrounding
-    // text via MessageContent.
+  it("renders a mid-text <think> as prose and invents no Thinking box", () => {
+    // The regression: the old splitter treated an opener anywhere in the text
+    // as the start of a reasoning run, so an assistant message that merely
+    // *discussed* the tag had the rest of its text moved into the box — the
+    // message was truncated mid-sentence. A marker is framing only when the
+    // row has a home for the fact it carries, and this row has none.
     mockAgentsCache = {
       "test-agent": {
         status: "connected",
@@ -1348,7 +1344,7 @@ describe("ChatPage thinking-before-content order", () => {
             parts: [
               {
                 kind: "text",
-                text: "before<think>reasoning here</think>after",
+                text: "Use `<think>` to mark reasoning, as in this sentence.",
               },
             ],
           },
@@ -1357,25 +1353,20 @@ describe("ChatPage thinking-before-content order", () => {
       },
     };
 
-    renderChat();
+    const { container } = renderChat();
 
-    // Thinking content is rendered in the Thinking box
-    expect(screen.getByText("reasoning here")).toBeInTheDocument();
-    // The visible text is split around the think block
-    expect(screen.getByText(/before/)).toBeInTheDocument();
-    expect(screen.getByText(/after/)).toBeInTheDocument();
-    // No raw <think> markers in the visible text
-    expect(screen.queryByText("<think>")).not.toBeInTheDocument();
-    expect(screen.queryByText("</think>")).not.toBeInTheDocument();
+    // The whole sentence is body text, tag included.
+    expect(container.textContent).toContain(
+      "Use <think> to mark reasoning, as in this sentence.",
+    );
+    // ...and nothing was hoisted into a reasoning box.
+    expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
   });
 
-  it("routes stray </think>\\n\\n text in Part.Text to the Thinking box (orphan closing)", () => {
-    // Regression: OpenAI-style models occasionally emit
-    // `</think>\n\n` as part of the response (a closing tag
-    // without a matching opener). The active message list
-    // routes the orphan's tail to the thinking channel so
-    // the user doesn't see raw `</think>` characters in the
-    // visible reply.
+  it("renders a stray </think> as prose and invents no Thinking box", () => {
+    // A closing tag with no opener is text. The old splitter deleted it and
+    // moved everything after it into the thinking channel; now the whole body
+    // stays in the body.
     mockAgentsCache = {
       "test-agent": {
         status: "connected",
@@ -1385,20 +1376,21 @@ describe("ChatPage thinking-before-content order", () => {
           {
             index: 1,
             role: "assistant",
-            parts: [{ kind: "text", text: "hello</think>\n\nworld" }],
+            parts: [
+              { kind: "text", text: "the model wrote </think> here, as prose" },
+            ],
           },
         ],
         model: { name: "qwen3.5-plus" },
       },
     };
 
-    renderChat();
+    const { container } = renderChat();
 
-    // The orphan + tail went to thinking; the visible text
-    // retains the prefix.
-    expect(screen.getByText("hello")).toBeInTheDocument();
-    // The raw `</think>` does not appear anywhere in the DOM
-    expect(screen.queryByText("</think>")).not.toBeInTheDocument();
+    expect(container.textContent).toContain(
+      "the model wrote </think> here, as prose",
+    );
+    expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
   });
 });
 

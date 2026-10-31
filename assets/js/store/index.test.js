@@ -2724,6 +2724,39 @@ describe("store", () => {
         text: "Visible answer",
       });
     });
+
+    it("appends a resumed thinking run to the one thinking part", () => {
+      // A provider can interleave reasoning after content, which would otherwise
+      // open a *second* thinking part — a shape no server produces, and one the
+      // display throws on (`splitReasoning`). The accumulator keeps the one
+      // channel the server guarantees.
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 5,
+        deltaIndex: 0,
+        content: "First thought ",
+        partType: "thinking",
+      });
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 5,
+        deltaIndex: 1,
+        content: "Visible answer",
+        partType: "text",
+      });
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 5,
+        deltaIndex: 2,
+        content: "second thought",
+        partType: "thinking",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      const thinkingParts = cache.streaming.parts.filter(
+        (p) => p.kind === "thinking",
+      );
+
+      expect(thinkingParts).toHaveLength(1);
+      expect(thinkingParts[0].thinking).toBe("First thought second thought");
+    });
   });
 
   describe("addChatDelta thinking-vs-text split (legacy partial protocol)", () => {

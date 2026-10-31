@@ -2,132 +2,80 @@ defmodule Nest.Messages.ThinkTagsTest do
   @moduledoc """
   Tests for `Nest.Messages.ThinkTags`.
 
-  Covers:
-  - No markers → returns input unchanged.
-  - Single block → removed.
-  - Multiple blocks → all removed.
-  - Nested `<think>` inside a think block → outer block
-    consumes the matching close; inner is text inside.
-  - Empty think block (`<think></think>`) → removed.
-  - Orphan `</think>` (no matching `<think>`) → orphan and
-    everything after is removed.
-  - Orphan `<think>` (no matching `</think>`) → from orphan
-    to end is removed.
-  - Non-binary input → returns "".
-  - `strip_from_parts/1` rewrites `Part.Text`, passes other
-    kinds through unchanged.
-  - Stray `</think>\n\n` (the OpenAI-style regression) → the
-    stray text and tail are removed.
+  The rule is "leading matched pair only": a `<think>…</think>` block at the
+  **head** of the text is reasoning and goes; everything else is prose and is
+  returned untouched. The orphan and unclosed cases are the regression — the
+  old splitter deleted the rest of the string, which silently removed an
+  agent's prose from the text the summariser reads whenever the model merely
+  *discussed* the tag.
   """
   use ExUnit.Case, async: true
 
-  alias Nest.Messages.Part
   alias Nest.Messages.ThinkTags
 
-  describe "strip/1 — no markers" do
-    test "returns the input unchanged" do
-      assert ThinkTags.strip("hello world") == "hello world"
+  describe "strip/1 — the leading block" do
+    test "removes a leading matched block and keeps the prose after it" do
+      assert ThinkTags.strip("<think>reasoning</think>The answer is 42.") ==
+               "The answer is 42."
     end
 
-    test "returns empty string unchanged" do
+    test "removes a block that is the whole string" do
+      # This is what `Nest.Tokens.Compactor.validate_summary/1` sees when the
+      # model was cut off mid-thinking: strip leaves "", and the empty check
+      # reports `:llm_returned_empty`.
+      assert ThinkTags.strip("<think>reasoning</think>") == ""
+      assert String.trim(ThinkTags.strip("<think>only reasoning</think>")) == ""
+    end
+
+    test "removes an empty leading block" do
+      assert ThinkTags.strip("<think></think>after") == "after"
+    end
+
+    test "ends the block at the first closer" do
+      # Nesting is not supported: a nested opener is content and the first
+      # `</think>` closes the block.
+      assert ThinkTags.strip("<think>outer<think>inner</think>rest</think>tail") ==
+               "rest</think>tail"
+    end
+
+    test "preserves whitespace and newlines after the block" do
+      assert ThinkTags.strip("<think>\nwhy\n</think>\n\nAnswer\n") ==
+               "\n\nAnswer\n"
+    end
+  end
+
+  describe "strip/1 — text that is not a leading block" do
+    test "leaves a block in the middle of prose alone" do
+      # The exact regression: an assistant message that discusses the tag. The
+      # old splitter routed everything after the tag into the reasoning channel.
+      assert ThinkTags.strip("before<think>reasoning</think>after") ==
+               "before<think>reasoning</think>after"
+    end
+
+    test "leaves a leading unclosed <think> alone" do
+      assert ThinkTags.strip("<think>reasoning") == "<think>reasoning"
+    end
+
+    test "leaves a leading orphan </think> alone" do
+      assert ThinkTags.strip("</think>after") == "</think>after"
+      assert ThinkTags.strip("hello</think>\n\nworld") == "hello</think>\n\nworld"
+    end
+
+    test "leaves a second block alone once the first has gone" do
+      assert ThinkTags.strip("<think>1</think>a<think>2</think>b") ==
+               "a<think>2</think>b"
+    end
+  end
+
+  describe "strip/1 — other input" do
+    test "returns text with no markers unchanged" do
+      assert ThinkTags.strip("hello world") == "hello world"
       assert ThinkTags.strip("") == ""
     end
 
-    test "returns non-binary input as empty string" do
+    test "returns non-binary input as an empty string" do
       assert ThinkTags.strip(nil) == ""
-    end
-  end
-
-  describe "strip/1 — single block" do
-    test "removes a single <think>...</think> block" do
-      assert ThinkTags.strip("before<think>reasoning</think>after") ==
-               "beforeafter"
-    end
-
-    test "removes a block that takes the whole string" do
-      assert ThinkTags.strip("<think>reasoning</think>") == ""
-    end
-  end
-
-  describe "strip/1 — multiple blocks" do
-    test "removes all blocks" do
-      assert ThinkTags.strip("a<think>1</think>b<think>2</think>c") == "abc"
-    end
-  end
-
-  describe "strip/1 — nested and edge cases" do
-    test "treats nested <think> inside a think block as text" do
-      # The inner `<think>...end` is text inside the outer
-      # think block. The outer block closes at the FINAL
-      # `</think>`. The inner `</think>` (after `inner`) is
-      # consumed to keep the outer block from closing early.
-      assert ThinkTags.strip("a<think>outer<think>inner</think>end</think>b") ==
-               "ab"
-    end
-
-    test "removes an empty think block" do
-      assert ThinkTags.strip("before<think></think>after") == "beforeafter"
-    end
-
-    test "removes an orphan </think> (no matching <think>)" do
-      # Stray closing tag and everything after is reasoning.
-      assert ThinkTags.strip("before</think>after") == "before"
-    end
-
-    test "removes an orphan <think> (no matching </think>)" do
-      # Incomplete think block; the rest is reasoning.
-      assert ThinkTags.strip("before<think>reasoning") == "before"
-    end
-
-    test "treats </think>\\n\\n as an orphan closing (OpenAI-style regression)" do
-      # The exact stray-text pattern from the regression:
-      # `</think>\n\n` leaking into the assistant's reply.
-      assert ThinkTags.strip("hello</think>\n\nworld") == "hello"
-    end
-  end
-
-  describe "strip_from_parts/1" do
-    test "rewrites Part.Text" do
-      parts = [
-        %Part.Text{text: "before<think>reasoning</think>after"},
-        %Part.Text{text: "no markers"}
-      ]
-
-      assert ThinkTags.strip_from_parts(parts) == [
-               %Part.Text{text: "beforeafter"},
-               %Part.Text{text: "no markers"}
-             ]
-    end
-
-    test "passes other part kinds through unchanged" do
-      tool_use = %Part.ToolUse{id: "1", name: "x", arguments: %{}}
-      tool_result = %Part.ToolResult{tool_call_id: "1", name: "x", content: "ok"}
-      thinking = %Part.Thinking{thinking: "inner reasoning"}
-      refusal = %Part.Refusal{refusal: "no"}
-
-      parts = [
-        tool_use,
-        %Part.Text{text: "<think>r</think>after"},
-        tool_result,
-        thinking,
-        refusal
-      ]
-
-      assert ThinkTags.strip_from_parts(parts) == [
-               tool_use,
-               %Part.Text{text: "after"},
-               tool_result,
-               thinking,
-               refusal
-             ]
-    end
-
-    test "returns empty list for non-list input" do
-      assert ThinkTags.strip_from_parts(nil) == []
-    end
-
-    test "returns empty list for empty list" do
-      assert ThinkTags.strip_from_parts([]) == []
+      assert ThinkTags.strip(42) == ""
     end
   end
 end

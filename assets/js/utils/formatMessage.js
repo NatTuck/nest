@@ -5,12 +5,11 @@
  *   - `messageToMarkdown(message)` produces the markdown body of a single
  *     chat message. It walks the message's canonical `parts` in order and
  *     serialises every part, with one deliberate exception: reasoning is
- *     omitted from the clipboard (issue #51). That covers both a
- *     `thinking` part and reasoning embedded as `<think>…</think>` inside
- *     a `text` part. Which roles get that treatment is decided by
- *     `stripsThinkTags/1`, which mirrors each role's *body* renderer
- *     (`MessageContent` / `SystemMessageContent`; see its docs) — the
- *     clipboard shows what that renderer shows. User messages also have
+ *     omitted from the clipboard (issue #51). What counts as reasoning is
+ *     `splitReasoning` (`utils/messageParts.js`), the same split the bubble
+ *     renders through — a `thinking` part, or the legacy leading
+ *     `<think>…</think>` block of an assistant row. A `<think>` anywhere else
+ *     is prose and is copied verbatim. User messages also have
  *     their `[mode: X]\n` prefix stripped (the mode badge is rendered
  *     separately in the UI; the user does not want it re-pasted), and a
  *     runtime notice has its `[nest notice]\n` marker stripped wherever it
@@ -42,9 +41,8 @@
 
 import { stripAgentHeaderMode } from "./agentHeader.js";
 import { stripHeader } from "./stripHeader.js";
-import { splitThinkFromParts } from "./thinkTags.js";
 import { mediaSummary } from "./media.js";
-import { commandOutputIndexes } from "./messageParts.js";
+import { commandOutputIndexes, splitReasoning } from "./messageParts.js";
 
 // The clipboard omits reasoning on purpose (issue #51). When a message
 // carries *only* reasoning, the copy would otherwise be empty — which reads
@@ -81,30 +79,39 @@ export function messageToMarkdown(message) {
     // doc's "One deliberate divergence from the bubble".
     const outputIndexes = commandOutputIndexes(message, message.parts);
 
+    // The one reasoning split, shared with the bubble. `parts` keeps the
+    // message's own indexes, so the output markers above still line up.
+    const { thinking, parts } = splitReasoning(message);
+
     const blocks = [];
-    let droppedReasoning = false;
-    for (const [index, part] of message.parts.entries()) {
+    for (const [index, part] of parts.entries()) {
       const block = partToMarkdown(part, role, mode, outputIndexes.has(index));
-      if (block !== "") {
-        blocks.push(block);
-      } else if (partIsReasoning(part, role)) {
-        droppedReasoning = true;
-      }
+      if (block !== "") blocks.push(block);
     }
     if (blocks.length > 0) return blocks.join("\n\n");
     // Nothing copyable. When reasoning was actually omitted, say so rather
     // than copying an empty string.
-    return droppedReasoning ? THINKING_OMITTED_MARKER : "";
+    return thinking ? THINKING_OMITTED_MARKER : "";
   }
 
   const raw = typeof message.content === "string" ? message.content : "";
-  const visible = visibleForRole(raw, role, mode);
+
+  // A legacy `content` string is one body, so it goes through the same rule by
+  // way of a one-part message: an assistant's leading `<think>` block is
+  // reasoning, and everything else is prose.
+  const { thinking, parts } = splitReasoning({
+    role,
+    parts: [{ kind: "text", text: raw }],
+  });
+  const visible = visibleForRole(parts[0].text, role, mode);
   if (visible !== "") return visible;
-  // Nothing visible. Say so when the content was reasoning: a legacy
-  // `thinking` field, or `content` that was entirely `<think>…</think>`.
+
+  // Nothing visible. Say so when the content was reasoning: the legacy
+  // `thinking` field, or a leading `<think>…</think>` block that was the whole
+  // body.
   const droppedReasoning =
     (typeof message.thinking === "string" && message.thinking !== "") ||
-    (stripsThinkTags(role) && raw !== "");
+    !!thinking;
   return droppedReasoning ? THINKING_OMITTED_MARKER : "";
 }
 
@@ -163,46 +170,20 @@ function mediaToMarkdown(part) {
 }
 
 /**
- * Whether a part produced no block because it was reasoning: a `thinking`
- * part, or a text part whose content was entirely `<think>…</think>`
- * (closed or unclosed) for a role whose body renderer splits those tags.
- */
-function partIsReasoning(part, role) {
-  if (!part || typeof part !== "object") return false;
-  if (part.kind === "thinking") return true;
-  if (part.kind !== "text" || !stripsThinkTags(role)) return false;
-  const text = typeof part.text === "string" ? part.text : "";
-  return text !== "" && visibleText(text) === "";
-}
-
-/**
- * Whether this role's *body* renderer splits `<think>` blocks out of its
- * text. `Message.jsx` renders a `user` row through `UserMessageParts` /
- * `userPartsFor` (raw text, with the wire framing stripped per text part) and a
- * `system` message through `SystemMessageContent` (raw too), while every other
- * role (assistant, tool, …) goes through `textPartsFor` /
- * `splitThinkFromParts`.
+ * The body text for a role, with the wire framing removed and nothing else
+ * done to it: reasoning was already taken out by `splitReasoning`, so a
+ * `<think>` that is still in the text is prose and is copied verbatim.
  *
- * This concerns the body only. `Message.jsx` also renders a `ThinkingBlock`
- * for every role via `thinkingFor`, but the copy does not consult it —
- * reasoning is the one deliberate omission, and only where the body
- * renderer treats it as reasoning.
- */
-function stripsThinkTags(role) {
-  return role !== "user" && role !== "system";
-}
-
-/**
- * The visible body text for a role, matching that role's body renderer:
- * the `user`'s own text with the mode prefix stripped, a `system` message
- * verbatim, and everyone else with `<think>` reasoning split out. A synthetic
- * runtime notice carries the `[nest notice]` marker at the head of its text
- * (on its user row, or on the fused `assistant(notice + ack)` row a transcript
- * recorded before the alternation bridge still carries), which is stripped
- * here too — the clipboard shows what the renderer shows. The one exception is
- * a part the wire marks as a command's output, which is copied byte for byte
- * (`isCommandOutput`): it is a body's tail, not its head, so nothing in it is
- * framing.
+ * A user row is a body with its mode prefix stripped (the row's badge shows
+ * it) and, for a transcript recorded before the header, the legacy label's
+ * mode clause. A synthetic runtime notice carries the `[nest notice]` marker at
+ * the head of its text (on its user row, or on the fused
+ * `assistant(notice + ack)` row a transcript recorded before the alternation
+ * bridge still carries), which `stripHeader` removes for every role.
+ *
+ * The one exception is a part the wire marks as a command's output, which is
+ * copied byte for byte (`isCommandOutput`): it is a body's tail, not its head,
+ * so nothing in it is framing.
  */
 function visibleForRole(text, role, mode, isCommandOutput = false) {
   // A command's output is copied exactly as the bubble shows it. The framing
@@ -215,18 +196,7 @@ function visibleForRole(text, role, mode, isCommandOutput = false) {
   if (role === "user") {
     return stripAgentHeaderMode(stripHeader(text, mode), mode);
   }
-  return stripHeader(stripsThinkTags(role) ? visibleText(text) : text, mode);
-}
-
-/**
- * The user-visible part of a string: everything outside `<think>…</think>`
- * (or an orphan `</think>`). Reuses `splitThinkFromParts`, the same split
- * the UI renders through, rather than re-deriving the extraction.
- */
-function visibleText(text) {
-  return splitThinkFromParts([{ kind: "text", text }])
-    .textParts.map((part) => part.text)
-    .join("");
+  return stripHeader(text, mode);
 }
 
 /** A tool call: a bold header naming the tool, then its arguments. */

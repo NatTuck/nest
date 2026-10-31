@@ -255,8 +255,9 @@ defmodule Nest.Tokens.Compactor do
   defp split_messages(_other), do: :too_short
 
   @doc """
-  Validate a compactor summary: it must be non-empty after stripping
-  `<think>...</think>` blocks and trimming whitespace.
+  Validate a compactor summary: it must be non-empty after stripping a
+  **leading** `<think>...</think>` block and trimming whitespace
+  (`Nest.Messages.ThinkTags`).
 
   This is the single summary contract, shared by `compact/3` and the live
   compaction commit (`Nest.Agents.Agent.Turn.Executor`). A missing
@@ -267,9 +268,13 @@ defmodule Nest.Tokens.Compactor do
   summary.
 
   Covers:
-    * LLM emitted only `<think>...</think>` blocks (no visible summary) —
-      common when the response is truncated mid-thinking by the token budget.
+    * LLM emitted only a leading `<think>...</think>` block (no visible
+      summary) — common when the response is truncated mid-thinking by the
+      token budget.
     * Whitespace-only responses (`"   "`, `"\\n\\n"`).
+
+  A `<think>` anywhere else is prose, so a summary that merely mentions the
+  tag is not empty.
   """
   @spec validate_summary(String.t() | nil) :: :ok | {:error, :llm_returned_empty}
   def validate_summary(nil), do: {:error, :llm_returned_empty}

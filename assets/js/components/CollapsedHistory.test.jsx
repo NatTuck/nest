@@ -357,56 +357,63 @@ describe("CollapsedHistory", () => {
       expect(bubble.textContent).toContain("Here is the answer.");
     });
 
-    it("splits <think>...</think> blocks buried in Part.Text into ThinkingBlock", () => {
-      // Some models emit the reasoning inline as
-      // `<think>...</think>` text inside a `Part.Text` rather
-      // than as a separate `Part.Thinking` entry. The history
-      // bubble splits the text, routes the inner content to
-      // ThinkingBlock, and renders only the surrounding
-      // text via MessageContent.
+    it("renders an assistant's leading <think> block as reasoning", () => {
+      // The one shape the display still reads: a build with no `Part.Thinking`
+      // wrote the reasoning as a leading matched block.
+      const history = buildHistory([
+        {
+          role: "assistant",
+          parts: [{ kind: "text", text: "<think>reasoning here</think>after" }],
+        },
+      ]);
+      render(<CollapsedHistory history={history} />);
+      const bubble = screen.getByTestId("history-message");
+      // The block's content is in the ThinkingBlock...
+      expect(bubble.textContent).toContain("reasoning here");
+      // ...and the body is what followed it, with no markers left behind.
+      expect(bubble.textContent).toContain("after");
+      expect(bubble.textContent).not.toContain("<think>");
+      expect(bubble.textContent).not.toContain("</think>");
+    });
+
+    it("renders a mid-text <think> as prose and invents no ThinkingBlock", () => {
+      // A marker is framing only when the row has a home for the fact it
+      // carries. This row has none, so the tag is something the model wrote.
       const history = buildHistory([
         {
           role: "assistant",
           parts: [
             {
               kind: "text",
-              text: "before<think>reasoning here</think>after",
+              text: "Use `<think>` to mark reasoning, as in this sentence.",
             },
           ],
         },
       ]);
       render(<CollapsedHistory history={history} />);
       const bubble = screen.getByTestId("history-message");
-      // Thinking content is rendered
-      expect(bubble.textContent).toContain("reasoning here");
-      // The visible text is split around the think block
-      expect(bubble.textContent).toContain("before");
-      expect(bubble.textContent).toContain("after");
-      // No raw <think> markers in the rendered text
-      expect(bubble.textContent).not.toContain("<think>");
-      expect(bubble.textContent).not.toContain("</think>");
+      expect(bubble.textContent).toContain(
+        "Use <think> to mark reasoning, as in this sentence.",
+      );
+      expect(bubble.textContent).not.toContain("Thinking");
     });
 
-    it("routes stray </think>\n\n text in Part.Text to the ThinkingBlock (orphan closing)", () => {
-      // Regression: the OpenAI-style model occasionally
-      // emits `</think>\n\n` as part of the response (a
-      // closing tag without a matching opener). The history
-      // bubble routes the orphan's tail to the thinking
-      // channel so the user doesn't see raw `</think>`
-      // characters in the visible reply.
+    it("renders a stray </think> as prose", () => {
+      // A closing tag with no opener is text; the old splitter deleted it and
+      // moved the rest of the body into the thinking channel.
       const history = buildHistory([
         {
           role: "assistant",
-          parts: [{ kind: "text", text: "hello</think>\n\nworld" }],
+          parts: [
+            { kind: "text", text: "the model wrote </think> here, as prose" },
+          ],
         },
       ]);
       render(<CollapsedHistory history={history} />);
       const bubble = screen.getByTestId("history-message");
-      // The orphan + tail went to thinking (rendered as
-      // collapsed reasoning), not the visible text
-      expect(bubble.textContent).not.toContain("</think>");
-      // The visible text retains the prefix
-      expect(bubble.textContent).toContain("hello");
+      expect(bubble.textContent).toContain(
+        "the model wrote </think> here, as prose",
+      );
     });
 
     it("renders tool_use parts via ToolCalls", () => {

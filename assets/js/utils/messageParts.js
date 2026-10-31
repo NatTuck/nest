@@ -4,46 +4,95 @@
  * rendering path (ChatPage.jsx) and the archived-history pane
  * (CollapsedHistory.jsx) so a re-broadcast assistant message
  * renders identically in both contexts.
+ *
+ * `splitReasoning/1` is the module's one decision about what is reasoning and
+ * what is prose; `thinkingFor/1`, `textPartsFor/1` and the clipboard all read
+ * it, so the box, the body and the copy cannot disagree.
  */
 
-import { splitThinkFromParts } from "./thinkTags.js";
+import { leadingThinkBlock } from "./thinkTags.js";
 import { stripHeader } from "./stripHeader.js";
 import { stripAgentHeaderMode } from "./agentHeader.js";
 import { messageText } from "./messageText.js";
 
-// Concatenate the thinking content for an assistant message:
-// both `Part.Thinking` entries AND any `<!--think...-->` blocks buried
-// in `Part.Text` text. If `message.parts` carries no thinking, falls
-// back to the legacy `message.thinking` field (seen on wire-format
-// messages that pre-date the parts cleanup).
+// A message's reasoning channel and its prose, decided **once** for both the
+// thinking box (`thinkingFor`) and the body (`textPartsFor` / the clipboard),
+// so the two cannot disagree about what was moved.
+//
+// The rule, in order:
+//
+//   * a `Part.Thinking` exists -> that IS the reasoning channel. The text is
+//     prose and is never scanned for tags.
+//   * else, an assistant row whose first text part opens with a matched
+//     `<think>…</think>` -> that leading block is legacy reasoning, and what
+//     follows it is prose.
+//   * else -> the text is prose, never scanned.
+//
+// `parts` keeps the message's own shape — same length, same order, same
+// indexes — because callers address parts by their index into
+// `message.parts` (the wire's `commandOutputParts` does). A reasoning part
+// stays in place and a caller that renders text skips it by kind.
+//
+// A second `Part.Thinking` throws. `build_assistant_parts/1` is the only
+// producer and emits at most one, first; a second is a server bug, and
+// silently concatenating it would invent reasoning that the row does not have.
+export function splitReasoning(message) {
+  const parts = Array.isArray(message?.parts) ? message.parts : [];
+  const thinking = parts.filter((p) => p?.kind === "thinking");
+
+  if (thinking.length > 1) {
+    throw new Error(
+      `a message may carry at most one thinking part, got ${thinking.length}: ` +
+        "Nest.Agents.Agent.Turn.Messages.build_assistant_parts/1 emits at most one, first",
+    );
+  }
+
+  if (thinking.length === 1) {
+    return { thinking: thinking[0].thinking || null, parts };
+  }
+
+  if (message?.role !== "assistant") return { thinking: null, parts };
+
+  const index = parts.findIndex((p) => p?.kind === "text");
+  if (index === -1) return { thinking: null, parts };
+
+  const block = leadingThinkBlock(parts[index].text);
+  if (!block) return { thinking: null, parts };
+
+  const next = parts.slice();
+  next[index] = { ...parts[index], text: block.rest };
+  return { thinking: block.thinking || null, parts: next };
+}
+
+// The thinking content for a message: `splitReasoning`'s channel, falling back
+// to the legacy `message.thinking` field (seen on wire-format messages that
+// pre-date the parts cleanup). A user row or a system row never has either, so
+// no row grows an invented reasoning box.
 export function thinkingFor(message) {
   if (!message) return null;
 
-  const fromParts = splitThinkFromParts(message.parts).thinking;
-  if (fromParts) return fromParts;
-
-  return message.thinking || null;
+  return splitReasoning(message).thinking || message.thinking || null;
 }
 
-// The parts for a non-user row, with any `<!--think...-->` blocks split
-// out (their content was routed into the ThinkingBlock above). NOT
-// text-only: every non-text part passes through in place, `media`
-// included, so a caller that renders the media itself must use
-// `messageContentPartsFor` instead (issue #115). A user row does not come
-// through here at all — `userPartsFor` renders it segment by segment — so this
-// is only used for non-user rows.
+// The parts for a non-user row, with the reasoning removed and any wire
+// framing stripped from the first text part. NOT text-only: every non-text part
+// passes through in place, `media` included, so a caller that renders the media
+// itself must use `messageContentPartsFor` instead (issue #115). A user row does
+// not come through here at all — `userPartsFor` renders it segment by segment —
+// so this is only used for non-user rows.
 //
-// A non-user row can still carry wire framing: a transcript recorded before
-// the `[From … | mode: …]` header has the retired `[nest notice]` marker at the
+// A non-user row can still carry wire framing: a transcript recorded before the
+// `[From … | mode: …]` header has the retired `[nest notice]` marker at the
 // head of a runtime notice's text (and a fused `assistant(notice + ack)` row
 // puts it at the head of an assistant row). The framing is stripped from the
-// first text part here — the same render-time removal `stripHeader` performs
+// first text part here — the same render-time removal `stripFraming` performs
 // for a user row — so the operator sees the words, not the wire. Only the first
 // text part is touched: a header or a marker always heads a body, never
 // mid-text.
 export function textPartsFor(message) {
+  const { parts } = splitReasoning(message);
   return stripHeaderFromParts(
-    splitThinkFromParts(message?.parts).textParts,
+    parts.filter((part) => part?.kind !== "thinking"),
     message,
   );
 }

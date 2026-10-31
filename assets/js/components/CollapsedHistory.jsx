@@ -67,12 +67,12 @@ const AVATAR_LETTER = {
   tool: "T",
 };
 
-// Concatenate the thinking content for an assistant message,
-// extract the visible text parts (with <think> blocks removed),
-// and derive legacy tool_call/tool_result shapes. All four
+// The reasoning channel for an assistant message, the visible text
+// parts, and the legacy tool_call/tool_result shapes. All four
 // helpers come from `utils/messageParts.js` and are shared with
 // the live-area ChatPage render so a re-broadcast message
-// renders identically in both contexts.
+// renders identically in both contexts — including which part of
+// it is reasoning (`splitReasoning`).
 
 function MessageBubble({ message }) {
   const role = message.role;

@@ -20,6 +20,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  splitReasoning,
   thinkingFor,
   textPartsFor,
   messageContentPartsFor,
@@ -31,43 +32,159 @@ import {
   LONG_FIELD_THRESHOLD,
 } from "./messageParts.js";
 
+describe("splitReasoning", () => {
+  // The rule, in order: a `Part.Thinking` is the reasoning channel and the text
+  // is never scanned; else an assistant's leading matched `<think>` block is
+  // legacy reasoning; else the text is prose.
+
+  it("takes a Part.Thinking as the reasoning channel and leaves the text alone", () => {
+    const text = { kind: "text", text: "<think>still prose</think>after" };
+    const result = splitReasoning({
+      role: "assistant",
+      parts: [{ kind: "thinking", thinking: "real reasoning" }, text],
+    });
+
+    expect(result.thinking).toBe("real reasoning");
+    // The text is not scanned at all: the tag stays, because the row already
+    // said where its reasoning lives.
+    expect(result.parts[1]).toBe(text);
+  });
+
+  it("throws when a message carries more than one Part.Thinking", () => {
+    // `build_assistant_parts/1` is the only producer and emits at most one,
+    // first. A second is a server bug; concatenating them would invent
+    // reasoning the row does not have.
+    expect(() =>
+      splitReasoning({
+        role: "assistant",
+        parts: [
+          { kind: "thinking", thinking: "first" },
+          { kind: "thinking", thinking: "second" },
+        ],
+      }),
+    ).toThrow(/at most one thinking part, got 2/);
+  });
+
+  it("takes an assistant's leading matched block as legacy reasoning", () => {
+    const result = splitReasoning({
+      role: "assistant",
+      parts: [{ kind: "text", text: "<think>secret</think>Answer." }],
+    });
+
+    expect(result.thinking).toBe("secret");
+    expect(result.parts).toEqual([{ kind: "text", text: "Answer." }]);
+  });
+
+  it("keeps the parts' indexes so commandOutputParts still lines up", () => {
+    const result = splitReasoning({
+      role: "assistant",
+      parts: [
+        { kind: "text", text: "<think>secret</think>Answer." },
+        { kind: "tool_use", id: "x", name: "shell-cmd" },
+      ],
+    });
+
+    expect(result.parts).toHaveLength(2);
+    expect(result.parts[1]).toEqual({
+      kind: "tool_use",
+      id: "x",
+      name: "shell-cmd",
+    });
+  });
+
+  it("does not scan a user's or a system's text", () => {
+    for (const role of ["user", "system", "tool"]) {
+      const parts = [{ kind: "text", text: "<think>mine</think>hi" }];
+      expect(splitReasoning({ role, parts })).toEqual({
+        thinking: null,
+        parts,
+      });
+    }
+  });
+
+  it("does not scan text that only mentions the tag", () => {
+    // The regression: a message reading "see <think> for details" lost the rest
+    // of its text to the thinking channel.
+    const parts = [{ kind: "text", text: "see <think> for details" }];
+    expect(splitReasoning({ role: "assistant", parts })).toEqual({
+      thinking: null,
+      parts,
+    });
+  });
+
+  it("tolerates a missing message or parts", () => {
+    expect(splitReasoning(null)).toEqual({ thinking: null, parts: [] });
+    expect(splitReasoning({})).toEqual({ thinking: null, parts: [] });
+  });
+});
+
 describe("thinkingFor", () => {
   it("returns null for null/undefined messages", () => {
     expect(thinkingFor(null)).toBeNull();
     expect(thinkingFor(undefined)).toBeNull();
   });
 
-  it("concatenates Part.Thinking entries with blank-line separators", () => {
+  it("returns the single Part.Thinking's content", () => {
     expect(
       thinkingFor({
-        parts: [
-          { kind: "thinking", thinking: "first" },
-          { kind: "thinking", thinking: "second" },
-        ],
+        parts: [{ kind: "thinking", thinking: "reasoning" }],
       }),
-    ).toBe("first\n\nsecond");
+    ).toBe("reasoning");
   });
 
   it("falls back to message.thinking when parts has no thinking entries", () => {
     expect(thinkingFor({ thinking: "legacy" })).toBe("legacy");
   });
+
+  it("finds an assistant's legacy leading block", () => {
+    expect(
+      thinkingFor({
+        role: "assistant",
+        parts: [{ kind: "text", text: "<think>legacy reasoning</think>hi" }],
+      }),
+    ).toBe("legacy reasoning");
+  });
+
+  it("never invents a box for a user row that mentions the tag", () => {
+    expect(
+      thinkingFor({
+        role: "user",
+        parts: [{ kind: "text", text: "<think>mine</think>hi" }],
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("textPartsFor", () => {
-  it("splits think tags out of Part.Text entries", () => {
+  it("takes an assistant's legacy leading block out of the body", () => {
     expect(
       textPartsFor({
+        role: "assistant",
+        parts: [{ kind: "text", text: "<think>reasoning</think>after" }],
+      }),
+    ).toEqual([{ kind: "text", text: "after" }]);
+  });
+
+  it("leaves a mid-text tag in the body", () => {
+    // Copied verbatim: it is prose, not framing.
+    expect(
+      textPartsFor({
+        role: "assistant",
+        parts: [{ kind: "text", text: "before<think>r</think>after" }],
+      }),
+    ).toEqual([{ kind: "text", text: "before<think>r</think>after" }]);
+  });
+
+  it("drops the thinking part from the body", () => {
+    expect(
+      textPartsFor({
+        role: "assistant",
         parts: [
-          {
-            kind: "text",
-            text: "before<think>reasoning</think>after",
-          },
+          { kind: "thinking", thinking: "r" },
+          { kind: "text", text: "hi" },
         ],
       }),
-    ).toEqual([
-      { kind: "text", text: "before" },
-      { kind: "text", text: "after" },
-    ]);
+    ).toEqual([{ kind: "text", text: "hi" }]);
   });
   it("preserves non-text/non-thinking parts (e.g. tool_use) for downstream renderers", () => {
     const toolUse = { kind: "tool_use", id: "x", name: "shell-cmd" };
