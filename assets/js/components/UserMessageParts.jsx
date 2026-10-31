@@ -42,12 +42,17 @@ import { SenderCaption } from "./SenderCaption.jsx";
 import { ToolMedia } from "./ToolMedia.jsx";
 import { TruncatedResult } from "./TruncatedResult.jsx";
 import { mediaFromParts, userPartsFor } from "../utils/messageParts.js";
+import { rowSenders } from "../utils/header.js";
 
 export function UserMessageParts({ message, className = "" }) {
   const blocks = userPartsFor(message);
   // One body needs no caption: the row label already names its sender. Several
-  // bodies do, because they can have different senders.
-  const caption = blocks.length > 1;
+  // do, because they can have different senders. The count is the label's own
+  // (`rowAppearance` reads `rowSenders` too), not the block count: blocks
+  // include a command's output, so a single backgrounded notice — one prose
+  // body plus its output part — would otherwise grow a caption that merely
+  // repeats the row label.
+  const caption = rowSenders(message).length > 1;
 
   return (
     <>

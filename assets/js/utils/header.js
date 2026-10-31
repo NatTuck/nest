@@ -172,11 +172,20 @@ export function senderClass(sender) {
  * `{sender, replyRequired, mode}`.
  *
  * A drained batch is one user row holding one body per entry, so the senders
- * are per body, not per row. A body's head is its first line, or the first line
- * after a blank line (the wire joins two bodies with one), and the fallbacks
- * are the markers this replaced: the `[Message from agent "…"]` label and the
- * `[nest notice]` marker. A body head that is none of those is `unknown` — the
- * row must say so rather than defaulting to "You" (AGENTS.md, UI Transparency).
+ * are per body, not per row.
+ *
+ * **Only a recognised head line delimits a body**: a `[From …]` header, a
+ * `[Message from agent "…"]` label, or the `[nest notice]` marker. The wire
+ * joins two bodies with a blank line, but a body *contains* blank lines too
+ * (markdown paragraphs), so from the text alone the two are indistinguishable —
+ * counting every line after a blank line would turn one three-paragraph note
+ * into "3 notes". A recognised head must also sit at a body head (the first
+ * line, or after a blank line), so a header quoted mid-paragraph is content.
+ *
+ * A row with **no** recognised head has no sender: it reports exactly one
+ * `unknown` entry — the row must say so rather than defaulting to "You"
+ * (AGENTS.md, UI Transparency), and one entry per paragraph would invent
+ * senders that are not there.
  *
  * A `commandOutputParts` part is skipped: it is a body's *tail*, so its first
  * line is bytes the command printed, and reading a sender out of it would
@@ -189,25 +198,33 @@ export function rowSenders(message) {
   const heads = [];
   for (const [index, part] of parts.entries()) {
     if (!part || part.kind !== "text" || outputIndexes.has(index)) continue;
-    heads.push(...bodyHeads(part.text));
+    heads.push(...recognisedHeads(part.text));
   }
 
   // A row persisted before the parts model is one body in `content`.
   if (heads.length === 0 && typeof message?.content === "string") {
-    heads.push(...bodyHeads(message.content));
+    heads.push(...recognisedHeads(message.content));
   }
 
-  return heads.map(senderOfHead);
+  if (heads.length === 0) return [unknownSender];
+
+  return heads;
 }
+
+// The entry for a row (or a body head) this build cannot attribute. One shape,
+// so `rowAppearance` and the captions agree on what "no sender" looks like.
+const unknownSender = { sender: null, replyRequired: false, mode: null };
 
 /**
  * The row's label, tint and avatar, and whether the row-level reply chip is
  * needed.
  *
  * `origin: "human"` is the server saying these are the reader's own words, so
- * the row says "You" — unchanged. Otherwise one sender names the row, several
- * say how many notes it holds (each body's caption carries its own sender),
- * and a row with no sender at all says so explicitly.
+ * the row says "You" — but only when every recognised sender is the human too:
+ * the marker is stamped from the row's *first* entry, so a mixed batch carries
+ * it. Otherwise one sender names the row, several say how many notes it holds
+ * (each body's caption carries its own sender), and a row with no sender at all
+ * says so explicitly.
  *
  * `replyRequired` is true only for a single-body row: with several bodies the
  * per-body captions carry it, so the row must not repeat it.
@@ -215,7 +232,12 @@ export function rowSenders(message) {
 export function rowAppearance(message) {
   const senders = rowSenders(message);
 
-  if (message?.origin === "human") {
+  // "You" needs the server's marker **and** every recognised sender to be the
+  // human: `MessageList.origin_metadata/1` tags a row from its *first* entry, so
+  // a drain batch holding the human's message and a peer's note carries
+  // `origin: "human"` — and the shortcut would draw the peer's words as the
+  // human's, which is the bug this module exists to fix.
+  if (message?.origin === "human" && senders.every(isHumanOrUnknown)) {
     return {
       label: "You",
       ...senderClass({ kind: "human" }),
@@ -264,26 +286,36 @@ function avatarLetter(sender) {
   }
 }
 
-function bodyHeads(text) {
+function isHumanOrUnknown(entry) {
+  return entry.sender === null || entry.sender.kind === "human";
+}
+
+// The recognised body heads of one text part, in order. Anything else — a
+// paragraph, a blank line, a line that merely looks like framing mid-body — is
+// body content and delimits nothing.
+function recognisedHeads(text) {
   if (typeof text !== "string" || text === "") return [];
 
   const heads = [];
   let atBodyHead = true;
   for (const line of text.split("\n")) {
-    // A blank line starts a new body; it is never itself a body's head.
     if (line === "") {
       atBodyHead = true;
       continue;
     }
-    if (atBodyHead) {
-      heads.push(line);
-      atBodyHead = false;
-    }
+
+    const head = headOfLine(line);
+    if (head && atBodyHead) heads.push(head);
+    // The line after a head is that body's content, and so is every line after
+    // ordinary text: neither is a body head.
+    atBodyHead = false;
   }
   return heads;
 }
 
-function senderOfHead(line) {
+// One line as a body head, or `null` when it is content. The three recognised
+// shapes are the current header and the two markers it replaced.
+function headOfLine(line) {
   const header = parseHeaderLine(line);
   if (header) return header;
 
@@ -304,5 +336,5 @@ function senderOfHead(line) {
     };
   }
 
-  return { sender: null, replyRequired: false, mode: null };
+  return null;
 }

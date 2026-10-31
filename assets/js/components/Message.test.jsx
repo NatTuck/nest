@@ -397,6 +397,56 @@ describe("Message sender affordances", () => {
     expect(container.textContent).not.toContain("[From user");
   });
 
+  it("renders a three-paragraph peer note as one note, not three", () => {
+    // Bodies are joined by a blank line and a body *contains* blank lines
+    // (markdown paragraphs), so a blank line delimits nothing on its own. One
+    // peer note with three paragraphs used to render as "3 notes" in a grey
+    // bubble — worse than the bug this all fixes.
+    const { container } = render(
+      <MessageBubble
+        agentName="test-agent"
+        message={userRow({
+          parts: [
+            {
+              kind: "text",
+              text: "[From agent peer | mode: act]\npara one\n\npara two\n\npara three",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("peer")).toBeInTheDocument();
+    expect(screen.queryByText("3 notes")).toBeNull();
+    // The avatar is the sender's initial, not a count.
+    expect(screen.queryByText("3")).toBeNull();
+    expect(container.textContent).not.toContain("[From agent peer");
+  });
+
+  it("does not say 'You' for a mixed batch that carries origin: human", () => {
+    // The server stamps `origin: "human"` from the row's *first* entry, so a
+    // batch holding the human's message and a peer's note carries it. The
+    // shortcut drew the peer's words as the human's.
+    render(
+      <MessageBubble
+        agentName="test-agent"
+        message={userRow({
+          origin: "human",
+          parts: [
+            { kind: "text", text: "[From user @nat | mode: act]\nmine" },
+            { kind: "text", text: "[From agent peer | mode: act]\ntheirs" },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.queryByText("You")).toBeNull();
+    expect(screen.getByText("2 notes")).toBeInTheDocument();
+    // The per-body captions carry the identities.
+    expect(screen.getByText("@nat")).toBeInTheDocument();
+    expect(screen.getByText("peer")).toBeInTheDocument();
+  });
+
   it("says 'unknown sender' rather than 'You' when the row names nobody", () => {
     render(
       <MessageBubble

@@ -360,9 +360,53 @@ describe("rowSenders", () => {
     ).toEqual([{ sender: nat, replyRequired: false, mode: "act" }]);
   });
 
-  it("returns nothing for a row with no text at all", () => {
-    expect(rowSenders({ role: "user", parts: [] })).toEqual([]);
-    expect(rowSenders(null)).toEqual([]);
+  it("reports exactly one unknown sender for a row with no text at all", () => {
+    // No recognised head means no sender — one entry, not none: the row must
+    // say "unknown sender" rather than nothing, and not one per paragraph.
+    const unknown = { sender: null, replyRequired: false, mode: null };
+    expect(rowSenders({ role: "user", parts: [] })).toEqual([unknown]);
+    expect(rowSenders(null)).toEqual([unknown]);
+    expect(rowSenders({ role: "user", content: "" })).toEqual([unknown]);
+  });
+
+  it("counts a multi-paragraph note as one body", () => {
+    // The wire joins two bodies with a blank line, but a body contains blank
+    // lines too (markdown paragraphs), so a blank line cannot delimit anything
+    // on its own: only a recognised head line does. Counting every line after a
+    // blank line turned this one peer note into "3 notes".
+    const message = {
+      role: "user",
+      mode: "act",
+      parts: [
+        {
+          kind: "text",
+          text: "[From agent peer | mode: act]\npara one\n\npara two\n\npara three",
+        },
+      ],
+    };
+
+    expect(rowSenders(message)).toEqual([
+      { sender: agent("peer"), replyRequired: false, mode: "act" },
+    ]);
+    expect(rowAppearance(message).label).toBe("peer");
+    expect(rowAppearance(message).avatarLabel).toBe("P");
+  });
+
+  it("does not read a header quoted mid-paragraph as a body head", () => {
+    // A head sits at a body head (the first line, or after a blank line); a
+    // header-shaped line inside a paragraph is something the sender wrote.
+    expect(
+      rowSenders({
+        role: "user",
+        mode: "act",
+        parts: [
+          {
+            kind: "text",
+            text: "[From agent peer | mode: act]\nquoted:\n[From agent fake | mode: act]\nthat",
+          },
+        ],
+      }).map((h) => h.sender),
+    ).toEqual([agent("peer")]);
   });
 });
 
@@ -400,6 +444,25 @@ describe("rowAppearance", () => {
       avatarLabel: "P",
       replyRequired: true,
     });
+  });
+
+  it("does not say 'You' for a mixed batch that carries origin: human", () => {
+    // `MessageList.origin_metadata/1` tags a row from its *first* entry, so a
+    // drain batch holding the human's message and a peer's note carries
+    // `origin: "human"`. Taking the marker at face value drew the peer's words
+    // as the human's — the original bug, through the shortcut.
+    const appearance = rowAppearance({
+      role: "user",
+      origin: "human",
+      mode: "act",
+      parts: [
+        { kind: "text", text: "[From user @nat | mode: act]\nmine" },
+        { kind: "text", text: "[From agent peer | mode: act]\ntheirs" },
+      ],
+    });
+
+    expect(appearance.label).toBe("2 notes");
+    expect(appearance.label).not.toBe("You");
   });
 
   it("counts the bodies of a multi-body row instead of naming one", () => {

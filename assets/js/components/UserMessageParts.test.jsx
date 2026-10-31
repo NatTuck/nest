@@ -250,6 +250,19 @@ describe("UserMessageParts", () => {
     expect(screen.queryByText("reply required")).toBeNull();
   });
 
+  it("grows no caption for a single backgrounded notice with its output", () => {
+    // The caption count is the row label's own (`rowSenders`), not the block
+    // count: this row has two blocks (prose + command output) but one sender,
+    // so a caption here would only repeat the row label.
+    render(<UserMessageParts message={outputRow()} />);
+
+    expect(
+      screen.getByText(/Your backgrounded command \(shell-cmd\) finished\./),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("nest runtime")).toBeNull();
+    expect(screen.queryByText("reply required")).toBeNull();
+  });
+
   it("renders a row persisted before the parts model (content only)", () => {
     render(
       <UserMessageParts
