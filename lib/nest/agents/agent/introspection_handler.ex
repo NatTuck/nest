@@ -225,8 +225,8 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
       {_role, %{api_logs: logs}} when is_list(logs) and logs != [] ->
         {:ok, Message.format_api_logs(logs)}
 
-      {role, %{index: idx}} when role in [:user, :tool] ->
-        {:ok, rebuild_request_logs(state, idx)}
+      {role, _message} = target when role in [:user, :tool] ->
+        {:ok, rebuild_request_logs(state, target)}
 
       _message ->
         {:error, :no_logs}
@@ -241,13 +241,16 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
     if index <= chat_state.last_compaction_index, do: :archived, else: :not_found
   end
 
-  defp rebuild_request_logs(state, idx) do
+  # `target` is the message `find_message/2` matched — the request this log is
+  # for. It is passed through rather than re-derived from the slice's shape, so
+  # the log's id and timestamp are the message's own.
+  defp rebuild_request_logs(state, {_role, %{index: idx}} = target) do
     # The active list holds no `{:compaction, _}` markers (they land on the
     # archived side of the boundary), so the cut is by index and there is
     # nothing to strip afterwards.
     slice = Enum.take_while(state.chat_state.messages, &index_at_or_before?(&1, idx))
 
-    api_log = Restore.rebuild_request_api_logs(state, slice, idx, state.client_config)
+    api_log = Restore.rebuild_request_api_logs(state, slice, target, state.client_config)
 
     Message.format_api_logs([api_log])
   end

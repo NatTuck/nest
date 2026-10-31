@@ -36,6 +36,11 @@ defmodule Nest.Agents.Agent.RestoreTest do
     Enum.take_while(messages, fn {_role, %{index: i}} -> i <= index end)
   end
 
+  # The target message a rebuild is for: the last element of the caller's cut,
+  # which is what `find_message/2` matched in the handler. Passed in rather than
+  # re-derived, so the log's id and timestamp are that message's own.
+  defp target(slice), do: List.last(slice)
+
   defp fixture_messages do
     [
       {:system,
@@ -114,7 +119,7 @@ defmodule Nest.Agents.Agent.RestoreTest do
       state = fixture_state()
       slice = slice_through(fixture_messages(), 3)
 
-      rebuilt = Restore.rebuild_request_api_logs(state, slice, 3, state.client_config)
+      rebuilt = Restore.rebuild_request_api_logs(state, slice, target(slice), state.client_config)
 
       assert rebuilt.type == :request
       assert rebuilt.id == "003.000"
@@ -146,13 +151,8 @@ defmodule Nest.Agents.Agent.RestoreTest do
           llm_metrics: %LlmMetrics{context_limit: nil}
       }
 
-      rebuilt =
-        Restore.rebuild_request_api_logs(
-          state,
-          slice_through(fixture_messages(), 1),
-          1,
-          state.client_config
-        )
+      slice = slice_through(fixture_messages(), 1)
+      rebuilt = Restore.rebuild_request_api_logs(state, slice, target(slice), state.client_config)
 
       refute Map.has_key?(rebuilt.payload, "tools")
       assert rebuilt.payload["tool_choice"] == :none
@@ -195,7 +195,12 @@ defmodule Nest.Agents.Agent.RestoreTest do
       ]
 
       rebuilt =
-        Restore.rebuild_request_api_logs(state, slice_through(active, 9), 9, state.client_config)
+        Restore.rebuild_request_api_logs(
+          state,
+          slice_through(active, 9),
+          target(slice_through(active, 9)),
+          state.client_config
+        )
 
       wire = rebuilt.payload["messages"]
 
@@ -208,7 +213,12 @@ defmodule Nest.Agents.Agent.RestoreTest do
       # An earlier index gets an earlier slice — the caller's cut, not a re-cut
       # of it — which is what keeps the log aligned with the message it is for.
       earlier =
-        Restore.rebuild_request_api_logs(state, slice_through(active, 7), 7, state.client_config)
+        Restore.rebuild_request_api_logs(
+          state,
+          slice_through(active, 7),
+          target(slice_through(active, 7)),
+          state.client_config
+        )
 
       assert Enum.map(earlier.payload["messages"], & &1["role"]) == ["system", "user"]
       assert earlier.timestamp == at(7)

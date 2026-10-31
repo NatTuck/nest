@@ -39,9 +39,9 @@ defmodule Nest.Agents.Agent.Restore do
   `%{id, timestamp, type: :request, payload}`. Two fields are the
   message's, not the fetch's:
 
-    * `timestamp` is the target message's own timestamp (the slice's last
-      element, by the caller's cut) — the widget shows when the request
-      happened, not when it was re-read;
+    * `timestamp` is the target message's own timestamp — the widget shows when
+      the request happened, not when it was re-read. The caller passes the
+      message it matched, so this function never re-derives it from a position.
     * `max_tokens` is the cap the request *would* have used
       (`Dispatch.ordinary_max_tokens/2`), not the encoder's fallback.
 
@@ -61,15 +61,20 @@ defmodule Nest.Agents.Agent.Restore do
   @spec rebuild_request_api_logs(
           Nest.Agents.Agent.t(),
           [Message.t()],
-          non_neg_integer(),
+          Message.t(),
           ClientConfig.t()
         ) :: %{
           id: String.t(),
-          timestamp: DateTime.t(),
+          timestamp: DateTime.t() | nil,
           type: :request,
           payload: map()
         }
-  def rebuild_request_api_logs(state, slice, message_index, %ClientConfig{} = client_config) do
+  def rebuild_request_api_logs(
+        state,
+        slice,
+        {_role, %{index: message_index, timestamp: at}},
+        %ClientConfig{} = client_config
+      ) do
     # The cap the live request would have used. `machine.work.ctx` — where the
     # turn keeps the model/limit pair — is reset at the end of every turn, so it
     # is rebuilt from the same two values in state.
@@ -93,7 +98,7 @@ defmodule Nest.Agents.Agent.Restore do
 
     %{
       id: format_sequence_id(message_index, 0),
-      timestamp: request_timestamp(slice),
+      timestamp: at,
       type: :request,
       payload: payload
     }
@@ -101,24 +106,11 @@ defmodule Nest.Agents.Agent.Restore do
 
   # The log is stamped with the *message's* time: it is a reconstruction of the
   # request that carried that message, and the widget renders it as when that
-  # request happened. The target message is the slice's last element by the
-  # caller's cut (`index <= message_index`).
-  #
-  # Every appended row is stamped (`Turn.Messages`, `Turn.Dispatch`,
-  # `Turn.Commit`), so an unstamped target is a caller bug rather than a case to
-  # render: a fetch-time (or epoch) timestamp would be a lie the user cannot see
-  # through, and this function has no way to tell "not yet stamped" from "never".
-  defp request_timestamp(slice) do
-    case List.last(slice) do
-      {_role, %{timestamp: %DateTime{} = at}} ->
-        at
-
-      other ->
-        raise ArgumentError,
-              "rebuild_request_api_logs/4 needs the target message in the slice, " <>
-                "stamped; got #{inspect(other)}"
-    end
-  end
+  # request happened. The target comes in as the message the caller matched, so
+  # there is nothing to recover from the slice's shape and no raise: every
+  # appended row is stamped (`Turn.Messages`, `Turn.Dispatch`, `Turn.Commit`), so
+  # an unstamped one is a caller bug that shows as a blank time rather than as a
+  # time nobody can tell from a real one.
 
   # Request api_logs for user/tool messages are never attached or stored —
   # they're synthetic and rebuilt on demand via `get_api_logs` when the user
