@@ -56,13 +56,14 @@ export function UserMessageParts({ message, className = "" }) {
 
   return (
     <>
-      {/* Keyed on the block's own part index: the blocks are a projection of
-          the row's parts, so that index is the one identity that is both unique
-          and stable — a content key would collide, since two bodies of a
-          drained batch can be byte-identical once the header is stripped. */}
+      {/* Keyed on the block's own `key`: the blocks are a projection of the
+          row's parts, so that is the one identity that is both unique and
+          stable — a content key would collide, since two bodies of a drained
+          batch can be byte-identical once the header is stripped, and a bare
+          part index collides once one part holds several bodies. */}
       {blocks.map((block, index) => (
         <Block
-          key={block.index}
+          key={block.key}
           block={block}
           className={className}
           spaced={index > 0}

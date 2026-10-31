@@ -12,6 +12,7 @@
 
 import { leadingThinkBlock } from "./thinkTags.js";
 import { splitFraming } from "./stripHeader.js";
+import { splitBodies } from "./header.js";
 import { stripAgentHeaderMode } from "./agentHeader.js";
 import { commandOutputIndexes } from "./commandOutput.js";
 import { messageText } from "./messageText.js";
@@ -132,9 +133,10 @@ export function messageContentPartsFor(message) {
 }
 
 // A user-role row's renderable blocks, in wire order, as
-// `{kind: "text" | "output", text, header, index}`. `header` is the parsed
+// `{kind: "text" | "output", text, header, key}`. `header` is the parsed
 // `[From … | mode: …]` header that was removed from that block, or `null`
-// (always `null` for an output block) — see `utils/header.js`.
+// (always `null` for an output block) — see `utils/header.js`. `key` is the
+// block's stable identity for the renderer.
 //
 // A user row's `parts` can hold more than one `text` part. A backgrounded
 // command's result is the prose that announces it plus the command's own
@@ -160,12 +162,11 @@ export function messageContentPartsFor(message) {
 // command's own bytes, so an output part's text is passed through untouched.
 //
 // `commandOutputParts` names indexes into `message.parts` — not into this
-// array — so each part's original index is what marks its block. That is what
+// array — so a part's own index is what marks its block as output. That is what
 // keeps a `media` part before the text from shifting the output's position,
 // and it is why the output part is not assumed to be last (a drained batch can
-// hold several bodies). `index` is that same original index, carried on the
-// block so the renderer has a stable identity to key on; a legacy row's single
-// block reports `0`.
+// hold several bodies). A prose part yields one block per body it holds; the
+// output path never splits.
 export function userPartsFor(message) {
   const parts = Array.isArray(message?.parts) ? message.parts : [];
   const outputIndexes = commandOutputIndexes(message, parts);
@@ -174,39 +175,74 @@ export function userPartsFor(message) {
   for (const [index, part] of parts.entries()) {
     if (!part || part.kind !== "text") continue;
     if (outputIndexes.has(index)) {
-      blocks.push({ kind: "output", text: part.text, header: null, index });
+      // An output part is a body's *tail*, never split: its bytes are the
+      // command's, and `commandOutputParts` addresses parts, not bodies.
+      blocks.push({
+        kind: "output",
+        text: part.text,
+        header: null,
+        key: String(index),
+      });
       continue;
     }
-    blocks.push({
-      kind: "text",
-      ...stripFraming(part.text, message?.mode),
-      index,
-    });
+    blocks.push(...bodyBlocks(part.text, index, message?.mode));
   }
 
   if (blocks.length > 0) return blocks;
 
   // Rows persisted before the parts model carry their text in `content` only
-  // (`messageText` is the one place that fallback lives).
-  return [
-    {
-      kind: "text",
-      ...stripFraming(messageText(message), message?.mode),
-      index: 0,
-    },
-  ];
+  // (`messageText` is the one place that fallback lives) — and those are
+  // exactly the rows whose several bodies were joined into one string.
+  return bodyBlocks(messageText(message), 0, message?.mode);
 }
 
-// A prose part's text with the wire framing removed, and the header that was
-// removed. `header` is the parsed `{sender, replyRequired, mode}` of the body's
-// head — the caption's content — so the block carries the facts the removal
-// took, and a caller cannot delete without them.
+// One block per body of a prose text, each with the header that was removed
+// from it.
 //
-// The retired `[Message from agent …]` label's mode clause goes too: the row's
-// badge already shows the mode.
+// A part normally holds exactly one body, and then it *is* the body: the text
+// is stripped as a whole, which is the part-level removal it has always been
+// (a legacy `[Message from agent "…"]` label stays on screen there, because it
+// wraps a body rather than heading one — only its mode clause goes).
+//
+// A part that holds **several** bodies — a legacy `content`-only row, or any
+// text built by joining bodies with a blank line — is split *before* stripping,
+// because stripping it as a whole would delete every head but the first with no
+// affordance to carry the rest. One block per body means one caption per body,
+// which is the rule the whole header work rests on. There the head line is
+// already gone (the split consumed it), so only the retired markers and the
+// legacy mode clause are left to remove from each body's text.
+//
+// `key` is the block's stable identity: the part index for the part's first
+// body, and `"<part>.<n>"` for the rest, because a bare part index would
+// collide once a part yields more than one block.
+function bodyBlocks(text, index, mode) {
+  const bodies = splitBodies(text);
+
+  if (bodies.length <= 1) {
+    return [
+      {
+        kind: "text",
+        text: stripFraming(text, mode),
+        header: bodies[0]?.header ?? null,
+        key: String(index),
+      },
+    ];
+  }
+
+  return bodies.map((body, n) => ({
+    kind: "text",
+    text: stripFraming(body.text, mode),
+    header: body.header,
+    key: n === 0 ? String(index) : `${index}.${n}`,
+  }));
+}
+
+// A body's text with the wire framing removed. The mode guard lives in
+// `splitFraming`: a header whose mode clause disagrees with the row's stays
+// visible. The retired `[Message from agent …]` label's mode clause goes too —
+// the row's badge already shows the mode.
 function stripFraming(text, mode) {
-  const { text: kept, headers } = splitFraming(text, mode);
-  return { text: stripAgentHeaderMode(kept, mode), header: headers[0] ?? null };
+  return stripAgentHeaderMode(splitFraming(text, mode).text, mode);
 }
 
 // Derive the legacy `toolCalls` shape from a message's `parts`

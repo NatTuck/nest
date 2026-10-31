@@ -330,7 +330,7 @@ describe("userPartsFor", () => {
           replyRequired: false,
           mode: "act",
         },
-        index: 0,
+        key: "0",
       },
       {
         kind: "text",
@@ -340,7 +340,7 @@ describe("userPartsFor", () => {
           replyRequired: false,
           mode: "act",
         },
-        index: 1,
+        key: "1",
       },
     ]);
 
@@ -362,10 +362,78 @@ describe("userPartsFor", () => {
       {
         kind: "text",
         text: '[Message from agent "peer"]\nmay I ask?',
-        header: null,
-        index: 0,
+        // The label wraps a body rather than heading one, so a single-body
+        // part keeps it on screen — but the sender it names is a fact the
+        // block carries, which is what the row label reads.
+        header: {
+          sender: { kind: "agent", name: "peer" },
+          replyRequired: false,
+          mode: null,
+        },
+        key: "0",
       },
     ]);
+  });
+
+  it("splits a content-only row into one block per body, each with its own header", () => {
+    // The FAIL this covers: one block per part meant the *second* body's header
+    // was deleted with no affordance to carry it — `splitFraming` removes every
+    // body head, but the block only kept `headers[0]`. Splitting before
+    // stripping gives each body its own block, and so its own caption.
+    const blocks = userPartsFor({
+      role: "user",
+      mode: "act",
+      content:
+        "[From agent alpha | mode: act]\nfirst body\n\n[From agent beta | mode: act]\nsecond body",
+    });
+
+    expect(blocks).toEqual([
+      {
+        kind: "text",
+        // The wire leaves the joining blank line at the end of the body.
+        text: "first body\n",
+        header: {
+          sender: { kind: "agent", name: "alpha" },
+          replyRequired: false,
+          mode: "act",
+        },
+        key: "0",
+      },
+      {
+        kind: "text",
+        text: "second body",
+        header: {
+          sender: { kind: "agent", name: "beta" },
+          replyRequired: false,
+          mode: "act",
+        },
+        key: "0.1",
+      },
+    ]);
+
+    // No header line survives in any block.
+    expect(blocks.map((b) => b.text).join("")).not.toContain("[From ");
+  });
+
+  it("splits a single text part that holds two bodies", () => {
+    const blocks = userPartsFor({
+      role: "user",
+      mode: "act",
+      parts: [
+        {
+          kind: "text",
+          text: "[From agent alpha | mode: act]\nfirst body\n\n[From agent beta, agents-send reply required | mode: act]\nsecond body",
+        },
+      ],
+    });
+
+    expect(blocks.map((b) => b.header.sender)).toEqual([
+      { kind: "agent", name: "alpha" },
+      { kind: "agent", name: "beta" },
+    ]);
+    expect(blocks.map((b) => b.header.replyRequired)).toEqual([false, true]);
+    // Keys are unique: a bare part index would collide.
+    expect(blocks.map((b) => b.key)).toEqual(["0", "0.1"]);
   });
 
   it("marks the part `commandOutputParts` names by its index in `parts`", () => {
@@ -384,7 +452,7 @@ describe("userPartsFor", () => {
         commandOutputParts: [2],
       }),
     ).toEqual([
-      // `index` is the part's index in `parts` (2), not its index among the
+      // `key` is the part's own index in `parts` (2), not its index among the
       // blocks (1) — that is the mapping the wire's `commandOutputParts` uses.
       {
         kind: "text",
@@ -394,10 +462,10 @@ describe("userPartsFor", () => {
           replyRequired: false,
           mode: "act",
         },
-        index: 1,
+        key: "1",
       },
       // An output block never carries a header: its bytes are a body's tail.
-      { kind: "output", text: "# output", header: null, index: 2 },
+      { kind: "output", text: "# output", header: null, key: "2" },
     ]);
   });
 
@@ -424,9 +492,9 @@ describe("userPartsFor", () => {
           replyRequired: false,
           mode: "act",
         },
-        index: 0,
+        key: "0",
       },
-      { kind: "output", text: "out", header: null, index: 1 },
+      { kind: "output", text: "out", header: null, key: "1" },
       {
         kind: "text",
         text: "\n\nhi",
@@ -435,7 +503,7 @@ describe("userPartsFor", () => {
           replyRequired: false,
           mode: "act",
         },
-        index: 2,
+        key: "2",
       },
     ]);
   });
@@ -456,7 +524,7 @@ describe("userPartsFor", () => {
           replyRequired: false,
           mode: "act",
         },
-        index: 0,
+        key: "0",
       },
     ]);
 
@@ -464,10 +532,10 @@ describe("userPartsFor", () => {
     // `messageText`, and the row must not render blank.
     expect(
       userPartsFor({ role: "user", parts: [], content: "only content" }),
-    ).toEqual([{ kind: "text", text: "only content", header: null, index: 0 }]);
+    ).toEqual([{ kind: "text", text: "only content", header: null, key: "0" }]);
 
     expect(userPartsFor(null)).toEqual([
-      { kind: "text", text: "", header: null, index: 0 },
+      { kind: "text", text: "", header: null, key: "0" },
     ]);
   });
 

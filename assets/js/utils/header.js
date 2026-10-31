@@ -198,17 +198,27 @@ export function rowSenders(message) {
   const heads = [];
   for (const [index, part] of parts.entries()) {
     if (!part || part.kind !== "text" || outputIndexes.has(index)) continue;
-    heads.push(...recognisedHeads(part.text));
+    heads.push(...bodiesOf(part.text));
   }
 
   // A row persisted before the parts model is one body in `content`.
   if (heads.length === 0 && typeof message?.content === "string") {
-    heads.push(...recognisedHeads(message.content));
+    heads.push(...bodiesOf(message.content));
   }
 
   if (heads.length === 0) return [unknownSender];
 
   return heads;
+}
+
+// The parsed headers of a text's bodies, in order. Shared with
+// `utils/messageParts.js`'s `userPartsFor`, which splits a part into one block
+// per body — the row label and the per-body captions therefore come from the
+// same split, so they cannot disagree about how many bodies a row has.
+function bodiesOf(text) {
+  return splitBodies(text)
+    .map((body) => body.header)
+    .filter(Boolean);
 }
 
 // The entry for a row (or a body head) this build cannot attribute. One shape,
@@ -242,7 +252,10 @@ export function rowAppearance(message) {
       label: "You",
       ...senderClass({ kind: "human" }),
       avatarLabel: "U",
-      replyRequired: false,
+      // A single-body row has no caption, so the row label is the only place
+      // its reply marker could appear; carrying it costs nothing and keeps the
+      // parse's facts.
+      replyRequired: senders.length === 1 && senders[0].replyRequired,
     };
   }
 
@@ -256,19 +269,10 @@ export function rowAppearance(message) {
     };
   }
 
-  if (senders.length > 1) {
-    return {
-      label: `${senders.length} notes`,
-      ...senderClass({ kind: "multi" }),
-      avatarLabel: String(senders.length),
-      replyRequired: false,
-    };
-  }
-
   return {
-    label: senderLabel(null),
-    ...senderClass(null),
-    avatarLabel: "?",
+    label: `${senders.length} notes`,
+    ...senderClass({ kind: "multi" }),
+    avatarLabel: String(senders.length),
     replyRequired: false,
   };
 }
@@ -290,27 +294,59 @@ function isHumanOrUnknown(entry) {
   return entry.sender === null || entry.sender.kind === "human";
 }
 
-// The recognised body heads of one text part, in order. Anything else — a
-// paragraph, a blank line, a line that merely looks like framing mid-body — is
-// body content and delimits nothing.
-function recognisedHeads(text) {
-  if (typeof text !== "string" || text === "") return [];
+/**
+ * `text` split at its recognised body heads, in order, as `[{header, text}]`.
+ *
+ * A part normally holds one body, so this returns one entry whose text is the
+ * whole part. A part that holds several — a legacy `content`-only row, or any
+ * text built by joining bodies with a blank line — yields one entry per body,
+ * each with its own parsed `header` (`null` for a body that has none), so the
+ * caller can give each its own block and its own caption.
+ *
+ * The split is the same predicate `rowSenders` uses: only a `[From …]` header,
+ * a `[Message from agent "…"]` label, or the `[nest notice]` marker, sitting at
+ * a body head, delimits a body. A blank line alone does not — a body contains
+ * blank lines (markdown paragraphs) — and a head-shaped line mid-paragraph is
+ * content. Each body's text keeps its own lines verbatim, including the blank
+ * line the wire leaves at the end of a body it joined to the next.
+ */
+export function splitBodies(text) {
+  if (typeof text !== "string") return [];
 
-  const heads = [];
+  const bodies = [];
+  let current = null;
   let atBodyHead = true;
+
   for (const line of text.split("\n")) {
     if (line === "") {
       atBodyHead = true;
+      if (current) current.lines.push(line);
       continue;
     }
 
     const head = headOfLine(line);
-    if (head && atBodyHead) heads.push(head);
-    // The line after a head is that body's content, and so is every line after
-    // ordinary text: neither is a body head.
+    if (head && atBodyHead) {
+      current = { header: head, lines: [] };
+      bodies.push(current);
+      // The head heads the body that follows it, so the next line is content.
+      atBodyHead = false;
+      continue;
+    }
+
+    if (!current) {
+      current = { header: null, lines: [] };
+      bodies.push(current);
+    }
+    current.lines.push(line);
     atBodyHead = false;
   }
-  return heads;
+
+  if (bodies.length === 0) return [{ header: null, text }];
+
+  return bodies.map((body) => ({
+    header: body.header,
+    text: body.lines.join("\n"),
+  }));
 }
 
 // One line as a body head, or `null` when it is content. The three recognised

@@ -423,6 +423,30 @@ describe("Message sender affordances", () => {
     expect(container.textContent).not.toContain("[From agent peer");
   });
 
+  it("captions every body of a content-only row that holds two bodies", () => {
+    // A row persisted before the parts model holds its bodies joined in one
+    // string. One block per part meant the second body's header was deleted
+    // with no affordance to carry it: the row said "2 notes" and named only the
+    // first sender.
+    const { container } = render(
+      <MessageBubble
+        agentName="test-agent"
+        message={userRow({
+          content:
+            "[From agent alpha | mode: act]\nfirst body\n\n[From agent beta | mode: act]\nsecond body",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("2 notes")).toBeInTheDocument();
+    expect(screen.getByText("alpha")).toBeInTheDocument();
+    expect(screen.getByText("beta")).toBeInTheDocument();
+    expect(screen.getByText(/first body/)).toBeInTheDocument();
+    expect(screen.getByText(/second body/)).toBeInTheDocument();
+    // No wire line survives in the body.
+    expect(container.textContent).not.toContain("[From ");
+  });
+
   it("does not say 'You' for a mixed batch that carries origin: human", () => {
     // The server stamps `origin: "human"` from the row's *first* entry, so a
     // batch holding the human's message and a peer's note carries it. The
