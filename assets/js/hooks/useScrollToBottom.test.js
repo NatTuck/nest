@@ -223,7 +223,11 @@ describe("useScrollToBottom", () => {
     });
 
     it("stays pinned on an unrelated keydown", () => {
-      const { result } = renderHookWithContainer("agent-1", null);
+      // The view is away from the bottom so this reaches the key filter: a
+      // container at the bottom returns at the `canScrollUp()` guard, which would
+      // leave the "not ArrowUp/Home" branch untested.
+      const { result, container } = renderHookWithContainer("agent-1", null);
+      scrolledUp(container);
       act(() => {
         fireEvent.keyDown(window, { key: "a" });
       });
@@ -247,8 +251,12 @@ describe("useScrollToBottom", () => {
 
     it("does not un-pin on ArrowUp/Home while an editable field has focus", () => {
       // In a text field these move the caret (or, with Ctrl/Cmd, walk the
-      // composer's history), so they are not scroll-up intent.
-      const { result } = renderHookWithContainer("agent-1", null);
+      // composer's history), so they are not scroll-up intent. The view is moved
+      // away from the bottom first: `handleKeyDown` returns early when there is
+      // nothing to scroll, so a fixture at the bottom would never reach the
+      // editable-target check this test exists for.
+      const { result, container } = renderHookWithContainer("agent-1", null);
+      scrolledUp(container);
       const wrapper = document.createElement("div");
       const input = document.createElement("input");
       wrapper.appendChild(input);
@@ -285,7 +293,11 @@ describe("useScrollToBottom", () => {
     });
 
     it("does not un-pin on Ctrl/Cmd/Alt + ArrowUp", () => {
-      const { result } = renderHookWithContainer("agent-1", null);
+      // Same reason as the editable-target test above: a container at the bottom
+      // returns before the modifier check, so the view has to be somewhere the
+      // gesture could actually move it.
+      const { result, container } = renderHookWithContainer("agent-1", null);
+      scrolledUp(container);
 
       for (const modifier of ["ctrlKey", "metaKey", "altKey"]) {
         act(() => {
@@ -516,6 +528,25 @@ describe("useScrollToBottom", () => {
       } finally {
         Element.prototype.scrollIntoView = original;
       }
+    });
+
+    it("is a no-op before the end anchor exists", () => {
+      // The anchor is a node the transcript renders; before it is there, the
+      // click has nothing to scroll to and must not throw. (The button is not
+      // rendered in that state either, but the guard is what keeps a stray call
+      // from a stale handler harmless — and it is the file's last uncovered
+      // statement, so this is also what keeps the hook at 100 %.)
+      const { result } = renderHook(
+        ({ endEl }) => useScrollToBottom(null, endEl, "agent-1", "token-1"),
+        { initialProps: { endEl: null } },
+      );
+
+      act(() => {
+        result.current.jumpToBottom();
+      });
+
+      expect(result.current.isAtBottom).toBe(true);
+      expect(result.current.hasNewContent).toBe(false);
     });
   });
 
