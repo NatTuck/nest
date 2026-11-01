@@ -40,16 +40,15 @@ export function ChatHeader({
           {/* Clamped to two lines below `lg`: a name like
               `charming-rhinoceros-root` took three lines and pushed everything
               else down, but one ellipsised line is not readable either — a
-              30-character agent name has no tooltip to reveal it on a phone. Two
+              30-character agent name would be cut with nothing to reveal it. Two
               lines is the compromise: the reader gets most of the name, and the
-              full text is still in the DOM (clamping is visual, so the accessible
-              name is whole). From `lg` up nothing clamps: the heading wraps as it
-              always has. The vocation rides on the same line from `lg` up, and is
-              its own line below it. */}
-          <h1
-            className="text-2xl font-bold text-gray-900 max-lg:line-clamp-2"
-            title={vocation?.name ? `${name} (${vocation.name})` : name}
-          >
+              full text is still the heading's text, so it is also its accessible
+              name (clamping is visual). No `title`: it would add a hover tooltip
+              the desktop never had, for a clamp the desktop does not use. From
+              `lg` up nothing clamps: the heading wraps as it always has. The
+              vocation rides on the same line from `lg` up, and is its own line
+              below it. */}
+          <h1 className="text-2xl font-bold text-gray-900 max-lg:line-clamp-2">
             {name}
             {vocation?.name && (
               <span className="hidden text-gray-500 font-normal lg:inline">

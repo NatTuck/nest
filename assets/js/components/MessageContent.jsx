@@ -19,12 +19,13 @@ import { textFromParts } from "../utils/messageText.js";
 // each level costs ~26px instead of ~52: still visibly nested, and the text
 // keeps its width. The marker is drawn in the padding, so it still has room.
 //
-// The margin is the one rule here that needs `!important`: it comes from
-// `@llamaindex/chat-ui`'s `.custom-markdown ul:not(.custom-renderer *)`, whose
-// specificity is the same as the best selector this variant can build and which
-// is loaded after Tailwind — so a plain override loses the tie and the phone
-// keeps a 20px margin *per level*. `!` is scoped to this one property, at this
-// one breakpoint, against a vendor stylesheet.
+// The margin is the one rule here that needs `!important`, and the reason is
+// specificity rather than order: `@llamaindex/chat-ui`'s
+// `.custom-markdown ul:not(.custom-renderer *)` is 0,2,1 — the `:not()` argument
+// counts — while `max-sm:[&_ul]:ml-0` compiles to 0,1,1, so no selector this
+// variant can build wins on merit. `!` is scoped to this one property, at this
+// one breakpoint, against a vendor stylesheet; reordering the imports would not
+// help.
 const MARKDOWN_CONTAINER_CLASS =
   "space-y-2 [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-hidden [&_p]:[overflow-wrap:anywhere] [&_li]:[overflow-wrap:anywhere] [&_table]:block [&_table]:overflow-x-auto [&_.prose]:max-w-none max-sm:[&_ol]:ml-0! max-sm:[&_ol]:pl-5 max-sm:[&_ul]:ml-0! max-sm:[&_ul]:pl-5";
 

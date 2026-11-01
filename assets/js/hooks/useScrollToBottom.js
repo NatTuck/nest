@@ -102,6 +102,12 @@ export function useScrollToBottom(
       return scrollHeight - scrollTop - clientHeight;
     };
 
+    // A gesture only means "leave the bottom" when the view *can* leave it. A
+    // conversation shorter than its container has nothing to scroll: `scrollTop`
+    // stays where it is, and un-pinning would raise "Jump to latest" over content
+    // that is already at the latest, where tapping it scrolls zero pixels.
+    const canScrollUp = () => distanceFromBottom() > AT_BOTTOM_EPSILON_PX;
+
     // Reaching the bottom (or the smooth jumpToBottom animation finishing)
     // means the user wants to follow along again. A scroll that moved
     // *upward* while still away from the bottom is a user scroll-up even
@@ -124,25 +130,23 @@ export function useScrollToBottom(
       lastScrollTop = scrollTop;
     };
 
-    // Real user input that scrolls up. A wheel-up or touch drag is an
-    // unambiguous intent to leave the bottom, regardless of how far it
-    // moved (a few pixels is enough).
+    // Real user input that scrolls up. A wheel-up or touch drag is an intent to
+    // leave the bottom, regardless of how far it moved (a few pixels is
+    // enough) — but only where there is somewhere to go: on a conversation that
+    // fits its container nothing scrolls, so the gesture is not a scroll-up. One
+    // that does move the view still un-pins without waiting for its `scroll`
+    // event, because the handler above catches the move either way.
     const handleWheel = (event) => {
-      if (event.deltaY < 0) unpin();
+      if (event.deltaY < 0 && canScrollUp()) unpin();
     };
-    // ...but a *touch* drag only means that when the view has actually left the
-    // bottom. A wheel-up at the bottom always moves the view (there is content
-    // above it) and PageUp likewise, so those gestures can be taken at their
-    // word. A finger cannot: iOS's rubber-band overscroll at the bottom, and a
-    // finger that slides a pixel during a tap, both fire `touchmove` while
-    // `scrollTop` does not change. Un-pinning there raises "Jump to latest" over
-    // a conversation that is already at the latest — and tapping it scrolls zero
-    // pixels, which reads as a button that does nothing. A drag that really
-    // leaves the bottom still un-pins at once: `scrollTop` has moved by the next
-    // `touchmove`, and the `scroll` handler above catches the move itself either
-    // way.
+    // A *touch* drag is the one that fires most readily without moving anything:
+    // iOS's rubber-band overscroll at the bottom, and a finger that slides a
+    // pixel during a tap, both fire `touchmove` while `scrollTop` does not
+    // change. A drag that really leaves the bottom still un-pins at once:
+    // `scrollTop` has moved by the next `touchmove`, and the `scroll` handler
+    // above catches the move itself either way.
     const handleTouchMove = () => {
-      if (distanceFromBottom() <= AT_BOTTOM_EPSILON_PX) return;
+      if (!canScrollUp()) return;
       unpin();
     };
 
@@ -161,6 +165,11 @@ export function useScrollToBottom(
       target.closest("input, textarea, select, [contenteditable]") !== null;
 
     const handleKeyDown = (event) => {
+      // Same rule as the wheel: a key that cannot move the view is not a
+      // scroll-up. On a conversation that fits its container PageUp does
+      // nothing, and it must not raise the pill either.
+      if (!canScrollUp()) return;
+
       if (event.key === "PageUp") {
         unpin();
         return;
