@@ -2836,6 +2836,10 @@ describe("ChatPage pane as a phone tab (#169)", () => {
     error: null,
   };
 
+  // The tab's accessible name carries the waiting count, so the signal is not
+  // colour-and-digit only. The frame above leaves one question outstanding.
+  const paneTabName = "Pane, 1 question waiting";
+
   // jsdom has no `matchMedia`; the tests that cross the breakpoint install this
   // and fire the query's own `change` event.
   let media;
@@ -2878,8 +2882,11 @@ describe("ChatPage pane as a phone tab (#169)", () => {
     expect(toggleSlot.className).toContain("hidden");
     expect(toggleSlot.className).toContain("lg:block");
 
-    const paneTab = screen.getByRole("tab", { name: "Pane" });
+    const paneTab = screen.getByRole("tab", { name: paneTabName });
     expect(paneTab).toHaveAttribute("aria-selected", "false");
+    // The question waiting in this frame is announced on the tab itself: on a
+    // phone the desktop's `PaneToggle` (and its amber pill) is not on screen.
+    expect(screen.getByTestId("pane-tab-waiting")).toHaveTextContent("1");
     // The conversation is what the column shows until the tab is picked.
     expect(screen.getByLabelText("Message")).toBeInTheDocument();
     expect(screen.queryByText("write the tests")).toBeNull();
@@ -2915,8 +2922,8 @@ describe("ChatPage pane as a phone tab (#169)", () => {
     mockPanes = { 1: { ...frame, collapsed: true } };
     renderChat();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Pane" }));
-    expect(screen.getByRole("tab", { name: "Pane" })).toHaveAttribute(
+    fireEvent.click(screen.getByRole("tab", { name: paneTabName }));
+    expect(screen.getByRole("tab", { name: paneTabName })).toHaveAttribute(
       "aria-selected",
       "true",
     );
@@ -2938,7 +2945,7 @@ describe("ChatPage pane as a phone tab (#169)", () => {
     mockPanes = { 1: { ...frame } };
 
     const { rerender } = renderChat();
-    fireEvent.click(screen.getByRole("tab", { name: "Pane" }));
+    fireEvent.click(screen.getByRole("tab", { name: paneTabName }));
     expect(screen.queryByLabelText("Message")).toBeNull();
 
     // A frame for another space replaces this one's, so the tab has nothing left

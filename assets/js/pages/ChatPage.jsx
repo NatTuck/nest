@@ -32,6 +32,7 @@ import { ChatTypingIndicator } from "../components/ChatTypingIndicator";
 import { ChatLoading } from "../components/ChatLoading";
 import { InboxPanel } from "../components/InboxPanel";
 import { PaneContent } from "../components/Pane/PaneContent";
+import { outstandingCount } from "../store/slices/pane";
 import { PanePanel } from "../components/Pane/PanePanel";
 import { PaneToggle } from "../components/Pane/PaneToggle";
 import { ChatChrome } from "../components/ChatChrome";
@@ -233,11 +234,15 @@ export function ChatPage() {
   );
   const partial = useStore((state) => state.agentsCache[name]?.partial ?? null);
   const jobs = useStore((state) => state.agentsCache[name]?.jobs ?? EMPTY_JOBS);
-  // Whether a `pane:state` frame for this space has arrived. It is what decides
+  // The pane's frame for this space, if one has arrived. Its presence decides
   // whether the tab bar offers the pane's phone tab at all — the same test
   // `PanePanel` and `PaneToggle` make before rendering anything, because a tab
-  // that opens an empty view is a control over nothing.
-  const hasPane = Boolean(useStore((state) => state.panes?.[spaceId]));
+  // that opens an empty view is a control over nothing — and its outstanding
+  // questions are the notification the phone's tab carries in place of the
+  // desktop's toggle.
+  const pane = useStore((state) => state.panes?.[spaceId]);
+  const hasPane = Boolean(pane);
+  const waitingQuestions = outstandingCount(pane);
   // The pane is a view only below `lg`, and only while it has a frame: a tab
   // that outlives its pane (a space switch, say) falls back to the conversation
   // rather than leaving the column with nothing in it.
@@ -611,6 +616,7 @@ export function ChatPage() {
           tab={activeTab}
           jobCount={runningJobCount(jobs)}
           hasPane={hasPane}
+          waitingCount={waitingQuestions}
           onSelectTab={setTab}
           onModelPickerOpen={() => setModelPickerOpen(true)}
           onRetry={handleRetry}

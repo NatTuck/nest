@@ -64,6 +64,44 @@ describe("ChatTabs", () => {
     expect(onSelect).toHaveBeenCalledWith(PANE_TAB);
   });
 
+  it("carries the waiting questions on the pane's tab, and leaves the desktop's toggle alone", () => {
+    const { rerender } = render(
+      <ChatTabs
+        active={CHAT_TAB}
+        onSelect={() => {}}
+        hasPane
+        waitingCount={2}
+        trailing={<button type="button">Toggle</button>}
+      />,
+    );
+
+    // The count is the whole notification the desktop's toggle gives with its
+    // amber pill and dot; the phone's tab has to give it too, or a question
+    // arriving is invisible until the reader opens the tab.
+    const waitingTab = screen.getByRole("tab", {
+      name: "Pane, 2 questions waiting",
+    });
+    const badge = screen.getByTestId("pane-tab-waiting");
+    expect(waitingTab).toContainElement(badge);
+    expect(badge).toHaveTextContent("2");
+    // The dot, not just the number: it is what makes the tab read as an alert
+    // rather than as a tab whose name happens to contain a digit.
+    expect(badge.querySelector(".bg-amber-500")).not.toBeNull();
+
+    // The desktop's control is untouched: still in the bar's trailing slot,
+    // still hidden below `lg`, and the signal is not in it.
+    const slot = screen.getByRole("button", { name: "Toggle" }).parentElement;
+    expect(slot.className).toContain("hidden");
+    expect(slot.className).toContain("lg:block");
+    expect(slot.contains(badge)).toBe(false);
+
+    rerender(<ChatTabs active={CHAT_TAB} onSelect={() => {}} hasPane />);
+
+    // Nothing waiting: no count, no dot, and the tab's plain name.
+    expect(screen.getByRole("tab", { name: "Pane" })).toBeInTheDocument();
+    expect(screen.queryByTestId("pane-tab-waiting")).toBeNull();
+  });
+
   it("keeps the pane's toggle out of the phone's tab bar", () => {
     render(
       <ChatTabs

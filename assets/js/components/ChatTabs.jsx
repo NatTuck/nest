@@ -10,13 +10,23 @@
  * The pane's third tab is the phone's control for the pane (#169's toggle is the
  * desktop's, in the trailing slot). Both exist in the markup and a breakpoint
  * decides which one a reader gets: the tab is `lg:hidden`, the trailing slot is
- * `hidden lg:block`. There is no JS viewport check anywhere — a window's layout
- * is Tailwind's business, and the two controls can never be on screen at once.
+ * `hidden lg:block`. That is Tailwind's decision and no JS reads a width to make
+ * it, so the two controls can never be on screen at once. (The UI's one
+ * media-query listener, `useOnDesktop`, retires the tab's *selection* when a
+ * window widens — that is stranded state, not layout.)
  *
  * The tab is only offered once a `pane:state` frame has arrived (`hasPane`):
  * there is nothing to show before that, and a tab that opens an empty view is a
  * control over nothing — the same rule that keeps `PaneToggle` absent until
  * then.
+ *
+ * It also carries the **waiting signal** (`waitingCount`): the amber dot and the
+ * number of questions still wanting an answer, which is the whole notification
+ * the desktop's `PaneToggle` gives. Without it the phone's tab would look the
+ * same whether nothing or five questions were waiting — a question arriving
+ * would be invisible until the reader opened the tab, which is the one thing the
+ * phone would do worse than the desktop for the same state. The count reaches
+ * the tab's accessible name too, so it is not a colour-only signal.
  *
  * Extracted from `ChatPage` to keep that file under the source-line cap.
  */
@@ -42,6 +52,7 @@ export function ChatTabs({
   jobCount = 0,
   trailing = null,
   hasPane = false,
+  waitingCount = 0,
 }) {
   const tabs = [
     { id: CHAT_TAB, label: "Chat" },
@@ -58,20 +69,49 @@ export function ChatTabs({
       aria-label="Chat views"
       className="mb-4 flex items-center gap-1 border-b border-gray-200"
     >
-      {tabs.map(({ id, label, phoneOnly }) => (
-        <button
-          key={id}
-          type="button"
-          role="tab"
-          aria-selected={active === id}
-          onClick={() => onSelect(id)}
-          className={[tabClass(active === id), phoneOnly && "lg:hidden"]
-            .filter(Boolean)
-            .join(" ")}
-        >
-          {label}
-        </button>
-      ))}
+      {tabs.map(({ id, label, phoneOnly }) => {
+        // Only the pane has anything to report, and only while it is the phone's
+        // tab. Every other tab keeps its bare text node, so the desktop bar is
+        // the same markup it has always been.
+        const waiting = phoneOnly ? waitingCount : 0;
+
+        return (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={active === id}
+            // The badge is a number and a colour; the name has to carry both.
+            aria-label={
+              waiting > 0
+                ? `${label}, ${waiting} question${waiting === 1 ? "" : "s"} waiting`
+                : undefined
+            }
+            onClick={() => onSelect(id)}
+            className={[tabClass(active === id), phoneOnly && "lg:hidden"]
+              .filter(Boolean)
+              .join(" ")}
+          >
+            {waiting > 0 ? (
+              <span className="flex items-center gap-1">
+                {label}
+                <span
+                  data-testid="pane-tab-waiting"
+                  className="flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-900"
+                >
+                  <span
+                    className="h-1.5 w-1.5 rounded-full bg-amber-500"
+                    aria-hidden="true"
+                  />
+                  {waiting}
+                </span>
+              </span>
+            ) : (
+              label
+            )}
+          </button>
+        );
+      })}
       {/* The pane's toggle (#169): the tab bar's right-hand end is the one band
           with nothing under it, and it is chrome the conversation cannot scroll
           away. A closed pane must not cost the conversation a column, and an

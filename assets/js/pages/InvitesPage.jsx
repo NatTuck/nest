@@ -149,7 +149,7 @@ export function InvitesPage() {
                         <button
                           type="button"
                           onClick={() => handleRevoke(invite.id)}
-                          className="text-xs text-red-600 hover:underline"
+                          className="text-xs text-red-600 hover:underline max-lg:px-3 max-lg:py-3.5"
                         >
                           Revoke
                         </button>

@@ -54,8 +54,10 @@ export function ChatChrome({
   tab,
   jobCount,
   // Whether a pane frame has arrived: the tab bar offers the pane's phone tab
-  // only then.
+  // only then. `waitingCount` is how many of its questions still want an answer,
+  // which the phone's tab shows in place of the desktop's toggle.
   hasPane,
+  waitingCount,
   // The pane's toggle, rendered in the tab bar's trailing slot (#169).
   paneToggle,
   // What the user can do from the chrome.
@@ -169,6 +171,7 @@ export function ChatChrome({
           jobCount={jobCount}
           trailing={paneToggle}
           hasPane={hasPane}
+          waitingCount={waitingCount}
         />
       </div>
     </>
