@@ -217,7 +217,7 @@ export function ChatInput({
       <button
         type="submit"
         disabled={sendDisabled}
-        className={`px-4 py-3 rounded-lg font-semibold text-white transition-all duration-200 leading-tight sm:px-6 ${
+        className={`px-4 py-3 rounded-lg font-semibold text-white transition-all duration-200 leading-tight sm:px-6 max-lg:flex-1 ${
           sendDisabled
             ? "bg-gray-400 cursor-not-allowed"
             : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
@@ -244,7 +244,7 @@ export function ChatInput({
           type="button"
           disabled
           aria-label="Stopping"
-          className="px-4 py-3 rounded-lg font-semibold text-white bg-red-400 cursor-not-allowed leading-tight flex items-center gap-2 sm:px-6"
+          className="px-4 py-3 rounded-lg font-semibold text-white bg-red-400 cursor-not-allowed leading-tight flex items-center justify-center gap-2 sm:px-6 max-lg:flex-1"
         >
           <svg
             className="animate-spin h-4 w-4"
@@ -276,7 +276,7 @@ export function ChatInput({
         type="button"
         onClick={onStop}
         aria-label="Stop"
-        className="px-4 py-3 rounded-lg font-semibold text-white bg-red-600 hover:bg-red-700 active:bg-red-800 transition-all duration-200 leading-tight sm:px-6"
+        className="px-4 py-3 rounded-lg font-semibold text-white bg-red-600 hover:bg-red-700 active:bg-red-800 transition-all duration-200 leading-tight sm:px-6 max-lg:flex-1"
       >
         Stop
         <span className="block text-xs font-normal opacity-75 max-sm:hidden">
@@ -309,7 +309,11 @@ export function ChatInput({
         if (!value.trim()) return;
         onSend();
       }}
-      className="border-t border-gray-200 pt-4"
+      // The home-indicator inset belongs to the composer itself, not to one
+      // page's wrapper: the chat page and the space feed both render this form,
+      // and both need the same 34px below it on a phone. `env()` is 0 on a
+      // desktop, so `lg:pb-0` is the desktop's zero-padding case.
+      className="border-t border-gray-200 pt-4 pb-[env(safe-area-inset-bottom)] lg:pb-0"
     >
       <div className="relative">
         {suggestions.length > 0 && (
@@ -344,7 +348,11 @@ export function ChatInput({
             ))}
           </div>
         )}
-        <div className="flex gap-2">
+        {/* Below `lg` the field gets a line of its own and the controls share the
+            next one: textarea + mode + Send (+ Stop) in one 390px row left the
+            field ~200px wide and the buttons squeezed. From `lg` up this is the
+            single row it has always been. */}
+        <div className="flex flex-wrap gap-2 lg:flex-nowrap">
           <textarea
             ref={textareaRef}
             value={value}
@@ -356,7 +364,7 @@ export function ChatInput({
             aria-label="Message"
             aria-keyshortcuts="Control+ArrowUp Control+ArrowDown Meta+ArrowUp Meta+ArrowDown Control+Enter Meta+Enter Control+m Meta+m"
             title="Enter to newline • Ctrl/Cmd+Enter to send • Ctrl/Cmd+Up/Down to walk previous prompts • Ctrl/Cmd+M to cycle modes"
-            className="flex-1 min-w-0 px-4 py-3 border border-gray-300 rounded-lg resize-none overflow-y-auto leading-snug focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed"
+            className="flex-1 min-w-0 px-4 py-3 border border-gray-300 rounded-lg resize-none overflow-y-auto leading-snug focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed max-lg:basis-full"
             style={{ maxHeight: `${MAX_HEIGHT_PX}px` }}
           />
           {modes && modes.length > 1 && onModeChange && (

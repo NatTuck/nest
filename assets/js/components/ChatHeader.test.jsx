@@ -46,6 +46,33 @@ function header(overrides = {}) {
 describe("ChatHeader", () => {
   beforeEach(cleanup);
 
+  it("puts the name on one line and the vocation on its own line below lg", () => {
+    // At 390px the heading took three lines for a name like
+    // `charming-rhinoceros-root`, and the inline `(Programmer)` was glued to it
+    // with no space. Below `lg` the name is one ellipsised line (the full text
+    // stays in the DOM — an ellipsis does not shorten an accessible name — and in
+    // `title`), the vocation is a subtitle, and the token column is the header's
+    // full width so its readout wraps instead of pushing the strip sideways.
+    render(header({ vocation: { name: "Builder" } }));
+
+    const heading = screen.getByRole("heading", { name: /alpha/ });
+    expect(heading.className).toContain("max-lg:truncate");
+    expect(heading).toHaveAttribute("title", "alpha (Builder)");
+
+    // From `lg` up the vocation rides on the heading, now with the space it was
+    // missing; below `lg` it is hidden in favour of the subtitle.
+    const inlineVocation = heading.querySelector("span");
+    expect(inlineVocation.className).toContain("hidden");
+    expect(inlineVocation.className).toContain("lg:inline");
+    expect(inlineVocation.textContent.startsWith(" (")).toBe(true);
+
+    const subtitle = screen.getByText("Builder");
+    expect(subtitle.className).toContain("lg:hidden");
+    expect(screen.getByTestId("usage-chip").parentElement.className).toContain(
+      "max-lg:w-full",
+    );
+  });
+
   it("renders the name, vocation, model, lineage, and status and opens the model picker", () => {
     const onModelPickerOpen = vi.fn();
     render(

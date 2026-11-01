@@ -136,12 +136,31 @@ describe("useScrollToBottom", () => {
       expect(result.current.isAtBottom).toBe(false);
     });
 
-    it("un-pins when the user drags the container (touchmove)", () => {
+    it("un-pins when the user drags the container away from the bottom (touchmove)", () => {
       const { result, container } = renderHookWithContainer("agent-1", null);
+      // The drag has moved the view, which is what makes it a scroll-up.
+      setMetrics(container, { scrollTop: 400 });
       act(() => {
         fireEvent.touchMove(container);
       });
       expect(result.current.isAtBottom).toBe(false);
+    });
+
+    it("stays pinned for a touch drag that cannot move the view", () => {
+      // The phone defect this pins: at the bottom, iOS's rubber-band overscroll
+      // and a finger that slides a pixel during a tap both fire `touchmove`
+      // while `scrollTop` does not change. Un-pinning there raised "Jump to
+      // latest" over a conversation that was already at the latest, and tapping
+      // it scrolled zero pixels — a button that visibly did nothing.
+      const { result, container } = renderHookWithContainer("agent-1", null);
+      expect(result.current.isAtBottom).toBe(true);
+
+      act(() => {
+        fireEvent.touchMove(container);
+      });
+
+      expect(result.current.isAtBottom).toBe(true);
+      expect(result.current.hasNewContent).toBe(false);
     });
 
     it("un-pins on PageUp/ArrowUp/Home keydown on window", () => {

@@ -7,6 +7,8 @@
  * - Renders a <select> with one <option> per mode
  * - value/onChange wiring
  * - disabled prop
+ * - The phone's segmented toggle: the same two modes, one tap, and only one of
+ *   the two controls visible on either side of `lg`
  */
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
@@ -69,6 +71,33 @@ describe("ModeSelector", () => {
       target: { value: "act" },
     });
     expect(onChange).toHaveBeenCalledWith("act");
+  });
+
+  it("offers a two-button toggle below lg and keeps the select from lg up", () => {
+    // `Nest.Modes` is a two-value catalogue, so a phone gets a segmented toggle:
+    // a `<select>` there is a full-screen wheel picker for one bit of choice, and
+    // it costs the composer row ~75px. Both controls are in the DOM and a
+    // breakpoint decides which one is on screen, the same way the pane's tab and
+    // its toggle are.
+    const onChange = vi.fn();
+    render(
+      <ModeSelector modes={["plan", "act"]} value="act" onChange={onChange} />,
+    );
+
+    const group = screen.getByRole("group", { name: "Agent mode" });
+    expect(group.className).toContain("lg:hidden");
+    expect(screen.getByLabelText("Mode").className).toContain("max-lg:hidden");
+
+    // The current mode is the pressed one; the other is a live button.
+    const plan = screen.getByRole("button", { name: "plan" });
+    const act = screen.getByRole("button", { name: "act" });
+    expect(act).toHaveAttribute("aria-pressed", "true");
+    expect(plan).toHaveAttribute("aria-pressed", "false");
+
+    // One tap switches; the button is 44px tall like every other phone control.
+    fireEvent.click(plan);
+    expect(onChange).toHaveBeenCalledWith("plan");
+    expect(plan.className).toContain("py-3");
   });
 
   it("renders as disabled when the disabled prop is set", () => {

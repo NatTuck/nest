@@ -90,6 +90,13 @@ describe("TokenUsageChip", () => {
       const bar = screen.getByRole("progressbar");
       expect(bar).toHaveAttribute("aria-valuenow", "15545");
       expect(bar).toHaveAttribute("aria-valuemax", "256000");
+
+      // The gauge is the one part of the line that cannot wrap, so a phone drops
+      // it and keeps the two percentages; the chip itself becomes the width of
+      // the header's column rather than its 426px content width, which is what
+      // used to run 64px past the edge of a 390px screen.
+      expect(bar.className).toContain("max-lg:hidden");
+      expect(chip.className).toContain("max-lg:w-full");
     });
 
     it("falls back to input_tokens when context_input_tokens is missing (old wire)", () => {

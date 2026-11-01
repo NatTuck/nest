@@ -185,20 +185,26 @@ export function TokenUsageChip({
   return (
     <div
       data-testid="token-usage-chip"
-      className="flex flex-col gap-1 text-xs text-zinc-500"
+      // Below `lg` the chip is the full width of the header's column, and its
+      // one line of mono numbers wraps inside that width rather than running
+      // 60px past the screen edge.
+      className="flex flex-col gap-1 text-xs text-zinc-500 max-lg:w-full max-lg:min-w-0"
     >
       <button
         type="button"
         onClick={() => setIsExpanded(!isExpanded)}
         aria-expanded={isExpanded}
         aria-label="Toggle token usage details"
-        className="flex items-center gap-2 text-left hover:text-zinc-300 transition-colors"
+        className="flex items-center gap-2 text-left hover:text-zinc-300 transition-colors max-lg:flex-wrap"
       >
         <span className="font-mono tabular-nums whitespace-nowrap">
           {formatTokens(safeUsed)} / {formatTokens(contextLimit)} tokens
         </span>
+        {/* The gauge is the one part of this line that cannot wrap, so it is the
+            part a phone drops: the two percentages either side of it carry the
+            same fact, and the bar is still here from `lg` up. */}
         <div
-          className="h-1 w-24 rounded bg-zinc-800 overflow-hidden"
+          className="h-1 w-24 rounded bg-zinc-800 overflow-hidden max-lg:hidden"
           role="progressbar"
           aria-valuemin={0}
           aria-valuemax={contextLimit}
