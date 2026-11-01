@@ -313,7 +313,7 @@ export function ChatInput({
       // page's wrapper: the chat page and the space feed both render this form,
       // and both need the same 34px below it on a phone. `env()` is 0 on a
       // desktop, so `lg:pb-0` is the desktop's zero-padding case.
-      className="border-t border-gray-200 pt-4 pb-[env(safe-area-inset-bottom)] lg:pb-0"
+      className="border-t border-gray-200 pt-4 pb-[env(safe-area-inset-bottom)] max-lg:pt-2 lg:pb-0"
     >
       <div className="relative">
         {suggestions.length > 0 && (

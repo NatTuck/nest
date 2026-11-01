@@ -96,6 +96,10 @@ export function TokenUsageChip({
   descendantUsage = null,
   totalUsage = null,
   contextLimit,
+  // The caller's own classes, appended to the root. The chat header uses it to
+  // fold the chip into its phone disclosure; empty by default, so every other
+  // caller renders the same markup it did.
+  className = "",
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -105,7 +109,7 @@ export function TokenUsageChip({
         data-testid="token-usage-chip"
         role="status"
         aria-label="Context limit data missing"
-        className="flex items-center gap-1.5 text-xs font-semibold text-red-400"
+        className={`flex items-center gap-1.5 text-xs font-semibold text-red-400 ${className}`}
       >
         <svg
           className="w-3.5 h-3.5"
@@ -188,7 +192,7 @@ export function TokenUsageChip({
       // Below `lg` the chip is the full width of the header's column, and its
       // one line of mono numbers wraps inside that width rather than running
       // 60px past the screen edge.
-      className="flex flex-col gap-1 text-xs text-zinc-500 max-lg:w-full max-lg:min-w-0"
+      className={`flex flex-col gap-1 text-xs text-zinc-500 max-lg:w-full max-lg:min-w-0 ${className}`}
     >
       <button
         type="button"

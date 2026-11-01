@@ -220,7 +220,14 @@ function Layout() {
           reader can act on, and a Tab that walks into content behind a backdrop
           is focus they cannot see. React 19 renders the boolean properly —
           present when true, absent when false. */}
-      <main inert={navOpen} className="flex-1 overflow-auto p-3 sm:p-6">
+      {/* Below `lg` the bottom gutter is the composer's own: the chat page's
+          field is the last thing on screen, and a gutter there is dead space
+          under the Send button. The safe-area inset still applies, inside
+          `ChatInput`'s form, so a device that reports one keeps its clearance. */}
+      <main
+        inert={navOpen}
+        className="flex-1 overflow-auto p-3 max-lg:pb-0 sm:p-6"
+      >
         <Outlet />
       </main>
     </div>

@@ -8,6 +8,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+import { ChatComposer } from "./ChatComposer";
 import { ChatInput } from "./ChatInput";
 
 function setup(props = {}) {
@@ -779,5 +780,41 @@ describe("ChatInput", () => {
       setup({ value: "/" });
       expect(screen.queryByRole("listbox")).toBeNull();
     });
+  });
+});
+
+describe("ChatInput focus across a re-render", () => {
+  it("keeps the same field, and its focus, when the composer's pill state flips", () => {
+    // The keyboard's resize scrolls the conversation, which flips the composer's
+    // `isAtBottom`/`hasNewContent` and re-renders it. A re-render must not replace
+    // the textarea: on a phone, removing the focused node takes the caret — and
+    // the IME — with it. jsdom cannot raise a keyboard, but it can tell a
+    // re-render from a re-mount, which is the half of this the app controls.
+    const props = {
+      inputValue: "",
+      onChange: () => {},
+      onSend: () => {},
+      onStop: () => {},
+      isBusy: false,
+      stopping: false,
+      disabled: false,
+      frozen: false,
+      placeholder: "Type a message...",
+      history: undefined,
+      commands: undefined,
+      jumpToBottom: () => {},
+    };
+    const { rerender } = render(
+      <ChatComposer {...props} hasNewContent={false} isAtBottom />,
+    );
+
+    const field = screen.getByLabelText("Message");
+    field.focus();
+    expect(field).toHaveFocus();
+
+    rerender(<ChatComposer {...props} hasNewContent isAtBottom={false} />);
+
+    expect(screen.getByLabelText("Message")).toBe(field);
+    expect(field).toHaveFocus();
   });
 });

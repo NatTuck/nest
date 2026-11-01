@@ -384,8 +384,13 @@ describe("Layout phone navigation", () => {
     expect(hamburger.closest("header").className).toContain("lg:hidden");
     expect(hamburger).toHaveAttribute("aria-expanded", "false");
     expect(panel.className).toContain("lg:static");
-    // `p-3` is the phone's gutter, `sm:p-6` the desktop's.
-    expect(main.className).toContain("p-3 sm:p-6");
+    // `p-3` is the phone's gutter and `sm:p-6` the desktop's. The phone's
+    // *bottom* gutter is 0: the composer is the last thing on the chat page, and
+    // a gutter under its buttons is dead space. The safe-area inset still applies
+    // inside `ChatInput`'s form, so a device that reports one keeps clearance.
+    expect(main.className).toContain("p-3");
+    expect(main.className).toContain("sm:p-6");
+    expect(main.className).toContain("max-lg:pb-0");
     expect(main).not.toHaveAttribute("inert");
 
     fireEvent.click(hamburger);
