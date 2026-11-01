@@ -219,11 +219,11 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
           onChange={setInputValue}
           onSend={handleSend}
           disabled={!lobbyJoined || !recipient}
-          placeholder={
-            recipient
-              ? `Send a note to ${recipient}...`
-              : "This space has no agent to send to..."
-          }
+          // Short on purpose: the field is one row on a phone (see `ChatInput`),
+          // and `Send a note to charming-rhinoceros-root...` wrapped past that
+          // row and was clipped. The recipient is named in the picker directly
+          // above, so the placeholder does not have to carry it.
+          placeholder={recipient ? "Send a note…" : "No agent to send to"}
           modes={feed?.modes ?? NO_MODES}
           mode={mode}
           onModeChange={handleModeChange}

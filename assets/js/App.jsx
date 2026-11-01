@@ -223,10 +223,17 @@ function Layout() {
       {/* Below `lg` the bottom gutter is the composer's own: the chat page's
           field is the last thing on screen, and a gutter there is dead space
           under the Send button. The safe-area inset still applies, inside
-          `ChatInput`'s form, so a device that reports one keeps its clearance. */}
+          `ChatInput`'s form, so a device that reports one keeps its clearance.
+
+          No `p-*` shorthand anywhere here, on purpose. `sm:p-6` is emitted after
+          `max-lg:pb-0` in the stylesheet (Tailwind sorts by variant, not by the
+          order in the attribute), so between 640 and 1023px it reset the bottom
+          to 24px — a gutter that only existed in that band. Sides and top are
+          set separately, nothing sets a bottom below `lg`, and `lg:p-6` restores
+          the desktop's 24px on every side. */}
       <main
         inert={navOpen}
-        className="flex-1 overflow-auto p-3 max-lg:pb-0 sm:p-6"
+        className="flex-1 overflow-auto pt-3 px-3 sm:pt-6 sm:px-6 lg:p-6"
       >
         <Outlet />
       </main>

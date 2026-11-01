@@ -52,10 +52,15 @@ function setup(props = {}) {
 
 describe("ChatInput", () => {
   describe("rendering", () => {
-    it("renders a multi-line textarea with the Send button", () => {
+    it("renders a one-row textarea that the desktop holds at two rows", () => {
       const { textarea, sendButton } = setup();
       expect(textarea.tagName).toBe("TEXTAREA");
-      expect(textarea).toHaveAttribute("rows", "2");
+      // One row on a phone — the composer is the biggest fixed block on a 640px
+      // screen — and it grows as the reader types. From `lg` up `min-h` keeps the
+      // two-row height the desktop has always had, so the field's box there is
+      // the same 68px it was when `rows` was 2.
+      expect(textarea).toHaveAttribute("rows", "1");
+      expect(textarea.className).toContain("lg:min-h-[68px]");
       expect(sendButton).toBeInTheDocument();
     });
 
