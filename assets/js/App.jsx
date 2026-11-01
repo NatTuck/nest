@@ -51,6 +51,7 @@ import { useStore } from "./store";
 import { initChannels, joinLobby, leaveLobby } from "./channels";
 import { readAuthToken } from "./socket";
 import { useDocumentTitle } from "./hooks/useDocumentTitle";
+import { useOnDesktop } from "./hooks/useOnDesktop";
 import { Sidebar } from "./components/Sidebar";
 import { PhoneTopBar } from "./components/PhoneTopBar";
 import { PhoneDrawer } from "./components/PhoneDrawer";
@@ -166,6 +167,13 @@ function Layout() {
   // opened it (see `PhoneDrawer`).
   const navTriggerRef = useRef(null);
   const closeNav = useCallback(() => setNavOpen(false), []);
+
+  // The drawer is phone-only state, and at `lg`+ nothing on screen can close it
+  // (the hamburger and the backdrop are both `lg:hidden`), so a window widened
+  // while it is open would leave `main` `inert` with no way back. The hook runs
+  // only when the window crosses into the desktop layout; see its doc for why
+  // this is not a layout branch.
+  useOnDesktop(closeNav);
 
   useEffect(() => {
     initChannels();

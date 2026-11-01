@@ -40,6 +40,7 @@ import { AgentEditModal } from "../components/AgentEditModal";
 import { ShellJobsPanel } from "../components/ShellJobsPanel";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
+import { useOnDesktop } from "../hooks/useOnDesktop";
 import { useAgentMode } from "../hooks/useAgentMode";
 import { buildChatHistory } from "../utils/chatHistory.js";
 import { describeEditError, getStatusLabel } from "../utils/chatErrors.js";
@@ -241,6 +242,13 @@ export function ChatPage() {
   // that outlives its pane (a space switch, say) falls back to the conversation
   // rather than leaving the column with nothing in it.
   const activeTab = tab === PANE_TAB && !hasPane ? CHAT_TAB : tab;
+  // ...and it is only a view while the phone layout is the one on screen. The
+  // pane tab is `lg:hidden`, so a window widened while it is selected would
+  // otherwise leave a tab bar with no tab selected; the hook puts the selection
+  // back on the conversation as the window crosses over. See its doc for why
+  // this is state retirement and not a layout branch.
+  const selectChatTab = useCallback(() => setTab(CHAT_TAB), []);
+  useOnDesktop(selectChatTab);
   // The archive is paged in lazily. `archivedHistory` holds the pages
   // loaded so far (empty until the card is expanded), `historyPrompts`
   // the recent user prompts behind the Ctrl/Cmd+Up recall list, and
@@ -632,20 +640,16 @@ export function ChatPage() {
             )}
           </div>
         ) : activeTab === PANE_TAB ? (
-          <>
-            {/* The pane as a phone view (#169): below `lg` the tab is the pane's
-              control, so its content takes the main column the conversation
-              would have had. From `lg` up the tab is not offered at all — the
-              sibling `PanePanel` column is the pane there — and the block below
-              is what keeps the conversation in the column for a window that was
-              resized across the breakpoint while this tab was selected. */}
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:hidden">
-              <PaneContent name={name} spaceId={spaceId} />
-            </div>
-            <div className="hidden min-h-0 flex-1 flex-col lg:flex">
-              {chatPane}
-            </div>
-          </>
+          // The pane as a phone view (#169): below `lg` the tab is the pane's
+          // control, so its content takes the main column the conversation would
+          // have had. It is only ever rendered on a phone — the tab is
+          // `lg:hidden` and `useOnDesktop` clears the selection as the window
+          // widens — so no second copy of the conversation is mounted behind it,
+          // and there is no `lg:` guard that would leave the column empty if
+          // this ever disagreed with the stylesheet.
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <PaneContent name={name} spaceId={spaceId} />
+          </div>
         ) : (
           chatPane
         )}

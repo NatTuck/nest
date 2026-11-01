@@ -34,6 +34,7 @@ import { RootGate, Layout } from "./App";
 import { MemoryRouter, Routes, Route, useNavigate } from "react-router-dom";
 import { useStore } from "./store";
 import { renderWithRouter } from "./test/render_with_router";
+import { stubDesktopQuery } from "./test/match_media";
 
 // `vi.mock` is hoisted, so the import path must be a
 // literal — Vitest will replace the module before any test
@@ -328,6 +329,10 @@ describe("Layout phone navigation", () => {
   // what is pinned here is the class contract plus the behaviour a reader
   // actually gets: the hamburger opens the panel, the page behind stops being
   // actionable, and the panel closes on Escape and on a route change.
+  // The desktop media query, for the tests that cross the breakpoint. jsdom has
+  // no `matchMedia`, so it is stubbed narrowly; see `test/match_media.js`.
+  let media;
+
   beforeEach(() => {
     act(() => {
       useStore.getState()._reset();
@@ -337,6 +342,8 @@ describe("Layout phone navigation", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    media?.restore();
+    media = undefined;
     act(() => {
       useStore.getState()._reset();
     });
@@ -397,6 +404,25 @@ describe("Layout phone navigation", () => {
     // Focus comes back to the control that opened it, not to a link that is now
     // off the screen.
     expect(hamburger).toHaveFocus();
+  });
+
+  it("retires the drawer when the window becomes a desktop", () => {
+    media = stubDesktopQuery();
+    const { container } = renderLayout();
+    const main = container.querySelector("main");
+    const hamburger = screen.getByRole("button", { name: "Open navigation" });
+
+    fireEvent.click(hamburger);
+    expect(main).toHaveAttribute("inert");
+
+    // The window widens past `lg`. The hamburger and the backdrop are both
+    // `lg:hidden`, so without retiring the state the drawer would be open with
+    // no control that can close it and the page behind it unreachable.
+    act(() => media.cross());
+
+    expect(hamburger).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByLabelText("Close navigation")).toBeNull();
+    expect(main).not.toHaveAttribute("inert");
   });
 
   it("closes the drawer when the route changes", () => {

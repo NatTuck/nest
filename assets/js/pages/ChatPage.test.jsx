@@ -164,6 +164,7 @@ vi.mock("../components/EditAgentDialog", () => ({
 }));
 
 import { ChatPage } from "./ChatPage";
+import { stubDesktopQuery } from "../test/match_media";
 import { SLASH_COMMANDS } from "../utils/slashCommands.js";
 
 // The same page, but with a `navigate` the test can call: the route keeps
@@ -2808,7 +2809,8 @@ describe("ChatPage pane as a phone tab (#169)", () => {
   // desktop's control and is hidden there. jsdom evaluates no media query, so
   // the two halves are pinned as they are built: the tab's `lg:hidden`, the
   // slot's `hidden`, and the fact that selecting the tab really does put the
-  // pane's content in the column.
+  // pane's content in the column. The breakpoint crossing itself — the one case
+  // that is not a style — is driven through the media-query stub.
   const decision = {
     id: "d1",
     title: "Ship or wait?",
@@ -2834,6 +2836,10 @@ describe("ChatPage pane as a phone tab (#169)", () => {
     error: null,
   };
 
+  // jsdom has no `matchMedia`; the tests that cross the breakpoint install this
+  // and fire the query's own `change` event.
+  let media;
+
   beforeEach(() => {
     mockAgentsCache = {
       "test-agent": {
@@ -2846,13 +2852,10 @@ describe("ChatPage pane as a phone tab (#169)", () => {
     };
   });
 
-  // The conversation's box in the column: the one that holds the composer.
-  function chatView(container) {
-    const column = container.firstElementChild.firstElementChild;
-    return [...column.children].find((el) =>
-      el.contains(screen.getByLabelText("Message")),
-    );
-  }
+  afterEach(() => {
+    media?.restore();
+    media = undefined;
+  });
 
   it("offers no pane tab until a frame for the space has arrived", () => {
     renderChat();
@@ -2877,7 +2880,9 @@ describe("ChatPage pane as a phone tab (#169)", () => {
 
     const paneTab = screen.getByRole("tab", { name: "Pane" });
     expect(paneTab).toHaveAttribute("aria-selected", "false");
-    expect(chatView(container).className).not.toContain("hidden");
+    // The conversation is what the column shows until the tab is picked.
+    expect(screen.getByLabelText("Message")).toBeInTheDocument();
+    expect(screen.queryByText("write the tests")).toBeNull();
 
     fireEvent.click(paneTab);
 
@@ -2896,25 +2901,45 @@ describe("ChatPage pane as a phone tab (#169)", () => {
     );
     expect(screen.queryByLabelText("Questions and TODO")).toBeNull();
 
-    // ...and it is the phone's view of the pane: from `lg` up the tab is not
-    // offered, and the conversation below is what the column shows.
-    const paneView = [
-      ...container.firstElementChild.firstElementChild.children,
-    ].find((el) => el.contains(todo));
-    expect(paneView.className).toContain("lg:hidden");
+    // The conversation is not mounted behind it: on a phone this tab replaces
+    // the column's content, the way the jobs tab does, and the `lg`+ case is
+    // handled by retiring the selection rather than by a hidden second copy (see
+    // the crossing test below).
+    expect(screen.queryByLabelText("Message")).toBeNull();
+  });
 
-    // Below `lg` the conversation is out of the way; from `lg` up it is what the
-    // column shows, whichever tab was the last one selected.
-    expect(chatView(container).className).toContain("hidden");
-    expect(chatView(container).className).toContain("lg:flex");
+  it("puts the selection back on the conversation when the window becomes a desktop", () => {
+    media = stubDesktopQuery();
+    // Closed, so the desktop's own pane column renders nothing: the TODO text
+    // below can then only have come from the phone's tab.
+    mockPanes = { 1: { ...frame, collapsed: true } };
+    renderChat();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Pane" }));
+    expect(screen.getByRole("tab", { name: "Pane" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    // The window widens past `lg`, where the pane tab is `lg:hidden`. Without
+    // this the bar would show no selected tab at all, with the pane's content in
+    // a column that is no longer a tab.
+    act(() => media.cross());
+
+    expect(screen.getByRole("tab", { name: "Chat" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByLabelText("Message")).toBeInTheDocument();
+    expect(screen.queryByText("write the tests")).toBeNull();
   });
 
   it("falls back to the conversation when the pane's frame is gone", () => {
     mockPanes = { 1: { ...frame } };
 
-    const { container, rerender } = renderChat();
+    const { rerender } = renderChat();
     fireEvent.click(screen.getByRole("tab", { name: "Pane" }));
-    expect(chatView(container).className).toContain("hidden");
+    expect(screen.queryByLabelText("Message")).toBeNull();
 
     // A frame for another space replaces this one's, so the tab has nothing left
     // to show. The column keeps the conversation rather than going blank.
@@ -2928,6 +2953,6 @@ describe("ChatPage pane as a phone tab (#169)", () => {
     );
 
     expect(screen.queryByRole("tab", { name: "Pane" })).toBeNull();
-    expect(chatView(container).className).not.toContain("hidden");
+    expect(screen.getByLabelText("Message")).toBeInTheDocument();
   });
 });
