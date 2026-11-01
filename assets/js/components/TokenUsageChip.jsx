@@ -235,13 +235,27 @@ export function TokenUsageChip({
             w {workingPct.toFixed(1)}%
           </span>
         ) : (
-          <span
-            data-testid="token-usage-working-pct"
-            className="font-mono tabular-nums whitespace-nowrap text-red-400 max-lg:hidden"
-            title="Working budget unavailable (server did not send usage.working_budget)"
-          >
-            w n/a
-          </span>
+          <>
+            {/* A *missing* working budget is not a number to keep off a phone's
+                line: it is data the server did not send, and the rule is that
+                missing data gets an obvious indicator rather than a tap away.
+                The desktop keeps its `w n/a`; below `lg` the indicator says what
+                is missing, because `w` alone means nothing on a line with no
+                hover. */}
+            <span
+              data-testid="token-usage-working-pct"
+              className="font-mono tabular-nums whitespace-nowrap text-red-400 max-lg:hidden"
+              title="Working budget unavailable (server did not send usage.working_budget)"
+            >
+              w n/a
+            </span>
+            <span
+              data-testid="token-usage-working-missing"
+              className="whitespace-nowrap text-red-400 lg:hidden"
+            >
+              no working budget
+            </span>
+          </>
         )}
         {projectedPct != null && (
           <span

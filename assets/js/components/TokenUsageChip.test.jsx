@@ -430,16 +430,26 @@ describe("TokenUsageChip", () => {
       );
     });
 
-    it("flags a missing working budget instead of hiding it", () => {
+    it("flags a missing working budget instead of hiding it, at both widths", () => {
       render(
         <TokenUsageChip
           usage={{ context_input_tokens: 1000 }}
           contextLimit={100000}
         />,
       );
-      expect(screen.getByTestId("token-usage-working-pct")).toHaveTextContent(
-        "w n/a",
-      );
+
+      // The desktop's line keeps the abbreviation...
+      const desktop = screen.getByTestId("token-usage-working-pct");
+      expect(desktop).toHaveTextContent("w n/a");
+      expect(desktop.className).toContain("max-lg:hidden");
+
+      // ...and a phone gets an explicit indicator on the same line. Hiding a
+      // *present* number behind the chevron is fine; hiding its *absence* is
+      // not, so this one is red and on the line rather than one tap away.
+      const missing = screen.getByTestId("token-usage-working-missing");
+      expect(missing).toHaveTextContent("no working budget");
+      expect(missing.className).toContain("lg:hidden");
+      expect(missing.className).toContain("text-red-400");
     });
 
     it("shows the projected percentage when a projection exceeds current usage", () => {
@@ -482,6 +492,9 @@ describe("TokenUsageChip", () => {
       // From `lg` up they are still there, as text.
       expect(working).toHaveTextContent("w 30.0%");
       expect(projected).toHaveTextContent("→ 55.0%");
+      // A budget that *is* present stays off the phone's line, and the
+      // missing-data indicator is not rendered at all.
+      expect(screen.queryByTestId("token-usage-working-missing")).toBeNull();
 
       fireEvent.click(
         screen.getByRole("button", { name: /toggle token usage details/i }),
