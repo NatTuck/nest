@@ -4,10 +4,21 @@
     <meta charset="utf-8" />
     <!-- `viewport-fit=cover` is what makes the phone's safe-area insets real
          numbers: without it `env(safe-area-inset-*)` is 0 on every device, and
-         the chat composer sits under the home indicator. -->
+         the chat composer sits under the home indicator.
+
+         `interactive-widget=resizes-content` is what keeps the soft keyboard from
+         closing on the chat composer. The default (`resizes-visual`) leaves the
+         layout viewport at its full height when the keyboard opens, so a
+         fixed-height shell like this one — `h-dvh`, `overflow-hidden`, a
+         bottom-pinned composer — keeps its field at the bottom of a viewport that
+         is now *behind* the keyboard. The document cannot scroll it into view (it
+         is exactly one viewport tall), so the browser cannot show the caret where
+         the finger put it, and the IME is dismissed. Resizing the content instead
+         makes the shell shorter, the composer moves up above the keyboard, and
+         the field stays visible and focused. -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <meta name="csrf-token" content={get_csrf_token()} />
     <title>{Nest.Hostname.get()}</title>

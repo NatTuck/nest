@@ -384,8 +384,18 @@ describe("Layout phone navigation", () => {
     expect(hamburger.closest("header").className).toContain("lg:hidden");
     expect(hamburger).toHaveAttribute("aria-expanded", "false");
     expect(panel.className).toContain("lg:static");
-    // `p-3` is the phone's gutter, `sm:p-6` the desktop's.
-    expect(main.className).toContain("p-3 sm:p-6");
+    // The phone's gutter is `pt-3 px-3`, the tablet's `sm:pt-6 sm:px-6`, and the
+    // desktop's `lg:p-6`. Nothing sets a *bottom* padding below `lg`: the composer
+    // is the last thing on the chat page, and a gutter under its buttons is dead
+    // space (its own safe-area inset is inside `ChatInput`'s form). The split is
+    // not cosmetic — a `p-*` shorthand is emitted after `max-lg:pb-0` in the
+    // stylesheet, so `sm:p-6` silently restored a 24px bottom between 640 and
+    // 1023px, which is a gutter that existed in no other band.
+    const classes = main.className.split(" ");
+    for (const cls of ["pt-3", "px-3", "sm:pt-6", "sm:px-6", "lg:p-6"]) {
+      expect(classes).toContain(cls);
+    }
+    expect(main.className).not.toMatch(/(^|\s)p-[0-9]/);
     expect(main).not.toHaveAttribute("inert");
 
     fireEvent.click(hamburger);

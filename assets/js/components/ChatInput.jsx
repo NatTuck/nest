@@ -313,7 +313,7 @@ export function ChatInput({
       // page's wrapper: the chat page and the space feed both render this form,
       // and both need the same 34px below it on a phone. `env()` is 0 on a
       // desktop, so `lg:pb-0` is the desktop's zero-padding case.
-      className="border-t border-gray-200 pt-4 pb-[env(safe-area-inset-bottom)] lg:pb-0"
+      className="border-t border-gray-200 pt-4 pb-[env(safe-area-inset-bottom)] max-lg:pt-2 lg:pb-0"
     >
       <div className="relative">
         {suggestions.length > 0 && (
@@ -364,11 +364,16 @@ export function ChatInput({
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
             disabled={disabled}
-            rows={2}
+            // One row on a phone: the composer is the biggest fixed block on a
+            // 640px screen, and a second empty row costs the conversation a line
+            // it can use. It grows from there as the reader types (`useLayoutEffect`
+            // below resizes to `scrollHeight`), and from `lg` up `min-h` keeps the
+            // two-row height the desktop has always had.
+            rows={1}
             aria-label="Message"
             aria-keyshortcuts="Control+ArrowUp Control+ArrowDown Meta+ArrowUp Meta+ArrowDown Control+Enter Meta+Enter Control+m Meta+m"
             title="Enter to newline • Ctrl/Cmd+Enter to send • Ctrl/Cmd+Up/Down to walk previous prompts • Ctrl/Cmd+M to cycle modes"
-            className="flex-1 min-w-0 px-4 py-3 border border-gray-300 rounded-lg resize-none overflow-y-auto leading-snug focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed max-lg:basis-full"
+            className="flex-1 min-w-0 px-4 py-3 border border-gray-300 rounded-lg resize-none overflow-y-auto leading-snug focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed max-lg:basis-full lg:min-h-[68px]"
             style={{ maxHeight: `${MAX_HEIGHT_PX}px` }}
           />
           {modes && modes.length > 1 && onModeChange && (

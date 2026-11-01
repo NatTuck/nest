@@ -67,7 +67,7 @@ export function ChatTabs({
     <div
       role="tablist"
       aria-label="Chat views"
-      className="mb-4 flex items-center gap-1 border-b border-gray-200"
+      className="mb-4 flex items-center gap-1 border-b border-gray-200 max-lg:mb-2"
     >
       {tabs.map(({ id, label, phoneOnly }) => {
         // Only the pane has anything to report, and only while it is the phone's
