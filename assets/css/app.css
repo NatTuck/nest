@@ -28,6 +28,40 @@
   position: relative;
 }
 
+/* The phone navigation drawer (below `lg`). Off-canvas while closed, which has
+   to take it out of the tab order and the accessibility tree as well as off the
+   screen: a translated box is still focusable, so tabbing from the phone's top
+   bar would land in links the reader cannot see. `visibility` is the one
+   property that does that without stopping the panel from sliding — the browser
+   paints a `visibility: visible` box for the whole transition — and the closed
+   state delays the flip until the slide-out has finished, so closing is a slide
+   rather than a snap.
+
+   At `lg` the sidebar is the static first column of the layout, so none of this
+   applies there and desktop keeps the sidebar it always had. Unlayered rules
+   like these win over Tailwind's `@layer utilities`, which is deliberate: the
+   `transform` the panel slides with is still a utility class. */
+.phone-drawer {
+  visibility: hidden;
+  transition:
+    transform 200ms ease-out,
+    visibility 0s linear 200ms;
+}
+
+.phone-drawer[data-open="true"] {
+  visibility: visible;
+  transition:
+    transform 200ms ease-out,
+    visibility 0s;
+}
+
+@media (min-width: 64rem) {
+  .phone-drawer {
+    visibility: visible;
+    transition: none;
+  }
+}
+
 /* Add variants based on LiveView classes */
 @custom-variant phx-click-loading (.phx-click-loading&, .phx-click-loading &);
 @custom-variant phx-submit-loading (.phx-submit-loading&, .phx-submit-loading &);

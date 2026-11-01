@@ -2801,3 +2801,133 @@ describe("ChatPage right-hand pane (#119 / #120)", () => {
     expect(container.firstElementChild.children).toHaveLength(1);
   });
 });
+
+describe("ChatPage pane as a phone tab (#169)", () => {
+  // Below `lg` the pane is the chat page's third tab and its content takes the
+  // main column; the `PaneToggle` in the tab bar's trailing slot is the
+  // desktop's control and is hidden there. jsdom evaluates no media query, so
+  // the two halves are pinned as they are built: the tab's `lg:hidden`, the
+  // slot's `hidden`, and the fact that selecting the tab really does put the
+  // pane's content in the column.
+  const decision = {
+    id: "d1",
+    title: "Ship or wait?",
+    body: "Shipping early risks bugs.",
+    options: ["Ship", "Wait"],
+    askedBy: "test-agent",
+    obsolete: false,
+    obsoleteReason: null,
+    orphaned: false,
+    orphanedReason: null,
+  };
+  const frame = {
+    decisions: [decision],
+    todos: {
+      "test-agent": [{ text: "write the tests", status: "in_progress" }],
+    },
+    seq: 1,
+    collapsed: false,
+    expandedId: null,
+    drafts: {},
+    marks: {},
+    outcomes: {},
+    error: null,
+  };
+
+  beforeEach(() => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messageCount: 0,
+        messages: [],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+  });
+
+  // The conversation's box in the column: the one that holds the composer.
+  function chatView(container) {
+    const column = container.firstElementChild.firstElementChild;
+    return [...column.children].find((el) =>
+      el.contains(screen.getByLabelText("Message")),
+    );
+  }
+
+  it("offers no pane tab until a frame for the space has arrived", () => {
+    renderChat();
+
+    // There is nothing to show yet, so there is no tab that opens an empty
+    // view — the same rule that keeps `PaneToggle` absent until then.
+    expect(screen.queryByRole("tab", { name: "Pane" })).toBeNull();
+  });
+
+  it("renders the pane in the column when its tab is selected", () => {
+    // Closed, as the pane is by default: the desktop column is not on screen, so
+    // what the tab renders is the tab's own doing.
+    mockPanes = { 1: { ...frame, collapsed: true } };
+
+    const { container } = renderChat();
+
+    // One control each side of the breakpoint: the desktop's toggle is in the
+    // bar (hidden below `lg`), and the tab is the phone's.
+    const toggleSlot = screen.getByTitle("Show the pane").parentElement;
+    expect(toggleSlot.className).toContain("hidden");
+    expect(toggleSlot.className).toContain("lg:block");
+
+    const paneTab = screen.getByRole("tab", { name: "Pane" });
+    expect(paneTab).toHaveAttribute("aria-selected", "false");
+    expect(chatView(container).className).not.toContain("hidden");
+
+    fireEvent.click(paneTab);
+
+    expect(paneTab).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Chat" })).toHaveAttribute(
+      "aria-selected",
+      "false",
+    );
+
+    // The pane's own content, in the page's main column: the TODO list and the
+    // question, not the closed desktop column (`PanePanel` renders nothing).
+    const todo = screen.getByText("write the tests");
+    expect(screen.getByText("Ship or wait?")).toBeInTheDocument();
+    expect(container.firstElementChild.firstElementChild.contains(todo)).toBe(
+      true,
+    );
+    expect(screen.queryByLabelText("Questions and TODO")).toBeNull();
+
+    // ...and it is the phone's view of the pane: from `lg` up the tab is not
+    // offered, and the conversation below is what the column shows.
+    const paneView = [
+      ...container.firstElementChild.firstElementChild.children,
+    ].find((el) => el.contains(todo));
+    expect(paneView.className).toContain("lg:hidden");
+
+    // Below `lg` the conversation is out of the way; from `lg` up it is what the
+    // column shows, whichever tab was the last one selected.
+    expect(chatView(container).className).toContain("hidden");
+    expect(chatView(container).className).toContain("lg:flex");
+  });
+
+  it("falls back to the conversation when the pane's frame is gone", () => {
+    mockPanes = { 1: { ...frame } };
+
+    const { container, rerender } = renderChat();
+    fireEvent.click(screen.getByRole("tab", { name: "Pane" }));
+    expect(chatView(container).className).toContain("hidden");
+
+    // A frame for another space replaces this one's, so the tab has nothing left
+    // to show. The column keeps the conversation rather than going blank.
+    mockPanes = {};
+    rerender(
+      <MemoryRouter initialEntries={["/space/my-space/agent/test-agent"]}>
+        <Routes>
+          <Route path="/space/:spaceSlug/agent/:name" element={<ChatPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole("tab", { name: "Pane" })).toBeNull();
+    expect(chatView(container).className).not.toContain("hidden");
+  });
+});

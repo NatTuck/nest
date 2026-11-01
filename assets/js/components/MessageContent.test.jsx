@@ -80,6 +80,10 @@ describe("MessageContent", () => {
       expect(root.className).toContain("[&_pre]:overflow-x-hidden");
       expect(root.className).toContain("[&_p]:[overflow-wrap:anywhere]");
       expect(root.className).toContain("[&_li]:[overflow-wrap:anywhere]");
+      // A table is the one markdown block that cannot wrap: it scrolls inside
+      // its own box rather than pushing the column wider than the phone.
+      expect(root.className).toContain("[&_table]:block");
+      expect(root.className).toContain("[&_table]:overflow-x-auto");
     });
 
     it("overrides the 65ch max-width on the prose container so text fills the message bubble", () => {

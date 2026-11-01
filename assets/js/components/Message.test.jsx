@@ -25,6 +25,43 @@ const assistantMessage = (overrides = {}) => ({
   ...overrides,
 });
 
+describe("Message bubble width on a phone", () => {
+  // The indent that puts a bubble on its own side is a desktop courtesy: at
+  // 375px, 48px of it plus `main`'s gutter left the text column about 23px
+  // wide. jsdom evaluates no media query, so what is pinned is the gate itself —
+  // the margin and the roomier padding must not apply below `sm`.
+  it("applies the bubble's side indent and padding only from `sm` up", () => {
+    const { container } = render(
+      <>
+        <MessageBubble agentName="test-agent" message={assistantMessage()} />
+        <MessageBubble
+          agentName="test-agent"
+          message={{
+            index: 3,
+            role: "user",
+            origin: "human",
+            parts: [{ kind: "text", text: "Hello" }],
+          }}
+        />
+      </>,
+    );
+
+    const [assistant, user] = container.children;
+
+    // The assistant's bubble is inset on its left, the human's on its right, and
+    // neither below `sm`.
+    expect(assistant.className).toContain("sm:mr-12");
+    expect(assistant.className).not.toMatch(/(^|\s)mr-12/);
+    expect(user.className).toContain("sm:ml-12");
+    expect(user.className).not.toMatch(/(^|\s)ml-12/);
+
+    // The padding is the phone's tighter one, with the desktop's restored at
+    // `sm`.
+    expect(assistant.className).toContain("p-3");
+    expect(assistant.className).toContain("sm:p-4");
+  });
+});
+
 describe("Message API logs affordance", () => {
   it("renders the API Logs block for an assistant message with a response log", () => {
     render(

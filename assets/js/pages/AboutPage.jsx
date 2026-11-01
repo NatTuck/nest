@@ -37,13 +37,13 @@ export function AboutPage() {
   };
 
   return (
-    <div className="max-w-3xl mx-auto py-12">
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8">
+    <div className="max-w-3xl mx-auto py-6 sm:py-12">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 sm:p-8">
         {/* Title */}
-        <h1 className="text-4xl font-bold text-gray-900 text-center mb-4">
+        <h1 className="text-3xl font-bold text-gray-900 text-center mb-4 sm:text-4xl">
           A Nest of Agents
         </h1>
-        <p className="text-xl text-gray-600 text-center mb-8">
+        <p className="text-lg text-gray-600 text-center mb-6 sm:text-xl sm:mb-8">
           Welcome to Nest — where intelligent agents collaborate and thrive
         </p>
 

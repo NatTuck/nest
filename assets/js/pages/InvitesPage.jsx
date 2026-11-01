@@ -70,7 +70,7 @@ export function InvitesPage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl p-6">
+    <div className="mx-auto max-w-3xl p-4 sm:p-6">
       <h1 className="mb-2 text-xl font-semibold text-gray-900">Invites</h1>
       <p className="mb-4 text-sm text-gray-600">
         Mint a fresh invite token and share it with the person you want to add.
@@ -94,66 +94,73 @@ export function InvitesPage() {
       {invites.length === 0 ? (
         <p className="text-sm text-gray-500">No invites yet.</p>
       ) : (
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr className="border-b text-left text-xs uppercase text-gray-500">
-              <th className="py-2">Status</th>
-              <th className="py-2">Token</th>
-              <th className="py-2">Created</th>
-              <th className="py-2">Expires</th>
-              <th className="py-2">Used</th>
-              <th className="py-2"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {invites.map((invite) => {
-              const status = statusFor(invite);
-              const revokable = !invite.used_at && !invite.revoked_at;
-              return (
-                <tr key={invite.id} className="border-b align-top">
-                  <td className="py-2">
-                    <span
-                      className={`inline-block rounded px-2 py-0.5 text-xs text-white ${
-                        status.tone === "green" ? "bg-green-600" : "bg-gray-500"
-                      }`}
-                    >
-                      {status.label}
-                    </span>
-                  </td>
-                  <td className="py-2">
-                    <code className="break-all font-mono text-xs text-gray-800">
-                      {invite.token}
-                    </code>
-                    <CopyButton
-                      getText={() => invite.token}
-                      label="Copy invite token"
-                    />
-                  </td>
-                  <td className="py-2 text-gray-700">
-                    {formatDate(invite.inserted_at)}
-                  </td>
-                  <td className="py-2 text-gray-700">
-                    {formatDate(invite.expires_at)}
-                  </td>
-                  <td className="py-2 text-gray-700">
-                    {formatDate(invite.used_at)}
-                  </td>
-                  <td className="py-2 text-right">
-                    {revokable ? (
-                      <button
-                        type="button"
-                        onClick={() => handleRevoke(invite.id)}
-                        className="text-xs text-red-600 hover:underline"
+        // Six columns of dates and tokens do not fit a phone. The table keeps
+        // its width and scrolls inside this box, rather than widening the page
+        // under it.
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b text-left text-xs uppercase text-gray-500">
+                <th className="py-2">Status</th>
+                <th className="py-2">Token</th>
+                <th className="py-2">Created</th>
+                <th className="py-2">Expires</th>
+                <th className="py-2">Used</th>
+                <th className="py-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {invites.map((invite) => {
+                const status = statusFor(invite);
+                const revokable = !invite.used_at && !invite.revoked_at;
+                return (
+                  <tr key={invite.id} className="border-b align-top">
+                    <td className="py-2">
+                      <span
+                        className={`inline-block rounded px-2 py-0.5 text-xs text-white ${
+                          status.tone === "green"
+                            ? "bg-green-600"
+                            : "bg-gray-500"
+                        }`}
                       >
-                        Revoke
-                      </button>
-                    ) : null}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                        {status.label}
+                      </span>
+                    </td>
+                    <td className="py-2">
+                      <code className="break-all font-mono text-xs text-gray-800">
+                        {invite.token}
+                      </code>
+                      <CopyButton
+                        getText={() => invite.token}
+                        label="Copy invite token"
+                      />
+                    </td>
+                    <td className="py-2 text-gray-700">
+                      {formatDate(invite.inserted_at)}
+                    </td>
+                    <td className="py-2 text-gray-700">
+                      {formatDate(invite.expires_at)}
+                    </td>
+                    <td className="py-2 text-gray-700">
+                      {formatDate(invite.used_at)}
+                    </td>
+                    <td className="py-2 text-right">
+                      {revokable ? (
+                        <button
+                          type="button"
+                          onClick={() => handleRevoke(invite.id)}
+                          className="text-xs text-red-600 hover:underline"
+                        >
+                          Revoke
+                        </button>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

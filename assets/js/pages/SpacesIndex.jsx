@@ -18,9 +18,9 @@ export function SpacesIndex() {
   useDocumentTitle(["Spaces"]);
 
   return (
-    <div className="max-w-4xl mx-auto py-12">
-      <div className="flex items-center justify-between mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">Spaces</h1>
+    <div className="max-w-4xl mx-auto py-6 sm:py-12">
+      <div className="flex items-center justify-between gap-3 mb-6 sm:mb-8">
+        <h1 className="text-2xl font-bold text-gray-900 sm:text-3xl">Spaces</h1>
         <Link
           to="/spaces/new"
           className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors"
@@ -45,7 +45,7 @@ export function SpacesIndex() {
               <Link
                 key={space.id}
                 to={`/space/${encodeURIComponent(space.slug)}`}
-                className="bg-white rounded-xl border border-gray-200 p-6 hover:border-blue-300 hover:shadow-sm transition-all"
+                className="bg-white rounded-xl border border-gray-200 p-4 hover:border-blue-300 hover:shadow-sm transition-all sm:p-6"
               >
                 <h2 className="text-lg font-semibold text-gray-800">
                   {space.name}

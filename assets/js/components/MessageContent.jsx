@@ -6,10 +6,13 @@ import { textFromParts } from "../utils/messageText.js";
 
 // Tailwind classes that tame the @llamaindex/chat-ui `<Markdown>`
 // component's HTML output: code blocks wrap rather than overflow,
-// prose paragraphs/lists break on any character, and the
-// typography plugin's 65ch max-width is removed.
+// prose paragraphs/lists break on any character, the typography
+// plugin's 65ch max-width is removed, and a table (which a model writes
+// as freely as it writes prose) scrolls inside its own box instead of
+// widening the column under it — `display: block` is what gives a table
+// a scroll container of its own while its rows keep laying out as rows.
 const MARKDOWN_CONTAINER_CLASS =
-  "space-y-2 [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-hidden [&_p]:[overflow-wrap:anywhere] [&_li]:[overflow-wrap:anywhere] [&_.prose]:max-w-none";
+  "space-y-2 [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-hidden [&_p]:[overflow-wrap:anywhere] [&_li]:[overflow-wrap:anywhere] [&_table]:block [&_table]:overflow-x-auto [&_.prose]:max-w-none";
 
 export function parseBlocks(content) {
   if (!content) return { completed: [], incomplete: "" };

@@ -17,11 +17,13 @@
  */
 export function RpgPlayInterface({ space }) {
   return (
-    <div className="max-w-4xl mx-auto py-10">
-      <h1 className="text-3xl font-bold text-gray-900">RPG Play Interface</h1>
+    <div className="max-w-4xl mx-auto py-6 sm:py-10">
+      <h1 className="text-2xl font-bold text-gray-900 sm:text-3xl">
+        RPG Play Interface
+      </h1>
       <p className="mt-1 text-sm text-gray-500">{space.name}</p>
 
-      <div className="mt-8 rounded-lg border border-gray-200 bg-white p-6">
+      <div className="mt-6 rounded-lg border border-gray-200 bg-white p-4 sm:mt-8 sm:p-6">
         <p className="text-gray-700">
           This space runs a tabletop campaign. The play interface is not built
           yet.

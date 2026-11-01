@@ -27,7 +27,7 @@ export function ArchivedSpaceRow({ space, location }) {
       >
         <Link
           to={spaceBase}
-          className="flex items-center gap-2 min-w-0 flex-1 px-3 py-2"
+          className="flex items-center gap-2 min-w-0 flex-1 px-3 py-2 max-lg:py-3"
         >
           <div className="w-2 h-2 rounded-full flex-shrink-0 bg-gray-400" />
           <span className="truncate text-sm font-medium">{space.name}</span>
@@ -35,7 +35,7 @@ export function ArchivedSpaceRow({ space, location }) {
         <button
           type="button"
           onClick={() => unarchiveSpace(space.id)}
-          className="mr-1 rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-200 opacity-0 group-hover:opacity-100 transition-opacity"
+          className="mr-1 rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-200 opacity-0 group-hover:opacity-100 transition-opacity max-lg:px-3 max-lg:py-3.5"
           aria-label={`Restore ${space.name}`}
           title="Restore space"
         >

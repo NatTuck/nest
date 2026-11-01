@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { ChatTabs, CHAT_TAB, JOBS_TAB } from "./ChatTabs";
+import { ChatTabs, CHAT_TAB, JOBS_TAB, PANE_TAB } from "./ChatTabs";
 
 describe("ChatTabs", () => {
   it("renders both tabs, with the job count on the jobs tab", () => {
@@ -41,6 +41,45 @@ describe("ChatTabs", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Shell jobs (0)" }));
     expect(onSelect).toHaveBeenCalledWith(JOBS_TAB);
+  });
+
+  it("offers the pane as a third tab only once a frame for the space has arrived", () => {
+    const onSelect = vi.fn();
+    const { rerender } = render(
+      <ChatTabs active={CHAT_TAB} onSelect={onSelect} />,
+    );
+
+    // No `pane:state` frame yet: there is nothing to show, so there is no tab
+    // that opens an empty view.
+    expect(screen.queryByRole("tab", { name: "Pane" })).toBeNull();
+
+    rerender(<ChatTabs active={CHAT_TAB} onSelect={onSelect} hasPane />);
+
+    const paneTab = screen.getByRole("tab", { name: "Pane" });
+    // `lg:hidden` is the whole mechanism: below `lg` the tab is the pane's
+    // control, and from `lg` up the toggle in the trailing slot is.
+    expect(paneTab.className).toContain("lg:hidden");
+
+    fireEvent.click(paneTab);
+    expect(onSelect).toHaveBeenCalledWith(PANE_TAB);
+  });
+
+  it("keeps the pane's toggle out of the phone's tab bar", () => {
+    render(
+      <ChatTabs
+        active={CHAT_TAB}
+        onSelect={() => {}}
+        trailing={<button type="button">Pane</button>}
+      />,
+    );
+
+    // Still inside the tab bar (it is the bar's trailing slot), but hidden
+    // below `lg`: on a 375px bar the tab above is the control, and two controls
+    // for one view would be one too many.
+    const slot = screen.getByRole("button", { name: "Pane" }).parentElement;
+    expect(screen.getByRole("tablist")).toContainElement(slot);
+    expect(slot.className).toContain("hidden");
+    expect(slot.className).toContain("lg:block");
   });
 
   it("renders the trailing slot inside the tab bar", () => {

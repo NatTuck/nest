@@ -2,7 +2,13 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- `viewport-fit=cover` is what makes the phone's safe-area insets real
+         numbers: without it `env(safe-area-inset-*)` is 0 on every device, and
+         the chat composer sits under the home indicator. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
     <meta name="csrf-token" content={get_csrf_token()} />
     <title>{Nest.Hostname.get()}</title>
     <link rel="icon" type="image/svg+xml" href={~p"/favicon.svg"} />

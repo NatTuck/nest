@@ -76,6 +76,7 @@ export function Sidebar() {
           to="/spaces/new"
           className={`
             w-full flex items-center gap-2 px-4 py-2 rounded-lg mb-4
+            max-lg:min-h-11
             transition-colors duration-200
             ${
               isActive("/spaces/new")
@@ -135,7 +136,7 @@ export function Sidebar() {
             <button
               type="button"
               onClick={() => setArchivedCollapsed(!archivedCollapsed)}
-              className="w-full flex items-center justify-between text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 px-2 hover:text-gray-600 transition-colors duration-200"
+              className="w-full flex items-center justify-between text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 px-2 max-lg:min-h-11 hover:text-gray-600 transition-colors duration-200"
               aria-expanded={!archivedCollapsed}
               aria-label="Toggle archived spaces"
             >
@@ -174,6 +175,7 @@ export function Sidebar() {
           to="/about"
           className={`
             flex items-center gap-2 px-3 py-2 rounded-lg
+            max-lg:min-h-11
             transition-colors duration-200
             ${
               isActive("/about")
@@ -204,6 +206,7 @@ export function Sidebar() {
             to="/providers"
             className={`
               flex items-center gap-2 px-3 py-2 rounded-lg
+              max-lg:min-h-11
               transition-colors duration-200
               ${
                 isActive("/providers")
@@ -281,14 +284,14 @@ function CurrentUserBar() {
       <div className="flex gap-2">
         <Link
           to="/invites"
-          className="flex-1 rounded border border-gray-300 px-2 py-1 text-center text-xs text-gray-700 hover:bg-gray-50"
+          className="flex-1 rounded border border-gray-300 px-2 py-1 text-center text-xs text-gray-700 hover:bg-gray-50 max-lg:py-3.5"
         >
           Invites
         </Link>
         <button
           type="button"
           onClick={handleLogout}
-          className="flex-1 rounded border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50"
+          className="flex-1 rounded border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 max-lg:py-3.5"
         >
           Logout
         </button>

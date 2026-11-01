@@ -87,7 +87,9 @@ export function EditAgentDialog({ open, onClose, current, onSave }) {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden">
+      {/* `max-h` + a scrolling body: a form taller than a phone's viewport must
+          scroll inside the panel, not push its own buttons off the screen. */}
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden flex max-h-[90dvh] flex-col">
         <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-gray-900">Edit agent</h2>
           <button
@@ -113,7 +115,7 @@ export function EditAgentDialog({ open, onClose, current, onSave }) {
           </button>
         </div>
 
-        <div className="px-6 py-4 space-y-4">
+        <div className="px-6 py-4 space-y-4 min-h-0 flex-1 overflow-y-auto">
           <div>
             <label
               htmlFor="edit-model-select"

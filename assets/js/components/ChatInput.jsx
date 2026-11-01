@@ -217,14 +217,18 @@ export function ChatInput({
       <button
         type="submit"
         disabled={sendDisabled}
-        className={`px-6 py-3 rounded-lg font-semibold text-white transition-all duration-200 leading-tight ${
+        className={`px-4 py-3 rounded-lg font-semibold text-white transition-all duration-200 leading-tight sm:px-6 ${
           sendDisabled
             ? "bg-gray-400 cursor-not-allowed"
             : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
         }`}
       >
         Send
-        <span className="block text-xs font-normal opacity-75">Ctrl+Enter</span>
+        {/* A phone has no Ctrl key, and the sublabel costs the textarea width
+            that a 375px row cannot spare. */}
+        <span className="block text-xs font-normal opacity-75 max-sm:hidden">
+          Ctrl+Enter
+        </span>
       </button>
     );
   };
@@ -240,7 +244,7 @@ export function ChatInput({
           type="button"
           disabled
           aria-label="Stopping"
-          className="px-6 py-3 rounded-lg font-semibold text-white bg-red-400 cursor-not-allowed leading-tight flex items-center gap-2"
+          className="px-4 py-3 rounded-lg font-semibold text-white bg-red-400 cursor-not-allowed leading-tight flex items-center gap-2 sm:px-6"
         >
           <svg
             className="animate-spin h-4 w-4"
@@ -272,10 +276,10 @@ export function ChatInput({
         type="button"
         onClick={onStop}
         aria-label="Stop"
-        className="px-6 py-3 rounded-lg font-semibold text-white bg-red-600 hover:bg-red-700 active:bg-red-800 transition-all duration-200 leading-tight"
+        className="px-4 py-3 rounded-lg font-semibold text-white bg-red-600 hover:bg-red-700 active:bg-red-800 transition-all duration-200 leading-tight sm:px-6"
       >
         Stop
-        <span className="block text-xs font-normal opacity-75">
+        <span className="block text-xs font-normal opacity-75 max-sm:hidden">
           Halt response
         </span>
       </button>
@@ -367,7 +371,10 @@ export function ChatInput({
           {isBusy && renderStopButton()}
         </div>
       </div>
-      <p className="mt-1 px-1 text-xs text-gray-400" aria-hidden="true">
+      <p
+        className="mt-1 px-1 text-xs text-gray-400 max-sm:hidden"
+        aria-hidden="true"
+      >
         Ctrl+↑ / Ctrl+↓ to walk previous prompts • Ctrl/Cmd+M to cycle modes
       </p>
     </form>

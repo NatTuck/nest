@@ -97,7 +97,7 @@ export function ArchivedGroup({
         onClick={() => {
           if (!forced) toggleTreeNode(groupKey);
         }}
-        className="flex items-center gap-1 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1 hover:text-gray-600 transition-colors duration-200"
+        className="flex items-center gap-1 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1 max-lg:min-h-11 hover:text-gray-600 transition-colors duration-200"
         aria-expanded={expanded}
         aria-disabled={forced || undefined}
         aria-label={toggleLabel}
@@ -272,7 +272,7 @@ export function AgentTreeRow({
             onClick={() => {
               if (!onCurrentPath) toggleTreeNode(nodeKey);
             }}
-            className="w-4 h-4 flex items-center justify-center flex-shrink-0 rounded text-gray-400 hover:text-gray-700 transition-colors duration-200"
+            className="w-4 h-4 flex items-center justify-center flex-shrink-0 rounded text-gray-400 hover:text-gray-700 transition-colors duration-200 max-lg:h-11 max-lg:w-11"
             aria-expanded={expanded}
             aria-disabled={onCurrentPath || undefined}
             aria-label={`Toggle ${agent.name}`}
@@ -302,7 +302,7 @@ export function AgentTreeRow({
         )}
         {isArchived ? (
           <div
-            className="flex items-center gap-2 min-w-0 flex-1 py-2 pr-3"
+            className="flex items-center gap-2 min-w-0 flex-1 py-2 pr-3 max-lg:py-3"
             title="Archived — restore this agent to open its chat"
           >
             {label}
@@ -310,7 +310,7 @@ export function AgentTreeRow({
         ) : (
           <Link
             to={`/space/${spaceSlug}/agent/${encodeURIComponent(agent.name)}`}
-            className="flex items-center gap-2 min-w-0 flex-1 py-2 pr-3"
+            className="flex items-center gap-2 min-w-0 flex-1 py-2 pr-3 max-lg:py-3"
             title={runningJobs > 0 ? runningJobsLabel(runningJobs) : undefined}
           >
             {label}
@@ -324,7 +324,7 @@ export function AgentTreeRow({
                 setRestoreError(restoreErrorMessage(err)),
               )
             }
-            className="mr-2 rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-200 opacity-0 group-hover:opacity-100 transition-opacity"
+            className="mr-2 rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-200 opacity-0 group-hover:opacity-100 transition-opacity max-lg:px-3 max-lg:py-3.5"
             aria-label={`Restore ${agent.name}`}
             title="Restore agent"
           >

@@ -31,6 +31,7 @@ import {
 } from "@testing-library/react";
 
 import { RootGate, Layout } from "./App";
+import { MemoryRouter, Routes, Route, useNavigate } from "react-router-dom";
 import { useStore } from "./store";
 import { renderWithRouter } from "./test/render_with_router";
 
@@ -317,5 +318,98 @@ describe("Layout", () => {
 
     unmount();
     expect(leaveLobby).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Layout phone navigation", () => {
+  // Below `lg` the sidebar is off-canvas behind a hamburger and `main` is the
+  // column under it; at `lg`+ the top bar is `hidden`, the drawer is the static
+  // first column and `main` is the second. jsdom evaluates no media query, so
+  // what is pinned here is the class contract plus the behaviour a reader
+  // actually gets: the hamburger opens the panel, the page behind stops being
+  // actionable, and the panel closes on Escape and on a route change.
+  beforeEach(() => {
+    act(() => {
+      useStore.getState()._reset();
+    });
+    initChannels.mockClear();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    act(() => {
+      useStore.getState()._reset();
+    });
+  });
+
+  // `Layout` renders `<Outlet/>`, so the routes have to be nested under it — and
+  // nested is what keeps the same `Layout` instance mounted across a navigation,
+  // which is the case a drawer left open would show up in.
+  function renderLayout() {
+    let navigate;
+    function Nav() {
+      navigate = useNavigate();
+      return null;
+    }
+    const utils = render(
+      <MemoryRouter initialEntries={["/spaces"]}>
+        <Nav />
+        <Routes>
+          <Route path="/" element={<Layout />}>
+            <Route path="spaces" element={<div data-testid="spaces" />} />
+            <Route path="about" element={<div data-testid="about" />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+    return { ...utils, go: (to) => act(() => navigate(to)) };
+  }
+
+  it("opens the drawer from the hamburger and closes it on Escape, taking the page behind out of play", () => {
+    const { container } = renderLayout();
+    const hamburger = screen.getByRole("button", { name: "Open navigation" });
+    const main = container.querySelector("main");
+    const panel = document.getElementById("phone-navigation");
+
+    // The phone's bar exists only on a phone, and the drawer is the same sidebar
+    // the desktop shows — `lg:static` is what makes it the layout's first column
+    // from `lg` up instead of an overlay.
+    expect(hamburger.closest("header").className).toContain("lg:hidden");
+    expect(hamburger).toHaveAttribute("aria-expanded", "false");
+    expect(panel.className).toContain("lg:static");
+    // `p-3` is the phone's gutter, `sm:p-6` the desktop's.
+    expect(main.className).toContain("p-3 sm:p-6");
+    expect(main).not.toHaveAttribute("inert");
+
+    fireEvent.click(hamburger);
+
+    // The control reports what it did, and the page behind the backdrop is not
+    // something a Tab can walk into.
+    expect(hamburger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByLabelText("Close navigation")).toBeInTheDocument();
+    expect(main).toHaveAttribute("inert");
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(hamburger).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByLabelText("Close navigation")).toBeNull();
+    expect(main).not.toHaveAttribute("inert");
+    // Focus comes back to the control that opened it, not to a link that is now
+    // off the screen.
+    expect(hamburger).toHaveFocus();
+  });
+
+  it("closes the drawer when the route changes", () => {
+    const { go } = renderLayout();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open navigation" }));
+    expect(screen.getByLabelText("Close navigation")).toBeInTheDocument();
+
+    go("/about");
+
+    // The page the reader navigated to is the one they wanted to see; the panel
+    // must not be left covering it.
+    expect(screen.getByTestId("about")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Close navigation")).toBeNull();
   });
 });
