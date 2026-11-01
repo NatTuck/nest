@@ -73,7 +73,9 @@ export function CopyButton({ getText, label = "Copy", feedbackMs = 2000 }) {
       onClick={handleClick}
       aria-label={actionLabel}
       title={actionLabel}
-      className="inline-flex items-center justify-center w-6 h-6 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-200 transition-colors"
+      // 44×44 below `lg` — the smallest target a thumb hits reliably — and the
+      // 24×24 it has always been on a desktop.
+      className="inline-flex items-center justify-center h-11 w-11 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-200 transition-colors lg:h-6 lg:w-6"
     >
       {copied ? <CheckIcon /> : <ClipboardIcon />}
     </button>

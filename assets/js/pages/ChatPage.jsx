@@ -31,14 +31,17 @@ import { ChatMessages } from "../components/ChatMessages";
 import { ChatTypingIndicator } from "../components/ChatTypingIndicator";
 import { ChatLoading } from "../components/ChatLoading";
 import { InboxPanel } from "../components/InboxPanel";
+import { PaneContent } from "../components/Pane/PaneContent";
+import { outstandingCount } from "../store/slices/pane";
 import { PanePanel } from "../components/Pane/PanePanel";
 import { PaneToggle } from "../components/Pane/PaneToggle";
 import { ChatChrome } from "../components/ChatChrome";
-import { CHAT_TAB, JOBS_TAB } from "../components/ChatTabs";
+import { CHAT_TAB, JOBS_TAB, PANE_TAB } from "../components/ChatTabs";
 import { AgentEditModal } from "../components/AgentEditModal";
 import { ShellJobsPanel } from "../components/ShellJobsPanel";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
+import { useOnDesktop } from "../hooks/useOnDesktop";
 import { useAgentMode } from "../hooks/useAgentMode";
 import { buildChatHistory } from "../utils/chatHistory.js";
 import { describeEditError, getStatusLabel } from "../utils/chatErrors.js";
@@ -231,6 +234,26 @@ export function ChatPage() {
   );
   const partial = useStore((state) => state.agentsCache[name]?.partial ?? null);
   const jobs = useStore((state) => state.agentsCache[name]?.jobs ?? EMPTY_JOBS);
+  // The pane's frame for this space, if one has arrived. Its presence decides
+  // whether the tab bar offers the pane's phone tab at all — the same test
+  // `PanePanel` and `PaneToggle` make before rendering anything, because a tab
+  // that opens an empty view is a control over nothing — and its outstanding
+  // questions are the notification the phone's tab carries in place of the
+  // desktop's toggle.
+  const pane = useStore((state) => state.panes?.[spaceId]);
+  const hasPane = Boolean(pane);
+  const waitingQuestions = outstandingCount(pane);
+  // The pane is a view only below `lg`, and only while it has a frame: a tab
+  // that outlives its pane (a space switch, say) falls back to the conversation
+  // rather than leaving the column with nothing in it.
+  const activeTab = tab === PANE_TAB && !hasPane ? CHAT_TAB : tab;
+  // ...and it is only a view while the phone layout is the one on screen. The
+  // pane tab is `lg:hidden`, so a window widened while it is selected would
+  // otherwise leave a tab bar with no tab selected; the hook puts the selection
+  // back on the conversation as the window crosses over. See its doc for why
+  // this is state retirement and not a layout branch.
+  const selectChatTab = useCallback(() => setTab(CHAT_TAB), []);
+  useOnDesktop(selectChatTab);
   // The archive is paged in lazily. `archivedHistory` holds the pages
   // loaded so far (empty until the card is expanded), `historyPrompts`
   // the recent user prompts behind the Ctrl/Cmd+Up recall list, and
@@ -488,6 +511,72 @@ export function ChatPage() {
   // queued on the server and delivered at the next turn boundary.
   const isInputDisabled = status !== "connected";
 
+  // The conversation's view of the page: the transcript, the typing indicator,
+  // the inbox and the composer. A fragment, not a wrapper — the column's
+  // children are the page's layout contract (issue #86): the message area is the
+  // column's one `flex-1` scroll region, and the composer and the tab bar sit
+  // outside it.
+  const chatPane = (
+    <>
+      {/* Messages */}
+      <ChatMessages
+        messages={messages}
+        partial={partial}
+        archivedHistory={archivedHistory}
+        lastCompactionIndex={lastCompactionIndex}
+        lastCompactionMarker={lastCompactionMarker}
+        historyError={historyError}
+        onLoadHistory={loadHistoryPage}
+        onLoadOlder={loadOlderHistory}
+        name={name}
+        loading={conversationLoading}
+        setScrollContainerEl={setScrollContainerEl}
+        setMessagesEndEl={setMessagesEndEl}
+      />
+
+      {/* Typing indicator - shown when waiting or generating */}
+      <ChatTypingIndicator
+        waitingForResponse={waitingForResponse}
+        streaming={streaming}
+        executingTools={executingTools}
+      />
+
+      {/* Async agent-to-agent messages queued while the agent is busy. */}
+      <InboxPanel name={name} onFetch={() => requestInbox(name)} />
+
+      {/* Input area with floating Jump to latest button */}
+      <ChatComposer
+        inputValue={inputValue}
+        onChange={setInputValue}
+        onSend={handleSendMessage}
+        onStop={handleStopMessage}
+        isBusy={isAgentBusy}
+        stopping={stopping}
+        disabled={isInputDisabled}
+        frozen={
+          agentState === "compaction_failed" ||
+          agentState === "compaction_loop_detected" ||
+          agentState === "context_overflow" ||
+          agentState === "model_missing" ||
+          agentState === "needs_repair"
+        }
+        placeholder={
+          status === "connected"
+            ? "Type a message..."
+            : "Connect to send messages..."
+        }
+        modes={availableModes}
+        mode={currentMode ?? defaultMode}
+        onModeChange={handleModeChange}
+        history={history}
+        commands={SLASH_COMMANDS}
+        hasNewContent={hasNewContent}
+        isAtBottom={isAtBottom}
+        jumpToBottom={jumpToBottom}
+      />
+    </>
+  );
+
   return (
     <div className="relative flex h-full max-w-6xl mx-auto overflow-hidden">
       {/* The pane (#119/#120) is a sibling column: it squishes this one, never takes its height. */}
@@ -524,8 +613,10 @@ export function ChatPage() {
           reloadError={reloadError}
           spaceId={spaceId}
           spaceName={space?.name}
-          tab={tab}
+          tab={activeTab}
           jobCount={runningJobCount(jobs)}
+          hasPane={hasPane}
+          waitingCount={waitingQuestions}
           onSelectTab={setTab}
           onModelPickerOpen={() => setModelPickerOpen(true)}
           onRetry={handleRetry}
@@ -538,7 +629,7 @@ export function ChatPage() {
           }
         />
 
-        {tab === JOBS_TAB ? (
+        {activeTab === JOBS_TAB ? (
           <div className="mb-4 flex-1 min-h-0 overflow-y-auto">
             {jobs.length === 0 ? (
               <p className="py-12 text-center text-sm text-gray-400">
@@ -554,65 +645,19 @@ export function ChatPage() {
               />
             )}
           </div>
+        ) : activeTab === PANE_TAB ? (
+          // The pane as a phone view (#169): below `lg` the tab is the pane's
+          // control, so its content takes the main column the conversation would
+          // have had. It is only ever rendered on a phone — the tab is
+          // `lg:hidden` and `useOnDesktop` clears the selection as the window
+          // widens — so no second copy of the conversation is mounted behind it,
+          // and there is no `lg:` guard that would leave the column empty if
+          // this ever disagreed with the stylesheet.
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <PaneContent name={name} spaceId={spaceId} />
+          </div>
         ) : (
-          <>
-            {/* Messages */}
-            <ChatMessages
-              messages={messages}
-              partial={partial}
-              archivedHistory={archivedHistory}
-              lastCompactionIndex={lastCompactionIndex}
-              lastCompactionMarker={lastCompactionMarker}
-              historyError={historyError}
-              onLoadHistory={loadHistoryPage}
-              onLoadOlder={loadOlderHistory}
-              name={name}
-              loading={conversationLoading}
-              setScrollContainerEl={setScrollContainerEl}
-              setMessagesEndEl={setMessagesEndEl}
-            />
-
-            {/* Typing indicator - shown when waiting or generating */}
-            <ChatTypingIndicator
-              waitingForResponse={waitingForResponse}
-              streaming={streaming}
-              executingTools={executingTools}
-            />
-
-            {/* Async agent-to-agent messages queued while the agent is busy. */}
-            <InboxPanel name={name} onFetch={() => requestInbox(name)} />
-
-            {/* Input area with floating Jump to latest button */}
-            <ChatComposer
-              inputValue={inputValue}
-              onChange={setInputValue}
-              onSend={handleSendMessage}
-              onStop={handleStopMessage}
-              isBusy={isAgentBusy}
-              stopping={stopping}
-              disabled={isInputDisabled}
-              frozen={
-                agentState === "compaction_failed" ||
-                agentState === "compaction_loop_detected" ||
-                agentState === "context_overflow" ||
-                agentState === "model_missing" ||
-                agentState === "needs_repair"
-              }
-              placeholder={
-                status === "connected"
-                  ? "Type a message..."
-                  : "Connect to send messages..."
-              }
-              modes={availableModes}
-              mode={currentMode ?? defaultMode}
-              onModeChange={handleModeChange}
-              history={history}
-              commands={SLASH_COMMANDS}
-              hasNewContent={hasNewContent}
-              isAtBottom={isAtBottom}
-              jumpToBottom={jumpToBottom}
-            />
-          </>
+          chatPane
         )}
 
         {/* Model picker modal — opens from the header chip

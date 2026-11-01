@@ -25,7 +25,7 @@ export function JumpToBottomButton({
       type="button"
       onClick={jumpToBottom}
       aria-label="Jump to latest messages"
-      className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-10 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-full shadow-lg hover:bg-indigo-700 transition-all duration-200 flex items-center gap-1.5"
+      className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-10 px-4 py-2 max-lg:py-3 bg-indigo-600 text-white text-sm font-medium rounded-full shadow-lg hover:bg-indigo-700 transition-all duration-200 flex items-center gap-1.5"
     >
       <svg
         className="w-4 h-4"

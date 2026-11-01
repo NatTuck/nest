@@ -38,19 +38,23 @@
  * unreachable. The login page says why it is being shown.
  */
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BrowserRouter,
   Routes,
   Route,
   Outlet,
+  useLocation,
   useNavigate,
 } from "react-router-dom";
 import { useStore } from "./store";
 import { initChannels, joinLobby, leaveLobby } from "./channels";
 import { readAuthToken } from "./socket";
 import { useDocumentTitle } from "./hooks/useDocumentTitle";
+import { useOnDesktop } from "./hooks/useOnDesktop";
 import { Sidebar } from "./components/Sidebar";
+import { PhoneTopBar } from "./components/PhoneTopBar";
+import { PhoneDrawer } from "./components/PhoneDrawer";
 import { ChatPage } from "./pages/ChatPage";
 import { SpaceView } from "./pages/SpaceView";
 import { NewSpacePage } from "./pages/NewSpacePage";
@@ -124,7 +128,7 @@ function RootGate() {
   }, [connectionFailed, navigate]);
 
   return (
-    <div className="flex h-screen items-center justify-center bg-gray-50">
+    <div className="flex min-h-dvh items-center justify-center bg-gray-50">
       <div className="text-sm text-gray-500">Loading…</div>
     </div>
   );
@@ -134,8 +138,20 @@ function RootGate() {
  * Layout component with sidebar and main content.
  *
  * Mounts only for authenticated routes (`/spaces`, `/space/:slug`,
- * `/space/:slug/agent/:name`, `/about`, `/invites`). The WS
- * connection is established via `initChannels` and the lobby is joined
+ * `/space/:slug/agent/:name`, `/about`, `/invites`).
+ *
+ * Below `lg` the same two regions are a column: `PhoneTopBar` (a hamburger and
+ * the app's name) above `main`, with the sidebar off-canvas in `PhoneDrawer`
+ * behind it. At `lg`+ the top bar is `hidden`, the drawer is `static`, and this
+ * is the row it has always been — every phone rule is behind a breakpoint, so
+ * the desktop layout is the same two boxes it was.
+ *
+ * `h-dvh` rather than `h-screen`: on iOS `100vh` is the *tall* viewport (the
+ * one with the address bar collapsed), so a page sized to it puts its bottom
+ * edge — the composer, on the chat page — under the address bar. `100dvh` is
+ * the viewport that is actually on screen, and on a desktop it is `100vh`.
+ *
+ * The WS connection is established via `initChannels` and the lobby is joined
  * once `isConnected` flips true.
  *
  * This is the second of the two `initChannels` call sites (`RootGate` is the
@@ -145,6 +161,19 @@ function RootGate() {
  */
 function Layout() {
   const isConnected = useStore((state) => state.isConnected);
+  const { pathname } = useLocation();
+  const [navOpen, setNavOpen] = useState(false);
+  // The hamburger, so closing the drawer can put focus back on the control that
+  // opened it (see `PhoneDrawer`).
+  const navTriggerRef = useRef(null);
+  const closeNav = useCallback(() => setNavOpen(false), []);
+
+  // The drawer is phone-only state, and at `lg`+ nothing on screen can close it
+  // (the hamburger and the backdrop are both `lg:hidden`), so a window widened
+  // while it is open would leave `main` `inert` with no way back. The hook runs
+  // only when the window crosses into the desktop layout; see its doc for why
+  // this is not a layout branch.
+  useOnDesktop(closeNav);
 
   useEffect(() => {
     initChannels();
@@ -162,10 +191,36 @@ function Layout() {
     };
   }, []);
 
+  // A route change closes the drawer: the link the reader just followed is the
+  // thing they wanted, and leaving the panel over it would hide it. This is the
+  // only place the drawer closes itself — everything else is the reader's own
+  // (the backdrop, Escape, the hamburger).
+  //
+  // The previous path is kept so this is a change and not a write on every
+  // render: `setNavOpen(false)` while it is already false is harmless, but a
+  // state write in an effect that runs on mount is a render for nothing.
+  const previousPathRef = useRef(pathname);
+  useEffect(() => {
+    if (previousPathRef.current === pathname) return;
+    previousPathRef.current = pathname;
+    setNavOpen(false);
+  }, [pathname]);
+
   return (
-    <div className="flex h-screen bg-gray-50">
-      <Sidebar />
-      <main className="flex-1 overflow-auto p-6">
+    <div className="flex h-dvh flex-col bg-gray-50 lg:flex-row">
+      <PhoneTopBar
+        expanded={navOpen}
+        onOpen={() => setNavOpen(true)}
+        triggerRef={navTriggerRef}
+      />
+      <PhoneDrawer open={navOpen} onClose={closeNav} triggerRef={navTriggerRef}>
+        <Sidebar />
+      </PhoneDrawer>
+      {/* `inert` while the drawer covers it: the panel is the only thing the
+          reader can act on, and a Tab that walks into content behind a backdrop
+          is focus they cannot see. React 19 renders the boolean properly —
+          present when true, absent when false. */}
+      <main inert={navOpen} className="flex-1 overflow-auto p-3 sm:p-6">
         <Outlet />
       </main>
     </div>

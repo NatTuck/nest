@@ -16,6 +16,7 @@ import {
   cleanup,
   act,
 } from "@testing-library/react";
+import { PaneContent } from "./PaneContent";
 import { PanePanel } from "./PanePanel";
 import { useStore } from "../../store";
 
@@ -81,6 +82,12 @@ describe("PanePanel", () => {
     const { container } = renderPane();
 
     expect(container.firstChild).toBeNull();
+
+    // The body says the same on its own, because it has a second frame: below
+    // `lg` the chat page's pane tab renders `PaneContent` directly, and a frame
+    // that is gone must leave it with nothing to show rather than crashing.
+    const body = render(<PaneContent name={NAME} spaceId={SPACE} />);
+    expect(body.container.firstChild).toBeNull();
   });
 
   it("shows the open agent's TODO items with their statuses, and the questions", () => {

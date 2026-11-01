@@ -155,7 +155,9 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
         <SpacePausedBanner spaceId={space.id} spaceName={space.name} />
 
         <header className="mb-4">
-          <h1 className="text-3xl font-bold text-gray-900">{space.name}</h1>
+          <h1 className="text-2xl font-bold text-gray-900 sm:text-3xl">
+            {space.name}
+          </h1>
           {blueprint && (
             <p className="text-sm text-gray-500 mt-1">
               Blueprint: {blueprint.name}
@@ -306,7 +308,7 @@ function NoteCard({ note, me }) {
       : "bg-blue-50 border-blue-200";
 
   return (
-    <li className={`rounded-lg border p-4 ${tone}`}>
+    <li className={`rounded-lg border p-3 sm:p-4 ${tone}`}>
       <div className="flex items-baseline justify-between gap-3">
         <p className="text-xs font-medium text-gray-600">
           {noteDirection(note, me)}

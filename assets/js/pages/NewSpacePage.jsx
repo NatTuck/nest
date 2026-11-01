@@ -161,12 +161,12 @@ export function NewSpacePage() {
   };
 
   return (
-    <div className="max-w-2xl mx-auto py-12">
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8">
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">
+    <div className="max-w-2xl mx-auto py-6 sm:py-12">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 sm:p-8">
+        <h1 className="text-2xl font-bold text-gray-900 mb-2 sm:text-3xl">
           Create New Space
         </h1>
-        <p className="text-gray-600 mb-8">
+        <p className="text-gray-600 mb-6 sm:mb-8">
           A space is a container for a group of collaborating agents.
         </p>
 

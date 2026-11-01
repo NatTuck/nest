@@ -65,7 +65,7 @@ export function SpaceView() {
 
   if (!resolved) {
     return (
-      <div className="max-w-4xl mx-auto py-12 text-center">
+      <div className="max-w-4xl mx-auto py-6 text-center sm:py-12">
         <h1 className="text-2xl font-bold text-gray-900 mb-2">
           Space not found
         </h1>
@@ -120,7 +120,7 @@ export function SpaceView() {
  */
 function ArchivedSpace({ space }) {
   return (
-    <div className="max-w-4xl mx-auto py-12 text-center">
+    <div className="max-w-4xl mx-auto py-6 text-center sm:py-12">
       <h1 className="text-2xl font-bold text-gray-900 mb-2">{space.name}</h1>
       <p className="text-sm text-gray-600">
         This space is archived. Unarchive it to see its notes, its agents and

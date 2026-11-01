@@ -98,8 +98,8 @@ export function ProvidersPage() {
   };
 
   return (
-    <div className="max-w-3xl mx-auto py-12">
-      <div className="mb-8">
+    <div className="max-w-3xl mx-auto py-6 sm:py-12">
+      <div className="mb-6 sm:mb-8">
         <h1 className="text-2xl font-bold text-gray-900 mb-1">Providers</h1>
         <p className="text-sm text-gray-600">
           Configure LLM providers and their models. Saving writes to{" "}

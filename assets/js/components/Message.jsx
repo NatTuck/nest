@@ -91,13 +91,16 @@ function Message({ message, agentName }) {
   // `rowSenders`, so the row and its per-body captions cannot disagree.
   const sender = isUser ? rowAppearance(message) : null;
 
+  // The indent that puts a bubble on its own side is `sm:`-only: at 375px,
+  // `ml-12`/`mr-12` (48px) plus `main`'s padding left a phone's text column
+  // about 23px wide. From `sm` up it is exactly what it always was.
   const bubbleClass = sender
-    ? `${sender.bubble} ml-12`
+    ? `${sender.bubble} sm:ml-12`
     : isSystem
-      ? "bg-amber-50 border border-amber-200 mx-8"
+      ? "bg-amber-50 border border-amber-200 sm:mx-8"
       : isTool
-        ? "bg-green-50 border border-green-200 mx-8"
-        : "bg-gray-50 mr-12";
+        ? "bg-green-50 border border-green-200 sm:mx-8"
+        : "bg-gray-50 sm:mr-12";
 
   const avatarClass = sender
     ? sender.avatar
@@ -124,7 +127,7 @@ function Message({ message, agentName }) {
         : agentName;
 
   return (
-    <div className={`flex gap-4 p-4 rounded-xl ${bubbleClass}`}>
+    <div className={`flex gap-2 p-3 rounded-xl sm:gap-4 sm:p-4 ${bubbleClass}`}>
       {/* Avatar */}
       <div
         className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${avatarClass}`}

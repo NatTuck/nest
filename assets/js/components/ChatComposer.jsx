@@ -31,7 +31,11 @@ export function ChatComposer({
   jumpToBottom,
 }) {
   return (
-    <div className="relative shrink-0">
+    // The bottom inset is the phone's home indicator: on a device without one
+    // (and at every width from `lg` up) `env()` is 0, so this is the padding the
+    // composer has always had. Without it the composer's bottom edge sits under
+    // the indicator on an iPhone.
+    <div className="relative shrink-0 pb-[env(safe-area-inset-bottom)] lg:pb-0">
       <JumpToBottomButton
         hasNewContent={hasNewContent}
         isAtBottom={isAtBottom}

@@ -5,9 +5,16 @@
  * It is a sibling of the conversation column, not part of it: the conversation
  * is the page's one scroll container (issue #86), and a pane inside it would
  * either scroll the questions away with the transcript or take the transcript's
- * height. On a wide screen the pane is a fixed-width column beside the chat; on
- * a narrow one it is an overlay over the chat, which is why the page's root is
- * the positioning context.
+ * height. It is a fixed-width column beside the chat — **desktop only**.
+ *
+ * Below `lg` the pane is the chat page's third tab instead (#169): the tab
+ * renders `PaneContent` in the main column, and the `collapsed` state below
+ * stays the *desktop* mechanism. The reason is that the two controls are
+ * different questions. A phone has no column to give away, so "is the pane
+ * open?" is answered by which tab is selected; a `pane:state` frame may open the
+ * pane (see the slice), and on a phone that would mean a question sliding over
+ * the conversation the reader is in the middle of. Hence `hidden lg:flex`: the
+ * sibling column simply does not exist below `lg`, and the tab does.
  *
  * The pane starts **closed**, and closing it is the user's state: it lives in
  * the store, so it survives a navigation. A frame opens it only when a question
@@ -17,16 +24,16 @@
  * would be undone by the next unrelated frame, and a user who is not ready to
  * answer could not dismiss the question they can see on the indicator.
  *
- * The control that opens it is `PaneToggle`, in the tab bar's trailing slot —
- * see that module for why it lives there and for what the waiting count means.
+ * The control that opens it on a desktop is `PaneToggle`, in the tab bar's
+ * trailing slot — see that module for why it lives there and for what the
+ * waiting count means.
  *
  * With no frame for this space there is nothing to show yet, and rendering an
  * empty column would shove the chat sideways the moment the first frame landed.
  */
 
 import { useStore } from "../../store";
-import { DecisionsAccordion } from "./DecisionsAccordion";
-import { TodoList } from "./TodoList";
+import { PaneContent } from "./PaneContent";
 
 export function PanePanel({ name, spaceId }) {
   const pane = useStore((state) => state.panes?.[spaceId]);
@@ -34,14 +41,13 @@ export function PanePanel({ name, spaceId }) {
   if (!pane) return null;
 
   // The toggle that opens it is `PaneToggle`, in the tab bar's trailing slot
-  // (#169): a closed pane must not take a column beside the conversation, and an
-  // overlay in the chat's corner would cover the header's live status.
+  // (#169): a closed pane must not take a column beside the conversation.
   if (pane.collapsed) return null;
 
   return (
     <aside
       aria-label="Questions and TODO"
-      className="absolute inset-y-0 right-0 z-20 flex w-full max-w-md flex-col overflow-hidden border-l border-gray-200 bg-white shadow-xl lg:static lg:z-auto lg:w-96 lg:max-w-none lg:shrink-0 lg:shadow-none"
+      className="hidden flex-col overflow-hidden border-l border-gray-200 bg-white lg:flex lg:w-96 lg:shrink-0"
     >
       <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-3 py-1.5">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
@@ -56,10 +62,7 @@ export function PanePanel({ name, spaceId }) {
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <TodoList todos={pane.todos} agentName={name} />
-        <DecisionsAccordion name={name} spaceId={spaceId} />
-      </div>
+      <PaneContent name={name} spaceId={spaceId} />
     </aside>
   );
 }

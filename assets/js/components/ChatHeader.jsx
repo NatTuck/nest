@@ -45,6 +45,7 @@ export function ChatHeader({
               className={`
                 inline-flex items-center gap-1
                 px-2 py-0.5 rounded-md
+                max-lg:min-h-11
                 transition-colors duration-150
                 hover:bg-gray-100
                 ${

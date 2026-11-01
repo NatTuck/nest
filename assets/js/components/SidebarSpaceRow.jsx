@@ -130,7 +130,7 @@ export function SpaceRow({
       >
         <Link
           to={spaceBase}
-          className="flex items-center gap-2 min-w-0 flex-1 px-3 py-2"
+          className="flex items-center gap-2 min-w-0 flex-1 px-3 py-2 max-lg:py-3"
           aria-current={onSpacePage ? "page" : undefined}
         >
           <span className="truncate text-sm font-medium">{space.name}</span>
@@ -143,7 +143,7 @@ export function SpaceRow({
           onClick={() => {
             if (!pinned) setRowExpanded((v) => !v);
           }}
-          className="p-1 mr-1 rounded hover:bg-gray-100 text-gray-400"
+          className="p-1 mr-1 rounded hover:bg-gray-100 text-gray-400 max-lg:p-3.5"
           aria-label={`Toggle ${space.name}`}
           aria-expanded={expanded}
           aria-disabled={pinned || undefined}
@@ -169,7 +169,7 @@ export function SpaceRow({
         <button
           type="button"
           onClick={() => archiveSpace(space.id)}
-          className="p-1 mr-1 rounded hover:bg-gray-100 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity"
+          className="p-1 mr-1 rounded hover:bg-gray-100 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity max-lg:p-3.5"
           aria-label={`Archive ${space.name}`}
           title="Archive space"
         >
