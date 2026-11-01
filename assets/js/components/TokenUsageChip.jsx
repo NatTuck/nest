@@ -185,20 +185,26 @@ export function TokenUsageChip({
   return (
     <div
       data-testid="token-usage-chip"
-      className="flex flex-col gap-1 text-xs text-zinc-500"
+      // Below `lg` the chip is the full width of the header's column, and its
+      // one line of mono numbers wraps inside that width rather than running
+      // 60px past the screen edge.
+      className="flex flex-col gap-1 text-xs text-zinc-500 max-lg:w-full max-lg:min-w-0"
     >
       <button
         type="button"
         onClick={() => setIsExpanded(!isExpanded)}
         aria-expanded={isExpanded}
         aria-label="Toggle token usage details"
-        className="flex items-center gap-2 text-left hover:text-zinc-300 transition-colors"
+        className="flex items-center gap-2 text-left hover:text-zinc-300 transition-colors max-lg:flex-wrap"
       >
         <span className="font-mono tabular-nums whitespace-nowrap">
           {formatTokens(safeUsed)} / {formatTokens(contextLimit)} tokens
         </span>
+        {/* The gauge is the one part of this line that cannot wrap, so it is the
+            part a phone drops: the two percentages either side of it carry the
+            same fact, and the bar is still here from `lg` up. */}
         <div
-          className="h-1 w-24 rounded bg-zinc-800 overflow-hidden"
+          className="h-1 w-24 rounded bg-zinc-800 overflow-hidden max-lg:hidden"
           role="progressbar"
           aria-valuemin={0}
           aria-valuemax={contextLimit}
@@ -213,27 +219,48 @@ export function TokenUsageChip({
         <span className="font-mono tabular-nums w-12 text-right">
           {pct.toFixed(1)}%
         </span>
+        {/* `w 36.9%` and `→ 41.0%` are abbreviations whose meaning lives in a
+            `title` tooltip — and a phone has no hover, so on one they read as a
+            bare "w" and a bare arrow. Below `lg` this line is the plain
+            percentage and the absolute numbers, and both figures are spelled out
+            in full in the expanded detail (`Working budget: …`, `Projected: …`),
+            which is where a touch reader gets them. Nothing is dropped from the
+            DOM: the desktop line and the detail are unchanged. */}
         {workingPct != null ? (
           <span
             data-testid="token-usage-working-pct"
-            className="font-mono tabular-nums whitespace-nowrap text-zinc-600"
+            className="font-mono tabular-nums whitespace-nowrap text-zinc-600 max-lg:hidden"
             title="Context used vs the working budget (window minus the LLM response reserve) — the basis the context warnings use"
           >
             w {workingPct.toFixed(1)}%
           </span>
         ) : (
-          <span
-            data-testid="token-usage-working-pct"
-            className="font-mono tabular-nums whitespace-nowrap text-red-400"
-            title="Working budget unavailable (server did not send usage.working_budget)"
-          >
-            w n/a
-          </span>
+          <>
+            {/* A *missing* working budget is not a number to keep off a phone's
+                line: it is data the server did not send, and the rule is that
+                missing data gets an obvious indicator rather than a tap away.
+                The desktop keeps its `w n/a`; below `lg` the indicator says what
+                is missing, because `w` alone means nothing on a line with no
+                hover. */}
+            <span
+              data-testid="token-usage-working-pct"
+              className="font-mono tabular-nums whitespace-nowrap text-red-400 max-lg:hidden"
+              title="Working budget unavailable (server did not send usage.working_budget)"
+            >
+              w n/a
+            </span>
+            <span
+              data-testid="token-usage-working-missing"
+              className="whitespace-nowrap text-red-400 lg:hidden"
+            >
+              no working budget
+            </span>
+          </>
         )}
         {projectedPct != null && (
           <span
             data-testid="token-usage-projected-pct"
-            className="font-mono tabular-nums whitespace-nowrap text-amber-400"
+            className="font-mono tabular-nums whitespace-nowrap text-amber-400 max-lg:hidden"
             title="Projected context after the pending message / predicted tool results — what a context warning compares"
           >
             → {projectedPct.toFixed(1)}%

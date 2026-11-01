@@ -46,6 +46,37 @@ function header(overrides = {}) {
 describe("ChatHeader", () => {
   beforeEach(cleanup);
 
+  it("clamps the name to two lines and puts the vocation on its own line below lg", () => {
+    // At 390px the heading took three lines for a name like
+    // `charming-rhinoceros-root`, and the inline `(Programmer)` was glued to it
+    // with no space. Below `lg` the name is clamped to two lines — one ellipsised
+    // line is not readable either, since a phone has no tooltip to reveal a
+    // 30-character agent name — the vocation is a subtitle, and the token column
+    // is the header's full width so its readout wraps instead of pushing the
+    // strip sideways. The full name stays in the DOM: clamping is visual.
+    render(header({ vocation: { name: "Builder" } }));
+
+    // The clamp is visual: the heading's text — and so its accessible name —
+    // still holds the whole name, and there is no `title`, which would be a
+    // hover tooltip the desktop never had and a phone cannot use.
+    const heading = screen.getByRole("heading", { name: /alpha/ });
+    expect(heading.className).toContain("max-lg:line-clamp-2");
+    expect(heading).not.toHaveAttribute("title");
+
+    // From `lg` up the vocation rides on the heading, now with the space it was
+    // missing; below `lg` it is hidden in favour of the subtitle.
+    const inlineVocation = heading.querySelector("span");
+    expect(inlineVocation.className).toContain("hidden");
+    expect(inlineVocation.className).toContain("lg:inline");
+    expect(inlineVocation.textContent.startsWith(" (")).toBe(true);
+
+    const subtitle = screen.getByText("Builder");
+    expect(subtitle.className).toContain("lg:hidden");
+    expect(screen.getByTestId("usage-chip").parentElement.className).toContain(
+      "max-lg:w-full",
+    );
+  });
+
   it("renders the name, vocation, model, lineage, and status and opens the model picker", () => {
     const onModelPickerOpen = vi.fn();
     render(

@@ -90,6 +90,13 @@ describe("TokenUsageChip", () => {
       const bar = screen.getByRole("progressbar");
       expect(bar).toHaveAttribute("aria-valuenow", "15545");
       expect(bar).toHaveAttribute("aria-valuemax", "256000");
+
+      // The gauge is the one part of the line that cannot wrap, so a phone drops
+      // it and keeps the two percentages; the chip itself becomes the width of
+      // the header's column rather than its 426px content width, which is what
+      // used to run 64px past the edge of a 390px screen.
+      expect(bar.className).toContain("max-lg:hidden");
+      expect(chip.className).toContain("max-lg:w-full");
     });
 
     it("falls back to input_tokens when context_input_tokens is missing (old wire)", () => {
@@ -423,16 +430,26 @@ describe("TokenUsageChip", () => {
       );
     });
 
-    it("flags a missing working budget instead of hiding it", () => {
+    it("flags a missing working budget instead of hiding it, at both widths", () => {
       render(
         <TokenUsageChip
           usage={{ context_input_tokens: 1000 }}
           contextLimit={100000}
         />,
       );
-      expect(screen.getByTestId("token-usage-working-pct")).toHaveTextContent(
-        "w n/a",
-      );
+
+      // The desktop's line keeps the abbreviation...
+      const desktop = screen.getByTestId("token-usage-working-pct");
+      expect(desktop).toHaveTextContent("w n/a");
+      expect(desktop.className).toContain("max-lg:hidden");
+
+      // ...and a phone gets an explicit indicator on the same line. Hiding a
+      // *present* number behind the chevron is fine; hiding its *absence* is
+      // not, so this one is red and on the line rather than one tap away.
+      const missing = screen.getByTestId("token-usage-working-missing");
+      expect(missing).toHaveTextContent("no working budget");
+      expect(missing.className).toContain("lg:hidden");
+      expect(missing.className).toContain("text-red-400");
     });
 
     it("shows the projected percentage when a projection exceeds current usage", () => {
@@ -448,6 +465,45 @@ describe("TokenUsageChip", () => {
       );
       expect(screen.getByTestId("token-usage-projected-pct")).toHaveTextContent(
         "→ 55.0%",
+      );
+    });
+
+    it("keeps the abbreviations off the phone's line and spells them out in the detail", () => {
+      // `w 36.9%` and `→ 41.0%` mean nothing without their `title` tooltips, and
+      // a phone has no hover: on one the line read `29.5% w 36.9%`. Below `lg`
+      // the collapsed line is the plain context percentage and the absolute
+      // numbers; the two figures live in the expanded detail, in full, which is
+      // the only place a touch reader can reach them.
+      render(
+        <TokenUsageChip
+          usage={{
+            context_input_tokens: 30000,
+            working_budget: 100000,
+            projected_context_input_tokens: 55000,
+          }}
+          contextLimit={125000}
+        />,
+      );
+
+      const working = screen.getByTestId("token-usage-working-pct");
+      const projected = screen.getByTestId("token-usage-projected-pct");
+      expect(working.className).toContain("max-lg:hidden");
+      expect(projected.className).toContain("max-lg:hidden");
+      // From `lg` up they are still there, as text.
+      expect(working).toHaveTextContent("w 30.0%");
+      expect(projected).toHaveTextContent("→ 55.0%");
+      // A budget that *is* present stays off the phone's line, and the
+      // missing-data indicator is not rendered at all.
+      expect(screen.queryByTestId("token-usage-working-missing")).toBeNull();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /toggle token usage details/i }),
+      );
+      expect(
+        screen.getByTestId("token-usage-working-budget"),
+      ).toHaveTextContent("Working budget: 30.0% of 100,000");
+      expect(screen.getByTestId("token-usage-projected")).toHaveTextContent(
+        "Projected: 55.0% of 100,000",
       );
     });
 

@@ -92,6 +92,23 @@ function scrollToBottom(container) {
 }
 
 /**
+ * Put the container above the bottom, the way a gesture leaves it.
+ *
+ * Every un-pin path now asks the DOM whether the view can move at all (a
+ * conversation shorter than its container has nothing to scroll), so a test that
+ * means "the user scrolled up" has to move the view first. In a browser the
+ * gesture produces the `scroll` event that does this; these tests fire the
+ * gesture alone, so they set the geometry instead.
+ */
+function scrolledUp(container) {
+  setMetrics(container, {
+    scrollTop: 400,
+    scrollHeight: 1000,
+    clientHeight: 500,
+  });
+}
+
+/**
  * Renders the hook with a container element pre-attached so the
  * scroll listener can find it on first render.
  */
@@ -118,6 +135,7 @@ describe("useScrollToBottom", () => {
     it("un-pins when the user wheels up", () => {
       const { result, container } = renderHookWithContainer("agent-1", null);
       act(() => {
+        scrolledUp(container);
         fireEvent.wheel(container, { deltaY: -100 });
       });
       expect(result.current.isAtBottom).toBe(false);
@@ -126,6 +144,7 @@ describe("useScrollToBottom", () => {
     it("does not re-pin on a wheel-down", () => {
       const { result, container } = renderHookWithContainer("agent-1", null);
       act(() => {
+        scrolledUp(container);
         fireEvent.wheel(container, { deltaY: -100 });
       });
       expect(result.current.isAtBottom).toBe(false);
@@ -136,12 +155,55 @@ describe("useScrollToBottom", () => {
       expect(result.current.isAtBottom).toBe(false);
     });
 
-    it("un-pins when the user drags the container (touchmove)", () => {
+    it("un-pins when the user drags the container away from the bottom (touchmove)", () => {
       const { result, container } = renderHookWithContainer("agent-1", null);
+      // The drag has moved the view, which is what makes it a scroll-up.
+      setMetrics(container, { scrollTop: 400 });
       act(() => {
         fireEvent.touchMove(container);
       });
       expect(result.current.isAtBottom).toBe(false);
+    });
+
+    it("stays pinned for a touch drag that cannot move the view", () => {
+      // The phone defect this pins: at the bottom, iOS's rubber-band overscroll
+      // and a finger that slides a pixel during a tap both fire `touchmove`
+      // while `scrollTop` does not change. Un-pinning there raised "Jump to
+      // latest" over a conversation that was already at the latest, and tapping
+      // it scrolled zero pixels — a button that visibly did nothing.
+      const { result, container } = renderHookWithContainer("agent-1", null);
+      expect(result.current.isAtBottom).toBe(true);
+
+      act(() => {
+        fireEvent.touchMove(container);
+      });
+
+      expect(result.current.isAtBottom).toBe(true);
+      expect(result.current.hasNewContent).toBe(false);
+    });
+
+    it("stays pinned when a gesture cannot move a conversation that fits the viewport", () => {
+      // A conversation shorter than its container has nothing to scroll, so a
+      // wheel-up or PageUp fires but leaves `scrollTop` where it was. Un-pinning
+      // there raised "Jump to latest" over content that was already at the
+      // latest, and tapping it scrolled zero pixels — the mouse and keyboard half
+      // of the phone defect the touch handler had.
+      const { result, container } = renderHookWithContainer("agent-1", null);
+      setMetrics(container, {
+        scrollTop: 0,
+        scrollHeight: 400,
+        clientHeight: 400,
+      });
+
+      act(() => {
+        fireEvent.wheel(container, { deltaY: -100 });
+      });
+      act(() => {
+        fireEvent.keyDown(window, { key: "PageUp" });
+      });
+
+      expect(result.current.isAtBottom).toBe(true);
+      expect(result.current.hasNewContent).toBe(false);
     });
 
     it("un-pins on PageUp/ArrowUp/Home keydown on window", () => {
@@ -149,6 +211,7 @@ describe("useScrollToBottom", () => {
 
       for (const key of ["PageUp", "ArrowUp", "Home"]) {
         act(() => {
+          scrolledUp(container);
           fireEvent.keyDown(window, { key });
         });
         expect(result.current.isAtBottom).toBe(false);
@@ -160,7 +223,11 @@ describe("useScrollToBottom", () => {
     });
 
     it("stays pinned on an unrelated keydown", () => {
-      const { result } = renderHookWithContainer("agent-1", null);
+      // The view is away from the bottom so this reaches the key filter: a
+      // container at the bottom returns at the `canScrollUp()` guard, which would
+      // leave the "not ArrowUp/Home" branch untested.
+      const { result, container } = renderHookWithContainer("agent-1", null);
+      scrolledUp(container);
       act(() => {
         fireEvent.keyDown(window, { key: "a" });
       });
@@ -171,9 +238,10 @@ describe("useScrollToBottom", () => {
       // PageUp is a scroll command: the browser routes it to the scroll
       // container, not the textarea, and focus normally sits in the
       // composer while streaming -- so the guard must not swallow it.
-      const { result } = renderHookWithContainer("agent-1", null);
+      const { result, container } = renderHookWithContainer("agent-1", null);
       const textarea = document.createElement("textarea");
       document.body.appendChild(textarea);
+      scrolledUp(container);
 
       act(() => {
         fireEvent.keyDown(textarea, { key: "PageUp" });
@@ -183,8 +251,12 @@ describe("useScrollToBottom", () => {
 
     it("does not un-pin on ArrowUp/Home while an editable field has focus", () => {
       // In a text field these move the caret (or, with Ctrl/Cmd, walk the
-      // composer's history), so they are not scroll-up intent.
-      const { result } = renderHookWithContainer("agent-1", null);
+      // composer's history), so they are not scroll-up intent. The view is moved
+      // away from the bottom first: `handleKeyDown` returns early when there is
+      // nothing to scroll, so a fixture at the bottom would never reach the
+      // editable-target check this test exists for.
+      const { result, container } = renderHookWithContainer("agent-1", null);
+      scrolledUp(container);
       const wrapper = document.createElement("div");
       const input = document.createElement("input");
       wrapper.appendChild(input);
@@ -209,6 +281,7 @@ describe("useScrollToBottom", () => {
 
       for (const key of ["ArrowUp", "Home"]) {
         act(() => {
+          scrolledUp(container);
           fireEvent.keyDown(document.body, { key });
         });
         expect(result.current.isAtBottom).toBe(false);
@@ -220,7 +293,11 @@ describe("useScrollToBottom", () => {
     });
 
     it("does not un-pin on Ctrl/Cmd/Alt + ArrowUp", () => {
-      const { result } = renderHookWithContainer("agent-1", null);
+      // Same reason as the editable-target test above: a container at the bottom
+      // returns before the modifier check, so the view has to be somewhere the
+      // gesture could actually move it.
+      const { result, container } = renderHookWithContainer("agent-1", null);
+      scrolledUp(container);
 
       for (const modifier of ["ctrlKey", "metaKey", "altKey"]) {
         act(() => {
@@ -274,6 +351,7 @@ describe("useScrollToBottom", () => {
     it("flips isAtBottom back to true when the user scrolls back to the bottom", () => {
       const { result, container } = renderHookWithContainer("agent-1", null);
       act(() => {
+        scrolledUp(container);
         fireEvent.wheel(container, { deltaY: -100 });
       });
       expect(result.current.isAtBottom).toBe(false);
@@ -310,6 +388,7 @@ describe("useScrollToBottom", () => {
           "token-1",
         );
         act(() => {
+          scrolledUp(container);
           fireEvent.wheel(container, { deltaY: -100 });
         });
         scrollIntoView.mockClear();
@@ -330,6 +409,7 @@ describe("useScrollToBottom", () => {
       );
 
       act(() => {
+        scrolledUp(container);
         fireEvent.wheel(container, { deltaY: -100 });
       });
       // Un-pinning re-runs the auto-scroll effect, which raises the flag.
@@ -410,6 +490,7 @@ describe("useScrollToBottom", () => {
           "token-1",
         );
         act(() => {
+          scrolledUp(container);
           fireEvent.wheel(container, { deltaY: -100 });
         });
         expect(result.current.hasNewContent).toBe(true);
@@ -448,6 +529,25 @@ describe("useScrollToBottom", () => {
         Element.prototype.scrollIntoView = original;
       }
     });
+
+    it("is a no-op before the end anchor exists", () => {
+      // The anchor is a node the transcript renders; before it is there, the
+      // click has nothing to scroll to and must not throw. (The button is not
+      // rendered in that state either, but the guard is what keeps a stray call
+      // from a stale handler harmless — and it is the file's last uncovered
+      // statement, so this is also what keeps the hook at 100 %.)
+      const { result } = renderHook(
+        ({ endEl }) => useScrollToBottom(null, endEl, "agent-1", "token-1"),
+        { initialProps: { endEl: null } },
+      );
+
+      act(() => {
+        result.current.jumpToBottom();
+      });
+
+      expect(result.current.isAtBottom).toBe(true);
+      expect(result.current.hasNewContent).toBe(false);
+    });
   });
 
   describe("id change resets state", () => {
@@ -457,6 +557,7 @@ describe("useScrollToBottom", () => {
         "token-1",
       );
       act(() => {
+        scrolledUp(container);
         fireEvent.wheel(container, { deltaY: -100 });
       });
       expect(result.current.hasNewContent).toBe(true);
@@ -495,6 +596,7 @@ describe("useScrollToBottom", () => {
 
       // User wheels up -- this should update isAtBottom to false
       act(() => {
+        scrolledUp(container);
         fireEvent.wheel(container, { deltaY: -100 });
       });
 
@@ -530,6 +632,7 @@ describe("useScrollToBottom", () => {
 
       // User wheels up
       act(() => {
+        scrolledUp(container);
         fireEvent.wheel(container, { deltaY: -100 });
       });
       expect(result.current.isAtBottom).toBe(false);
