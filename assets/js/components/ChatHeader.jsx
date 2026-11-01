@@ -37,13 +37,17 @@ export function ChatHeader({
     <div className="border-b border-gray-200 pb-4 mb-4">
       <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between lg:gap-4">
         <div className="min-w-0">
-          {/* One line, ellipsised: a name like `charming-rhinoceros-root` used
-              to take three lines and push everything else down. The full text
-              stays in the DOM (an ellipsis does not shorten an accessible name)
-              and in `title` for a mouse. The vocation rides on the same line
-              from `lg` up, and is its own line below it. */}
+          {/* Clamped to two lines below `lg`: a name like
+              `charming-rhinoceros-root` took three lines and pushed everything
+              else down, but one ellipsised line is not readable either — a
+              30-character agent name has no tooltip to reveal it on a phone. Two
+              lines is the compromise: the reader gets most of the name, and the
+              full text is still in the DOM (clamping is visual, so the accessible
+              name is whole). From `lg` up nothing clamps: the heading wraps as it
+              always has. The vocation rides on the same line from `lg` up, and is
+              its own line below it. */}
           <h1
-            className="text-2xl font-bold text-gray-900 max-lg:truncate"
+            className="text-2xl font-bold text-gray-900 max-lg:line-clamp-2"
             title={vocation?.name ? `${name} (${vocation.name})` : name}
           >
             {name}

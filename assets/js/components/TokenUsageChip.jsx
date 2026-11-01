@@ -219,10 +219,17 @@ export function TokenUsageChip({
         <span className="font-mono tabular-nums w-12 text-right">
           {pct.toFixed(1)}%
         </span>
+        {/* `w 36.9%` and `→ 41.0%` are abbreviations whose meaning lives in a
+            `title` tooltip — and a phone has no hover, so on one they read as a
+            bare "w" and a bare arrow. Below `lg` this line is the plain
+            percentage and the absolute numbers, and both figures are spelled out
+            in full in the expanded detail (`Working budget: …`, `Projected: …`),
+            which is where a touch reader gets them. Nothing is dropped from the
+            DOM: the desktop line and the detail are unchanged. */}
         {workingPct != null ? (
           <span
             data-testid="token-usage-working-pct"
-            className="font-mono tabular-nums whitespace-nowrap text-zinc-600"
+            className="font-mono tabular-nums whitespace-nowrap text-zinc-600 max-lg:hidden"
             title="Context used vs the working budget (window minus the LLM response reserve) — the basis the context warnings use"
           >
             w {workingPct.toFixed(1)}%
@@ -230,7 +237,7 @@ export function TokenUsageChip({
         ) : (
           <span
             data-testid="token-usage-working-pct"
-            className="font-mono tabular-nums whitespace-nowrap text-red-400"
+            className="font-mono tabular-nums whitespace-nowrap text-red-400 max-lg:hidden"
             title="Working budget unavailable (server did not send usage.working_budget)"
           >
             w n/a
@@ -239,7 +246,7 @@ export function TokenUsageChip({
         {projectedPct != null && (
           <span
             data-testid="token-usage-projected-pct"
-            className="font-mono tabular-nums whitespace-nowrap text-amber-400"
+            className="font-mono tabular-nums whitespace-nowrap text-amber-400 max-lg:hidden"
             title="Projected context after the pending message / predicted tool results — what a context warning compares"
           >
             → {projectedPct.toFixed(1)}%

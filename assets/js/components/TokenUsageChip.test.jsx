@@ -458,6 +458,42 @@ describe("TokenUsageChip", () => {
       );
     });
 
+    it("keeps the abbreviations off the phone's line and spells them out in the detail", () => {
+      // `w 36.9%` and `→ 41.0%` mean nothing without their `title` tooltips, and
+      // a phone has no hover: on one the line read `29.5% w 36.9%`. Below `lg`
+      // the collapsed line is the plain context percentage and the absolute
+      // numbers; the two figures live in the expanded detail, in full, which is
+      // the only place a touch reader can reach them.
+      render(
+        <TokenUsageChip
+          usage={{
+            context_input_tokens: 30000,
+            working_budget: 100000,
+            projected_context_input_tokens: 55000,
+          }}
+          contextLimit={125000}
+        />,
+      );
+
+      const working = screen.getByTestId("token-usage-working-pct");
+      const projected = screen.getByTestId("token-usage-projected-pct");
+      expect(working.className).toContain("max-lg:hidden");
+      expect(projected.className).toContain("max-lg:hidden");
+      // From `lg` up they are still there, as text.
+      expect(working).toHaveTextContent("w 30.0%");
+      expect(projected).toHaveTextContent("→ 55.0%");
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /toggle token usage details/i }),
+      );
+      expect(
+        screen.getByTestId("token-usage-working-budget"),
+      ).toHaveTextContent("Working budget: 30.0% of 100,000");
+      expect(screen.getByTestId("token-usage-projected")).toHaveTextContent(
+        "Projected: 55.0% of 100,000",
+      );
+    });
+
     it("does not show a projected marker when none is in flight", () => {
       render(
         <TokenUsageChip

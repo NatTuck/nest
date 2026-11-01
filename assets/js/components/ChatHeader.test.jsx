@@ -46,17 +46,18 @@ function header(overrides = {}) {
 describe("ChatHeader", () => {
   beforeEach(cleanup);
 
-  it("puts the name on one line and the vocation on its own line below lg", () => {
+  it("clamps the name to two lines and puts the vocation on its own line below lg", () => {
     // At 390px the heading took three lines for a name like
     // `charming-rhinoceros-root`, and the inline `(Programmer)` was glued to it
-    // with no space. Below `lg` the name is one ellipsised line (the full text
-    // stays in the DOM — an ellipsis does not shorten an accessible name — and in
-    // `title`), the vocation is a subtitle, and the token column is the header's
-    // full width so its readout wraps instead of pushing the strip sideways.
+    // with no space. Below `lg` the name is clamped to two lines — one ellipsised
+    // line is not readable either, since a phone has no tooltip to reveal a
+    // 30-character agent name — the vocation is a subtitle, and the token column
+    // is the header's full width so its readout wraps instead of pushing the
+    // strip sideways. The full name stays in the DOM: clamping is visual.
     render(header({ vocation: { name: "Builder" } }));
 
     const heading = screen.getByRole("heading", { name: /alpha/ });
-    expect(heading.className).toContain("max-lg:truncate");
+    expect(heading.className).toContain("max-lg:line-clamp-2");
     expect(heading).toHaveAttribute("title", "alpha (Builder)");
 
     // From `lg` up the vocation rides on the heading, now with the space it was

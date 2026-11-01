@@ -217,7 +217,7 @@ export function ChatInput({
       <button
         type="submit"
         disabled={sendDisabled}
-        className={`px-4 py-3 rounded-lg font-semibold text-white transition-all duration-200 leading-tight sm:px-6 max-lg:flex-1 ${
+        className={`px-4 py-3 rounded-lg font-semibold text-white transition-all duration-200 leading-tight sm:px-6 max-lg:ml-auto ${
           sendDisabled
             ? "bg-gray-400 cursor-not-allowed"
             : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
@@ -244,7 +244,7 @@ export function ChatInput({
           type="button"
           disabled
           aria-label="Stopping"
-          className="px-4 py-3 rounded-lg font-semibold text-white bg-red-400 cursor-not-allowed leading-tight flex items-center justify-center gap-2 sm:px-6 max-lg:flex-1"
+          className="px-4 py-3 rounded-lg font-semibold text-white bg-red-400 cursor-not-allowed leading-tight flex items-center justify-center gap-2 sm:px-6"
         >
           <svg
             className="animate-spin h-4 w-4"
@@ -276,7 +276,7 @@ export function ChatInput({
         type="button"
         onClick={onStop}
         aria-label="Stop"
-        className="px-4 py-3 rounded-lg font-semibold text-white bg-red-600 hover:bg-red-700 active:bg-red-800 transition-all duration-200 leading-tight sm:px-6 max-lg:flex-1"
+        className="px-4 py-3 rounded-lg font-semibold text-white bg-red-600 hover:bg-red-700 active:bg-red-800 transition-all duration-200 leading-tight sm:px-6"
       >
         Stop
         <span className="block text-xs font-normal opacity-75 max-sm:hidden">
@@ -350,8 +350,12 @@ export function ChatInput({
         )}
         {/* Below `lg` the field gets a line of its own and the controls share the
             next one: textarea + mode + Send (+ Stop) in one 390px row left the
-            field ~200px wide and the buttons squeezed. From `lg` up this is the
-            single row it has always been. */}
+            field ~200px wide and the buttons squeezed. The mode toggle sits at
+            the left and the buttons are pushed to the right edge at their natural
+            width (`max-lg:ml-auto`) — a full-width Send with a small toggle
+            beside it read as an accident, and a thumb reaching the right edge is
+            the normal shape for this control. From `lg` up this is the single row
+            it has always been. */}
         <div className="flex flex-wrap gap-2 lg:flex-nowrap">
           <textarea
             ref={textareaRef}
