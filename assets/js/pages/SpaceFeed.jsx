@@ -37,6 +37,7 @@ import { spaceDraftKey } from "../store/slices/composer";
 import { JumpToBottomButton } from "../components/JumpToBottomButton";
 import { SendErrorBanner } from "../components/SendErrorBanner";
 import { SpaceEnvironmentCard } from "../components/SpaceEnvironmentCard";
+import { MessageContent } from "../components/MessageContent";
 import { SpacePausedBanner } from "../components/SpacePausedBanner";
 import { useAgentMode } from "../hooks/useAgentMode";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
@@ -294,7 +295,16 @@ function FeedNotes({ feed, me, onRetry }) {
   );
 }
 
-/** One note: who said it to whom, when, what, and whether it awaits an answer. */
+/**
+ * One note: who said it to whom, when, what, and whether it awaits an answer.
+ *
+ * The body is markdown, rendered through `MessageContent` — the same component
+ * the chat transcript uses, which is `@llamaindex/chat-ui`'s `Markdown` — rather
+ * than as plain text. A note is model output like any other assistant message,
+ * and the two places it can be read should not disagree about what it says.
+ * That component also brings the overflow rules (code wraps, tables scroll)
+ * that keep a wide body inside the phone's column.
+ */
 function NoteCard({ note, me }) {
   const incoming = isIncoming(note, me);
   const runtime = note.from_kind === "runtime";
@@ -318,9 +328,10 @@ function NoteCard({ note, me }) {
         </time>
       </div>
 
-      <p className="mt-2 whitespace-pre-wrap text-sm text-gray-800">
-        {note.content}
-      </p>
+      <MessageContent
+        parts={[{ kind: "text", text: note.content }]}
+        className="mt-2 text-sm text-gray-800"
+      />
 
       {note.kind === "query" && (
         <p className="mt-2 text-xs font-medium text-indigo-700">
