@@ -272,7 +272,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # the final post-compaction shape, not on the compactor's text.
 
       # Use a real Programmer vocation so the compaction's
-      # `compose_vocation_config/6` re-render runs over a real prompt
+      # `compose_vocation_config/5` re-render runs over a real prompt
       # (the regenerated system message itself is asserted in
       # `agent_compaction_system_repeat_test.exs`).
       voc_id = programmer_vocation_id_for_test()

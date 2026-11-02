@@ -267,8 +267,7 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
           ctx.mounts,
           {ctx.context_limit, ctx.context_limit_source},
           ctx.agent_name,
-          ctx.depth,
-          ctx.client_config.model
+          %SystemPrompt.Identity{depth: ctx.depth, model: ctx.client_config.model}
         )
 
       system_prompt

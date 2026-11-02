@@ -266,10 +266,76 @@ defmodule Nest.DotConfig.LoadTest do
       assert load_models(~s(base-url = "https://acme.example/v1")) == []
       assert length(load_models(~s(models = [{ name = "m" }]))) == 1
 
-      path = tmp_toml_file("models_string")
-      File.write!(path, "[providers.acme]\nmodels = \"abc\"\n")
+      for bad <- [~s(models = "abc"), ~s(models = 7)] do
+        path = tmp_toml_file("models_string")
+        File.write!(path, "[providers.acme]\n" <> bad <> "\n")
 
-      assert_raise RuntimeError, ~r/Provider acme: invalid models/, fn ->
+        assert_raise RuntimeError, ~r/Provider acme: invalid models/, fn ->
+          DotConfig.load(path)
+        end
+      end
+    end
+
+    # An entry that is not a table used to reach `Map.get(7, "name")` and raise
+    # `BadMapError` — a refusal, but one that says nothing about `models`. The
+    # shared rule (#105 S4) names the field and the entry.
+    test "raises on an entry that is not a table, naming the field" do
+      path = tmp_toml_file("models_entry")
+      File.write!(path, "[providers.acme]\nmodels = [7]\n")
+
+      assert_raise RuntimeError, ~r/Provider acme: invalid models entry 7/, fn ->
+        DotConfig.load(path)
+      end
+    end
+  end
+
+  describe "provider flags" do
+    # #105 S1. `auto-models = "no"` is truthy, so a typo silently turned
+    # auto-discovery **on**; the value was persisted as the string and re-read as
+    # one. The rule is the one the other three flags use.
+    test "auto-models is a boolean, defaults to false, and refuses anything else" do
+      assert load_flag(~s(base-url = "https://acme.example/v1"), :auto_models) == false
+      assert load_flag("auto-models = true", :auto_models) == true
+      assert load_flag("auto-models = false", :auto_models) == false
+
+      for bad <- [~s(auto-models = "no"), ~s(auto-models = 1)] do
+        path = tmp_toml_file("auto_models_bad")
+        File.write!(path, "[providers.acme]\n" <> bad <> "\n")
+
+        assert_raise RuntimeError, ~r/Provider acme: invalid auto-models/, fn ->
+          DotConfig.load(path)
+        end
+      end
+    end
+  end
+
+  describe "provider protocol" do
+    # #105 S2. Every consumer has a catch-all meaning `openai`, so a bogus value
+    # was silently OpenAI-compatible and nothing said so.
+    test "is openai when absent, keeps the two known protocols, and refuses the rest" do
+      assert load_protocol(~s(base-url = "https://acme.example/v1")) == "openai"
+      assert load_protocol(~s(protocol = "openai")) == "openai"
+      assert load_protocol(~s(protocol = "anthropic")) == "anthropic"
+
+      for bad <- [~s(protocol = "bogus"), "protocol = 7"] do
+        path = tmp_toml_file("protocol_bad")
+        File.write!(path, "[providers.acme]\n" <> bad <> "\n")
+
+        assert_raise RuntimeError, ~r/Provider acme: invalid protocol/, fn ->
+          DotConfig.load(path)
+        end
+      end
+    end
+  end
+
+  describe "provider name" do
+    # #105 S3. `" "` passed the blank check and persisted as `[providers." "]` —
+    # a provider nothing can address.
+    test "refuses a whitespace-only key" do
+      path = tmp_toml_file("provider_name_blank")
+      File.write!(path, "[providers.\" \"]\nbase-url = \"https://acme.example/v1\"\n")
+
+      assert_raise RuntimeError, ~r/invalid provider name " "/, fn ->
         DotConfig.load(path)
       end
     end
@@ -298,6 +364,20 @@ defmodule Nest.DotConfig.LoadTest do
     File.write!(path, "[providers.acme]\n" <> line <> "\n")
     {:ok, config} = DotConfig.load(path)
     config.providers["acme"].models
+  end
+
+  defp load_flag(line, key) do
+    path = tmp_toml_file("flag_ok")
+    File.write!(path, "[providers.acme]\n" <> line <> "\n")
+    {:ok, config} = DotConfig.load(path)
+    Map.fetch!(config.providers["acme"], key)
+  end
+
+  defp load_protocol(line) do
+    path = tmp_toml_file("protocol_ok")
+    File.write!(path, "[providers.acme]\n" <> line <> "\n")
+    {:ok, config} = DotConfig.load(path)
+    config.providers["acme"].protocol
   end
 
   defp load_model_context_limit(line) do

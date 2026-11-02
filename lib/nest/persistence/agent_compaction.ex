@@ -159,8 +159,7 @@ defmodule Nest.Persistence.AgentCompaction do
         ),
         {limit, source},
         agent.name,
-        agent.depth || 0,
-        ChatModel.model_name(agent.model)
+        %SystemPrompt.Identity{depth: agent.depth || 0, model: ChatModel.model_name(agent.model)}
       )
 
     system_prompt

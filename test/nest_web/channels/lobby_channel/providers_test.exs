@@ -547,6 +547,50 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       end
     end
 
+    test "replies invalid_payload for the four values #105 closes, writing nothing", %{
+      socket: socket,
+      local_file: local_file
+    } do
+      # Each of these was accepted on at least one side, so the config the app
+      # wrote for itself could be one it then misread (#105):
+      #
+      #   * S1 `auto_models` — `m["auto_models"] || false` wrote `"no"` through,
+      #     and `"no"` is truthy, so a typo silently turned discovery **on**. One
+      #     rule now refuses all four flags on both sides; the other three used
+      #     to coerce a non-boolean to their default here while the reader raised.
+      #   * S2 `protocol` — every consumer has a catch-all meaning `openai`, so
+      #     `"bogus"` persisted and was then silently OpenAI-compatible.
+      #   * S3 the provider name — `" "` passed the blank check and persisted as
+      #     `[providers." "]`.
+      #   * S4 `models` — this side raised `protocol Enumerable not implemented
+      #     for type Integer` (or `BadMapError` for `[7]`) where the reader said
+      #     "must be an array of tables". One rule, one sentence.
+      cases = [
+        {"auto_models", "no", "invalid auto_models"},
+        {"auto_probe", "no", "invalid auto_probe"},
+        {"expose_models", "no", "invalid expose_models"},
+        {"probe_multimodal", "no", "invalid probe_multimodal"},
+        {"protocol", "bogus", "invalid protocol"},
+        {"name", " ", "invalid provider name"},
+        {"models", 7, "invalid models"},
+        {"models", [7], "invalid models"}
+      ]
+
+      for {field, bad, expected} <- cases do
+        ref =
+          push(socket, "save_providers", %{
+            "providers" => [%{"name" => "acme", field => bad}]
+          })
+
+        assert_reply ref, :error, %{"reason" => "invalid_payload", "message" => message}, 1_000
+
+        # The message names the field, so the operator (and this loop) can tell
+        # the refusals apart.
+        assert message =~ expected
+        refute File.exists?(local_file)
+      end
+    end
+
     test "replies invalid_payload for a model context-limit the runtime rejects", %{
       socket: socket,
       local_file: local_file
