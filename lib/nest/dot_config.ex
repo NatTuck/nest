@@ -454,12 +454,17 @@ defmodule Nest.DotConfig do
   end
 
   defp parse_provider(name, data) do
+    # The key is the provider's identity everywhere, so a blank or
+    # whitespace-only one is not a provider (`FieldValidation.provider_name/1`).
+    name = FieldValidation.provider_name(name)
+
     %Provider{
       name: name,
       base_url: ModelValidation.validate_base_url(Map.get(data, "base-url"), name),
       api_key: ModelValidation.validate_api_key(Map.get(data, "api-key"), name),
-      protocol: Map.get(data, "protocol", "openai"),
-      auto_models: Map.get(data, "auto-models", false),
+      protocol: FieldValidation.protocol(Map.get(data, "protocol"), name),
+      auto_models:
+        FieldValidation.boolean(Map.get(data, "auto-models"), name, "auto-models", false),
       tags: parse_tags(Map.get(data, "tags"), name),
       models: parse_provider_models(data, name),
       first_byte_timeout_seconds: parse_first_byte_timeout(data, name),
@@ -468,9 +473,16 @@ defmodule Nest.DotConfig do
         parse_default_context_limit(Map.get(data, "default-context-limit"), name),
       default_thinking_effort: parse_thinking_effort(Map.get(data, "default-thinking-effort")),
       probe_base_url: parse_probe_base_url(Map.get(data, "probe-base-url"), name),
-      auto_probe: parse_auto_probe(Map.get(data, "auto-probe"), name),
-      expose_models: parse_expose_models(Map.get(data, "expose-models"), name),
-      probe_multimodal: parse_probe_multimodal(Map.get(data, "probe-multimodal"), name)
+      auto_probe: FieldValidation.boolean(Map.get(data, "auto-probe"), name, "auto-probe", true),
+      expose_models:
+        FieldValidation.boolean(Map.get(data, "expose-models"), name, "expose-models", false),
+      probe_multimodal:
+        FieldValidation.boolean(
+          Map.get(data, "probe-multimodal"),
+          name,
+          "probe-multimodal",
+          false
+        )
     }
   end
 
@@ -479,20 +491,14 @@ defmodule Nest.DotConfig do
   #
   # A malformed value used to fall through to `[]`, silently dropping the whole
   # model list — the opposite of the "a bad value is a startup error" convention
-  # the rest of this module follows. The write side already raised on it
-  # (`Enum.map/2` on a non-list), so the two sides agree now.
+  # the rest of this module follows. The *shape* rule is
+  # `ModelValidation.validate_models/2`, shared with the write side so the two
+  # refuse in the same words (#105 S4).
   defp parse_provider_models(data, provider_name) do
-    case Map.get(data, "models") do
-      nil ->
-        []
-
-      models_list when is_list(models_list) ->
-        Enum.map(models_list, &parse_model(&1, provider_name))
-
-      other ->
-        raise "Provider #{provider_name}: invalid models #{inspect(other)}: " <>
-                "must be an array of tables"
-    end
+    data
+    |> Map.get("models")
+    |> ModelValidation.validate_models(provider_name)
+    |> Enum.map(&parse_model(&1, provider_name))
   end
 
   # Parses the optional `probe-base-url` (a discovery-only URL) for
@@ -513,38 +519,6 @@ defmodule Nest.DotConfig do
 
   defp parse_probe_base_url(url, provider_name),
     do: FieldValidation.non_empty_string(url, provider_name, "probe-base-url")
-
-  # Parses the optional `auto-probe` flag (endpoint auto-detection).
-  # Defaults to `true` when absent.
-  defp parse_auto_probe(nil, _provider_name), do: true
-
-  defp parse_auto_probe(value, _provider_name) when is_boolean(value), do: value
-
-  defp parse_auto_probe(value, provider_name) do
-    raise "Provider #{provider_name}: invalid auto-probe #{inspect(value)}: must be a boolean"
-  end
-
-  # Parses the optional `expose-models` flag (model visibility in models-list).
-  # Defaults to `false` when absent.
-  defp parse_expose_models(nil, _provider_name), do: false
-
-  defp parse_expose_models(value, _provider_name) when is_boolean(value), do: value
-
-  defp parse_expose_models(value, provider_name) do
-    raise "Provider #{provider_name}: invalid expose-models #{inspect(value)}: must be a boolean"
-  end
-
-  # Parses the optional `probe-multimodal` opt-in (a discovered
-  # model's image-input support may be probed by
-  # `Nest.LLM.MultimodalProbe`). Defaults to `false` when absent:
-  # probing costs a real request per model, so it is opt-in.
-  defp parse_probe_multimodal(nil, _provider_name), do: false
-
-  defp parse_probe_multimodal(value, _provider_name) when is_boolean(value), do: value
-
-  defp parse_probe_multimodal(value, provider_name) do
-    raise "Provider #{provider_name}: invalid probe-multimodal #{inspect(value)}: must be a boolean"
-  end
 
   # Parses and validates the provider's first-byte bound (seconds). Returns the
   # default if neither key is present. Raises on invalid values so config
