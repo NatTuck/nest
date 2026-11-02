@@ -160,7 +160,13 @@ defmodule Nest.Agents.Visibility do
     with {:ok, pid} <- Registry.lookup(space_id, name),
          %{space_id: sid} = info <- fetch_public_info(pid),
          true <- visible_to?(info, user_id) do
-      Map.put(info, :space_id, sid)
+      # `:mode` is the **live** one: `current_mode` is the agent's
+      # `state.live.mode`, which a running turn can have moved ahead of the row
+      # (`Turn.keep_mode/2` writes the row at the settle). `agents-list` reports
+      # this value, not the row's.
+      info
+      |> Map.put(:space_id, sid)
+      |> Map.put(:mode, info.current_mode)
     else
       _ -> nil
     end
@@ -227,6 +233,7 @@ defmodule Nest.Agents.Visibility do
            created_by_user_id: owner_id,
            shared: shared,
            model: model,
+           mode: mode,
            parent_id: parent_id,
            depth: depth
          },
@@ -241,6 +248,9 @@ defmodule Nest.Agents.Visibility do
       parent_id: parent_id,
       parent_name: Map.get(names_by_id, parent_id),
       depth: depth,
+      # No live process, so there is no live mode to disagree with: the row's is
+      # the mode this agent starts in, and the one `agents-list` reports.
+      mode: mode,
       created_by_user_id: owner_id,
       shared: shared == true,
       status: :idle
