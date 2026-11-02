@@ -29,7 +29,7 @@
  * one it is. A read that failed never renders as "nothing has been said".
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useStore } from "../store";
 import { requestSpaceFeed, sendSpaceNote } from "../channels";
 import { ChatInput } from "../components/ChatInput";
@@ -113,7 +113,22 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
     defaultMode: feed?.defaultMode ?? null,
   });
 
-  const owed = owedAgents(feed?.notes, me);
+  // An archived agent owes nothing (see `owedAgents`), so the projection is told
+  // which agents are archived. The store keeps them in their own list — the one
+  // the sidebar's archived rows come from — and they are still rows in
+  // `feed.notes`, which is why the notes alone cannot answer this.
+  const archivedAgents = useStore((state) => state.archivedAgents);
+  const archivedNames = useMemo(
+    () =>
+      new Set(
+        (archivedAgents ?? [])
+          .filter((agent) => agent.space_id === space.id)
+          .map((agent) => agent.name),
+      ),
+    [archivedAgents, space.id],
+  );
+
+  const owed = owedAgents(feed?.notes, me, archivedNames);
   const mode = currentMode ?? feed?.defaultMode ?? null;
 
   // The same follow/pin behaviour the agent page has, over the feed's notes.

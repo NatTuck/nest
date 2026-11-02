@@ -510,6 +510,50 @@ describe("SpaceFeed", () => {
     expect(screen.getByLabelText("Send to")).toHaveValue("minion");
   });
 
+  it("shows no owed reply for a query from an archived agent", () => {
+    // The agent was archived after it asked. Nothing can be sent to it — the
+    // recipient picker does not offer it either — so a reply button for it would
+    // be a control that cannot do anything.
+    withFeed(
+      readyFeed([note({ id: 1, from_name: "retired", kind: "query" })]),
+      {
+        archivedAgents: [{ name: "retired", space_id: 1, archived: true }],
+      },
+    );
+
+    renderFeed();
+
+    // The banner names one agent per owed reply, and there is nobody to name.
+    expect(
+      screen.queryByRole("button", { name: /Reply to/ }),
+    ).not.toBeInTheDocument();
+    // The note itself is still in the feed, with its own unanswered state: this
+    // fixes what is *owed*, not what was said. (The card's line is a fact about
+    // the row — `answered_at` is null — and the issue asks only for the banner.)
+    const notes = screen.getByRole("list", { name: "Notes" });
+    expect(notes).toHaveTextContent("from agent retired → you");
+    expect(notes).toHaveTextContent("waiting for your reply");
+  });
+
+  it("offers the live agent and leaves the archived one out", () => {
+    withFeed(
+      readyFeed([
+        note({ id: 1, from_name: "retired", kind: "query" }),
+        note({ id: 2, from_name: "boss", kind: "query" }),
+      ]),
+      { archivedAgents: [{ name: "retired", space_id: 1, archived: true }] },
+    );
+
+    renderFeed();
+
+    expect(
+      screen.getByRole("button", { name: "Reply to boss" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Reply to retired/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders no owed-reply banner when nothing is outstanding", () => {
     renderFeed();
 
