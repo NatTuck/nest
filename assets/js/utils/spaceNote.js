@@ -108,3 +108,30 @@ export function owedAgents(notes, me, archived) {
 
   return [...agents.values()];
 }
+
+/**
+ * Which of a `query` row's four states it is in, as a fact rather than a
+ * sentence — so the card and the banner cannot disagree about what is owed.
+ *
+ *   * `answered` — the human answered it (`answered_at` is set).
+ *   * `owed` — incoming and unanswered: this human's to answer, and `owedAgents`
+ *     names it in the banner.
+ *   * `archived` — incoming and unanswered, but the agent that asked is
+ *     archived. The row's own truth is unchanged (nobody has answered it), which
+ *     is what the card says; what it must not do is *invite* a reply, because an
+ *     archived agent's process is stopped and nothing the human sends can clear
+ *     the query. `owedAgents` leaves it out of the banner for that reason, and a
+ *     card that asked for the reply anyway would contradict the banner three
+ *     lines above it.
+ *   * `awaiting` — a query the human sent, waiting for the other end's answer.
+ *
+ * `archived` is the same set `owedAgents/3` takes.
+ */
+export function queryReplyState(note, me, archived) {
+  if (!isIncoming(note, me)) return "awaiting";
+  if (note.answered_at) return "answered";
+  if (note.from_kind === "agent" && archived?.has(note.from_name)) {
+    return "archived";
+  }
+  return "owed";
+}

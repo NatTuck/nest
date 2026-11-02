@@ -75,6 +75,23 @@ defmodule Nest.DotConfig.FieldValidation do
     raise "Provider #{provider_name}: invalid #{field} #{inspect(value)}: must be a boolean"
   end
 
+  # The protocols `protocol/2` accepts: the set the two consumers implement
+  # (`Nest.EndpointProbe.protocol_atom/1`, `Nest.LLM.MultimodalProbe.wire_format/1`).
+  @protocols ["openai", "anthropic"]
+
+  @doc """
+  The protocols `protocol/2` accepts.
+
+  Public because the GUI's editor has to offer the same set
+  (`assets/js/components/providerConstants.js`'s `PROTOCOLS`) and the browser
+  cannot read this module, so the list is written down twice.
+  `Nest.DotConfigJsDefaultsTest` reads that file and fails when the two drift, so
+  a protocol added here without the editor (or the reverse) is a test failure
+  rather than a config refused at load for a value the editor offers.
+  """
+  @spec protocols() :: [String.t()]
+  def protocols, do: @protocols
+
   @doc """
   A provider's `protocol`, or a raise. `nil` means the documented default,
   `"openai"`.
@@ -82,11 +99,8 @@ defmodule Nest.DotConfig.FieldValidation do
   The two consumers both have a catch-all that means `"openai"`
   (`Nest.EndpointProbe.protocol_atom/1`, `Nest.LLM.MultimodalProbe.wire_format/1`),
   so a `protocol = "bogus"` was silently OpenAI-compatible on both sides and
-  nothing ever said so. The set below is those consumers' set: a protocol added
-  to either must be added here, or the config that names it is refused at load.
+  nothing ever said so. The set is `protocols/0`'s.
   """
-  @protocols ["openai", "anthropic"]
-
   @spec protocol(term(), String.t() | nil) :: String.t()
   def protocol(nil, _provider_name), do: "openai"
 

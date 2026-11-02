@@ -43,7 +43,12 @@ import { useAgentMode } from "../hooks/useAgentMode";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { errorText } from "../utils/errorText";
 import { formatTimestamp } from "../utils/formatTimestamp";
-import { isIncoming, noteDirection, owedAgents } from "../utils/spaceNote";
+import {
+  isIncoming,
+  noteDirection,
+  owedAgents,
+  queryReplyState,
+} from "../utils/spaceNote";
 
 // A fresh list per call would be a new reference every render, which the
 // composer's history reset keys off. The feed has no history to walk: it is not
@@ -202,6 +207,7 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
         <FeedNotes
           feed={feed}
           me={me}
+          archived={archivedNames}
           onRetry={() => requestSpaceFeed(space.id)}
         />
         <div ref={setNotesEndEl} />
@@ -257,7 +263,7 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
  * A failed read says so and offers the retry; a read still in flight says so; and
  * an empty feed is only claimed once the server has answered with an empty list.
  */
-function FeedNotes({ feed, me, onRetry }) {
+function FeedNotes({ feed, me, archived, onRetry }) {
   if (!feed || feed.status === "loading") {
     return (
       <p className="py-12 text-center text-sm text-gray-500">
@@ -304,11 +310,27 @@ function FeedNotes({ feed, me, onRetry }) {
   return (
     <ul aria-label="Notes" className="space-y-2">
       {feed.notes.map((note) => (
-        <NoteCard key={note.id} note={note} me={me} />
+        <NoteCard key={note.id} note={note} me={me} archived={archived} />
       ))}
     </ul>
   );
 }
+
+/**
+ * What a `query` row's status line says, one line per state `queryReplyState/3`
+ * decides.
+ *
+ * The archived case is the one that is not obvious: the row is still unanswered
+ * (nobody has answered it, and the card says so), but the agent that asked is
+ * stopped, so there is no reply to give. Inviting one would contradict the
+ * owed-reply banner, which leaves an archived agent out for the same reason.
+ */
+const QUERY_REPLY_TEXT = {
+  answered: "you answered",
+  owed: "waiting for your reply",
+  awaiting: "waiting for an answer",
+  archived: "waiting for an answer (agent archived)",
+};
 
 /**
  * One note: who said it to whom, when, what, and whether it awaits an answer.
@@ -320,7 +342,7 @@ function FeedNotes({ feed, me, onRetry }) {
  * That component also brings the overflow rules (code wraps, tables scroll)
  * that keep a wide body inside the phone's column.
  */
-function NoteCard({ note, me }) {
+function NoteCard({ note, me, archived }) {
   const incoming = isIncoming(note, me);
   const runtime = note.from_kind === "runtime";
 
@@ -350,11 +372,7 @@ function NoteCard({ note, me }) {
 
       {note.kind === "query" && (
         <p className="mt-2 text-xs font-medium text-indigo-700">
-          {incoming
-            ? note.answered_at
-              ? "you answered"
-              : "waiting for your reply"
-            : "waiting for an answer"}
+          {QUERY_REPLY_TEXT[queryReplyState(note, me, archived)]}
         </p>
       )}
     </li>

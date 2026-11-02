@@ -510,12 +510,16 @@ describe("SpaceFeed", () => {
     expect(screen.getByLabelText("Send to")).toHaveValue("minion");
   });
 
-  it("shows no owed reply for a query from an archived agent", () => {
+  it("stops inviting a reply from an archived agent, and keeps asking the live one", () => {
     // The agent was archived after it asked. Nothing can be sent to it — the
     // recipient picker does not offer it either — so a reply button for it would
-    // be a control that cannot do anything.
+    // be a control that cannot do anything, and a card that said "waiting for
+    // your reply" would contradict the banner three lines above it.
     withFeed(
-      readyFeed([note({ id: 1, from_name: "retired", kind: "query" })]),
+      readyFeed([
+        note({ id: 1, from_name: "retired", kind: "query" }),
+        note({ id: 2, from_name: "boss", kind: "query" }),
+      ]),
       {
         archivedAgents: [{ name: "retired", space_id: 1, archived: true }],
       },
@@ -523,16 +527,29 @@ describe("SpaceFeed", () => {
 
     renderFeed();
 
-    // The banner names one agent per owed reply, and there is nobody to name.
+    const items = within(
+      screen.getByRole("list", { name: "Notes" }),
+    ).getAllByRole("listitem");
+
+    // The archived agent's row is still unanswered — that is the row's own truth
+    // — and the card says so without asking for what cannot happen.
+    expect(items[0]).toHaveTextContent("from agent retired → you");
+    expect(items[0]).toHaveTextContent(
+      "waiting for an answer (agent archived)",
+    );
+    expect(items[0]).not.toHaveTextContent("your reply");
+
+    // The live agent's query is unchanged: it is this human's to answer.
+    expect(items[1]).toHaveTextContent("waiting for your reply");
+
+    // The banner names one agent per owed reply, and there is nobody to name but
+    // the live one — the same fact the card now states.
     expect(
-      screen.queryByRole("button", { name: /Reply to/ }),
+      screen.getByRole("button", { name: "Reply to boss" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Reply to retired/ }),
     ).not.toBeInTheDocument();
-    // The note itself is still in the feed, with its own unanswered state: this
-    // fixes what is *owed*, not what was said. (The card's line is a fact about
-    // the row — `answered_at` is null — and the issue asks only for the banner.)
-    const notes = screen.getByRole("list", { name: "Notes" });
-    expect(notes).toHaveTextContent("from agent retired → you");
-    expect(notes).toHaveTextContent("waiting for your reply");
   });
 
   it("offers the live agent and leaves the archived one out", () => {

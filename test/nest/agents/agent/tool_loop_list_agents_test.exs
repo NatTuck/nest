@@ -57,17 +57,35 @@ defmodule Nest.Agents.Agent.ToolLoopListAgentsTest do
     assert entry_for(list(space_id), name) =~ ~s(mode: "act")
   end
 
-  test "keeps the listing inside the tool's 4000-character cap", %{space_id: space_id} do
-    for n <- 1..80, do: insert_row(space_id, "agent-with-a-long-name-#{n}", "act")
+  test "keeps the listing inside the tool's 4000-character cap, with the longest mode", %{
+    space_id: space_id
+  } do
+    # The longest mode name is the worst case for the column #193 added: the
+    # entry is serialized whole, so a longer value is what could push a listing
+    # past the cap. Taken from the catalog rather than written down, so a third
+    # mode is measured too.
+    longest = Enum.max_by(Nest.Modes.names(), &String.length/1)
+
+    # A listing that fits: every entry is whole and the result is under the cap,
+    # so the mode column costs what it costs and nothing is dropped.
+    fits = "fits-#{System.unique_integer([:positive])}"
+    {:ok, _row} = insert_row(space_id, fits, longest)
 
     content = list(space_id)
+    assert String.length(content) < 4_000
+    assert String.ends_with?(content, "}]")
+    assert entry_for(content, fits) =~ ~s(mode: "#{longest}")
 
-    # The cap is the tool's own (`@list_agents_max_chars`). This space has no
-    # human, so the listing is the whole result and the cap is exactly hit —
-    # which is what makes the assertion more than a tautology: a listing under
-    # the cap would not reach 4000.
+    # A listing that does not: the cap is hit exactly, and the head entry is
+    # still whole — the truncation is the tail, which is what the cap is for.
+    # This space has no human, so the listing is the whole result, and the
+    # listing is sorted by name, so `first` is the entry at the head.
+    first = "agent-with-a-long-name-1"
+    for n <- 1..80, do: insert_row(space_id, "agent-with-a-long-name-#{n}", longest)
+
+    content = list(space_id)
     assert String.length(content) == 4_000
-    assert content =~ ~s(mode: "act")
+    assert entry_for(content, first) =~ ~s(mode: "#{longest}")
   end
 
   # ---- helpers ----
