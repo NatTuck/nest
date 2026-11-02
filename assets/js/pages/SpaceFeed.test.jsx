@@ -326,6 +326,62 @@ describe("SpaceFeed", () => {
     );
   });
 
+  it("renders a note's body as markdown, through the transcript's renderer", () => {
+    withFeed(
+      readyFeed([
+        note({
+          content:
+            "**bold** and `code`\n\n- one\n- two\n\n[link](https://example.com)",
+        }),
+      ]),
+    );
+
+    renderFeed();
+
+    const card = screen
+      .getByRole("list", { name: "Notes" })
+      .querySelector("li");
+
+    expect(card.querySelector("strong")).toHaveTextContent("bold");
+    expect(card.querySelector("code")).toHaveTextContent("code");
+    // The markdown list, not the note list: the card is one of those.
+    expect(card.querySelectorAll("ul li")).toHaveLength(2);
+    expect(card.querySelector("a")).toHaveAttribute(
+      "href",
+      "https://example.com",
+    );
+    // The same prose container the transcript renders into, which is what brings
+    // the phone's overflow rules (a wrapped `<pre>`, a scrolling table).
+    expect(card.querySelector(".prose")).not.toBeNull();
+  });
+
+  it("cannot turn raw HTML in a note into live DOM", () => {
+    // A note's body is model output, so this is the question worth pinning.
+    // `@llamaindex/chat-ui`'s `Markdown` is `react-markdown` with `remark-gfm`,
+    // `remark-math` and `rehype-katex` — and *no* `rehype-raw`. Without it, a
+    // raw-HTML node is never parsed: the markup comes out as literal characters
+    // in a text node, so a tag never becomes an element and an attribute never
+    // becomes a handler. There is nothing to sanitise. If a `rehype-raw` ever
+    // appears in that stack, this test is what fails.
+    withFeed(
+      readyFeed([
+        note({ id: 1, content: "<script>alert(1)</script>" }),
+        note({ id: 2, content: '<img src="x" onerror="alert(2)">' }),
+      ]),
+    );
+
+    const { container } = renderFeed();
+
+    expect(container.querySelector("script")).toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("[onerror]")).toBeNull();
+    // The markup is *shown*, as characters: `textContent` carries the angle
+    // brackets, which a parsed element's text would not. The reader sees what the
+    // model wrote and none of it is markup.
+    expect(container.textContent).toContain("<script>alert(1)</script>");
+    expect(container.textContent).toContain('onerror="alert(2)"');
+  });
+
   it("says a query is still waiting for an answer, and says when it was answered", () => {
     withFeed(
       readyFeed([
@@ -452,6 +508,50 @@ describe("SpaceFeed", () => {
 
     // The reply's recipient is the agent that asked.
     expect(screen.getByLabelText("Send to")).toHaveValue("minion");
+  });
+
+  it("shows no owed reply for a query from an archived agent", () => {
+    // The agent was archived after it asked. Nothing can be sent to it — the
+    // recipient picker does not offer it either — so a reply button for it would
+    // be a control that cannot do anything.
+    withFeed(
+      readyFeed([note({ id: 1, from_name: "retired", kind: "query" })]),
+      {
+        archivedAgents: [{ name: "retired", space_id: 1, archived: true }],
+      },
+    );
+
+    renderFeed();
+
+    // The banner names one agent per owed reply, and there is nobody to name.
+    expect(
+      screen.queryByRole("button", { name: /Reply to/ }),
+    ).not.toBeInTheDocument();
+    // The note itself is still in the feed, with its own unanswered state: this
+    // fixes what is *owed*, not what was said. (The card's line is a fact about
+    // the row — `answered_at` is null — and the issue asks only for the banner.)
+    const notes = screen.getByRole("list", { name: "Notes" });
+    expect(notes).toHaveTextContent("from agent retired → you");
+    expect(notes).toHaveTextContent("waiting for your reply");
+  });
+
+  it("offers the live agent and leaves the archived one out", () => {
+    withFeed(
+      readyFeed([
+        note({ id: 1, from_name: "retired", kind: "query" }),
+        note({ id: 2, from_name: "boss", kind: "query" }),
+      ]),
+      { archivedAgents: [{ name: "retired", space_id: 1, archived: true }] },
+    );
+
+    renderFeed();
+
+    expect(
+      screen.getByRole("button", { name: "Reply to boss" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Reply to retired/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("renders no owed-reply banner when nothing is outstanding", () => {

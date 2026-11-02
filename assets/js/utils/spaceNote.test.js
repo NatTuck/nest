@@ -134,6 +134,25 @@ describe("owedAgents", () => {
     ]);
   });
 
+  it("leaves out an archived agent, which owes nothing anyone can answer", () => {
+    // An archived agent's process is stopped: its query is still a row in the
+    // feed, but there is no turn to answer from this page and no note the human
+    // could send that would clear it.
+    const notes = [
+      note({ id: 1, kind: "query", from_name: "retired" }),
+      note({ id: 2, kind: "query", from_name: "boss" }),
+    ];
+
+    expect(owedAgents(notes, "alice", new Set(["retired"]))).toEqual([
+      { name: "boss", count: 1 },
+    ]);
+    // With nothing archived, nothing changes.
+    expect(owedAgents(notes, "alice")).toEqual([
+      { name: "retired", count: 1 },
+      { name: "boss", count: 1 },
+    ]);
+  });
+
   it("leaves out a query from another human, who is not an agent to answer", () => {
     const notes = [
       note({

@@ -29,7 +29,7 @@
  * one it is. A read that failed never renders as "nothing has been said".
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useStore } from "../store";
 import { requestSpaceFeed, sendSpaceNote } from "../channels";
 import { ChatInput } from "../components/ChatInput";
@@ -37,6 +37,7 @@ import { spaceDraftKey } from "../store/slices/composer";
 import { JumpToBottomButton } from "../components/JumpToBottomButton";
 import { SendErrorBanner } from "../components/SendErrorBanner";
 import { SpaceEnvironmentCard } from "../components/SpaceEnvironmentCard";
+import { MessageContent } from "../components/MessageContent";
 import { SpacePausedBanner } from "../components/SpacePausedBanner";
 import { useAgentMode } from "../hooks/useAgentMode";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
@@ -112,7 +113,22 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
     defaultMode: feed?.defaultMode ?? null,
   });
 
-  const owed = owedAgents(feed?.notes, me);
+  // An archived agent owes nothing (see `owedAgents`), so the projection is told
+  // which agents are archived. The store keeps them in their own list — the one
+  // the sidebar's archived rows come from — and they are still rows in
+  // `feed.notes`, which is why the notes alone cannot answer this.
+  const archivedAgents = useStore((state) => state.archivedAgents);
+  const archivedNames = useMemo(
+    () =>
+      new Set(
+        (archivedAgents ?? [])
+          .filter((agent) => agent.space_id === space.id)
+          .map((agent) => agent.name),
+      ),
+    [archivedAgents, space.id],
+  );
+
+  const owed = owedAgents(feed?.notes, me, archivedNames);
   const mode = currentMode ?? feed?.defaultMode ?? null;
 
   // The same follow/pin behaviour the agent page has, over the feed's notes.
@@ -294,7 +310,16 @@ function FeedNotes({ feed, me, onRetry }) {
   );
 }
 
-/** One note: who said it to whom, when, what, and whether it awaits an answer. */
+/**
+ * One note: who said it to whom, when, what, and whether it awaits an answer.
+ *
+ * The body is markdown, rendered through `MessageContent` — the same component
+ * the chat transcript uses, which is `@llamaindex/chat-ui`'s `Markdown` — rather
+ * than as plain text. A note is model output like any other assistant message,
+ * and the two places it can be read should not disagree about what it says.
+ * That component also brings the overflow rules (code wraps, tables scroll)
+ * that keep a wide body inside the phone's column.
+ */
 function NoteCard({ note, me }) {
   const incoming = isIncoming(note, me);
   const runtime = note.from_kind === "runtime";
@@ -318,9 +343,10 @@ function NoteCard({ note, me }) {
         </time>
       </div>
 
-      <p className="mt-2 whitespace-pre-wrap text-sm text-gray-800">
-        {note.content}
-      </p>
+      <MessageContent
+        parts={[{ kind: "text", text: note.content }]}
+        className="mt-2 text-sm text-gray-800"
+      />
 
       {note.kind === "query" && (
         <p className="mt-2 text-xs font-medium text-indigo-700">
