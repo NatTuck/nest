@@ -147,15 +147,14 @@ defmodule Nest.Agents.AgentAgentsMdTest do
           Mounts.new(nil, nil),
           {nil, nil},
           "agent",
-          0,
-          nil
+          %SystemPrompt.Identity{depth: 0, model: nil}
         )
 
       refute system_prompt =~ "Here are AGENTS.md guidelines for this project:"
     end
   end
 
-  # `compose_vocation_config/6` is re-run **mid-session** (on compaction), so both
+  # `compose_vocation_config/5` is re-run **mid-session** (on compaction), so both
   # arms below are reachable while an agent is running — no agent can *start* in a
   # workspace the gate refuses, which is why the start-time tests cannot see them.
   describe "an AGENTS.md that is not a regular file" do
@@ -201,8 +200,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
         Mounts.new(workspace, nil),
         {128_000, :default},
         "agent-under-test",
-        0,
-        nil
+        %SystemPrompt.Identity{depth: 0, model: nil}
       )
 
     prompt
