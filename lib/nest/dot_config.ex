@@ -15,6 +15,13 @@ defmodule Nest.DotConfig do
   @config_dir :filename.basedir(:user_config, "nest")
   @config_file Path.join(@config_dir, "config.toml")
 
+  # The optional top-level key `local.toml` uses to record the providers the
+  # user deleted in the app. The merge drops these names from the merged set
+  # whichever file defines them, which is what makes a deletion stick: the
+  # overlay cannot just *omit* a provider, because `config.toml` would supply it
+  # again on the next load. `Nest.DotConfig.Writer` maintains the list.
+  @deleted_providers_key "deleted-providers"
+
   # Default bound on silence *before the first streamed chunk*, in seconds.
   # A long-context cache miss has to prefill the whole prompt before it can
   # emit anything, and the provider may queue the request first, so this is
@@ -79,9 +86,25 @@ defmodule Nest.DotConfig do
   def default_stream_idle_timeout_seconds, do: @default_stream_idle_timeout_seconds
 
   @doc """
+  Returns the full path to `config.toml` — the base config, which the app never
+  writes. `Nest.DotConfig.Writer` reads it to know which provider names a
+  deletion has to be recorded against, because those are the names that would
+  otherwise come back.
+  """
+  def config_file, do: default_config_file()
+
+  defp default_config_file do
+    if Mix.env() == :test do
+      Path.join([File.cwd!(), "test", "data", "config.toml"])
+    else
+      @config_file
+    end
+  end
+
+  @doc """
   Returns the full path to local.toml — the user's overlay config edited
   from the in-app Providers screen. `local.toml` is merged over
-  `config.toml` (local wins per provider); `config.toml` is never
+  `config.toml` per provider name (local wins); `config.toml` is never
   modified by the app.
   """
   def local_file, do: default_local_file()
@@ -99,31 +122,38 @@ defmodule Nest.DotConfig do
   In test environment, loads from test/data/config.toml instead of the default location.
 
   The user's `local.toml` (if present) is merged over `config.toml`:
-  providers/models defined in `local.toml` override the same-named entries
-  in `config.toml`, and top-level scalars from `local.toml` win.
+
+    * **providers merge per name.** A name `local.toml` defines replaces the
+      same-named entry from `config.toml`, and every other provider
+      `config.toml` defines survives. (The overlay used to replace the whole
+      table, so one provider in `local.toml` hid every provider in
+      `config.toml` — add one there and rescan, and nothing appeared.)
+    * **`deleted-providers = ["name", …]` deletes.** The names in that
+      top-level key are dropped from the merged set whichever file defines
+      them, which is how a provider deleted in the app stays deleted instead of
+      being re-added from `config.toml` on the next load. A file without the
+      key is a file that deletes nothing. `Nest.DotConfig.Writer` maintains it;
+      it belongs in `local.toml`, and the key is inert in `config.toml`.
+    * **top-level scalars** from `local.toml` win per key.
+
+  `models` is derived from the merged provider list, so a provider that appears
+  or disappears takes its models with it.
   """
   def load do
-    base =
-      if Mix.env() == :test do
-        Path.join([File.cwd!(), "test", "data", "config.toml"])
-      else
-        @config_file
-      end
-
-    # `__MODULE__.local_file()` is a remote self-call on purpose: Mimic
-    # copies `Nest.DotConfig` by renaming the original to
-    # `Nest.DotConfig.Mimic.Original.Module` and installing a proxy under
-    # `Nest.DotConfig`. A bare local `local_file()` would bind to the
-    # renamed original and bypass the proxy, so this *internal* read of
-    # `load/0` would ignore the `Mimic.stub(Nest.DotConfig, :local_file, ...)`
-    # that `lobby_channel/providers_test.exs` sets and silently fall back to
-    # `config.toml` (`test/data/local.toml` does not exist). The writer is
-    # unaffected: `dot_config/writer.ex` reaches the proxy through its own
-    # remote `DotConfig.local_file()`. This relies on `local_file/0` staying
-    # public — private is a loud compile warning (an error under
-    # `--warnings-as-errors`), but dropping the `__MODULE__.` prefix is a
-    # silent re-break of that test.
-    merge_loads(load(base), load(__MODULE__.local_file()))
+    # `__MODULE__.config_file()` / `__MODULE__.local_file()` are remote
+    # self-calls on purpose: Mimic copies `Nest.DotConfig` by renaming the
+    # original to `Nest.DotConfig.Mimic.Original.Module` and installing a proxy
+    # under `Nest.DotConfig`. A bare local call would bind to the renamed
+    # original and bypass the proxy, so this *internal* read of `load/0` would
+    # ignore the `Mimic.stub(Nest.DotConfig, :local_file, ...)` that
+    # `lobby_channel/providers_test.exs` and the merge tests set, and silently
+    # fall back to the real path (`test/data/local.toml` does not exist). The
+    # writer is unaffected: `dot_config/writer.ex` reaches the proxy through its
+    # own remote `DotConfig.local_file()` / `DotConfig.config_file()`. This
+    # relies on both accessors staying public — private is a loud compile
+    # warning (an error under `--warnings-as-errors`), but dropping the
+    # `__MODULE__.` prefix is a silent re-break of those tests.
+    merge_loads(load(__MODULE__.config_file()), load(__MODULE__.local_file()))
     # `&resolve_api_key/1` is a local capture on purpose: `Nest.DotConfig` is
     # Mimic-wrapped, so a remote `__MODULE__.resolve_api_key/1` would go
     # through the proxy and pick up any stub. See `KeyValidation`.
@@ -141,32 +171,48 @@ defmodule Nest.DotConfig do
   defp merge_loads({:error, reason}, _local), do: {:error, reason}
 
   defp merge_configs(base, local) do
-    # `local.toml` is the authoritative provider list when it defines one
-    # (the app always writes the full set it manages), so a provider
-    # deleted from the GUI actually disappears rather than being
-    # re-added from `config.toml`. Other top-level scalars merge with
-    # local winning per key.
+    # Providers merge **per name**, and `local.toml` wins where it defines the
+    # name. The overlay used to replace the whole table when it defined any
+    # provider at all, so one provider in `local.toml` discarded every provider
+    # in `config.toml`: the GUI writes the full set it manages, so after the
+    # first save `config.toml`'s providers were invisible, and adding one and
+    # hitting "Rescan providers" showed nothing.
+    #
+    # Deletion still sticks, because it is recorded rather than inferred:
+    # `deleted-providers` drops those names from the merged set, so the drop is
+    # the same whichever side supplied the provider. `Nest.DotConfig.Writer`
+    # maintains the list — it is what makes "delete in the GUI" survive the next
+    # load. The drop is on the merged map and not on `base` for exactly that
+    # reason: a name must be gone however it got here.
     providers =
-      if map_size(local.providers) > 0, do: local.providers, else: base.providers
+      base.providers
+      |> Map.merge(local.providers)
+      |> Map.drop(local.deleted_providers)
 
-    models =
-      providers
-      |> Map.values()
-      |> Enum.flat_map(fn p ->
-        (p.models || []) |> Enum.map(&%{&1 | provider_name: p.name})
-      end)
-      |> Map.new(fn m -> {m.name, m} end)
+    models = derive_models(providers)
 
     %{
       base
       | providers: providers,
         models: models,
+        deleted_providers: local.deleted_providers,
         max_tool_iterations: local.max_tool_iterations || base.max_tool_iterations,
         max_depth: local.max_depth || base.max_depth,
         max_concurrency: local.max_concurrency || base.max_concurrency,
         max_async_message_tokens: local.max_async_message_tokens || base.max_async_message_tokens,
         default_thinking_effort: local.default_thinking_effort || base.default_thinking_effort
     }
+  end
+
+  # The flat models map, derived from the merged provider list so a provider
+  # that appears or disappears takes its models with it.
+  defp derive_models(providers) do
+    providers
+    |> Map.values()
+    |> Enum.flat_map(fn p ->
+      (p.models || []) |> Enum.map(&%{&1 | provider_name: p.name})
+    end)
+    |> Map.new(fn m -> {m.name, m} end)
   end
 
   @doc """
@@ -371,29 +417,62 @@ defmodule Nest.DotConfig do
   # Private functions
 
   defp parse_config(raw_config) do
-    providers =
-      raw_config
-      |> Map.get("providers", %{})
-      |> Enum.map(fn {name, provider_data} ->
-        {name, parse_provider(name, provider_data)}
-      end)
-      |> Map.new()
+    providers = parse_providers(raw_config)
+    settings = parse_settings(raw_config)
 
-    # Build a flat models map for easy lookup
-    models =
-      providers
-      |> Enum.flat_map(fn {provider_name, provider} ->
-        (provider.models || [])
-        |> Enum.map(fn model ->
-          {model.name, %{model | provider_name: provider_name}}
-        end)
-      end)
-      |> Map.new()
+    # A file may not both define and delete the same provider. That is the
+    # writer's own invariant, so a file carrying both was edited by hand and one
+    # of the two lines is a mistake. Refusing it names the provider instead of
+    # picking a winner, which would leave the file saying two things and meaning
+    # one — and the winner would be whichever line the merge happened to apply
+    # last.
+    refuse_deleted_provider_contradictions!(providers, settings.deleted_providers)
 
-    Map.merge(
-      %{providers: providers, models: models},
-      parse_settings(raw_config)
-    )
+    Map.merge(%{providers: providers, models: derive_models(providers)}, settings)
+  end
+
+  defp parse_providers(raw_config) do
+    raw_config
+    |> Map.get("providers", %{})
+    |> Enum.map(fn {name, provider_data} -> {name, parse_provider(name, provider_data)} end)
+    |> Map.new()
+  end
+
+  # Parses the optional top-level `deleted-providers` list: absent means none, a
+  # list of provider names is kept, and anything else raises. `local.toml` is
+  # user-editable, so a hand-written `deleted-providers = "pegasus"` has to be a
+  # refusal naming the key — not a crash on `Enum`, and above all not a silent
+  # `[]`, which would bring a deleted provider back on the next load.
+  defp parse_deleted_providers(nil), do: []
+
+  defp parse_deleted_providers(names) when is_list(names) do
+    Enum.map(names, &parse_deleted_provider/1)
+  end
+
+  defp parse_deleted_providers(other) do
+    raise "Invalid #{@deleted_providers_key} #{inspect(other)}: " <>
+            "must be a list of provider names"
+  end
+
+  defp parse_deleted_provider(name) when is_binary(name) do
+    # The same rule a provider key follows, so a tombstone can only ever name
+    # something the providers table could hold.
+    FieldValidation.provider_name(name)
+  end
+
+  defp parse_deleted_provider(other) do
+    raise "Invalid #{@deleted_providers_key} entry #{inspect(other)}: must be a provider name"
+  end
+
+  defp refuse_deleted_provider_contradictions!(providers, deleted_providers) do
+    case Enum.find(deleted_providers, &Map.has_key?(providers, &1)) do
+      nil ->
+        :ok
+
+      name ->
+        raise "Provider #{name}: is both defined and listed in #{@deleted_providers_key}; " <>
+                "a provider can be defined or deleted, not both"
+    end
   end
 
   # Parse the top-level scalar settings. Kept separate from
@@ -407,7 +486,8 @@ defmodule Nest.DotConfig do
       max_async_message_tokens:
         parse_max_async_message_tokens(Map.get(raw_config, "max-async-message-tokens")),
       default_thinking_effort:
-        parse_thinking_effort(Map.get(raw_config, "default-thinking-effort"))
+        parse_thinking_effort(Map.get(raw_config, "default-thinking-effort")),
+      deleted_providers: parse_deleted_providers(Map.get(raw_config, @deleted_providers_key))
     }
   end
 

@@ -7,7 +7,10 @@ defmodule NestWeb.LobbyChannel.Providers do
   for the GUI (used in the lobby `init` payload and the
   `providers_updated` broadcast). `save/2` persists the provider set
   to `~/.config/nest/local.toml` (never `config.toml`), reloads the
-  runtime model cache, and broadcasts the new list.
+  runtime model cache, and broadcasts the new list. The write also
+  records the providers the payload dropped, so a provider deleted in
+  the GUI is not re-added from `config.toml` on the next load
+  (`Nest.DotConfig.Writer` owns that record).
 
   Admin-only: callers must authorize `is_admin` before calling
   `save/2`.
@@ -51,8 +54,8 @@ defmodule NestWeb.LobbyChannel.Providers do
         Phoenix.Channel.broadcast(socket, "providers_updated", %{providers: providers()})
         {:reply, :ok, socket}
 
-      {:error, _reason} ->
-        {:reply, {:error, %{"reason" => "failed_to_save"}}, socket}
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => "failed_to_save", "message" => reason}}, socket}
     end
   rescue
     error ->
