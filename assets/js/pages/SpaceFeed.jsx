@@ -29,7 +29,7 @@
  * one it is. A read that failed never renders as "nothing has been said".
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useStore } from "../store";
 import { requestSpaceFeed, sendSpaceNote } from "../channels";
 import { ChatInput } from "../components/ChatInput";
@@ -37,12 +37,18 @@ import { spaceDraftKey } from "../store/slices/composer";
 import { JumpToBottomButton } from "../components/JumpToBottomButton";
 import { SendErrorBanner } from "../components/SendErrorBanner";
 import { SpaceEnvironmentCard } from "../components/SpaceEnvironmentCard";
+import { MessageContent } from "../components/MessageContent";
 import { SpacePausedBanner } from "../components/SpacePausedBanner";
 import { useAgentMode } from "../hooks/useAgentMode";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { errorText } from "../utils/errorText";
 import { formatTimestamp } from "../utils/formatTimestamp";
-import { isIncoming, noteDirection, owedAgents } from "../utils/spaceNote";
+import {
+  isIncoming,
+  noteDirection,
+  owedAgents,
+  queryReplyState,
+} from "../utils/spaceNote";
 
 // A fresh list per call would be a new reference every render, which the
 // composer's history reset keys off. The feed has no history to walk: it is not
@@ -112,7 +118,22 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
     defaultMode: feed?.defaultMode ?? null,
   });
 
-  const owed = owedAgents(feed?.notes, me);
+  // An archived agent owes nothing (see `owedAgents`), so the projection is told
+  // which agents are archived. The store keeps them in their own list — the one
+  // the sidebar's archived rows come from — and they are still rows in
+  // `feed.notes`, which is why the notes alone cannot answer this.
+  const archivedAgents = useStore((state) => state.archivedAgents);
+  const archivedNames = useMemo(
+    () =>
+      new Set(
+        (archivedAgents ?? [])
+          .filter((agent) => agent.space_id === space.id)
+          .map((agent) => agent.name),
+      ),
+    [archivedAgents, space.id],
+  );
+
+  const owed = owedAgents(feed?.notes, me, archivedNames);
   const mode = currentMode ?? feed?.defaultMode ?? null;
 
   // The same follow/pin behaviour the agent page has, over the feed's notes.
@@ -186,6 +207,7 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
         <FeedNotes
           feed={feed}
           me={me}
+          archived={archivedNames}
           onRetry={() => requestSpaceFeed(space.id)}
         />
         <div ref={setNotesEndEl} />
@@ -241,7 +263,7 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
  * A failed read says so and offers the retry; a read still in flight says so; and
  * an empty feed is only claimed once the server has answered with an empty list.
  */
-function FeedNotes({ feed, me, onRetry }) {
+function FeedNotes({ feed, me, archived, onRetry }) {
   if (!feed || feed.status === "loading") {
     return (
       <p className="py-12 text-center text-sm text-gray-500">
@@ -288,14 +310,39 @@ function FeedNotes({ feed, me, onRetry }) {
   return (
     <ul aria-label="Notes" className="space-y-2">
       {feed.notes.map((note) => (
-        <NoteCard key={note.id} note={note} me={me} />
+        <NoteCard key={note.id} note={note} me={me} archived={archived} />
       ))}
     </ul>
   );
 }
 
-/** One note: who said it to whom, when, what, and whether it awaits an answer. */
-function NoteCard({ note, me }) {
+/**
+ * What a `query` row's status line says, one line per state `queryReplyState/3`
+ * decides.
+ *
+ * The archived case is the one that is not obvious: the row is still unanswered
+ * (nobody has answered it, and the card says so), but the agent that asked is
+ * stopped, so there is no reply to give. Inviting one would contradict the
+ * owed-reply banner, which leaves an archived agent out for the same reason.
+ */
+const QUERY_REPLY_TEXT = {
+  answered: "you answered",
+  owed: "waiting for your reply",
+  awaiting: "waiting for an answer",
+  archived: "waiting for an answer (agent archived)",
+};
+
+/**
+ * One note: who said it to whom, when, what, and whether it awaits an answer.
+ *
+ * The body is markdown, rendered through `MessageContent` — the same component
+ * the chat transcript uses, which is `@llamaindex/chat-ui`'s `Markdown` — rather
+ * than as plain text. A note is model output like any other assistant message,
+ * and the two places it can be read should not disagree about what it says.
+ * That component also brings the overflow rules (code wraps, tables scroll)
+ * that keep a wide body inside the phone's column.
+ */
+function NoteCard({ note, me, archived }) {
   const incoming = isIncoming(note, me);
   const runtime = note.from_kind === "runtime";
 
@@ -318,17 +365,14 @@ function NoteCard({ note, me }) {
         </time>
       </div>
 
-      <p className="mt-2 whitespace-pre-wrap text-sm text-gray-800">
-        {note.content}
-      </p>
+      <MessageContent
+        parts={[{ kind: "text", text: note.content }]}
+        className="mt-2 text-sm text-gray-800"
+      />
 
       {note.kind === "query" && (
         <p className="mt-2 text-xs font-medium text-indigo-700">
-          {incoming
-            ? note.answered_at
-              ? "you answered"
-              : "waiting for your reply"
-            : "waiting for an answer"}
+          {QUERY_REPLY_TEXT[queryReplyState(note, me, archived)]}
         </p>
       )}
     </li>

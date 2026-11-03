@@ -14,6 +14,7 @@ defmodule NestWeb.LobbyChannel.Providers do
   """
 
   alias Nest.DotConfig
+  alias Nest.DotConfig.FieldValidation
   alias Nest.DotConfig.Model
   alias Nest.DotConfig.ModelValidation
   alias Nest.DotConfig.Provider
@@ -111,15 +112,19 @@ defmodule NestWeb.LobbyChannel.Providers do
   end
 
   defp provider_from_map(m) do
-    name = provider_name(m["name"])
+    # The name is the provider's key in `local.toml` and how it is addressed
+    # everywhere, so a blank or whitespace-only one is not a provider — the
+    # shared rule, so the reader refuses the same keys (#105 S3).
+    name = FieldValidation.provider_name(m["name"])
 
     %Provider{
       name: name,
       base_url: m["base_url"],
       api_key: api_key(m["api_key"], name),
-      protocol: m["protocol"] || "openai",
-      auto_models: m["auto_models"] || false,
-      models: Enum.map(m["models"] || [], &model_from_map(&1, name))
+      models:
+        m["models"]
+        |> ModelValidation.validate_models(name)
+        |> Enum.map(&model_from_map(&1, name))
     }
     |> Map.merge(validated_fields(m, name))
   end
@@ -169,26 +174,19 @@ defmodule NestWeb.LobbyChannel.Providers do
       default_context_limit: default_context_limit(m["default_context_limit"], name),
       default_thinking_effort: parse_effort(m["default_thinking_effort"]),
       probe_base_url: probe_base_url(m["probe_base_url"], name),
-      auto_probe: if(is_boolean(m["auto_probe"]), do: m["auto_probe"], else: true),
-      expose_models: if(is_boolean(m["expose_models"]), do: m["expose_models"], else: false),
-      probe_multimodal: parse_probe_multimodal(m["probe_multimodal"])
+      protocol: FieldValidation.protocol(m["protocol"], name),
+      # One rule for all four flags, on both sides (#105 S1). `auto_models` used
+      # to be `m["auto_models"] || false`, which wrote `"no"` through and read
+      # back as truthy — a typo that silently turned discovery **on**. The three
+      # siblings used to coerce a non-boolean to their default here while the
+      # reader raised on it; they are refused now, like `probe_multimodal`
+      # already was.
+      auto_models: FieldValidation.boolean(m["auto_models"], name, "auto_models", false),
+      auto_probe: FieldValidation.boolean(m["auto_probe"], name, "auto_probe", true),
+      expose_models: FieldValidation.boolean(m["expose_models"], name, "expose_models", false),
+      probe_multimodal:
+        FieldValidation.boolean(m["probe_multimodal"], name, "probe_multimodal", false)
     }
-  end
-
-  # The provider's name is its key in `local.toml` and how it is addressed
-  # everywhere, so an absent or blank one is not a provider. Both used to be
-  # accepted, and they collapsed onto the *same* key — `{"name": ""}` and
-  # `{"name": null}` both wrote `[providers.""]` — so two different payloads
-  # produced one unaddressable provider. The GUI's "add provider" starts a row at
-  # `name: ""`, so refusing it means the operator names the provider before
-  # saving, exactly as the model-name rule already requires.
-  #
-  # The reader is left alone: a TOML key is always a string, so there is no
-  # non-binary shape to refuse, and an empty one reaches no raising consumer.
-  defp provider_name(name) when is_binary(name) and name != "", do: name
-
-  defp provider_name(name) do
-    raise "invalid provider name #{inspect(name)}: must be a non-empty string"
   end
 
   # `base-url` is the last field of this class, and the same shape as
@@ -216,19 +214,6 @@ defmodule NestWeb.LobbyChannel.Providers do
 
   defp probe_base_url(url, provider_name) do
     ModelValidation.validate_probe_base_url(url, provider_name)
-  end
-
-  # The opt-in is a boolean, and it is persisted: a non-boolean in the payload
-  # is a typo, not a request to opt out, so it raises rather than being
-  # silently coerced to `false` (which would write the wrong value to
-  # `local.toml`). The function-level `rescue` in `save/2` turns the raise into
-  # `invalid_payload`, exactly as a bad thinking-effort value does. Absent
-  # (`nil`) keeps the documented default of `false`, matching the TOML parser.
-  defp parse_probe_multimodal(value) when is_boolean(value), do: value
-  defp parse_probe_multimodal(nil), do: false
-
-  defp parse_probe_multimodal(value) do
-    raise "invalid probe_multimodal #{inspect(value)}: must be a boolean"
   end
 
   defp model_from_map(m, provider_name) do

@@ -1,6 +1,7 @@
 defmodule Nest.DotConfig.ModelValidation do
   @moduledoc """
-  Read-time validation for a `[[providers.<name>.models]]` entry's values.
+  Read-time validation for a `[[providers.<name>.models]]` entry's values, and
+  for the provider's `models` list itself.
 
   These live apart from `Nest.DotConfig` to keep that module under its
   file-length cap — the same reason `Nest.DotConfig.KeyValidation` and
@@ -11,10 +12,10 @@ defmodule Nest.DotConfig.ModelValidation do
   when the config is read, not on the first LLM call, and not as a crash inside
   the `models-list` tool.
 
-  `validate_name/2` and `validate_multi_modal/3` are also called by
-  `NestWeb.LobbyChannel.Providers` on the **write** side, so a value the GUI
-  accepts is a value the reader accepts. See `Nest.DotConfig.FieldValidation`
-  for why that sharing matters.
+  `validate_name/2`, `validate_multi_modal/3` and `validate_models/2` are also
+  called by `NestWeb.LobbyChannel.Providers` on the **write** side, so a value
+  the GUI accepts is a value the reader accepts. See
+  `Nest.DotConfig.FieldValidation` for why that sharing matters.
   """
 
   alias Nest.DotConfig.FieldValidation
@@ -80,6 +81,38 @@ defmodule Nest.DotConfig.ModelValidation do
   def validate_multi_modal(value, provider_name, model_name) do
     raise "Provider #{provider_name}#{subject(model_name)}: invalid multi-modal " <>
             "#{inspect(value)}: must be a table"
+  end
+
+  @doc """
+  A provider's `models` list, or a raise. `nil` means unset, which the reader
+  treats as no models.
+
+  The value is returned as given; parsing each entry is the caller's (both sides
+  build their own model struct). What this refuses is the *shape*: a non-list
+  (`models = 7`), and a list holding something that is not a table.
+
+  Both sides call it, because they used to disagree in the least useful way: the
+  reader raised `"must be an array of tables"` while the writer's `Enum.map/2`
+  raised `protocol Enumerable not implemented for type Integer`, and that raw
+  protocol error is what `save/2`'s `rescue` put in front of the operator. A
+  `[7]` entry was worse still — the reader reached `Map.get(7, "name")` and
+  raised `BadMapError`, which is a refusal but says nothing about `models`.
+  """
+  @spec validate_models(term(), String.t() | nil) :: [map()]
+  def validate_models(nil, _provider_name), do: []
+
+  def validate_models(models, provider_name) when is_list(models) do
+    Enum.each(models, fn
+      %{} -> :ok
+      entry -> raise invalid_models_entry_message(entry, provider_name)
+    end)
+
+    models
+  end
+
+  def validate_models(value, provider_name) do
+    raise "Provider #{provider_name}: invalid models #{inspect(value)}: " <>
+            "must be an array of tables"
   end
 
   @doc """
@@ -224,6 +257,11 @@ defmodule Nest.DotConfig.ModelValidation do
 
   defp subject(nil), do: ""
   defp subject(name), do: ", model #{name}"
+
+  defp invalid_models_entry_message(entry, provider_name) do
+    "Provider #{provider_name}: invalid models entry #{inspect(entry)}: " <>
+      "must be a table"
+  end
 
   defp invalid_modalities_message(input, provider_name, model_name) do
     "Provider #{provider_name}#{subject(model_name)}: invalid multi-modal input " <>

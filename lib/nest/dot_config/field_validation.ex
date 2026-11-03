@@ -57,6 +57,90 @@ defmodule Nest.DotConfig.FieldValidation do
   end
 
   @doc """
+  A boolean, or a raise. `nil` means "not set here" and takes `default`.
+
+  Used for every provider flag — `auto-models`, `auto-probe`, `expose-models`,
+  `probe-multimodal` — on both sides. The rule is one rule because the defect it
+  prevents is the two sides disagreeing: `auto-models = "no"` was truthy, so a
+  typo silently turned auto-discovery **on**, and the writer's `|| false` wrote
+  the string through. `nil` is not the same as `false`: the reader substitutes
+  the documented default, and the writer's payload omits an untouched checkbox.
+  """
+  @spec boolean(term(), String.t() | nil, String.t(), boolean()) :: boolean()
+  def boolean(nil, _provider_name, _field, default), do: default
+
+  def boolean(value, _provider_name, _field, _default) when is_boolean(value), do: value
+
+  def boolean(value, provider_name, field, _default) do
+    raise "Provider #{provider_name}: invalid #{field} #{inspect(value)}: must be a boolean"
+  end
+
+  # The protocols `protocol/2` accepts: the set the two consumers implement
+  # (`Nest.EndpointProbe.protocol_atom/1`, `Nest.LLM.MultimodalProbe.wire_format/1`).
+  @protocols ["openai", "anthropic"]
+
+  @doc """
+  The protocols `protocol/2` accepts.
+
+  Public because the GUI's editor has to offer the same set
+  (`assets/js/components/providerConstants.js`'s `PROTOCOLS`) and the browser
+  cannot read this module, so the list is written down twice.
+  `Nest.DotConfigJsDefaultsTest` reads that file and fails when the two drift, so
+  a protocol added here without the editor (or the reverse) is a test failure
+  rather than a config refused at load for a value the editor offers.
+  """
+  @spec protocols() :: [String.t()]
+  def protocols, do: @protocols
+
+  @doc """
+  A provider's `protocol`, or a raise. `nil` means the documented default,
+  `"openai"`.
+
+  The two consumers both have a catch-all that means `"openai"`
+  (`Nest.EndpointProbe.protocol_atom/1`, `Nest.LLM.MultimodalProbe.wire_format/1`),
+  so a `protocol = "bogus"` was silently OpenAI-compatible on both sides and
+  nothing ever said so. The set is `protocols/0`'s.
+  """
+  @spec protocol(term(), String.t() | nil) :: String.t()
+  def protocol(nil, _provider_name), do: "openai"
+
+  def protocol(value, _provider_name) when value in @protocols, do: value
+
+  def protocol(value, provider_name) do
+    raise "Provider #{provider_name}: invalid protocol #{inspect(value)}: " <>
+            "must be one of #{Enum.map_join(@protocols, ", ", &inspect/1)}"
+  end
+
+  @doc """
+  A provider's name, or a raise.
+
+  The name is the provider's key in `local.toml` and how it is addressed
+  everywhere, so an absent, blank or whitespace-only one is not a provider. A
+  blank name used to be accepted, and `{"name": ""}` and `{"name": null}`
+  collapsed onto the same key, `[providers.""]`, so two different payloads
+  produced one unaddressable provider; `" "` then slipped past the blank rule
+  and persisted as `[providers." "]`, which undercut the wording of the rule it
+  had just passed.
+
+  Both sides call it. The reader's key is always a string, so the non-binary
+  shapes are the writer's, but a whitespace-only *key* in a hand-written file is
+  the same unaddressable provider and is refused at load like any other bad
+  value.
+  """
+  @spec provider_name(term()) :: String.t()
+  def provider_name(name) when is_binary(name) do
+    if String.trim(name) == "" do
+      raise "invalid provider name #{inspect(name)}: must be a non-empty string"
+    else
+      name
+    end
+  end
+
+  def provider_name(name) do
+    raise "invalid provider name #{inspect(name)}: must be a non-empty string"
+  end
+
+  @doc """
   A non-empty string, or a raise.
 
   Used for a provider's `probe-base-url`. `nil` is the caller's business — the

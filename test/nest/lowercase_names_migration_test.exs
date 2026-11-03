@@ -450,8 +450,7 @@ defmodule Nest.LowercaseNamesMigrationTest do
         Mounts.new(nil, nil),
         {nil, nil},
         name,
-        0,
-        nil
+        %SystemPrompt.Identity{depth: 0, model: nil}
       )
 
     insert_message(agent_id, 0, "system", prompt <> Keyword.get(opts, :extra, ""))

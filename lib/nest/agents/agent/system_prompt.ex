@@ -25,6 +25,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   """
 
   alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.SystemPrompt.Identity
   alias Nest.Messages.Sanitize
   alias Nest.Models.MultiModal
   alias Nest.Modes
@@ -114,20 +115,18 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
   The `name` argument is the agent's readable identifier; it
   is rendered into an identity line telling the agent its name
-  and spawn depth. The `depth` argument is the agent's distance
-  from its tree root (0 for roots, `parent.depth + 1` for
-  children). The identity line reports `depth` of
-  `Config.configured_max_depth/0`. Note: a clone inherits this
-  system message from its parent, so the reported name/depth
-  may be stale once cloned — the clone's own "You are the
-  clone" notice supersedes it.
-  The `model` argument is the agent's model **name** (a string, or `nil` for a
-  caller that has no model to state). It renders the model section — the model's
-  name and whether we treat it as accepting image input — which is the only
-  place an agent is told what *its own* model accepts (`file-read`'s description
-  states the capability unconditionally, because it is the same text for every
-  agent). It has no default on purpose: a default of `nil` would silently omit a
-  section that is identity rather than tool reference.
+  and spawn depth. The `identity` argument carries the agent's
+  spawn `depth` (0 for roots, `parent.depth + 1` for children,
+  reported as `depth` of `Config.configured_max_depth/0`) and its
+  model **name** (a string, or `nil` for a caller that has no model
+  to state), which renders the model section. They are a struct
+  rather than two more positional arguments — see
+  `Nest.Agents.Agent.SystemPrompt.Identity` for why (#128) — and
+  neither has a default on purpose: a default of `nil` would
+  silently omit a section that is identity rather than tool
+  reference. Note: a clone inherits this system message from its
+  parent, so the reported name/depth may be stale once cloned — the
+  clone's own "You are the clone" notice supersedes it.
   It takes no `mode`. The modes are universal (`Nest.Modes`) and an agent's
   mode is a runtime property, so the composer renders the constant catalog and
   states the mode nowhere: every message already states it. The `AGENTS.md` read
@@ -139,20 +138,19 @@ defmodule Nest.Agents.Agent.SystemPrompt do
           Mounts.t(),
           {integer() | nil, atom() | nil},
           String.t(),
-          non_neg_integer(),
-          String.t() | nil
+          Identity.t()
         ) ::
           {String.t() | nil, [String.t()], Nest.Vocations.Vocation.t() | nil}
-  def compose_vocation_config(nil, _mounts, _context_limit_info, _name, _depth, _model),
+  def compose_vocation_config(nil, _mounts, _context_limit_info, _name, _identity),
     do: {nil, [], nil}
 
-  def compose_vocation_config(vocation, mounts, context_limit_info, name, depth, model) do
+  def compose_vocation_config(vocation, mounts, context_limit_info, name, identity) do
     tools = Groups.expand(vocation.tools || [])
 
     system_prompt =
       (vocation.system_prompt || "") <>
         modes_section(tools, mounts) <>
-        build_suffix(mounts, context_limit_info, name, depth, tools, model) <>
+        build_suffix(mounts, context_limit_info, name, identity, tools) <>
         agents_md_section(mounts) <>
         Nest.ProjectConfig.section(Mounts.workspace(mounts))
 
@@ -186,9 +184,9 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
   defp modes_marker(false), do: "\n\n[Available modes]\n\n"
 
-  defp build_suffix(mounts, context_limit_info, name, depth, tools, model) do
-    identity_section(name, depth) <>
-      model_section(model) <>
+  defp build_suffix(mounts, context_limit_info, name, identity, tools) do
+    identity_section(name, identity.depth) <>
+      model_section(identity.model) <>
       tool_sections(tools, mounts, name) <>
       context_limit_section(context_limit_info)
   end

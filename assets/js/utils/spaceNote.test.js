@@ -14,6 +14,7 @@ import {
   noteEnd,
   owedAgents,
   owedQueries,
+  queryReplyState,
 } from "./spaceNote";
 
 const note = (overrides) => ({
@@ -134,6 +135,25 @@ describe("owedAgents", () => {
     ]);
   });
 
+  it("leaves out an archived agent, which owes nothing anyone can answer", () => {
+    // An archived agent's process is stopped: its query is still a row in the
+    // feed, but there is no turn to answer from this page and no note the human
+    // could send that would clear it.
+    const notes = [
+      note({ id: 1, kind: "query", from_name: "retired" }),
+      note({ id: 2, kind: "query", from_name: "boss" }),
+    ];
+
+    expect(owedAgents(notes, "alice", new Set(["retired"]))).toEqual([
+      { name: "boss", count: 1 },
+    ]);
+    // With nothing archived, nothing changes.
+    expect(owedAgents(notes, "alice")).toEqual([
+      { name: "retired", count: 1 },
+      { name: "boss", count: 1 },
+    ]);
+  });
+
   it("leaves out a query from another human, who is not an agent to answer", () => {
     const notes = [
       note({
@@ -149,5 +169,49 @@ describe("owedAgents", () => {
     ];
 
     expect(owedAgents(notes, "alice")).toEqual([]);
+  });
+});
+
+describe("queryReplyState", () => {
+  it("tells an answered query from one that is still owed, and from an archived agent's", () => {
+    // The four states the card renders. The archived one is the case the banner
+    // and the card used to disagree about: the row is unanswered, so the card
+    // keeps saying so, but the agent is stopped, so nothing is owed.
+    expect(queryReplyState(note({ kind: "query" }), "alice")).toBe("owed");
+    expect(
+      queryReplyState(
+        note({ kind: "query", answered_at: "2026-10-18T12:01:00Z" }),
+        "alice",
+      ),
+    ).toBe("answered");
+    expect(
+      queryReplyState(
+        note({ kind: "query", from_name: "retired" }),
+        "alice",
+        new Set(["retired"]),
+      ),
+    ).toBe("archived");
+    // A query the human sent is waiting for the other end, not for them.
+    expect(
+      queryReplyState(
+        note({ kind: "query", to_kind: "agent", to_name: "boss" }),
+        "alice",
+      ),
+    ).toBe("awaiting");
+  });
+
+  it("only calls an agent's own query archived", () => {
+    // A human with the same name as an archived agent is not an agent, so the
+    // archived set does not apply to their note: the reply is the human's to
+    // give and the card must keep asking for it.
+    const fromHuman = note({
+      kind: "query",
+      from_kind: "user",
+      from_name: "retired",
+    });
+
+    expect(queryReplyState(fromHuman, "alice", new Set(["retired"]))).toBe(
+      "owed",
+    );
   });
 });

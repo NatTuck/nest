@@ -247,8 +247,10 @@ defmodule Nest.Agents.Agent.Init do
         mounts,
         {context_limit, context_limit_source},
         Map.get(attrs, :name, ""),
-        Map.get(attrs, :depth, 0),
-        ChatModel.model_name(model)
+        %SystemPrompt.Identity{
+          depth: Map.get(attrs, :depth, 0),
+          model: ChatModel.model_name(model)
+        }
       )
 
     tool_names = maybe_exclude_spawn(tool_names, attrs)

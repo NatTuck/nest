@@ -6,12 +6,12 @@ defmodule NestWeb.LobbyChannelRescanModelsTest do
   INSTRUCTION:
 
   A `rescan_models` push must NOT be answered until the scan it
-  started is genuinely finished. `Nest.Models` streams a
-  `{:models_updated, _}` per provider as a *partial* and only then
-  emits a single terminal `{:models_scan_complete, %{scan_id: id}}`.
+  started is genuinely finished. `Nest.Models` broadcasts a single
+  `{:models_updated, _}` for the whole scan (when it completes) and
+  then a single terminal `{:models_scan_complete, %{scan_id: id}}`.
   The channel defers the push reply until it sees that terminal event
   for the same scan id. Answering the push immediately (the old
-  fire-and-forget behavior) or on the first partial (the old
+  fire-and-forget behavior) or on the `models_updated` frame (the old
   "models changed = done" client heuristic) is the bug this file
   locks out: a fast first provider would re-enable the button
   mid-scan and the rescan looked like a no-op.

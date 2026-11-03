@@ -327,6 +327,8 @@ defmodule Nest.ModelsTest do
 
   # Add an auto-models provider to the running singleton's static config,
   # restoring the previous snapshot afterwards. The stub answers its URL.
+  # Returns the config it installed, for a caller that has to make a scan
+  # re-read it (`Models.rescan/0` loads `config.toml` again).
   defp inject_second_provider do
     # allowlist: fixture — the read half of the :sys.replace_state pair
     previous = :sys.get_state(Models, 1_000).static_config
@@ -341,21 +343,51 @@ defmodule Nest.ModelsTest do
       models: []
     }
 
-    replace_state(
-      Models,
-      fn state ->
-        static_config = %{
-          previous
-          | providers: Map.put(previous.providers, "other-auto", provider)
-        }
+    static_config = %{
+      previous
+      | providers: Map.put(previous.providers, "other-auto", provider)
+    }
 
-        %{state | static_config: static_config}
-      end
-    )
+    replace_state(Models, fn state -> %{state | static_config: static_config} end)
 
     on_exit(fn ->
       replace_state(Models, fn state -> %{state | static_config: previous} end)
     end)
+
+    static_config
+  end
+
+  describe "one frame per scan" do
+    test "a two-provider scan reaches a subscriber as one frame carrying both" do
+      # Two auto-models providers, so "one frame per scan" is distinguishable
+      # from "one frame because there was only one provider". `rescan/0`
+      # re-reads `config.toml`, so the injected provider has to come back from
+      # that read — and it returns the scan id, which is what makes the
+      # terminal event below unambiguous (the setup's own scan left one in this
+      # process's mailbox).
+      config = inject_second_provider()
+      Nest.DotConfig |> stub(:load, fn -> {:ok, config} end)
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "models")
+      scan_id = Models.rescan()
+
+      assert_receive {:models_updated, payload}, 1_000
+
+      # The one frame is the whole catalog, not one provider's share: both
+      # providers' answers are in it, and it is the list `list/0` returns.
+      assert Enum.any?(payload, &(&1["name"] == "MiniMax-M3"))
+      assert Enum.any?(payload, &(&1["name"] == "other-auto-model"))
+      assert payload == Models.list()
+
+      assert_receive {:models_scan_complete, %{scan_id: ^scan_id, models: ^payload}}, 1_000
+
+      # One scan, one frame. A per-provider broadcast leaves the second
+      # provider's frame in this mailbox: both are sent by the same process
+      # before the terminal event, so the order above already settled it.
+      refute_receive {:models_updated, _}, 0
+
+      Phoenix.PubSub.unsubscribe(Nest.PubSub, "models")
+    end
   end
 
   describe "scan completion broadcast" do

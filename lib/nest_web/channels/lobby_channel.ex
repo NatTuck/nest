@@ -332,13 +332,12 @@ defmodule NestWeb.LobbyChannel do
 
   @impl true
   def handle_in("rescan_models", _payload, socket) do
-    # `Nest.Models` broadcasts one `models_updated` per provider as it
-    # answers, then a single `models_scan_complete` when the scan is
-    # genuinely done (all providers answered, or the deadline fired).
-    # We hold each push open and reply only on that terminal event so
-    # the client's "rescanning" state tracks the whole scan rather
-    # than the first partial. The channel process is never blocked:
-    # `socket_ref/1` + `reply/2` answer later from `handle_info/2`.
+    # `Nest.Models` broadcasts one `models_updated` per scan, when it
+    # completes, and then a single `models_scan_complete` for that scan
+    # (#71). We hold each push open and reply only on the terminal event
+    # so the client's "rescanning" state tracks the whole scan. The
+    # channel process is never blocked: `socket_ref/1` + `reply/2`
+    # answer later from `handle_info/2`.
     scan_id = Models.rescan()
     pending = Map.get(socket.assigns, :pending_rescan, [])
 

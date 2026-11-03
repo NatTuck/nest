@@ -229,7 +229,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   # `agents-list`: read the space's non-archived agents —
   # running or persisted-only — and serialize their name,
-  # vocation, status, and depth. Pure read — no GenServer
+  # vocation, status, depth, and mode. Pure read — no GenServer
   # round-trip needed.
   #
   # The space's **humans** are named too, on their own line and marked as
@@ -248,7 +248,10 @@ defmodule Nest.Agents.Agent.ToolLoop do
           # `vocation_id` by `Nest.Agents.Visibility`.
           vocation: Map.get(info, :vocation_slug),
           status: info.status,
-          depth: info.depth
+          depth: info.depth,
+          # The agent's mode *now*: the live one for a running agent, the row's
+          # for a persisted-only one (`Visibility` resolves both into `:mode`).
+          mode: Map.get(info, :mode)
         }
       end)
 

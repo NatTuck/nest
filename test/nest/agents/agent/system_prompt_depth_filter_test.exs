@@ -7,7 +7,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
 
   * The `[Delegation]` section is gone from the system prompt —
     tool descriptions in the tool list are the only guidance.
-  * `compose_vocation_config/6` never filters the spawn tool by
+  * `compose_vocation_config/5` never filters the spawn tool by
     depth (clones must keep the parent's exact tool list).
   * The scratch section says the `/tmp` root is shared with
     siblings and never names the host backing path.
@@ -50,8 +50,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
       Mounts.new(nil, nil),
       {nil, nil},
       name,
-      depth,
-      nil
+      %SystemPrompt.Identity{depth: depth, model: nil}
     )
   end
 

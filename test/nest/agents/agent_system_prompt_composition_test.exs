@@ -349,7 +349,13 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
   defp compose_with(vocation, mounts, model \\ nil) do
     {prompt, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(vocation, mounts, {nil, nil}, "agent", 0, model)
+      SystemPrompt.compose_vocation_config(
+        vocation,
+        mounts,
+        {nil, nil},
+        "agent",
+        %SystemPrompt.Identity{depth: 0, model: model}
+      )
 
     prompt
   end
