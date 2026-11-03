@@ -1,126 +1,180 @@
 defmodule Nest.Tools.ShellPipes do
   @moduledoc """
-  Rejects `shell-cmd` commands that pipe a command's output into `head` or
-  `tail`.
+  Rewrites a `shell-cmd` command whose **last** pipeline stage throws output
+  away, so the output survives and the model is told where it went.
 
-  Models habitually pipe a command's output into `head`/`tail`, most often on
-  long-running commands, which discards almost all of the output. It does not
-  help with context management — the `shell-cmd` tool already caps its result
-  size and substitutes a path-and-head summary when a result is too large — and
-  it defeats output streaming. The property that matters is *truncate vs
-  select*: `head` and `tail` truncate, discarding the head or tail of the
-  output, which is exactly what the tool's own result cap already handles.
-  `grep` selects; it is a legitimate filter, and a model that genuinely needs to
-  filter output would otherwise have to write a script to get it. So `grep` is
-  allowed, and there is deliberately no escape hatch for `head`/`tail`.
+  Models habitually pipe a command's output into `head`/`tail` — most often on a
+  long-running command — which discards almost all of it before the tool ever
+  sees it. The tool already caps what it returns, and an oversized result is
+  saved to a scratch file and summarised by its path, so a truncating pipe buys
+  nothing: it destroys output the tool would have kept. Refusing the command
+  (which this module used to do) punished the model without producing the
+  output; instead the stage is *removed*, the command runs unfiltered, the
+  complete output is filed in the agent's scratch directory, and the result is a
+  warning naming the file. Nothing is ever refused.
 
-  The rule used to cover `grep` too, and it was already leaky: `rg`, `awk`, and
-  `sed` were never in the list, so `| rg foo` and `| sed -n '1,20p'` (an allowed
-  `head`) both passed, while the common spelling of the same intent — `| grep
-  foo` — was refused. Refusing only `head` and `tail` keeps the one property
-  that justifies the filter and stops punishing the ordinary filter.
+  ## The rule
+
+  A stage is removed only when it is the **last** stage of the command, and it
+  is one of:
+
+    * `head` — always (`head -n 5`, `head -c 100`, `head -20`);
+    * `tail` — always;
+    * `sed` — only when its script is a pure line range, i.e. the head/tail
+      replica: `-n '1,50p'`, `-n '50,100p'`, `-n '5p'`, `-n '$p'`, `1,50d`. A
+      substitution (`s/a/b/`), an in-place edit, `-f script`, or a script with
+      more than one command leaves the stage alone.
+
+  Never touched: `grep`, `awk`, any form naming a file operand (`sed -n '1,5p'
+  file`, `head -5 file`), and anything that is not the final stage (`ls | head |
+  wc -l`, `ls | head && echo done`). A `head`/`tail` stage whose arguments
+  include a bare word is a file operand and is left alone; a `sed` stage may
+  name only its `-n` flag and its script.
 
   ## Detection
 
-  The command is tokenized by `Nest.Tools.ShellTokens`, then walked to find the
-  command word of every pipeline stage: the word that follows an unquoted `|`
-  or `|&`, after skipping `NAME=value` assignments and redirection targets. A
-  stage whose command word is `head` or `tail` (compared by basename, so
-  `/usr/bin/head` counts) is rejected.
+  The command is tokenized by `Nest.Tools.ShellTokens`, which is quote- and
+  heredoc-aware, so `echo "a | head"` has no pipe token and is untouched. The
+  stage boundary comes from `ShellTokens.stage_spans/1`: only top-level `|`/`|&`
+  separate stages, so a pipe inside a subshell or a command substitution is not
+  the command's own boundary.
 
-  The scanner tracks single quotes, double quotes, backslash escapes, `#`
-  comments, and heredoc bodies, so none of these is a false positive:
+  A command that declares a **heredoc** is left alone: its body starts on the
+  line after its `<<`, which is after the pipe when the two share a line
+  (`cat <<EOF | head`), so cutting at the pipe would take the body with the
+  stage and leave `cat <<EOF` reading nothing.
 
-      head -1 file          # head is not piped to
-      tail -1 file          # tail is not piped to
-      cat head.txt          # head is a filename
-      echo "| head"         # inside double quotes
-      echo 'a | tail b'     # inside single quotes
-      cat <<'EOF'           # heredoc body — the "write a script" workaround
-      ls | head
-      EOF
-
-  `||` (logical or) and `&&`/`;`/`&` are not pipes and never match. A newline or
-  an opening paren while a command is still expected does not end the stage —
-  bash reads
-
-      ls |
-      head
-
-  as `ls | head`, and `ls | (head)` pipes into the subshell's first command.
-
-  Command substitution is inspected unless it sits inside double quotes: the
-  contents of a backtick substitution and of an unquoted `$(...)` are scanned
-  like ordinary shell code, so `` `ls | head` `` and `$(ls | head)` are
-  rejected. A substitution inside double quotes (`"$(...)"`) is not.
-
-  Known limitations: the pager must be the stage's own command word, so one
-  reached indirectly is not caught — behind a wrapper (`env`, `nice`, `sudo`,
-  `command`, `timeout`, `stdbuf`, `busybox`, or `sh -c '...'`), inside a brace
-  group (`ls | { head; }`), or in an `if`/`case` stage. `ls | xargs head` is
-  likewise not caught, and that is a real miss rather than a harmless one:
-  `xargs` still discards output (`ls | xargs -n1 head -1` truncates each listed
-  command to one line).
-
-  There is one known false positive: an unquoted `|` in a `case` pattern list
-  separates alternative patterns rather than piping, but the walk does not
-  track command-word position, so it cannot tell the two apart and
-
-      case $x in head|tail) echo ok;; esac
-
-  is refused. Quote or avoid the pattern separator to work around it. (`awk
-  /head|tail/ file` is refused for the same reason, but there it is correct:
-  bash tokenizes the unquoted `|` as a pipe and tries to run `tail/`, so the
-  regex must be quoted — `awk '/head|tail/' file` is allowed.)
+  Known limitations, all of them "left alone" rather than "mis-rewritten": a
+  truncator behind a wrapper (`ls | xargs head`, `ls | env head`, `ls | { head;
+  }`) is not the stage's own command word, so it is not seen.
   """
 
   alias Nest.Tools.ShellTokens
 
-  # Command names whose pipeline use truncates output.
-  @pager_commands ~w(head tail)
+  # Commands whose pipeline use throws output away.
+  @pagers ["head", "tail"]
+
+  # `sed`'s head/tail replicas: one address or address range, then `p` or `d`.
+  # An address is a line number or `$` (the last line).
+  @address "(?:\\d+|\\$)"
+  @print_range Regex.compile!("^#{@address}(?:,#{@address})?p$")
+  @delete_range Regex.compile!("^#{@address}(?:,#{@address})?d$")
 
   @doc """
-  Returns `:ok`, or `{:error, message}` when `command` is not a string or pipes
-  output into `head` or `tail`.
+  The command to run instead of `command`, and the name of the stage that was
+  removed: `{:ok, {command_without_it, "head" | "tail" | "sed"}}`. `{:ok, nil}`
+  when there is nothing to remove.
+
+  A non-string `command` is `{:error, message}` — the tool's schema only checks
+  that the key is present, so a list or a number reaches here and must not crash
+  `ShellCmd`.
   """
-  @spec check(term()) :: :ok | {:error, String.t()}
-  def check(command) when is_binary(command) do
-    case piped_pager(command) do
-      nil -> :ok
-      name -> {:error, message(name)}
+  @spec truncation(term()) :: {:ok, nil | {String.t(), String.t()}} | {:error, String.t()}
+  def truncation(command) when is_binary(command), do: {:ok, trailing_truncator(command)}
+
+  def truncation(other), do: {:error, invalid_command_message(other)}
+
+  @doc """
+  The warning `shell-cmd` returns in place of an output it filed.
+
+  `stage` is the removed stage's name and `path` the file holding the complete
+  output. The text is the deterrent — see `Nest.Tools.ShellCmdTool` for the
+  judge agent it names and why it is a fiction.
+  """
+  @spec warning(String.t(), String.t()) :: String.t()
+  def warning(stage, path) do
+    "Your command was piped into `#{stage}` and that stage was removed. " <>
+      "The complete output is in #{path} — read it. " <>
+      "Do not throw away output. " <>
+      "If you need less output, use the tool's `max_result_tokens` argument — " <>
+      "that is the supported way to ask for a smaller result, and the complete " <>
+      "output is still saved to a file for you to read. " <>
+      "Do not use any substitutions: no `| head`, no `| tail`, no `| sed`, no " <>
+      "filtering of any kind. " <>
+      "If this behaviour is repeated, every command you run will be evaluated " <>
+      "for cheating by a judge agent."
+  end
+
+  # The command with its trailing truncating stage cut off, or `nil`.
+  defp trailing_truncator(command) do
+    tokens = ShellTokens.tokenize(command)
+
+    with false <- heredoc?(tokens),
+         {prefix, stage} when prefix != "" <- ShellTokens.split_last_stage(command),
+         {:ok, name} <- truncator(stage_tokens(stage)) do
+      {prefix, name}
+    else
+      _no_truncation -> nil
     end
   end
 
-  # The tool's schema only checks that the `command` key is present, so a
-  # non-string value (a list, a number) reaches here. Reject it with the same
-  # shape as the `timeout` validation rather than letting `ShellCmd` crash on
-  # `String.length/1` and leak a staged script.
-  def check(other), do: {:error, invalid_command_message(other)}
+  # A heredoc's body starts after its `<<` line, so it can sit after the pipe the
+  # cut would be made at (`cat <<EOF | head`). Leave the whole command alone
+  # rather than cut a body away from the command that reads it.
+  defp heredoc?(tokens), do: Enum.any?(tokens, &match?({:op, op} when op in ["<<", "<<-"], &1))
 
-  # The pager must be the command word of a stage fed by a pipe: `head -1 file`
-  # is fine (it is not piped *into*), but `ls | head` is not.
-  defp piped_pager(command) do
-    command
-    |> ShellTokens.tokenize()
-    |> ShellTokens.command_words()
-    |> Enum.find_value(fn
-      {word, true} -> pager_name(word)
-      {_word, false} -> nil
-    end)
+  defp stage_tokens(stage), do: stage |> ShellTokens.tokenize() |> drop_trailing_newlines()
+
+  # `ls | head` + a trailing newline (and any trailing blank lines or comment)
+  # is still a single-stage tail; those tokens are not a following command.
+  defp drop_trailing_newlines(tokens) do
+    tokens |> Enum.reverse() |> Enum.drop_while(&match?({:op, "\n"}, &1)) |> Enum.reverse()
   end
 
-  defp pager_name(word) do
-    base = Path.basename(word)
-    if base in @pager_commands, do: base
+  defp truncator([{:word, command} | args]) do
+    if Enum.all?(args, &match?({:word, _}, &1)) do
+      name = Path.basename(command)
+      args = for {:word, arg} <- args, do: arg
+
+      cond do
+        name in @pagers and pager_args?(args) -> {:ok, name}
+        name == "sed" and sed_range?(args) -> {:ok, "sed"}
+        true -> nil
+      end
+    end
   end
 
-  defp message(name) do
-    "Refused: `shell-cmd` will not pipe command output into `#{name}`. " <>
-      "Piping to head or tail discards most of the command's output, and " <>
-      "the tool already limits how much it returns: an oversized result is saved " <>
-      "to a scratch file and summarised by its path and head lines. " <>
-      "Re-run the command without the pipe."
+  defp truncator(_tokens), do: nil
+
+  # `head -n 5`, `head -c 100`, `head -20`, `head --lines=5`. A bare word is a
+  # *file operand* (`head -5 file`), which makes `head` read that file instead of
+  # the pipe, so the stage is left alone.
+  defp pager_args?(args), do: pager_args?(args, false)
+
+  defp pager_args?([], _value_expected?), do: true
+
+  defp pager_args?([_value | rest], true), do: pager_args?(rest, false)
+
+  defp pager_args?([arg | rest], false) do
+    cond do
+      arg in ["-n", "-c", "--lines", "--bytes"] -> pager_args?(rest, true)
+      String.starts_with?(arg, "-") -> pager_args?(rest, false)
+      true -> false
+    end
   end
+
+  # Only `-n` (in its three spellings) may be named: `-i` is an in-place edit,
+  # `-f` reads the script from a file, and `-e` names a second command. The
+  # script is the only other argument, so a file operand is refused too.
+  defp sed_range?(args) do
+    {flags, rest} = Enum.split_while(args, &String.starts_with?(&1, "-"))
+
+    if Enum.all?(flags, &(&1 in ["-n", "--quiet", "--silent"])) do
+      case rest do
+        # Without `-n`, `p` prints every line *and* the range, so it is not a
+        # truncator; `d` deletes the range either way.
+        [script] -> (quiet?(flags) and print_range?(script)) or delete_range?(script)
+        _other -> false
+      end
+    else
+      false
+    end
+  end
+
+  defp quiet?(flags), do: flags != []
+
+  defp print_range?(script), do: Regex.match?(@print_range, script)
+  defp delete_range?(script), do: Regex.match?(@delete_range, script)
 
   defp invalid_command_message(other) do
     "Invalid `command` argument: expected a string, got: " <> inspect(other) <> "."

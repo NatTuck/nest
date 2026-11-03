@@ -341,23 +341,18 @@ defmodule Nest.Tools.ShellCmdTest do
     end
   end
 
-  test "the tool refuses to pipe output into head or tail", %{ws: ws} do
+  @tag :bwrap
+  test "a trailing truncating stage is removed, never refused", %{ws: ws} do
+    # `Mounts.new(ws, nil)` has no scratch dir, so there is nowhere to file the
+    # complete output — and it must not be thrown away: the command runs without
+    # its stage and the output comes back in full. `Nest.Tools.ShellPipesTest`
+    # covers the filed-and-warned case, which needs a scratch.
     function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
 
-    # One representative: `Nest.Tools.ShellPipes.check/1`'s own suite covers the
-    # detection and the message in full, so this only has to pin that the tool
-    # *calls* it — rejected before anything runs, so no bwrap is needed.
-    assert {:error, message} = function.function.(%{"command" => "ls | head"}, nil)
-    assert message =~ "will not pipe command output into"
+    for n <- 1..5, do: File.write!(Path.join(ws, "listed-#{n}.txt"), "")
 
-    # `background: true` does not get a discarded pipe past it either.
-    assert {:error, message} =
-             function.function.(
-               %{"command" => "sort | uniq -c | head", "background" => true},
-               nil
-             )
-
-    assert message =~ "will not pipe command output into"
+    assert {:ok, output} = function.function.(%{"command" => "ls | head -2"}, nil)
+    assert length(String.split(output, "\n", trim: true)) == 5
   end
 
   test "the tool rejects a detached-background marker, even with `background: true`", %{ws: ws} do

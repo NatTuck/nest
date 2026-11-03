@@ -2,9 +2,10 @@ defmodule Nest.Tools.ShellTokens do
   @moduledoc """
   Quote- and heredoc-aware shell tokenizer and stage walk.
 
-  Shared by the `shell-cmd` command filters — `Nest.Tools.ShellPipes` (pipes
-  into `head`/`tail`) and `Nest.Tools.ShellBackground` (`setsid`, `nohup`, and
-  `&`) — so the quote, comment, and heredoc rules are written and tested once.
+  Shared by the `shell-cmd` command filters — `Nest.Tools.ShellPipes` (a
+  trailing stage that throws output away) and `Nest.Tools.ShellBackground`
+  (`setsid`, `nohup`, and `&`) — so the quote, comment, and heredoc rules are
+  written and tested once.
 
   ## `tokenize/1`
 
@@ -56,6 +57,13 @@ defmodule Nest.Tools.ShellTokens do
   as `ls | head`, and `ls | (head)` pipes into the subshell's first command.
   Once the stage has consumed an assignment or a redirection, though, a newline
   ends it: `ls | VAR=x` + newline + `head` runs `head` as a separate command.
+
+  ## `split_last_stage/1`
+
+  The byte boundary of the last top-level pipeline stage, as `{prefix,
+  last_stage}` — what a caller that has to *cut* a pipeline needs, since words
+  are returned with their quotes stripped and a token list cannot reproduce the
+  source text.
   """
 
   # Operators that consume the following word as their target (a filename or a
@@ -83,7 +91,60 @@ defmodule Nest.Tools.ShellTokens do
   Tokenize `command` into `{:word, binary}` and `{:op, binary}` tokens in order.
   """
   @spec tokenize(String.t()) :: [token()]
-  def tokenize(command), do: scan(command, :normal, [], [], [])
+  def tokenize(command), do: command |> scan_tokens() |> Enum.map(&strip_offset/1)
+
+  @doc """
+  Split `command` at its last top-level `|`/`|&`: `{prefix, last_stage}`, where
+  `prefix` is everything before the operator (so the operator itself is in
+  neither half), or `:none` when the command has no top-level pipe.
+
+  Only a top-level operator is a stage boundary: a pipe inside a subshell, a
+  command substitution, or a backtick substitution belongs to the stage that
+  contains it. This is what lets a caller cut a pipeline exactly instead of
+  re-joining tokens — words come back with their quotes stripped, so a token
+  list cannot reproduce the source text.
+  """
+  @spec split_last_stage(String.t()) :: :none | {String.t(), String.t()}
+  def split_last_stage(command) when is_binary(command) do
+    case List.last(top_level_pipes(scan_tokens(command))) do
+      nil ->
+        :none
+
+      {pos, len} ->
+        {binary_part(command, 0, pos),
+         binary_part(command, pos + len, byte_size(command) - pos - len)}
+    end
+  end
+
+  # The token stream with each operator's byte offset into the command. Only
+  # operators carry one: a word's source text is not recoverable from its token
+  # (the quotes are gone), and no caller needs it.
+  defp scan_tokens(command) do
+    scan(command, :normal, [], [], %{src: command, heredocs: [], in_backtick: false})
+  end
+
+  defp strip_offset({:op, op, _pos, _in_backtick}), do: {:op, op}
+  defp strip_offset(token), do: token
+
+  # The top-level `|`/`|&` operators, with their offsets, in order. `(`/`)` move
+  # the depth; an unmatched `)` does not go below zero, so a malformed command
+  # still yields a usable answer. A pipe inside a backtick substitution is not
+  # top-level either: the substitution is scanned as ordinary code, so the
+  # scanner records that it is inside one (`state.in_backtick`).
+  defp top_level_pipes(tokens), do: top_level_pipes(tokens, 0, [])
+
+  defp top_level_pipes([], _depth, acc), do: Enum.reverse(acc)
+
+  defp top_level_pipes([{:op, "(", _pos, _backtick} | rest], depth, acc),
+    do: top_level_pipes(rest, depth + 1, acc)
+
+  defp top_level_pipes([{:op, ")", _pos, _backtick} | rest], depth, acc),
+    do: top_level_pipes(rest, max(depth - 1, 0), acc)
+
+  defp top_level_pipes([{:op, op, pos, false} | rest], 0, acc) when op in ["|", "|&"],
+    do: top_level_pipes(rest, 0, [{pos, byte_size(op)} | acc])
+
+  defp top_level_pipes([_token | rest], depth, acc), do: top_level_pipes(rest, depth, acc)
 
   @doc """
   Return `{command_word, piped?}` for each simple command in `tokens`.
@@ -178,94 +239,97 @@ defmodule Nest.Tools.ShellTokens do
   # Quotes are stripped from words; operators are returned as written. Heredoc
   # bodies and `#` comments are skipped, so their contents never become tokens.
 
-  defp scan(<<>>, _mode, word, tokens, _pending), do: Enum.reverse(flush(word, tokens))
+  defp scan(<<>>, _mode, word, tokens, _state), do: Enum.reverse(flush(word, tokens))
 
   # -- normal mode --
 
   # A backslash-newline is a line continuation: it disappears, so it neither
   # joins nor splits words.
-  defp scan(<<"\\\n", rest::binary>>, :normal, word, tokens, pending),
-    do: scan(rest, :normal, word, tokens, pending)
+  defp scan(<<"\\\n", rest::binary>>, :normal, word, tokens, state),
+    do: scan(rest, :normal, word, tokens, state)
 
-  defp scan(<<"\\", char, rest::binary>>, :normal, word, tokens, pending),
-    do: scan(rest, :normal, [word, char], tokens, pending)
+  defp scan(<<"\\", char, rest::binary>>, :normal, word, tokens, state),
+    do: scan(rest, :normal, [word, char], tokens, state)
 
-  defp scan(<<"\\">>, :normal, word, tokens, pending),
-    do: scan(<<>>, :normal, [word, "\\"], tokens, pending)
+  defp scan(<<"\\">>, :normal, word, tokens, state),
+    do: scan(<<>>, :normal, [word, "\\"], tokens, state)
 
-  defp scan(<<"'", rest::binary>>, :normal, word, tokens, pending),
-    do: scan(rest, :single, word, tokens, pending)
+  defp scan(<<"'", rest::binary>>, :normal, word, tokens, state),
+    do: scan(rest, :single, word, tokens, state)
 
-  defp scan(<<"\"", rest::binary>>, :normal, word, tokens, pending),
-    do: scan(rest, :double, word, tokens, pending)
+  defp scan(<<"\"", rest::binary>>, :normal, word, tokens, state),
+    do: scan(rest, :double, word, tokens, state)
 
   # A backtick runs a command substitution whose contents are ordinary shell
   # code. Treat it as a word boundary (the contents are scanned like any other
   # code) so `` `ls | head` `` behaves like `$(ls | head)`, instead of gluing
   # the backtick onto the command word (`head` + backtick) and hiding the pager.
-  defp scan(<<"`", rest::binary>>, :normal, word, tokens, pending),
-    do: scan(rest, :normal, [], flush(word, tokens), pending)
+  defp scan(<<"`", rest::binary>>, :normal, word, tokens, state) do
+    scan(rest, :normal, [], flush(word, tokens), %{state | in_backtick: not state.in_backtick})
+  end
 
   # `$((...))` and `((...))` are arithmetic: a `<<` inside them is a shift, not
   # a heredoc, and the expression is not shell code. Consume it whole.
-  defp scan(<<"$((", rest::binary>>, :normal, word, tokens, pending),
-    do: scan(skip_arith(rest, 0), :normal, [], flush(word, tokens), pending)
+  defp scan(<<"$((", rest::binary>>, :normal, word, tokens, state),
+    do: scan(skip_arith(rest, 0), :normal, [], flush(word, tokens), state)
 
-  defp scan(<<"((", rest::binary>>, :normal, word, tokens, pending),
-    do: scan(skip_arith(rest, 0), :normal, [], flush(word, tokens), pending)
+  defp scan(<<"((", rest::binary>>, :normal, word, tokens, state),
+    do: scan(skip_arith(rest, 0), :normal, [], flush(word, tokens), state)
 
   # `#` starts a comment only at the start of a word, matching bash.
-  defp scan(<<"#", rest::binary>>, :normal, [], tokens, pending),
-    do: scan(skip_comment(rest), :normal, [], tokens, pending)
+  defp scan(<<"#", rest::binary>>, :normal, [], tokens, state),
+    do: scan(skip_comment(rest), :normal, [], tokens, state)
 
-  defp scan(<<char, rest::binary>>, :normal, word, tokens, pending) when char in [?\s, ?\t],
-    do: scan(rest, :normal, [], flush(word, tokens), pending)
+  defp scan(<<char, rest::binary>>, :normal, word, tokens, state) when char in [?\s, ?\t],
+    do: scan(rest, :normal, [], flush(word, tokens), state)
 
-  defp scan(<<"\n", rest::binary>>, :normal, word, tokens, pending) do
-    tokens = push_op(flush(word, tokens), "\n")
-    {rest, _pending} = skip_heredocs(rest, pending)
-    scan(rest, :normal, [], tokens, [])
+  defp scan(<<"\n", rest::binary>> = input, :normal, word, tokens, state) do
+    tokens = push_op(flush(word, tokens), "\n", pos_of(state, input), state)
+    {rest, _heredocs} = skip_heredocs(rest, state.heredocs)
+    scan(rest, :normal, [], tokens, %{state | heredocs: []})
   end
 
-  defp scan(input, :normal, word, tokens, pending),
-    do: scan_operator(input, word, tokens, pending)
+  defp scan(input, :normal, word, tokens, state),
+    do: scan_operator(input, word, tokens, state)
 
   # -- single quotes: everything is literal until the closing quote --
 
-  defp scan(<<"'", rest::binary>>, :single, word, tokens, pending),
-    do: scan(rest, :normal, word, tokens, pending)
+  defp scan(<<"'", rest::binary>>, :single, word, tokens, state),
+    do: scan(rest, :normal, word, tokens, state)
 
-  defp scan(<<char, rest::binary>>, :single, word, tokens, pending),
-    do: scan(rest, :single, [word, char], tokens, pending)
+  defp scan(<<char, rest::binary>>, :single, word, tokens, state),
+    do: scan(rest, :single, [word, char], tokens, state)
 
   # -- double quotes: `\` escapes, everything else is literal --
 
-  defp scan(<<"\\\n", rest::binary>>, :double, word, tokens, pending),
-    do: scan(rest, :double, word, tokens, pending)
+  defp scan(<<"\\\n", rest::binary>>, :double, word, tokens, state),
+    do: scan(rest, :double, word, tokens, state)
 
-  defp scan(<<"\\", char, rest::binary>>, :double, word, tokens, pending),
-    do: scan(rest, :double, [word, char], tokens, pending)
+  defp scan(<<"\\", char, rest::binary>>, :double, word, tokens, state),
+    do: scan(rest, :double, [word, char], tokens, state)
 
-  defp scan(<<"\\">>, :double, word, tokens, pending),
-    do: scan(<<>>, :double, [word, "\\"], tokens, pending)
+  defp scan(<<"\\">>, :double, word, tokens, state),
+    do: scan(<<>>, :double, [word, "\\"], tokens, state)
 
-  defp scan(<<"\"", rest::binary>>, :double, word, tokens, pending),
-    do: scan(rest, :normal, word, tokens, pending)
+  defp scan(<<"\"", rest::binary>>, :double, word, tokens, state),
+    do: scan(rest, :normal, word, tokens, state)
 
-  defp scan(<<char, rest::binary>>, :double, word, tokens, pending),
-    do: scan(rest, :double, [word, char], tokens, pending)
+  defp scan(<<char, rest::binary>>, :double, word, tokens, state),
+    do: scan(rest, :double, [word, char], tokens, state)
 
-  defp scan_operator(input, word, tokens, pending) do
+  defp scan_operator(input, word, tokens, state) do
+    pos = pos_of(state, input)
+
     case take_operator(input) do
       {:ok, op, rest} when op in ["<<", "<<-"] ->
-        heredoc(rest, op == "<<-", word, tokens, pending)
+        heredoc(rest, op == "<<-", word, tokens, state, pos)
 
       {:ok, op, rest} ->
-        scan(rest, :normal, [], push_op(flush(word, tokens), op), pending)
+        scan(rest, :normal, [], push_op(flush(word, tokens), op, pos, state), state)
 
       :error ->
         <<char, rest::binary>> = input
-        scan(rest, :normal, [word, char], tokens, pending)
+        scan(rest, :normal, [word, char], tokens, state)
     end
   end
 
@@ -273,30 +337,27 @@ defmodule Nest.Tools.ShellTokens do
 
   # `<<`/`<<-` starts a heredoc only when a delimiter follows; otherwise (for
   # example `<< | head`) the operator is emitted as-is.
-  defp heredoc(rest, strip_tabs, word, tokens, pending) do
+  defp heredoc(rest, strip_tabs, word, tokens, state, pos) do
     op = if strip_tabs, do: "<<-", else: "<<"
+    tokens = push_op(flush(word, tokens), op, pos, state)
 
     case take_heredoc_delim(rest) do
       {:ok, delim, rest} ->
-        scan(
-          rest,
-          :normal,
-          [],
-          push_op(flush(word, tokens), op),
-          pending ++ [{delim, strip_tabs}]
-        )
+        scan(rest, :normal, [], tokens, add_heredoc(state, {delim, strip_tabs}))
 
       :unknown ->
         # The delimiter has an embedded quote or `(` (`<<E'OF'`, `<<$(cmd)`), so
         # its exact text is not knowable here. Keep scanning the rest of the
         # current line — a pipe there is real — and let `skip_heredocs/2` drop
         # everything from the next newline on as the body.
-        scan(rest, :normal, [], push_op(flush(word, tokens), op), pending ++ [{:unknown, false}])
+        scan(rest, :normal, [], tokens, add_heredoc(state, {:unknown, false}))
 
       :error ->
-        scan(rest, :normal, [], push_op(flush(word, tokens), op), pending)
+        scan(rest, :normal, [], tokens, state)
     end
   end
+
+  defp add_heredoc(state, heredoc), do: %{state | heredocs: state.heredocs ++ [heredoc]}
 
   # Returns `{:ok, delim, rest}` for a delimiter, `:unknown` when the delimiter
   # has an embedded quote or `(` (`<<E'OF'`, `<<$(cmd)`) that this tokenizer
@@ -414,5 +475,10 @@ defmodule Nest.Tools.ShellTokens do
   defp flush([], tokens), do: tokens
   defp flush(word, tokens), do: [{:word, IO.iodata_to_binary(word)} | tokens]
 
-  defp push_op(tokens, op), do: [{:op, op} | tokens]
+  defp push_op(tokens, op, pos, state), do: [{:op, op, pos, state.in_backtick} | tokens]
+
+  # The byte offset of `input` within the command being scanned: `state.src` is
+  # that command, carried unchanged for the whole scan, so the offset is what
+  # has been consumed.
+  defp pos_of(state, input), do: byte_size(state.src) - byte_size(input)
 end
