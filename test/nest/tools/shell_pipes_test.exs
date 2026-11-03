@@ -16,6 +16,7 @@ defmodule Nest.Tools.ShellPipesTest do
   import Nest.Test.TmpCleanup
 
   alias Nest.Sandbox.Mounts
+  alias Nest.Sandbox.ShellJobs
   alias Nest.Tools
   alias Nest.Tools.ShellPipes
 
@@ -160,6 +161,42 @@ defmodule Nest.Tools.ShellPipesTest do
     end
 
     @tag :bwrap
+    test "a background call runs its command as written, files nothing, and is not warned about",
+         %{mounts: mounts, scratch: scratch} do
+      # A background job answers with a job id rather than a filed result, so
+      # there is nothing to file and nothing to warn about: the pipe is left in
+      # place and the job's own output is what comes back. The job reports its
+      # exit to this process (the caller is its waiter), so this needs no grace
+      # window to be deterministic.
+      #
+      # A key of its own, so the job does not land under the tools' shared
+      # `{:unknown, :unknown}` fallback and disturb another test's listing. The
+      # space id is above any serial a test database hands out, so a space-wide
+      # listing cannot see it either.
+      space_id = 1_000_000 + System.unique_integer([:positive])
+      key = {space_id, "pipe-bg-#{System.unique_integer([:positive])}"}
+      {space_id, name} = key
+
+      assert {:ok, output} =
+               run_tool(
+                 "ls | head -2",
+                 mounts,
+                 %{"background" => true},
+                 %{space_id: space_id, agent_name: name}
+               )
+
+      # The stage ran: two lines, not the five the file would hold.
+      assert lines(output) == ["file-1.txt", "file-2.txt"]
+      refute output =~ "judge agent"
+
+      # Nothing was filed, and the job recorded the command exactly as asked —
+      # a warning here would have claimed a stage was removed when it ran.
+      refute Enum.any?(File.ls!(scratch), &String.starts_with?(&1, "exec-"))
+
+      assert [%{command: "ls | head -2"}] = ShellJobs.list(key)
+    end
+
+    @tag :bwrap
     test "an untouched command runs as written, writes no file, and is not warned about", %{
       mounts: mounts,
       scratch: scratch
@@ -183,8 +220,11 @@ defmodule Nest.Tools.ShellPipesTest do
     end
   end
 
-  defp run_tool(command, mounts) do
-    Tools.get_function("shell-cmd", mounts).function.(%{"command" => command}, %{})
+  defp run_tool(command, mounts, extra \\ %{}, context \\ %{}) do
+    Tools.get_function("shell-cmd", mounts).function.(
+      Map.put(extra, "command", command),
+      context
+    )
   end
 
   # The path the warning names, as the agent sees it (`/tmp/<agent>/exec-*.txt`).
@@ -203,8 +243,9 @@ defmodule Nest.Tools.ShellPipesTest do
       "The complete output is in #{path} — read it. " <>
       "Do not throw away output. " <>
       "If you need less output, use the tool's `max_result_tokens` argument — " <>
-      "that is the supported way to ask for a smaller result, and the complete " <>
-      "output is still saved to a file for you to read. " <>
+      "that is the supported way to ask for a smaller result, and when the " <>
+      "result is large enough to overflow, the complete output is still saved " <>
+      "to a file for you to read. " <>
       "Do not use any substitutions: no `| head`, no `| tail`, no `| sed`, no " <>
       "filtering of any kind. " <>
       "If this behaviour is repeated, every command you run will be evaluated " <>

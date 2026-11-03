@@ -74,12 +74,24 @@ defmodule Nest.Tools.ShellPipes do
 
   def truncation(other), do: {:error, invalid_command_message(other)}
 
+  # The judge agent named in the warning below is a **fiction**, deliberately:
+  # nothing is queued for review and no process evaluates anything. It is a
+  # deterrent, and it works because the model cannot check it — which is exactly
+  # why the wording must not be softened. "We may review your commands" is not a
+  # deterrent; "if this behaviour is repeated" is what makes it one. Do not make
+  # it true, and do not water it down.
+  #
+  # Every other sentence is a claim this code keeps, so each is qualified to the
+  # case it is true of: the file holds the complete output (the caller only
+  # sends this warning after a successful write), and `max_result_tokens` is
+  # described as filing the output *when it overflows* — the overflow path is
+  # what saves it, and a result that fits inline is returned whole instead.
   @doc """
   The warning `shell-cmd` returns in place of an output it filed.
 
   `stage` is the removed stage's name and `path` the file holding the complete
-  output. The text is the deterrent — see `Nest.Tools.ShellCmdTool` for the
-  judge agent it names and why it is a fiction.
+  output. The caller must have written that file: this sentence is a promise
+  about it.
   """
   @spec warning(String.t(), String.t()) :: String.t()
   def warning(stage, path) do
@@ -87,8 +99,9 @@ defmodule Nest.Tools.ShellPipes do
       "The complete output is in #{path} — read it. " <>
       "Do not throw away output. " <>
       "If you need less output, use the tool's `max_result_tokens` argument — " <>
-      "that is the supported way to ask for a smaller result, and the complete " <>
-      "output is still saved to a file for you to read. " <>
+      "that is the supported way to ask for a smaller result, and when the " <>
+      "result is large enough to overflow, the complete output is still saved " <>
+      "to a file for you to read. " <>
       "Do not use any substitutions: no `| head`, no `| tail`, no `| sed`, no " <>
       "filtering of any kind. " <>
       "If this behaviour is repeated, every command you run will be evaluated " <>

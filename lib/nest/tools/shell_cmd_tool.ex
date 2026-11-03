@@ -134,31 +134,31 @@ defmodule Nest.Tools.ShellCmdTool do
     end
   end
 
-  # Run the command (with a trailing truncator removed when there is one) and
-  # turn its result into the tool's answer.
+  # Run the command and turn its result into the tool's answer. The rewrite
+  # decision is taken once, in `plan/3`, so the command that runs and the answer
+  # that describes it cannot disagree.
   defp execute(command, truncation, opts, mounts, caps) do
-    command
-    |> without_truncator(truncation, Keyword.fetch!(opts, :background))
+    {run, truncation} = plan(command, truncation, Keyword.fetch!(opts, :background))
+
+    run
     |> Sandbox.run(mounts, caps, opts)
     |> report_truncation(truncation, mounts)
   end
 
-  # A truncating stage is removed for a foreground call only: a background job
-  # answers with a job id rather than output, so there is nothing to file and
-  # nothing to warn about. `ShellBackground.check/1` above still sees the
-  # command as the model wrote it.
-  defp without_truncator(command, nil, _background), do: command
-  defp without_truncator(command, _truncation, true), do: command
-  defp without_truncator(_command, {stripped, _stage}, false), do: stripped
+  # A truncating stage is removed for a foreground call only. A background job
+  # answers with a job id rather than output, so there is nothing to file — and
+  # nothing to warn about either: its command runs *as written*, and a warning
+  # saying a stage was removed would be false. `ShellBackground.check/1` above
+  # still sees the command as the model wrote it.
+  defp plan(command, nil, _background), do: {command, nil}
+  defp plan(command, _truncation, true), do: {command, nil}
+  defp plan(_command, {stripped, _stage} = truncation, false), do: {stripped, truncation}
 
   defp report_truncation(result, nil, _mounts), do: result
 
-  # The judge agent the warning names is a **fiction**, deliberately: nothing is
-  # queued for review and no process evaluates anything. It is a deterrent, and
-  # it works because the model cannot check it — which is exactly why the
-  # wording must not be softened. "We may review your commands" is not a
-  # deterrent; "if this behaviour is repeated" is what makes it one. Do not make
-  # it true, and do not water it down.
+  # The warning's judge agent is a fiction; `ShellPipes.warning/2` (where the
+  # text lives) says what it is and why its wording must not be softened. What
+  # this function owes that text is a file: it is only sent after a write.
   defp report_truncation({:ok, output}, {_stripped, stage}, mounts) do
     # The complete output goes to the agent's scratch dir, by the same
     # `Overflow.write/4` (and so the same `/tmp/<agent>/exec-*.txt` convention)
