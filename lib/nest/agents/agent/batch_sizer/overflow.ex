@@ -88,10 +88,13 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   there was no more. It is appended **only when something was cut**, so a
   result that fits gains nothing, and it counts the lines the model actually
   receives — the body is sized before the clause is written, so no later trim
-  can make the counts describe text that is no longer there. In the no-room
-  case there is no clause: the body *is* the elision marker, which already says
-  the content was elided and where it is, and there are no preview lines to
-  count.
+  can make the counts describe text that is no longer there. "Cut" means the
+  body differs from the content, not that the counts differ: `line_count/1`
+  counts a trailing blank line as a line while the body's trailing newlines are
+  trimmed, so a count comparison would label content whose only loss was
+  trailing whitespace. In the no-room case there is no clause: the body *is* the
+  elision marker, which already says the content was elided and where it is, and
+  there are no preview lines to count.
 
   `label` names the result for the model (e.g. `"Command output of 'ls'"`).
   `prefix` names the scratch file (see `write/4`). `content` is expected
@@ -113,6 +116,12 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
     # this content can need (`first <total> of <total>`) makes the reservation a
     # fixed string, so the counts and the budget cannot chase each other, and the
     # body is final once it is chosen — no later trim can invalidate the counts.
+    #
+    # The reservation is the block's first two lines, exactly: the header with
+    # its clause, and the blank line between it and the body. `estimate("")` is
+    # 10, not 0 (`estimate/1` adds the per-line overhead), which is precisely
+    # what that blank line costs in `head_text/3`'s line-by-line accounting — so
+    # the block's per-line total is at most `budget` by construction.
     reserved = Estimator.estimate(header <> clause(total, total)) + Estimator.estimate("")
     body = head_text(content, min(head_budget(header), budget - reserved), no_room)
 
@@ -121,8 +130,17 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
       # trimmed as before (a budget too small for either is the marker alone).
       truncate_to_fit(header <> "\n\n" <> no_room, budget, no_room)
     else
-      shown = line_count(body)
-      header = if shown < total, do: header <> clause(shown, total), else: header
+      # The clause is about what was *cut*, so the test is whether the body is
+      # the whole content — not `shown < total`. Those differ on a trailing blank
+      # line: `line_count/1` counts it as a line, while `head_text/3` trims the
+      # body's trailing newlines, so `"a\n\n"` fits entirely and still had
+      # `shown < total`. The body is what the model receives, so comparing it to
+      # the content (modulo the whitespace `head_text/3` trims) is the honest
+      # test.
+      header =
+        if String.trim_trailing(content) == body,
+          do: header,
+          else: header <> clause(line_count(body), total)
 
       header <> "\n\n" <> body
     end

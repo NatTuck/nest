@@ -124,21 +124,26 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
     end
 
     test "leaves a preview that fits entirely unlabelled", %{dir: dir} do
-      content = "one\ntwo\nthree\n"
+      # The blank-tail shape is the one that can catch a wrong condition: a
+      # trailing newline ends the last line for `line_count/1`, while
+      # `head_text/3` trims the body's trailing newlines, so a condition on the
+      # counts alone (`shown < total`) labels content whose only "cut" is
+      # trailing whitespace. The three-line shape alone cannot see that.
+      for content <- ["one\ntwo\nthree\n", "one\ntwo\nthree\n\n", "one\ntwo\nthree\n\n\n"] do
+        out =
+          Overflow.substitute(
+            content,
+            %{mounts: Mounts.new(nil, dir)},
+            "Command output",
+            100_000,
+            "exec"
+          )
 
-      out =
-        Overflow.substitute(
-          content,
-          %{mounts: Mounts.new(nil, dir)},
-          "Command output",
-          100_000,
-          "exec"
-        )
-
-      # Nothing was cut, so nothing is claimed — and the result gains no tokens
-      # for a clause it does not need.
-      refute out =~ "Below:"
-      assert String.split(out, "\n\n") |> List.last() == "one\ntwo\nthree"
+        # Nothing was cut, so nothing is claimed — and the result gains no tokens
+        # for a clause it does not need.
+        refute out =~ "Below:", "#{inspect(content)} was labelled"
+        assert String.split(out, "\n\n") |> List.last() == String.trim_trailing(content)
+      end
     end
 
     test "the no-room case is the marker, with no clause", %{dir: dir} do
@@ -203,11 +208,20 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
             assert length(String.split(body, "\n")) == String.to_integer(shown)
 
           nil ->
-            # No preview lines, so no label: either the marker (nothing fits
-            # below the header) or the header alone (the marker itself did not
-            # fit). Either way the result still names the scratch file, which is
-            # the one thing a substituted result must do.
-            assert out =~ "content elided" or out =~ Sandbox.sandbox_tmp_path(dir)
+            # No label, and exactly three shapes, each asserted whole: the marker
+            # alone (not even the header fits), the header alone (the header fits
+            # and the marker does not), or the header and the marker (both fit,
+            # no preview line does). All three name the file; none claims a
+            # count. (An `out =~ path` assertion here would pass for all three
+            # and so distinguish nothing.)
+            [path] = Regex.run(~r{/tmp/[^\s]+\.txt}, out)
+            saved = "Command output (#{Estimator.estimate(content)} tokens) saved to #{path}."
+
+            assert out in [
+                     "[content elided: see #{path}]",
+                     saved,
+                     saved <> "\n\n[content elided: see #{path}]"
+                   ]
         end
       end
 
