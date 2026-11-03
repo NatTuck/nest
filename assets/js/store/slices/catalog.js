@@ -26,6 +26,15 @@ export function catalogSetters(set) {
     },
 
     /**
+     * Replace the names `local.toml` records as deleted. `undefined` means the
+     * frame did not carry them, which is *not* "nothing was deleted" — the page
+     * shows that as an explicit unknown.
+     */
+    setDeletedProviders: (names) => {
+      set({ deletedProviders: names ?? null });
+    },
+
+    /**
      * Replace the multimodal probe cache's stats — the lobby's
      * `probe_cache_stats` frame and the reply to `clear_probe_cache`
      * both carry them. `null` means "the server has not told us", which

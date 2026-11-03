@@ -3,6 +3,7 @@ defmodule Nest.DotConfig do
   Loads and manages XDG-compliant configuration from ~/.config/nest/config.toml
   """
 
+  alias Nest.DotConfig.DeletedProviders
   alias Nest.DotConfig.FieldValidation
   alias Nest.DotConfig.KeyValidation
   alias Nest.DotConfig.Model
@@ -14,13 +15,6 @@ defmodule Nest.DotConfig do
 
   @config_dir :filename.basedir(:user_config, "nest")
   @config_file Path.join(@config_dir, "config.toml")
-
-  # The optional top-level key `local.toml` uses to record the providers the
-  # user deleted in the app. The merge drops these names from the merged set
-  # whichever file defines them, which is what makes a deletion stick: the
-  # overlay cannot just *omit* a provider, because `config.toml` would supply it
-  # again on the next load. `Nest.DotConfig.Writer` maintains the list.
-  @deleted_providers_key "deleted-providers"
 
   # Default bound on silence *before the first streamed chunk*, in seconds.
   # A long-context cache miss has to prefill the whole prompt before it can
@@ -153,22 +147,32 @@ defmodule Nest.DotConfig do
     # relies on both accessors staying public — private is a loud compile
     # warning (an error under `--warnings-as-errors`), but dropping the
     # `__MODULE__.` prefix is a silent re-break of those tests.
-    merge_loads(load(__MODULE__.config_file()), load(__MODULE__.local_file()))
+    base_path = __MODULE__.config_file()
+
+    merge_loads(load(base_path), base_path, load(__MODULE__.local_file()))
     # `&resolve_api_key/1` is a local capture on purpose: `Nest.DotConfig` is
     # Mimic-wrapped, so a remote `__MODULE__.resolve_api_key/1` would go
     # through the proxy and pick up any stub. See `KeyValidation`.
     |> KeyValidation.validate(&resolve_api_key/1)
   end
 
-  # Merge the base (config.toml) and overlay (local.toml) parses. Missing
-  # files are treated as empty. Local wins at provider/model and top-level
-  # key granularity.
-  defp merge_loads({:ok, base}, {:ok, local}) do
-    {:ok, merge_configs(base, local)}
+  # Merge the base (config.toml) and overlay (local.toml) parses. Missing files
+  # are treated as empty. Local wins per provider name and per top-level key.
+  #
+  # `deleted-providers` is the overlay's key, so the base file is checked for it
+  # before the merge: in `config.toml` a list could hide nothing — that file is
+  # what the records hide a provider *from* — and a valid list that silently
+  # does nothing is worse than a refusal (`Nest.DotConfig.DeletedProviders`).
+  defp merge_loads({:ok, base}, base_path, local) do
+    DeletedProviders.refuse_in_config!(base, base_path)
+
+    case local do
+      {:ok, local} -> {:ok, merge_configs(base, local)}
+      {:error, _} -> {:ok, base}
+    end
   end
 
-  defp merge_loads({:ok, base}, {:error, _}), do: {:ok, base}
-  defp merge_loads({:error, reason}, _local), do: {:error, reason}
+  defp merge_loads({:error, reason}, _base_path, _local), do: {:error, reason}
 
   defp merge_configs(base, local) do
     # Providers merge **per name**, and `local.toml` wins where it defines the
@@ -249,7 +253,7 @@ defmodule Nest.DotConfig do
   defp decode(file_path, content) do
     case Toml.decode(content) do
       {:ok, config} ->
-        config = parse_config(config)
+        config = parse_config(config, file_path)
         ParseCache.put(file_path, content, config)
         {:ok, config}
 
@@ -416,17 +420,11 @@ defmodule Nest.DotConfig do
 
   # Private functions
 
-  defp parse_config(raw_config) do
+  defp parse_config(raw_config, path) do
     providers = parse_providers(raw_config)
-    settings = parse_settings(raw_config)
+    settings = parse_settings(raw_config, path)
 
-    # A file may not both define and delete the same provider. That is the
-    # writer's own invariant, so a file carrying both was edited by hand and one
-    # of the two lines is a mistake. Refusing it names the provider instead of
-    # picking a winner, which would leave the file saying two things and meaning
-    # one — and the winner would be whichever line the merge happened to apply
-    # last.
-    refuse_deleted_provider_contradictions!(providers, settings.deleted_providers)
+    DeletedProviders.refuse_contradictions!(providers, settings.deleted_providers, path)
 
     Map.merge(%{providers: providers, models: derive_models(providers)}, settings)
   end
@@ -438,47 +436,10 @@ defmodule Nest.DotConfig do
     |> Map.new()
   end
 
-  # Parses the optional top-level `deleted-providers` list: absent means none, a
-  # list of provider names is kept, and anything else raises. `local.toml` is
-  # user-editable, so a hand-written `deleted-providers = "pegasus"` has to be a
-  # refusal naming the key — not a crash on `Enum`, and above all not a silent
-  # `[]`, which would bring a deleted provider back on the next load.
-  defp parse_deleted_providers(nil), do: []
-
-  defp parse_deleted_providers(names) when is_list(names) do
-    Enum.map(names, &parse_deleted_provider/1)
-  end
-
-  defp parse_deleted_providers(other) do
-    raise "Invalid #{@deleted_providers_key} #{inspect(other)}: " <>
-            "must be a list of provider names"
-  end
-
-  defp parse_deleted_provider(name) when is_binary(name) do
-    # The same rule a provider key follows, so a tombstone can only ever name
-    # something the providers table could hold.
-    FieldValidation.provider_name(name)
-  end
-
-  defp parse_deleted_provider(other) do
-    raise "Invalid #{@deleted_providers_key} entry #{inspect(other)}: must be a provider name"
-  end
-
-  defp refuse_deleted_provider_contradictions!(providers, deleted_providers) do
-    case Enum.find(deleted_providers, &Map.has_key?(providers, &1)) do
-      nil ->
-        :ok
-
-      name ->
-        raise "Provider #{name}: is both defined and listed in #{@deleted_providers_key}; " <>
-                "a provider can be defined or deleted, not both"
-    end
-  end
-
   # Parse the top-level scalar settings. Kept separate from
   # `parse_config/1` so the provider/model construction and the scalar
   # parsing each stay under the credo ABC cap.
-  defp parse_settings(raw_config) do
+  defp parse_settings(raw_config, path) do
     %{
       max_tool_iterations: parse_max_tool_iterations(Map.get(raw_config, "max-tool-iterations")),
       max_depth: parse_max_depth(Map.get(raw_config, "max-depth")),
@@ -487,7 +448,7 @@ defmodule Nest.DotConfig do
         parse_max_async_message_tokens(Map.get(raw_config, "max-async-message-tokens")),
       default_thinking_effort:
         parse_thinking_effort(Map.get(raw_config, "default-thinking-effort")),
-      deleted_providers: parse_deleted_providers(Map.get(raw_config, @deleted_providers_key))
+      deleted_providers: DeletedProviders.parse(Map.get(raw_config, DeletedProviders.key()), path)
     }
   end
 

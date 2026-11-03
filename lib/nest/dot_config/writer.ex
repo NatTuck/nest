@@ -39,6 +39,11 @@ defmodule Nest.DotConfig.Writer do
   @doc """
   Write the given provider structs to a specific file (test seam).
 
+  `file` replaces only the **overlay**: the base a deletion is recorded against
+  is still `Nest.DotConfig.config_file/0`, because that is the file the record
+  has to hide the provider from. A test that wants a hermetic write therefore
+  stubs both.
+
   Every failure is `{:error, sentence}`: a refusal says which file it could not
   read, and a write that does not land names the file and the filesystem's
   reason. `NestWeb.LobbyChannel.Providers` hands that sentence to the operator,
@@ -106,25 +111,38 @@ defmodule Nest.DotConfig.Writer do
     path = DotConfig.config_file()
 
     if File.exists?(path) do
-      case DotConfig.load(path) do
+      case load_for_record(path) do
         {:ok, config} -> {:ok, MapSet.new(Map.keys(config.providers))}
-        {:error, reason} -> {:error, "cannot read #{path} to record deleted providers: #{reason}"}
+        {:error, reason} -> {:error, "cannot use #{path} to record deleted providers: #{reason}"}
       end
     else
       {:ok, MapSet.new()}
     end
   end
 
+  # `DotConfig.load/1` returns a tuple for a file it cannot read or parse, but a
+  # *semantic* error raises out of `parse_config/1` — so the rescue is what makes
+  # the sentence above true for the file a hand-edit actually breaks. A syntax
+  # error is the easy case; `base-url = 5` is the one an operator writes, and it
+  # used to escape as a raise, which the channel's `rescue` turned into
+  # `invalid_payload`: a false code, since the payload was fine and the file was
+  # not.
+  defp load_for_record(path) do
+    DotConfig.load(path)
+  rescue
+    error -> {:error, Exception.message(error)}
+  end
+
   # The records the file already carries, so a deletion is remembered across
   # writes and a re-added name can be cleared from it.
   defp previous_deleted_providers(file) do
     if File.exists?(file) do
-      case DotConfig.load(file) do
+      case load_for_record(file) do
         {:ok, config} ->
           {:ok, MapSet.new(config.deleted_providers)}
 
         {:error, reason} ->
-          {:error, "cannot read #{file} to keep its deleted providers: #{reason}"}
+          {:error, "cannot use #{file} to keep its deleted providers: #{reason}"}
       end
     else
       {:ok, MapSet.new()}

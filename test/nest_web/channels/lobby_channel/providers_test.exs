@@ -99,7 +99,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # Drain the `:after_join` init + broken-agents pushes so later
       # `assert_receive`/`assert_reply` in each test starts from a clean
       # mailbox (assert_receive only inspects the next message).
-      assert_push "init", _
+      assert_push "init", init
       assert_push "broken_agents_updated", _
 
       # The handler runs in the channel process; make this test's stubs
@@ -108,7 +108,16 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       Mimic.allow(Nest.DotConfig, self(), socket.channel_pid)
       Mimic.allow(Nest.Models, self(), socket.channel_pid)
 
-      {:ok, socket: socket, user: user}
+      {:ok, socket: socket, user: user, init: init}
+    end
+
+    test "the join payload carries the removal record, empty when nothing is recorded", %{
+      init: init
+    } do
+      # Present and empty, not missing: the GUI renders a missing key as an
+      # explicit unknown, because "nothing was deleted" is an answer and
+      # silence is not.
+      assert init.deleted_providers == []
     end
 
     test "persists the providers to local.toml and broadcasts providers_updated", %{
@@ -132,12 +141,21 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # these two assertions: each carries its own real bound, rather than
       # synchronising on the channel process to read them with a `0` fence.
       assert_reply ref, :ok, %{}, 1_000
-      assert_push "providers_updated", %{providers: providers}, 1_000
+
+      assert_push "providers_updated",
+                  %{providers: providers, deleted_providers: deleted},
+                  1_000
 
       # The push carries what the handler read back out of `local.toml`, so
       # this is the write as well as the broadcast.
       assert Enum.any?(providers, &(&1["name"] == "acme"))
       assert File.read!(local_file) =~ "acme"
+
+      # The payload carried only `acme`, so the three providers `config.toml`
+      # defines were recorded as deleted — and the client is told, because a
+      # provider that is absent with no explanation is the quiet no-op this
+      # whole feature exists to avoid.
+      assert deleted == ["anthropic-provider", "model-studio", "pegasus"]
     end
 
     test "round-trips probe_multimodal through save, the push and local.toml", %{

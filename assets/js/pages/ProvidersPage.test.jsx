@@ -101,6 +101,7 @@ describe("ProvidersPage", () => {
       providers: [],
       currentUser: adminUser(),
       probeCacheStats: null,
+      deletedProviders: [],
     });
   });
 
@@ -147,6 +148,35 @@ describe("ProvidersPage", () => {
       "https://acme.example/v1",
     );
     expect(screen.getByLabelText(/model name/i)).toHaveValue("acme-1");
+  });
+
+  it("names the providers that were removed here but are still in config.toml", async () => {
+    // A save from a stale tab records as deleted every provider its payload did
+    // not carry, including one added to `config.toml` afterwards. Without this
+    // line the provider is simply not there, and nothing says why.
+    setStore({
+      providers: [sampleProvider],
+      deletedProviders: ["anthropic-provider", "model-studio"],
+    });
+
+    await renderPage();
+
+    expect(
+      screen.getByText(/removed here .*anthropic-provider, model-studio/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/still in/i)).toBeInTheDocument();
+  });
+
+  it("renders an explicit unknown when the server did not report the removals", async () => {
+    // `null` is "not told", which is not "nothing was deleted": the second
+    // reads as an answer, and this one is the absence of one.
+    setStore({ providers: [sampleProvider], deletedProviders: null });
+
+    await renderPage();
+
+    expect(
+      screen.getByText(/did not report which providers are removed/i),
+    ).toBeInTheDocument();
   });
 
   it("adds an empty provider editor when Add provider is clicked", async () => {

@@ -100,16 +100,33 @@ defmodule Nest.DotConfig.ProviderTombstonesTest do
     # provider does not matter. The base half above is the only reachable one: a
     # provider defined in `local.toml` and deleted there is the contradiction
     # refused below.
-    test "a file that defines and deletes the same provider is refused, naming it", %{
-      base: base,
-      local: local
-    } do
+    test "a file that defines and deletes the same provider is refused, naming it and the file",
+         %{
+           base: base,
+           local: local
+         } do
       File.write!(base, block("alpha"))
       File.write!(local, with_deleted(["alpha"], block("alpha")))
 
-      assert_raise RuntimeError, ~r/Provider alpha: is both defined and listed/, fn ->
-        DotConfig.load()
-      end
+      # The file is named because there are two of them: "Provider alpha" alone
+      # does not say which one to open.
+      assert_raise RuntimeError,
+                   ~r/Provider alpha: is both defined and listed in deleted-providers, in #{local}/,
+                   fn -> DotConfig.load() end
+    end
+
+    test "the key in config.toml is refused, naming the file", %{base: base, local: local} do
+      # A list there could hide nothing — `config.toml` is what the records hide
+      # a provider *from* — so it would be a valid no-op that reads as a working
+      # deletion. The base file is the one that has to be opened to fix it.
+      # The tombstoned name is not defined in that file, so this is the key's
+      # *placement* being refused, not the contradiction.
+      File.write!(base, with_deleted(["beta"], block("alpha")))
+      File.write!(local, block("beta"))
+
+      assert_raise RuntimeError,
+                   ~r/deleted-providers belongs in local.toml, not in #{base}/,
+                   fn -> DotConfig.load() end
     end
 
     test "a malformed value is refused, naming the key", %{base: base, local: local} do
@@ -206,24 +223,36 @@ defmodule Nest.DotConfig.ProviderTombstonesTest do
       assert Map.keys(config.providers) == ["alpha"]
     end
 
-    test "refuses, and writes nothing, when it cannot read what it records against", %{
+    test "refuses, and writes nothing, when it cannot use what it records against", %{
       base: base,
       local: local
     } do
-      # Either file being unreadable makes the record a guess, and a wrong guess
+      # Either file being unusable makes the record a guess, and a wrong guess
       # either resurrects a deleted provider or hides a live one.
       File.write!(base, block("alpha"))
+
+      # A syntax error comes back from `Toml.decode/1` as a tuple...
       File.write!(local, "= not toml\n")
-      before = File.read!(local)
-
       assert {:error, reason} = Writer.save_providers([provider("alpha")])
-      assert reason =~ "cannot read"
-      assert File.read!(local) == before
+      assert reason =~ "cannot use"
+      assert File.read!(local) == "= not toml\n"
 
+      # ... but a *semantic* error raises out of `parse_config/1`, and that is
+      # the shape a hand-edit actually takes. The sentence has to survive it: a
+      # raise here reaches the channel's `rescue`, which answers
+      # `invalid_payload` — a false code, since the payload was fine and the
+      # file was not.
+      File.write!(local, "[providers.broken]\nbase-url = 5\n")
+      assert {:error, reason} = Writer.save_providers([provider("alpha")])
+      assert reason =~ "cannot use"
+      assert reason =~ "Provider broken: invalid base-url"
+      assert File.read!(local) == "[providers.broken]\nbase-url = 5\n"
+
+      # The base file is the other half of the record.
       File.write!(base, "= not toml\n")
       File.write!(local, "")
       assert {:error, reason} = Writer.save_providers([provider("alpha")])
-      assert reason =~ "cannot read"
+      assert reason =~ "cannot use"
       assert File.read!(local) == ""
     end
   end
