@@ -10,7 +10,9 @@ defmodule NestWeb.ShellCodeLoadingTest do
   is how `page_controller_test.exs` has failed. `test_helper.exs` pays the first
   render — and the first read and insert — before any deadline; this is the
   invariant behind that warm-up: once warm, a render makes no code-server call
-  at all.
+  from the request process at all. The trace sees the calling process only,
+  which is where every one of these loads is made; a load made by some other
+  process would not show up here, so that is the claim this file can make.
 
   The trace is the assertion rather than a module list on purpose. A list keeps
   passing while the request path grows another lazy load, which is exactly the

@@ -300,13 +300,24 @@ end
 
 # Warm the request path and the first DB touch.
 #
+# Placement is load-bearing twice, so do not tidy this block upward. The
+# `checkout/1` below is only legal once `Sandbox.mode(Nest.Repo, :manual)` has
+# run (it is above), and although `ExUnit.start/1` has already run, the suite
+# does not start until `mix test` loads the test files after this file returns —
+# so a warm-up here is still before every test's deadline.
+#
 # The lists above cannot cover a *request*: the loads a request pays are made by
 # the plug stack's own `init/1` and render call sites, and no
-# `Code.ensure_loaded/1` list names them all. One cold `GET /register` on
-# `PageController` makes 38 code-server calls — 19 modules, two each, a
-# `get_object_code_for_loading` and a `load_ok` — and the first DB read and the
-# first insert make 22 and 20 more. Measured on this host by tracing
-# `:code_server.call/1` in a single test process; the modules, by call site:
+# `Code.ensure_loaded/1` list names them all. At the position this block runs,
+# one cold `GET /register` on `PageController` makes 46 code-server calls — 23
+# modules, two each, a `get_object_code_for_loading` and a `load_ok` — the
+# sandbox checkout plus the first DB read make 24 more, and the first insert
+# makes 20. Measured here by diffing `:code.all_loaded/0` around each step.
+# Tracing `:code_server.call/1` from inside a test process instead reports 19 of
+# those 23 modules, not the other four (`Plug.Adapters.Test.Conn`,
+# `Phoenix.Router`, `Phoenix.VerifiedRoutes`, `String.Unicode`): the test's own
+# harness had already loaded them before it started tracing. The modules, by
+# call site:
 #
 #   render  Phoenix.URL (`~p` in root.html.heex), Plug.Router.Utils
 #           (Plug.Static.init/1), Phoenix.LiveDashboard.RequestLogger,
@@ -320,7 +331,8 @@ end
 #   read    Ecto.Repo.Queryable, Ecto.Queryable{,.Atom,.Ecto.Query},
 #           DBConnection.Query{,.Postgrex.Query},
 #           Ecto.Adapters.SQL.Sandbox.Connection, DBConnection.LogEntry,
-#           String.Chars.Postgrex.Query, Ecto.Repo.{Assoc,Preloader}
+#           String.Chars.Postgrex.Query, Ecto.Repo.{Assoc,Preloader}, plus
+#           DBConnection.Ownership.Proxy for the `checkout/1` itself
 #   insert  Ecto.Changeset{,.Relation}, Ecto.Type, Ecto.Repo.Schema,
 #           Ecto.Association, Ecto{,.Embedded,.Schema},
 #           Postgrex.Extensions.Timestamp, NaiveDateTime
@@ -349,7 +361,17 @@ _ = Phoenix.ConnTest.html_response(shell_conn, 200)
 
 _ = Ecto.Adapters.SQL.Sandbox.checkout(Nest.Repo)
 _ = Nest.Accounts.user_count()
-_ = Nest.Accounts.create_user(%{username: "warmup", password: "warmup-password"}, "warmup")
+
+# Matched, not discarded. An invalid changeset still loads `Ecto.Repo.Schema`,
+# `Ecto.Changeset` and `Ecto.Type`, but stops before the insert, so it never
+# loads `NaiveDateTime` or `Postgrex.Extensions.Timestamp` — and the guard below
+# would still pass. Matching the result makes the insert path a precondition
+# rather than a hope: a tightened password or username rule fails here, loudly,
+# instead of quietly leaving the first inserting test to pay those loads inside
+# its own deadline.
+{:ok, _user, _role} =
+  Nest.Accounts.create_user(%{username: "warmup", password: "warmup-password"}, "warmup")
+
 _ = Ecto.Adapters.SQL.Sandbox.checkin(Nest.Repo)
 
 # Fail loudly if it did not take, so a future reader cannot delete the calls
