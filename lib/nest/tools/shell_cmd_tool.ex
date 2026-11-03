@@ -10,6 +10,7 @@ defmodule Nest.Tools.ShellCmdTool do
 
   require Logger
 
+  alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.LLM.Tool
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
@@ -67,7 +68,13 @@ defmodule Nest.Tools.ShellCmdTool do
       "limit does not apply to `background: true`. Every call is a shell job " <>
       "while it runs, so it is listed by `shell-list` and `shell-kill` can stop " <>
       "it; `background: true` returns a job id instead of waiting, and the job " <>
-      "outlives the call."
+      "outlives the call. A pipeline whose **last** stage throws output away " <>
+      "(`head`, `tail`, or a `sed` line range such as `-n '1,50p'`) has that " <>
+      "stage removed: the command runs without it, its complete output is " <>
+      "saved to a file in your scratch directory, and the result says where — " <>
+      "read that file. `grep`, `awk`, and a `sed` substitution are untouched, " <>
+      "and so is any stage that is not the last one. To ask for less output, " <>
+      "use `max_result_tokens`; never truncate it with a pipe."
   end
 
   defp shell_background_property do
@@ -103,7 +110,7 @@ defmodule Nest.Tools.ShellCmdTool do
     context = context || %{}
     caps = caps_from_context(context)
 
-    with :ok <- ShellPipes.check(command),
+    with {:ok, truncation} <- ShellPipes.truncation(command),
          :ok <- ShellBackground.check(command),
          {:ok, timeout} <- shell_timeout_ms(args["timeout"]) do
       Logger.info(
@@ -123,9 +130,50 @@ defmodule Nest.Tools.ShellCmdTool do
         ]
         |> put_timeout(timeout)
 
-      Sandbox.run(command, mounts, caps, opts)
+      execute(command, truncation, opts, mounts, caps)
     end
   end
+
+  # Run the command and turn its result into the tool's answer. The rewrite
+  # decision is taken once, in `plan/3`, so the command that runs and the answer
+  # that describes it cannot disagree.
+  defp execute(command, truncation, opts, mounts, caps) do
+    {run, truncation} = plan(command, truncation, Keyword.fetch!(opts, :background))
+
+    run
+    |> Sandbox.run(mounts, caps, opts)
+    |> report_truncation(truncation, mounts)
+  end
+
+  # A truncating stage is removed for a foreground call only. A background job
+  # answers with a job id rather than output, so there is nothing to file — and
+  # nothing to warn about either: its command runs *as written*, and a warning
+  # saying a stage was removed would be false. `ShellBackground.check/1` above
+  # still sees the command as the model wrote it.
+  defp plan(command, nil, _background), do: {command, nil}
+  defp plan(command, _truncation, true), do: {command, nil}
+  defp plan(_command, {stripped, _stage} = truncation, false), do: {stripped, truncation}
+
+  defp report_truncation(result, nil, _mounts), do: result
+
+  # The warning's judge agent is a fiction; `ShellPipes.warning/2` (where the
+  # text lives) says what it is and why its wording must not be softened. What
+  # this function owes that text is a file: it is only sent after a write.
+  defp report_truncation({:ok, output}, {_stripped, stage}, mounts) do
+    # The complete output goes to the agent's scratch dir, by the same
+    # `Overflow.write/4` (and so the same `/tmp/<agent>/exec-*.txt` convention)
+    # as every other offloaded result. When the write fails there is no path to
+    # name, and the output must not be thrown away: it is returned instead,
+    # unwarned, because the warning's whole point is the file.
+    case Overflow.write(output, %{mounts: mounts}, "exec", "txt") do
+      nil -> {:ok, output}
+      path -> {:ok, ShellPipes.warning(stage, path)}
+    end
+  end
+
+  # A failed or cancelled command keeps its own result: the model has to see why
+  # it failed, and a truncating pipe is irrelevant to that.
+  defp report_truncation(result, _truncation, _mounts), do: result
 
   # `nil` means the argument was omitted: leave `:timeout` off the opts so
   # `ShellCmd.execute/4`'s own default applies (one source of truth for the

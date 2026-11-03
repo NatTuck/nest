@@ -1,195 +1,254 @@
 defmodule Nest.Tools.ShellPipesTest do
   @moduledoc """
-  Tests for `Nest.Tools.ShellPipes`, the filter that rejects `shell-cmd`
-  commands piping output into `head` or `tail`.
+  Tests for `Nest.Tools.ShellPipes`, which removes a `shell-cmd` command's
+  trailing output-truncating stage instead of refusing the command.
 
-  `check/1` is pure — no bwrap, no I/O — so these run fast. The positive cases
-  pin the pipeline detection (including by path, after redirections, and on a
-  continuation line); the negative cases pin the false positives the tokenizer
-  must avoid: quotes, comments, heredoc bodies, `||`/`&&`, `head` used directly
-  or as a filename, and a pipe into `grep`, which is allowed (issue #106).
+  Two levels. `truncation/1` is pure — no bwrap, no I/O — so the rule is pinned
+  cheaply: which stage is removed, what the command becomes, and the many shapes
+  that are left alone (`grep`, `awk`, a `sed` substitution, a file operand, a
+  stage that is not the last one, anything quoted or heredoc'd). The tool-level
+  tests then run the real thing: the command without its stage, the complete
+  output in a scratch file, and the warning that names it.
   """
 
   use ExUnit.Case, async: true
 
+  import Nest.Test.TmpCleanup
+
+  alias Nest.Sandbox.Mounts
+  alias Nest.Sandbox.ShellJobs
+  alias Nest.Tools
   alias Nest.Tools.ShellPipes
 
-  describe "check/1 rejects a pipe into head or tail" do
-    test "rejects a pager at any pipeline stage, by bare name or by path, and names it" do
-      for {command, pager} <- [
-            {"ls | head", "head"},
-            {"cat big.log | tail -f", "tail"},
-            {"ls|head", "head"},
-            {"a | b | head", "head"},
-            {"ls | /usr/bin/head", "head"},
-            {"(( x << 1 ))\nls | head", "head"}
+  describe "truncation/1 removes a trailing truncating stage" do
+    test "head, tail, and a sed line range, naming the stage and the command left behind" do
+      for {command, prefix, stage} <- [
+            {"ls | head", "ls ", "head"},
+            {"ls|head", "ls", "head"},
+            {"ls | head -n 5", "ls ", "head"},
+            {"ls | head -20", "ls ", "head"},
+            {"ls | head -c 100", "ls ", "head"},
+            {"ls | tail -n 5", "ls ", "tail"},
+            {"ls | /usr/bin/head", "ls ", "head"},
+            {"ls | sed -n '1,50p'", "ls ", "sed"},
+            {"ls | sed -n '50,100p'", "ls ", "sed"},
+            {"ls | sed -n '5p'", "ls ", "sed"},
+            {"ls | sed -n '$p'", "ls ", "sed"},
+            {"ls | sed '1,50d'", "ls ", "sed"},
+            {"ls | sed -n '1,50d'", "ls ", "sed"}
           ] do
-        assert {:error, message} = ShellPipes.check(command),
-               "expected #{inspect(command)} to be rejected"
-
-        assert message =~ "will not pipe command output into `#{pager}`"
+        assert {:ok, {^prefix, ^stage}} = ShellPipes.truncation(command),
+               "expected #{inspect(command)} to lose its last stage"
       end
     end
 
-    test "sees the command word after redirections and assignments" do
-      # A redirection target or an assignment between the pipe and the command
-      # must not hide the pager.
-      for command <- ["cmd | > out head", "cmd | VAR=x head", "cmd | 2>/dev/null head"] do
-        assert {:error, _message} = ShellPipes.check(command),
-               "expected #{inspect(command)} to be rejected"
-      end
+    test "keeps everything before the last stage, and takes the operator with it" do
+      # The stage is the *last* one, so the earlier stages stay: the command that
+      # runs is the model's own, minus the pipe that discarded its output.
+      assert {:ok, {"ls | grep x ", "head"}} = ShellPipes.truncation("ls | grep x | head")
+      assert {:ok, {"cd /x\nls ", "head"}} = ShellPipes.truncation("cd /x\nls | head")
+      # A trailing newline (or a comment, which the tokenizer drops) is not a
+      # following command, so it does not disqualify the stage.
+      assert {:ok, {"ls ", "head"}} = ShellPipes.truncation("ls | head\n")
+      assert {:ok, {"ls ", "head"}} = ShellPipes.truncation("ls | head # first two")
     end
+  end
 
-    test "treats |&, a subshell, a continuation line, and a following && as pipes" do
+  describe "truncation/1 leaves everything else alone" do
+    test "a filter, a file operand, or a stage that is not the last one" do
       for command <- [
-            "ls |& tail",
-            "ls\n| head",
-            "ls \\\n| head",
-            "ls |\nhead",
+            "ls | head | wc -l",
+            "ls | head && echo done",
+            "ls | head; echo done",
+            "ls | head;",
+            "ls | head > out.txt",
+            "ls | head 2>/dev/null",
+            "ls | grep x",
+            "ls | awk '{print $1}'",
+            "ls | sed 's/a/b/'",
+            "ls | sed '1,50p'",
+            "ls | sed -i '1,50d'",
+            "ls | sed -f script.sed",
+            "ls | sed -n '1,50p' file",
+            "ls | head -5 file",
+            "sed -n '1,5p' file",
+            "head -5 file",
+            "head -1 file"
+          ] do
+        assert {:ok, nil} = ShellPipes.truncation(command),
+               "expected #{inspect(command)} to be left alone"
+      end
+    end
+
+    test "a quoted pipe, a heredoc, or a stage inside a substitution" do
+      for command <- [
+            ~s{echo "a | head"},
+            "echo 'a | head'",
+            "cat <<EOF | head",
+            "cat <<'EOF'\nls | head\nEOF",
             "(ls | head)",
             "ls | (head)",
-            "ls | head && echo done"
+            "$(ls | head)",
+            "`ls | head`",
+            "ls | xargs head",
+            "ls | { head; }"
           ] do
-        assert {:error, _message} = ShellPipes.check(command),
-               "expected #{inspect(command)} to be rejected"
+        assert {:ok, nil} = ShellPipes.truncation(command),
+               "expected #{inspect(command)} to be left alone"
       end
     end
 
-    test "rejects a pipe inside backticks or an unquoted command substitution" do
-      # A backtick or unquoted `$(...)` runs real shell code, so a pipe inside
-      # it is a real pipe into a pager.
-      for command <- ["`ls | head`", "$(ls | head)"] do
-        assert {:error, _message} = ShellPipes.check(command),
-               "expected #{inspect(command)} to be rejected"
-      end
-    end
-
-    test "rejects a pipe on the heredoc line, and code after the body" do
-      # Only the heredoc *body* is skipped: a pipe on the `<<` line is a real
-      # pipeline, and so is code after the closing delimiter. An undecidable
-      # delimiter (`<<E'OF'`, whose text is `EOF` to bash) still scans the rest
-      # of the line, so the pipe there is caught.
-      for command <- [
-            "cat <<EOF | head",
-            "cat <<E'OF' | head",
-            "cat <<EOF\nls | head\nEOF\nls | head"
-          ] do
-        assert {:error, _message} = ShellPipes.check(command),
-               "expected #{inspect(command)} to be rejected"
-      end
-    end
-
-    test "rejects an unquoted | in a case pattern list and in an awk regex" do
-      # A `case` pattern list uses `|` to separate alternatives, not to pipe, so
-      # refusing `case $x in head|tail)` is the one documented false positive
-      # (the walk does not track command-word position). `awk /head|tail/ file`
-      # is refused for the same reason but there it is *correct*: bash tokenizes
-      # that `|` as a pipe and tries to run `tail/`, so the regex must be quoted.
-      for command <- ["case $x in head|tail) echo ok;; esac", "awk /head|tail/ file"] do
-        assert {:error, _message} = ShellPipes.check(command),
-               "expected #{inspect(command)} to be rejected"
-      end
-    end
-  end
-
-  describe "check/1 allows commands that do not pipe into a pager" do
-    test "allows head used directly or as a filename, and a quoted |" do
-      # A pager only counts when it is a pipeline stage's command word, and the
-      # match is the exact basename: `head.txt` and `headless` are not pagers,
-      # and a `|` inside quotes is not a pipe.
-      for command <- ["head -1 file", "cat head.txt", "ls | headless", "awk '/head|tail/' file"] do
-        assert :ok = ShellPipes.check(command), "expected #{inspect(command)} to be allowed"
-      end
-    end
-
-    test "allows a pipe into a command that is not a pager, including grep (issue #106)" do
-      # `grep` selects rather than truncates, so it is a legitimate filter and
-      # piping into it is allowed — the filter refuses only `head` and `tail`.
-      for command <- ["ls | sort", "ls | grep x"] do
-        assert :ok = ShellPipes.check(command), "expected #{inspect(command)} to be allowed"
-      end
-    end
-
-    test "does not treat ||, &&, or ; as a pipe" do
-      for command <- ["make || head", "ls && head -1 f", "false; head -1 f"] do
-        assert :ok = ShellPipes.check(command), "expected #{inspect(command)} to be allowed"
-      end
-    end
-
-    test "ignores pipes inside quotes, comments, and heredoc bodies" do
-      # The heredoc case is the issue's own "write a script and run it"
-      # workaround: the body may legitimately contain a pipe into a pager.
-      for command <- [
-            ~s{echo "| head"},
-            "echo 'a | grep b'",
-            "echo # | head",
-            "cat <<EOF\nls | head\nEOF",
-            "cat <<'EOF'\nls | head\nEOF",
-            "cat <<-EOF\n\tls | head\n\tEOF",
-            "cat <<\\EOF\nls | head\nEOF",
-            "cat <<'E OF'\nls | head\nE OF",
-            "cat <<$F\nls | head\n$F",
-            "cat <<E'OF'\nls | head\nEOF",
-            "cat <<\\-EOF\nls | head\nEOF"
-          ] do
-        assert :ok = ShellPipes.check(command), "expected #{inspect(command)} to be allowed"
-      end
-    end
-
-    test "handles degenerate shell syntax without a false positive" do
-      # An empty command, trailing backslashes (in and out of double quotes), an
-      # arithmetic `<<` that is not a heredoc, and `<<` with no body or an
-      # unclosed quoted delimiter all stay `:ok`.
-      for command <- [
-            "",
-            "ls \\",
-            ~s{echo "a\\},
-            "echo $((1 << 2))",
-            "cat << $file",
-            "cat <<'EOF"
-          ] do
-        assert :ok = ShellPipes.check(command), "expected #{inspect(command)} to be allowed"
-      end
-    end
-
-    test "a newline ends the stage once content was consumed after the pipe" do
-      # A bare `|` + newline is a continuation, but once the stage has an
-      # assignment or a redirection the newline ends it — bash runs `head` as a
-      # separate command.
-      for command <- ["ls | 2>/dev/null\nhead -1 g", "ls |\nVAR=x\nhead -1 f"] do
-        assert :ok = ShellPipes.check(command), "expected #{inspect(command)} to be allowed"
-      end
-    end
-
-    test "documents the known misses so the moduledoc cannot drift" do
-      # These are the limitations named in the moduledoc: the pager is not the
-      # stage's own command word (a wrapper, a brace group, or an argument), so
-      # the filter does not catch it.
-      for command <- ["ls | xargs head", "ls | { head; }", "ls | env head"] do
-        assert :ok = ShellPipes.check(command), "expected #{inspect(command)} to be allowed"
-      end
-    end
-
-    test "allows command substitution that is double-quoted or has no pager pipe" do
-      # A substitution inside double quotes is not inspected (a documented
-      # limitation), and a substitution whose contents contain no pager pipe is
-      # fine even when unquoted.
-      for command <- [~s{echo "$(ls | head)"}, "echo `ls`"] do
-        assert :ok = ShellPipes.check(command), "expected #{inspect(command)} to be allowed"
-      end
-    end
-  end
-
-  describe "check/1 edge cases" do
     test "rejects a non-binary command with the same shape as the timeout error" do
-      # `Nest.LLM.Tools` only checks that the `command` key is present, so a
+      # The tool's schema only checks that the `command` key is present, so a
       # non-string value reaches here; it must not crash `ShellCmd`.
       for bad <- [nil, ["echo X | head"]] do
-        assert {:error, message} = ShellPipes.check(bad)
+        assert {:error, message} = ShellPipes.truncation(bad)
 
         assert message ==
                  "Invalid `command` argument: expected a string, got: #{inspect(bad)}."
       end
     end
+  end
+
+  describe "the shell-cmd tool" do
+    setup do
+      unique = System.unique_integer([:positive])
+
+      # A workspace outside /tmp, because the scratch dir is bound there.
+      workspace = Path.join([File.cwd!(), "_build", "tmp", "nest_pipe_ws_#{unique}"])
+      File.mkdir_p!(workspace)
+
+      for n <- 1..5 do
+        File.write!(Path.join(workspace, "file-#{n}.txt"), "contents #{n}\n")
+      end
+
+      root = Path.join(System.tmp_dir!(), "nest_pipe_scratch_#{unique}")
+      agent = "pipe-agent-#{unique}"
+      scratch = Path.join([root, "space-1", agent])
+      File.mkdir_p!(scratch)
+
+      on_exit(fn ->
+        if String.contains?(workspace, "nest_pipe_ws"), do: File.rm_rf!(workspace)
+        rm_tmp!(root, "nest_pipe_scratch")
+      end)
+
+      %{mounts: Mounts.new(workspace, scratch), agent: agent, scratch: scratch}
+    end
+
+    @tag :bwrap
+    test "a truncated command runs without its stage, and its complete output is filed", %{
+      mounts: mounts,
+      agent: agent,
+      scratch: scratch
+    } do
+      for {command, stage} <- [
+            {"ls | head -2", "head"},
+            {"ls | tail -n 2", "tail"},
+            {"ls | sed -n '1,2p'", "sed"}
+          ] do
+        assert {:ok, warning} = run_tool(command, mounts)
+
+        # The stage really ran: the answer is the warning, and the file it names
+        # holds all five entries rather than the two the pipe would have kept.
+        path = filed_path(warning, agent)
+        filed = File.read!(Path.join(scratch, Path.basename(path)))
+        assert length(lines(filed)) == 5
+
+        # The warning is the shipped text, exactly — it names the removed stage
+        # and the file, and it is the deterrent (`ShellPipes.warning/2`).
+        assert warning == warning_text(stage, path)
+      end
+    end
+
+    @tag :bwrap
+    test "a background call runs its command as written, files nothing, and is not warned about",
+         %{mounts: mounts, scratch: scratch} do
+      # A background job answers with a job id rather than a filed result, so
+      # there is nothing to file and nothing to warn about: the pipe is left in
+      # place and the job's own output is what comes back. The job reports its
+      # exit to this process (the caller is its waiter), so this needs no grace
+      # window to be deterministic.
+      #
+      # A key of its own, so the job does not land under the tools' shared
+      # `{:unknown, :unknown}` fallback and disturb another test's listing. The
+      # space id is above any serial a test database hands out, so a space-wide
+      # listing cannot see it either.
+      space_id = 1_000_000 + System.unique_integer([:positive])
+      key = {space_id, "pipe-bg-#{System.unique_integer([:positive])}"}
+      {space_id, name} = key
+
+      assert {:ok, output} =
+               run_tool(
+                 "ls | head -2",
+                 mounts,
+                 %{"background" => true},
+                 %{space_id: space_id, agent_name: name}
+               )
+
+      # The stage ran: two lines, not the five the file would hold.
+      assert lines(output) == ["file-1.txt", "file-2.txt"]
+      refute output =~ "judge agent"
+
+      # Nothing was filed, and the job recorded the command exactly as asked —
+      # a warning here would have claimed a stage was removed when it ran.
+      refute Enum.any?(File.ls!(scratch), &String.starts_with?(&1, "exec-"))
+
+      assert [%{command: "ls | head -2"}] = ShellJobs.list(key)
+    end
+
+    @tag :bwrap
+    test "an untouched command runs as written, writes no file, and is not warned about", %{
+      mounts: mounts,
+      scratch: scratch
+    } do
+      for {command, expected} <- [
+            {~s{echo "a | head"}, "a | head"},
+            {"ls | head | wc -l", "5"},
+            {"ls | grep file-1", "file-1.txt"},
+            {"ls | awk '{print $1}'", "file-1.txt"},
+            {"ls | sed 's/file-/item-/'", "item-1.txt"},
+            {"head -2 file-3.txt", "contents 3"},
+            {"sed -n '1,2p' file-4.txt", "contents 4"}
+          ] do
+        assert {:ok, output} = run_tool(command, mounts),
+               "expected #{inspect(command)} to run as written"
+
+        assert output =~ expected
+        refute output =~ "judge agent"
+        assert File.ls!(scratch) == [], "#{inspect(command)} must not file anything"
+      end
+    end
+  end
+
+  defp run_tool(command, mounts, extra \\ %{}, context \\ %{}) do
+    Tools.get_function("shell-cmd", mounts).function.(
+      Map.put(extra, "command", command),
+      context
+    )
+  end
+
+  # The path the warning names, as the agent sees it (`/tmp/<agent>/exec-*.txt`).
+  defp filed_path(warning, agent) do
+    [path] = Regex.run(~r{/tmp/#{agent}/exec-[^ ]+\.txt}, warning)
+    path
+  end
+
+  defp lines(text), do: String.split(text, "\n", trim: true)
+
+  # The warning as shipped, spelled out rather than read back from
+  # `ShellPipes.warning/2`: an exact assertion is what makes a softened wording
+  # fail here.
+  defp warning_text(stage, path) do
+    "Your command was piped into `#{stage}` and that stage was removed. " <>
+      "The complete output is in #{path} — read it. " <>
+      "Do not throw away output. " <>
+      "If you need less output, use the tool's `max_result_tokens` argument — " <>
+      "that is the supported way to ask for a smaller result, and when the " <>
+      "result is large enough to overflow, the complete output is still saved " <>
+      "to a file for you to read. " <>
+      "Do not use any substitutions: no `| head`, no `| tail`, no `| sed`, no " <>
+      "filtering of any kind. " <>
+      "If this behaviour is repeated, every command you run will be evaluated " <>
+      "for cheating by a judge agent."
   end
 end

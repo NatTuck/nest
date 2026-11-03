@@ -56,8 +56,9 @@ defmodule Nest.Tools.InspectFile do
           "full read fits in your context budget, or whether to run " <>
           "`shell-cmd` directly on the file (e.g. `head -1 <path>` or " <>
           "`sed -n '1,20p' <path>`) for a partial read; call the tool on " <>
-          "the file, never piped into head/tail (shell-cmd refuses " <>
-          "that). Files larger than 10 MB are rejected; use `shell-cmd` " <>
+          "the file rather than piping a command's output into head or " <>
+          "tail (shell-cmd removes that stage and hands you the file). " <>
+          "Files larger than 10 MB are rejected; use `shell-cmd` " <>
           "with `wc -l <path>` or `head -1 <path>` for those. Metadata is " <>
           "collected inside the " <>
           "sandbox, so only files the sandbox exposes are visible.",
