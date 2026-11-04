@@ -78,7 +78,8 @@ defmodule Nest.DotConfig.DeletedProviders do
 
       names ->
         raise "#{@key} belongs in local.toml, not in #{path}: it lists " <>
-                "#{Enum.join(names, ", ")}, and #{path} is the file those records hide."
+                "#{Enum.join(names, ", ")}, and a record in that file could only hide a " <>
+                "provider that #{path} itself defines."
     end
   end
 

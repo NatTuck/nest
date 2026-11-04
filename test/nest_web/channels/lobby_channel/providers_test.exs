@@ -77,7 +77,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
   end
 
   describe "handle_in(save_providers)" do
-    setup do
+    setup %{local_file: local_file} do
       Repo.delete_all(InviteSchema)
       Repo.delete_all(UserSchema)
 
@@ -102,9 +102,16 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       assert_push "init", init
       assert_push "broken_agents_updated", _
 
+      # The base a save records deletions against is this describe's own, not
+      # the shared `test/data/config.toml`: which providers a dropped payload
+      # records must not change when someone edits a fixture used suite-wide.
+      base = local_file <> ".base"
+      File.write!(base, "[providers.alpha]\n[providers.beta]\n[providers.gamma]\n")
+      Mimic.stub(Nest.DotConfig, :config_file, fn -> base end)
+      on_exit(fn -> File.rm(base) end)
+
       # The handler runs in the channel process; make this test's stubs
-      # (`Nest.DotConfig.local_file/0`, `Nest.Models.rescan/0`) visible
-      # there.
+      # (`config_file/0`, `local_file/0`, `rescan/0`) visible there.
       Mimic.allow(Nest.DotConfig, self(), socket.channel_pid)
       Mimic.allow(Nest.Models, self(), socket.channel_pid)
 
@@ -151,11 +158,10 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       assert Enum.any?(providers, &(&1["name"] == "acme"))
       assert File.read!(local_file) =~ "acme"
 
-      # The payload carried only `acme`, so the three providers `config.toml`
-      # defines were recorded as deleted — and the client is told, because a
-      # provider that is absent with no explanation is the quiet no-op this
-      # whole feature exists to avoid.
-      assert deleted == ["anthropic-provider", "model-studio", "pegasus"]
+      # The payload carried only `acme`, so every provider the base defines was
+      # recorded as deleted, and the client is told: a provider that is absent
+      # with no explanation is the quiet no-op this feature exists to avoid.
+      assert deleted == ["alpha", "beta", "gamma"]
     end
 
     test "round-trips probe_multimodal through save, the push and local.toml", %{
