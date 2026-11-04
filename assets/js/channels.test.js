@@ -901,12 +901,16 @@ describe("channels", () => {
       assert.strictEqual(useStore.getState().archivedSpaces[0].id, 9);
     });
 
-    it("should set providers from the init payload", async () => {
+    it("should set providers and the removed names from the init payload", async () => {
       setNextJoinResult("lobby", {
         autoInit: {
           agents: [],
           models: [],
           providers: [{ name: "acme" }, { name: "pegasus" }],
+          // The names `local.toml` records as deleted. They are sent because a
+          // provider the merge drops is otherwise simply absent from the list,
+          // with nothing to explain it.
+          deleted_providers: ["pegasus"],
         },
       });
       joinLobby();
@@ -917,6 +921,7 @@ describe("channels", () => {
           ["acme", "pegasus"],
         );
       });
+      assert.deepStrictEqual(useStore.getState().deletedProviders, ["pegasus"]);
     });
 
     it("should update store.models on models_updated event", async () => {
@@ -966,6 +971,7 @@ describe("channels", () => {
 
       simulateServerEvent("lobby", "providers_updated", {
         providers: [{ name: "brand-new" }],
+        deleted_providers: ["gone"],
       });
 
       await vi.waitFor(() => {
@@ -973,6 +979,9 @@ describe("channels", () => {
           { name: "brand-new" },
         ]);
       });
+      // The frame carries the removal record too, so a save from this client
+      // shows what it just recorded.
+      assert.deepStrictEqual(useStore.getState().deletedProviders, ["gone"]);
     });
 
     it("should update store.probeCacheStats on probe_cache_stats event", async () => {

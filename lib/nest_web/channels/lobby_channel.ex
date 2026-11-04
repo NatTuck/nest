@@ -261,6 +261,10 @@ defmodule NestWeb.LobbyChannel do
   end
 
   defp init_payload(spaces, user) do
+    # One load for both halves of the provider payload; see
+    # `NestWeb.LobbyChannel.Providers.providers_and_deleted/0`.
+    {providers, deleted_providers} = Providers.providers_and_deleted()
+
     %{
       spaces: spaces,
       archived_spaces: Spaces.list_archived_for_user(user.id),
@@ -273,7 +277,8 @@ defmodule NestWeb.LobbyChannel do
       blueprints: Blueprints.list_blueprints(),
       models: safe_models_list(),
       vocations: Vocations.list_vocations(),
-      providers: Providers.providers(),
+      providers: providers,
+      deleted_providers: deleted_providers,
       suggested_name: Spaces.suggest_name(),
       current_user: public_current_user(user),
       invites:

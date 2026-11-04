@@ -7,7 +7,10 @@ defmodule NestWeb.LobbyChannel.Providers do
   for the GUI (used in the lobby `init` payload and the
   `providers_updated` broadcast). `save/2` persists the provider set
   to `~/.config/nest/local.toml` (never `config.toml`), reloads the
-  runtime model cache, and broadcasts the new list.
+  runtime model cache, and broadcasts the new list. The write also
+  records the providers the payload dropped, so a provider deleted in
+  the GUI is not re-added from `config.toml` on the next load
+  (`Nest.DotConfig.Writer` owns that record).
 
   Admin-only: callers must authorize `is_admin` before calling
   `save/2`.
@@ -22,16 +25,39 @@ defmodule NestWeb.LobbyChannel.Providers do
   alias Nest.Models
 
   @doc """
-  The configured providers, serialized for the GUI. Returns an empty
-  list when the config can't be loaded.
+  Both halves of the provider payload from **one** config load: the serialized
+  providers, and the names `local.toml` records as deleted — the providers the
+  merge drops even though `config.toml` still defines them.
+
+  One load, for two reasons. It reads and merges both files, which is the
+  expensive part; and a snapshot is what makes the two halves agree, where two
+  loads could straddle a save and report a provider as both present and deleted.
+
+  The removal record travels to the GUI because without it a provider can vanish
+  from the screen with nothing to explain it: a save from a stale tab records as
+  deleted every provider its payload did not carry, including ones the operator
+  added to `config.toml` afterwards.
   """
-  @spec providers() :: [map()]
-  def providers do
+  @spec providers_and_deleted() :: {[map()], [String.t()] | nil}
+  def providers_and_deleted do
     case DotConfig.load() do
-      {:ok, config} -> config.providers |> Map.values() |> Enum.map(&provider_to_map/1)
-      _ -> []
+      {:ok, config} ->
+        {config.providers |> Map.values() |> Enum.map(&provider_to_map/1),
+         Enum.sort(config.deleted_providers)}
+
+      _ ->
+        # Not `[]` for the record: a config that cannot be loaded is not a config
+        # with no deletions, and the GUI renders a missing record as an explicit
+        # unknown where an empty list reads as an answer.
+        {[], nil}
     end
   end
+
+  @doc """
+  The configured providers, serialized for the GUI.
+  """
+  @spec providers() :: [map()]
+  def providers, do: elem(providers_and_deleted(), 0)
 
   @doc """
   Persist the provider set (from the GUI payload) to `local.toml`,
@@ -48,11 +74,18 @@ defmodule NestWeb.LobbyChannel.Providers do
     case Writer.save_providers(structs) do
       :ok ->
         Models.rescan()
-        Phoenix.Channel.broadcast(socket, "providers_updated", %{providers: providers()})
+
+        {providers, deleted} = providers_and_deleted()
+
+        Phoenix.Channel.broadcast(socket, "providers_updated", %{
+          providers: providers,
+          deleted_providers: deleted
+        })
+
         {:reply, :ok, socket}
 
-      {:error, _reason} ->
-        {:reply, {:error, %{"reason" => "failed_to_save"}}, socket}
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => "failed_to_save", "message" => reason}}, socket}
     end
   rescue
     error ->

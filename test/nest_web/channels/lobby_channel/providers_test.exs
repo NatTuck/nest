@@ -77,7 +77,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
   end
 
   describe "handle_in(save_providers)" do
-    setup do
+    setup %{local_file: local_file} do
       Repo.delete_all(InviteSchema)
       Repo.delete_all(UserSchema)
 
@@ -99,16 +99,32 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # Drain the `:after_join` init + broken-agents pushes so later
       # `assert_receive`/`assert_reply` in each test starts from a clean
       # mailbox (assert_receive only inspects the next message).
-      assert_push "init", _
+      assert_push "init", init
       assert_push "broken_agents_updated", _
 
+      # The base a save records deletions against is this describe's own, not
+      # the shared `test/data/config.toml`: which providers a dropped payload
+      # records must not change when someone edits a fixture used suite-wide.
+      base = local_file <> ".base"
+      File.write!(base, "[providers.alpha]\n[providers.beta]\n[providers.gamma]\n")
+      Mimic.stub(Nest.DotConfig, :config_file, fn -> base end)
+      on_exit(fn -> File.rm(base) end)
+
       # The handler runs in the channel process; make this test's stubs
-      # (`Nest.DotConfig.local_file/0`, `Nest.Models.rescan/0`) visible
-      # there.
+      # (`config_file/0`, `local_file/0`, `rescan/0`) visible there.
       Mimic.allow(Nest.DotConfig, self(), socket.channel_pid)
       Mimic.allow(Nest.Models, self(), socket.channel_pid)
 
-      {:ok, socket: socket, user: user}
+      {:ok, socket: socket, user: user, init: init}
+    end
+
+    test "the join payload carries the removal record, empty when nothing is recorded", %{
+      init: init
+    } do
+      # Present and empty, not missing: the GUI renders a missing key as an
+      # explicit unknown, because "nothing was deleted" is an answer and
+      # silence is not.
+      assert init.deleted_providers == []
     end
 
     test "persists the providers to local.toml and broadcasts providers_updated", %{
@@ -132,12 +148,20 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # these two assertions: each carries its own real bound, rather than
       # synchronising on the channel process to read them with a `0` fence.
       assert_reply ref, :ok, %{}, 1_000
-      assert_push "providers_updated", %{providers: providers}, 1_000
+
+      assert_push "providers_updated",
+                  %{providers: providers, deleted_providers: deleted},
+                  1_000
 
       # The push carries what the handler read back out of `local.toml`, so
       # this is the write as well as the broadcast.
       assert Enum.any?(providers, &(&1["name"] == "acme"))
       assert File.read!(local_file) =~ "acme"
+
+      # The payload carried only `acme`, so every provider the base defines was
+      # recorded as deleted, and the client is told: a provider that is absent
+      # with no explanation is the quiet no-op this feature exists to avoid.
+      assert deleted == ["alpha", "beta", "gamma"]
     end
 
     test "round-trips probe_multimodal through save, the push and local.toml", %{

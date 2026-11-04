@@ -16,6 +16,21 @@ defmodule Nest.DotConfig.LoadTest do
   alias Nest.DotConfig.Provider
   alias Nest.DotConfig.Writer
 
+  # `save_providers/2` records the providers a payload drops by reading
+  # `DotConfig.config_file/0`, which in `:test` is `test/data/config.toml` — the
+  # three-provider fixture. Unstubbed, every file written here would carry
+  # `deleted-providers = [those three]`: invisible, and load-bearing (the
+  # parse-cache test needs two saves to serialize to the same length). A path
+  # that does not exist is the "no base config" case, where nothing can come
+  # back and so nothing is recorded.
+  setup do
+    base =
+      Path.join(System.tmp_dir!(), "no_base_#{System.unique_integer([:positive])}.toml")
+
+    Mimic.stub(DotConfig, :config_file, fn -> base end)
+    :ok
+  end
+
   describe "the parse cache behind load/1" do
     # `load/1` reads the file on every call and caches only the parse, keyed on
     # the bytes it read — never on the file's *identity*. `ParseCacheTest` pins

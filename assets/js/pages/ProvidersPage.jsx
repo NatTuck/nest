@@ -27,6 +27,7 @@ import { errorText } from "../utils/errorText";
 
 export function ProvidersPage() {
   const providers = useStore((state) => state.providers);
+  const deletedProviders = useStore((state) => state.deletedProviders);
   const isAdmin = useStore((state) => state.currentUser?.is_admin);
 
   useDocumentTitle(["Providers"]);
@@ -108,6 +109,8 @@ export function ProvidersPage() {
         </p>
       </div>
 
+      <DeletedProviders deleted={deletedProviders} />
+
       <ProbeCachePanel
         isRescanning={isRescanning}
         onRescan={handleRescanModels}
@@ -155,6 +158,38 @@ export function ProvidersPage() {
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * The providers `local.toml` records as deleted: the merge drops them even
+ * though `config.toml` still defines them.
+ *
+ * This line exists because the alternative is a provider that is simply not
+ * there. A save from a stale tab records as deleted every provider its payload
+ * did not carry — including one the operator added to `config.toml` afterwards —
+ * and with nothing on screen saying so, the only clue is that it vanished.
+ *
+ * `null` is "the server has not said", not "none deleted", so it renders as an
+ * explicit unknown rather than as the empty list (the same rule the probe-cache
+ * panel follows).
+ */
+function DeletedProviders({ deleted }) {
+  if (deleted == null) {
+    return (
+      <p className="mb-6 text-sm text-red-600">
+        The server did not report which providers are removed here.
+      </p>
+    );
+  }
+
+  if (deleted.length === 0) return null;
+
+  return (
+    <p className="mb-6 text-sm text-gray-600">
+      Removed here (still in <code className="text-gray-800">config.toml</code>
+      ): {deleted.join(", ")}
+    </p>
   );
 }
 

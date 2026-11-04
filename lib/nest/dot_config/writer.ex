@@ -4,8 +4,23 @@ defmodule Nest.DotConfig.Writer do
   and writes them to `local.toml` (the in-app editable overlay). `config.toml`
   is never written by the app.
 
-  The written file is the full provider set the user manages; on load,
-  `local.toml`'s `providers` table is authoritative over `config.toml`.
+  The written file is the full provider set the user manages, **plus** a
+  `deleted-providers` list naming the providers that set no longer contains, so
+  `Nest.DotConfig.load/0`'s merge does not bring them back from `config.toml`.
+  A provider the user re-adds is removed from that list in the same write, which
+  is what makes re-adding work.
+
+  The list is computed from what the files say, not from the payload alone: a
+  name is recorded as deleted when `config.toml` defines it and the payload does
+  not, or when the file already recorded it and the payload still does not. A
+  provider that only ever lived in `local.toml` needs no record — it is simply
+  absent from the file that replaces it — and must not get one, or a name the
+  operator later adds to `config.toml` by hand would be invisible for a reason
+  nothing on screen explains.
+
+  Writing stops with `{:error, reason}` when the files that answer those two
+  questions cannot be read: the record would otherwise be a guess, and a wrong
+  guess either resurrects a deleted provider or hides a live one.
   """
 
   alias Nest.DotConfig
@@ -16,22 +31,121 @@ defmodule Nest.DotConfig.Writer do
   Write the given provider structs to `local.toml`. Returns `:ok` on
   success or `{:error, reason}` on failure.
   """
-  @spec save_providers([Provider.t()]) :: :ok | {:error, term()}
+  @spec save_providers([Provider.t()]) :: :ok | {:error, String.t()}
   def save_providers(providers) do
     save_providers(providers, DotConfig.local_file())
   end
 
   @doc """
   Write the given provider structs to a specific file (test seam).
-  """
-  @spec save_providers([Provider.t()], String.t()) :: :ok | {:error, term()}
-  def save_providers(providers, file) do
-    config = %{
-      "providers" => Map.new(providers, fn p -> {p.name, provider_to_map(p)} end)
-    }
 
-    with {:ok, toml} <- TomlElixir.encode(config) do
-      write_atomic(file, toml)
+  `file` replaces only the **overlay**: the base a deletion is recorded against
+  is still `Nest.DotConfig.config_file/0`, because that is the file the record
+  has to hide the provider from. A test that wants a hermetic write therefore
+  stubs both.
+
+  Every failure is `{:error, sentence}`: a refusal says which file it could not
+  read, and a write that does not land names the file and the filesystem's
+  reason. `NestWeb.LobbyChannel.Providers` hands that sentence to the operator,
+  so a refused save says why instead of only `failed_to_save`.
+  """
+  @spec save_providers([Provider.t()], String.t()) :: :ok | {:error, String.t()}
+  def save_providers(providers, file) do
+    with {:ok, deleted} <- deleted_providers(file, MapSet.new(providers, & &1.name)),
+         {:ok, toml} <- TomlElixir.encode(contents(providers, deleted)) do
+      case write_atomic(file, toml) do
+        :ok -> :ok
+        {:error, reason} -> {:error, "could not write #{file}: #{inspect(reason)}"}
+      end
+    end
+  end
+
+  defp contents(providers, deleted) do
+    %{"providers" => Map.new(providers, fn p -> {p.name, provider_to_map(p)} end)}
+    |> maybe_put("deleted-providers", deleted)
+  end
+
+  # The names this write records as deleted:
+  #
+  #   * a provider `config.toml` defines that the payload does not — the user
+  #     deleted it, and without a record the next load re-adds it;
+  #   * a name the file already recorded that the payload still does not
+  #     contain — the deletion outlives every write until the provider is added
+  #     back;
+  #
+  # and a name in the payload is cleared from both, which is what makes
+  # re-adding a deleted provider work.
+  #
+  # A record naming a provider that exists nowhere is **kept**, not pruned.
+  # Pruning would only happen on a write, so whether such a name came back would
+  # depend on whether a save happened to land in between; and a deletion is the
+  # user's decision, which a later edit to `config.toml` must not quietly undo.
+  # To bring the name back, add it in the app (which clears the record) or
+  # remove it from `deleted-providers` by hand.
+  defp deleted_providers(file, written_names) do
+    with {:ok, base_names} <- base_provider_names(),
+         {:ok, previous} <- previous_deleted_providers(file) do
+      kept =
+        base_names
+        |> MapSet.union(previous)
+        |> MapSet.difference(written_names)
+        |> Enum.sort()
+
+      {:ok, empty_list_as_nil(kept)}
+    end
+  end
+
+  # `nil` is how `contents/2` says "omit the key", so a write that deletes
+  # nothing leaves the file exactly as it was before this feature existed.
+  defp empty_list_as_nil([]), do: nil
+  defp empty_list_as_nil(list), do: list
+
+  # The names `config.toml` defines. Those are the only providers a deletion has
+  # to be recorded against, because `local.toml` is rewritten wholesale by this
+  # module: a name that only ever lived there is gone from the new file already.
+  #
+  # A missing `config.toml` defines no providers, which is a fact and not a
+  # guess; a `config.toml` that cannot be read or parsed is neither, so the
+  # write stops rather than recording a record it cannot stand behind.
+  defp base_provider_names do
+    path = DotConfig.config_file()
+
+    if File.exists?(path) do
+      case load_for_record(path) do
+        {:ok, config} -> {:ok, MapSet.new(Map.keys(config.providers))}
+        {:error, reason} -> {:error, "cannot use #{path} to record deleted providers: #{reason}"}
+      end
+    else
+      {:ok, MapSet.new()}
+    end
+  end
+
+  # `DotConfig.load/1` returns a tuple for a file it cannot read or parse, but a
+  # *semantic* error raises out of `parse_config/1` — so the rescue is what makes
+  # the sentence above true for the file a hand-edit actually breaks. A syntax
+  # error is the easy case; `base-url = 5` is the one an operator writes, and it
+  # used to escape as a raise, which the channel's `rescue` turned into
+  # `invalid_payload`: a false code, since the payload was fine and the file was
+  # not.
+  defp load_for_record(path) do
+    DotConfig.load(path)
+  rescue
+    error -> {:error, Exception.message(error)}
+  end
+
+  # The records the file already carries, so a deletion is remembered across
+  # writes and a re-added name can be cleared from it.
+  defp previous_deleted_providers(file) do
+    if File.exists?(file) do
+      case load_for_record(file) do
+        {:ok, config} ->
+          {:ok, MapSet.new(config.deleted_providers)}
+
+        {:error, reason} ->
+          {:error, "cannot use #{file} to keep its deleted providers: #{reason}"}
+      end
+    else
+      {:ok, MapSet.new()}
     end
   end
 

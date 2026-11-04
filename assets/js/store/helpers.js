@@ -32,6 +32,11 @@ export const initialState = {
   models: [],
   vocations: [],
   providers: [],
+  // The providers `local.toml` records as deleted, so the merge drops them even
+  // though `config.toml` still defines them. `null` until the lobby's `init`
+  // answers — the providers page renders that as an explicit unknown, never as
+  // "nothing was deleted", because the two call for different actions.
+  deletedProviders: null,
   // Stats for the persisted multimodal probe cache (`{entries,
   // oldest_age_s, path}`), as last reported by the lobby. `null` until
   // the server has answered — the providers page renders that as an

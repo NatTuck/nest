@@ -33,6 +33,7 @@ export function joinLobby(onOk, onError) {
     store.setModels(payload.models || []);
     store.setVocations(payload.vocations || []);
     store.setProviders(payload.providers || []);
+    store.setDeletedProviders(payload.deleted_providers);
     store.setSpaces(payload.spaces || []);
     store.setArchivedSpaces(payload.archived_spaces || []);
     store.setPausedSpaces(payload.paused_space_ids || []);
@@ -183,6 +184,7 @@ export function joinLobby(onOk, onError) {
 
   lobbyChannel.on("providers_updated", (payload) => {
     getStore().setProviders(payload.providers || []);
+    getStore().setDeletedProviders(payload.deleted_providers);
   });
 
   // Cache stats are broadcast by every `clear_probe_cache` (so a second
