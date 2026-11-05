@@ -88,13 +88,14 @@ export function ProviderEditor({ provider, onChange, onRemove }) {
           />
         </Field>
         <Field label="API Key">
-          {/* `type="text"`, deliberately: a password field is the signal every
-              browser and extension password manager keys on, and an API key
-              must never be offered to one — it is a secret the operator
-              already has, not a credential to save or generate. Masking it
-              would mean putting the password signal back, so it is not
-              masked. `autoComplete`/`autoCorrect`/`autoCapitalize` are off so
-              nothing "helps" by completing, correcting or capitalising a key. */}
+          {/* `type="text"`, deliberately: a password field is the signal the
+              built-in password managers key on, and the first thing extensions
+              look for, and an API key must never be offered to one — it is a
+              secret the operator already has, not a credential to save or
+              generate. Masking it would put that signal back, so it is not
+              masked (the key is plaintext in `local.toml` either way).
+              `autoComplete`/`autoCorrect`/`autoCapitalize` are off so nothing
+              "helps" by completing, correcting or capitalising a key. */}
           <input
             type="text"
             autoComplete="off"
