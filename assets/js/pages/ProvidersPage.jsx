@@ -196,10 +196,15 @@ function DeletedProviders({ deleted }) {
 // Assign a stable client-side `id` to any provider/model that doesn't
 // already have one (store-seeded providers come back without ids).
 // Used purely as a React key so name edits don't remount editors.
+//
+// `previous_name` is the name the row was seeded under, kept so a rename can
+// carry the provider's api key: the browser never receives the key (#202), so
+// the server has to be told which stored key belongs to the renamed provider.
 function assignIds(providers) {
   return providers.map((provider) => ({
     ...provider,
     id: provider.id ?? makeId(),
+    previous_name: provider.name ?? "",
     models: (provider.models || []).map((model) => ({
       ...model,
       id: model.id ?? makeId(),
@@ -221,6 +226,7 @@ function toPayload(providers) {
     ({
       id: _providerId,
       has_api_key: _hasApiKey,
+      previous_name,
       api_key,
       clear_api_key,
       models,
@@ -230,6 +236,12 @@ function toPayload(providers) {
         ...rest,
         models: (models || []).map(({ id: _modelId, ...model }) => model),
       };
+
+      // Only when it differs: a rename is the same provider, and the stored key
+      // is found under the old name.
+      if (previous_name && previous_name !== rest.name) {
+        provider.previous_name = previous_name;
+      }
 
       if (clear_api_key) {
         provider.clear_api_key = true;

@@ -26,7 +26,7 @@ defmodule NestWeb.LobbyChannel.Providers do
 
   A save therefore carries the key in three explicit states rather than echoing
   it: omitted means keep, a value means replace, and `clear_api_key` means
-  remove (`api_key_action/2`). `Nest.DotConfig.Writer` merges the kept value from
+  remove (`api_key_source/2`). `Nest.DotConfig.Writer` merges the kept value from
   the overlay it is about to replace.
   """
 
@@ -164,13 +164,13 @@ defmodule NestWeb.LobbyChannel.Providers do
     # shared rule, so the reader refuses the same keys (#105 S3).
     name = FieldValidation.provider_name(m["name"])
 
-    {api_key_action, api_key} = api_key_action(m, name)
+    {api_key_source, api_key} = api_key_source(m, name)
 
     %Provider{
       name: name,
       base_url: m["base_url"],
       api_key: api_key,
-      api_key_action: api_key_action,
+      api_key_source: api_key_source,
       models:
         m["models"]
         |> ModelValidation.validate_models(name)
@@ -268,12 +268,17 @@ defmodule NestWeb.LobbyChannel.Providers do
 
   # Whether a key is configured — never what it is (#202). A reference
   # (`${ENV}` / `file:`) counts: the provider *has* a key, even though
-  # `KeyValidation` resolves it at load and the secret lives elsewhere. An empty
-  # string does not: it is what a clear writes, so the overlay shadows a key
-  # `config.toml` defines.
-  defp has_api_key?(nil), do: false
-  defp has_api_key?(""), do: false
-  defp has_api_key?(key) when is_binary(key), do: true
+  # `KeyValidation` resolves it at load and the secret lives elsewhere. Blank does
+  # not: an empty string is what a clear writes (so the overlay shadows a key
+  # `config.toml` defines), and a whitespace-only key authenticates nothing, so
+  # "configured" would promise a usable key that is not there.
+  #
+  # The one way this can still say true for a provider that cannot authenticate:
+  # a reference that resolves to an empty string (a variable that is set but
+  # blank). Nothing here can know that without resolving it, and resolving it to
+  # decide a placeholder is not worth doing on a payload path.
+  defp has_api_key?(key) when is_binary(key), do: String.trim(key) != ""
+  defp has_api_key?(_key), do: false
 
   # The api key's three states, explicit in the payload. The browser never
   # receives the value, so a save cannot say "unchanged" by echoing it:
@@ -287,25 +292,51 @@ defmodule NestWeb.LobbyChannel.Providers do
   # and "empty means keep" would leave no way to remove one — so an explicit
   # `api_key: ""` is refused rather than guessed at, and so is a payload that
   # both sets and clears.
-  defp api_key_action(m, provider_name) do
+  defp api_key_source(m, provider_name) do
     clear? = FieldValidation.boolean(m["clear_api_key"], provider_name, "clear_api_key", false)
 
     case {m["api_key"], clear?} do
       {nil, false} ->
-        {:keep, nil}
+        {keep_source(m, provider_name), nil}
 
       {nil, true} ->
         {:clear, nil}
 
-      {"", _} ->
-        raise "Provider #{provider_name}: `api_key` is empty: omit it to keep the stored " <>
-                "key, or send `clear_api_key` to remove it"
-
+      # Before the empty-key clause: a payload that sends both is a contradiction
+      # first, and telling it to "send `clear_api_key`" would be false.
       {_key, true} ->
         raise "Provider #{provider_name}: `api_key` and `clear_api_key` contradict each other"
 
+      {"", false} ->
+        raise "Provider #{provider_name}: `api_key` is empty: omit it to keep the stored " <>
+                "key, or send `clear_api_key` to remove it"
+
       {key, false} ->
         {:set, api_key(key, provider_name)}
+    end
+  end
+
+  # Where a keep finds its key: this provider's own name, or — when the payload
+  # says the provider was renamed — the name it was stored under (#203). A rename
+  # is the same provider with nothing typed, and the browser cannot send the key
+  # to carry it, so the writer looks the stored key up by that name.
+  #
+  # A client-supplied previous name is **not** a key-copy primitive: the handler
+  # is admin-only, and an admin can already read and edit `local.toml` on the
+  # server, so this crosses no boundary they did not already hold. It cannot
+  # name a provider the caller could not otherwise have seen either — the
+  # provider list in the payload is the merged one.
+  defp keep_source(m, name) do
+    case previous_name(m, name) do
+      ^name -> :keep
+      previous -> {:renamed_from, previous}
+    end
+  end
+
+  defp previous_name(m, name) do
+    case m["previous_name"] do
+      blank when blank in [nil, ""] -> name
+      previous -> FieldValidation.provider_name(previous)
     end
   end
 
@@ -413,7 +444,7 @@ defmodule NestWeb.LobbyChannel.Providers do
   # raises `FunctionClauseError`.
   #
   # Only ever called for a key the payload actually carries: "no key" is a state
-  # of its own (`api_key_action/2`), not an empty value.
+  # of its own (`api_key_source/2`), not an empty value.
   defp api_key(key, provider_name) do
     key = ModelValidation.validate_api_key(key, provider_name)
     _ = DotConfig.resolve_api_key(key)

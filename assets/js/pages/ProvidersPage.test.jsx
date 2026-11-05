@@ -371,6 +371,67 @@ describe("ProvidersPage", () => {
     );
   });
 
+  it("keeps a typed key and a pending clear when the save fails", async () => {
+    // A failed save must not cost the operator a secret they just pasted: the
+    // draft is only re-seeded by the broadcast that follows a *successful* save.
+    setStore({ providers: [sampleProvider] });
+
+    saveProviders.mockImplementation((_providers, _onOk, onError) =>
+      onError({}),
+    );
+
+    await renderPage();
+
+    fireEvent.change(screen.getByLabelText(/api key/i), {
+      target: { value: "sk-typed" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/failed to save provider config/i),
+      ).toBeInTheDocument(),
+    );
+
+    expect(screen.getByLabelText(/api key/i)).toHaveValue("sk-typed");
+
+    // The same for a pending removal: it is still pending, and still says so.
+    fireEvent.click(screen.getByRole("button", { name: /^clear$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(saveProviders).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByText(/removed when you save/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^undo$/i })).toBeInTheDocument();
+  });
+
+  it("sends the previous name only when the provider was renamed", async () => {
+    // A rename is the same provider with nothing typed, so the server has to be
+    // told which stored key belongs to it (#203) — otherwise the key is dropped
+    // with the old block.
+    const second = { ...sampleProvider, name: "other", has_api_key: false };
+    setStore({ providers: [sampleProvider, second] });
+
+    saveProviders.mockImplementation((_providers, onOk, _onError) => onOk());
+
+    await renderPage();
+
+    fireEvent.change(screen.getAllByLabelText(/provider name/i)[0], {
+      target: { value: "acme-main" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(saveProviders).toHaveBeenCalledTimes(1));
+
+    const [providers] = saveProviders.mock.calls[0];
+    expect(providers[0].name).toBe("acme-main");
+    expect(providers[0].previous_name).toBe("acme");
+    // Unchanged rows say nothing about it.
+    expect(providers[1]).not.toHaveProperty("previous_name");
+  });
+
   it("re-seeds the draft when the store provider list changes", async () => {
     setStore({ providers: [sampleProvider] });
 

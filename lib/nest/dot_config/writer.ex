@@ -25,7 +25,7 @@ defmodule Nest.DotConfig.Writer do
   ## The api key
 
   The browser never receives a provider's key (#202), so it cannot echo one back
-  to mean "unchanged". Each provider carries `api_key_action` instead, and the
+  to mean "unchanged". Each provider carries `api_key_source` instead, and the
   key line is merged per provider, from the overlay this write replaces:
 
     * `:clear` writes `api-key = ""` **explicitly**, so it shadows a key
@@ -39,6 +39,12 @@ defmodule Nest.DotConfig.Writer do
       for an overlay entry that sets none, which is the one field the per-name
       merge does not replace. Writing `""` for "unchanged" would shadow the base
       with nothing.
+
+  A **rename** arrives as `{:renamed_from, name}`: the same provider with nothing
+  typed, so its key has to travel with it (#203). That is the one case where a
+  keep writes a key the overlay did not hold — the old name's block is being
+  tombstoned or dropped, so a key that lives only in `config.toml` under the old
+  name is unreachable unless it is carried to the new one.
   """
 
   alias Nest.DotConfig
@@ -70,9 +76,10 @@ defmodule Nest.DotConfig.Writer do
   @spec save_providers([Provider.t()], String.t()) :: :ok | {:error, String.t()}
   def save_providers(providers, file) do
     with {:ok, previous} <- previous_local(file),
-         {:ok, deleted} <- deleted_providers(previous, MapSet.new(providers, & &1.name)),
+         {:ok, base} <- base_providers(),
+         {:ok, deleted} <- deleted_providers(previous, base, MapSet.new(providers, & &1.name)),
          {:ok, toml} <-
-           TomlElixir.encode(contents(with_api_keys(providers, previous), deleted)) do
+           TomlElixir.encode(contents(with_api_keys(providers, previous, base), deleted)) do
       case write_atomic(file, toml) do
         :ok -> :ok
         {:error, reason} -> {:error, "could not write #{file}: #{inspect(reason)}"}
@@ -102,16 +109,19 @@ defmodule Nest.DotConfig.Writer do
   # user's decision, which a later edit to `config.toml` must not quietly undo.
   # To bring the name back, add it in the app (which clears the record) or
   # remove it from `deleted-providers` by hand.
-  defp deleted_providers(previous, written_names) do
-    with {:ok, base_names} <- base_provider_names() do
-      kept =
-        base_names
-        |> MapSet.union(MapSet.new(previous.deleted))
-        |> MapSet.difference(written_names)
-        |> Enum.sort()
+  defp deleted_providers(previous, base, written_names) do
+    # The **written** names, so a renamed provider leaves its old name behind:
+    # recorded when the base defines it (or it would come back beside the
+    # rename), simply gone when it does not.
+    kept =
+      base
+      |> Map.keys()
+      |> MapSet.new()
+      |> MapSet.union(MapSet.new(previous.deleted))
+      |> MapSet.difference(written_names)
+      |> Enum.sort()
 
-      {:ok, empty_list_as_nil(kept)}
-    end
+    {:ok, empty_list_as_nil(kept)}
   end
 
   # `nil` is how `contents/2` says "omit the key", so a write that deletes
@@ -119,23 +129,24 @@ defmodule Nest.DotConfig.Writer do
   defp empty_list_as_nil([]), do: nil
   defp empty_list_as_nil(list), do: list
 
-  # The names `config.toml` defines. Those are the only providers a deletion has
+  # What `config.toml` defines. Its names are the only providers a deletion has
   # to be recorded against, because `local.toml` is rewritten wholesale by this
   # module: a name that only ever lived there is gone from the new file already.
+  # Its keys are what a rename carries.
   #
   # A missing `config.toml` defines no providers, which is a fact and not a
   # guess; a `config.toml` that cannot be read or parsed is neither, so the
   # write stops rather than recording a record it cannot stand behind.
-  defp base_provider_names do
+  defp base_providers do
     path = DotConfig.config_file()
 
     if File.exists?(path) do
       case load_for_record(path) do
-        {:ok, config} -> {:ok, MapSet.new(Map.keys(config.providers))}
+        {:ok, config} -> {:ok, config.providers}
         {:error, reason} -> {:error, "cannot use #{path} to record deleted providers: #{reason}"}
       end
     else
-      {:ok, MapSet.new()}
+      {:ok, %{}}
     end
   end
 
@@ -175,16 +186,32 @@ defmodule Nest.DotConfig.Writer do
   # The api key each provider's line carries, after the merge described in the
   # moduledoc. `api_key` is the only field this write reads from the overlay;
   # everything else in the payload is authoritative.
-  defp with_api_keys(providers, previous) do
+  defp with_api_keys(providers, previous, base) do
     Enum.map(providers, fn provider ->
-      %{provider | api_key: merged_api_key(provider, Map.get(previous.providers, provider.name))}
+      %{provider | api_key: merged_api_key(provider, previous, base)}
     end)
   end
 
-  defp merged_api_key(%{api_key_action: :clear}, _previous), do: ""
-  defp merged_api_key(%{api_key_action: :set, api_key: key}, _previous), do: key
-  defp merged_api_key(%{api_key_action: :keep}, nil), do: nil
-  defp merged_api_key(%{api_key_action: :keep}, previous), do: previous.api_key
+  defp merged_api_key(%{api_key_source: :clear}, _previous, _base), do: ""
+
+  defp merged_api_key(%{api_key_source: :set, api_key: key}, _previous, _base), do: key
+
+  defp merged_api_key(%{api_key_source: :keep, name: name}, previous, _base) do
+    # The overlay's own line, or nothing: an omission lets the merge inherit the
+    # base's, so writing the base's value here would copy a secret into the
+    # overlay for no reason.
+    api_key_of(Map.get(previous.providers, name))
+  end
+
+  defp merged_api_key(%{api_key_source: {:renamed_from, previous_name}}, previous, base) do
+    # The old block is being dropped or tombstoned, so the key has to travel —
+    # including one that lives only in `config.toml`, under the old name.
+    api_key_of(Map.get(previous.providers, previous_name)) ||
+      api_key_of(Map.get(base, previous_name))
+  end
+
+  defp api_key_of(nil), do: nil
+  defp api_key_of(%Provider{api_key: key}), do: key
 
   @doc """
   Write `contents` to `path` atomically: the bytes go to a

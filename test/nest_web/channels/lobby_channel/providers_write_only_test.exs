@@ -165,6 +165,59 @@ defmodule NestWeb.LobbyChannel.ProvidersWriteOnlyTest do
     assert config.providers["with-key"].api_key == "typed-secret"
   end
 
+  test "a rename carries the key over to the new name", %{
+    socket: socket,
+    local_file: local_file,
+    key_file: key_file
+  } do
+    # A rename is the same provider with nothing typed, so it arrives as a keep —
+    # and the key has to follow it, or the old block takes the key with it (#203).
+    ref =
+      push(socket, "save_providers", %{
+        "providers" => [
+          %{"name" => "renamed", "previous_name" => "referenced"},
+          %{"name" => "with-key"},
+          %{"name" => "no-key"}
+        ]
+      })
+
+    assert_reply ref, :ok, %{}, 1_000
+
+    toml = File.read!(local_file)
+    assert toml =~ "[providers.renamed]"
+    refute toml =~ "[providers.referenced]"
+    assert toml =~ ~s(api-key = "file:#{key_file}")
+
+    assert {:ok, config} = DotConfig.load()
+    assert config.providers["renamed"].api_key == "file:#{key_file}"
+    refute Map.has_key?(config.providers, "referenced")
+  end
+
+  test "renaming a provider whose key is only in the base carries it and tombstones the old name",
+       %{socket: socket, local_file: local_file} do
+    ref =
+      push(socket, "save_providers", %{
+        "providers" => [
+          %{"name" => "with-key-main", "previous_name" => "with-key"},
+          %{"name" => "referenced"},
+          %{"name" => "no-key"}
+        ]
+      })
+
+    assert_reply ref, :ok, %{}, 1_000
+
+    toml = File.read!(local_file)
+    assert toml =~ "[providers.with-key-main]"
+    # Recorded, so the base's block does not come back beside the rename.
+    assert toml =~ ~s(deleted-providers = ["with-key"])
+
+    assert {:ok, config} = DotConfig.load()
+    refute Map.has_key?(config.providers, "with-key")
+    # The key lived only in the base, under the name that is now tombstoned, so
+    # it is unreachable unless the rename carried it.
+    assert config.providers["with-key-main"].api_key == "base-secret"
+  end
+
   test "clearing writes an empty key, which shadows the base's", %{
     socket: socket,
     local_file: local_file

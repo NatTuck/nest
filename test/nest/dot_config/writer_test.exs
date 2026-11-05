@@ -136,7 +136,7 @@ defmodule Nest.DotConfig.WriterTest do
       """)
 
       assert :ok =
-               Writer.save_providers([%Provider{name: "acme", api_key_action: :keep}], path)
+               Writer.save_providers([%Provider{name: "acme", api_key_source: :keep}], path)
 
       # Verbatim. Writing the resolved secret would put it on disk and break the
       # reference the operator wrote.
@@ -148,7 +148,7 @@ defmodule Nest.DotConfig.WriterTest do
       path = tmp_file("writer_key_absent")
 
       assert :ok =
-               Writer.save_providers([%Provider{name: "acme", api_key_action: :keep}], path)
+               Writer.save_providers([%Provider{name: "acme", api_key_source: :keep}], path)
 
       # Absent, not empty: `api-key = ""` would shadow a key `config.toml`
       # defines with nothing, which is a clear rather than a keep.
@@ -161,7 +161,7 @@ defmodule Nest.DotConfig.WriterTest do
 
       assert :ok =
                Writer.save_providers(
-                 [%Provider{name: "acme", api_key: "typed", api_key_action: :set}],
+                 [%Provider{name: "acme", api_key: "typed", api_key_source: :set}],
                  path
                )
 
@@ -174,7 +174,7 @@ defmodule Nest.DotConfig.WriterTest do
       path = tmp_file("writer_key_clear")
       File.write!(path, "[providers.acme]\napi-key = \"stored\"\n")
 
-      assert :ok = Writer.save_providers([%Provider{name: "acme", api_key_action: :clear}], path)
+      assert :ok = Writer.save_providers([%Provider{name: "acme", api_key_source: :clear}], path)
 
       # Explicit, not omitted: the overlay's own line is what stops the base's
       # key from applying.
