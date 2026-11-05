@@ -19,6 +19,11 @@ defmodule NestWeb.LobbyChannel do
   across all spaces, so the sidebar can render the selection
   without an extra round-trip.
 
+  The payload also carries the configured providers, and **not** their api keys:
+  each one says `has_api_key`, never the value (#202). `init` goes to every
+  authenticated user, so a key in it would be readable by any of them — see
+  `NestWeb.LobbyChannel.Providers`.
+
   The subscription set is also the feed's read scope: every space topic the
   user can see is subscribed, which is where `{:user_note, _}` frames arrive.
   """

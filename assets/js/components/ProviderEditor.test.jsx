@@ -19,7 +19,9 @@ const provider = {
   id: "prov-1",
   name: "acme",
   base_url: "https://acme.example/v1",
-  api_key: "secret",
+  // The key itself never arrives (#202): the payload says whether one is
+  // configured, and the field starts empty.
+  has_api_key: true,
   protocol: "openai",
   auto_models: false,
   tags: [],
@@ -61,7 +63,12 @@ describe("ProviderEditor", () => {
     expect(screen.getByLabelText("Base URL")).toHaveValue(
       "https://acme.example/v1",
     );
-    expect(screen.getByLabelText(/api key/i)).toHaveValue("secret");
+    // Empty, with a placeholder that says why: the value is never sent.
+    expect(screen.getByLabelText(/api key/i)).toHaveValue("");
+    expect(screen.getByLabelText(/api key/i)).toHaveAttribute(
+      "placeholder",
+      "configured — leave blank to keep",
+    );
     expect(screen.getByLabelText(/default context limit/i)).toHaveValue(200000);
     expect(screen.getByLabelText(/default thinking effort/i)).toHaveValue(
       "high",
@@ -87,6 +94,103 @@ describe("ProviderEditor", () => {
     expect(key).toHaveAttribute("autocorrect", "off");
     expect(key).toHaveAttribute("autocapitalize", "off");
     expect(container.querySelector('input[type="password"]')).toBeNull();
+  });
+
+  it("says whether a key is configured, without showing one", () => {
+    const { rerender } = render(
+      <ProviderEditor
+        provider={provider}
+        onChange={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+
+    expect(screen.getByLabelText(/api key/i)).toHaveAttribute(
+      "placeholder",
+      "configured — leave blank to keep",
+    );
+
+    // A provider with no key says so, and offers nothing to clear.
+    rerender(
+      <ProviderEditor
+        provider={{ ...provider, has_api_key: false }}
+        onChange={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+
+    expect(screen.getByLabelText(/api key/i)).toHaveAttribute(
+      "placeholder",
+      "not configured",
+    );
+    expect(screen.getByRole("button", { name: /^clear$/i })).toBeDisabled();
+  });
+
+  it("marks a key for removal, and says so, until it is typed over", () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <ProviderEditor
+        provider={provider}
+        onChange={onChange}
+        onRemove={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^clear$/i }));
+
+    // Clear is a *pending* removal, not an empty field: the payload says
+    // `clear_api_key` so the server can tell it from "unchanged".
+    expect(onChange).toHaveBeenCalledWith({
+      ...provider,
+      api_key: "",
+      clear_api_key: true,
+    });
+
+    rerender(
+      <ProviderEditor
+        provider={{ ...provider, api_key: "", clear_api_key: true }}
+        onChange={onChange}
+        onRemove={() => {}}
+      />,
+    );
+
+    expect(screen.getByText(/removed when you save/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/api key/i)).toHaveAttribute(
+      "placeholder",
+      "will be removed when you save",
+    );
+
+    // Typing after Clear means "replace": the pending removal is dropped, so a
+    // payload never carries both.
+    onChange.mockClear();
+    fireEvent.change(screen.getByLabelText(/api key/i), {
+      target: { value: "new-secret" },
+    });
+
+    expect(onChange).toHaveBeenCalledWith({
+      ...provider,
+      api_key: "new-secret",
+      clear_api_key: false,
+    });
+  });
+
+  it("undoes a pending removal", () => {
+    const onChange = vi.fn();
+    render(
+      <ProviderEditor
+        provider={{ ...provider, api_key: "", clear_api_key: true }}
+        onChange={onChange}
+        onRemove={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^undo$/i }));
+
+    expect(onChange).toHaveBeenCalledWith({
+      ...provider,
+      api_key: "",
+      clear_api_key: false,
+    });
   });
 
   it("propagates a name edit via onChange", () => {
@@ -342,6 +446,10 @@ describe("ProviderEditor", () => {
     expect(screen.getByLabelText(/provider name/i)).toHaveValue("");
     expect(screen.getByLabelText("Base URL")).toHaveValue("");
     expect(screen.getByLabelText(/api key/i)).toHaveValue("");
+    expect(screen.getByLabelText(/api key/i)).toHaveAttribute(
+      "placeholder",
+      "not configured",
+    );
     expect(screen.getByLabelText(/protocol/i)).toHaveValue("openai");
     expect(screen.getByLabelText(/auto-probe endpoint/i)).toBeChecked();
     expect(screen.getByText(/no models configured/i)).toBeInTheDocument();

@@ -119,9 +119,13 @@ defmodule Nest.DotConfig do
 
     * **providers merge per name.** A name `local.toml` defines replaces the
       same-named entry from `config.toml`, and every other provider
-      `config.toml` defines survives. (The overlay used to replace the whole
-      table, so one provider in `local.toml` hid every provider in
-      `config.toml` — add one there and rescan, and nothing appeared.)
+      `config.toml` defines survives. The one exception is `api-key`: an overlay
+      entry that sets no key inherits the base's, so a save that does not touch
+      the key keeps it (the browser is never sent the value — #202), while an
+      empty key (`api-key = ""`, what a clear writes) shadows it. (The overlay
+      used to replace the whole table, so one provider in `local.toml` hid every
+      provider in `config.toml` — add one there and rescan, and nothing
+      appeared.)
     * **`deleted-providers = ["name", …]` deletes.** The names in that
       top-level key are dropped from the merged set whichever file defines
       them, which is how a provider deleted in the app stays deleted instead of
@@ -192,6 +196,10 @@ defmodule Nest.DotConfig do
       base.providers
       |> Map.merge(local.providers)
       |> Map.drop(local.deleted_providers)
+      |> Enum.map(fn {name, provider} ->
+        {name, inherit_api_key(provider, Map.get(base.providers, name))}
+      end)
+      |> Map.new()
 
     models = derive_models(providers)
 
@@ -207,6 +215,24 @@ defmodule Nest.DotConfig do
         default_thinking_effort: local.default_thinking_effort || base.default_thinking_effort
     }
   end
+
+  # The one field the overlay does **not** replace wholesale: an overlay entry
+  # that sets no `api-key` inherits the base's.
+  #
+  # The browser never receives a provider's key (#202), so a save cannot echo one
+  # back to mean "unchanged" — `Nest.DotConfig.Writer` omits the line for a keep,
+  # and this is what makes that omission mean "the base's still applies" rather
+  # than "no key". Without it, per-name replacement would drop the key of every
+  # base provider the first time the GUI saved, because the GUI sends every
+  # provider it manages.
+  #
+  # An empty key is not `nil`: `api-key = ""` is what a clear writes, and it
+  # shadows the base rather than inheriting from it.
+  defp inherit_api_key(%Provider{api_key: nil} = provider, %Provider{api_key: key})
+       when not is_nil(key),
+       do: %{provider | api_key: key}
+
+  defp inherit_api_key(provider, _base_provider), do: provider
 
   # The flat models map, derived from the merged provider list so a provider
   # that appears or disappears takes its models with it.

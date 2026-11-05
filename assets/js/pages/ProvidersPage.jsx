@@ -67,7 +67,7 @@ export function ProvidersPage() {
     setError(null);
 
     saveProviders(
-      stripIds(draft),
+      toPayload(draft),
       () => setSaving(false),
       (err) => {
         setError(errorText(err, "Failed to save provider config"));
@@ -196,10 +196,15 @@ function DeletedProviders({ deleted }) {
 // Assign a stable client-side `id` to any provider/model that doesn't
 // already have one (store-seeded providers come back without ids).
 // Used purely as a React key so name edits don't remount editors.
+//
+// `previous_name` is the name the row was seeded under, kept so a rename can
+// carry the provider's api key: the browser never receives the key (#202), so
+// the server has to be told which stored key belongs to the renamed provider.
 function assignIds(providers) {
   return providers.map((provider) => ({
     ...provider,
     id: provider.id ?? makeId(),
+    previous_name: provider.name ?? "",
     models: (provider.models || []).map((model) => ({
       ...model,
       id: model.id ?? makeId(),
@@ -207,14 +212,44 @@ function assignIds(providers) {
   }));
 }
 
-// Drop the client-only `id` fields before sending the draft to the
-// server — they're React-key bookkeeping, not provider config.
-function stripIds(providers) {
-  return providers.map((provider) => {
-    const { id: _providerId, models, ...rest } = provider;
-    return {
-      ...rest,
-      models: (models || []).map(({ id: _modelId, ...model }) => model),
-    };
-  });
+// The provider payload: the draft minus what is client-only, plus the api key's
+// three explicit states.
+//
+// The key is write-only (#202): `has_api_key` comes back, the value never does,
+// so the draft's `api_key` is only what the operator typed in this session. A
+// non-empty value replaces it, `clear_api_key` removes it, and an omitted
+// `api_key` keeps what is on disk. Nothing is inferred — `api_key: ""` would be
+// indistinguishable from "clear", and "absent means empty" would wipe every key
+// on every save.
+function toPayload(providers) {
+  return providers.map(
+    ({
+      id: _providerId,
+      has_api_key: _hasApiKey,
+      previous_name,
+      api_key,
+      clear_api_key,
+      models,
+      ...rest
+    }) => {
+      const provider = {
+        ...rest,
+        models: (models || []).map(({ id: _modelId, ...model }) => model),
+      };
+
+      // Only when it differs: a rename is the same provider, and the stored key
+      // is found under the old name.
+      if (previous_name && previous_name !== rest.name) {
+        provider.previous_name = previous_name;
+      }
+
+      if (clear_api_key) {
+        provider.clear_api_key = true;
+      } else if (api_key) {
+        provider.api_key = api_key;
+      }
+
+      return provider;
+    },
+  );
 }

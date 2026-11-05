@@ -146,6 +146,48 @@ defmodule Nest.DotConfig.ProviderTombstonesTest do
     end
   end
 
+  describe "the api key across the two files" do
+    # The browser never receives a provider's key (#202), so a save cannot echo
+    # one back to mean "unchanged": the writer omits the line for a keep, and the
+    # merge is what makes that omission mean "the base's still applies".
+    test "an overlay that sets no key inherits the base's", %{base: base, local: local} do
+      File.write!(base, """
+      [providers.shared]
+      base-url = "https://base.example/v1"
+      api-key = "base-secret"
+      """)
+
+      File.write!(local, """
+      [providers.shared]
+      base-url = "https://local.example/v1"
+      """)
+
+      {:ok, config} = DotConfig.load()
+
+      # Wholesale replacement of every other field, and the one exception.
+      assert config.providers["shared"].base_url == "https://local.example/v1"
+      assert config.providers["shared"].api_key == "base-secret"
+    end
+
+    test "an empty key shadows the base's", %{base: base, local: local} do
+      File.write!(base, """
+      [providers.shared]
+      base-url = "https://base.example/v1"
+      api-key = "base-secret"
+      """)
+
+      # What a clear writes. `""` is not "unset": it is the operator saying this
+      # provider has no key.
+      File.write!(local, """
+      [providers.shared]
+      api-key = ""
+      """)
+
+      {:ok, config} = DotConfig.load()
+      assert config.providers["shared"].api_key == ""
+    end
+  end
+
   describe "the writer's record" do
     test "records a provider the payload drops, and clears it when it comes back", %{
       base: base,
