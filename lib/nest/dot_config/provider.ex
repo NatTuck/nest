@@ -50,6 +50,13 @@ defmodule Nest.DotConfig.Provider do
   `false`. Set `expose-models = true` on providers whose models
   should be discoverable by agents via the `models-list` tool.
 
+  `api_key_action` is the **write path's** instruction for `api_key`; the reader
+  leaves it at its default. The browser never receives a key (#202), so a save
+  cannot say "unchanged" by echoing the stored value: `:keep` means "whatever the
+  overlay already holds", which `Nest.DotConfig.Writer` reads from the file,
+  `:set` means `api_key` is the value to write, and `:clear` means write an empty
+  key so it shadows whatever `config.toml` defines.
+
   `probe_multimodal` is the optional opt-in that lets discovery
   probe a model's image-input support (`Nest.LLM.MultimodalProbe`)
   when the provider's `/models` body leaves it unknown. Defaults to
@@ -72,6 +79,7 @@ defmodule Nest.DotConfig.Provider do
     :default_thinking_effort,
     :probe_base_url,
     :expose_models,
+    api_key_action: :set,
     probe_multimodal: false,
     auto_probe: true
   ]

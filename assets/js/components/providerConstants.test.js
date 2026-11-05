@@ -35,7 +35,9 @@ describe("providerConstants", () => {
       // provider could not be saved until the field was filled; `null` means
       // "unset" and writes no key.
       base_url: null,
-      api_key: "",
+      // No `api_key` at all: the key is write-only (#202), so a new provider
+      // has no key state — `api_key` appears only once the operator types one,
+      // and `clear_api_key` only once they clear one.
       protocol: "openai",
       auto_models: false,
       tags: [],

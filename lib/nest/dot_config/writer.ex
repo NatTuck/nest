@@ -21,6 +21,24 @@ defmodule Nest.DotConfig.Writer do
   Writing stops with `{:error, reason}` when the files that answer those two
   questions cannot be read: the record would otherwise be a guess, and a wrong
   guess either resurrects a deleted provider or hides a live one.
+
+  ## The api key
+
+  The browser never receives a provider's key (#202), so it cannot echo one back
+  to mean "unchanged". Each provider carries `api_key_action` instead, and the
+  key line is merged per provider, from the overlay this write replaces:
+
+    * `:clear` writes `api-key = ""` **explicitly**, so it shadows a key
+      `config.toml` defines. Omitting the line would let the base's key through,
+      which is not a clear.
+    * `:set` writes the value the payload carried.
+    * `:keep` writes what the overlay already held — including a `${ENV}` or
+      `file:` **reference**, verbatim, never the secret it resolves to — and
+      omits the line when the overlay held none. An omitted key is what lets a
+      key `config.toml` defines still apply: `Nest.DotConfig.load/0` inherits it
+      for an overlay entry that sets none, which is the one field the per-name
+      merge does not replace. Writing `""` for "unchanged" would shadow the base
+      with nothing.
   """
 
   alias Nest.DotConfig
@@ -51,8 +69,10 @@ defmodule Nest.DotConfig.Writer do
   """
   @spec save_providers([Provider.t()], String.t()) :: :ok | {:error, String.t()}
   def save_providers(providers, file) do
-    with {:ok, deleted} <- deleted_providers(file, MapSet.new(providers, & &1.name)),
-         {:ok, toml} <- TomlElixir.encode(contents(providers, deleted)) do
+    with {:ok, previous} <- previous_local(file),
+         {:ok, deleted} <- deleted_providers(previous, MapSet.new(providers, & &1.name)),
+         {:ok, toml} <-
+           TomlElixir.encode(contents(with_api_keys(providers, previous), deleted)) do
       case write_atomic(file, toml) do
         :ok -> :ok
         {:error, reason} -> {:error, "could not write #{file}: #{inspect(reason)}"}
@@ -82,12 +102,11 @@ defmodule Nest.DotConfig.Writer do
   # user's decision, which a later edit to `config.toml` must not quietly undo.
   # To bring the name back, add it in the app (which clears the record) or
   # remove it from `deleted-providers` by hand.
-  defp deleted_providers(file, written_names) do
-    with {:ok, base_names} <- base_provider_names(),
-         {:ok, previous} <- previous_deleted_providers(file) do
+  defp deleted_providers(previous, written_names) do
+    with {:ok, base_names} <- base_provider_names() do
       kept =
         base_names
-        |> MapSet.union(previous)
+        |> MapSet.union(MapSet.new(previous.deleted))
         |> MapSet.difference(written_names)
         |> Enum.sort()
 
@@ -133,21 +152,39 @@ defmodule Nest.DotConfig.Writer do
     error -> {:error, Exception.message(error)}
   end
 
-  # The records the file already carries, so a deletion is remembered across
-  # writes and a re-added name can be cleared from it.
-  defp previous_deleted_providers(file) do
+  # What the overlay already holds, for the two things this write has to keep:
+  # the providers it records as deleted, and the api keys it stores — the browser
+  # sends back only a key the operator just typed (#202).
+  #
+  # A missing file holds nothing, which is a fact; a file that cannot be read or
+  # parsed is not, so the write stops rather than guessing at either.
+  defp previous_local(file) do
     if File.exists?(file) do
       case load_for_record(file) do
         {:ok, config} ->
-          {:ok, MapSet.new(config.deleted_providers)}
+          {:ok, %{deleted: config.deleted_providers, providers: config.providers}}
 
         {:error, reason} ->
-          {:error, "cannot use #{file} to keep its deleted providers: #{reason}"}
+          {:error, "cannot use #{file} to keep its deleted providers and api keys: #{reason}"}
       end
     else
-      {:ok, MapSet.new()}
+      {:ok, %{deleted: [], providers: %{}}}
     end
   end
+
+  # The api key each provider's line carries, after the merge described in the
+  # moduledoc. `api_key` is the only field this write reads from the overlay;
+  # everything else in the payload is authoritative.
+  defp with_api_keys(providers, previous) do
+    Enum.map(providers, fn provider ->
+      %{provider | api_key: merged_api_key(provider, Map.get(previous.providers, provider.name))}
+    end)
+  end
+
+  defp merged_api_key(%{api_key_action: :clear}, _previous), do: ""
+  defp merged_api_key(%{api_key_action: :set, api_key: key}, _previous), do: key
+  defp merged_api_key(%{api_key_action: :keep}, nil), do: nil
+  defp merged_api_key(%{api_key_action: :keep}, previous), do: previous.api_key
 
   @doc """
   Write `contents` to `path` atomically: the bytes go to a

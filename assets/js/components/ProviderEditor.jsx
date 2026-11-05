@@ -23,6 +23,18 @@ function Field({ label, children }) {
   );
 }
 
+// What the write-only key field says when it is empty (#202). `has_api_key` is
+// the server's answer to "is one configured"; the value itself never arrives, so
+// "configured" is all this box can promise — and a clear that is pending says so
+// rather than looking like an empty field.
+function apiKeyPlaceholder(provider) {
+  if (provider.clear_api_key) return "will be removed when you save";
+
+  return provider.has_api_key
+    ? "configured — leave blank to keep"
+    : "not configured";
+}
+
 const inputCls =
   "px-2 py-1 text-sm border border-gray-300 rounded-md outline-none focus:ring-2 focus:ring-blue-500";
 
@@ -95,18 +107,54 @@ export function ProviderEditor({ provider, onChange, onRemove }) {
               generate. Masking it would put that signal back, so it is not
               masked (the key is plaintext in `local.toml` either way).
               `autoComplete`/`autoCorrect`/`autoCapitalize` are off so nothing
-              "helps" by completing, correcting or capitalising a key. */}
-          <input
-            type="text"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            value={provider.api_key ?? ""}
-            onChange={(e) => set("api_key", e.target.value)}
-            className={inputCls}
-            aria-label="API key"
-          />
+              "helps" by completing, correcting or capitalising a key.
+
+              The field is write-only (#202): the server sends `has_api_key`,
+              never the key, so this box starts empty even when one is
+              configured. Typing replaces it, Clear removes it, and leaving it
+              blank keeps what is stored. Reading a key back means opening
+              `local.toml` — that is the accepted answer, so there is no reveal
+              here. */}
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              value={provider.api_key ?? ""}
+              onChange={(e) =>
+                onChange({
+                  ...provider,
+                  api_key: e.target.value,
+                  // Typing after Clear means "replace", not "clear".
+                  clear_api_key: false,
+                })
+              }
+              placeholder={apiKeyPlaceholder(provider)}
+              className={`${inputCls} flex-1`}
+              aria-label="API key"
+            />
+            <button
+              type="button"
+              onClick={() =>
+                onChange({
+                  ...provider,
+                  api_key: "",
+                  clear_api_key: !provider.clear_api_key,
+                })
+              }
+              disabled={!provider.has_api_key && !provider.clear_api_key}
+              className="px-2 py-1 text-xs font-medium text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {provider.clear_api_key ? "Undo" : "Clear"}
+            </button>
+          </div>
+          {provider.clear_api_key && (
+            <span className="text-xs text-amber-700">
+              removed when you save
+            </span>
+          )}
         </Field>
         <Field label="Protocol">
           <select

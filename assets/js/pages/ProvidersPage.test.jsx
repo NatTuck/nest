@@ -65,7 +65,9 @@ function adminUser() {
 const sampleProvider = {
   name: "acme",
   base_url: "https://acme.example/v1",
-  api_key: "secret",
+  // The key itself never reaches the browser (#202): the payload says whether
+  // one is configured.
+  has_api_key: true,
   protocol: "openai",
   auto_models: false,
   tags: [],
@@ -224,7 +226,13 @@ describe("ProvidersPage", () => {
     await waitFor(() => expect(saveProviders).toHaveBeenCalledTimes(1));
 
     const [providers, onOk] = saveProviders.mock.calls[0];
-    expect(providers).toEqual([sampleProvider]);
+    // The draft minus the client-only `id` and the server-owned `has_api_key` —
+    // and with no `api_key` key at all, because nothing was typed: an omitted
+    // key means "keep what is stored", which is the only way a save can say it
+    // when the browser never receives the value (#202).
+    const { has_api_key: _hasApiKey, ...expected } = sampleProvider;
+    expect(providers).toEqual([expected]);
+    expect(providers[0]).not.toHaveProperty("api_key");
     expect(typeof onOk).toBe("function");
 
     // The saving flag clears once onOk fires.
@@ -296,6 +304,53 @@ describe("ProvidersPage", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled(),
     );
+  });
+
+  it("sends a typed key and leaves every untouched provider's key alone", async () => {
+    const second = { ...sampleProvider, name: "other", has_api_key: false };
+    setStore({ providers: [sampleProvider, second] });
+
+    saveProviders.mockImplementation((_providers, onOk, _onError) => onOk());
+
+    await renderPage();
+
+    fireEvent.change(screen.getAllByLabelText(/api key/i)[0], {
+      target: { value: "sk-typed" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(saveProviders).toHaveBeenCalledTimes(1));
+
+    const [providers] = saveProviders.mock.calls[0];
+    expect(providers[0].api_key).toBe("sk-typed");
+    // The other provider was not touched, so it says nothing about its key and
+    // the server keeps what is on disk.
+    expect(providers[1]).not.toHaveProperty("api_key");
+    expect(providers[1]).not.toHaveProperty("clear_api_key");
+  });
+
+  it("sends clear_api_key when the operator clears a key", async () => {
+    setStore({ providers: [sampleProvider] });
+
+    saveProviders.mockImplementation((_providers, onOk, _onError) => onOk());
+
+    await renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: /^clear$/i }));
+
+    // On screen before the save, because a pending removal is not an empty
+    // field: the operator has to be able to tell them apart.
+    expect(screen.getByText(/removed when you save/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(saveProviders).toHaveBeenCalledTimes(1));
+
+    const [providers] = saveProviders.mock.calls[0];
+    expect(providers[0].clear_api_key).toBe(true);
+    // Never both: the server refuses a payload that sets and clears at once.
+    expect(providers[0]).not.toHaveProperty("api_key");
   });
 
   it("surfaces a save failure inline", async () => {

@@ -120,6 +120,71 @@ defmodule Nest.DotConfig.WriterTest do
     end
   end
 
+  describe "the api key is write-only (#202)" do
+    test "a kept key is written back from the overlay, reference and all" do
+      path = tmp_file("writer_key_keep")
+      key_file = Path.join(System.tmp_dir!(), "nest-tmp-writer-key")
+      File.write!(key_file, "resolved-from-file\n")
+      on_exit(fn -> File.rm(key_file) end)
+
+      # The overlay as the app itself writes it: a `file:` reference. Loading it
+      # resolves the reference for the provider but leaves the reference in the
+      # struct, which is what a keep has to write back.
+      File.write!(path, """
+      [providers.acme]
+      api-key = "file:#{key_file}"
+      """)
+
+      assert :ok =
+               Writer.save_providers([%Provider{name: "acme", api_key_action: :keep}], path)
+
+      # Verbatim. Writing the resolved secret would put it on disk and break the
+      # reference the operator wrote.
+      assert File.read!(path) =~ ~s(api-key = "file:#{key_file}")
+      refute File.read!(path) =~ "resolved-from-file"
+    end
+
+    test "a kept key the overlay does not hold writes no line, so the base's still applies" do
+      path = tmp_file("writer_key_absent")
+
+      assert :ok =
+               Writer.save_providers([%Provider{name: "acme", api_key_action: :keep}], path)
+
+      # Absent, not empty: `api-key = ""` would shadow a key `config.toml`
+      # defines with nothing, which is a clear rather than a keep.
+      refute File.read!(path) =~ "api-key"
+    end
+
+    test "a set key replaces the stored one" do
+      path = tmp_file("writer_key_set")
+      File.write!(path, "[providers.acme]\napi-key = \"stored\"\n")
+
+      assert :ok =
+               Writer.save_providers(
+                 [%Provider{name: "acme", api_key: "typed", api_key_action: :set}],
+                 path
+               )
+
+      toml = File.read!(path)
+      assert toml =~ ~s(api-key = "typed")
+      refute toml =~ "stored"
+    end
+
+    test "a cleared key writes an empty line, which is what shadows the base's" do
+      path = tmp_file("writer_key_clear")
+      File.write!(path, "[providers.acme]\napi-key = \"stored\"\n")
+
+      assert :ok = Writer.save_providers([%Provider{name: "acme", api_key_action: :clear}], path)
+
+      # Explicit, not omitted: the overlay's own line is what stops the base's
+      # key from applying.
+      assert File.read!(path) =~ ~s(api-key = "")
+
+      assert {:ok, config} = DotConfig.load(path)
+      assert config.providers["acme"].api_key == ""
+    end
+  end
+
   describe "write_atomic/2" do
     test "replaces the contents in place, leaving no temp file behind" do
       path = tmp_file("writer_atomic")
