@@ -63,7 +63,13 @@ describe("RegisterPage", () => {
     ).toBeInTheDocument();
     expect(screen.getByDisplayValue("invite-abc")).toBeInTheDocument();
     expect(screen.getByLabelText(/username/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
+    // Like `LoginPage`'s: a real credential stays a password field, so a
+    // password manager offers to save the one it *should*. The provider API
+    // key is the field that must not — see `ProviderEditor`'s test.
+    expect(screen.getByLabelText(/password/i)).toHaveAttribute(
+      "type",
+      "password",
+    );
     expect(
       screen.getByRole("button", { name: /create account/i }),
     ).toBeInTheDocument();
