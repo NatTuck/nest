@@ -142,8 +142,13 @@ defmodule Nest.DotConfig.Writer do
 
     if File.exists?(path) do
       case load_for_record(path) do
-        {:ok, config} -> {:ok, config.providers}
-        {:error, reason} -> {:error, "cannot use #{path} to record deleted providers: #{reason}"}
+        {:ok, config} ->
+          {:ok, config.providers}
+
+        {:error, reason} ->
+          {:error,
+           "cannot use #{path} to record deleted providers or carry a renamed " <>
+             "provider's api key: #{reason}"}
       end
     else
       {:ok, %{}}
