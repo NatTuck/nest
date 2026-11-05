@@ -57,7 +57,13 @@ describe("LoginPage", () => {
       screen.getByRole("heading", { name: /sign in/i }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText(/username/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
+    // The real credential stays a password field: a password manager *should*
+    // offer to save it. Only the provider API key is kept out of reach — see
+    // `ProviderEditor`'s "does not present the API key as a password field".
+    expect(screen.getByLabelText(/password/i)).toHaveAttribute(
+      "type",
+      "password",
+    );
     expect(
       screen.getByRole("button", { name: /sign in/i }),
     ).toBeInTheDocument();

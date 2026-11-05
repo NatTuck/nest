@@ -88,8 +88,19 @@ export function ProviderEditor({ provider, onChange, onRemove }) {
           />
         </Field>
         <Field label="API Key">
+          {/* `type="text"`, deliberately: a password field is the signal every
+              browser and extension password manager keys on, and an API key
+              must never be offered to one — it is a secret the operator
+              already has, not a credential to save or generate. Masking it
+              would mean putting the password signal back, so it is not
+              masked. `autoComplete`/`autoCorrect`/`autoCapitalize` are off so
+              nothing "helps" by completing, correcting or capitalising a key. */}
           <input
-            type="password"
+            type="text"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
             value={provider.api_key ?? ""}
             onChange={(e) => set("api_key", e.target.value)}
             className={inputCls}

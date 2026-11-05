@@ -69,6 +69,26 @@ describe("ProviderEditor", () => {
     expect(screen.getAllByLabelText(/model name/i)).toHaveLength(2);
   });
 
+  it("does not present the API key as a password field", () => {
+    // An API key must never be offered to a browser or extension password
+    // manager. `type="password"` is the signal they key on, so this asserts the
+    // absence of that signal — and of the whole password field — in the editor.
+    const { container } = render(
+      <ProviderEditor
+        provider={provider}
+        onChange={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+
+    const key = screen.getByLabelText(/api key/i);
+    expect(key).toHaveAttribute("type", "text");
+    expect(key).toHaveAttribute("autocomplete", "off");
+    expect(key).toHaveAttribute("autocorrect", "off");
+    expect(key).toHaveAttribute("autocapitalize", "off");
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+  });
+
   it("propagates a name edit via onChange", () => {
     const onChange = vi.fn();
     render(
