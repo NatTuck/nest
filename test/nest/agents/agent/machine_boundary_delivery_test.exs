@@ -145,12 +145,14 @@ defmodule MachineBoundaryDeliveryTest do
       entries = [inbox_entry()]
       m = boundary_state(tool_tail(), inbox_count: 1)
 
-      {:ok, actions, next} = Machine.step(m, {:inbox_drain, entries, "queued payload"})
+      {:ok, actions, next} = Machine.step(m, {:inbox_drain, entries, "queued payload", nil})
 
       assert {:append, {:user, %Nest.Messages.User{parts: [%Part.Text{text: text}]}}} =
                Enum.find(actions, &match?({:append, _}, &1))
 
-      assert text == "queued payload"
+      # The row is the batch's own rendering (each body headered), which is what
+      # the executor's peek puts in the event.
+      assert text == "[From agent peer | mode: chat]\nqueued payload"
 
       append_at = index_of(actions, &match?({:append, _}, &1))
 
@@ -196,7 +198,7 @@ defmodule MachineBoundaryDeliveryTest do
       entries = [query_entry("peer")]
       m = boundary_state(tool_tail(), inbox_count: 1, context_limit: 1)
 
-      {:ok, actions, next} = Machine.step(m, {:inbox_drain, entries, "queued"})
+      {:ok, actions, next} = Machine.step(m, {:inbox_drain, entries, "queued", nil})
 
       refute Enum.any?(actions, &match?({:consume_inbox, _}, &1))
       refute Enum.any?(actions, &match?({:append, _}, &1))

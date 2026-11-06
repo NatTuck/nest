@@ -480,6 +480,29 @@ describe("rowAppearance", () => {
     expect(appearance.replyRequired).toBe(false);
   });
 
+  it("names the runtime on an offloaded batch, which is its own sentence (#195)", () => {
+    // An offloaded batch is one text part: the runtime's header plus the
+    // pointer to the file the batch went to. It is the runtime speaking, so the
+    // row says so — a headerless row here is exactly what used to render as
+    // "unknown sender" and tell the operator nothing about where the text went.
+    const appearance = rowAppearance({
+      role: "user",
+      origin: "human",
+      parts: [
+        {
+          kind: "text",
+          text: "[From nest runtime | mode: act]\nYou have 1 queued message. It was too large to include inline and was saved to /tmp/x/agent-inbox-1.txt. Read that file to see it.",
+        },
+      ],
+    });
+
+    expect(appearance.label).toBe("nest runtime");
+    // Not "You": the row's text is the runtime's, whatever `origin` says about
+    // the batch's first entry.
+    expect(appearance.label).not.toBe("You");
+    expect(appearance.replyRequired).toBe(false);
+  });
+
   it("says 'unknown sender' rather than 'You' when there is none", () => {
     const appearance = rowAppearance({
       role: "user",

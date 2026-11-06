@@ -23,12 +23,15 @@ defmodule Nest.Agents.Agent.Turn.Drain do
   alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Timeline
+  alias Nest.Messages.Segment
   alias Nest.Sandbox.Mounts
 
-  @type peek :: :empty | {:error, String.t()} | {Agent.t(), [map()], String.t()}
+  @type peek ::
+          :empty | {:error, String.t()} | {Agent.t(), [map()], String.t(), [Segment.t()] | nil}
 
   @doc """
-  The next batch to deliver, the state its mode applied, and its content.
+  The next batch to deliver, the state its mode applied, its content, and the
+  parts the delivered row has (`nil` when the batch is delivered whole).
 
   The mode comes first: the delivered message is *rendered* with the mode the
   turn will run in (a peer delivery's header states it), and `applied_mode/2`
@@ -59,9 +62,9 @@ defmodule Nest.Agents.Agent.Turn.Drain do
     state = %{state | live: %{state.live | mode: mode}}
 
     case Inbox.combine_and_offload(batch, state) do
-      {:ok, content} ->
+      {:ok, content, parts} ->
         if mode_changed?, do: Broadcasts.status(state)
-        {state, batch, content}
+        {state, batch, content, parts}
 
       # Nothing was delivered under the mode this peek applied, so the rejected
       # state (with its mode change) is dropped rather than returned.

@@ -30,7 +30,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       m = executing_state()
       entries = [entry("peer note")]
 
-      {:ok, actions, next} = Machine.step(m, {:inbox_drain, entries, "peer note"})
+      {:ok, actions, next} = Machine.step(m, {:inbox_drain, entries, "peer note", nil})
 
       ref = m.work.worker_ref
       calls = MessageList.unpaired_tail_tool_uses(m.work.ctx.messages)
@@ -55,7 +55,10 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       assert ack_text =~ "running in the background"
 
       assert {:user, %User{parts: [%Part.Text{text: text}]}} = user
-      assert text == "peer note"
+      # The delivered row is the batch's own rendering, each body headered
+      # (`Inbox.Render`), so the event carries that text — as the executor's
+      # peek hands it over.
+      assert text == "[From agent peer | mode: chat]\npeer note"
 
       # The batch moved out of the worker fields — which `Phase.enter/4` nulls —
       # into the entry its late result is routed on, ids and all: the ids are
@@ -91,7 +94,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       entries = [notice_entry(["call_1"])]
 
       {:ok, [{:append_many, [synthetic, ack, delivered]}, {:consume_inbox, ^entries}, :iterate],
-       _next} = Machine.step(m, {:inbox_drain, entries, "the backgrounded call finished"})
+       _next} = Machine.step(m, {:inbox_drain, entries, "the backgrounded call finished", nil})
 
       assert {:user, %User{metadata: metadata}} = delivered
       assert metadata["backgrounded_fulfilled_ids"] == ["call_1"]
@@ -137,7 +140,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
 
       entries = [entry("the question", :query, "alice")]
 
-      {:ok, actions, next} = Machine.step(m, {:inbox_drain, entries, "the question"})
+      {:ok, actions, next} = Machine.step(m, {:inbox_drain, entries, "the question", nil})
 
       # The debt is the boundary's own shape: one key per named query sender,
       # its reminder count starting at 0.
@@ -160,7 +163,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       assert ack_text == "Okay, context noted."
 
       assert {:user, %User{parts: [%Part.Text{text: text}]}} = delivered
-      assert text == "the question"
+      assert text == "[From agent alice, agents-send reply required | mode: chat]\nthe question"
 
       # The threshold is recorded on the machine, so it does not fire again for
       # this segment.
@@ -194,7 +197,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
                "#{label}: the fixture must decide #{inspect(expected)}"
 
         assert {:ignore, :delivery_would_not_fit, ^m} =
-                 Machine.step(m, {:inbox_drain, [entry("peer note")], "peer note"}),
+                 Machine.step(m, {:inbox_drain, [entry("peer note")], "peer note", nil}),
                "#{label}: the delivery must stay queued"
       end
     end
@@ -216,7 +219,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
         # The machine comes back untouched, so the entries are still queued and
         # the turn boundary drains them exactly as it did before.
         assert {:ignore, :no_batch_to_background, ^m} =
-                 Machine.step(m, {:inbox_drain, entries, "peer note"}),
+                 Machine.step(m, {:inbox_drain, entries, "peer note", nil}),
                "#{label} must not background anything"
       end
     end
@@ -231,7 +234,8 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
           assistant_tool_call(2, ["c1", "c2", "c3"])
         ])
 
-      {:ok, _actions, next} = Machine.step(m, {:inbox_drain, [entry("peer note")], "peer note"})
+      {:ok, _actions, next} =
+        Machine.step(m, {:inbox_drain, [entry("peer note")], "peer note", nil})
 
       # One entry per *batch*, so the entry count says nothing about how many
       # promises the batch holds: the stop's cancellation record counts calls,
@@ -248,7 +252,8 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       pid_a = m.work.active_worker
 
       # A message arrives mid-batch, so batch A moves to the background.
-      {:ok, _actions, m} = Machine.step(m, {:inbox_drain, [entry("first note")], "first note"})
+      {:ok, _actions, m} =
+        Machine.step(m, {:inbox_drain, [entry("first note")], "first note", nil})
 
       assert %{^ref_a => %{pid: ^pid_a}} = m.work.backgrounded
 

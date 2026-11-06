@@ -323,11 +323,11 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
         | chat_state: %{state(machine).chat_state | messages: promised_tail()}
       }
 
-      {_agent, {:inbox_drain, [entry], content}} = Executor.run_all(actions, agent)
+      {_agent, {:inbox_drain, [entry], content, parts}} = Executor.run_all(actions, agent)
 
       assert %{kind: :runtime, fulfilled_ids: ["call_1"]} = entry
 
-      notice = Inbox.build_drained_message([entry], content, "chat")
+      notice = Inbox.build_drained_message([entry], content, parts, "chat")
       loaded = promised_tail() ++ [notice]
 
       # The promise the death closed is not reported — without the marker it is

@@ -326,9 +326,14 @@ defmodule Nest.Agents.Agent.Turn.Executor do
 
   defp execute({:drain_inbox}, state) do
     case Drain.peek(state) do
-      :empty -> {state, :continue}
-      {:error, reason} -> Drain.failed(state, reason)
-      {state, batch, content} -> {state, {:follow, {:inbox_drain, batch, content}}}
+      :empty ->
+        {state, :continue}
+
+      {:error, reason} ->
+        Drain.failed(state, reason)
+
+      {state, batch, content, parts} ->
+        {state, {:follow, {:inbox_drain, batch, content, parts}}}
     end
   end
 
@@ -342,9 +347,9 @@ defmodule Nest.Agents.Agent.Turn.Executor do
       {:error, reason} ->
         Drain.failed(state, reason)
 
-      {state, batch, content} ->
-        # The batch's `fulfilled_ids` ride it too (`Inbox.build_drained_message/3`).
-        user = Inbox.build_drained_message(batch, content, state.live.mode)
+      {state, batch, content, parts} ->
+        # The batch's `fulfilled_ids` ride it too (`Inbox.build_drained_message/4`).
+        user = Inbox.build_drained_message(batch, content, parts, state.live.mode)
 
         # `:stale` is the appender's "this message does not answer the live
         # sequence" refusal. Consuming the batch on it would drop the message

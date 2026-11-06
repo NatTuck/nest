@@ -55,7 +55,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       # A missing or blank sender still says `agent`: the body must not read as
       # a human's, and printing `nil` would be worse. Three bodies in one batch
       # also pin the blank line that separates them.
-      assert {:ok, rendered} =
+      assert {:ok, rendered, nil} =
                Render.combine_and_offload(
                  [
                    entry(:agent, "peer", "from an agent"),
@@ -73,7 +73,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       # A query is a peer's words and says so (decision 7): it is the one kind
       # that obliges an answer.
       assert Render.combine_and_offload([entry(:query, "peer", "may I ask?")], state) ==
-               {:ok, "[From agent peer, agents-send reply required | mode: act]\nmay I ask?"}
+               {:ok, "[From agent peer, agents-send reply required | mode: act]\nmay I ask?", nil}
     end
 
     test "an over-cap batch is offloaded to a file named after its first entry's id" do
@@ -86,9 +86,19 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       state = %Agent{name: "offload-id", space_id: 1, mounts: Mounts.new(nil, dir)}
       first = %{entry(:agent, "peer", "hello world", nil, "firstid") | content: @oversized}
 
-      assert {:ok, content} = Render.combine_and_offload([first], state)
+      assert {:ok, content, parts} = Render.combine_and_offload([first], state)
+
+      # The pointer is the runtime's own sentence about the batch, so the row
+      # states the runtime — a headerless row renders as "unknown sender" (#195).
+      assert content =~ "[From nest runtime | mode: act]"
       assert content =~ "agent-inbox-firstid.txt"
-      assert File.read!(Path.join(dir, "agent-inbox-firstid.txt")) =~ "hello world"
+      assert parts == [{:text, content}]
+
+      # The file keeps the whole rendered batch, headers and bodies, so the
+      # senders are recoverable there.
+      file = File.read!(Path.join(dir, "agent-inbox-firstid.txt"))
+      assert file =~ "hello world"
+      assert file =~ "[From agent peer | mode: act]"
     end
   end
 
@@ -111,6 +121,9 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
 
       assert pointer =~ "Your message was too large"
       assert pointer =~ "saved to"
+      # The pointer replaced the message's own text — header included — so the
+      # row states the runtime, which is who is saying it was too large.
+      assert pointer =~ "[From nest runtime | mode: act]"
       # The body is in the file, whole, and the delivered row is the pointer.
       assert Enum.any?(File.ls!(dir), fn name ->
                File.read!(Path.join(dir, name)) == @oversized
@@ -154,7 +167,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       notice = entry(:runtime, nil, "runtime note", nil, nil, true)
 
       assert {:user, %{metadata: metadata}} =
-               Render.build_drained_message([notice], "runtime note", "chat")
+               Render.build_drained_message([notice], "runtime note", nil, "chat")
 
       assert metadata == %{"mode" => "chat"}
     end
@@ -163,17 +176,18 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       # There is no output to show, so there is nothing to render verbatim: one
       # part, and the key is omitted entirely rather than sent empty.
       notice = notice_entry({:worker_down, :killed})
-      assert {:ok, content} = Render.combine_and_offload([notice], render_state("act"))
+      assert {:ok, content, nil} = Render.combine_and_offload([notice], render_state("act"))
 
       assert {:user, %User{parts: [%Part.Text{}], metadata: metadata}} =
-               Render.build_drained_message([notice], content, "act")
+               Render.build_drained_message([notice], content, nil, "act")
 
       refute Map.has_key?(metadata, "command_output_parts")
     end
 
-    test "an offloaded batch is the pointer alone, with no marker" do
+    test "an offloaded batch is the runtime's pointer alone, with no marker" do
       # The pointer replaced the whole text, so the command output is in the
-      # scratch file rather than in the row: one text part, and no
+      # scratch file rather than in the row: one text part carrying the
+      # runtime's header (it is the runtime's sentence), and no
       # `commandOutputParts` — there is no output part for it to name.
       dir = Path.join(System.tmp_dir!(), "inbox-notice-#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)
@@ -182,15 +196,19 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       state = %Agent{name: "offload-notice", space_id: 1, mounts: Mounts.new(nil, dir)}
       notice = notice_entry({:results, [%{name: "shell-cmd", content: @oversized}]})
 
-      assert {:ok, content} = Render.combine_and_offload([notice], state)
+      assert {:ok, content, parts} = Render.combine_and_offload([notice], state)
       # The batch really was offloaded: the delivered content is the pointer,
       # whose singular wording is pinned on the transcript by the drain test.
       assert content =~ "saved to"
+      assert parts == [{:text, content}]
 
+      # The parts are the ones the offload stated, not a re-render of the batch:
+      # the row is the pointer, so its join is the pointer.
       assert {:user, %User{parts: [%Part.Text{text: pointer}], metadata: metadata}} =
-               Render.build_drained_message([notice], content, "act")
+               Render.build_drained_message([notice], content, parts, "act")
 
       assert pointer == content
+      assert pointer =~ "[From nest runtime | mode: act]"
       refute Map.has_key?(metadata, "command_output_parts")
     end
   end
@@ -271,9 +289,10 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
 
         assert pointer =~ "You have 1 queued message"
 
-        # The pointer carries no header: a header heads a body, and the body is
-        # what went to the file.
-        refute pointer =~ "[From "
+        # The pointer is the runtime's own sentence about the batch, so the row
+        # states the runtime: a headerless user row is what renders as "unknown
+        # sender" (#195). The *body's* header is what went to the file.
+        assert pointer =~ "[From nest runtime | mode: "
 
         # One scratch file per delivery, holding the batch's whole text — and
         # therefore the body's header, which the model reads back there.

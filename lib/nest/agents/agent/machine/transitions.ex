@@ -259,8 +259,8 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     Compaction.stage(%{m | loop_count: 0, work: %{m.work | focus: focus}}, nil)
   end
 
-  def do_step(%{phase: :idle} = m, {:inbox_drain, entries, content}),
-    do: deliver_inbox(m, entries, content)
+  def do_step(%{phase: :idle} = m, {:inbox_drain, entries, content, parts}),
+    do: deliver_inbox(m, entries, content, parts)
 
   def do_step(%{phase: :idle} = m, {:http_ok, _ref, _response}), do: {:ignore, :stale_result, m}
 
@@ -356,8 +356,8 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # clause, but the phase stays `:generating`, so no transient idle is ever
   # broadcast (an idle-based `agents-wait` would resolve early, and a
   # `{:finalize, :clean}` would report a partial result to a parent).
-  def do_step(%{phase: :generating, kind: :chat} = m, {:inbox_drain, entries, content}),
-    do: deliver_inbox(m, entries, content)
+  def do_step(%{phase: :generating, kind: :chat} = m, {:inbox_drain, entries, content, parts}),
+    do: deliver_inbox(m, entries, content, parts)
 
   def do_step(%{phase: :generating, kind: :chat} = m, {:append_result, :invalid, reason}) do
     Failure.fail_turn(m, %ArgumentError{message: reason}, [])
@@ -378,8 +378,8 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # that would not fit the context — is a no-op that leaves the entries queued
   # for the turn boundary, so the boundary's own compaction/block decision is
   # the one that runs for them.
-  def do_step(%{phase: :executing_tools} = m, {:inbox_drain, entries, content}),
-    do: Backgrounding.step(m, entries, content)
+  def do_step(%{phase: :executing_tools} = m, {:inbox_drain, entries, content, parts}),
+    do: Backgrounding.step(m, entries, content, parts)
 
   def do_step(%{phase: :executing_tools} = m, {:tool_results, ref, results}) do
     if Machine.valid_ref?(m, ref), do: tool_results(m, results), else: {:ignore, :stale_result, m}
@@ -436,11 +436,11 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # turn boundary from issue #15 — start the delivered message's turn the same
   # way: build the user message in the current mode and hand it to
   # `start_chat/3`, which owns the fits / compaction / block decision. The
-  # message carries the batch's fulfilled ids (`Inbox.build_drained_message/3`):
+  # message carries the batch's fulfilled ids (`Inbox.build_drained_message/4`):
   # the notice answers the backgrounded calls it names, which is what lets a
   # later load tell a kept promise from a lost one.
-  defp deliver_inbox(m, entries, content) do
-    user = Inbox.build_drained_message(entries, content, m.work.ctx.mode)
+  defp deliver_inbox(m, entries, content, parts) do
+    user = Inbox.build_drained_message(entries, content, parts, m.work.ctx.mode)
     start_chat(m, {:user_message, user}, entries)
   end
 
