@@ -1,5 +1,10 @@
 # Context management sequence — current behavior
 
+> **Historical.** The 80%-of-remaining inline share described below was
+> replaced by `ResultPolicy`'s `min(requested, budget)` (a per-tool default the
+> model may raise) and the path-and-head substitute by a pointer plus a fixed
+> preview. See `notes/no-truncation-or-overflow.md`.
+
 > **Status:** this snapshot describes the *pre-fix* behavior. The intended
 > model and the fix plan live in `notes/compaction-reserve-plan.md` (core
 > goal: **we can always compact** — the compaction reserve `C` is kept free

@@ -7,7 +7,7 @@ defmodule Nest.Agents.Agent.BatchPlan do
   enqueues the aggregate. Everything here can be decided without running
   anything: item resolution (`items` XOR `glob`), the template check and
   rendering, the children's names, the `[error: ...]` slot markers, the JSON
-  aggregate (offloaded to the scratch dir when it exceeds the inline cap), and
+  aggregate (offloaded to the scratch dir when it exceeds its limit), and
   the model-facing failure wording.
 
   ## Contract
@@ -49,13 +49,12 @@ defmodule Nest.Agents.Agent.BatchPlan do
 
   alias Jason
   alias Nest.Agents.Agent.BatchSizer.Overflow
-  alias Nest.Agents.Agent.CapCalculator
   alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.ResultPolicy
   alias Nest.Agents.Agent.SpawnErrors
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
   alias Nest.Sandbox
-  alias Nest.Tokens.Estimator
 
   # Per-item deadline default (5 minutes).
   @default_timeout_ms 300_000
@@ -398,7 +397,7 @@ defmodule Nest.Agents.Agent.BatchPlan do
   # ---- Result assembly ----
 
   # Encode the ordered slot list as a JSON array, offloading to the scratch dir
-  # (with a pointer + head inline) when it exceeds the effective inline cap.
+  # (with a pointer + preview inline) when it exceeds the limit.
   def assemble(ctx, tc, results) do
     encode_and_offload(ctx, tc, Enum.map(results, &slot_to_string/1))
   end
@@ -425,14 +424,26 @@ defmodule Nest.Agents.Agent.BatchPlan do
   defp stopped_slot_to_string(value), do: slot_to_string(value)
 
   defp offload_if_needed(ctx, tc, json, count) do
-    usable = CapCalculator.usable_remaining(ctx)
+    budget =
+      case ResultPolicy.window(ctx) do
+        {:ok, left} -> left
+        :none -> 0
+      end
 
-    if usable > 0 and
-         Estimator.estimate(json) > CapCalculator.effective_max_result_tokens(tc, usable) do
-      cap = CapCalculator.effective_max_result_tokens(tc, usable)
-      Overflow.substitute(json, ctx, "Batch of #{count} results", cap, "agents-batch")
-    else
-      json
+    limit = ResultPolicy.limit(tc, budget)
+
+    case ResultPolicy.admit(json, limit, ResultPolicy.on_over(tc.name)) do
+      {:inline, _size} ->
+        json
+
+      {:file, size} ->
+        case Overflow.substitute(json, ctx, "Batch of #{count} results", "agents-batch") do
+          {:ok, pointer} -> pointer
+          :error -> ResultPolicy.offload_failure(size)
+        end
+
+      {:refuse, size} ->
+        ResultPolicy.refusal(size, limit, tc.name)
     end
   end
 

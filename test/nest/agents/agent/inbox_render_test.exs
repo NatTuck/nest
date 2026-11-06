@@ -55,14 +55,17 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       # A missing or blank sender still says `agent`: the body must not read as
       # a human's, and printing `nil` would be worse. Three bodies in one batch
       # also pin the blank line that separates them.
-      assert Render.combine_and_offload(
-               [
-                 entry(:agent, "peer", "from an agent"),
-                 entry(:agent, "", "from a blank agent"),
-                 entry(:agent, nil, "from nobody")
-               ],
-               state
-             ) ==
+      assert {:ok, rendered} =
+               Render.combine_and_offload(
+                 [
+                   entry(:agent, "peer", "from an agent"),
+                   entry(:agent, "", "from a blank agent"),
+                   entry(:agent, nil, "from nobody")
+                 ],
+                 state
+               )
+
+      assert rendered ==
                "[From agent peer | mode: act]\nfrom an agent\n\n" <>
                  "[From agent | mode: act]\nfrom a blank agent\n\n" <>
                  "[From agent | mode: act]\nfrom nobody"
@@ -70,7 +73,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       # A query is a peer's words and says so (decision 7): it is the one kind
       # that obliges an answer.
       assert Render.combine_and_offload([entry(:query, "peer", "may I ask?")], state) ==
-               "[From agent peer, agents-send reply required | mode: act]\nmay I ask?"
+               {:ok, "[From agent peer, agents-send reply required | mode: act]\nmay I ask?"}
     end
 
     test "an over-cap batch is offloaded to a file named after its first entry's id" do
@@ -83,9 +86,60 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       state = %Agent{name: "offload-id", space_id: 1, mounts: Mounts.new(nil, dir)}
       first = %{entry(:agent, "peer", "hello world", nil, "firstid") | content: @oversized}
 
-      content = Render.combine_and_offload([first], state)
+      assert {:ok, content} = Render.combine_and_offload([first], state)
       assert content =~ "agent-inbox-firstid.txt"
       assert File.read!(Path.join(dir, "agent-inbox-firstid.txt")) =~ "hello world"
+    end
+  end
+
+  describe "admit_single/2" do
+    test "a message over the cap becomes a pointer to the scratch file" do
+      # The same admission a drained batch gets, for the paths that deliver one
+      # message: an idle `chat:message`, a spawn kickoff. A body over the
+      # configured cap is filed rather than allowed to force a compaction.
+      dir = Path.join(System.tmp_dir!(), "inbox-single-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> rm_tmp!(dir, "inbox-single-") end)
+
+      state = %Agent{name: "single", space_id: 1, mounts: Mounts.new(nil, dir)}
+
+      message =
+        {:user, %User{parts: [%Part.Text{text: @oversized}], metadata: %{"mode" => "act"}}}
+
+      assert {:ok, {:user, %User{parts: [%Part.Text{text: pointer}]} = delivered}} =
+               Render.admit_single(message, state)
+
+      assert pointer =~ "Your message was too large"
+      assert pointer =~ "saved to"
+      # The body is in the file, whole, and the delivered row is the pointer.
+      assert Enum.any?(File.ls!(dir), fn name ->
+               File.read!(Path.join(dir, name)) == @oversized
+             end)
+
+      assert delivered.metadata == %{"mode" => "act"}
+    end
+
+    test "a message that fits is delivered unchanged" do
+      dir = Path.join(System.tmp_dir!(), "inbox-single-fit-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> rm_tmp!(dir, "inbox-single-fit-") end)
+
+      state = %Agent{name: "single-fit", space_id: 1, mounts: Mounts.new(nil, dir)}
+      message = {:user, %User{parts: [%Part.Text{text: "hello"}], metadata: %{}}}
+
+      assert Render.admit_single(message, state) == {:ok, message}
+      assert File.ls!(dir) == []
+    end
+
+    test "a message that cannot be filed is a clear error, not an inline copy" do
+      # No scratch dir: the write fails, and the answer is an error naming the
+      # size. Inlining it would only move the failure to the send gate, which is
+      # a never-happen tripwire rather than a place to absorb an oversized body.
+      state = %Agent{name: "single-no-scratch", space_id: 1, mounts: Mounts.new(nil, nil)}
+      message = {:user, %User{parts: [%Part.Text{text: @oversized}], metadata: %{}}}
+
+      assert {:error, reason} = Render.admit_single(message, state)
+      assert reason =~ "could not be written"
     end
   end
 
@@ -109,7 +163,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       # There is no output to show, so there is nothing to render verbatim: one
       # part, and the key is omitted entirely rather than sent empty.
       notice = notice_entry({:worker_down, :killed})
-      content = Render.combine_and_offload([notice], render_state("act"))
+      assert {:ok, content} = Render.combine_and_offload([notice], render_state("act"))
 
       assert {:user, %User{parts: [%Part.Text{}], metadata: metadata}} =
                Render.build_drained_message([notice], content, "act")
@@ -128,7 +182,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       state = %Agent{name: "offload-notice", space_id: 1, mounts: Mounts.new(nil, dir)}
       notice = notice_entry({:results, [%{name: "shell-cmd", content: @oversized}]})
 
-      content = Render.combine_and_offload([notice], state)
+      assert {:ok, content} = Render.combine_and_offload([notice], state)
       # The batch really was offloaded: the delivered content is the pointer,
       # whose singular wording is pinned on the transcript by the drain test.
       assert content =~ "saved to"

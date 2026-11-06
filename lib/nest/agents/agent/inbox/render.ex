@@ -78,6 +78,7 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Inbox.Delivery
+  alias Nest.Agents.Agent.ResultPolicy
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Messages.Header
   alias Nest.Messages.MessageList
@@ -85,22 +86,62 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   alias Nest.Messages.Segment
   alias Nest.Messages.User
   alias Nest.Sandbox.Mounts
-  alias Nest.Tokens.Estimator
 
   @doc """
-  Combine one drain batch and, when over the async-message cap, offload the
-  text to the agent scratch dir. Returns the content string to deliver.
+  Combine one drain batch and admit it: whole when it fits, offloaded to the
+  agent scratch dir when it does not. Returns the content to deliver.
+
+  `{:error, reason}` means the batch was too large to inline and could not be
+  written either — the caller must leave the entries queued and surface the
+  reason. Nothing is ever inlined over the budget and nothing is dropped.
+
   Used by the turn executor's drain actions, which pass `Inbox.batch/1`'s
   selection so the entries rendered are exactly the entries consumed.
   """
-  @spec combine_and_offload([map()], Agent.t()) :: String.t()
+  @spec combine_and_offload([map()], Agent.t()) :: {:ok, String.t()} | {:error, String.t()}
   def combine_and_offload(entries, state) do
     # `state.live.mode` is the mode the turn will run in — the drain applies the
     # batch's own request before it renders (see `Turn.Executor.peek_inbox/1`) —
     # so a peer delivery's header states the mode the *recipient* is about to
     # work under, which is what every message an agent receives has to say.
-    offload(combine(entries, state.live.mode), entries, state)
+    offload(combine(entries, state.live.mode), length(entries), Delivery.batch_id(entries), state)
   end
+
+  @doc """
+  Admit one message: whole when it fits, offloaded to the agent's scratch dir
+  when it does not.
+
+  The single-message path (`ChatPipeline.handle_chat`) and the drain share this
+  rule; they differ only in what the pointer says, because a batch pointer has
+  to say how many bodies the file holds. A message is never inlined over the
+  budget and never dropped.
+  """
+  @spec admit_single(term(), Agent.t()) :: {:ok, term()} | {:error, String.t()}
+  def admit_single({:user, %User{} = user} = message, state) do
+    content = text_of(user)
+
+    case offload(content, 0, nil, state) do
+      {:ok, ^content} ->
+        {:ok, message}
+
+      {:ok, replacement} ->
+        {:ok, {:user, %{user | parts: [%Part.Text{text: replacement}]}}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def admit_single(message, _state), do: {:ok, message}
+
+  defp text_of(%User{parts: parts}) when is_list(parts) do
+    Enum.map_join(parts, "", fn
+      %Part.Text{text: text} -> text || ""
+      _other -> ""
+    end)
+  end
+
+  defp text_of(%User{}), do: ""
 
   @doc """
   The user message a drained batch is delivered as.
@@ -217,24 +258,43 @@ defmodule Nest.Agents.Agent.Inbox.Render do
       else: [{:text, content}]
   end
 
-  # Over the configured cap, write the full combined text to the agent's
-  # scratch dir and return a pointer. If the write fails, fall back to
-  # the full text so no messages are lost.
-  defp offload(content, entries, state) do
-    if Estimator.estimate(content) > Config.configured_async_message_max_tokens() do
-      case Overflow.write(
-             content,
-             %{mounts: Mounts.from_agent(state)},
-             "agent-inbox",
-             "txt",
-             Delivery.batch_id(entries)
-           ) do
-        nil -> content
-        path -> pointer(length(entries), path)
-      end
-    else
-      content
+  # The same admission the tool results get, with `requested` being the
+  # configured async-message cap: the content is inlined whole when it fits, and
+  # written to the agent's scratch dir with a pointer when it does not. A write
+  # that fails is its own error — the caller keeps the batch queued and says so,
+  # rather than inlining something over the budget or dropping it.
+  defp offload(content, count, id, state) do
+    # The message cap is intrinsic: it is about how much a single body may
+    # carry, not about how full the conversation is. A message over it is filed,
+    # because a large paste must not force a compaction; a message under it is
+    # delivered whole and the *conversation* being full is what the fit
+    # decision (and so a compaction) is for.
+    limit = Config.configured_async_message_max_tokens()
+
+    case ResultPolicy.admit(content, limit, :file) do
+      {:inline, _size} ->
+        {:ok, content}
+
+      {:file, size} ->
+        case Overflow.write(
+               content,
+               %{mounts: Mounts.from_agent(state)},
+               "agent-inbox",
+               "txt",
+               id
+             ) do
+          nil -> {:error, ResultPolicy.offload_failure(size)}
+          path -> {:ok, pointer(count, path)}
+        end
+
+      {:refuse, size} ->
+        {:error, ResultPolicy.refusal(size, limit, "queued message")}
     end
+  end
+
+  defp pointer(0, path) do
+    "Your message was too large to include inline and was saved to #{path}. " <>
+      "Read that file to see it."
   end
 
   defp pointer(1, path) do

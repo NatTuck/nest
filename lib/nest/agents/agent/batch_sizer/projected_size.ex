@@ -21,7 +21,8 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   tools.
   """
 
-  alias Nest.Agents.Agent.CapCalculator
+  alias Nest.Agents.Agent.BatchSizer.Overflow
+  alias Nest.Agents.Agent.ResultPolicy
   alias Nest.Messages.ToolCall
   alias Nest.Sandbox
   alias Nest.Tokens.Estimator
@@ -380,10 +381,10 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
 
   def read_file_projection(_, _ctx), do: summary_baseline_size() * @safety_padding
 
-  # A `file-read` can never put more than the per-call inline cap inline: over
-  # it, `BatchSizer.handle_over_cap/5` replaces the result with a small error —
-  # for text and media alike (`media_over_cap_error/3`). So a projection above
-  # the cap prices a result the tool is structurally unable to produce.
+  # A `file-read` can never put more than its inline limit inline: over it,
+  # `ResultPolicy` refuses the result with a small error — for text and media
+  # alike. So a projection above the limit prices a result the tool is
+  # structurally unable to produce.
   #
   # Left unclamped, that projection can refuse a batch for a call that was
   # guaranteed to return a one-line error. The refusal is
@@ -400,12 +401,12 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   # A context with no usable window left (already at or past its content limit)
   # leaves the projection alone. The batch cannot fit whatever this returns —
   # the reserve alone already meets the limit — and
-  # `CapCalculator.effective_max_result_tokens/2` requires a positive window, so
+  # `ResultPolicy.limit/2` requires a positive budget, so
   # there is no cap to clamp to. `cook/2` reports the same window as no cap
   # (`cap_for/2`) and substitutes the result rather than raising.
   defp clamp_to_cap(projection, tc, ctx) do
-    case CapCalculator.usable_window(ctx) do
-      {:ok, usable} -> min(projection, CapCalculator.effective_max_result_tokens(tc, usable))
+    case ResultPolicy.window(ctx) do
+      {:ok, budget} -> min(projection, ResultPolicy.limit(tc, budget))
       :none -> projection
     end
   end
@@ -429,8 +430,12 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
     end
   end
 
+  # The minimum a result can cost: one substitute, as `Overflow.substitute/5`
+  # builds it. The two are the same number by construction, so the preflight's
+  # "room for one substitute per call" guarantee cannot drift from what the
+  # admission pass actually produces.
   def summary_baseline_size do
-    estimator_overhead("[error placeholder]")
+    Overflow.substitute_size()
   end
 
   defp caps_of(ctx) do

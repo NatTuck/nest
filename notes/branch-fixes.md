@@ -1,5 +1,10 @@
 # `shell-bg` (PR #10) — fixes
 
+> **Historical.** The 80%-of-remaining inline share described below was
+> replaced by `ResultPolicy`'s `min(requested, budget)` (a per-tool default the
+> model may raise) and the path-and-head substitute by a pointer plus a fixed
+> preview. See `notes/no-truncation-or-overflow.md`.
+
 Branch: `shell-bg` (commit `78f8ef3`, "Group tool capabilities and add background shell jobs").
 This note is the working plan for the review fixes on that branch plus the
 tool-call budget invariant work that the review surfaced.

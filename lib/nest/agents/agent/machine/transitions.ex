@@ -34,6 +34,9 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   alias Nest.LLM.Preflight
   alias Nest.Messages.MessageList
   alias Nest.Messages.ToolResult
+  alias Nest.Tokens.Budget
+
+  require Logger
 
   # Compile-time copies of the blocked phases so guards stay valid.
   @blocked [
@@ -493,10 +496,33 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   defp dispatch_http(m) do
     case Preflight.validate_request(messages(m)) do
       :ok ->
-        do_dispatch_http(m)
+        dispatch_gate(m)
 
       {:error, violations} ->
         Failure.fail_turn(m, %ArgumentError{message: Preflight.format_violations(violations)}, [])
+    end
+  end
+
+  # The send gate. Every request this agent makes is sized here first, so a
+  # conversation that is over its content budget cannot reach the provider —
+  # the provider's own 400 is not a recovery path, it is a bug report. This is
+  # a tripwire and should never fire: `start_chat/3`, the batch preflight and
+  # `ResultPolicy` all keep the list inside `L - C` before a request is built.
+  # When it does fire, the conversation is compacted (which is the only thing
+  # that can help) instead of being sent.
+  defp dispatch_gate(m) do
+    limit = m.work.ctx.context_limit
+    messages = m.work.ctx.messages
+
+    if is_integer(limit) and limit > 0 and not Budget.fits?(messages, limit) do
+      Logger.error(
+        "[preflight] send gate: agent's context is #{Budget.size(messages)} tokens " <>
+          "against a #{limit} limit; compacting instead of sending. This should be unreachable."
+      )
+
+      Compaction.stage(m, nil)
+    else
+      do_dispatch_http(m)
     end
   end
 

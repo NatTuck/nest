@@ -56,7 +56,6 @@ defmodule Nest.Agents.Agent.ProjectedSizeCoverageTest do
       # themselves. Both assertions below fail if a clause is replaced by the
       # catch-all, which is the drift a membership list cannot see.
       c = ctx()
-      minimum = ProjectedSize.summary_baseline_size()
 
       # `agents-history` is unbounded by construction, so it projects at the
       # substitute minimum like the other response-bearing sub-agent tools.
@@ -64,12 +63,15 @@ defmodule Nest.Agents.Agent.ProjectedSizeCoverageTest do
                ProjectedSize.project(call("c", "agents-wait", %{}), c)
 
       # The two pane tools that read a list project one representative report,
-      # so their projection must be larger than the substitute minimum a tool
-      # with no shape projects at — the minimum is not the contract, a
-      # realistic list is.
+      # so their projection differs from the catch-all a tool with no shape
+      # falls to. The substitute minimum is not the yardstick: a substitute is
+      # ~250 tokens, larger than a short list, so comparing against it would
+      # pass even for the catch-all.
+      catch_all = ProjectedSize.project(call("c-unknown", "no-such-tool", %{}), c)
+
       for name <- ~w(decisions-list todos-list) do
-        assert ProjectedSize.project(call("c-#{name}", name, %{}), c) > minimum,
-               "#{name} projects at the substitute minimum, not at a real list"
+        assert ProjectedSize.project(call("c-#{name}", name, %{}), c) != catch_all,
+               "#{name} projects at the catch-all, not at a real list"
       end
     end
   end

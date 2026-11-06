@@ -3,10 +3,10 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   Shared "write an oversized result to the agent's scratch dir" helpers.
 
   `write/4` saves the full bytes and is what `BatchSizer` and `Inbox` use to
-  offload; `substitute/5` turns an oversized result into an in-budget inline
-  block (a pointer + head) and is the single summarization path used by
-  `BatchSizer` (regular tools), `BatchPlan` (the `agents-batch` aggregate) and
-  `SubAgentResults` (the sub-agent tools' results).
+  offload; `substitute/5` turns an oversized result into a pointer plus a short
+  preview and is the single substitution path used by `BatchSizer` (regular
+  tools), `BatchPlan` (the `agents-batch` aggregate) and `SubAgentResults` (the
+  sub-agent tools' results).
 
   The scratch dir comes from `ctx.mounts` — the agent's own sub-directory of
   the space scratch dir (which the sandbox binds read-write at `/tmp`, so the
@@ -65,53 +65,95 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
     end
   end
 
-  @doc """
-  Build an in-budget inline substitute for an oversized tool result.
+  # The preview's size. Fixed rather than derived from the budget: a substitute
+  # whose size depends on the window cannot be priced by the preflight, and
+  # `substitute_size/0` is what the projection reserves per call. 200 tokens is
+  # enough to tell a command's failure from its output and small enough that a
+  # model that then reads the file has wasted very little.
+  @preview_tokens 200
 
-  Writes the full `content` to the agent's scratch dir and returns:
+  # Memo key for `substitute_size/0`.
+  @substitute_size_key {__MODULE__, :substitute_size}
+
+  @doc """
+  Write `content` to the agent's scratch dir and return the inline substitute:
 
       <label> (<N> tokens) saved to <path>.
 
-      <leading whole lines that fit the head budget>
+      <leading whole lines of the content, ~#{@preview_tokens} tokens>
 
-  truncated (line-aligned) so `Estimator.estimate/1` of the result is at
-  most `budget` tokens. The result is always valid UTF-8 and always fits;
-  callers must not inline the full `content` instead. It is also never
-  empty: when there is no budget for any of the content, the marker names
-  the scratch file so the model still knows that content was elided and
-  where to find it.
+  The pointer names the file and its size; the preview says what the content
+  is. Neither repeats anything the caller already has: the tool's arguments are
+  in the `tool_use` part immediately before this, so the label names the tool
+  and nothing else.
 
-  `label` names the result for the model (e.g. `"Command output of 'ls'"`).
-  `prefix` names the scratch file (see `write/4`). `content` is expected
-  to be storable text — non-text results (invalid UTF-8 or NUL) take
-  `handle_binary_shell/4` instead.
+  `{:ok, text}` when the file was written, `:error` when it could not be — the
+  caller turns that into a clear error, because a result that is too large to
+  inline and cannot be filed has to say so rather than be quietly kept or
+  quietly dropped.
+
+  `prefix` names the scratch file (see `write/4`). `content` is expected to be
+  storable text — non-text results (invalid UTF-8 or NUL) are written first and
+  described by the caller.
   """
-  @spec substitute(binary(), map(), String.t(), non_neg_integer(), String.t()) :: String.t()
-  def substitute(content, ctx, label, budget, prefix) do
+  @spec substitute(binary(), map(), String.t(), String.t(), String.t() | nil) ::
+          {:ok, String.t()} | :error
+  def substitute(content, ctx, label, prefix, id \\ nil) do
     size = Estimator.estimate(content)
-    path = write(content, ctx, prefix, "txt")
 
-    location = if path, do: "saved to #{path}", else: "temp file unavailable"
-    no_room = elided_marker(path)
-    header = "#{label} (#{size} tokens) #{location}."
-
-    block = header <> "\n\n" <> head_text(content, head_budget(header), no_room)
-    truncate_to_fit(block, budget, no_room)
+    case write(content, ctx, prefix, "txt", id) do
+      nil -> :error
+      path -> {:ok, pointer(label, size, path, content)}
+    end
   end
 
-  # The no-room marker for a substituted result. It always says the
-  # content was elided, and names the scratch file when one was written
-  # so the model can still read the full text.
-  defp elided_marker(nil),
-    do: "[content elided: the full result could not be written to a scratch file]"
+  @doc """
+  The size of one substitute, for the preflight's per-call projection.
 
-  defp elided_marker(path), do: "[content elided: see #{path}]"
+  The preflight has to reserve room for the substitute a call might produce, so
+  this and `substitute/5` must describe the same block — one function, so they
+  cannot drift.
 
-  # Head budget: ~4× the header, with a floor so a very short header
-  # still yields a usable preview.
-  defp head_budget(header) do
-    header_tokens = Estimator.estimate(header)
-    max(header_tokens * 4, header_tokens + 50)
+  Memoized in `:persistent_term`: it is a constant of this module's own format,
+  and `ResultPolicy.admit/3` reads it on every result to decide whether filing
+  is even worth it. Recomputing it there would put a tokenizer call on every
+  admission.
+  """
+  @spec substitute_size() :: pos_integer()
+  def substitute_size do
+    case :persistent_term.get(@substitute_size_key, nil) do
+      nil ->
+        size =
+          Estimator.estimate(
+            pointer("Output of shell-cmd", 1_000_000, "/tmp/a/exec-0000000000000000.txt", "")
+          ) + @preview_tokens
+
+        :persistent_term.put(@substitute_size_key, size)
+        size
+
+      size ->
+        size
+    end
+  end
+
+  defp pointer(label, size, path, content) do
+    header = "#{label} (#{size} tokens) saved to #{path}."
+
+    case preview(content) do
+      "" -> header
+      head -> header <> "\n\n" <> head
+    end
+  end
+
+  # Whole lines, so the preview never ends mid-line. A single line longer than
+  # the whole budget (a minified blob) is cut by characters instead of being
+  # dropped: `head_text/3` returns its marker for it, and a preview is worth
+  # more than nothing.
+  defp preview(content) do
+    case head_text(content, @preview_tokens, "") do
+      "" -> content |> String.slice(0, @preview_tokens * 4) |> String.trim_trailing()
+      head -> head
+    end
   end
 
   @doc """
@@ -153,17 +195,6 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
 
     if head == "", do: no_room, else: head
   end
-
-  @doc """
-  Trim `text` to at most `target_tokens` by taking leading whole lines.
-
-  Never returns an empty string; see `head_text/3` for `no_room`.
-  """
-  @spec truncate_to_fit(String.t(), integer(), String.t()) :: String.t()
-  def truncate_to_fit(text, target_tokens, no_room)
-
-  def truncate_to_fit(_text, target_tokens, no_room) when target_tokens <= 0, do: no_room
-  def truncate_to_fit(text, target_tokens, no_room), do: head_text(text, target_tokens, no_room)
 
   @doc """
   Lossy UTF-8 coercion: replace every invalid byte sequence, and every

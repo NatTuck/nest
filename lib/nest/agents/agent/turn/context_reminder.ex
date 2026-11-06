@@ -31,7 +31,7 @@ defmodule Nest.Agents.Agent.Turn.ContextReminder do
   opposite of what the threshold means — and read from the machine's `ctx`, which
   carries the value the agent started with. Both notice sites ask here, so there
   is one answer for "should this conversation be told". Nothing else reads it:
-  compaction, the per-tool-result cap (`Nest.Agents.Agent.CapCalculator`) and the
+  compaction, the per-tool-result limit (`Nest.Agents.Agent.ResultPolicy`) and the
   usage chip (`Nest.Agents.Agent.Broadcasts.Usage`) are unaffected by the
   setting, and a threshold is marked announced only when its notice landed.
   """

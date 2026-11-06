@@ -27,7 +27,7 @@ defmodule Nest.Tokens.Reserve do
 
   `compaction_reserve/1` is the single source of this number. It backs the
   send preflight (`Nest.Tokens.PreFlight`), the per-tool result cap
-  (`Nest.Agents.Agent.CapCalculator.usable_remaining/1`), the content-budget
+  (`Nest.Agents.Agent.ResultPolicy.window/1`), the content-budget
   display (`Broadcasts.Usage` / `TokenUsageChip`), the compactor's `<N>` hint
   (`Nest.Tokens.Compactor.compute_summary_budget/4`), and the context-overflow
   message (`Nest.Agents.Agent.Compaction.Overflow`). It is **not** the model's

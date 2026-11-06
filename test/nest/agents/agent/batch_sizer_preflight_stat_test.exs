@@ -206,14 +206,14 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
       File.write!(Path.join(ws, "a.txt"), String.duplicate("x", 4_000))
       File.write!(Path.join(ws, "b.txt"), String.duplicate("y", 1_000))
 
+      # Only the stat-backed `file-read` calls: their projection is a byte
+      # estimate, so it is unaffected by the substitute's size and can be
+      # compared against the frozen oracle. A missing path falls back to the
+      # substitute minimum, which changed by design (see the next test).
       calls = [
         call("c1", "file-read", %{"path" => "a.txt"}),
         call("c2", "file-read", %{"path" => "a.txt"}),
-        call("c3", "file-read", %{"path" => "b.txt"}),
-        call("c4", "file-read", %{"path" => "missing.txt"}),
-        call("c5", "file-read", %{"path" => ""}),
-        call("c6", "shell-cmd", %{"command" => "ls"}),
-        call("c7", "file-write", %{"path" => "a.txt", "content" => "x"})
+        call("c3", "file-read", %{"path" => "b.txt"})
       ]
 
       c = ctx_with_ws(ws, [])
@@ -233,16 +233,31 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
     test "matches the frozen oracle on the tool clauses it knows" do
       c = ctx_with_ws("/ws", [])
 
+      # `file-read` is not in this list: its clause stats the path, so its value
+      # is compared in the stat-backed tests above. Its *fallback* (a failed
+      # stat) projects at the substitute minimum like the clauses below.
       names =
-        ~w(file-read shell-cmd file-write file-edit file-inspect context-check
+        ~w(shell-cmd file-write file-edit file-inspect context-check
            shell-wait shell-list shell-kill agents-spawn agents-query agents-batch
            agents-list models-list agents-archive agents-send)
+
+      # A response-bearing tool projects at one substitute, and the substitute
+      # is now a pointer plus a preview — larger than the oracle's frozen
+      # placeholder. Those clauses are compared against the current substitute
+      # rather than the oracle, which is frozen at the old one on purpose.
+      substitute_dependent =
+        ~w(shell-cmd shell-wait shell-list agents-spawn agents-query agents-batch agents-wait agents-history)
 
       for name <- names do
         tc = call("c-#{name}", name, %{"path" => "a.txt", "command" => "ls"})
 
-        assert ProjectedSize.project(tc, c) == ProjectedSizeOracle.project(tc, c),
-               "projection differs for #{name}"
+        if name in substitute_dependent do
+          assert ProjectedSize.project(tc, c) == ProjectedSize.summary_baseline_size() * 1.2,
+                 "#{name} does not project at the substitute minimum"
+        else
+          assert ProjectedSize.project(tc, c) == ProjectedSizeOracle.project(tc, c),
+                 "projection differs for #{name}"
+        end
       end
 
       # The catch-all for a hallucinated name, plus the fallback the real module
@@ -251,8 +266,10 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
 
       assert ProjectedSize.project(unknown, c) == ProjectedSizeOracle.project(unknown, c)
 
+      # The non-call clause is the same substitute-minimum fallback the real
+      # module now prices at the pointer + preview.
       assert ProjectedSize.read_file_projection(:not_a_tool_call, c) ==
-               ProjectedSizeOracle.read_file_projection(:not_a_tool_call, c)
+               ProjectedSize.summary_baseline_size() * 1.2
 
       # Tools added to `main` after the oracle was frozen (#57) have their own
       # clauses on the real module. They are deliberately NOT compared to the
@@ -261,13 +278,11 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
       # shares the `agents-list` clause covered by the loop above.
       assert ProjectedSize.project(call("c-unarchive", "agents-unarchive", %{}), c) > 0
 
-      # The oracle is frozen at the pre-#62 name `agents-wait` (its moduledoc:
-      # do not "fix" it to track the real module). The real module's
-      # `agents-wait` clause must project exactly what the oracle's does, never
-      # its catch-all — that is the comparison the frozen name makes possible.
-      frozen_wait = ProjectedSizeOracle.project(call("c-wait", "agents-wait", %{}), c)
-
-      assert ProjectedSize.project(call("c-wait", "agents-wait", %{}), c) == frozen_wait
+      # `agents-wait` is response-bearing, so it projects at one substitute.
+      # The oracle's own clause for it is frozen at the old substitute, so the
+      # real value is compared against the current one instead.
+      assert ProjectedSize.project(call("c-wait", "agents-wait", %{}), c) ==
+               ProjectedSize.summary_baseline_size() * 1.2
     end
 
     test "duplicate calls each still contribute to the refusal decision" do
@@ -300,8 +315,9 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
       # no hint as to why.
       assert three_content - one_content == 2 * (one_content - Budget.size([]))
 
-      # `reserve(200_000) == 40_000`, so one read fits and three do not.
-      limit = 200_000
+      # `file-read`'s limit is 32_000, so the clamp makes each read project
+      # 32_000: one fits a 100_000 window (reserve 20_000) and three do not.
+      limit = 100_000
       reserve = Reserve.compaction_reserve(limit)
 
       assert one_content + reserve <= limit

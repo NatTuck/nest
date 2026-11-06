@@ -557,12 +557,15 @@ defmodule Nest.Agents.Agent.Inbox do
   # drain caller reaches for, exactly as the `Delivery` delegates below do for
   # the consume API. The rendering rules are documented there.
 
-  @doc """
-  Combine one drain batch and, when over the async-message cap, offload the
-  text to the agent's scratch dir. Returns the content string to deliver.
-  """
-  @spec combine_and_offload([entry()], Agent.t()) :: String.t()
+  # One drain batch's admission: whole when it fits, offloaded when it does not.
+  @spec combine_and_offload([entry()], Agent.t()) :: {:ok, String.t()} | {:error, String.t()}
   defdelegate combine_and_offload(entries, state), to: Render
+
+  # One message's admission: whole when it fits, offloaded when it does not.
+  # `{:error, reason}` means it could not be filed either, so the caller must
+  # not deliver it.
+  @spec admit_single(term(), Agent.t()) :: {:ok, term()} | {:error, String.t()}
+  defdelegate admit_single(message, state), to: Render
 
   @doc """
   The user message a drained batch is delivered as: its rendered `content`,

@@ -7,24 +7,21 @@ defmodule Nest.LLM.Tool do
   and returns `{:ok, String.t()}` on success or `{:error, String.t()}`
   on failure.
 
-  Tool-result sizing is enforced by `Nest.Agents.Agent.BatchSizer`,
-  not by this struct. The BatchSizer computes an inline cap per
-  batch equal to 80% of the remaining usable context window and
-  routes results that exceed the cap through a per-tool path:
+  Tool-result sizing is enforced by `Nest.Agents.Agent.ResultPolicy`,
+  not by this struct. It decides `min(requested, budget)` per result —
+  `requested` being the call's `max_result_tokens` or the tool's default,
+  and `budget` what the context has left — and routes a result over it
+  through a per-tool path:
 
     * `file-read` → `{:error, "File is X tokens which exceeds your requested limit of Y."}`
-    * Every other tool → path-and-head substitute (full output saved to tmp)
+    * Every other tool → a pointer + preview, with the full output saved to
+      the agent's scratch dir.
 
-  No tool result is ever kept over budget: the BatchSizer follows the
-  keep-or-substitute decision for every tool, and `ToolLoop` reruns it
-  over the whole batch (regular + sub-agent results).
-
-  The LLM may override the cap on a per-call basis by passing
-  `max_result_tokens` in the call's arguments; the override may
-  only lower the cap (lower it to force a summary/error path even
-  when full content would fit inline). The schema for
-  `max_result_tokens` lives on `parameters_schema`, not on the
-  struct.
+  No tool result is ever kept over budget: every result goes through that
+  one admission, whatever its kind (a success, an error, a cancellation and
+  a wait are the same content question). The LLM chooses the size by
+  passing `max_result_tokens` in the call's arguments; the schema for it
+  lives on `parameters_schema`, not on the struct.
   """
 
   defstruct name: nil,

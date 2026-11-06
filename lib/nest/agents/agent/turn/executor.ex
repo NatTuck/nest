@@ -24,7 +24,6 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Compaction.Overflow
   alias Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess
   alias Nest.Agents.Agent.Inbox
@@ -36,6 +35,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.Agents.Agent.Turn.ChildActions
   alias Nest.Agents.Agent.Turn.Commit
+  alias Nest.Agents.Agent.Turn.Drain
   alias Nest.Agents.Agent.Turn.GiveUpDelivery
   alias Nest.Agents.Agent.Turn.HTTPWorker
   alias Nest.Agents.Agent.Turn.Terminal
@@ -325,8 +325,9 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   defp execute({:stop_watchers}, state), do: ChildActions.stop_watchers(state)
 
   defp execute({:drain_inbox}, state) do
-    case peek_inbox(state) do
+    case Drain.peek(state) do
       :empty -> {state, :continue}
+      {:error, reason} -> Drain.failed(state, reason)
       {state, batch, content} -> {state, {:follow, {:inbox_drain, batch, content}}}
     end
   end
@@ -334,9 +335,12 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   # The loop breaker's give-up shape (issue #26): build the message from the
   # peeked batch, append it, and consume it — without `start_chat/3`.
   defp execute({:drain_inbox, :append}, state) do
-    case peek_inbox(state) do
+    case Drain.peek(state) do
       :empty ->
         {state, :continue}
+
+      {:error, reason} ->
+        Drain.failed(state, reason)
 
       {state, batch, content} ->
         # The batch's `fulfilled_ids` ride it too (`Inbox.build_drained_message/3`).
@@ -354,7 +358,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
         # that is not `{:ok, _}` must never consume the batch, and leaving the
         # message queued is the only safe disposition for one.
         case MessageAppender.handle_single(state, user) do
-          {:ok, _stamped, state} -> consume_inbox(state, batch)
+          {:ok, _stamped, state} -> Drain.consume(state, batch)
           {:stale, state} -> {state, {:follow, {:append_result, :stale, nil}}}
           {:invalid, reason, state} -> {state, {:follow, {:append_result, :invalid, reason}}}
         end
@@ -362,7 +366,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   end
 
   # The consume half of peek-then-consume, emitted by the appending branch.
-  defp execute({:consume_inbox, entries}, state), do: consume_inbox(state, entries)
+  defp execute({:consume_inbox, entries}, state), do: Drain.consume(state, entries)
 
   # A backgrounded batch's outcome (issue #36): the batch has no live worker
   # to settle it, so it arrives as a `:runtime` entry (no agent said it).
@@ -433,80 +437,6 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   # The peek half of peek-then-consume (issue #26): the drain computes the
   # batch's content and applies its mode, but leaves `state.live.inbox` alone and
   # rebroadcasts nothing. `{:consume_inbox, _}` is what clears the queue —
-  # emitted only by the branch that appended the message — so a delivery that
-  # parks (a compaction, a block) leaves the message queued and visible.
-  @spec peek_inbox(Nest.Agents.Agent.t()) ::
-          :empty | {Nest.Agents.Agent.t(), [map()], String.t()}
-  defp peek_inbox(state) do
-    case Inbox.batch(state.live.inbox) do
-      [] ->
-        :empty
-
-      batch ->
-        # The mode comes first: the delivered message is *rendered* with the mode
-        # the turn will run in (a peer delivery's header states it), and
-        # `applied_mode/2` is what decides it — the batch's own request, resolved.
-        #
-        # It is *not* re-authorized here, and that is deliberate: the authority
-        # ran where the change was **asked** (the send tool, with the sender's
-        # mode as it was then), and the actor was entitled when it asked. A
-        # delivery-time re-check would refuse a change that was legitimate when
-        # it was made, which is a different rule, not a stricter one.
-        mode = applied_mode(state, batch)
-        mode_changed? = mode != state.live.mode
-        state = %{state | live: %{state.live | mode: mode}}
-        content = Inbox.combine_and_offload(batch, state)
-
-        # `Broadcasts.status/1` is the only carrier of `currentMode`, and the
-        # settle loop broadcasts only on a status *change* — which this drain
-        # deliberately does not cause (the phase stays `:generating`) — so the
-        # new mode is published here or the UI keeps the old one until the turn
-        # ends.
-        if mode_changed?, do: Broadcasts.status(state)
-
-        {state, batch, content}
-    end
-  end
-
-  defp consume_inbox(state, entries) do
-    # Drop exactly the peeked batch, not the whole queue: the executor runs
-    # synchronously inside one settle, so nothing can be enqueued between the
-    # peek and the consume, and anything the peek did not deliver stays queued.
-    # The frame is the removal delta for exactly those ids (issue #27) —
-    # `Inbox.consume_and_broadcast/2` owns both the write and the frame so they
-    # cannot disagree.
-    state = Inbox.consume_and_broadcast(state, entries)
-    Timeline.drained(state, entries)
-    {state, :continue}
-  end
-
-  # One mode per delivered batch: the most recent entry that carries a mode wins
-  # (`Inbox.drain_mode/1`) — the human's own request, or a peer's `set_mode`,
-  # which rides the message it belongs to — and the agent's current mode stands
-  # when no entry does. The winner is resolved against the modes this build has
-  # (`Nest.Modes`) exactly as `ChatPipeline.handle_chat/3` resolves an idle
-  # turn's request, so `state.live.mode` — and with it the UI's `currentMode` —
-  # never holds a mode nothing can honour. Applied here, never when the entry was
-  # queued:
-  # `state.live.mode` feeds `ctx.mode`/`ctx.caps`, which `Turn.prepare/1`
-  # rebuilds on every settle, so setting it on arrival would re-resolve the caps
-  # of the *ongoing* turn's remaining tool calls. A drain that consumes nothing
-  # — a decline, a park, a block — undoes the application
-  # (`Turn.restore_undelivered_mode/3`) for that same reason: the entry is still
-  # queued, so the mode must not stick.
-  defp applied_mode(state, entries) do
-    case Inbox.Mode.drain_mode(entries) do
-      nil ->
-        state.live.mode
-
-      requested ->
-        {resolved, _caps} =
-          ChatPipeline.resolve_mode_and_caps(requested, state.vocation, Mounts.from_agent(state))
-
-        resolved
-    end
-  end
-
   defp spawn_worker(state, kind, fun) do
     ref = make_ref()
     agent_pid = self()
