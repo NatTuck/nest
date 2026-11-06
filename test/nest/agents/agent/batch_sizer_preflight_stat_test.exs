@@ -191,14 +191,31 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
     end
 
     test "a memo that misses the path still stats, and a failed stat falls back" do
-      Mimic.expect(Sandbox, :stat, 1, fn _path, _c, _m -> {:error, :enoent} end)
+      # Three: the real module, the frozen one, and the frozen one again on a
+      # ctx with no caps.
+      Mimic.expect(Sandbox, :stat, 3, fn _path, _c, _m -> {:error, :enoent} end)
 
       # A memo that does not mention this path: the projection must stat rather
       # than invent a size, and a failed stat is the summary fallback.
       c = Map.put(ctx_with_ws("/ws", []), :file_read_sizes, %{})
+      tc = call("c1", "file-read", %{"path" => "a.txt"})
 
-      assert ProjectedSize.project(call("c1", "file-read", %{"path" => "a.txt"}), c) ==
-               ProjectedSize.summary_baseline_size() * 1.2
+      assert ProjectedSize.project(tc, c) == ProjectedSize.summary_baseline_size() * 1.2
+
+      # The oracle's fallback, from the same failed stat. Its *value* is the
+      # frozen placeholder rather than the current substitute — the two differ by
+      # design — so this is a second assertion, not one `==`: what it pins is that
+      # the fallback's shape (stat, then the summary baseline) is the same on both
+      # sides. Without it, the oracle's `else` branch is reached by nothing, and
+      # the frozen module's most conservative path is the one nothing checks.
+      assert ProjectedSizeOracle.project(tc, c) ==
+               ProjectedSizeOracle.summary_baseline_size() * 1.2
+
+      # A ctx with no `:caps` at all: the oracle's `caps_of/1` falls back to the
+      # sandbox defaults, which is the branch every other fixture skips (they all
+      # carry caps).
+      assert ProjectedSizeOracle.project(tc, Map.delete(c, :caps)) ==
+               ProjectedSizeOracle.summary_baseline_size() * 1.2
     end
 
     test "matches main's projection module, path for path (independent oracle)" do
@@ -260,6 +277,29 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
         end
       end
 
+      # The clauses whose *value* the two modules no longer share: the frozen
+      # one prices each response-bearing tool at its own substitute minimum, and
+      # the loop above skips them for exactly that reason. Asserting the frozen
+      # value is what keeps those clauses live — it is the one claim that
+      # survives the substitute growing a pointer and a preview.
+      for name <- ~w(shell-cmd shell-wait shell-list agents-spawn agents-query agents-batch) do
+        tc = call("c-frozen-#{name}", name, %{})
+
+        assert ProjectedSizeOracle.project(tc, c) ==
+                 ProjectedSizeOracle.summary_baseline_size() * 1.2,
+               "#{name} does not project at the frozen substitute minimum"
+      end
+
+      # The oracle's tool list, which the real module's guard test reads.
+      assert ProjectedSizeOracle.projected?("shell-cmd")
+      refute ProjectedSizeOracle.projected?("no-such-tool")
+
+      # Two names, so the oracle counts them rather than defaulting to one.
+      two = call("c-archive-two", "agents-archive", %{"name" => ["a", "b"]})
+      one = call("c-archive-one", "agents-archive", %{"name" => ["a"]})
+
+      assert ProjectedSizeOracle.project(two, c) == 2 * ProjectedSizeOracle.project(one, c)
+
       # The catch-all for a hallucinated name, plus the fallback the real module
       # also exposes.
       unknown = call("c-unknown", "no-such-tool", %{})
@@ -280,9 +320,16 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
 
       # `agents-wait` is response-bearing, so it projects at one substitute.
       # The oracle's own clause for it is frozen at the old substitute, so the
-      # real value is compared against the current one instead.
-      assert ProjectedSize.project(call("c-wait", "agents-wait", %{}), c) ==
-               ProjectedSize.summary_baseline_size() * 1.2
+      # real value is compared against the current one — and the frozen clause is
+      # asserted separately, at the frozen value. Two assertions because the
+      # values differ by design; without the second, nothing reaches the oracle's
+      # `agents-wait` clause at all.
+      wait = call("c-wait", "agents-wait", %{})
+
+      assert ProjectedSize.project(wait, c) == ProjectedSize.summary_baseline_size() * 1.2
+
+      assert ProjectedSizeOracle.project(wait, c) ==
+               ProjectedSizeOracle.summary_baseline_size() * 1.2
     end
 
     test "duplicate calls each still contribute to the refusal decision" do

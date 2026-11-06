@@ -432,6 +432,11 @@ defmodule Nest.Agents.Agent.BatchPlan do
 
     limit = ResultPolicy.limit(tc, budget)
 
+    # The one caller is the `agents-batch` aggregate (`BatchPlan.assemble/3`,
+    # from `BatchCoordinator`), whose `ResultPolicy.on_over/1` is `:file` — so
+    # `admit/3` cannot answer `{:refuse, _}` and there is no arm for it. A
+    # `:refuse` would mean the policy changed for this tool, which should crash
+    # rather than fall through to a refusal nobody wrote.
     case ResultPolicy.admit(json, limit, ResultPolicy.on_over(tc.name)) do
       {:inline, _size} ->
         json
@@ -441,9 +446,6 @@ defmodule Nest.Agents.Agent.BatchPlan do
           {:ok, pointer} -> pointer
           :error -> ResultPolicy.offload_failure(size)
         end
-
-      {:refuse, size} ->
-        ResultPolicy.refusal(size, limit, tc.name)
     end
   end
 

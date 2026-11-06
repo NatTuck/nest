@@ -165,8 +165,6 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSizeOracle do
     end
   end
 
-  def read_file_projection(_, _ctx), do: summary_baseline_size() * @safety_padding
-
   def summary_baseline_size do
     estimator_overhead("[error placeholder]")
   end

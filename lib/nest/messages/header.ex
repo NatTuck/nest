@@ -240,9 +240,11 @@ defmodule Nest.Messages.Header do
     * **otherwise the name it carries** — an *address* (`Nest.Address`) is a
       human's, which is how a note to a human is delivered and what a reply is
       sent to; a bare name is an agent's and is not folded, because it is an
-      identifier rather than a written address, so `"Nat"` reads as that agent.
-      A spawn kickoff lands here: a `kind: :user` entry that nobody typed, from
-      the spawning agent.
+      identifier rather than a written address, so `"nat-2"` reads as that
+      agent. A spawn kickoff lands here: a `kind: :user` entry that nobody
+      typed, from the spawning agent. (A name outside the grammar — `"Nat"` — is
+      *refused* by `line/3` rather than folded; see the grammar above. This
+      function answers "who", not "is it writable".)
 
   The sigil is how you *address* somebody in a tool argument; it is not how a
   row that already knows its speaker is a human gets labelled. Both roads end at

@@ -3,21 +3,23 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
   Tests for the LobbyChannel `providers/0` serializer and the
   `save_providers` handler.
 
-  Runs `async: true`. Neither dependency is a global:
+  Runs `async: false`: the `"lobby"` PubSub topic is process-global, so any save
+  broadcasts into every other joined test's mailbox.
 
-    * The model-cache `rescan/0` is stubbed per-test and made visible
-      to the channel process with `Mimic.allow/3`, the same private-mode
-      pattern the other lobby channel tests use.
-    * The writer's target `local.toml` path is injected by stubbing
-      `Nest.DotConfig.local_file/0`, instead of setting the
-      process-global `:local_config_file` app env (which leaked the
-      temp file into every concurrently-running `DotConfig.load/0`
-      caller).
+  That is the one global here, and it is unavoidable — `Providers.save/2` must
+  announce a save on the topic the lobby's clients listen to. `ChannelTest`
+  delivers every broadcast on a joined topic to that test's process, so a
+  concurrent test's save can be the first `providers_updated` frame a test sees
+  (`mix test --seed 805575` was the seed that showed it). Everything else is
+  per-test: the model-cache `rescan/0` is stubbed and made visible with
+  `Mimic.allow/3`, and the writer's target `local.toml` is injected by stubbing
+  `Nest.DotConfig.local_file/0` rather than through the process-global
+  `:local_config_file` app env.
 
   Each test gets its own uniquely-named temp file, removed on exit.
   """
 
-  use NestWeb.ChannelCase, async: true
+  use NestWeb.ChannelCase, async: false
 
   alias Nest.Accounts
   alias Nest.Accounts.Invite, as: InviteSchema

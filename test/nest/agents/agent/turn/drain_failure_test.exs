@@ -21,6 +21,10 @@ defmodule Nest.Agents.Agent.Turn.DrainFailureTest do
   alias Nest.TextFixtures
 
   test "a batch that cannot be admitted is a visible error and stays queued" do
+    # Both drain shapes: the follow one (the machine decides what to do with the
+    # content) and the loop breaker's append one. The append shape's error arm is
+    # the one that used to pass the peek's error tuple on as the message's
+    # content, so it is asserted here rather than left to the follow path.
     # intentional: over the inline cap *and* unfilable, so there is nothing to
     # deliver. `Drain.failed/2` answers with a visible error and an untouched
     # queue — inlining over the budget or dropping the batch would each lose the
@@ -49,12 +53,21 @@ defmodule Nest.Agents.Agent.Turn.DrainFailureTest do
         # frame said otherwise.
         assert next.live.inbox == [peer]
         refute_received {:chat_inbox, _}
+
+        # The loop breaker's shape, on the same queue: same admission, same
+        # answer.
+        {appended, nil} = Executor.run_all([{:drain_inbox, :append}], state)
+        assert appended.live.inbox == [peer]
+        refute_received {:chat_inbox, _}
       end)
 
     # The frame the channel forwards to the browser as `chat:error`, and the line
     # the server logs: both name the reason.
     assert_receive {:chat_error, %{content: content}}, 1_000
     assert content =~ "could not be written"
+
+    # One frame per drain shape, and the same sentence in both.
+    assert_receive {:chat_error, %{content: ^content}}, 1_000
     assert log =~ "could not be written"
   end
 

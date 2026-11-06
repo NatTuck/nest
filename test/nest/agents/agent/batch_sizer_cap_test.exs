@@ -23,6 +23,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
 
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.BatchSizer.ProjectedSize
+  alias Nest.Agents.Agent.ResultPolicy
 
   alias Nest.LLM.Tool
   alias Nest.Messages.Assistant
@@ -329,6 +330,76 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       # had measured, and the body is 40 000 bytes either way.
       assert content =~ "saved to"
       assert byte_size(content) < 1_000
+    end
+  end
+
+  describe "the admission's failure paths" do
+    # `cook/2` admits every result through `ResultPolicy`, and a result over its
+    # limit is filed. These are the two ways that can go wrong: the scratch write
+    # fails, and the lossy view of a binary is empty.
+    setup do
+      dir =
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
+          "batchsizer-admit-#{System.unique_integer([:positive])}"
+        ])
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> rm_tmp!(dir, "batchsizer-admit-") end)
+      {:ok, tmp_dir: dir}
+    end
+
+    test "a text result that cannot be filed is an error naming the size" do
+      # No scratch dir, so `Overflow.substitute/5` cannot write: the result
+      # becomes an error rather than an inline copy over the budget.
+      c = ctx([], context_limit: 100)
+      big = TextFixtures.big_text(40_000)
+
+      # The turn logs the error result it produced; that is the line captured
+      # here, asserted rather than silenced.
+      log =
+        capture_log(fn ->
+          assert [%ToolResult{is_error: true, content: content}] =
+                   BatchSizer.cook([{call("c1", "agents-query", %{}), :ok, big}], c)
+
+          assert content == ResultPolicy.offload_failure(Estimator.estimate(big))
+          assert content =~ "could not be written"
+        end)
+
+      assert log =~ "BatchSizer produced is_error=true tool result"
+      assert log =~ "agents-query"
+    end
+
+    test "a non-text result that cannot be filed is an error too" do
+      # The same failure on the binary path, which writes with `Overflow.write/5`
+      # rather than `substitute/5` — one place each, both saying so.
+      c = ctx([], context_limit: 100)
+
+      log =
+        capture_log(fn ->
+          assert [%ToolResult{is_error: true, content: content}] =
+                   BatchSizer.cook([{call("c1", "shell-cmd", %{}), :ok, <<0, 1, 2, 0, 255>>}], c)
+
+          assert content =~ "could not be written"
+        end)
+
+      assert log =~ "BatchSizer produced is_error=true tool result"
+      assert log =~ "shell-cmd"
+    end
+
+    test "a small binary's lossy view rides along with its pointer", %{tmp_dir: tmp_dir} do
+      # Every byte is NUL, and NUL is replaced rather than dropped — so the view
+      # is never empty, and a small binary always shows one after the pointer.
+      c = ctx([], context_limit: 100_000, tmp_path: tmp_dir)
+
+      assert [%ToolResult{is_error: false, content: content}] =
+               BatchSizer.cook([{call("c1", "shell-cmd", %{}), :ok, <<0, 0, 0, 0>>}], c)
+
+      assert content =~ "saved to"
+      assert content =~ "\n\n"
+      assert content =~ "\uFFFD"
     end
   end
 

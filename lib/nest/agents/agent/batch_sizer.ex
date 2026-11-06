@@ -230,14 +230,6 @@ defmodule Nest.Agents.Agent.BatchSizer do
     Budget.size(ctx.messages || []) + ceil(projected)
   end
 
-  @doc """
-  The content budget left in a context: `L - C - size(messages)`.
-
-  Delegates to `Nest.Agents.Agent.ResultPolicy.window/1`; `:none` when there is
-  no usable window at all.
-  """
-  defdelegate window(ctx), to: ResultPolicy
-
   # ---- Phase 1: per-tool projected sizes (pre-execution) ----
   #
   # The per-tool projection and the batch sum both live in
@@ -506,12 +498,11 @@ defmodule Nest.Agents.Agent.BatchSizer do
     end
   end
 
-  defp binary_view(pointer, content) do
-    case Overflow.to_valid_utf8(content) do
-      "" -> pointer
-      body -> pointer <> "\n\n" <> body
-    end
-  end
+  # The lossy view of a small binary, appended to its pointer. There is no
+  # empty-view branch: `to_valid_utf8/1` never answers `""` for a non-empty
+  # binary — every byte it cannot read becomes a replacement character — and an
+  # empty one is text, so it never reaches `admit_binary/5` at all.
+  defp binary_view(pointer, content), do: pointer <> "\n\n" <> Overflow.to_valid_utf8(content)
 
   # Media gets its own wording because the remedy differs: the model cannot
   # retry with a smaller `max_result_tokens` and get a summarized image, so it

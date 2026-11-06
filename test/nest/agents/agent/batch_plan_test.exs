@@ -144,6 +144,37 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
     end
   end
 
+  describe "assemble/3's admission" do
+    # `assemble/3` is the `agents-batch` aggregate's one admission: it goes
+    # through `ResultPolicy` like every other result, so the aggregate is filed
+    # when it does not fit. These are the two outcomes of that filing.
+    @big String.duplicate("x", 40_000)
+
+    test "an aggregate that cannot be filed says so, and one that can is a pointer",
+         %{tmp: tmp} do
+      tc = %ToolCall{id: "c1", name: "agents-batch", arguments: %{}}
+
+      # A spent window: `window/1` answers `:none`, the budget is floored at 0,
+      # and the aggregate is over its limit. With no scratch dir it cannot be
+      # filed, so the model is told the content is unavailable.
+      spent = %{
+        context_limit: 100,
+        messages: [{:user, %Nest.Messages.User{parts: [%Nest.Messages.Part.Text{text: @big}]}}],
+        mounts: Mounts.new(nil, nil)
+      }
+
+      failure = BatchPlan.assemble(spent, tc, [@big])
+      assert failure =~ "could not be written"
+
+      # With a scratch dir it is filed: a pointer naming the batch, not the JSON.
+      writable = %{spent | mounts: Mounts.new(nil, tmp)}
+      pointer = BatchPlan.assemble(writable, tc, [@big])
+
+      assert pointer =~ "Batch of 1 results"
+      assert pointer =~ "saved to"
+    end
+  end
+
   describe "render/3" do
     test "an empty template renders the item verbatim" do
       assert BatchPlan.render("", 0, "the raw item") == "the raw item"

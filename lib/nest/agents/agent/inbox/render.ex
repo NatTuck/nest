@@ -113,13 +113,13 @@ defmodule Nest.Agents.Agent.Inbox.Render do
     case offload(content, length(entries), Delivery.batch_id(entries), state) do
       # Inlined: the delivered row *is* the batch's own rendering, so there is
       # no separate part list to state — `nil` says "render the batch".
-      {:ok, ^content} ->
+      {:inline, _content} ->
         {:ok, content, nil}
 
       # Offloaded: the pointer is the runtime's own sentence about the batch, so
       # the row says `nest runtime` and is one text part with no command output.
       # The file it points at keeps the whole rendered batch, headers and all.
-      {:ok, pointer} ->
+      {:filed, pointer} ->
         text = Header.put(pointer, :runtime, mode)
         {:ok, text, [{:text, text}]}
 
@@ -142,12 +142,12 @@ defmodule Nest.Agents.Agent.Inbox.Render do
     content = text_of(user)
 
     case offload(content, 0, nil, state) do
-      {:ok, ^content} ->
+      {:inline, _content} ->
         {:ok, message}
 
       # The pointer replaced the message's own text — including its header — so
       # the row states the runtime, which is who is saying "it was too large".
-      {:ok, pointer} ->
+      {:filed, pointer} ->
         text = Header.put(pointer, :runtime, state.live.mode)
         {:ok, {:user, %{user | parts: [%Part.Text{text: text}]}}}
 
@@ -276,6 +276,9 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   # written to the agent's scratch dir with a pointer when it does not. A write
   # that fails is its own error — the caller keeps the batch queued and says so,
   # rather than inlining something over the budget or dropping it.
+  # The outcome is **tagged**, so a caller does not have to compare strings to
+  # tell "delivered whole" from "filed" — the seam's claim, in the shape of the
+  # code.
   defp offload(content, count, id, state) do
     # The message cap is intrinsic: it is about how much a single body may
     # carry, not about how full the conversation is. A message over it is filed,
@@ -284,9 +287,14 @@ defmodule Nest.Agents.Agent.Inbox.Render do
     # decision (and so a compaction) is for.
     limit = Config.configured_async_message_max_tokens()
 
+    # `:file` is the policy this path decides with, so `admit/3` answers
+    # `{:inline, _}` or `{:file, _}` and nothing else: `{:refuse, _}` comes from
+    # `on_over/1`, which this call does not use (the message cap is a size bound,
+    # not a tool's policy). A `{:refuse, _}` here would mean that changed, and a
+    # `CaseClauseError` is the right answer to it.
     case ResultPolicy.admit(content, limit, :file) do
       {:inline, _size} ->
-        {:ok, content}
+        {:inline, content}
 
       {:file, size} ->
         case Overflow.write(
@@ -297,11 +305,8 @@ defmodule Nest.Agents.Agent.Inbox.Render do
                id
              ) do
           nil -> {:error, ResultPolicy.offload_failure(size)}
-          path -> {:ok, pointer(count, path)}
+          path -> {:filed, pointer(count, path)}
         end
-
-      {:refuse, size} ->
-        {:error, ResultPolicy.refusal(size, limit, "queued message")}
     end
   end
 

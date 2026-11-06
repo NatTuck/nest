@@ -50,10 +50,14 @@ defmodule Nest.Agents.Agent.SubAgentResults do
   @spec bound(String.t(), ToolCall.t(), map()) :: String.t()
   def bound(content, %ToolCall{} = tc, %{context_limit: limit} = ctx)
       when is_integer(limit) and limit > 0 do
+    # The one caller is `ToolLoop`'s `agents-history` result, whose
+    # `ResultPolicy.on_over/1` is `:file` — so `decision/3` cannot answer
+    # `{:refuse, _}` here, and there is no arm for it. A `:refuse` would mean the
+    # policy changed for this caller, and that should crash rather than fall
+    # through to a refusal nobody wrote.
     case decision(content, tc, ctx) do
       {:inline, _size} -> content
       {:file, size} -> substitute(content, tc, ctx, size)
-      {:refuse, size} -> refusal(tc, ctx, size)
     end
   end
 
@@ -64,8 +68,6 @@ defmodule Nest.Agents.Agent.SubAgentResults do
   end
 
   defp inline(tc, ctx), do: ResultPolicy.limit(tc, budget(ctx))
-
-  defp refusal(tc, ctx, size), do: ResultPolicy.refusal(size, inline(tc, ctx), tc.name)
 
   defp budget(ctx) do
     case ResultPolicy.window(ctx) do
