@@ -22,9 +22,12 @@ defmodule Nest.Agents.Agent.ResultPolicy do
       a pointer + short preview (`Nest.Agents.Agent.BatchSizer.Overflow`). Every
       tool whose output exists nowhere else, and every message.
     * `:refuse` — a size-hint error instead, for content that is already at an
-      address the model named: `file-read` (its path) and `agents-history` (its
-      index range). A second copy would be redundant, and the model can narrow
-      the read.
+      address the model named: `file-read` (its path). A second copy would be
+      redundant, and the model can narrow the read. It is `file-read`'s policy
+      **alone** (`on_over/1`), and the one `{:refuse, _}` arm left in the tree is
+      `BatchSizer.admit_text/5`; the other result paths (`BatchPlan`,
+      `SubAgentResults`, `Inbox.Render`) all file, so their `case` has no
+      `:refuse` arm and would crash rather than invent a refusal.
 
   `file-read` also carries a larger default: a quarter of all reads exceed the
   8k floor, and a refusal costs a round trip where a substitution costs a file.
