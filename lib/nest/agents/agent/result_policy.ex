@@ -140,7 +140,15 @@ defmodule Nest.Agents.Agent.ResultPolicy do
     "#{label(name)} is #{size} tokens, which exceeds your limit of #{limit}."
   end
 
-  @doc "A short label for a tool's result, used by the pointer and the refusal."
+  @doc """
+  A short label for a tool's result, used by the pointer and the refusal.
+
+  The tool's **name**, deliberately, and not its arguments: a label that spelled
+  the call (`Output of shell-wait job-7`) repeated what the preceding
+  `tool_use` part already carries, and it grew without bound with the argument
+  it quoted. The call itself is one part earlier in the transcript; this names
+  which tool produced the output and stops there.
+  """
   @spec label(String.t()) :: String.t()
   def label(name), do: "Output of #{name}"
 end

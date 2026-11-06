@@ -108,6 +108,26 @@ defmodule Nest.Agents.Agent.ResultPolicyTest do
     end
   end
 
+  test "offload_failure/1 says the content is gone, and that re-running is the way back" do
+    # Reached when the scratch write fails: there is no pointer to give, so the
+    # model is told the content is unavailable — not that it was inlined (it was
+    # not) and not that it is on disk (it is not). It names the size so the model
+    # can tell how far over the cap it was.
+    assert ResultPolicy.offload_failure(9_000) ==
+             "Result of ~9000 tokens could not be included inline and could not be written " <>
+               "to a scratch file. The content is unavailable; re-run the call if you still " <>
+               "need it."
+  end
+
+  test "label/1 names the tool, not the call it was made with" do
+    # The arguments are one part earlier, in the `tool_use` the label follows, so
+    # a label that spelled them (`Output of shell-wait job-7`) repeated the
+    # transcript and grew with whatever the argument quoted. This names which
+    # tool produced the output and stops there.
+    assert ResultPolicy.label("shell-wait") == "Output of shell-wait"
+    assert ResultPolicy.label("file-read") == "Output of file-read"
+  end
+
   test "refusal/3 keeps file-read's wording and names the limit for others" do
     assert ResultPolicy.refusal(33_000, 32_000, "file-read") ==
              "File is 33000 tokens which exceeds your requested limit of 32000."

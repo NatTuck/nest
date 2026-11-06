@@ -100,6 +100,37 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       assert file =~ "hello world"
       assert file =~ "[From agent peer | mode: act]"
     end
+
+    test "a batch that is over the cap and cannot be filed is an error, not an inline copy" do
+      # The same rule `admit_single/2` follows: nothing is inlined over the
+      # budget to rescue the drain, and nothing is dropped. The caller keeps the
+      # batch queued and surfaces the reason (`Turn.Drain.failed/2`).
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "inbox-batch-no-write-#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(dir)
+
+      on_exit(fn ->
+        # The directory is made unwritable below, so cleanup has to be able to
+        # open it again.
+        File.chmod(dir, 0o700)
+        rm_tmp!(dir, "inbox-batch-no-write-")
+      end)
+
+      # A read-only directory: the scratch write fails every time, so the
+      # outcome does not depend on timing or on trying it again.
+      File.chmod!(dir, 0o500)
+
+      state = %Agent{name: "batch-no-write", space_id: 1, mounts: Mounts.new(nil, dir)}
+      first = %{entry(:agent, "peer", "hello world", nil, "firstid") | content: @oversized}
+
+      assert {:error, reason} = Render.combine_and_offload([first], state)
+      assert reason =~ "could not be written"
+      assert reason =~ "tokens"
+    end
   end
 
   describe "admit_single/2" do

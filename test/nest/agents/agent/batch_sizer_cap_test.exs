@@ -320,8 +320,15 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       # Substituted, not kept full: with no budget left `Overflow.substitute/5`
       # returns its pointer form. The claim is that it did not raise and did not
       # keep the 40 000-byte body.
+      #
+      # The bound is `1_000` and not "much smaller than the body", because the
+      # pointer has a known shape: one sentence plus the scratch path. Measured
+      # on this host it is 908 bytes, so the headroom is the path — the only
+      # part whose length varies (the temp dir). It was loosened to 2_000 once;
+      # 2_000 is not the real bound, it is the real bound plus a slack nobody
+      # had measured, and the body is 40 000 bytes either way.
       assert content =~ "saved to"
-      assert byte_size(content) < 2_000
+      assert byte_size(content) < 1_000
     end
   end
 
