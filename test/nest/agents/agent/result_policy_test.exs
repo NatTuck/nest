@@ -101,10 +101,15 @@ defmodule Nest.Agents.Agent.ResultPolicyTest do
   end
 
   describe "on_over/1" do
-    test "only file-read refuses" do
+    test "only file-read refuses, and refusal/3 is that refusal's wording" do
       assert ResultPolicy.on_over("file-read") == :refuse
       assert ResultPolicy.on_over("shell-cmd") == :file
       assert ResultPolicy.on_over("agents-history") == :file
+
+      # `file-read` is the one refusal, so this is the one sentence a refusal
+      # says: the size, and the knob that would have let the read through.
+      assert ResultPolicy.refusal(33_000, 32_000, "file-read") ==
+               "File is 33000 tokens which exceeds your requested limit of 32000."
     end
   end
 
@@ -126,13 +131,5 @@ defmodule Nest.Agents.Agent.ResultPolicyTest do
     # tool produced the output and stops there.
     assert ResultPolicy.label("shell-wait") == "Output of shell-wait"
     assert ResultPolicy.label("file-read") == "Output of file-read"
-  end
-
-  test "refusal/3 keeps file-read's wording and names the limit for others" do
-    assert ResultPolicy.refusal(33_000, 32_000, "file-read") ==
-             "File is 33000 tokens which exceeds your requested limit of 32000."
-
-    assert ResultPolicy.refusal(9_000, 8_000, "shell-cmd") ==
-             "Output of shell-cmd is 9000 tokens, which exceeds your limit of 8000."
   end
 end

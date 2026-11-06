@@ -131,16 +131,15 @@ defmodule Nest.Agents.Agent.ResultPolicy do
   @doc """
   The size-hint error for a `:refuse` policy.
 
-  `file-read`'s wording is its own: it is the one refusal the model meets
-  routinely, and it names the knob that would have let the read through.
+  `file-read` is the only tool that refuses (`on_over/1`), so this is its
+  wording: it is the refusal the model meets routinely, and it names the knob
+  that would have let the read through. The head matches the tool's name so a
+  tool that starts refusing fails here — loudly, in this function — rather than
+  borrowing a sentence written about a file.
   """
   @spec refusal(non_neg_integer(), non_neg_integer(), String.t()) :: String.t()
   def refusal(size, limit, "file-read") do
     "File is #{size} tokens which exceeds your requested limit of #{limit}."
-  end
-
-  def refusal(size, limit, name) do
-    "#{label(name)} is #{size} tokens, which exceeds your limit of #{limit}."
   end
 
   @doc """
