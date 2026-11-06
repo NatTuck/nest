@@ -65,13 +65,16 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
     test "preflight compares projected_content_size/2 plus the reserve against the limit" do
       calls = [call("c1", "shell-cmd")]
 
-      # Content is tiny, but the 8_192 reserve floor does not fit in a
-      # 100-token window: content alone would fit, content + reserve does
-      # not, and `preflight/2` is what adds the reserve.
+      # Content is one substitute — a pointer plus its preview, which is what a
+      # `shell-cmd` result costs at minimum — but the 8_192 reserve floor does
+      # not fit in a 100-token window: content alone would fit, content +
+      # reserve does not, and `preflight/2` is what adds the reserve.
       c = ctx([], context_limit: 100)
       content = BatchSizer.projected_content_size(calls, c)
 
-      assert content < 100
+      # At least one substitute, with the 20% projection margin on top of it.
+      assert content >= Overflow.substitute_size()
+      assert content < 8_192
       assert content + Reserve.compaction_reserve(100) > 100
       assert {:refuse, _} = BatchSizer.preflight(calls, c)
 
@@ -189,7 +192,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       # Preflight passed (summary+reserve fit); post-execution
       # decided to summarize (full output didn't fit).
       assert result.is_error == false
-      assert result.content =~ "Command output of 'cat foo'"
+      assert result.content =~ "Output of shell-cmd"
       assert result.content =~ "saved to"
       assert result.content =~ Sandbox.sandbox_tmp_path(dir)
       refute result.content =~ dir
@@ -342,14 +345,13 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       assert read_saved(dir, content) == raw
     end
 
-    test "an exhausted batch budget keeps the pointer and drops the inline view", %{} do
-      # A small binary normally inlines `pointer <> "\n\n" <> body`. When
-      # the running batch budget is already spent, the result is trimmed to
-      # the caller-supplied marker instead: the `pointer` (which names the
-      # scratch file and byte count) plus a note that the inline lossy view
-      # was dropped. `execute/2` runs the tool; `cook/2` applies the budget
-      # pass against an exhausted limit (preflight would refuse a limit this
-      # small, so `run/2` cannot reach this branch).
+    test "an exhausted batch budget still keeps a tiny binary's lossy view", %{} do
+      # A small binary inlines `pointer <> "\n\n" <> body`, and that is
+      # budget-independent: the pointer names the scratch file and the byte
+      # count, the lossy view is at most `@small_binary_max_bytes`, and
+      # trimming it would cost more than it saves. `execute/2` runs the tool;
+      # `cook/2` admits the result against an exhausted window (preflight would
+      # refuse a limit this small, so `run/2` cannot reach this branch).
       raw = <<"OK", 0x1F, 0x8B, 0x08, 0x00, 0xFF>>
       dir = tmp_dir_for_test()
       tools = [binary_tool(raw)]
@@ -365,9 +367,8 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       assert content =~ "saved to "
       assert content =~ Sandbox.sandbox_tmp_path(dir)
       refute content =~ dir
-      assert content =~ "inline view elided"
-      # The inline lossy view is exactly what got dropped.
-      refute content =~ Overflow.to_valid_utf8(raw)
+      # The lossy view rides along: it is the only place these bytes are readable.
+      assert content =~ Overflow.to_valid_utf8(raw)
 
       # The scratch file still holds the original raw bytes.
       assert read_saved(dir, content) == raw

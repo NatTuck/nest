@@ -141,7 +141,7 @@ defmodule Nest.TestSupport.MachineTestHelpers do
 
   def sample_event(:chat_request), do: {:chat_request, {:user_message, user()}}
   def sample_event(:iterate), do: :iterate
-  def sample_event(:inbox_drain), do: {:inbox_drain, [], "queued"}
+  def sample_event(:inbox_drain), do: {:inbox_drain, [], "queued", nil}
   def sample_event(:http_ok), do: {:http_ok, make_ref(), response()}
   def sample_event(:http_error), do: {:http_error, make_ref(), :boom}
   def sample_event(:worker_crashed), do: {:worker_crashed, make_ref(), %RuntimeError{}, []}

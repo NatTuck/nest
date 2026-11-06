@@ -284,7 +284,7 @@ defmodule MachineDebtTest do
       assert Machine.owed_senders(resting) == []
 
       {:ok, drain_actions, next} =
-        Machine.step(resting, {:inbox_drain, [query_entry("bob")], "queued query"})
+        Machine.step(resting, {:inbox_drain, [query_entry("bob")], "queued query", nil})
 
       assert Enum.any?(drain_actions, &match?({:append, _}, &1))
       assert next.owed_replies == %{"bob" => 0}

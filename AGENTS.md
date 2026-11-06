@@ -181,6 +181,8 @@ unless you have a concrete reason to believe that there's some external reason
 why we expect things to take a specific amount of time. A test unexpectedly
 hitting a timeout, even occasionally, means the test is critically broken and
 needs to be fixed so it's not timing-dependent.
+- No loops to sample random or non-deterministic behavior. If trying something
+once isn't enough to test it you must not try it multiple times instead.
 
 ### Test Coverage
 

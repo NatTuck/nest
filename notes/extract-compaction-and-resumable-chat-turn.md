@@ -1,5 +1,10 @@
 # Extract compaction from the chat task; replace per-iteration preflight with deterministic tool-size accounting
 
+> **Historical.** The 80%-of-remaining inline share described below was
+> replaced by `ResultPolicy`'s `min(requested, budget)` (a per-tool default the
+> model may raise) and the path-and-head substitute by a pointer plus a fixed
+> preview. See `notes/no-truncation-or-overflow.md`.
+
 ## Implementation status
 
 The BatchSizer core is landed and all existing tests pass (`mix precommit`

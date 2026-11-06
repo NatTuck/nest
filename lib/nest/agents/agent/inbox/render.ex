@@ -61,10 +61,12 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   headering the first segment of every entry, and which the segments cannot
   break, because the first segment's first line is the body's first line.
 
-  The **offload** is the one case with no marker: the pointer replaced the
-  whole text, so the row is one text part and carries no `"commandOutputParts"`
-  at all (`delivered_parts/3` detects it by the delivered content no longer
-  being the batch's rendering).
+  The **offload** is the one case with no command output: the pointer replaced
+  the whole text, and the pointer is the runtime's own sentence — so the row is
+  one text part carrying the runtime's header, and no `"commandOutputParts"` at
+  all. Which row it is is **stated** by `combine_and_offload/2` rather than
+  inferred from the content afterwards (issue #147): it hands back the delivered
+  parts, so nothing has to re-render the batch and compare.
 
   `build_drained_message/3` is the seam's other half: the one place a drained
   batch becomes the message the transcript carries, so the batch's metadata —
@@ -78,6 +80,7 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Inbox.Delivery
+  alias Nest.Agents.Agent.ResultPolicy
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Messages.Header
   alias Nest.Messages.MessageList
@@ -85,22 +88,84 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   alias Nest.Messages.Segment
   alias Nest.Messages.User
   alias Nest.Sandbox.Mounts
-  alias Nest.Tokens.Estimator
 
   @doc """
-  Combine one drain batch and, when over the async-message cap, offload the
-  text to the agent scratch dir. Returns the content string to deliver.
+  Combine one drain batch and admit it: whole when it fits, offloaded to the
+  agent scratch dir when it does not. Returns the content to deliver.
+
+  `{:error, reason}` means the batch was too large to inline and could not be
+  written either — the caller must leave the entries queued and surface the
+  reason. Nothing is ever inlined over the budget and nothing is dropped.
+
   Used by the turn executor's drain actions, which pass `Inbox.batch/1`'s
   selection so the entries rendered are exactly the entries consumed.
   """
-  @spec combine_and_offload([map()], Agent.t()) :: String.t()
+  @spec combine_and_offload([map()], Agent.t()) ::
+          {:ok, String.t(), [Segment.t()] | nil} | {:error, String.t()}
   def combine_and_offload(entries, state) do
     # `state.live.mode` is the mode the turn will run in — the drain applies the
     # batch's own request before it renders (see `Turn.Executor.peek_inbox/1`) —
     # so a peer delivery's header states the mode the *recipient* is about to
     # work under, which is what every message an agent receives has to say.
-    offload(combine(entries, state.live.mode), entries, state)
+    mode = state.live.mode
+    content = combine(entries, mode)
+
+    case offload(content, length(entries), Delivery.batch_id(entries), state) do
+      # Inlined: the delivered row *is* the batch's own rendering, so there is
+      # no separate part list to state — `nil` says "render the batch".
+      {:inline, _content} ->
+        {:ok, content, nil}
+
+      # Offloaded: the pointer is the runtime's own sentence about the batch, so
+      # the row says `nest runtime` and is one text part with no command output.
+      # The file it points at keeps the whole rendered batch, headers and all.
+      {:filed, pointer} ->
+        text = Header.put(pointer, :runtime, mode)
+        {:ok, text, [{:text, text}]}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
+
+  @doc """
+  Admit one message: whole when it fits, offloaded to the agent's scratch dir
+  when it does not.
+
+  The single-message path (`ChatPipeline.handle_chat`) and the drain share this
+  rule; they differ only in what the pointer says, because a batch pointer has
+  to say how many bodies the file holds. A message is never inlined over the
+  budget and never dropped.
+  """
+  @spec admit_single(term(), Agent.t()) :: {:ok, term()} | {:error, String.t()}
+  def admit_single({:user, %User{} = user} = message, state) do
+    content = text_of(user)
+
+    case offload(content, 0, nil, state) do
+      {:inline, _content} ->
+        {:ok, message}
+
+      # The pointer replaced the message's own text — including its header — so
+      # the row states the runtime, which is who is saying "it was too large".
+      {:filed, pointer} ->
+        text = Header.put(pointer, :runtime, state.live.mode)
+        {:ok, {:user, %{user | parts: [%Part.Text{text: text}]}}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def admit_single(message, _state), do: {:ok, message}
+
+  defp text_of(%User{parts: parts}) when is_list(parts) do
+    Enum.map_join(parts, "", fn
+      %Part.Text{text: text} -> text || ""
+      _other -> ""
+    end)
+  end
+
+  defp text_of(%User{}), do: ""
 
   @doc """
   The user message a drained batch is delivered as.
@@ -114,17 +179,21 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   (`MessageList.backgrounded_results/1`).
 
   The row's text is `content` — the caller has already used it for the fit
-  check and the offload — and the parts are `delivered_parts/3`'s, whose join is
-  `content` in every case. Which of them are command output is stated by
-  `User.command_output_metadata/1`, the only writer of that key.
+  check and the offload — and `parts` is what `combine_and_offload/2` handed
+  back, whose join is `content` in every case. Which of them are command output
+  is stated by `User.command_output_metadata/1`, the only writer of that key.
 
   The single writer of that marker, so every drain shape builds its message here
   — including the backgrounding path, which delivers a *notice* entry when one
   was queued while another batch executed.
   """
-  @spec build_drained_message([map()], String.t(), String.t()) :: {:user, User.t()}
-  def build_drained_message(entries, content, mode) do
-    parts = delivered_parts(entries, content, mode)
+  @spec build_drained_message([map()], String.t(), [Segment.t()] | nil, String.t()) ::
+          {:user, User.t()}
+  def build_drained_message(entries, content, parts, mode) do
+    # `parts` is what `combine_and_offload/2` stated: `nil` when the batch was
+    # inlined (the row is the batch's own rendering), the pointer row when it was
+    # not. Nothing is re-rendered to find out which.
+    parts = parts || parts(entries, mode)
 
     metadata =
       entries
@@ -202,39 +271,48 @@ defmodule Nest.Agents.Agent.Inbox.Render do
   # rides each entry's last segment, keeping that segment's kind, so an entry
   # that ends in command output still ends in command output — otherwise the
   # client would render its last line as markdown.
-  # The delivered row's segments: the batch's own rendering, unless the delivered
-  # content is not that rendering — which happens exactly when the batch was
-  # offloaded. The pointer replaced the whole text, so there is no command output
-  # in it to mark, and the row is one text part with no `"commandOutputParts"`.
-  #
-  # The mode matters here because it is what the headers state: the comparison is
-  # against the same rendering `combine_and_offload/2` produced, headers and all.
-  defp delivered_parts(entries, content, mode) do
-    rendered = parts(entries, mode)
+  # The same admission the tool results get, with `requested` being the
+  # configured async-message cap: the content is inlined whole when it fits, and
+  # written to the agent's scratch dir with a pointer when it does not. A write
+  # that fails is its own error — the caller keeps the batch queued and says so,
+  # rather than inlining something over the budget or dropping it.
+  # The outcome is **tagged**, so a caller does not have to compare strings to
+  # tell "delivered whole" from "filed" — the seam's claim, in the shape of the
+  # code.
+  defp offload(content, count, id, state) do
+    # The message cap is intrinsic: it is about how much a single body may
+    # carry, not about how full the conversation is. A message over it is filed,
+    # because a large paste must not force a compaction; a message under it is
+    # delivered whole and the *conversation* being full is what the fit
+    # decision (and so a compaction) is for.
+    limit = Config.configured_async_message_max_tokens()
 
-    if Enum.map_join(rendered, "", &elem(&1, 1)) == content,
-      do: rendered,
-      else: [{:text, content}]
+    # `:file` is the policy this path decides with, so `admit/3` answers
+    # `{:inline, _}` or `{:file, _}` and nothing else: `{:refuse, _}` comes from
+    # `on_over/1`, which this call does not use (the message cap is a size bound,
+    # not a tool's policy). A `{:refuse, _}` here would mean that changed, and a
+    # `CaseClauseError` is the right answer to it.
+    case ResultPolicy.admit(content, limit, :file) do
+      {:inline, _size} ->
+        {:inline, content}
+
+      {:file, size} ->
+        case Overflow.write(
+               content,
+               %{mounts: Mounts.from_agent(state)},
+               "agent-inbox",
+               "txt",
+               id
+             ) do
+          nil -> {:error, ResultPolicy.offload_failure(size)}
+          path -> {:filed, pointer(count, path)}
+        end
+    end
   end
 
-  # Over the configured cap, write the full combined text to the agent's
-  # scratch dir and return a pointer. If the write fails, fall back to
-  # the full text so no messages are lost.
-  defp offload(content, entries, state) do
-    if Estimator.estimate(content) > Config.configured_async_message_max_tokens() do
-      case Overflow.write(
-             content,
-             %{mounts: Mounts.from_agent(state)},
-             "agent-inbox",
-             "txt",
-             Delivery.batch_id(entries)
-           ) do
-        nil -> content
-        path -> pointer(length(entries), path)
-      end
-    else
-      content
-    end
+  defp pointer(0, path) do
+    "Your message was too large to include inline and was saved to #{path}. " <>
+      "Read that file to see it."
   end
 
   defp pointer(1, path) do

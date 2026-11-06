@@ -8,11 +8,11 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
   (we never truncate a result to fit).
 
   Per `notes/no-truncation-or-overflow.md`:
-    * `usable = context_limit - estimate_messages(messages) - reserve`
-    * `default_cap = floor(usable * 0.80)`
-    * `effective_cap = min(LLM_override, default_cap)` (LLM may only lower)
-    * When exceeded: `shell_cmd` → path-and-head summary,
-      `read_file` → structured error, others → path-and-head substitute.
+    * `budget = context_limit - estimate_messages(messages) - reserve`
+    * `requested = max_result_tokens || the tool's default`
+    * `limit = min(requested, budget)` — there is no share of the window
+    * When exceeded: every tool but `file-read` is filed and replaced by a
+      pointer + preview; `file-read` gets a structured error.
   """
 
   use ExUnit.Case, async: true
@@ -23,7 +23,8 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
 
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.BatchSizer.ProjectedSize
-  alias Nest.Agents.Agent.CapCalculator
+  alias Nest.Agents.Agent.ResultPolicy
+
   alias Nest.LLM.Tool
   alias Nest.Messages.Assistant
   alias Nest.Messages.ToolCall
@@ -82,16 +83,16 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
 
     # Defaults summary for these tests:
     #
-    # * cap = min(LLM override, floor(usable * 0.80)), where
-    #   usable = context_limit - size(messages) - reserve.
-    # * `context_limit: 100_000` leaves 80_000 usable, so the default cap is
-    #   64_000 — far above these outputs, so the `max_result_tokens: 100`
+    # * limit = min(requested, budget), where
+    #   budget = context_limit - size(messages) - reserve.
+    # * `context_limit: 100_000` leaves 80_000 of budget, so the 8_000-token
+    #   default is far above these outputs and the `max_result_tokens: 100`
     #   override is the only thing that bites.
-    # * `context_limit: 20_000` leaves 11_808 usable (the 8_192-token reserve
-    #   dominates), so the default cap is 9_446 — which the `max_result_tokens:
-    #   100_000` override is clamped to.
+    # * `context_limit: 20_000` leaves 11_808 (the 8_192-token reserve
+    #   dominates), so an override above 11_808 is capped by the budget — never
+    #   by the default.
 
-    test "LLM override below 80% forces summary even when output fits inline",
+    test "an override below the default files a result that would have fit",
          %{tmp_dir: dir} do
       # Output of ~1_000 chars ≈ 250 tokens → fits default_cap easily,
       # but the override forces a tight cap that the output exceeds.
@@ -115,16 +116,17 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
                )
 
       assert result.is_error == false
-      assert result.content =~ "Command output of 'ls'"
+      assert result.content =~ "Output of shell-cmd"
       assert result.content =~ "saved to"
 
       [exec_file] = Enum.filter(File.ls!(dir), &String.starts_with?(&1, "exec-"))
       assert File.read!(Path.join(dir, exec_file)) == output
     end
 
-    test "LLM override above 80% is clamped to 80%", %{tmp_dir: dir} do
-      # 40_000 chars ≈ 10_000 tokens → exceeds default_cap of 8_000
-      # even though the LLM asked for 100_000 (clamped to 8_000).
+    test "an override above the default is honoured up to the budget", %{tmp_dir: dir} do
+      # 40_000 chars ≈ 10_000 tokens. The model asked for 100_000; the budget
+      # is 11_808, so the limit is the budget and the output fits inline. The
+      # default of 8_000 would have filed it — the ask is what raises it.
       big_output = TextFixtures.big_text(40_000)
 
       tools = [
@@ -145,9 +147,39 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
                )
 
       assert result.is_error == false
-      # Substituted, not kept whole: had the override been honoured the
-      # ~12_000-token output would have gone inline under a 100_000 cap.
-      assert result.content =~ "saved to"
+      # Kept whole: the ask raised the limit above the 8_000 default, and the
+      # output fits the budget the window actually leaves.
+      refute result.content =~ "saved to"
+    end
+
+    test "an error result over the limit is filed like any other", %{tmp_dir: dir} do
+      # The incident, in one call: a `grep` that exits non-zero still returns its
+      # whole output as the result's content. Before the `:error` arm went
+      # through the same admission, that content was sized and kept inline
+      # whatever its size — 1.8 MB of it produced a 1.42M-token request against
+      # a 1.05M window.
+      big = TextFixtures.big_text(40_000)
+      tools = [make_tool("shell-cmd", fn _, _ -> {:error, big} end)]
+      c = ctx(tools, context_limit: 20_000, tmp_path: dir)
+
+      log =
+        capture_log(fn ->
+          assert [%ToolResult{is_error: true, content: content}] =
+                   BatchSizer.run(
+                     [call("c1", "shell-cmd", %{"command" => "grep -R x ."})],
+                     c
+                   )
+
+          # Filed, not kept: the kind is still an error, and the content is the
+          # pointer, well under the 8_000 default it exceeded.
+          assert content =~ "saved to"
+          assert Estimator.estimate(content) < 8_000
+
+          [exec_file] = Enum.filter(File.ls!(dir), &String.starts_with?(&1, "exec-"))
+          assert File.read!(Path.join(dir, exec_file)) == big
+        end)
+
+      assert log =~ "BatchSizer produced is_error=true tool result"
     end
 
     test "output below cap stays inline (no summary)", %{tmp_dir: dir} do
@@ -249,7 +281,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       assert [%ToolResult{content: content}] =
                BatchSizer.run([call("c1", "shell-wait", %{"id" => "job-7"})], c)
 
-      assert content =~ "Output of shell-wait job-7"
+      assert content =~ "Output of shell-wait"
       assert content =~ "saved to"
     end
 
@@ -289,8 +321,85 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       # Substituted, not kept full: with no budget left `Overflow.substitute/5`
       # returns its pointer form. The claim is that it did not raise and did not
       # keep the 40 000-byte body.
-      assert content =~ "content elided"
+      #
+      # The bound is `1_000` and not "much smaller than the body", because the
+      # pointer has a known shape: one sentence plus the scratch path. Measured
+      # on this host it is 908 bytes, so the headroom is the path — the only
+      # part whose length varies (the temp dir). It was loosened to 2_000 once;
+      # 2_000 is not the real bound, it is the real bound plus a slack nobody
+      # had measured, and the body is 40 000 bytes either way.
+      assert content =~ "saved to"
       assert byte_size(content) < 1_000
+    end
+  end
+
+  describe "the admission's failure paths" do
+    # `cook/2` admits every result through `ResultPolicy`, and a result over its
+    # limit is filed. These are the two ways that can go wrong: the scratch write
+    # fails, and the lossy view of a binary is empty.
+    setup do
+      dir =
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
+          "batchsizer-admit-#{System.unique_integer([:positive])}"
+        ])
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> rm_tmp!(dir, "batchsizer-admit-") end)
+      {:ok, tmp_dir: dir}
+    end
+
+    test "a text result that cannot be filed is an error naming the size" do
+      # No scratch dir, so `Overflow.substitute/5` cannot write: the result
+      # becomes an error rather than an inline copy over the budget.
+      c = ctx([], context_limit: 100)
+      big = TextFixtures.big_text(40_000)
+
+      # The turn logs the error result it produced; that is the line captured
+      # here, asserted rather than silenced.
+      log =
+        capture_log(fn ->
+          assert [%ToolResult{is_error: true, content: content}] =
+                   BatchSizer.cook([{call("c1", "agents-query", %{}), :ok, big}], c)
+
+          assert content == ResultPolicy.offload_failure(Estimator.estimate(big))
+          assert content =~ "could not be written"
+        end)
+
+      assert log =~ "BatchSizer produced is_error=true tool result"
+      assert log =~ "agents-query"
+    end
+
+    test "a non-text result that cannot be filed is an error too" do
+      # The same failure on the binary path, which writes with `Overflow.write/5`
+      # rather than `substitute/5` — one place each, both saying so.
+      c = ctx([], context_limit: 100)
+
+      log =
+        capture_log(fn ->
+          assert [%ToolResult{is_error: true, content: content}] =
+                   BatchSizer.cook([{call("c1", "shell-cmd", %{}), :ok, <<0, 1, 2, 0, 255>>}], c)
+
+          assert content =~ "could not be written"
+        end)
+
+      assert log =~ "BatchSizer produced is_error=true tool result"
+      assert log =~ "shell-cmd"
+    end
+
+    test "a small binary's lossy view rides along with its pointer", %{tmp_dir: tmp_dir} do
+      # Every byte is NUL, and NUL is replaced rather than dropped — so the view
+      # is never empty, and a small binary always shows one after the pointer.
+      c = ctx([], context_limit: 100_000, tmp_path: tmp_dir)
+
+      assert [%ToolResult{is_error: false, content: content}] =
+               BatchSizer.cook([{call("c1", "shell-cmd", %{}), :ok, <<0, 0, 0, 0>>}], c)
+
+      assert content =~ "saved to"
+      assert content =~ "\n\n"
+      assert content =~ "\uFFFD"
     end
   end
 
@@ -320,12 +429,12 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       File.write!(Path.join(dir, "shot.png"), TextFixtures.big_text(10))
 
       # The image ceiling is 4_096 tokens whatever the file size. At
-      # `context_limit: 10_000` the content budget is 1_808 (the 8_192-token
-      # reserve dominates), so the cap is floor(0.80 * 1_808) == 1_446 — below
-      # the ceiling, so the projection is the cap.
+      # `context_limit: 10_000` the budget is 1_808 (the 8_192-token reserve
+      # dominates), so the limit is the budget — below the ceiling — and the
+      # projection is the limit.
       c = ctx([], context_limit: 10_000, workspace_path: dir)
 
-      assert ProjectedSize.project(call("c1", "file-read", %{"path" => "shot.png"}), c) == 1_446
+      assert ProjectedSize.project(call("c1", "file-read", %{"path" => "shot.png"}), c) == 1_808
     end
 
     test "the refused 3.3 MB PDF read fits once the projection is clamped", %{tmp_dir: dir} do
@@ -347,8 +456,9 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       assert unclamped + Reserve.compaction_reserve(limit) > limit
 
       # The reserve is 209_715 and the content budget 838_861, so 93_500 tokens
-      # of conversation leave 745_361 usable and a cap of 596_288.
-      assert ProjectedSize.project(hd(calls), c) == 596_288
+      # of conversation leave 745_361 of budget. `file-read`'s requested size is
+      # 32_000, so that is the limit and the projection is clamped to it.
+      assert ProjectedSize.project(hd(calls), c) == 32_000
       assert {:fits, _} = BatchSizer.preflight(calls, c)
     end
 
@@ -367,35 +477,25 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       assert {:refuse, _} = BatchSizer.preflight(calls, c)
     end
 
-    test "two over-cap reads still refuse, and compaction cannot clear it", %{tmp_dir: dir} do
-      # The known gap this branch does NOT close, pinned so it is a recorded
-      # limitation rather than a surprise. Two clamped `file-read`s cost
-      # `2 * cap = 1.6 * usable`, and `size + reserve = limit - usable` by
-      # definition, so the total is `limit + 0.6 * usable` — above the limit for
-      # every `usable > 0`. Measured here: 2 * 671_088 + 209_715 = 1_551_891
-      # against a 1_048_576 limit.
-      #
-      # The refusal is a property of the files, not of the transcript, so the
-      # compaction it routes into re-refuses the same carried calls — the loop
-      # the clamp was written for. Closing it needs the routing to refuse to
-      # the model instead of compacting (P2), and the loop breaker un-disarmed
-      # (P3); neither belongs here.
+    test "two over-cap reads now fit, so the refusal loop cannot start", %{tmp_dir: dir} do
+      # This used to be a recorded limitation: two clamped `file-read`s cost
+      # `2 * cap` and the cap was 80% of the budget, so two of them always
+      # exceeded the window — and because the refusal is a property of the
+      # files rather than the transcript, compaction re-refused the same
+      # carried calls. With `file-read`'s limit at a flat 32_000, two of them
+      # cost 64_000 against a 745_361 budget, so the batch fits.
       File.write!(Path.join(dir, "big.txt"), TextFixtures.big_text(3_000_000))
 
       limit = 1_048_576
       c = ctx([], context_limit: limit, workspace_path: dir)
 
-      # The same file twice: the refusal depends on the file, not the
-      # conversation, which is exactly why compaction cannot clear it.
       calls = [
         call("c1", "file-read", %{"path" => "big.txt"}),
         call("c2", "file-read", %{"path" => "big.txt"})
       ]
 
-      cap = floor(CapCalculator.usable_remaining(c) * 0.8)
-
-      assert ProjectedSize.project_batch(calls, c) == 2 * cap
-      assert {:refuse, _} = BatchSizer.preflight(calls, c)
+      assert ProjectedSize.project_batch(calls, c) == 2 * 32_000
+      assert {:fits, _} = BatchSizer.preflight(calls, c)
     end
   end
 

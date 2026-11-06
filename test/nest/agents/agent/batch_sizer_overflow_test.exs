@@ -2,12 +2,15 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
   @moduledoc """
   Tests for `Nest.Agents.Agent.BatchSizer.Overflow`.
 
-  Pins the "never produce an empty result" rule. When there is no budget
-  for any of the content (or the content itself is empty), `head_text/3`
-  and `truncate_to_fit/3` return an explicit marker — never `""` — and
-  `substitute/5` composes that marker with a pointer naming the scratch
-  file, so a substituted result always says that content was elided and
-  where the full text went.
+  `substitute/5` is the one shape an oversized result takes: a pointer naming
+  the scratch file, its size, and a fixed-size preview of the content. It never
+  echoes the caller's arguments (they are already in the `tool_use` part next
+  door) and never depends on the budget, which is what lets
+  `substitute_size/0` price it for the preflight.
+
+  A write that fails is `:error`, not a marker and not a quiet inline copy: the
+  caller turns it into a clear error, because a result too large to inline and
+  impossible to file has to say so.
   """
   use ExUnit.Case, async: true
 
@@ -30,66 +33,68 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
     {:ok, dir: dir}
   end
 
-  test "head_text/3 and truncate_to_fit/3 never return an empty string" do
+  test "head_text/3 never returns an empty string" do
     marker = "[content elided: see /tmp/x.txt]"
 
-    # No budget at all, a budget too small for even the first line, and
-    # empty content: each returns the caller's elision marker verbatim
-    # instead of "" (or a truncated head).
+    # No budget at all, a budget too small for even the first line, and empty
+    # content: each returns the caller's marker instead of "".
     assert Overflow.head_text("content", 0, marker) == marker
     assert Overflow.head_text("a line far too long for a 1-token budget", 1, marker) == marker
     assert Overflow.head_text("", 100, marker) == marker
-    assert Overflow.truncate_to_fit("content", 0, marker) == marker
 
-    # The one clause that does return content: leading whole lines, joined
-    # and trailing-trimmed. The marker goes unused because every line fits,
-    # so nothing was dropped.
+    # Leading whole lines, joined and trailing-trimmed. The marker goes unused
+    # because every line fits, so nothing was dropped.
     assert Overflow.head_text("first\nsecond\nthird\n", 100, "unused") ==
              "first\nsecond\nthird"
   end
 
   describe "substitute/5" do
-    test "names the scratch file even when the budget leaves no room", %{dir: dir} do
-      # A budget of `1` has room for neither the content nor even the header
-      # line, so the result must be the marker naming the file rather than
-      # "". (The `0` no-budget clause of `truncate_to_fit/3` is pinned by the
-      # test above.)
-      out =
-        Overflow.substitute(
-          "line one\nline two\n",
-          %{mounts: Mounts.new(nil, dir)},
-          "Command output",
-          1,
-          "exec"
-        )
+    test "writes the content and returns a pointer + preview, or :error when it cannot", %{
+      dir: dir
+    } do
+      content = String.duplicate("a line of content\n", 400)
 
-      assert out =~ "elided"
-      assert out =~ Sandbox.sandbox_tmp_path(dir)
-    end
+      assert {:ok, out} =
+               Overflow.substitute(
+                 content,
+                 %{mounts: Mounts.new(nil, dir)},
+                 "Output of shell-cmd",
+                 "exec"
+               )
 
-    test "keeps the pointer and a head when there is room", %{dir: dir} do
-      out =
-        Overflow.substitute(
-          String.duplicate("a line of content\n", 200),
-          %{mounts: Mounts.new(nil, dir)},
-          "Command output",
-          200,
-          "exec"
-        )
-
-      # The pointer is the sandbox spelling, never the host scratch dir, and
-      # the body keeps a head of the content — all within the budget.
+      # The pointer names the sandbox spelling, never the host scratch dir, and
+      # says how big the full content is.
       assert out =~ Sandbox.sandbox_tmp_path(dir)
       refute out =~ dir
+      assert out =~ "Output of shell-cmd"
+      assert out =~ "#{Estimator.estimate(content)} tokens"
+
+      # The preview is bounded by the fixed preview size, not by any caller
+      # budget: the substitute is the same size whatever room is left — and
+      # `substitute_size/0` must never be below a real one, because the
+      # preflight reserves exactly that per call and under-reserving is what
+      # lets a batch overflow.
       assert out =~ "line of content"
-      assert Estimator.estimate(out) <= 200
+      assert Estimator.estimate(out) <= Overflow.substitute_size()
+
+      # A write that fails is its own answer — not a marker, and not a quiet
+      # inline copy of the content.
+      assert Overflow.substitute(content, %{}, "Output of shell-cmd", "exec") == :error
     end
 
-    test "says so when no scratch file could be written" do
-      out = Overflow.substitute("line one", %{}, "Command output", 0, "exec")
+    test "names the file and nothing else when the content has no lines", %{dir: dir} do
+      # A single line longer than the whole preview: the preview is cut by
+      # characters rather than dropped, so a minified blob still shows its head.
+      assert {:ok, out} =
+               Overflow.substitute(
+                 String.duplicate("x", 5_000),
+                 %{mounts: Mounts.new(nil, dir)},
+                 "Output of shell-cmd",
+                 "exec"
+               )
 
-      assert out =~ "elided"
-      assert out =~ "could not be written"
+      assert out =~ "xxxx"
+      assert Estimator.estimate(out) <= Overflow.substitute_size() + 10
     end
   end
 end

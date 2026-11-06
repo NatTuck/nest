@@ -34,7 +34,12 @@ defmodule Nest.Agents.NameGenerator do
 
   Takes a MapSet of existing names and keeps generating until it finds
   one that isn't in the set. Raises if it can't find a unique name
-  after max_attempts.
+  after `@max_attempts` tries.
+
+  `generate` is the source of candidates and defaults to `generate/0`. It is a
+  parameter so the retry and the give-up can be tested deterministically: a
+  collision cannot be forced through the real generator without drawing until
+  one happens to repeat.
 
   ## Examples
 
@@ -43,20 +48,20 @@ defmodule Nest.Agents.NameGenerator do
       "swift-fox"
 
   """
-  @spec generate_unique(MapSet.t(String.t())) :: String.t()
-  def generate_unique(existing) do
-    do_generate_unique(existing, 0)
+  @spec generate_unique(MapSet.t(String.t()), (-> String.t())) :: String.t()
+  def generate_unique(existing, generate \\ &generate/0) do
+    do_generate_unique(existing, generate, 0)
   end
 
-  defp do_generate_unique(_existing, attempts) when attempts >= @max_attempts do
+  defp do_generate_unique(_existing, _generate, attempts) when attempts >= @max_attempts do
     raise "Could not generate unique name after #{@max_attempts} attempts"
   end
 
-  defp do_generate_unique(existing, attempts) do
-    name = generate()
+  defp do_generate_unique(existing, generate, attempts) do
+    name = generate.()
 
     if MapSet.member?(existing, name) do
-      do_generate_unique(existing, attempts + 1)
+      do_generate_unique(existing, generate, attempts + 1)
     else
       name
     end

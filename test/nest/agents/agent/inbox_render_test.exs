@@ -55,14 +55,17 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       # A missing or blank sender still says `agent`: the body must not read as
       # a human's, and printing `nil` would be worse. Three bodies in one batch
       # also pin the blank line that separates them.
-      assert Render.combine_and_offload(
-               [
-                 entry(:agent, "peer", "from an agent"),
-                 entry(:agent, "", "from a blank agent"),
-                 entry(:agent, nil, "from nobody")
-               ],
-               state
-             ) ==
+      assert {:ok, rendered, nil} =
+               Render.combine_and_offload(
+                 [
+                   entry(:agent, "peer", "from an agent"),
+                   entry(:agent, "", "from a blank agent"),
+                   entry(:agent, nil, "from nobody")
+                 ],
+                 state
+               )
+
+      assert rendered ==
                "[From agent peer | mode: act]\nfrom an agent\n\n" <>
                  "[From agent | mode: act]\nfrom a blank agent\n\n" <>
                  "[From agent | mode: act]\nfrom nobody"
@@ -70,7 +73,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       # A query is a peer's words and says so (decision 7): it is the one kind
       # that obliges an answer.
       assert Render.combine_and_offload([entry(:query, "peer", "may I ask?")], state) ==
-               "[From agent peer, agents-send reply required | mode: act]\nmay I ask?"
+               {:ok, "[From agent peer, agents-send reply required | mode: act]\nmay I ask?", nil}
     end
 
     test "an over-cap batch is offloaded to a file named after its first entry's id" do
@@ -83,9 +86,104 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       state = %Agent{name: "offload-id", space_id: 1, mounts: Mounts.new(nil, dir)}
       first = %{entry(:agent, "peer", "hello world", nil, "firstid") | content: @oversized}
 
-      content = Render.combine_and_offload([first], state)
+      assert {:ok, content, parts} = Render.combine_and_offload([first], state)
+
+      # The pointer is the runtime's own sentence about the batch, so the row
+      # states the runtime — a headerless row renders as "unknown sender" (#195).
+      assert content =~ "[From nest runtime | mode: act]"
       assert content =~ "agent-inbox-firstid.txt"
-      assert File.read!(Path.join(dir, "agent-inbox-firstid.txt")) =~ "hello world"
+      assert parts == [{:text, content}]
+
+      # The file keeps the whole rendered batch, headers and bodies, so the
+      # senders are recoverable there.
+      file = File.read!(Path.join(dir, "agent-inbox-firstid.txt"))
+      assert file =~ "hello world"
+      assert file =~ "[From agent peer | mode: act]"
+    end
+
+    test "a batch that is over the cap and cannot be filed is an error, not an inline copy" do
+      # The same rule `admit_single/2` follows: nothing is inlined over the
+      # budget to rescue the drain, and nothing is dropped. The caller keeps the
+      # batch queued and surfaces the reason (`Turn.Drain.failed/2`).
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "inbox-batch-no-write-#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(dir)
+
+      on_exit(fn ->
+        # The directory is made unwritable below, so cleanup has to be able to
+        # open it again.
+        File.chmod(dir, 0o700)
+        rm_tmp!(dir, "inbox-batch-no-write-")
+      end)
+
+      # A read-only directory: the scratch write fails every time, so the
+      # outcome does not depend on timing or on trying it again.
+      File.chmod!(dir, 0o500)
+
+      state = %Agent{name: "batch-no-write", space_id: 1, mounts: Mounts.new(nil, dir)}
+      first = %{entry(:agent, "peer", "hello world", nil, "firstid") | content: @oversized}
+
+      assert {:error, reason} = Render.combine_and_offload([first], state)
+      assert reason =~ "could not be written"
+      assert reason =~ "tokens"
+    end
+  end
+
+  describe "admit_single/2" do
+    test "a message over the cap becomes a pointer to the scratch file" do
+      # The same admission a drained batch gets, for the paths that deliver one
+      # message: an idle `chat:message`, a spawn kickoff. A body over the
+      # configured cap is filed rather than allowed to force a compaction.
+      dir = Path.join(System.tmp_dir!(), "inbox-single-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> rm_tmp!(dir, "inbox-single-") end)
+
+      state = %Agent{name: "single", space_id: 1, mounts: Mounts.new(nil, dir)}
+
+      message =
+        {:user, %User{parts: [%Part.Text{text: @oversized}], metadata: %{"mode" => "act"}}}
+
+      assert {:ok, {:user, %User{parts: [%Part.Text{text: pointer}]} = delivered}} =
+               Render.admit_single(message, state)
+
+      assert pointer =~ "Your message was too large"
+      assert pointer =~ "saved to"
+      # The pointer replaced the message's own text — header included — so the
+      # row states the runtime, which is who is saying it was too large.
+      assert pointer =~ "[From nest runtime | mode: act]"
+      # The body is in the file, whole, and the delivered row is the pointer.
+      assert Enum.any?(File.ls!(dir), fn name ->
+               File.read!(Path.join(dir, name)) == @oversized
+             end)
+
+      assert delivered.metadata == %{"mode" => "act"}
+    end
+
+    test "a message that fits is delivered unchanged" do
+      dir = Path.join(System.tmp_dir!(), "inbox-single-fit-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> rm_tmp!(dir, "inbox-single-fit-") end)
+
+      state = %Agent{name: "single-fit", space_id: 1, mounts: Mounts.new(nil, dir)}
+      message = {:user, %User{parts: [%Part.Text{text: "hello"}], metadata: %{}}}
+
+      assert Render.admit_single(message, state) == {:ok, message}
+      assert File.ls!(dir) == []
+    end
+
+    test "a message that cannot be filed is a clear error, not an inline copy" do
+      # No scratch dir: the write fails, and the answer is an error naming the
+      # size. Inlining it would only move the failure to the send gate, which is
+      # a never-happen tripwire rather than a place to absorb an oversized body.
+      state = %Agent{name: "single-no-scratch", space_id: 1, mounts: Mounts.new(nil, nil)}
+      message = {:user, %User{parts: [%Part.Text{text: @oversized}], metadata: %{}}}
+
+      assert {:error, reason} = Render.admit_single(message, state)
+      assert reason =~ "could not be written"
     end
   end
 
@@ -100,7 +198,7 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       notice = entry(:runtime, nil, "runtime note", nil, nil, true)
 
       assert {:user, %{metadata: metadata}} =
-               Render.build_drained_message([notice], "runtime note", "chat")
+               Render.build_drained_message([notice], "runtime note", nil, "chat")
 
       assert metadata == %{"mode" => "chat"}
     end
@@ -109,17 +207,18 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       # There is no output to show, so there is nothing to render verbatim: one
       # part, and the key is omitted entirely rather than sent empty.
       notice = notice_entry({:worker_down, :killed})
-      content = Render.combine_and_offload([notice], render_state("act"))
+      assert {:ok, content, nil} = Render.combine_and_offload([notice], render_state("act"))
 
       assert {:user, %User{parts: [%Part.Text{}], metadata: metadata}} =
-               Render.build_drained_message([notice], content, "act")
+               Render.build_drained_message([notice], content, nil, "act")
 
       refute Map.has_key?(metadata, "command_output_parts")
     end
 
-    test "an offloaded batch is the pointer alone, with no marker" do
+    test "an offloaded batch is the runtime's pointer alone, with no marker" do
       # The pointer replaced the whole text, so the command output is in the
-      # scratch file rather than in the row: one text part, and no
+      # scratch file rather than in the row: one text part carrying the
+      # runtime's header (it is the runtime's sentence), and no
       # `commandOutputParts` — there is no output part for it to name.
       dir = Path.join(System.tmp_dir!(), "inbox-notice-#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)
@@ -128,15 +227,19 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
       state = %Agent{name: "offload-notice", space_id: 1, mounts: Mounts.new(nil, dir)}
       notice = notice_entry({:results, [%{name: "shell-cmd", content: @oversized}]})
 
-      content = Render.combine_and_offload([notice], state)
+      assert {:ok, content, parts} = Render.combine_and_offload([notice], state)
       # The batch really was offloaded: the delivered content is the pointer,
       # whose singular wording is pinned on the transcript by the drain test.
       assert content =~ "saved to"
+      assert parts == [{:text, content}]
 
+      # The parts are the ones the offload stated, not a re-render of the batch:
+      # the row is the pointer, so its join is the pointer.
       assert {:user, %User{parts: [%Part.Text{text: pointer}], metadata: metadata}} =
-               Render.build_drained_message([notice], content, "act")
+               Render.build_drained_message([notice], content, parts, "act")
 
       assert pointer == content
+      assert pointer =~ "[From nest runtime | mode: act]"
       refute Map.has_key?(metadata, "command_output_parts")
     end
   end
@@ -217,9 +320,10 @@ defmodule Nest.Agents.Agent.InboxRenderTest do
 
         assert pointer =~ "You have 1 queued message"
 
-        # The pointer carries no header: a header heads a body, and the body is
-        # what went to the file.
-        refute pointer =~ "[From "
+        # The pointer is the runtime's own sentence about the batch, so the row
+        # states the runtime: a headerless user row is what renders as "unknown
+        # sender" (#195). The *body's* header is what went to the file.
+        assert pointer =~ "[From nest runtime | mode: "
 
         # One scratch file per delivery, holding the batch's whole text — and
         # therefore the body's header, which the model reads back there.

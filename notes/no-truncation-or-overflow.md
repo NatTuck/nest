@@ -1,268 +1,97 @@
-# `max_result_tokens` design — no truncation, no overflow
+# Result admission — one rule, one place
 
-## Goal
+## The rule
 
-Wire up `max_result_tokens` (declared in every tool's JSON schema today
-but never read at runtime) as a real cap on tool result size. Two
-non-negotiable rules:
-
-1. **No truncations** — the LLM never sees a partially-degraded tool
-   result. Either the full content or a summary pointing to a file.
-2. **No overflows** — the BatchSizer's preflight guarantees space for the
-   minimum size of every tool call in the batch *before* any tool runs,
-   and the keep-or-substitute pass never leaves an over-budget result
-   inline.
-
-> **Status note (this file predates the `shell-*`/sub-agent tools).**
-> The invariant is now enforced for *every* tool, not just `shell-cmd`:
-> an over-budget result is always replaced by a path-and-head substitute
-> (full output written to the agent scratch dir), via
-> `Nest.Agents.Agent.BatchSizer.Overflow.substitute/5`. `ToolLoop` reruns
-> the pass over the whole batch (regular + sub-agent results) with
-> `BatchSizer.cook/2`. Tool names below are the historical
-> `execute_command`/`read_file`; the current names are `shell-cmd` and
-> `file-read`.
-
-The cap is computed as **80% of the remaining usable context window**,
-computed once at the start of each batch. The LLM can lower it (ask for a
-tighter cap → forces the summary path even when full content fits inline)
-but cannot raise it.
-
-## Why "no truncation"
-
-The legacy `BudgetPlanner` truncated tool output heuristically when it
-overflowed the budget. That was lossy: the LLM saw a degraded version of
-the file/command output with no pointer to the full version. The
-BatchSizer replaces this with a binary choice per tool result:
-
-- **Full content** ships to the LLM inline, OR
-- **Path-and-head summary** ships to the LLM inline, with the full
-  content written to a temp file the LLM can re-read.
-
-There is no third option ("truncate a little inline"). The user
-explicitly confirmed this is the desired shape.
-
-## Why "no overflow"
-
-The BatchSizer preflight already projects each tool's **minimum size**
-(the size it would take if summarized to a path-and-head block) and
-refuses the batch when `messages + sum(minimum_sizes) + reserve > limit`.
-The existing preflight uses `summary_baseline_size() * @safety_padding`
-for `execute_command` (see `lib/nest/agents/agent/batch_sizer.ex:113-115`)
-— that 20% padding is the "minimum space we know we'll need even in the
-worst case" reserve.
-
-The cap (80% of remaining usable) is therefore the **inline-vs-substitute
-threshold**, not a sizing guarantee. If a tool's output exceeds the cap
-at runtime, the BatchSizer routes it through the substitute path — which
-keeps the inline cost bounded. The output is never truncated to a
-partial inline form, and (since the catch-all fix) is never kept full
-over budget either.
-
-### Current invariant
-
-For every admitted batch, after the single keep-or-substitute pass
-(`BatchSizer.cook/2` over the whole input-ordered batch):
+Every result that would enter the live message list is admitted by
+`Nest.Agents.Agent.ResultPolicy`:
 
 ```
-messages + reserve + Σ inline_final(tool_i)  ≤  context_limit
+budget    = context_limit - compaction reserve - size(messages) - already admitted
+requested = the model's `max_result_tokens`, else the tool's default
+inline    = min(requested, budget)
+
+size(content) <= inline -> inline whole
+otherwise               -> on_over/1: :file   -> write it, inline a pointer + preview
+                                    :refuse -> a size-hint error
 ```
 
-This is what prevents overflow. Every result that does not fit the
-remaining running budget is replaced by a path-and-head substitute sized
-to fit, so no single result and no batch can overflow — regardless of
-whether an individual result was kept full above its projection.
+There is no share of the window and no second predicate. `requested` is what
+the model asked for (8_000 for most tools, 32_000 for `file-read`) and the only
+ceiling on it is the budget actually left. A model that asks for more than the
+budget gets the budget; a model that asks for nothing gets the default.
 
-`ProjectedSize` projections are, for most tools, **lower bounds** on the
-result: they are each tool's minimum substitutable size (so preflight admits
-the batch with room for substitutes). `file-read` is the exception — its
-projection is a byte-based estimate clamped to the per-call cap, so it is an
-upper bound on what the tool can keep inline rather than a lower bound on
-what it returns. Either way a tool can be kept full above its projection
-(e.g. `shell-cmd` under the cap, or a token-dense `file-read` under the byte
-heuristic), and that is fine because the running pass re-checks the actual
-size. What must never happen — and no longer does — is keeping a result that
-does not fit. `ProjectedSize.projected?/1` is asserted against the
-registered tool set in `test/nest/agents/agent/batch_sizer_test.exs`
-so a new tool cannot be added with only the catch-all.
+`budget` is decremented by each admitted result, so a batch shares one
+allowance and neither a result nor a batch can exceed the window. That is why
+there is no separate "does it still fit the batch" check.
 
-## Formula
+## `on_over`
 
-Computed once per batch at `BatchSizer.run/2` entry. Stored on the ctx
-under `:__usable_remaining__` and threaded through `cook/2` to
-`apply_one_with_acc/3`.
+- **`:file`** — every tool whose output exists nowhere else, and every message.
+  The content is written to the agent's scratch dir and replaced by:
 
-```elixir
-# ctx.context_limit flows from state.llm_metrics.context_limit (may be nil)
+  ```
+  Output of shell-cmd (640017 tokens) saved to /tmp/agent/exec-abc.txt.
 
-usable = ctx.context_limit
-       - Estimator.estimate_messages(ctx.messages || [])
-       - @preflight_reserve   # 8_192 tokens — reserved for the LLM's
-                              # next response + tool_call overhead
+  Exit code 2:
+  JOURNAL.md:22332:step is the acceptance run …
+  ```
 
-default_cap = floor(usable * 0.80)   # the inline-vs-summary threshold
+  The pointer names the tool and the size; the preview is a **fixed** ~200
+  tokens of whole lines. Neither repeats the call's arguments — they are in the
+  `tool_use` part immediately before it — and neither depends on the budget,
+  which is what lets `ProjectedSize` price a substitute exactly.
+  `Overflow.substitute_size/0` and `Overflow.substitute/5` describe the same
+  block, one function, so they cannot drift.
 
-effective_cap(tc) = case tc.arguments["max_result_tokens"] do
-  nil  -> default_cap                          # LLM didn't ask, use 80%
-  n when is_integer(n) and n > 0 ->
-    min(n, default_cap)                         # LLM asked for less
-  _    -> default_cap                          # malformed → fall back
-end
-```
+- **`:refuse`** — `file-read` only. The content is already at the path the call
+  named, so a second copy would be redundant and the model can narrow the read
+  (`file-inspect`, a line range, `grep`). The error names the size and the
+  limit. `ProjectedSize.read_file_projection/2` clamps its projection to that
+  limit, because the tool is structurally unable to produce more inline; without
+  the clamp a batch is refused for a call guaranteed to return one line, and
+  that refusal cannot be cleared by compaction (it is a property of the file,
+  not the transcript).
 
-When `ctx.context_limit` is `nil` (degraded-but-hopeful path), no cap.
-When `usable ≤ 0` the preflight has normally refused the batch already, but
-`cook/2` is reachable on its own — it runs once over a merged regular +
-sub-agent batch — so a spent window is treated as no cap and the result is
-substituted rather than raising.
+## No uncapped path
 
-## Per-tool behavior when the cap is exceeded
+The admission runs for every result whatever its kind — a success, an error, a
+cancellation and a wait are the same content question. Before it did, the
+`is_error`/`:cancelled` arm sized a result and kept it inline without checking
+either the limit or the batch budget; a `grep` that exited 2 with 1.8 MB of
+output produced a 1.42M-token request against a 1.05M window.
 
-| Tool | Action when `content_size > effective_cap` |
-|---|---|
-| `shell-cmd` / `shell-wait` / `shell-list` | Write full content to `<tmp>/exec-<rand>.txt`. Return `<label> (<N> tokens) saved to <path>.\n\n<head>` (`Overflow.substitute/5`). |
-| `file-read` | Return `{:error, "File is X tokens which exceeds your requested limit of Y."}`. The LLM gets a structured error and can use `file-inspect` for metadata, or `shell-cmd` directly on the file for a partial read. It cannot raise the limit — an override may only lower the default. |
-| `agents-spawn` (with query) / `agents-query` | Write full response to `<tmp>/agents-<rand>.txt`. Return `<label> (<N> tokens) saved to <path>.\n\n<head>`. |
-| `agents-batch` | `BatchLoop` offloads the JSON aggregate via `Overflow.substitute/5`. |
-| Bounded tools (`file-write`, `file-edit`, `file-inspect`, `context-check`, `shell-kill`, `agents-archive`, `agents-list`, `models-list`) | Fixed/derived output; cap-exceeded is unreachable. If it somehow happens they are substituted too — never kept full. |
+A write that fails is its own error (`ResultPolicy.offload_failure/1`), never a
+quiet inline fallback: the send gate is a never-happen tripwire, not a place to
+absorb an oversized result.
 
-Every substitutable tool has an in-budget fallback. There is no
-"keep full anyway" path.
+## Messages
 
-## Decision tree in `apply_one_with_acc/3`
+Messages share the rule with a different `requested`: the configured
+`max-async-message-tokens` (`Config.configured_async_message_max_tokens/0`,
+default 8_000). That cap is intrinsic — how much one body may carry — so a
+message over it is filed rather than allowed to force a compaction. A message
+*under* it is delivered whole, and the conversation being full is what the fit
+decision and a compaction are for.
 
-```
-For each tool result, in batch order:
+`Inbox.Render.combine_and_offload/2` (a drained batch) and
+`Inbox.Render.admit_single/2` (a single message, including a human's) are the
+two call sites. A batch that cannot be filed leaves its entries queued and
+surfaces a `chat:error`.
 
-1. content_size = Estimator.estimate(content) + per_message_overhead()
+## The send gate
 
-2. If effective_cap && content_size > cap + per_message_overhead():
-     # Cap exceeded → route per-tool (see table above)
-     For read_file:   return error ToolResult with is_error: true
-     For other tools: write-to-tmp + path-and-head substitute
+`Machine.Transitions` checks `Budget.fits?/2` before every request and compacts
+instead of sending. It is a tripwire and should never fire: `start_chat/3`, the
+batch preflight and `ResultPolicy` all keep the list inside `L - C` first. It
+exists so a conversation that is somehow over budget cannot reach the provider,
+because the provider's 400 is a bug report rather than a recovery path.
 
-3. Else (content fits the inline cap):
-     If keep_full?(tc, acc, content_size):
-       Return full content
-     Else (batch budget overflow post-preflight):
-       Write-to-tmp + path-and-head substitute (every tool)
-```
+## What this replaced
 
-Both over-budget branches substitute; nothing is ever kept full over
-budget. `ToolLoop.run_batch/2` runs `BatchSizer.execute/2` for the
-regular tools, merges the sub-agent entries in input order, and calls
-`BatchSizer.cook/2` once, so the running total covers the whole batch.
-
-The cap check (step 2) is the **primary gate**. The batch-budget check
-(step 3) is a secondary defense for cases where multiple tools in the
-same batch collectively overflow — rare, because preflight has already
-guaranteed space for the minimums.
-
-## Helper signatures (planned)
-
-```elixir
-# Public — usable remaining context (excluding reserve)
-@spec usable_remaining(map()) :: pos_integer() | nil
-
-# Public — the effective cap for a single tool call
-@spec effective_max_result_tokens(ToolCall.t(), map(), pos_integer() | nil) ::
-        pos_integer() | nil
-
-# Private — per-tool routing when the cap is exceeded
-@spec handle_over_cap(ToolCall.t(), String.t(), pos_integer(), map(), map()) ::
-        {{atom(), atom(), String.t()}, map()}
-```
-
-`ctx[:__usable_remaining__]` is computed once in `run/2` and read in
-`apply_one_with_acc/3` via the ctx map. (Avoids threading a new
-parameter through every helper.)
-
-## File-by-file change list
-
-### `lib/nest/agents/agent/batch_sizer.ex`
-- Add `usable_remaining/1`, `effective_max_result_tokens/3`, `handle_over_cap/5`.
-- Modify `run/2` to thread `__usable_remaining__` through ctx.
-- Modify `apply_one_with_acc/3` to add the cap check at the top of the
-  decision tree.
-- No new truncation function. Existing `build_summary_with_size/4`
-  is reused for `execute_command`.
-
-### `lib/nest/llm/tool.ex`
-- Update moduledoc to describe the new design (cap is inline-vs-summary
-  threshold, 80% default, override-below, no truncation).
-- Remove `max_result_tokens` from `defstruct` (was never consumed at
-  runtime; the schema entry lives on `parameters_schema`, not the struct).
-- Remove `max_result_tokens` from the `@type t` typespec.
-
-### `lib/nest/tools.ex`
-- Remove `max_result_tokens: ...` from each of the 5 Tool struct
-  builders (`read_file_function`, `write_file_function`, `edit_function`,
-  `shell_cmd_function`, `context_function`).
-- Remove the 4 `@*_max_result_tokens` constants (`@default_max_result_tokens`,
-  `@write_file_max_result_tokens`, `@context_max_result_tokens`,
-  `@edit_max_result_tokens`).
-- Update `max_result_tokens_schema/0` description: "Maximum tokens for the
-  inline result. Default is 80% of the remaining usable context window.
-  Lower this to force a path-and-head summary for `execute_command` or
-  an error for `read_file`." Keep the schema entry — the LLM still
-  needs to see the knob.
-
-### `lib/nest/llm/tools.ex`
-- Delete `default_max_result_tokens/2` — dead code, never called
-  anywhere in `lib/` or `test/`.
-
-### `test/nest/agents/agent/batch_sizer_test.exs`
-Add 6 tests under a new `describe "max_result_tokens cap"` block:
-
-1. `execute_command output exceeding 80% cap routes to summary path`
-2. `LLM override below 80% forces summary even when output fits inline`
-3. `LLM override above 80% is clamped to 80%`
-4. `output below cap stays inline (no summary)`
-5. `read_file exceeding cap returns error: "File is X tokens which exceeds your requested limit of Y."`
-6. `no cap when context_limit is nil`
-
-Existing tests should still pass — the cap check is additive (an
-additional route before the existing keep-or-summarize decision).
-
-### `test/nest/llm/tool_test.exs` (create if absent)
-- Schema has `max_result_tokens` arg.
-- Struct does NOT have a `max_result_tokens` field.
-- `@type t` does NOT include `max_result_tokens`.
-
-### `test/nest/tools_test.exs` (and friends like `tools_edit_test.exs`, `tools_inspect_file_test.exs`)
-- Existing tests check `tool.max_result_tokens` — update them to check
-  `tool.parameters_schema["properties"]["max_result_tokens"]` instead.
-
-### `notes/extract-compaction-and-resumable-chat-turn.md`
-Update the BatchSizer section with:
-- The cap formula (`usable`, `default_cap`, `effective_cap`).
-- The decision tree (full vs. summary, no intermediate truncation).
-- The per-tool table.
-
-### `notes/context-and-compaction.md`
-Rewrite the "Per-tool max_result_tokens" section (lines 89-109) to
-reflect the new design. The 8,192 default and 50% ceiling are gone;
-the new spec is 80% of remaining usable, with override-below.
-
-## Sequencing (for build-mode execution)
-
-1. `lib/nest/llm/tool.ex` — docstring + struct cleanup
-2. `lib/nest/tools.ex` — remove per-tool field + constants
-3. `lib/nest/llm/tools.ex` — delete dead `default_max_result_tokens/2`
-4. `lib/nest/agents/agent/batch_sizer.ex` — main work (cap formula,
-   decision tree integration, per-tool routing)
-5. `test/nest/agents/agent/batch_sizer_test.exs` — new tests
-6. Existing schema tests — update assertions
-7. Doc updates (both `notes/` files)
-8. `mix precommit` — verify clean
-
-## Open questions
-
-- **`max_result_tokens` validation**: treat `nil`/missing as "use 80%
-  default," integers ≤ 0 as "use 80% default" (invalid → fall back),
-  positive integers as "use override (clamped to 80%)." Negative or zero
-  values from a malformed LLM response fall back to default rather than
-  raising an error. Document this in `effective_max_result_tokens/3`.
-- **`read_file` error message wording**: `"File is X tokens which
-  exceeds your requested limit of Y."` — matches user spec exactly.
-  Confirm or tweak.
+- `floor(usable * 0.80)` as the default inline size (`CapCalculator`), and the
+  model being able to only *lower* it. The 80% share was a ceiling nobody chose;
+  the model asking is the only reason to go large.
+- `keep_full?/3` and the running-total pass: the budget is the running total.
+- The `substitute/5` head, whose size came from the header (which echoed the
+  whole shell command).
+- The `:error`/`:cancelled` arm's exemption.

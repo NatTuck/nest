@@ -522,7 +522,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # `agents-history` (issue #22): a plain DB read of another agent's persisted
   # sequence, so it is callable mid-turn and never touches the target's process.
   # A range read of tool-heavy history can be arbitrarily large, so it goes
-  # through the same inline cap every response-bearing sub-agent result does.
+  # through the same admission every response-bearing sub-agent result does.
   defp run_history(ctx, %ToolCall{} = tc) do
     case History.run(ctx, tc) do
       {:ok, content} ->

@@ -242,10 +242,10 @@ defmodule Nest.Tools.ShellPipesTest do
     "Your command was piped into `#{stage}` and that stage was removed. " <>
       "The complete output is in #{path} — read it. " <>
       "Do not throw away output. " <>
-      "If you need less output, use the tool's `max_result_tokens` argument — " <>
-      "that is the supported way to ask for a smaller result, and when the " <>
-      "result is large enough to overflow, the complete output is still saved " <>
-      "to a file for you to read. " <>
+      "If you need to choose the size, use the tool's `max_result_tokens` " <>
+      "argument — that is the supported way to decide how much comes back, and " <>
+      "when the result is large enough to overflow, the complete output is " <>
+      "still saved to a file for you to read. " <>
       "Do not use any substitutions: no `| head`, no `| tail`, no `| sed`, no " <>
       "filtering of any kind. " <>
       "If this behaviour is repeated, every command you run will be evaluated " <>

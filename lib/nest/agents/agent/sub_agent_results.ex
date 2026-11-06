@@ -11,10 +11,9 @@ defmodule Nest.Agents.Agent.SubAgentResults do
   """
 
   alias Nest.Agents.Agent.BatchSizer.Overflow
-  alias Nest.Agents.Agent.CapCalculator
   alias Nest.Agents.Agent.Inbox
+  alias Nest.Agents.Agent.ResultPolicy
   alias Nest.Messages.ToolCall
-  alias Nest.Tokens.Estimator
 
   # -- the parent's inbox --
 
@@ -43,27 +42,44 @@ defmodule Nest.Agents.Agent.SubAgentResults do
   # -- bounding --
 
   @doc """
-  Bound an unbounded sub-agent result to the per-call inline cap. Sub-agent
-  tools bypass `BatchSizer`, so this is where their results get an
-  in-budget substitute: if the response exceeds `max_result_tokens`, the
-  full text is written to the agent scratch dir and a pointer + head is
-  returned inline.
+  Bound an unbounded sub-agent result. Sub-agent tools bypass `BatchSizer`, so
+  this is where their results meet the same admission: over
+  `min(requested, budget)`, the full text is written to the agent scratch dir
+  and a pointer + preview comes back inline.
   """
   @spec bound(String.t(), ToolCall.t(), map()) :: String.t()
-  def bound(content, %ToolCall{} = tc, %{context_limit: limit, messages: _} = ctx)
+  def bound(content, %ToolCall{} = tc, %{context_limit: limit} = ctx)
       when is_integer(limit) and limit > 0 do
-    usable = CapCalculator.usable_remaining(ctx)
-
-    if usable > 0 and
-         Estimator.estimate(content) > CapCalculator.effective_max_result_tokens(tc, usable) do
-      budget = CapCalculator.effective_max_result_tokens(tc, usable)
-      Overflow.substitute(content, ctx, sub_label(tc), budget, "agents")
-    else
-      content
+    # The one caller is `ToolLoop`'s `agents-history` result, whose
+    # `ResultPolicy.on_over/1` is `:file` — so `decision/3` cannot answer
+    # `{:refuse, _}` here, and there is no arm for it. A `:refuse` would mean the
+    # policy changed for this caller, and that should crash rather than fall
+    # through to a refusal nobody wrote.
+    case decision(content, tc, ctx) do
+      {:inline, _size} -> content
+      {:file, size} -> substitute(content, tc, ctx, size)
     end
   end
 
   def bound(content, _tc, _ctx), do: content
 
-  defp sub_label(%ToolCall{name: name}), do: "Output of #{name}"
+  defp decision(content, tc, ctx) do
+    ResultPolicy.admit(content, inline(tc, ctx), ResultPolicy.on_over(tc.name))
+  end
+
+  defp inline(tc, ctx), do: ResultPolicy.limit(tc, budget(ctx))
+
+  defp budget(ctx) do
+    case ResultPolicy.window(ctx) do
+      {:ok, left} -> left
+      :none -> 0
+    end
+  end
+
+  defp substitute(content, tc, ctx, size) do
+    case Overflow.substitute(content, ctx, ResultPolicy.label(tc.name), "agents") do
+      {:ok, pointer} -> pointer
+      :error -> ResultPolicy.offload_failure(size)
+    end
+  end
 end

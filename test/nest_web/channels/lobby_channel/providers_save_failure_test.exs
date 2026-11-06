@@ -16,9 +16,12 @@ defmodule NestWeb.LobbyChannel.ProvidersSaveFailureTest do
   to re-point `local_file` at a path that could not be created, and it timed out
   under CPU burners. Making the directory unwritable needs no stub at all, and is
   what `writer_test.exs` does for the same failure.
+
+  Runs `async: false`: the `"lobby"` PubSub topic is process-global, so any save
+  broadcasts into every other joined test's mailbox.
   """
 
-  use NestWeb.ChannelCase, async: true
+  use NestWeb.ChannelCase, async: false
 
   import Nest.Test.TmpCleanup
 

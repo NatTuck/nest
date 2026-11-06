@@ -155,11 +155,11 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   delivered message. The no-op shapes — nothing in flight, or a delivery that
   would not fit — leave the entries queued.
   """
-  @spec step(Machine.t(), [term()], String.t()) ::
+  @spec step(Machine.t(), [term()], String.t(), [Nest.Messages.Segment.t()] | nil) ::
           {:ok, [term()], Machine.t()} | {:ignore, atom(), Machine.t()}
-  def step(m, entries, content) do
+  def step(m, entries, content, parts) do
     if backgroundable?(m) do
-      deliver_or_decline(m, entries, content)
+      deliver_or_decline(m, entries, content, parts)
     else
       {:ignore, :no_batch_to_background, m}
     end
@@ -298,15 +298,15 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   # overflow banner). Dispatching it from here would skip both decisions and
   # append a message the context cannot hold, with the batch's own result still
   # to come.
-  defp deliver_or_decline(m, entries, content) do
+  defp deliver_or_decline(m, entries, content, parts) do
     # The delivered message in the batch's own mode, built by the same
-    # `Inbox.build_drained_message/3` every other drain shape uses. The
+    # `Inbox.build_drained_message/4` every other drain shape uses. The
     # executor's peek has already applied the mode to `state.live.mode`, and
     # `Turn.prepare/1` rebuilt the context from it, so `ctx.mode` is the winning
     # mode — and the builder is what carries a drained batch's `fulfilled_ids`
     # onto the message, so a notice delivered *here* marks its promise kept
     # exactly as one drained at the turn boundary does.
-    user = Inbox.build_drained_message(entries, content, m.work.ctx.mode)
+    user = Inbox.build_drained_message(entries, content, parts, m.work.ctx.mode)
 
     if fits?(m, user) do
       background(m, entries, user)

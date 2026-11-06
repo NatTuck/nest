@@ -14,10 +14,10 @@ defmodule Nest.Tools do
   require Logger
 
   alias Nest.Agents.Agent.BatchPlan
-  alias Nest.Agents.Agent.CapCalculator
   alias Nest.Agents.Agent.Config
   alias Nest.LLM.Tool
   alias Nest.Sandbox.Mounts
+  alias Nest.Tokens.Budget
   alias Nest.Tokens.ConversationSize
 
   alias Nest.Tools.{
@@ -135,14 +135,15 @@ defmodule Nest.Tools do
   @doc """
   JSON schema fragment for the `max_result_tokens` call arg.
   The LLM sees this on the tools that take it and learns it can
-  request a specific cap. The BatchSizer treats this as an
-  inline-vs-summary threshold:
+  choose the inline size. `Nest.Agents.Agent.ResultPolicy` treats it as
+  the `requested` half of `min(requested, budget)`:
 
-    * `shell-cmd` → if exceeded, write the full output to a
-      tmp file and return a path-and-head summary inline.
-    * `file-read` → if exceeded, return an error result with
-      the actual vs. requested token counts.
-    * Other tools → bounded output by construction (cap unreachable).
+    * every tool but `file-read` → if exceeded, write the full output to
+      the agent's scratch dir and inline a pointer + preview.
+    * `file-read` → if exceeded, return an error result with the actual
+      vs. requested token counts, because the content is already at the
+      path the call named.
+    * Other tools → bounded output by construction (limit unreachable).
 
   Tools whose result is already a fixed-size confirmation or a
   pointer (`agents-query`, `agents-spawn`, `agents-send`,
@@ -162,20 +163,20 @@ defmodule Nest.Tools do
   same `SubAgentResults.bound/3` every response-bearing sub-agent tool
   goes through.
 
-  The default is 80% of the remaining usable context window.
-  The LLM may only lower the cap (e.g. to force a summary/error
-  path even when full content fits inline).
+  The default is the tool's own: 8_000 for most, 32_000 for `file-read`.
+  Asking for more is allowed and is honoured up to the budget the context
+  actually leaves, so this is the knob for a result you expect to be large.
   """
   @spec max_result_tokens_schema() :: map()
   def max_result_tokens_schema do
     %{
       "type" => "integer",
       "description" =>
-        "Maximum tokens for the inline result. Defaults to 80% of the " <>
-          "remaining usable context window. Lower this to force a " <>
-          "path-and-head summary (shell-cmd) or an error result " <>
-          "(file-read); the value is clamped to the 80% default if you " <>
-          "ask for more."
+        "Maximum tokens for the inline result. Defaults to 8000 (32000 for " <>
+          "file-read). Ask for more when you expect a large result; the value " <>
+          "is capped by the context budget actually left. Over it, the result " <>
+          "is saved to a file and you get a pointer plus a preview (or, for " <>
+          "file-read, an error naming the size)."
     }
   end
 
@@ -198,7 +199,7 @@ defmodule Nest.Tools do
   # The `context-check` tool reports current context usage. The
   # function receives the live tool context (messages +
   # context_limit) via `BatchSizer.do_execute/2`, and computes
-  # real stats using the same math as `CapCalculator`/`BatchSizer`
+  # real stats using the same math as `ResultPolicy`/`BatchSizer`
   # so the LLM is told the exact budget that will be enforced on
   # its tool results.
   defp context_check_function do
@@ -225,7 +226,7 @@ defmodule Nest.Tools do
     case Map.get(context, :context_limit) do
       limit when is_integer(limit) and limit > 0 ->
         used = ConversationSize.size(messages)
-        usable = CapCalculator.usable_remaining(%{context_limit: limit, messages: messages})
+        usable = Budget.remaining(messages, limit)
         pct = round(used / limit * 100)
 
         {:ok,

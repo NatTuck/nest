@@ -249,17 +249,17 @@ defmodule Nest.Tools.InspectFile do
 
   # JSON schema fragment for the `max_result_tokens` call arg.
   # The LLM sees this on the tools that take it and learns it can
-  # request a specific cap. The BatchSizer treats this as an
-  # inline-vs-summary threshold; `file-inspect`'s output is bounded by
-  # construction so the cap is unreachable in practice, but the schema
-  # entry is kept consistent with the rest of the tool set.
+  # request a specific size. `ResultPolicy` treats it as the `requested`
+  # half of `min(requested, budget)`; `file-inspect`'s output is bounded
+  # by construction so the limit is unreachable in practice, but the
+  # schema entry is kept consistent with the rest of the tool set.
   defp max_result_tokens_schema do
     %{
       "type" => "integer",
       "description" =>
-        "Maximum tokens for the inline result. Defaults to 80% of the " <>
-          "remaining usable context window. For `file-inspect` the cap " <>
-          "is unreachable in practice (output is bounded)."
+        "Maximum tokens for the inline result. Defaults to 8000, capped by " <>
+          "the context budget left. For `file-inspect` the limit is " <>
+          "unreachable in practice (output is bounded)."
     }
   end
 

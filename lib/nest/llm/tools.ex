@@ -87,7 +87,7 @@ defmodule Nest.LLM.Tools do
   Returns the underlying `{:ok, content}` / `{:error, reason}` tuple
   from the tool's function without wrapping it in a
   `ToolResult` struct. Used by `Nest.Agents.Agent.BatchSizer`,
-  which sizes each result and decides keep-or-substitute before
+  which sizes each result and admits it before
   persisting.
 
   A tool may also return `{:waiting, content}`: the call registered interest

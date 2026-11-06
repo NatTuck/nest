@@ -304,7 +304,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       state = inbox_state([peer], "act")
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
 
-      {state, {:inbox_drain, [^peer], content}} = run({:drain_inbox}, state)
+      {state, {:inbox_drain, [^peer], content, _parts}} = run({:drain_inbox}, state)
 
       assert content == "[From agent peer | mode: act]\npeer note"
       assert state.live.inbox == [peer]
@@ -394,7 +394,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       # An agent-run head is delivered under the agent's current mode; the peek
       # consumes nothing, so the queue is untouched (including the human entry
       # behind the batch).
-      {state, {:inbox_drain, [^peer], content}} =
+      {state, {:inbox_drain, [^peer], content, _parts}} =
         run({:drain_inbox}, inbox_state([peer, human], "act"))
 
       assert state.live.inbox == [peer, human]
@@ -404,7 +404,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       # A lone human message runs in its own mode, and it carries its own
       # header: a queued human message must read like one typed while the agent
       # was idle (issue #31 decision 8).
-      {state, {:inbox_drain, [^human], content}} =
+      {state, {:inbox_drain, [^human], content, _parts}} =
         run({:drain_inbox}, inbox_state([human], "act"))
 
       assert state.live.inbox == [human]
@@ -416,7 +416,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       # mode nothing can honour.
       bogus = %{human | mode: "bogus"}
 
-      {state, {:inbox_drain, [^bogus], _content}} =
+      {state, {:inbox_drain, [^bogus], _content, _parts}} =
         run({:drain_inbox}, inbox_state([bogus], "act"))
 
       assert state.live.mode == "act"

@@ -10,6 +10,7 @@ defmodule MachineTest do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Compaction
   alias Nest.Messages.Part
+  alias Nest.Tokens.Budget
 
   describe "vocabulary" do
     test "blocked phases are a subset of the declared phases" do
@@ -327,6 +328,50 @@ defmodule MachineTest do
       {:ok, actions, _next} = Machine.step(m, :iterate)
 
       assert Enum.any?(actions, &match?({:spawn_http, _}, &1))
+    end
+  end
+
+  describe "the send gate" do
+    import ExUnit.CaptureLog
+
+    test ":iterate compacts instead of sending a list that is over its budget" do
+      # The gate is a never-happen tripwire: `start_chat/3`, the batch preflight
+      # and `ResultPolicy` all keep the live list inside `L - C`, so this path is
+      # unreachable in normal operation. It exists because a conversation that
+      # is somehow over budget must not reach the provider — the provider's 400
+      # is a bug report, not a recovery path — and the only thing that can help
+      # is a compaction.
+      base = state_at(:generating)
+
+      # A real `usage` anchor prices the list without tokenizing it: 90_000
+      # input + 100 output against a 100_000 window whose reserve is 20_000.
+      big =
+        {:assistant,
+         %Nest.Messages.Assistant{
+           parts: [%Part.Text{text: "done"}],
+           usage: %{input_tokens: 90_000, output_tokens: 100}
+         }}
+
+      ctx = %{
+        base.work.ctx
+        | messages: base.work.ctx.messages ++ [{:user, user()}, big, {:user, user()}]
+      }
+
+      # The premise, so the assertion below cannot pass on a list that fits.
+      refute Budget.fits?(ctx.messages, 100_000)
+
+      log =
+        capture_log(fn ->
+          {:ok, actions, next} = Machine.step(%{base | work: %{base.work | ctx: ctx}}, :iterate)
+
+          refute Enum.any?(actions, &match?({:spawn_http, _}, &1))
+
+          # Staging a compaction is what the gate does instead: the machine
+          # enters a compaction turn rather than a chat one.
+          assert next.kind == :compaction
+        end)
+
+      assert log =~ "send gate"
     end
   end
 end

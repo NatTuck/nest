@@ -37,33 +37,27 @@ defmodule Nest.Agents.Agent.BatchSizer do
   `Nest.Tokens.Estimator.estimate/1` (which applies the 20%
   safety multiplier), so they are conservative upper bounds on
   what the LLM will tokenize.
+  ## Phase 3: One admission for every result
 
-  ## Phase 3: Keep-or-substitute (all tools)
+  Each result goes through `Nest.Agents.Agent.ResultPolicy`: it is kept whole
+  when it fits `min(requested, budget)`, written to the agent's scratch dir and
+  replaced by a pointer + preview when it does not, or refused with a size hint
+  when the content is already at an address the model named. A success, an
+  error, a cancellation and a wait are the same question, so they take the same
+  path.
 
-  For each result, decide keep-full or replace-with-substitute such that
-  the running total never exceeds `context_limit`. Earlier results get
-  keep-full; later results get substituted as the budget tightens. An
-  over-budget result is ALWAYS substituted — never kept full. The
-  substitute writes the full output to the agent's scratch dir and
-  returns a pointer + head of bounded size.
+  `budget` is what is left after the results admitted before it, so a batch
+  shares one allowance and no result — and no batch — can exceed the window.
 
-  ## Tool-result cap (`max_result_tokens`)
+  ## `max_result_tokens`
 
-  The LLM may pass `max_result_tokens` in a tool call's arguments
-  to ask for a tighter inline cap. The effective cap is computed
-  once per batch as 80% of the remaining usable context window;
-  the LLM may only lower the cap (raise it past the 80% default
-  is clamped). Per-tool behavior when the cap is exceeded:
+  The LLM may pass `max_result_tokens` to choose the inline size for a call. It
+  is the `requested` half of `min(requested, budget)`: above the tool's default
+  is allowed, and only the remaining budget caps it. See `ResultPolicy`.
 
-    * `file-read` → return `{:error, "File is X tokens
-      which exceeds your requested limit of Y."}`.
-    * Every other tool → write full output to tmp, return
-      path-and-head substitute inline.
-
-  `ToolLoop` runs `execute/2` for the regular tools, then cooks the
-  merged regular + sub-agent entries once via `cook/2`, so the budget
-  pass covers the whole batch and the invariant holds across tool
-  families.
+  `ToolLoop` runs `execute/2` for the regular tools, then admits the merged
+  regular + sub-agent entries once via `cook/2`, so the whole batch shares one
+  budget across tool families.
 
   When `ctx.context_limit` is `nil` (or non-positive), `preflight`
   matches no clause and raises — the limit is never optional, and a
@@ -73,7 +67,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   alias Nest.Agents.Agent.BatchSizer.FilePolicy
   alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Agents.Agent.BatchSizer.ProjectedSize
-  alias Nest.Agents.Agent.CapCalculator
+  alias Nest.Agents.Agent.ResultPolicy
   alias Nest.Agents.SpaceGate
   alias Nest.LLM.Tools, as: LLMTools
   alias Nest.Messages.Part
@@ -113,7 +107,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
 
   @doc """
   Run a batch of tool calls through preflight → execute →
-  keep-or-substitute. Returns a list of `ToolResult` structs in
+  admission. Returns a list of `ToolResult` structs in
   input order, ready for the chat task to append as a single
   `{:tool, _}` message.
 
@@ -236,18 +230,6 @@ defmodule Nest.Agents.Agent.BatchSizer do
     Budget.size(ctx.messages || []) + ceil(projected)
   end
 
-  @doc """
-  Remaining usable context window in tokens. Delegates to
-  `Nest.Agents.Agent.CapCalculator.usable_remaining/1`.
-  """
-  defdelegate usable_remaining(ctx), to: CapCalculator
-
-  @doc """
-  The effective inline-result cap for a tool call. Delegates to
-  `Nest.Agents.Agent.CapCalculator.effective_max_result_tokens/2`.
-  """
-  defdelegate effective_max_result_tokens(tool_call, usable), to: CapCalculator
-
   # ---- Phase 1: per-tool projected sizes (pre-execution) ----
   #
   # The per-tool projection and the batch sum both live in
@@ -347,7 +329,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   # substituted (`handle_over_cap`/`offload`), never kept full.
 
   @doc """
-  Turn raw `entry`s into `ToolResult`s, applying the keep-or-substitute
+  Turn raw `entry`s into `ToolResult`s, applying the admission
   pass over the whole (input-ordered) list.
 
   This is the single budget pass. `run/2` uses it for a standalone batch,
@@ -365,17 +347,13 @@ defmodule Nest.Agents.Agent.BatchSizer do
   def cook(entries, _ctx), do: finalize(entries, false)
 
   defp reduce_entries(entries, ctx) do
-    limit = ctx.context_limit
-    base = Budget.size(ctx.messages || [])
-    usable = usable_remaining(ctx)
-    reserve = Reserve.compaction_reserve(limit)
-    initial = %{running: base + reserve, limit: limit, usable: usable}
+    budget =
+      case ResultPolicy.window(ctx) do
+        {:ok, left} -> left
+        :none -> 0
+      end
 
-    {cooked, _final_acc} =
-      Enum.map_reduce(entries, initial, fn entry, acc ->
-        apply_one_with_acc(entry, ctx, acc)
-      end)
-
+    {cooked, _left} = Enum.map_reduce(entries, budget, &admit_one(&1, ctx, &2))
     cooked
   end
 
@@ -434,193 +412,104 @@ defmodule Nest.Agents.Agent.BatchSizer do
     }
   end
 
-  defp keep_full?(_tc, %{limit: limit, running: running}, full_size),
-    do: running + full_size <= limit
+  defp spend(budget, size) when is_integer(budget) and is_integer(size),
+    do: max(0, budget - size)
 
-  defp advance(%{running: running} = acc, by) do
-    %{acc | running: running + by}
-  end
+  defp message_size(text), do: Estimator.estimate(text) + per_message_overhead()
 
-  # Like `apply_one/3` but threaded through the running acc.
-  # Returns `{cooked_entry, updated_acc}`.
+  # One admission for every result, whatever its kind: a success, an error, a
+  # cancellation and a wait are the same content question, so they take the same
+  # path. Only the payload's *type* differs below, and only the two non-text
+  # ones need anything the policy cannot say.
   #
-  # Decision tree:
-  #   1. Compute `full_size` for the actual content.
-  #   2. If the cap (`effective_max_result_tokens/2`) is set and
-  #      `full_size > cap`, route per-tool (`handle_over_cap/5`):
-  #        * `file-read`  → return an error result with a size hint. The cap
-  #          is an upper bound on what the preflight projects rather than a
-  #          matched number: `ProjectedSize.read_file_projection/2` clamps its
-  #          projection to this cap, so the preflight is never *below* what
-  #          this pass enforces.
-  #        * every other tool → `offload/5`: write the full output to scratch
-  #          and keep a bounded pointer + head inline.
-  #      Note what does NOT bound that substitute: `offload/5` sizes it against
-  #      `acc.limit - acc.running`, and `acc.limit` is the *context limit*, not
-  #      the cap. So "nothing over the cap goes inline" holds for `file-read`
-  #      and media only — it is not a property of every tool, and code that
-  #      wants a cap bound must not assume it.
-  #   3. Otherwise, decide keep-full vs. summarize against the
-  #      running batch budget (`keep_full?/3`). The batch budget
-  #      should always accommodate `full_size` post-preflight, but
-  #      every tool falls back to the substitute path (`offload/5`)
-  #      when it does not.
-  #
-  # A tool result that isn't storable text (invalid UTF-8, or valid
-  # UTF-8 containing NUL — e.g. `curl` dumping a download to stdout, or
-  # a hardware tool's NUL-padded output) never goes inline raw: it's
-  # written to the scratch file and replaced with a non-text `saved to
-  # <path>` pointer so the LLM is told the result is binary and can
-  # decide whether to inspect the file. When the binary is tiny
-  # (<= `@small_binary_max_bytes`), a lossy UTF-8 view is included
-  # inline too.
-  # A media result is priced at its modality's ceiling — the same number the
-  # preflight projects — and is NEVER substituted. You cannot summarize an
-  # image, so an over-cap attachment is an error the model can act on, exactly
-  # like `file-read`'s text over-cap path. Falling through to the binary
-  # machinery below would be worse than useless: it would write the base64 to
-  # a scratch file and hand the model a pointer to something it cannot see.
-  defp apply_one_with_acc({tc, :ok, {:media, part}}, _ctx, acc) do
+  # `budget` is what is left after the results admitted before this one, so a
+  # batch shares one allowance: the running total is the budget itself, which is
+  # why there is no second "does it still fit the batch" check.
+  defp admit_one({tc, :ok, {:media, part}}, _ctx, budget) do
     price = Estimator.estimate_media(part) + per_message_overhead()
-    cap = cap_for(tc, acc)
+    limit = ResultPolicy.limit(tc, budget)
 
-    if cap && price > cap do
-      error = media_over_cap_error(part, price, cap)
-      error_size = Estimator.estimate(error) + per_message_overhead()
-      {{tc, :error, error}, advance(acc, error_size)}
+    if price <= limit do
+      {{tc, :ok, {:media, part}}, spend(budget, price)}
     else
-      {{tc, :ok, {:media, part}}, advance(acc, price)}
+      error = media_over_cap_error(part, price, limit)
+      {{tc, :error, error}, spend(budget, message_size(error))}
     end
   end
 
-  defp apply_one_with_acc({tc, :ok, content} = entry, ctx, acc) do
-    if is_binary(content) and not Sanitize.text?(content) do
-      handle_binary_shell(tc, content, ctx, acc)
-    else
-      size_text_result(entry, ctx, acc)
+  defp admit_one({tc, kind, content}, ctx, budget) when is_binary(content) do
+    if Sanitize.text?(content),
+      do: admit_text(tc, kind, content, ctx, budget),
+      else: admit_binary(tc, kind, content, ctx, budget)
+  end
+
+  # The one place a tool result is kept, filed, or refused.
+  defp admit_text(tc, kind, content, ctx, budget) do
+    limit = ResultPolicy.limit(tc, budget)
+
+    case ResultPolicy.admit(content, limit, ResultPolicy.on_over(tc.name)) do
+      {:inline, size} ->
+        {{tc, kind, content}, spend(budget, size + per_message_overhead())}
+
+      {:file, size} ->
+        substitute(tc, kind, content, ctx, budget, size)
+
+      {:refuse, size} ->
+        error = ResultPolicy.refusal(size, limit, tc.name)
+        {{tc, :error, error}, spend(budget, message_size(error))}
     end
   end
 
-  # `:cancelled` is cooked exactly like `:error` — an error result whose content is
-  # the reason — because the only difference is the log line `finalize/2` skips for
-  # it, and the kind it keeps so that line can tell them apart.
-  defp apply_one_with_acc({tc, kind, reason}, _ctx, acc) when kind in [:error, :cancelled] do
-    error_size = Estimator.estimate(reason) + per_message_overhead()
-    {{tc, kind, reason}, advance(acc, error_size)}
-  end
+  # A result too large to inline goes to the scratch dir and comes back as a
+  # pointer + preview. When that write fails there is no quiet fallback: the
+  # result becomes an error saying so, because the alternative is inlining it
+  # (and relying on the send gate) or dropping it silently.
+  defp substitute(tc, kind, content, ctx, budget, size) do
+    case Overflow.substitute(content, ctx, ResultPolicy.label(tc.name), write_prefix(tc.name)) do
+      {:ok, pointer} ->
+        {{tc, kind, pointer}, spend(budget, message_size(pointer))}
 
-  # A wait tool's result is sized exactly like an ordinary text result — it is a
-  # short confirmation — and only the kind is re-tagged, so `entry_parts/3` can
-  # stamp the part's `state` (issue #54).
-  defp apply_one_with_acc({tc, :waiting, content}, ctx, acc) do
-    {{tc, _ok, cooked}, acc} = apply_one_with_acc({tc, :ok, content}, ctx, acc)
-    {{tc, :waiting, cooked}, acc}
-  end
-
-  # The original post-execution sizing path for text tool results.
-  defp size_text_result({tc, :ok, content}, ctx, acc) do
-    full_size = Estimator.estimate(content) + per_message_overhead()
-    cap = cap_for(tc, acc)
-
-    if cap && full_size > cap do
-      handle_over_cap(tc, content, full_size, ctx, acc)
-    else
-      fit_in_batch_budget(tc, content, full_size, ctx, acc)
+      :error ->
+        error = ResultPolicy.offload_failure(size)
+        {{tc, :error, error}, spend(budget, message_size(error))}
     end
   end
 
-  # The cap for this call, or `nil` when the batch has no usable window left.
-  #
-  # `effective_max_result_tokens/2` requires a positive window, and a spent one
-  # is reachable here: `cook/2` runs on its own for a merged regular +
-  # sub-agent batch, without the preflight that would have refused it, and
-  # `reduce_entries/2` sets `usable: 0` when the conversation has already
-  # consumed the content budget. Treating that as "no cap" falls through to the
-  # batch-budget pass, which substitutes an over-budget result — the right
-  # answer, where raising would crash the turn.
-  defp cap_for(tc, %{usable: usable}) when is_integer(usable) and usable > 0,
-    do: effective_max_result_tokens(tc, usable)
-
-  defp cap_for(_tc, _acc), do: nil
-
-  # A non-text tool result: always write the raw bytes to the scratch
-  # file and return a `saved to <path>` pointer inline that tells the
-  # model the output is non-text/binary. The model never sees the raw
-  # bytes inline (except the lossy view below). For tiny binaries a
-  # lossy UTF-8 view rides along so the model can read the contents
-  # without opening the file.
-  defp handle_binary_shell(tc, content, ctx, acc) do
+  # Non-text output (invalid UTF-8, or NUL that jsonb rejects) never goes inline
+  # raw: it is written and described by a pointer, so the model is told the
+  # result is binary and where the bytes are. A tiny binary also gets a lossy
+  # view inline, which is the only case where any of its bytes reach the model.
+  defp admit_binary(tc, kind, content, ctx, budget) do
     bytes = byte_size(content)
-    path = Overflow.write(content, ctx, write_prefix(tc.name), "txt")
-    location = if path, do: "saved to #{path}", else: "temp file unavailable"
-    pointer = "#{output_label(tc)} (non-text binary output, #{bytes} bytes) #{location}."
+    label = "#{ResultPolicy.label(tc.name)} (non-text binary output, #{bytes} bytes)"
 
-    inline =
-      if bytes <= @small_binary_max_bytes do
-        body = Overflow.to_valid_utf8(content)
+    case Overflow.write(content, ctx, write_prefix(tc.name), "txt") do
+      nil ->
+        error = ResultPolicy.offload_failure(message_size(content))
+        {{tc, :error, error}, spend(budget, message_size(error))}
 
-        if body == "" do
-          pointer
-        else
-          pointer <> "\n\n" <> body
-        end
-      else
-        pointer
-      end
+      path ->
+        pointer = "#{label} saved to #{path}."
 
-    inline_size = Estimator.estimate(inline) + per_message_overhead()
+        inline =
+          if bytes <= @small_binary_max_bytes, do: binary_view(pointer, content), else: pointer
 
-    if acc.running + inline_size <= acc.limit do
-      {{tc, :ok, inline}, advance(acc, inline_size)}
-    else
-      # No room for the inline view. Trim to whole lines, but pass an
-      # explicit marker: a generic one would only say "written to a scratch
-      # file" and drop the path. `pointer` already names the scratch file
-      # and byte count (or says the temp file was unavailable), so the
-      # marker reads correctly in both cases.
-      budget = max(0, acc.limit - acc.running - per_message_overhead())
-      no_room = pointer <> " [inline view elided]"
-      trimmed = Overflow.head_text(inline, budget, no_room)
-      trimmed_size = Estimator.estimate(trimmed) + per_message_overhead()
-      {{tc, :ok, trimmed}, advance(acc, trimmed_size)}
+        {{tc, kind, inline}, spend(budget, message_size(inline))}
     end
   end
 
-  # Decision for tools whose output fits the inline cap but might
-  # overflow the running batch budget. Same routing as
-  # `handle_over_cap/5`, but the trigger is the batch budget rather
-  # than the inline cap.
-  defp fit_in_batch_budget(tc, content, full_size, ctx, acc) do
-    if keep_full?(tc, acc, full_size) do
-      {{tc, :ok, content}, advance(acc, full_size)}
-    else
-      offload(tc, content, ctx, acc)
-    end
-  end
-
-  # Per-tool routing when the inline cap is exceeded. The cap was set by
-  # `effective_max_result_tokens/2` — the LLM either asked for it (via
-  # `max_result_tokens`) or got the 80% default. `file-read` returns an
-  # explicit error (its caller asked for a size check); every other tool
-  # is substituted with an in-budget pointer + head. We never keep an
-  # over-budget result inline.
-  defp handle_over_cap(%ToolCall{name: "file-read"} = tc, _content, full_size, _ctx, acc) do
-    cap = effective_max_result_tokens(tc, acc.usable)
-    error = "File is #{full_size} tokens which exceeds your requested limit of #{cap}."
-    error_size = Estimator.estimate(error) + per_message_overhead()
-    {{tc, :error, error}, advance(acc, error_size)}
-  end
-
-  defp handle_over_cap(tc, content, _full_size, ctx, acc) do
-    offload(tc, content, ctx, acc)
-  end
+  # The lossy view of a small binary, appended to its pointer. There is no
+  # empty-view branch: `to_valid_utf8/1` never answers `""` for a non-empty
+  # binary — every byte it cannot read becomes a replacement character — and an
+  # empty one is text, so it never reaches `admit_binary/5` at all.
+  defp binary_view(pointer, content), do: pointer <> "\n\n" <> Overflow.to_valid_utf8(content)
 
   # Media gets its own wording because the remedy differs: the model cannot
   # retry with a smaller `max_result_tokens` and get a summarized image, so it
   # has to be told the attachment was dropped rather than shortened.
-  defp media_over_cap_error(%Part.Media{} = part, price, cap) do
+  defp media_over_cap_error(%Part.Media{} = part, price, limit) do
     "File is #{human_bytes(part.bytes)} of #{part.media_type} (~#{price} tokens), which " <>
-      "exceeds your requested limit of #{cap}. Media cannot be summarized or " <>
+      "exceeds your requested limit of #{limit}. Media cannot be summarized or " <>
       "offloaded, so it was not attached."
   end
 
@@ -639,33 +528,6 @@ defmodule Nest.Agents.Agent.BatchSizer do
     source = if part.path, do: " from #{part.path}", else: ""
     "Read #{human_bytes(part.bytes)} #{part.media_type}#{source}; attached below."
   end
-
-  # Replace an oversized result with an in-budget pointer + head. The
-  # block is sized to the remaining batch budget, so it always fits.
-  # This is the ONLY path for an over-budget result — keeping the full
-  # content inline would violate the budget invariant.
-  defp offload(tc, content, ctx, acc) do
-    budget = max(0, acc.limit - acc.running - per_message_overhead())
-
-    inline =
-      Overflow.substitute(content, ctx, output_label(tc), budget, write_prefix(tc.name))
-
-    inline_size = Estimator.estimate(inline) + per_message_overhead()
-    {{tc, :ok, inline}, advance(acc, inline_size)}
-  end
-
-  # Human-readable label for a substituted result, naming the tool and
-  # (when present) its identifying argument.
-  defp output_label(%ToolCall{name: "shell-cmd", arguments: args}),
-    do: "Command output of '#{arg(args, "command")}'"
-
-  defp output_label(%ToolCall{name: "shell-wait", arguments: args}),
-    do: "Output of shell-wait #{arg(args, "id")}"
-
-  defp output_label(%ToolCall{name: name}), do: "Output of #{name}"
-
-  defp arg(args, key) when is_map(args), do: Map.get(args, key, "")
-  defp arg(_args, _key), do: ""
 
   # Scratch-file prefix. Shell results keep the historical "exec" prefix
   # (the docs/model refer to it); everything else is named after the tool.

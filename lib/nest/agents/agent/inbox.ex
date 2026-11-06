@@ -145,7 +145,6 @@ defmodule Nest.Agents.Agent.Inbox do
   alias Nest.Agents.Agent.Turn.Backgrounded
   alias Nest.Agents.Agent.Watch
   alias Nest.Messages.Segment
-  alias Nest.Messages.User
 
   require Logger
 
@@ -554,22 +553,26 @@ defmodule Nest.Agents.Agent.Inbox do
 
   # The LLM-facing rendering of a drain batch lives in `Render` — the seam's
   # single owner — and these delegates keep `Inbox` the one public surface a
-  # drain caller reaches for, exactly as the `Delivery` delegates below do for
-  # the consume API. The rendering rules are documented there.
+  # drain caller reaches for, as the `Delivery` delegates below do for the
+  # consume API. The rendering rules are documented there.
 
-  @doc """
-  Combine one drain batch and, when over the async-message cap, offload the
-  text to the agent's scratch dir. Returns the content string to deliver.
-  """
-  @spec combine_and_offload([entry()], Agent.t()) :: String.t()
+  # One drain batch's admission: whole when it fits, offloaded when it does not.
+  @spec combine_and_offload([entry()], Agent.t()) ::
+          {:ok, String.t(), [Nest.Messages.Segment.t()] | nil} | {:error, String.t()}
   defdelegate combine_and_offload(entries, state), to: Render
 
+  # One message's admission: whole when it fits, offloaded when it does not.
+  # `{:error, reason}` means it could not be filed either, so the caller must
+  # not deliver it.
+  @spec admit_single(term(), Agent.t()) :: {:ok, term()} | {:error, String.t()}
+  defdelegate admit_single(message, state), to: Render
+
   @doc """
-  The user message a drained batch is delivered as: its rendered `content`,
-  the drain's `mode`, and the batch's metadata.
+  The user message a drained batch is delivered as: its rendered `content`, the
+  parts `combine_and_offload/2` stated (`nil` when it was delivered whole), the
+  drain's `mode`, and the batch's metadata. The spec is `Render`'s.
   """
-  @spec build_drained_message([entry()], String.t(), String.t()) :: {:user, User.t()}
-  defdelegate build_drained_message(entries, content, mode), to: Render
+  defdelegate build_drained_message(entries, content, parts, mode), to: Render
 
   @doc """
   The batch a drain delivers, selected from the FIFO head of `entries`.

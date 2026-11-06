@@ -258,7 +258,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
 
     @tag timeout: 5_000
     test "a tool result is still capped, and nothing is announced" do
-      # The cap is `CapCalculator.usable_remaining/1`'s — `L - C - size(messages)`
+      # The limit is `ResultPolicy`'s — `min(requested, L - C - size(messages))`
       # — and reads neither the setting nor the thresholds, so it must bite here
       # exactly as it does for a space that opted in. The seed is past 25%, which
       # is the threshold an ungated notice site would have fired on.
@@ -295,7 +295,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
 
       # Over the inline budget, so it is the pointer + head substitute, not the
       # whole 60 kB.
-      assert content =~ "Command output of 'cat big.txt'"
+      assert content =~ "Output of shell-cmd"
       assert content =~ "saved to"
       assert String.length(content) < 60_000
 

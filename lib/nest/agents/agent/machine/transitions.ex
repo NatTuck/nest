@@ -34,6 +34,9 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   alias Nest.LLM.Preflight
   alias Nest.Messages.MessageList
   alias Nest.Messages.ToolResult
+  alias Nest.Tokens.Budget
+
+  require Logger
 
   # Compile-time copies of the blocked phases so guards stay valid.
   @blocked [
@@ -256,8 +259,8 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     Compaction.stage(%{m | loop_count: 0, work: %{m.work | focus: focus}}, nil)
   end
 
-  def do_step(%{phase: :idle} = m, {:inbox_drain, entries, content}),
-    do: deliver_inbox(m, entries, content)
+  def do_step(%{phase: :idle} = m, {:inbox_drain, entries, content, parts}),
+    do: deliver_inbox(m, entries, content, parts)
 
   def do_step(%{phase: :idle} = m, {:http_ok, _ref, _response}), do: {:ignore, :stale_result, m}
 
@@ -353,8 +356,8 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # clause, but the phase stays `:generating`, so no transient idle is ever
   # broadcast (an idle-based `agents-wait` would resolve early, and a
   # `{:finalize, :clean}` would report a partial result to a parent).
-  def do_step(%{phase: :generating, kind: :chat} = m, {:inbox_drain, entries, content}),
-    do: deliver_inbox(m, entries, content)
+  def do_step(%{phase: :generating, kind: :chat} = m, {:inbox_drain, entries, content, parts}),
+    do: deliver_inbox(m, entries, content, parts)
 
   def do_step(%{phase: :generating, kind: :chat} = m, {:append_result, :invalid, reason}) do
     Failure.fail_turn(m, %ArgumentError{message: reason}, [])
@@ -375,8 +378,8 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # that would not fit the context — is a no-op that leaves the entries queued
   # for the turn boundary, so the boundary's own compaction/block decision is
   # the one that runs for them.
-  def do_step(%{phase: :executing_tools} = m, {:inbox_drain, entries, content}),
-    do: Backgrounding.step(m, entries, content)
+  def do_step(%{phase: :executing_tools} = m, {:inbox_drain, entries, content, parts}),
+    do: Backgrounding.step(m, entries, content, parts)
 
   def do_step(%{phase: :executing_tools} = m, {:tool_results, ref, results}) do
     if Machine.valid_ref?(m, ref), do: tool_results(m, results), else: {:ignore, :stale_result, m}
@@ -433,11 +436,11 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # turn boundary from issue #15 — start the delivered message's turn the same
   # way: build the user message in the current mode and hand it to
   # `start_chat/3`, which owns the fits / compaction / block decision. The
-  # message carries the batch's fulfilled ids (`Inbox.build_drained_message/3`):
+  # message carries the batch's fulfilled ids (`Inbox.build_drained_message/4`):
   # the notice answers the backgrounded calls it names, which is what lets a
   # later load tell a kept promise from a lost one.
-  defp deliver_inbox(m, entries, content) do
-    user = Inbox.build_drained_message(entries, content, m.work.ctx.mode)
+  defp deliver_inbox(m, entries, content, parts) do
+    user = Inbox.build_drained_message(entries, content, parts, m.work.ctx.mode)
     start_chat(m, {:user_message, user}, entries)
   end
 
@@ -493,10 +496,33 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   defp dispatch_http(m) do
     case Preflight.validate_request(messages(m)) do
       :ok ->
-        do_dispatch_http(m)
+        dispatch_gate(m)
 
       {:error, violations} ->
         Failure.fail_turn(m, %ArgumentError{message: Preflight.format_violations(violations)}, [])
+    end
+  end
+
+  # The send gate. Every request this agent makes is sized here first, so a
+  # conversation that is over its content budget cannot reach the provider —
+  # the provider's own 400 is not a recovery path, it is a bug report. This is
+  # a tripwire and should never fire: `start_chat/3`, the batch preflight and
+  # `ResultPolicy` all keep the list inside `L - C` before a request is built.
+  # When it does fire, the conversation is compacted (which is the only thing
+  # that can help) instead of being sent.
+  defp dispatch_gate(m) do
+    limit = m.work.ctx.context_limit
+    messages = m.work.ctx.messages
+
+    if is_integer(limit) and limit > 0 and not Budget.fits?(messages, limit) do
+      Logger.error(
+        "[preflight] send gate: agent's context is #{Budget.size(messages)} tokens " <>
+          "against a #{limit} limit; compacting instead of sending. This should be unreachable."
+      )
+
+      Compaction.stage(m, nil)
+    else
+      do_dispatch_http(m)
     end
   end
 

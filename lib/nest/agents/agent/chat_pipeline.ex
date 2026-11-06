@@ -9,6 +9,8 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   `Machine.step/2`; the pipeline only prepares the event.
   """
 
+  alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Messages.Header
@@ -48,7 +50,6 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # is what a restart and a later spawn read — so it is written down, and
     # nothing is announced: the message's own prefix is what states it.
     pre_mode = state.live.mode
-    state = %{state | live: %{state.live | mode: effective_mode, cancelled: false}}
 
     # The one builder (`Dispatch.build_user_message/3`), not a private copy:
     # `chat_or_queue/5` sends an idle agent straight here and a busy one to the
@@ -60,8 +61,23 @@ defmodule Nest.Agents.Agent.ChatPipeline do
         metadata: User.source_metadata(source)
       )
 
-    {:ok, state} = Turn.settle(state, {:chat_request, {:user_message, user}})
-    {:noreply, Turn.keep_mode(state, pre_mode)}
+    # The same admission a queued message gets (`Inbox.Render`): whole when it
+    # fits, offloaded to the agent's scratch dir with a pointer when it does
+    # not. It runs before the mode is applied, so a message that cannot be
+    # delivered leaves the agent's mode alone.
+    case Inbox.admit_single(user, state) do
+      {:ok, user} ->
+        state = %{state | live: %{state.live | mode: effective_mode, cancelled: false}}
+        {:ok, state} = Turn.settle(state, {:chat_request, {:user_message, user}})
+        {:noreply, Turn.keep_mode(state, pre_mode)}
+
+      {:error, reason} ->
+        # Too large to inline and impossible to file. Nothing is delivered and
+        # the operator is told why; inlining it would only move the failure to
+        # the send gate.
+        Broadcasts.error(state.space_id, state.name, nil, reason, "ChatPipeline.handle_chat")
+        {:noreply, state}
+    end
   end
 
   @doc """

@@ -88,56 +88,58 @@ call, skip *this and all remaining* unprocessed calls in the batch.
 
 ## Per-tool `max_result_tokens`
 
-The LLM may pass `max_result_tokens` in any tool call's arguments
-to ask for a tighter inline cap. The cap is enforced by
-`Nest.Agents.Agent.BatchSizer` as a **gate** (does the result fit
-inline, or do we route it through a different path?), never as a
-**shrinker** (we never truncate a result to fit). Two principles:
+The LLM may pass `max_result_tokens` in a tool call's arguments to choose how
+much of that call's result it wants inline. `Nest.Agents.Agent.ResultPolicy` is
+the one place the decision is made; `notes/no-truncation-or-overflow.md` is the
+full statement. In brief:
 
-1. **No truncations** — the LLM never sees a partially-degraded
-   tool result. Either full content or a summary pointing to a tmp
-   file, or an explicit error with the size counts.
-2. **No overflows** — the BatchSizer's preflight guarantees space
-   for the minimum size of every tool call in the batch *before*
-   any tool runs. The cap is the inline-vs-summary threshold,
-   not a sizing guarantee.
+1. **No truncations** — the LLM never sees a partially-degraded tool result.
+   Either the full content, or a pointer to a scratch file plus a short preview,
+   or an explicit error with the size counts.
+2. **No overflows** — the budget is decremented by each admitted result, so a
+   batch shares one allowance and no result (and no batch) can exceed the
+   window.
 
 ### Formula
 
-Computed once per batch in `BatchSizer.run/2`:
-
 ```
-usable       = context_limit - estimate_messages(messages) - @preflight_reserve
-default_cap  = floor(usable * 0.80)
-effective_cap = min(LLM_override, default_cap)   # LLM may only lower
+budget    = context_limit - compaction reserve - size(messages) - already admitted
+requested = max_result_tokens || the tool's default
+inline    = min(requested, budget)
 ```
 
-When `context_limit: nil`, no cap is enforced
-(degraded-but-hopeful path). When `usable ≤ 0`, the preflight has
-already refused the batch, so this branch is unreachable in
-practice.
+There is no share of the window. `requested` is 8_000 for most tools and 32_000
+for `file-read`; asking for more is allowed and is capped only by the budget.
+When `context_limit: nil` no admission runs (a degraded path: the runtime always
+resolves a limit at init).
 
-### Per-tool behavior when the cap is exceeded
+### Per-tool behavior over the limit
 
 | Tool | Action |
 |---|---|
-| `execute_command` | Write full output to `<tmp>/exec-<rand>.txt`. Return path-and-head summary inline. |
-| `read_file` | Return `{:error, "File is X tokens which exceeds your requested limit of Y."}`. |
-| `write_file` / `edit` / `context` / `inspect_file` | Log warning, keep full. Cap unreachable in practice (bounded output by construction). |
+| every tool but `file-read` | Write the full output to the agent's scratch dir. Inline a pointer naming the tool, the size and the path, plus a fixed ~200-token preview of whole lines. |
+| `file-read` | `{:error, "File is X tokens which exceeds your requested limit of Y."}` — the content is already at the path the call named, so the model narrows the read instead. |
 
-The LLM gets the structured error message in `read_file` so it
-knows whether to retry with a higher `max_result_tokens` or use
-`inspect_file` / `shell_cmd head|tail|sed -n` for a partial read.
+The error is what lets the model retry with a larger `max_result_tokens` or use
+`file-inspect` / `shell-cmd` with a line range.
 
-### Removal of per-tool struct field
+### Per-tool defaults, and why they are back
 
-The legacy `Tool` struct carried a per-tool `max_result_tokens`
-field (8,192 for `read_file` / `shell_cmd`, 256 for `write_file` /
-`edit`, 512 for `context`). That field is gone — tool caps are
-owned by the BatchSizer, not by individual tool builders. The
-JSON schema still advertises `max_result_tokens` on every tool so
-the LLM can request a tighter cap on a per-call basis, but the
-default is global (80% of remaining usable) rather than per-tool.
+The legacy `Tool` struct carried a per-tool `max_result_tokens` field (8,192 for
+`read_file` / `shell_cmd`, 256 for `write_file` / `edit`, 512 for `context`). It
+was removed, and the default became global: 80% of the remaining usable window,
+which the model could only lower.
+
+That global share is gone. The 80% figure was a ceiling nobody chose — a fresh
+1M-token conversation let one tool result take ~600k tokens inline — and a model
+that wanted a large result had no way to say so. `ResultPolicy.default_limit/1`
+now answers per tool (8_000, and 32_000 for `file-read`, which refuses rather
+than substituting and so pays a round trip for a small default), and
+`max_result_tokens` *raises* it up to the budget.
+
+This is not the old field returning: that was a **cap the model could not
+raise**, advertised in the schema but never read. This is a **default the model
+can raise**, and the schema and the enforcement read the same number.
 
 ## Compaction algorithm
 
