@@ -68,6 +68,14 @@ const REPLY_CLAUSE = ", agents-send reply required";
 
 const HEADER_RE =
   /^\[From (.+?)(, agents-send reply required)? \| mode: (.+)\]$/;
+
+// The charset a name and a mode are drawn from (`Nest.Name`, and the mode's
+// own class): no ` | `, `,`, `]` or newline. That is what makes a header one
+// unambiguous line, and it is why a name outside it is not a header at all —
+// the server's writer refuses to make one (`Nest.Messages.Header.line/3`), so a
+// line carrying one can only be hand-made, and reading it would let a name
+// smuggle a clause into the row.
+const WORD_RE = /^[a-z0-9_-]+$/;
 const LEGACY_LABEL_RE = /^\[Message from agent\s+"([^"]*)"/;
 
 // The sender kinds, and the appearance each one is drawn with. A sender must
@@ -114,6 +122,9 @@ export function parseHeaderLine(line) {
   const sender = parseWho(match[1]);
   if (!sender) return null;
 
+  // A mode outside the charset is not a mode: the writer refuses it too.
+  if (!WORD_RE.test(match[3])) return null;
+
   return {
     sender,
     replyRequired: match[2] === REPLY_CLAUSE,
@@ -127,10 +138,10 @@ function parseWho(who) {
   if (who === "agent") return { kind: "agent", name: null };
 
   const human = who.match(/^user @(.+)$/);
-  if (human) return { kind: "human", name: human[1] };
+  if (human && WORD_RE.test(human[1])) return { kind: "human", name: human[1] };
 
   const agent = who.match(/^agent (.+)$/);
-  if (agent) return { kind: "agent", name: agent[1] };
+  if (agent && WORD_RE.test(agent[1])) return { kind: "agent", name: agent[1] };
 
   return null;
 }

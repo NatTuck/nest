@@ -15,6 +15,28 @@ defmodule Nest.Messages.Header do
       [From nest runtime | mode: act]
       [From nest runtime | mode: compact]
 
+  ## The grammar
+
+  This module is the format's only spec. The client parses the same lines
+  (`assets/js/utils/header.js`), and the two are pinned together by a test that
+  runs the client's parser over this module's output.
+
+      header   := "[From " who [ reply ] " | mode: " mode "]"
+      who      := "nest runtime" | "user" [ " @" human ] | "agent" [ " " agent ]
+      reply    := ", agents-send reply required"
+      mode     := a `Nest.Modes` name (or `compact`, the compaction request's)
+      human    := a name (`Nest.Name`: [a-z0-9_-], at most 255 bytes)
+      agent    := an agent name, the same rule
+
+  **The charset is what makes the grammar unambiguous**: no name and no mode can
+  contain ` | `, `,`, `]` or a newline, so a line parses without escaping or
+  quoting and a header is exactly one line. `line/3` therefore *refuses* a name
+  or a mode outside it (`Nest.Name.valid?/1` for a name, the same character
+  class for a mode): a name that is not a slug is a bug upstream, and escaping
+  it silently would hide the bug and produce a line the client cannot parse.
+  That is what lets `parse/1` be strict — it accepts what `line/3` writes and
+  nothing else.
+
   * The human arm is `user`, and it **names the human** whenever the producer
     has the name: `human?` is the fact, `from` is the name, and the row states
     it as the address a reply goes to — `[From user @nat …]`, the same string
@@ -56,17 +78,35 @@ defmodule Nest.Messages.Header do
 
   @type sender :: :user | :runtime | {:user, String.t()} | {:agent, String.t() | nil}
 
+  @type parsed :: %{sender: sender(), reply_required: boolean(), mode: String.t()}
+
+  # The wire literals, in one place: the writer and the parser are the same
+  # grammar, so they must not spell it twice.
+  @from "[From "
+  @reply ", agents-send reply required"
+  @mode_sep " | mode: "
+  @close "]"
+
+  # What a mode may be made of: the same class a name uses, so a mode can never
+  # contain the separator or the closing bracket either. Every `Nest.Modes` name
+  # and `compact` match it.
+  @word ~r/\A[a-z0-9_-]+\z/
+
   @doc """
   The header line for `sender` in `mode`, with the reply marker when
   `reply_required?`.
   """
   @spec line(sender(), String.t(), boolean()) :: String.t()
-  def line(sender, mode, reply_required? \\ false)
+  def line(sender, mode, reply_required? \\ false) do
+    who = who(sender)
+    mode = assert_mode!(mode)
 
-  def line(sender, mode, true),
-    do: "[From #{who(sender)}, agents-send reply required | mode: #{mode}]"
-
-  def line(sender, mode, _reply_required?), do: "[From #{who(sender)} | mode: #{mode}]"
+    if reply_required? do
+      @from <> who <> @reply <> @mode_sep <> mode <> @close
+    else
+      @from <> who <> @mode_sep <> mode <> @close
+    end
+  end
 
   @doc """
   `text` with `sender`'s header at the head of its own line.
@@ -74,6 +114,77 @@ defmodule Nest.Messages.Header do
   @spec put(String.t(), sender(), String.t(), boolean()) :: String.t()
   def put(text, sender, mode, reply_required? \\ false),
     do: line(sender, mode, reply_required?) <> "\n" <> text
+
+  @doc """
+  The header at the head of `text`, parsed.
+
+  `:error` when the first line is not a header `line/3` could have written. Only
+  the current shape parses: the retired `[Message from agent "…"]` label and the
+  `[nest notice]` marker are the client's compat path for rows recorded before
+  the header (`assets/js/utils/header.js`), not this format.
+
+  The server has exactly one reader — this one — and `body/1` and `runtime?/1`
+  go through it rather than matching prefixes of their own.
+  """
+  @spec parse(String.t()) :: {:ok, parsed()} | :error
+  def parse(text) when is_binary(text) do
+    [line | _] = String.split(text, "\n", parts: 2)
+
+    with {:ok, who, reply?, mode} <- split(line),
+         true <- word?(mode),
+         {:ok, sender} <- parse_who(who) do
+      {:ok, %{sender: sender, reply_required: reply?, mode: mode}}
+    else
+      _ -> :error
+    end
+  end
+
+  def parse(_text), do: :error
+
+  # A header is exactly one line: the opening, a `who` clause, the reply marker
+  # when it is there, the mode, the closing bracket — and nothing else. Splitting
+  # on the two fixed separators is enough because no name and no mode can contain
+  # either (`line/3` refuses them), which is the whole reason the charset exists.
+  defp split(line) do
+    if String.starts_with?(line, @from) and String.ends_with?(line, @close) do
+      inner = binary_part(line, byte_size(@from), byte_size(line) - byte_size(@from) - 1)
+
+      with [who_and_reply, mode] when mode != "" <- String.split(inner, @mode_sep),
+           {:ok, who, reply?} <- split_reply(who_and_reply) do
+        {:ok, who, reply?, mode}
+      else
+        _ -> :error
+      end
+    else
+      :error
+    end
+  end
+
+  defp split_reply(who_and_reply) do
+    case String.split(who_and_reply, @reply) do
+      [who] when who != "" -> {:ok, who, false}
+      [who, ""] when who != "" -> {:ok, who, true}
+      _ -> :error
+    end
+  end
+
+  defp parse_who(who) do
+    case who do
+      "nest runtime" -> {:ok, :runtime}
+      "user" -> {:ok, :user}
+      "agent" -> {:ok, {:agent, nil}}
+      "user @" <> name -> parse_name({:user, name}, name)
+      "agent " <> name -> parse_name({:agent, name}, name)
+      _ -> :error
+    end
+  end
+
+  # The same rule the writer asserts, so the two sides accept exactly the same
+  # lines: a name the charset does not allow cannot have been written by
+  # `line/3`, and accepting it would let a line that is not a header through.
+  defp parse_name(sender, name) do
+    if Nest.Name.valid?(name), do: {:ok, sender}, else: :error
+  end
 
   @doc """
   Whether `text`'s header says the runtime wrote it.
@@ -86,7 +197,12 @@ defmodule Nest.Messages.Header do
   under-counts is worse than one that is merely less specific.
   """
   @spec runtime?(String.t()) :: boolean()
-  def runtime?(text), do: String.starts_with?(text, "[From nest runtime")
+  def runtime?(text) do
+    case parse(text) do
+      {:ok, %{sender: :runtime}} -> true
+      _ -> false
+    end
+  end
 
   @doc """
   The body behind `text`'s header, or `nil` when it has none.
@@ -99,7 +215,7 @@ defmodule Nest.Messages.Header do
   """
   @spec body(String.t()) :: String.t() | nil
   def body(text) do
-    with true <- String.starts_with?(text, "[From "),
+    with {:ok, _parsed} <- parse(text),
          [_header, body] <- String.split(text, "\n", parts: 2) do
       body
     else
@@ -168,8 +284,41 @@ defmodule Nest.Messages.Header do
 
   defp who(:user), do: "user"
   defp who(:runtime), do: "nest runtime"
-  defp who({:user, username}) when is_binary(username) and username != "", do: "user @#{username}"
+
+  defp who({:user, username}) when is_binary(username) and username != "",
+    do: "user @" <> assert_name!(username)
+
   defp who({:user, _username}), do: "user"
-  defp who({:agent, name}) when is_binary(name) and name != "", do: "agent #{name}"
+
+  defp who({:agent, name}) when is_binary(name) and name != "",
+    do: "agent " <> assert_name!(name)
+
   defp who({:agent, _name}), do: "agent"
+
+  # A name is a `Nest.Name`, and that is not a formality: the header has no
+  # escaping, so a name outside the charset would produce a line that either
+  # parses as something else or does not parse at all. A name that is not a slug
+  # is a bug upstream — refusing it here names the bug instead of hiding it.
+  defp assert_name!(name) do
+    if Nest.Name.valid?(name) do
+      name
+    else
+      raise ArgumentError,
+            "a header's sender name must be a Nest.Name ([a-z0-9_-]+, at most " <>
+              "#{Nest.Name.max_bytes()} bytes), got #{inspect(name)}: the header has no " <>
+              "escaping, so a name outside that charset cannot be written unambiguously"
+    end
+  end
+
+  defp assert_mode!(mode) do
+    if word?(mode) do
+      mode
+    else
+      raise ArgumentError,
+            "a header's mode must be [a-z0-9_-]+, got #{inspect(mode)}: the header has no " <>
+              "escaping, so a mode outside that charset cannot be written unambiguously"
+    end
+  end
+
+  defp word?(word), do: is_binary(word) and Regex.match?(@word, word)
 end
