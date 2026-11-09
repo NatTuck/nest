@@ -38,7 +38,9 @@ defmodule Nest.Tools.ShellPipesTest do
     "$(ls | head)",
     "`ls | head`",
     "(ls | head)",
-    "cat <<'EOF'\nls | head\nEOF"
+    "cat <<'EOF'\nls | head\nEOF",
+    # The realistic long-command false positive: `||` is not a pipe.
+    "make || exit 1"
   ]
 
   test "a pipe is refused above the bound and accepted at or below it" do
@@ -48,19 +50,17 @@ defmodule Nest.Tools.ShellPipesTest do
 
       assert :ok == ShellPipes.check(command, @short, false), command
       assert :ok == ShellPipes.check(command, 1_000, false), command
+
+      # A job's `timeout` is ignored, so `background: true` is the long case at
+      # any bound.
+      assert {:error, _} = ShellPipes.check(command, @short, true), command
+      assert {:error, _} = ShellPipes.check(command, @long, true), command
     end
   end
 
   test "a command with no top-level pipe is accepted at any bound" do
     for command <- @unpiped, timeout <- [@long, @short], background <- [false, true] do
       assert :ok == ShellPipes.check(command, timeout, background), command
-    end
-  end
-
-  test "a background job is unbounded, so its pipes are refused" do
-    for command <- @piped do
-      assert {:error, _} = ShellPipes.check(command, @short, true), command
-      assert {:error, _} = ShellPipes.check(command, @long, true), command
     end
   end
 

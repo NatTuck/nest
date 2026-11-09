@@ -67,12 +67,13 @@ defmodule Nest.Tools.ShellCmdTool do
       "limit does not apply to `background: true`. Every call is a shell job " <>
       "while it runs, so it is listed by `shell-list` and `shell-kill` can stop " <>
       "it; `background: true` returns a job id instead of waiting, and the job " <>
-      "outlives the call. A pipe is allowed only when the command's " <>
-      "`timeout` is #{div(ShellPipes.long_command_ms(), 1000)} seconds or less; " <>
-      "above that the call is refused, because a pipe throws away output the " <>
-      "tool keeps and a run that long is expensive to repeat for the part you " <>
-      "filtered away. For a long command, write a script that manages its own " <>
-      "log and run that. To ask for less output, use `max_result_tokens`."
+      "outlives the call. A pipe is allowed only for a foreground call whose " <>
+      "`timeout` is #{div(ShellPipes.long_command_ms(), 1000)} seconds or less, and " <>
+      "is refused above that and for any `background: true` call (a job is " <>
+      "unbounded), because a pipe throws away output the tool keeps and a run " <>
+      "that long is expensive to repeat for the part you filtered away. For a long " <>
+      "command, write a script that manages its own log and run that. To ask for " <>
+      "less output, use `max_result_tokens`."
   end
 
   defp shell_background_property do

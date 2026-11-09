@@ -313,6 +313,13 @@ defmodule Nest.Tools.ShellCmdTest do
     refute Map.has_key?(timeout, "maximum")
     assert tool.parameters_schema["required"] == ["command"]
 
+    # The pipe rule, in the model-visible description: a necessary condition
+    # (`timeout` ≤ 30s) is not sufficient, and a background job never qualifies.
+    # Both halves are stated because a model that read only the first would try
+    # `background: true` with a short timeout and get the same refusal.
+    assert tool.description =~ "only for a foreground call whose"
+    assert tool.description =~ "any `background: true` call"
+
     # The umask the transcript's preamble sets, stated to the model. 0022 is the
     # policy (a directory an agent creates must never be world-writable) and the
     # literal is deliberate: the description interpolates `Transcript.umask/0`,
@@ -370,6 +377,22 @@ defmodule Nest.Tools.ShellCmdTest do
 
     assert message =~ "pipes output"
     refute File.exists?(Path.join(ws, "refused.txt"))
+
+    # A job's `timeout` is ignored, so `background: true` is the long case at any
+    # bound — and the refusal must not offer a `timeout` it cannot honour.
+    assert {:error, background_message} =
+             function.function.(
+               %{"command" => "touch bg.txt | cat", "background" => true, "timeout" => 30},
+               nil
+             )
+
+    assert background_message =~ "a job's `timeout` is ignored"
+    refute File.exists?(Path.join(ws, "bg.txt"))
+
+    # Omitting `timeout` is the 60-second default, so it is the long case too:
+    # omitting it must not be the way around the rule.
+    assert {:error, _} = function.function.(%{"command" => "touch omitted.txt | cat"}, nil)
+    refute File.exists?(Path.join(ws, "omitted.txt"))
   end
 
   test "the tool rejects a detached-background marker, even with `background: true`", %{ws: ws} do

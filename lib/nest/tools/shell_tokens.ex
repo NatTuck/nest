@@ -60,9 +60,9 @@ defmodule Nest.Tools.ShellTokens do
   ## `split_last_stage/1`
 
   The byte boundary of the last top-level pipeline stage, as `{prefix,
-  last_stage}` — what a caller that has to *cut* a pipeline needs, since words
-  are returned with their quotes stripped and a token list cannot reproduce the
-  source text.
+  last_stage}` — what a caller that has to *locate* the last top-level pipe
+  needs, since words are returned with their quotes stripped and a token list
+  cannot reproduce the source text.
   """
 
   # Operators that consume the following word as their target (a filename or a
@@ -99,9 +99,9 @@ defmodule Nest.Tools.ShellTokens do
 
   Only a top-level operator is a stage boundary: a pipe inside a subshell, a
   command substitution, or a backtick substitution belongs to the stage that
-  contains it. This is what lets a caller cut a pipeline exactly instead of
-  re-joining tokens — words come back with their quotes stripped, so a token
-  list cannot reproduce the source text.
+  contains it. That is what makes "is there a top-level pipe?" a question about
+  this command's own pipeline and not about a nested one — words come back with
+  their quotes stripped, so a token list cannot answer it.
   """
   @spec split_last_stage(String.t()) :: :none | {String.t(), String.t()}
   def split_last_stage(command) when is_binary(command) do
