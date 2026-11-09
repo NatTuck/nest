@@ -33,8 +33,9 @@ defmodule Nest.Tools.ShellCmd.Background do
 
   `script` is the staged transcript's host path — `ShellJobs` removes it when the
   job ends, and this removes it when the job never starts. `script_sandbox` is
-  the spelling the backend's command line hands bash, and `opts` carries
-  `:agent_key`, `:agent_pid` and `:grace_ms`.
+  the spelling the backend's command line hands bash. `opts` carries
+  `:agent_key` (required — a job with no owner has no cap, no listing and no
+  sidebar row), `:agent_pid` and `:grace_ms`.
   """
   @spec run(String.t(), String.t(), String.t(), Mounts.t(), map() | nil, keyword()) ::
           {:ok, String.t()} | {:error, String.t()}
@@ -44,7 +45,9 @@ defmodule Nest.Tools.ShellCmd.Background do
       {:error, "Background jobs require a tmp directory"}
     else
       grace = Keyword.get(opts, :grace_ms, @default_grace_ms)
-      agent_key = Keyword.get(opts, :agent_key, {:unknown, :unknown})
+      # A background call is a tool call, and a tool call always carries the
+      # caller's identity: `Nest.Tools.agent_key/1` refuses one without it.
+      agent_key = Keyword.fetch!(opts, :agent_key)
 
       Logger.info(
         "Starting background shell job in #{Mounts.workspace(mounts) || "/"}: " <>

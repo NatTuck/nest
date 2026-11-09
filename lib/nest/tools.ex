@@ -188,12 +188,25 @@ defmodule Nest.Tools do
   `Nest.Agents.Agent.BatchSizer`, which forwards the in-process turn's
   identity; both the writer (`shell-cmd`) and the readers
   (`shell-list`/`shell-wait`/`shell-kill`) must derive it the same way.
-  `:unknown` is the defensive fallback for callers without an identity
-  (e.g. direct unit tests).
+
+  A context without an identity is a bug, not a case to absorb: it used to
+  default to `{:unknown, :unknown}`, one process-global key that two such
+  callers would have shared — a background-job cap and a job list belonging to
+  nobody. So it raises, and every test that drives one of these tools passes the
+  identity it means.
   """
-  @spec agent_key(map()) :: {term(), term()}
+  @spec agent_key(map()) :: {term(), String.t()}
   def agent_key(context) when is_map(context) do
-    {Map.get(context, :space_id, :unknown), Map.get(context, :agent_name, :unknown)}
+    space_id = Map.get(context, :space_id)
+    name = Map.get(context, :agent_name)
+
+    if is_nil(space_id) or not is_binary(name) do
+      raise ArgumentError,
+            "tool context has no agent identity: expected :space_id and :agent_name, got: " <>
+              inspect(Map.take(context, [:space_id, :agent_name]))
+    end
+
+    {space_id, name}
   end
 
   # The `context-check` tool reports current context usage. The

@@ -251,11 +251,15 @@ defmodule Nest.Tools.Pane do
   end
 
   # The pane is keyed by the *real* agent: a tool call with no identity would
-  # otherwise write to a bucket nothing ever reads.
+  # otherwise write to a bucket nothing ever reads. Checked here rather than
+  # letting `Nest.Tools.agent_key/1` raise — a tool answers its caller in words,
+  # and a missing identity is a thing the model can be told about.
   defp with_agent(context, fun) do
-    case Nest.Tools.agent_key(context) do
-      {space_id, name} when is_integer(space_id) and is_binary(name) -> fun.(space_id, name)
-      _key -> {:error, "This tool needs a running agent's identity."}
-    end
+    space_id = Map.get(context, :space_id)
+    name = Map.get(context, :agent_name)
+
+    if is_integer(space_id) and is_binary(name),
+      do: fun.(space_id, name),
+      else: {:error, "This tool needs a running agent's identity."}
   end
 end

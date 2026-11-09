@@ -94,15 +94,16 @@ defmodule Nest.Tools.ShellCmd do
       waiting. Requires a scratch directory (the job log lives under it, and
       the path reported to the agent is the sandbox's
       `/tmp/<agent-name>/shell-jobs/<id>.log`). Additional
-      opts: `:agent_key` (`{space_id, agent_name}`), `:agent_pid`, and
-      `:grace_ms` (how long to wait for an immediate exit before reporting
-      the job as running).
+      opts: `:agent_key` (`{space_id, agent_name}`, required for a background
+      call), `:agent_pid`, and `:grace_ms` (how long to wait for an immediate
+      exit before reporting the job as running).
     * `:register_job` - when `true`, the call is registered as a shell job for
       as long as it runs (#174), so `shell-list`, the job panel and `shell-kill`
       see it. Set only by `Nest.Tools.ShellCmdTool`; the file tools' and the
       sandbox helpers' commands (`execute_raw/4`, `Nest.Sandbox.write/4`) are
-      short internal steps and are not jobs. A call with no scratch directory,
-      or one whose `:agent_key` names no agent, runs unregistered.
+      short internal steps and are not jobs. A call with no scratch directory
+      runs unregistered; a call that registers must carry `:agent_key`, because
+      a job nobody can address is not a job.
 
   ## Returns
 
@@ -156,27 +157,23 @@ defmodule Nest.Tools.ShellCmd do
   # The registration attrs for a call that opted in (`:register_job`), or `nil`.
   #
   # Two calls are not registered, and neither loses anything by it: a call with no
-  # scratch directory has nowhere to put the job's log, and a call whose key names
-  # no agent — `Nest.Tools.agent_key/1`'s `:unknown` fallback, for a tool run
-  # outside an agent — has no reader, because every listing, the panel and the
-  # sidebar are keyed by `{space_id, name}` (`Frames` and `ExitNotice` skip such a
-  # key). Either way the command still runs, with the result it would have had.
+  # scratch directory has nowhere to put the job's log, and a call that does not
+  # opt in — the sandbox's own internal commands, which are short steps — has no
+  # reader, because every listing, the panel and the sidebar are keyed by
+  # `{space_id, name}`. Either way the command still runs, with the result it
+  # would have had.
   defp job_attrs(command, mounts, opts) do
-    agent_key = Keyword.get(opts, :agent_key, {:unknown, :unknown})
-
-    if Keyword.get(opts, :register_job, false) && Mounts.scratch(mounts) &&
-         names_agent?(agent_key) do
+    if Keyword.get(opts, :register_job, false) && Mounts.scratch(mounts) do
       %{
         command: command,
         mounts: mounts,
-        agent_key: agent_key,
+        # A call that registers is a tool call, and a tool call always carries
+        # the caller's identity: `Nest.Tools.agent_key/1` refuses one without it.
+        agent_key: Keyword.fetch!(opts, :agent_key),
         agent_pid: Keyword.get(opts, :agent_pid)
       }
     end
   end
-
-  defp names_agent?({_space_id, name}) when is_binary(name), do: true
-  defp names_agent?(_key), do: false
 
   @doc """
   Low-level sibling of `execute/4` for callers that need the raw exit code and

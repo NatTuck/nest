@@ -1,11 +1,5 @@
 defmodule Nest.Tools.ShellJobsTest do
-  # Runs `async: false`: one test here starts a background job under the tools'
-  # fallback key `{:unknown, :unknown}` (the key a context with no space and no
-  # name resolves to), and `Nest.Sandbox.ShellJobsTest` does the same in its own
-  # async module. The per-agent background cap is 1, so when the two overlap the
-  # second `start_child` is refused with "Background shell job limit reached" and
-  # the test fails on a coin flip. Every other key here is unique per test.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Messages.{ToolCall, ToolResult}
@@ -244,27 +238,6 @@ defmodule Nest.Tools.ShellJobsTest do
     assert text =~ "- #{running} (owner: #{elem(sibling, 1)}): running"
     assert text =~ "2 finished shell jobs are not listed."
     refute text =~ "echo done"
-  end
-
-  test "shell-list scope: space names a job whose key names no agent", %{tmp: tmp} do
-    # `Nest.Tools.agent_key/1` falls back to `{:unknown, :unknown}` for a caller
-    # with neither a space nor a name, so a space listing must render the missing
-    # owner rather than raise on a key that is not `{space_id, name}`.
-    key = {:unknown, :unknown}
-    on_exit(fn -> ShellJobs.stop_all(key) end)
-
-    id = start_job!("sleep 30", tmp, key)
-    assert %{agent: nil} = Enum.find(ShellJobs.list_space(:unknown), &(&1.id == id))
-
-    # No `space_id` in the context, so the tool's own key is the fallback too.
-    assert {:ok, text} =
-             invoke(
-               Tools.get_function("shell-list", Mounts.new(nil, nil)),
-               %{"scope" => "space"},
-               %{agent_pid: self()}
-             )
-
-    assert text =~ "- #{id} (owner: unknown): running"
   end
 
   test "shell-kill stops another agent's job in this space, and refuses another space's", %{

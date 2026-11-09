@@ -531,8 +531,8 @@ defmodule Nest.Agents.Agent.TmpSpace do
   `cleanup/3` for a caller that holds the key rather than the two parts — the
   shell-jobs manager's `drop_agent/3`, which removes an agent's scratch after
   it has stopped the agent's jobs. A key that is not `{integer, binary}` is
-  ignored rather than routed to `cleanup/3`: `{:unknown, :unknown}` and
-  `{nil, nil}` are real keys in that manager, and neither names a directory.
+  ignored rather than routed to `cleanup/3`: the tests' `{:test, name}` is a
+  real key in that manager, and it names no directory.
 
   `backend` is the dropped agent's backend, because it decides which root the
   scratch directory is under (see the moduledoc). The shell-jobs manager keeps

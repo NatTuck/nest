@@ -1,6 +1,12 @@
 defmodule Nest.ToolsTest do
   use ExUnit.Case, async: true
 
+  # A tool call carries the caller's agent identity: `Nest.Tools.agent_key/1`
+  # refuses a context without one (it used to default every such caller to a
+  # single `:unknown` key, which two of them would have shared). These tests are
+  # about commands, not identity, so this is the identity they mean.
+  @ctx %{space_id: :tools_test, agent_name: "tools-test"}
+
   import ExUnit.CaptureLog
 
   import Nest.Test.TmpCleanup
@@ -85,12 +91,12 @@ defmodule Nest.ToolsTest do
       File.write!(test_file, "Hello, World!")
 
       function = Tools.get_function("file-read", Mounts.new(workspace, nil))
-      assert {:ok, result} = function.function.(%{"path" => "test.txt"}, nil)
+      assert {:ok, result} = function.function.(%{"path" => "test.txt"}, @ctx)
       assert result == "Hello, World!"
 
       # A missing path is an error naming the path, not a crash.
       assert {:error, error_msg} =
-               function.function.(%{"path" => "nonexistent.txt"}, nil)
+               function.function.(%{"path" => "nonexistent.txt"}, @ctx)
 
       assert error_msg =~ "File not found: nonexistent.txt"
     end
@@ -99,7 +105,7 @@ defmodule Nest.ToolsTest do
       function = Tools.get_function("file-read", Mounts.new(nil, nil))
 
       assert {:error, "No workspace configured for this agent"} =
-               function.function.(%{"path" => "test.txt"}, nil)
+               function.function.(%{"path" => "test.txt"}, @ctx)
     end
 
     test "the modality gate answers before the byte gate", %{workspace: workspace} do
@@ -149,7 +155,7 @@ defmodule Nest.ToolsTest do
       function = Tools.get_function("file-read", Mounts.new(workspace, nil))
 
       for name <- ["nul.bin", "invalid.bin"] do
-        assert {:error, error_msg} = function.function.(%{"path" => name}, nil)
+        assert {:error, error_msg} = function.function.(%{"path" => name}, @ctx)
         assert error_msg =~ "non-text"
         assert error_msg =~ "file-inspect"
       end
@@ -231,7 +237,7 @@ defmodule Nest.ToolsTest do
       function = Tools.get_function("file-write", Mounts.new(nil, nil))
 
       assert {:error, "No workspace configured for this agent"} =
-               function.function.(%{"path" => "test.txt", "content" => "test"}, nil)
+               function.function.(%{"path" => "test.txt", "content" => "test"}, @ctx)
     end
   end
 
@@ -260,11 +266,11 @@ defmodule Nest.ToolsTest do
     } do
       function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
-      assert {:ok, result} = function.function.(%{"command" => "echo hello"}, nil)
+      assert {:ok, result} = function.function.(%{"command" => "echo hello"}, @ctx)
       assert result =~ "hello"
 
       # stderr is captured too, not discarded.
-      assert {:ok, result} = function.function.(%{"command" => "echo error >&2"}, nil)
+      assert {:ok, result} = function.function.(%{"command" => "echo error >&2"}, @ctx)
       assert result =~ "error"
 
       # A command with no output still gets a legible result rather than "".
@@ -272,7 +278,7 @@ defmodule Nest.ToolsTest do
                Function.execute(
                  function,
                  %{"command" => "true"},
-                 nil
+                 @ctx
                )
 
       assert result == "[Command executed successfully with no output]"
@@ -285,7 +291,7 @@ defmodule Nest.ToolsTest do
 
       log =
         capture_log(fn ->
-          assert {:error, result} = function.function.(%{"command" => "exit 1"}, nil)
+          assert {:error, result} = function.function.(%{"command" => "exit 1"}, @ctx)
           assert result =~ "Exit code"
         end)
 
@@ -298,7 +304,7 @@ defmodule Nest.ToolsTest do
       log =
         capture_log(fn ->
           assert {:error, result} =
-                   function.function.(%{"command" => "echo 'test' > /tmp/test_file.txt"}, nil)
+                   function.function.(%{"command" => "echo 'test' > /tmp/test_file.txt"}, @ctx)
 
           # Should fail with a read-only filesystem error
           assert result =~ "Read-only file system" or result =~ "Exit code"
@@ -314,7 +320,7 @@ defmodule Nest.ToolsTest do
 
       function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
-      assert {:ok, result} = function.function.(%{"command" => "cat test.txt"}, nil)
+      assert {:ok, result} = function.function.(%{"command" => "cat test.txt"}, @ctx)
       assert result =~ "workspace file"
     end
 
@@ -344,7 +350,7 @@ defmodule Nest.ToolsTest do
                      "echo 'test content' > /tmp/#{agent_name}/test_file.txt && " <>
                        "cat /tmp/#{agent_name}/test_file.txt"
                  },
-                 nil
+                 @ctx
                )
 
       assert result =~ "test content"
@@ -363,7 +369,7 @@ defmodule Nest.ToolsTest do
                Function.execute(
                  function,
                  %{"command" => "echo hello > /dev/null && echo done"},
-                 nil
+                 @ctx
                )
 
       assert result =~ "done"
@@ -375,7 +381,7 @@ defmodule Nest.ToolsTest do
                Function.execute(
                  function,
                  %{"command" => "ls /nonexistent-path 2>/dev/null; echo done"},
-                 nil
+                 @ctx
                )
 
       assert result =~ "done"
@@ -390,7 +396,7 @@ defmodule Nest.ToolsTest do
                  %{
                    "command" => "find /nonexistent-path-xyz -name foo 2>/dev/null; echo marker"
                  },
-                 nil
+                 @ctx
                )
 
       assert result =~ "marker"
@@ -475,27 +481,40 @@ defmodule Nest.ToolsTest do
                Function.execute(
                  function,
                  %{"command" => "echo hello"},
-                 %{caps: caps}
+                 Map.merge(@ctx, %{caps: caps})
                )
 
       assert result =~ "hello"
     end
 
-    test "tool falls back to default caps when the context is nil or has no caps key", %{
+    test "tool falls back to default caps when the context has no caps key", %{
       workspace: workspace
     } do
       function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
-      # The legacy path: callers that pass nil context get default caps.
-      assert {:ok, result} = function.function.(%{"command" => "echo ok"}, nil)
+      assert {:ok, result} = function.function.(%{"command" => "echo ok"}, @ctx)
       assert result =~ "ok"
 
-      # The catch-all path in caps_from_context/1: context is a map
-      # but lacks the :caps key.
+      # The catch-all path in caps_from_context/1: a context with an identity
+      # but no :caps key gets the defaults.
       assert {:ok, result} =
-               function.function.(%{"command" => "echo ok"}, %{other: "thing"})
+               function.function.(%{"command" => "echo ok"}, Map.put(@ctx, :other, "thing"))
 
       assert result =~ "ok"
+    end
+  end
+
+  describe "the agent identity a tool call must carry" do
+    test "a context without one is refused, because one global key is worse" do
+      # The identity is what keys a background job's cap, its listing and its
+      # sidebar row. A missing one used to default to `{:unknown, :unknown}` —
+      # one process-global key that two callers would have shared — so it is a
+      # raise rather than a guess.
+      function = Tools.get_function("shell-cmd", Mounts.new("/tmp", nil))
+
+      assert_raise ArgumentError, ~r/no agent identity/, fn ->
+        function.function.(%{"command" => "true"}, %{})
+      end
     end
   end
 

@@ -61,8 +61,7 @@ defmodule Nest.Sandbox.ShellJobs.ExitNotice do
     Map.get(job, :killed_by) == :owner or Waiters.get(state.waiters, job.id) != []
   end
 
-  # The owning agent's pid, or `nil` for a job whose key names no agent (the
-  # tools' `{:unknown, :unknown}` fallback) or whose agent is not tracked.
+  # The owning agent's pid, or `nil` for a job whose agent is not tracked.
   defp owner_pid(job, state) do
     case Map.get(state.agents, job.agent_key) do
       %{pid: pid} -> pid

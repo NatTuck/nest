@@ -253,10 +253,9 @@ defmodule Nest.Tools.ShellJobs do
   end
 
   # The owner column is the point of the space listing: an agent looks because
-  # the job it needs is not its own. A job whose key names no agent says so
-  # rather than dropping the column.
+  # the job it needs is not its own.
   defp render_space_job(job) do
-    "- #{job.id} (owner: #{job.agent || "unknown"}): #{job.status}" <>
+    "- #{job.id} (owner: #{job.agent}): #{job.status}" <>
       status_suffix(job) <> " — #{job.command} (log: #{job.log_path})"
   end
 

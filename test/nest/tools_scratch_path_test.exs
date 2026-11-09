@@ -58,43 +58,47 @@ defmodule Nest.ToolsScratchPathTest do
     inspect = Tools.get_function("file-inspect", Mounts.new(workspace, tmp_path))
     shell = Tools.get_function("shell-cmd", Mounts.new(workspace, tmp_path))
 
+    # The tool calls carry the caller's agent identity (`Nest.Tools.agent_key/1`
+    # refuses a context without one); the caps are the test's own.
+    ctx = Map.merge(%{space_id: :tools_test, agent_name: "scratch-path-test"}, %{caps: caps})
+
     log =
       capture_log(fn ->
         # `file-write`'s advertised path is the sandbox path: the bytes land
         # under the agent's scratch directory.
         assert {:ok, _} =
-                 write.function.(%{"path" => sandbox_file, "content" => "hello"}, %{caps: caps})
+                 write.function.(%{"path" => sandbox_file, "content" => "hello"}, ctx)
 
         assert File.read!(outside_file) == "hello"
 
         # ... and a path outside the agent's domain does not resolve either.
         assert {:error, message} =
-                 write.function.(%{"path" => outside_file, "content" => "nope"}, %{caps: caps})
+                 write.function.(%{"path" => outside_file, "content" => "nope"}, ctx)
 
         assert message =~ "No such file"
 
         # `file-read` sees the same file through the same spelling.
-        assert {:ok, "hello"} = read.function.(%{"path" => sandbox_file}, %{caps: caps})
+        assert {:ok, "hello"} = read.function.(%{"path" => sandbox_file}, ctx)
 
         # `file-edit` reads and writes the same file through the sandbox
         # spelling (this could not work under the old split-path design).
         assert {:ok, _} =
                  edit.function.(
                    %{"path" => sandbox_file, "old_text" => "hello", "new_text" => "world"},
-                   %{caps: caps}
+                   ctx
                  )
 
-        assert {:ok, "world"} = read.function.(%{"path" => sandbox_file}, %{caps: caps})
+        assert {:ok, "world"} = read.function.(%{"path" => sandbox_file}, ctx)
 
         # `file-inspect` operates on the same spelling.
-        assert {:ok, _} = inspect.function.(%{"path" => sandbox_file}, %{caps: caps})
+        assert {:ok, _} = inspect.function.(%{"path" => sandbox_file}, ctx)
 
         # `shell-cmd` sees the same file through the same spelling.
         assert {:ok, "world"} =
-                 shell.function.(%{"command" => "cat #{sandbox_file}"}, %{caps: caps})
+                 shell.function.(%{"command" => "cat #{sandbox_file}"}, ctx)
 
         # ... and a path outside the agent's domain does not resolve for a read.
-        assert {:error, message} = read.function.(%{"path" => outside_file}, %{caps: caps})
+        assert {:error, message} = read.function.(%{"path" => outside_file}, ctx)
         assert message =~ "File not found"
       end)
 

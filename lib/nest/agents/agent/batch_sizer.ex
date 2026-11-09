@@ -274,9 +274,9 @@ defmodule Nest.Agents.Agent.BatchSizer do
            context_limit: ctx.context_limit,
            # Per-call identity. Tools that manage per-agent resources
            # (`shell-cmd background`, `shell-list`/`wait`/`kill`) need the
-           # real `{space_id, agent_name}` and the Agent pid; without these
-           # they default to `{:unknown, :unknown}` and operate on the
-           # wrong (or no) agent. See `Nest.Tools.agent_key/1`.
+           # real `{space_id, agent_name}` and the Agent pid; a tool given no
+           # identity raises rather than sharing one global key, so the turn
+           # always forwards them. See `Nest.Tools.agent_key/1`.
            agent_pid: Map.get(ctx, :agent_pid),
            agent_name: Map.get(ctx, :agent_name),
            space_id: Map.get(ctx, :space_id),

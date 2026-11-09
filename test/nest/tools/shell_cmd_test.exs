@@ -21,6 +21,9 @@ defmodule Nest.Tools.ShellCmdTest do
 
   use ExUnit.Case, async: true
 
+  # The tool needs the caller's agent identity; see `Nest.Tools.agent_key/1`.
+  @ctx %{space_id: :tools_test, agent_name: "shell-cmd-test"}
+
   import ExUnit.CaptureLog
   import Nest.Test.FileMode
   import Nest.Test.TmpCleanup
@@ -214,7 +217,7 @@ defmodule Nest.Tools.ShellCmdTest do
     function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
 
     assert {:ok, output} =
-             function.function.(%{"command" => "echo hi", "timeout" => 86_400_000}, nil)
+             function.function.(%{"command" => "echo hi", "timeout" => 86_400_000}, @ctx)
 
     # The command ran to completion and its real output came back: the
     # `{:ok, ...}` can only be produced by this call's own erlexec `:DOWN`,
@@ -282,7 +285,7 @@ defmodule Nest.Tools.ShellCmdTest do
     assert {:ok, output} =
              function.function.(
                %{"command" => "echo one; sleep 0.1; echo two", "timeout" => 1},
-               nil
+               @ctx
              )
 
     assert output =~ "one"
@@ -340,7 +343,7 @@ defmodule Nest.Tools.ShellCmdTest do
     # that skipped `is_integer` (which would raise in the multiplication).
     for bad <- [0, -1, 1.5, "5"] do
       assert {:error, message} =
-               function.function.(%{"command" => "echo nope", "timeout" => bad}, nil)
+               function.function.(%{"command" => "echo nope", "timeout" => bad}, @ctx)
 
       assert message ==
                "Invalid `timeout` argument: expected a positive integer of seconds, " <>
@@ -354,7 +357,7 @@ defmodule Nest.Tools.ShellCmdTest do
     function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
 
     assert {:error, message} =
-             function.function.(%{"command" => "touch refused.txt | cat", "timeout" => 60}, nil)
+             function.function.(%{"command" => "touch refused.txt | cat", "timeout" => 60}, @ctx)
 
     assert message =~ "pipes output"
     refute File.exists?(Path.join(ws, "refused.txt"))
@@ -372,7 +375,7 @@ defmodule Nest.Tools.ShellCmdTest do
 
     # Omitting `timeout` is the 60-second default, so it is the long case too:
     # omitting it must not be the way around the rule.
-    assert {:error, _} = function.function.(%{"command" => "touch omitted.txt | cat"}, nil)
+    assert {:error, _} = function.function.(%{"command" => "touch omitted.txt | cat"}, @ctx)
     refute File.exists?(Path.join(ws, "omitted.txt"))
   end
 
@@ -388,7 +391,7 @@ defmodule Nest.Tools.ShellCmdTest do
     assert {:ok, output} =
              function.function.(
                %{"command" => "ls listed-*.txt | head -2", "timeout" => 30},
-               nil
+               @ctx
              )
 
     assert length(String.split(output, "\n", trim: true)) == 2
@@ -396,7 +399,7 @@ defmodule Nest.Tools.ShellCmdTest do
     assert {:ok, "beta\n"} =
              function.function.(
                %{"command" => "cat sample.txt | grep beta", "timeout" => 30},
-               nil
+               @ctx
              )
   end
 
@@ -411,7 +414,7 @@ defmodule Nest.Tools.ShellCmdTest do
     # only that the tool calls it, on the argument combination that could bypass
     # it.
     assert {:error, message} =
-             function.function.(%{"command" => "setsid sleep 1", "background" => true}, nil)
+             function.function.(%{"command" => "setsid sleep 1", "background" => true}, @ctx)
 
     assert message =~ "never runs a command detached"
     assert message =~ "background: true"
