@@ -1,3 +1,14 @@
+> **Superseded — do not implement this.** This note describes replacing
+> `Phoenix.CodeReloader` with a reloader of your own. We did that, and it broke
+> the dev server: a second compiler running inside the app's VM compiles
+> outside `Phoenix.CodeReloader.Server`, the one GenServer that serializes
+> reloads, so a request could land in the window where Mix had purged the
+> protocol-consolidation directory and not yet rebuilt it — the debug page then
+> died on `Plug.Exception.status/1` and took the real exception with it. The
+> module is gone as of #207; `lib/nest_web/endpoint.ex` installs stock
+> `plug Phoenix.CodeReloader`, and `test/nest_web/dev_reload_test.exs` keeps a
+> second reloader out. Kept for the reasoning, not as a plan.
+
 Respect. Here's the battle-tested architecture:
 
 ## The Core Insight

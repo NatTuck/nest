@@ -110,10 +110,7 @@ defmodule Nest.Application do
     # before any child starts.
     :ok = TmpSpace.prepare_own_root()
 
-    # Add surgical reloader in development
-    dev_children = if code_reloading?(), do: [NestWeb.SurgicalReloader], else: []
-
-    children = base_children ++ dev_children ++ [NestWeb.Endpoint]
+    children = base_children ++ [NestWeb.Endpoint]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
@@ -136,11 +133,6 @@ defmodule Nest.Application do
   defp skip_migrations? do
     # By default, sqlite migrations are run when using a release
     System.get_env("RELEASE_NAME") == nil
-  end
-
-  defp code_reloading? do
-    endpoint_config = Application.get_env(:nest, NestWeb.Endpoint, [])
-    Keyword.get(endpoint_config, :code_reloader, false)
   end
 
   defp check_system_dependencies! do
