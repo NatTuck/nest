@@ -27,6 +27,7 @@ defmodule Nest.TerminologyTest do
     "lib/nest/sandbox.ex",
     "lib/nest/sandbox/**/*.ex",
     "lib/nest/agents/agent/tmp_space.ex",
+    "lib/nest/agents/agent/system_prompt.ex",
     "lib/nest/tools/shell_cmd.ex",
     "lib/nest/tools/shell_cmd/**/*.ex",
     "lib/nest/tools/shell_cmd_tool.ex",
@@ -38,14 +39,14 @@ defmodule Nest.TerminologyTest do
     "lib/nest/messages/part.ex",
     "test/nest/sandbox/**/*.exs",
     "test/nest/tools_scratch_path_test.exs",
-    "test/nest/sandbox_path_domain_test.exs",
+    "test/nest/sandbox*.exs",
     "test/nest/agents/agent/tmp_space_test.exs",
     "test/nest/agents/agent/batch_sizer_overflow_test.exs",
     "test/nest/agents/agent/batch_sizer_preflight_stat_test.exs",
     "test/nest/agents/agent/batch_sizer_test.exs",
     "test/nest/agents/agent/shell_job_notice_test.exs",
     "test/nest/agents/agent/system_prompt_depth_filter_test.exs",
-    "test/nest/agents/agent/system_prompt_composition_test.exs",
+    "test/nest/agents/agent_system_prompt_composition_test.exs",
     "test/nest/agents/none_scratch_name_test.exs",
     "test/nest/lowercase_names_migration_test.exs",
     "test/nest/spaces/environment_confirm_test.exs",
@@ -60,6 +61,7 @@ defmodule Nest.TerminologyTest do
     "lib/nest/sandbox.ex",
     "lib/nest/sandbox/paths.ex",
     "lib/nest/agents/agent/tmp_space.ex",
+    "lib/nest/agents/agent/system_prompt.ex",
     "lib/nest/tools/shell_cmd.ex",
     "test/nest/tools_scratch_path_test.exs"
   ]
@@ -75,6 +77,13 @@ defmodule Nest.TerminologyTest do
     # A broken glob must not pass vacuously: an empty list makes the assertion
     # below green, and a count threshold cannot see a list that lost one file.
     found = MapSet.new(files, &Path.relative_to(&1, @root))
+
+    # Every entry has to match something. A path that is misspelled or has moved
+    # makes the scan quietly smaller than it claims, which is how the first
+    # version of this list missed `lib/nest/sandbox.ex`.
+    for entry <- @scoped do
+      assert Path.wildcard(Path.join(@root, entry)) != [], "#{entry} matches no file"
+    end
 
     assert MapSet.subset?(MapSet.new(@must_include), found),
            "the scan is not looking where the rule lives: " <>
