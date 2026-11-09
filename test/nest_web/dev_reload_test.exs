@@ -110,10 +110,33 @@ defmodule NestWeb.DevReloadTest do
     end
   end
 
+  describe "the matcher" do
+    # The tree has no offender, so the scan only ever exercises this matcher's
+    # negative case. Pinned on literals, including the two deliberate gaps the
+    # moduledoc names, so an edit here cannot disable the guard silently.
+    test "sees every spelling that reaches Mix.Task.run, and only code" do
+      for source <- [
+            ~S|Mix.Task.run("compile.elixir")|,
+            "alias Mix.Task",
+            "import Mix.Task, only: [run: 2]",
+            ~S|apply(Mix.Task, :run, ["x"])|
+          ] do
+        assert mix_task_lines(Code.string_to_quoted!(source)) != [],
+               "missed #{source}"
+      end
+
+      assert mix_task_lines(Code.string_to_quoted!("Mix.Task.Compiler")) == []
+
+      assert mix_task_lines(Code.string_to_quoted!("# Mix.Task.run is fine in prose\nx = 1")) ==
+               []
+    end
+  end
+
   # Any reference, not just a call — see the moduledoc. `Macro.prewalk/3` sees
   # comments and strings as nothing at all, so prose about `Mix.Task.run` is
   # not an offender; only code is.
-  defp mix_task_lines(ast) do
+  @doc false
+  def mix_task_lines(ast) do
     {_, lines} =
       Macro.prewalk(ast, [], fn
         {:__aliases__, meta, [:Mix, :Task]} = node, acc -> {node, [meta[:line] | acc]}

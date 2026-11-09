@@ -21,6 +21,7 @@ defmodule NestWeb.LobbyChannel.SaveProvidersSerialTest do
   # The *channel push*, not `Writer.save_providers/2`: that writes the file and
   # does not broadcast, so the `dot_config/*` tests that call it stay async.
   @push ~r/push\(\w+, "save_providers"/
+  @async_false ~r/use\s+[\w.]+\s*,\s*async:\s*false/
 
   @known_pushers [
     "test/nest_web/channels/lobby_channel/providers_save_failure_test.exs",
@@ -38,7 +39,7 @@ defmodule NestWeb.LobbyChannel.SaveProvidersSerialTest do
       |> SourceScan.flat_map(fn file ->
         source = File.read!(file)
 
-        if Regex.match?(@push, source),
+        if push?(source),
           do: [{Path.relative_to(file, root), source}],
           else: []
       end)
@@ -55,7 +56,24 @@ defmodule NestWeb.LobbyChannel.SaveProvidersSerialTest do
              "\"lobby\" topic, so they must run `async: false`: #{inspect(offenders)}"
   end
 
+  describe "the detectors" do
+    # The suite only ever feeds these their passing case, so a one-character edit
+    # could disable the guard and leave it green. Pinned on literals instead.
+    test "tell a real case from a look-alike" do
+      assert push?(~S|push(socket, "save_providers", %{})|)
+      refute push?("Writer.save_providers(providers)")
+
+      assert async_false?("use NestWeb.ChannelCase, async: false")
+      refute async_false?("use NestWeb.ChannelCase, async: true")
+    end
+  end
+
+  # The channel push, not the writer call.
+  @doc false
+  def push?(source), do: Regex.match?(@push, source)
+
   # The module's own `use`, which is where `async: false` lives. A file with no
   # `use` line at all cannot be a test module.
-  defp async_false?(source), do: Regex.match?(~r/use\s+[\w.]+\s*,\s*async:\s*false/, source)
+  @doc false
+  def async_false?(source), do: Regex.match?(@async_false, source)
 end
