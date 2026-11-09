@@ -58,22 +58,25 @@ defmodule NestWeb.LobbyChannel.SaveProvidersSerialTest do
 
   describe "the detectors" do
     # The suite only ever feeds these their passing case, so a one-character edit
-    # could disable the guard and leave it green. Pinned on literals instead.
+    # could disable the guard and leave it green. Pinned on literals instead, and
+    # built by concatenation: the scan reads raw source, comments included, so a
+    # spelled-out push here would make the guard list *itself* as a pusher and
+    # then spare itself only because it also holds the async-attribute literal —
+    # a green that proves nothing. Concatenation keeps this file matching neither
+    # pattern, which the assertions below check from both directions.
     test "tell a real case from a look-alike" do
-      assert push?(~S|push(socket, "save_providers", %{})|)
+      assert push?("push(" <> ~s|socket, "save_providers", %{})|)
       refute push?("Writer.save_providers(providers)")
 
-      assert async_false?("use NestWeb.ChannelCase, async: false")
-      refute async_false?("use NestWeb.ChannelCase, async: true")
+      assert async_false?("use NestWeb.ChannelCase, async: " <> "false")
+      refute async_false?("use NestWeb.ChannelCase, async: " <> "true")
     end
   end
 
   # The channel push, not the writer call.
-  @doc false
-  def push?(source), do: Regex.match?(@push, source)
+  defp push?(source), do: Regex.match?(@push, source)
 
   # The module's own `use`, which is where `async: false` lives. A file with no
   # `use` line at all cannot be a test module.
-  @doc false
-  def async_false?(source), do: Regex.match?(@async_false, source)
+  defp async_false?(source), do: Regex.match?(@async_false, source)
 end

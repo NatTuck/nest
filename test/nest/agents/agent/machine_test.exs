@@ -452,6 +452,12 @@ defmodule MachineTest do
   defp walk_starts do
     {:ok, _, compacting} = Compaction.stage(state_at(:generating), {:tool_call, %{}, 1, 10})
 
+    # `stage/3` answers `{:ok, …}` for the *blocked* outcomes too
+    # (`:context_overflow`, `:compaction_loop_detected`), so the match above does
+    # not prove the compaction slice is what was staged — the fixture could
+    # quietly become a blocked machine and the walk would still pass.
+    assert compacting.phase == :generating and compacting.kind == :compaction
+
     for(phase <- Machine.phases(), do: state_at(phase)) ++ [compacting]
   end
 
@@ -468,8 +474,21 @@ defmodule MachineTest do
 
     next =
       case result do
-        {:ok, _actions, next} -> next
-        {:ignore, _reason, next} -> next
+        {:ok, actions, next} ->
+          # Every emitted action must be in the declared vocabulary (and so have
+          # an executor clause). The older "transition coverage" test checks this
+          # one step per pair; here it is every step of every sequence.
+          for action <- actions do
+            assert action_tag(action) in Machine.actions(),
+                   "#{inspect(elem_of(event))} in #{inspect(state.phase)} emitted " <>
+                     "undeclared action #{inspect(action)}"
+          end
+
+          next
+
+        {:ignore, reason, next} ->
+          assert is_atom(reason)
+          next
       end
 
     Machine.validate!(next)

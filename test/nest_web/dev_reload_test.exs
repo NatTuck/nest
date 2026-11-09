@@ -121,22 +121,21 @@ defmodule NestWeb.DevReloadTest do
             "import Mix.Task, only: [run: 2]",
             ~S|apply(Mix.Task, :run, ["x"])|
           ] do
-        assert mix_task_lines(Code.string_to_quoted!(source)) != [],
-               "missed #{source}"
+        # The line number is part of the contract — it is what the offender
+        # message prints — so `[1]`, not merely "non-empty".
+        assert mix_task_lines(Code.string_to_quoted!(source)) == [1], "missed #{source}"
       end
 
+      # The deliberate gap: the compiler behaviour is not `Mix.Task.run`, and a
+      # listener module in `lib/` is the shape we would want.
       assert mix_task_lines(Code.string_to_quoted!("Mix.Task.Compiler")) == []
-
-      assert mix_task_lines(Code.string_to_quoted!("# Mix.Task.run is fine in prose\nx = 1")) ==
-               []
     end
   end
 
   # Any reference, not just a call — see the moduledoc. `Macro.prewalk/3` sees
   # comments and strings as nothing at all, so prose about `Mix.Task.run` is
   # not an offender; only code is.
-  @doc false
-  def mix_task_lines(ast) do
+  defp mix_task_lines(ast) do
     {_, lines} =
       Macro.prewalk(ast, [], fn
         {:__aliases__, meta, [:Mix, :Task]} = node, acc -> {node, [meta[:line] | acc]}
