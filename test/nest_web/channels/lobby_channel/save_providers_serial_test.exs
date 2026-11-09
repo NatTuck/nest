@@ -21,6 +21,7 @@ defmodule NestWeb.LobbyChannel.SaveProvidersSerialTest do
   # The *channel push*, not `Writer.save_providers/2`: that writes the file and
   # does not broadcast, so the `dot_config/*` tests that call it stay async.
   @push ~r/push\(\w+, "save_providers"/
+  @async_false ~r/use\s+[\w.]+\s*,\s*async:\s*false/
 
   @known_pushers [
     "test/nest_web/channels/lobby_channel/providers_save_failure_test.exs",
@@ -38,7 +39,7 @@ defmodule NestWeb.LobbyChannel.SaveProvidersSerialTest do
       |> SourceScan.flat_map(fn file ->
         source = File.read!(file)
 
-        if Regex.match?(@push, source),
+        if push?(source),
           do: [{Path.relative_to(file, root), source}],
           else: []
       end)
@@ -55,7 +56,37 @@ defmodule NestWeb.LobbyChannel.SaveProvidersSerialTest do
              "\"lobby\" topic, so they must run `async: false`: #{inspect(offenders)}"
   end
 
+  describe "the detectors" do
+    # The suite only ever feeds these their passing case, so a one-character edit
+    # could disable the guard and leave it green. Pinned on literals instead, and
+    # built by concatenation: the scan reads raw source, comments included, so a
+    # spelled-out push here would make the guard list *itself* as a pusher and
+    # then spare itself only because it also holds the async-attribute literal —
+    # a green that proves nothing. The two `__ENV__.file` lines below are what
+    # keeps that from coming back: they pin the invariant (this file matches
+    # neither pattern), which the spelling of the literals alone would not.
+    test "tell a real case from a look-alike" do
+      assert push?("push(" <> ~s|socket, "save_providers", %{})|)
+      refute push?("Writer.save_providers(providers)")
+
+      assert async_false?("use NestWeb.ChannelCase, async: " <> "false")
+      refute async_false?("use NestWeb.ChannelCase, async: " <> "true")
+
+      # The topic half of the pattern, so loosening it to `push\(\w+` fails here
+      # rather than being caught incidentally by an unrelated async test.
+      refute push?(~S|push(socket, "providers_updated", %{})|)
+
+      # And the file that holds this scan must not match its own patterns, or it
+      # lists itself as a pusher and passes for the wrong reason.
+      refute push?(File.read!(__ENV__.file))
+      refute async_false?(File.read!(__ENV__.file))
+    end
+  end
+
+  # The channel push, not the writer call.
+  defp push?(source), do: Regex.match?(@push, source)
+
   # The module's own `use`, which is where `async: false` lives. A file with no
   # `use` line at all cannot be a test module.
-  defp async_false?(source), do: Regex.match?(~r/use\s+[\w.]+\s*,\s*async:\s*false/, source)
+  defp async_false?(source), do: Regex.match?(@async_false, source)
 end

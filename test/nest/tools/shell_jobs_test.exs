@@ -1,5 +1,11 @@
 defmodule Nest.Tools.ShellJobsTest do
-  use ExUnit.Case, async: true
+  # Runs `async: false`: one test here starts a background job under the tools'
+  # fallback key `{:unknown, :unknown}` (the key a context with no space and no
+  # name resolves to), and `Nest.Sandbox.ShellJobsTest` does the same in its own
+  # async module. The per-agent background cap is 1, so when the two overlap the
+  # second `start_child` is refused with "Background shell job limit reached" and
+  # the test fails on a coin flip. Every other key here is unique per test.
+  use ExUnit.Case, async: false
 
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Messages.{ToolCall, ToolResult}

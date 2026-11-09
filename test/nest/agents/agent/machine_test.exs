@@ -260,27 +260,47 @@ defmodule MachineTest do
     end
   end
 
-  describe "property: random event sequences preserve invariants" do
-    test "no declared event ever quarantines and the machine stays valid" do
-      :rand.seed(:exsss, {1, 2, 3})
-      tags = Machine.events()
+  # The older "transition coverage" test above is the fast single-step contract:
+  # every (phase, declared event) pair classified once. This walk is the sequence
+  # one — the same assertions plus `status_for/1` and a three-event continuation,
+  # over the same pairs. They are kept apart because the single-step test is the
+  # one a reader checks against the transition table; folding them would hide
+  # that contract inside a loop.
+  describe "walk: every declared event, from every start" do
+    test "a declared event never quarantines and the machine stays valid" do
+      # Deterministic on purpose. This was a 500-step random walk that drew
+      # `Enum.at(tags, :rand.uniform(length(tags)) - 1)`, so what it covered was a
+      # function of the *length* of the event vocabulary: adding one event shifted
+      # every draw, and a clause that only the walk reached could lose its only
+      # test without anything failing (#211 — it is how the dead
+      # `{:compaction_error, …}` clause survived, and then how it was found).
+      # Walking every (start, declared event) pair makes coverage a function of
+      # the vocabulary itself: a new event can only add work.
+      #
+      # Per *tag*, not per shape: `sample_event/1` supplies one event per tag, so
+      # a clause reached only by a different shape of the same tag is not walked
+      # — `:worker_start_failed` carries `:tools` here, and the `:http` clauses
+      # (the HTTP worker's, the compactor's) are reached by their own tests. Same
+      # for every ref-gated event: the sample's ref is fresh, so `valid_ref?/2`
+      # is false and only the stale arm is walked.
+      for start <- walk_starts(), tag <- Machine.events() do
+        [sample_event(tag) | continuation()]
+        |> Enum.reduce(start, &step!/2)
+      end
+    end
 
-      Enum.reduce(1..500, state_at(:idle), fn _, state ->
-        tag = Enum.at(tags, :rand.uniform(length(tags)) - 1)
-        result = Machine.step(state, sample_event(tag))
+    test "a second spawn of a registered name is ignored, not overwritten" do
+      # The walk sends each declared event once per start, so it cannot reach a
+      # duplicate: that branch needs the same name twice, and the old random walk
+      # only hit it when it drew `:child_spawned` twice in a row. Pinned here so
+      # `ChildEvents.transition/2`'s `{:ignore, …}` side has a test that does not
+      # depend on a draw.
+      {:ok, [], spawned} = Machine.step(state_at(:idle), {:child_spawned, "kid", false, nil})
 
-        assert result != :quarantine
+      assert {:ignore, :duplicate_child, next} =
+               Machine.step(spawned, {:child_spawned, "kid", false, nil})
 
-        next =
-          case result do
-            {:ok, _actions, next} -> next
-            {:ignore, _reason, next} -> next
-          end
-
-        Machine.validate!(next)
-        assert is_atom(Machine.status_for(next))
-        next
-      end)
+      assert next.children == spawned.children
     end
   end
 
@@ -374,4 +394,124 @@ defmodule MachineTest do
       assert log =~ "send gate"
     end
   end
+
+  describe "a refused worker start (issue #108)" do
+    test "the tool batch's spawn is refused: fail the turn instead of resting with no worker" do
+      # intentional: a failed `Task.Supervisor.start_child/2` never emits
+      # `{:worker_started, …}`, so `work.worker_ref` is still nil and every
+      # `{:worker_crashed, …}` clause is gated out by `valid_ref?/2`. Ignoring
+      # the refusal left the machine in `:executing_tools` with no worker: not
+      # backgroundable, no drain, no turn boundary, every arrival queued forever.
+      executing = state_at(:executing_tools)
+
+      {:ok, actions, next} =
+        Machine.step(executing, {:worker_start_failed, :tools, :max_children})
+
+      assert next.phase == :idle
+      assert {:fail_turn, :max_children, []} in actions
+      assert {:drain_inbox} in actions
+    end
+
+    test "the HTTP spawn's refusal in :generating takes the same funnel" do
+      generating = state_at(:generating)
+
+      {:ok, actions, next} =
+        Machine.step(generating, {:worker_start_failed, :http, :max_children})
+
+      assert next.phase == :idle
+      assert {:fail_turn, :max_children, []} in actions
+      assert {:drain_inbox} in actions
+    end
+
+    test "the same event in :stopping is ignored, so a late spawn result cannot resurrect it" do
+      # intentional: a stop in flight owns the terminal recovery. A refusal that
+      # arrives after it must not fail — or restart — a machine already ending.
+      stopping = state_at(:stopping)
+
+      assert {:ignore, :not_applicable, ^stopping} =
+               Machine.step(stopping, {:worker_start_failed, :tools, :max_children})
+    end
+
+    test "a refused compactor start resumes the turn instead of resting in :compacting" do
+      # intentional: the compactor is the third spawn site (`{:stage_compaction,
+      # …}`). Ignoring its refusal would leave the machine `:compacting` with no
+      # worker and no timer — no drain and no turn boundary can leave that — so it
+      # takes the slice's own retryable funnel, exactly as a compactor crash does.
+      {:ok, _, compacting} = Compaction.stage(state_at(:generating), {:tool_call, %{}, 1, 10})
+
+      {:ok, actions, next} =
+        Machine.step(compacting, {:worker_start_failed, :http, :max_children})
+
+      assert Enum.any?(actions, &match?({:broadcast, {:compaction_error, _}, nil}, &1))
+      assert :iterate in actions
+      assert next.kind == :chat and next.phase == :generating
+      Machine.validate!(next)
+    end
+
+    test "a crash carrying a ref the machine does not know is still ignored" do
+      # intentional: the new event must not become a licence to accept any
+      # crash. A `{:worker_crashed, …}` whose ref is not the live worker's is a
+      # stale result from a worker this turn no longer owns.
+      generating = state_at(:generating)
+
+      assert {:ignore, :stale_result, ^generating} =
+               Machine.step(generating, {:worker_crashed, make_ref(), %RuntimeError{}, []})
+    end
+  end
+
+  # Every start the walk uses: one machine per declared phase, plus the
+  # compaction slice, which `state_at/1` cannot build (it builds chat machines)
+  # and which the old random walk reached only by drifting into it.
+  defp walk_starts do
+    {:ok, _, compacting} = Compaction.stage(state_at(:generating), {:tool_call, %{}, 1, 10})
+
+    # `stage/3` answers `{:ok, …}` for the *blocked* outcomes too
+    # (`:context_overflow`, `:compaction_loop_detected`), so the match above does
+    # not prove the compaction slice is what was staged — the fixture could
+    # quietly become a blocked machine and the walk would still pass.
+    assert compacting.phase == :generating and compacting.kind == :compaction
+
+    for(phase <- Machine.phases(), do: state_at(phase)) ++ [compacting]
+  end
+
+  # A short fixed tail, so each pair exercises a sequence and not only one step.
+  defp continuation, do: Enum.map([:iterate, :inbox_drain, :worker_down], &sample_event/1)
+
+  # The assertions the old walk made per step, kept as one function so a failure
+  # names the event and the phase it was in.
+  defp step!(event, state) do
+    result = Machine.step(state, event)
+
+    assert result != :quarantine,
+           "declared event #{inspect(elem_of(event))} quarantined in #{inspect(state.phase)}"
+
+    next =
+      case result do
+        {:ok, actions, next} ->
+          # Every emitted action must be in the declared vocabulary (and so have
+          # an executor clause). The older "transition coverage" test checks this
+          # one step per pair; here it is every step of every sequence.
+          for action <- actions do
+            assert action_tag(action) in Machine.actions(),
+                   "#{inspect(elem_of(event))} in #{inspect(state.phase)} emitted " <>
+                     "undeclared action #{inspect(action)}"
+          end
+
+          next
+
+        {:ignore, reason, next} ->
+          assert is_atom(reason)
+          next
+      end
+
+    Machine.validate!(next)
+    assert is_atom(Machine.status_for(next))
+    next
+  end
+
+  # The tag of a sample event, for the failure message: a bare atom tag or the
+  # first element of the tuple.
+  defp elem_of(event) when is_atom(event), do: event
+  defp elem_of(event) when is_tuple(event), do: elem(event, 0)
+  defp elem_of(event), do: event
 end

@@ -317,6 +317,14 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
       else: {:ignore, :stale_result, m}
   end
 
+  # A refused spawn is not a stale result: no worker ever existed, so there is no
+  # ref to match and `valid_ref?/2` gates the `{:worker_crashed, …}` clause above
+  # out entirely (issue #108). Failing the turn is that clause's funnel, and the
+  # failure's terminal repair answers any unpaired `tool_use`, so the transcript
+  # stays wire-valid.
+  def do_step(%{phase: :generating, kind: :chat} = m, {:worker_start_failed, :http, reason}),
+    do: Failure.fail_turn(m, reason, [])
+
   def do_step(
         %{phase: :generating, kind: :chat, work: %{preflight: nil}} = m,
         {:preflight_result, _}
@@ -394,6 +402,15 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   def do_step(%{phase: :executing_tools} = m, {:http_ok, _ref, _response}),
     do: {:ignore, :stale_result, m}
+
+  # The batch's own spawn was refused (issue #108): nothing was started, so
+  # nothing will ever report. Ignoring it left the machine in `:executing_tools`
+  # with no worker — not backgroundable, no drain, no turn boundary — so every
+  # arrival queued behind a batch that does not exist. The failure's terminal
+  # repair answers the batch's `tool_use` parts, so the wire sequence stays valid
+  # and the model is told the batch failed.
+  def do_step(%{phase: :executing_tools} = m, {:worker_start_failed, :tools, reason}),
+    do: Failure.fail_turn(m, reason, [])
 
   # --- compaction (generating) ---
 

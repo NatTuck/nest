@@ -145,6 +145,7 @@ defmodule Nest.TestSupport.MachineTestHelpers do
   def sample_event(:http_ok), do: {:http_ok, make_ref(), response()}
   def sample_event(:http_error), do: {:http_error, make_ref(), :boom}
   def sample_event(:worker_crashed), do: {:worker_crashed, make_ref(), %RuntimeError{}, []}
+  def sample_event(:worker_start_failed), do: {:worker_start_failed, :tools, :max_children}
   def sample_event(:worker_down), do: {:worker_down, self(), :killed}
   def sample_event(:worker_started), do: {:worker_started, make_ref(), self(), :http}
   def sample_event(:llm_error), do: {:llm_error, make_ref(), "boom"}
@@ -155,7 +156,6 @@ defmodule Nest.TestSupport.MachineTestHelpers do
   def sample_event(:timer_armed), do: {:timer_armed, :stop_timer, make_ref()}
   def sample_event(:commit_done), do: {:commit_done}
   def sample_event(:commit_error), do: {:commit_error, :boom}
-  def sample_event(:compaction_error), do: {:compaction_error, :boom, nil}
   def sample_event(:retry_compaction), do: :retry_compaction
   def sample_event(:compact_request), do: {:compact_request, nil}
   def sample_event(:loop_ack), do: :loop_ack
