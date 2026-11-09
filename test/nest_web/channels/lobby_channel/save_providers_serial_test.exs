@@ -62,14 +62,24 @@ defmodule NestWeb.LobbyChannel.SaveProvidersSerialTest do
     # built by concatenation: the scan reads raw source, comments included, so a
     # spelled-out push here would make the guard list *itself* as a pusher and
     # then spare itself only because it also holds the async-attribute literal —
-    # a green that proves nothing. Concatenation keeps this file matching neither
-    # pattern, which the assertions below check from both directions.
+    # a green that proves nothing. The two `__ENV__.file` lines below are what
+    # keeps that from coming back: they pin the invariant (this file matches
+    # neither pattern), which the spelling of the literals alone would not.
     test "tell a real case from a look-alike" do
       assert push?("push(" <> ~s|socket, "save_providers", %{})|)
       refute push?("Writer.save_providers(providers)")
 
       assert async_false?("use NestWeb.ChannelCase, async: " <> "false")
       refute async_false?("use NestWeb.ChannelCase, async: " <> "true")
+
+      # The topic half of the pattern, so loosening it to `push\(\w+` fails here
+      # rather than being caught incidentally by an unrelated async test.
+      refute push?(~S|push(socket, "providers_updated", %{})|)
+
+      # And the file that holds this scan must not match its own patterns, or it
+      # lists itself as a pusher and passes for the wrong reason.
+      refute push?(File.read!(__ENV__.file))
+      refute async_false?(File.read!(__ENV__.file))
     end
   end
 

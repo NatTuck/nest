@@ -126,9 +126,12 @@ defmodule NestWeb.DevReloadTest do
         assert mix_task_lines(Code.string_to_quoted!(source)) == [1], "missed #{source}"
       end
 
-      # The deliberate gap: the compiler behaviour is not `Mix.Task.run`, and a
-      # listener module in `lib/` is the shape we would want.
+      # The two deliberate gaps the moduledoc names: the compiler behaviour is not
+      # `Mix.Task.run` (a listener module in `lib/` is the shape we would want),
+      # and an aliased `Mix` is out of the matcher's reach on purpose.
       assert mix_task_lines(Code.string_to_quoted!("Mix.Task.Compiler")) == []
+
+      assert mix_task_lines(Code.string_to_quoted!(~s|alias Mix, as: M\nM.Task.run("x")|)) == []
     end
   end
 

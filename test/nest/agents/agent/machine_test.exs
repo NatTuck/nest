@@ -260,6 +260,12 @@ defmodule MachineTest do
     end
   end
 
+  # The older "transition coverage" test above is the fast single-step contract:
+  # every (phase, declared event) pair classified once. This walk is the sequence
+  # one — the same assertions plus `status_for/1` and a three-event continuation,
+  # over the same pairs. They are kept apart because the single-step test is the
+  # one a reader checks against the transition table; folding them would hide
+  # that contract inside a loop.
   describe "walk: every declared event, from every start" do
     test "a declared event never quarantines and the machine stays valid" do
       # Deterministic on purpose. This was a 500-step random walk that drew
@@ -270,6 +276,13 @@ defmodule MachineTest do
       # `{:compaction_error, …}` clause survived, and then how it was found).
       # Walking every (start, declared event) pair makes coverage a function of
       # the vocabulary itself: a new event can only add work.
+      #
+      # Per *tag*, not per shape: `sample_event/1` supplies one event per tag, so
+      # a clause reached only by a different shape of the same tag is not walked
+      # — `:worker_start_failed` carries `:tools` here, and the `:http` clauses
+      # (the HTTP worker's, the compactor's) are reached by their own tests. Same
+      # for every ref-gated event: the sample's ref is fresh, so `valid_ref?/2`
+      # is false and only the stale arm is walked.
       for start <- walk_starts(), tag <- Machine.events() do
         [sample_event(tag) | continuation()]
         |> Enum.reduce(start, &step!/2)
