@@ -30,6 +30,11 @@ defmodule NestWeb.DevReloadTest do
   not inside the app's BEAM, and `Mix.Task.run("app.start")` there is the
   intended use.
 
+  What the matcher does **not** catch, on purpose: `Mix.Task.Compiler` (that is
+  the compiler behaviour, and a listener module in `lib/` is the shape we would
+  *want*), and a contrived `alias Mix, as: M` followed by `M.Task.run/2`. It
+  catches every spelling anyone actually writes.
+
   ## Why the endpoint installs exactly one reloader
 
   Stock Phoenix splits the job: `Phoenix.LiveReloader` broadcasts the change to
