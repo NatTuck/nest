@@ -94,15 +94,16 @@ defmodule Nest.Tools.ShellCmd do
       waiting. Requires a scratch directory (the job log lives under it, and
       the path reported to the agent is the sandbox's
       `/tmp/<agent-name>/shell-jobs/<id>.log`). Additional
-      opts: `:agent_key` (`{space_id, agent_name}`), `:agent_pid`, and
-      `:grace_ms` (how long to wait for an immediate exit before reporting
-      the job as running).
+      opts: `:agent_key` (`{space_id, agent_name}`, required for a background
+      call), `:agent_pid`, and `:grace_ms` (how long to wait for an immediate
+      exit before reporting the job as running).
     * `:register_job` - when `true`, the call is registered as a shell job for
       as long as it runs (#174), so `shell-list`, the job panel and `shell-kill`
       see it. Set only by `Nest.Tools.ShellCmdTool`; the file tools' and the
       sandbox helpers' commands (`execute_raw/4`, `Nest.Sandbox.write/4`) are
-      short internal steps and are not jobs. A call with no scratch directory,
-      or one whose `:agent_key` names no agent, runs unregistered.
+      short internal steps and are not jobs. A call with no scratch directory
+      runs unregistered; a call that registers must carry `:agent_key`, because
+      a job nobody can address is not a job.
 
   ## Returns
 

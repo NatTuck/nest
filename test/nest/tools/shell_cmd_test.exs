@@ -22,7 +22,7 @@ defmodule Nest.Tools.ShellCmdTest do
   use ExUnit.Case, async: true
 
   # The tool needs the caller's agent identity; see `Nest.Tools.agent_key/1`.
-  @ctx %{space_id: :tools_test, agent_name: "tools-test"}
+  @ctx %{space_id: :tools_test, agent_name: "shell-cmd-test"}
 
   import ExUnit.CaptureLog
   import Nest.Test.FileMode

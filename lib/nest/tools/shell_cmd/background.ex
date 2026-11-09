@@ -33,8 +33,9 @@ defmodule Nest.Tools.ShellCmd.Background do
 
   `script` is the staged transcript's host path — `ShellJobs` removes it when the
   job ends, and this removes it when the job never starts. `script_sandbox` is
-  the spelling the backend's command line hands bash, and `opts` carries
-  `:agent_key`, `:agent_pid` and `:grace_ms`.
+  the spelling the backend's command line hands bash. `opts` carries
+  `:agent_key` (required — a job with no owner has no cap, no listing and no
+  sidebar row), `:agent_pid` and `:grace_ms`.
   """
   @spec run(String.t(), String.t(), String.t(), Mounts.t(), map() | nil, keyword()) ::
           {:ok, String.t()} | {:error, String.t()}

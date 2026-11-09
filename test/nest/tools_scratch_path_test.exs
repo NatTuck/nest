@@ -60,7 +60,7 @@ defmodule Nest.ToolsScratchPathTest do
 
     # The tool calls carry the caller's agent identity (`Nest.Tools.agent_key/1`
     # refuses a context without one); the caps are the test's own.
-    ctx = Map.merge(%{space_id: :tools_test, agent_name: "tools-test"}, %{caps: caps})
+    ctx = Map.merge(%{space_id: :tools_test, agent_name: "scratch-path-test"}, %{caps: caps})
 
     log =
       capture_log(fn ->

@@ -35,10 +35,13 @@ defmodule NestWeb.LobbyChannelTestHelpers do
   save's. This waits for the frame that names exactly `names` and consumes the
   rest: they belong to tests running beside this one.
 
-  Raises when no such frame arrives within `timeout`.
+  Raises when no such frame arrives within `timeout`. The frame is normally
+  already in the mailbox: `Providers.save/2` broadcasts before it replies, and
+  every caller fences on that reply first, so the bound is a failure fence
+  rather than a wait.
   """
   @spec assert_providers_updated([String.t()], non_neg_integer()) :: map()
-  def assert_providers_updated(names, timeout \\ 1_000) do
+  def assert_providers_updated(names, timeout \\ 500) do
     await_providers_updated(Enum.sort(names), System.monotonic_time(:millisecond) + timeout)
   end
 

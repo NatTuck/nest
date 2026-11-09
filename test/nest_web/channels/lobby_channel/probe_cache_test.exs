@@ -86,9 +86,10 @@ defmodule NestWeb.LobbyChannel.ProbeCacheTest do
       assert stats.path == path
 
       # A read: every session on the topic is not told about it. The `0` fence
-      # is sound only while `probe_cache_stats` has a single emitter
-      # (`ProbeCache.clear/0`): a second one could land between the reply and
-      # this line.
+      # is sound because `probe_cache_stats` has a single emitter
+      # (`ProbeCache.clear/0`) and only this file exercises it — a second
+      # emitter, or a second test clearing the cache beside this one, could
+      # land a frame between the reply and this line.
       refute_push "probe_cache_stats", _, 0
     end
 
