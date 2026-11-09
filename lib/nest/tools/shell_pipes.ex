@@ -33,7 +33,7 @@ defmodule Nest.Tools.ShellPipes do
 
   ## Detection
 
-  `ShellTokens.split_last_stage/1` reports only a **top-level** pipe, so a pipe
+  `ShellTokens.piped?/1` reports only a **top-level** pipe, so a pipe
   inside quotes, a command substitution, a subshell or a heredoc *body* is not
   this command's own pipeline. A heredoc piped onward (`cat <<EOF | head`) is a
   real pipe and is treated like any other. The wrapper gaps the other command
@@ -55,14 +55,12 @@ defmodule Nest.Tools.ShellPipes do
   """
   @spec check(term(), non_neg_integer(), boolean()) :: :ok | {:error, String.t()}
   def check(command, timeout_ms, background?) when is_binary(command) do
-    if (background? or timeout_ms > @long_command_ms) and piped?(command),
+    if (background? or timeout_ms > @long_command_ms) and ShellTokens.piped?(command),
       do: {:error, refusal()},
       else: :ok
   end
 
   def check(other, _timeout_ms, _background?), do: {:error, invalid_command_message(other)}
-
-  defp piped?(command), do: ShellTokens.split_last_stage(command) != :none
 
   @doc """
   The refusal a piped command over the bound gets.

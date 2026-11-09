@@ -1,100 +1,61 @@
 defmodule Nest.Tools.ShellTokensTest do
   @moduledoc """
-  The tokenizer's own edges, and the one thing a caller cuts with:
-  `split_last_stage/1`.
+  The tokenizer's own edges, and the two questions callers ask of a command:
+  `piped?/1` (does it have a top-level pipe?) and `command_words/1` (which words
+  are command words, and which stages are fed by a pipe?).
 
-  `Nest.Tools.ShellPipes` reads only the *verdict* ("is there a top-level
-  pipe?"), never the split: a byte offset that is off by one produces a
-  plausible-but-different command, and a caller that only asks "is there a pipe"
-  cannot notice. So every case here is asserted as either "no cut" (`:none`) or
-  "the last top-level stage is exactly this" — both are correct answers; the
-  point is that none of them is a wrong one.
-
-  `tokenize/1` is pinned alongside, because two other callers depend on its
-  output shape (`command_words/1` for `ShellBackground.check/1`, and the words
-  `ShellBackground` compares): the offsets the splitter uses are internal, and
-  must not leak into the token stream.
+  `tokenize/1` is pinned alongside, because two callers depend on its output
+  shape (`command_words/1` for `ShellBackground.check/1`, and the words
+  `ShellBackground` compares): the scanner's internal token shape must not leak
+  into the token stream.
   """
 
   use ExUnit.Case, async: true
 
   alias Nest.Tools.ShellTokens
 
-  describe "split_last_stage/1 finds the last top-level pipe" do
-    test "the plain cases, so the pins below are anchored" do
-      assert ShellTokens.split_last_stage("ls | head") == {"ls ", " head"}
-      assert ShellTokens.split_last_stage("ls|head") == {"ls", "head"}
-      assert ShellTokens.split_last_stage("ls | grep x | head") == {"ls | grep x ", " head"}
-      assert ShellTokens.split_last_stage("ls | head | wc -l") == {"ls | head ", " wc -l"}
-      assert ShellTokens.split_last_stage("head -1 file") == :none
-      assert ShellTokens.split_last_stage("") == :none
-    end
-
-    test "an escaped pipe is a word, not an operator" do
-      # `ls \| head` runs `ls` with two arguments; bash never pipes it.
-      assert ShellTokens.split_last_stage("ls \\| head") == :none
-      assert ShellTokens.tokenize("ls \\| head") == [word: "ls", word: "|", word: "head"]
-    end
-
-    test "`||` is not a pipe, and `|&` is" do
-      assert ShellTokens.split_last_stage("ls || head") == :none
-      assert ShellTokens.tokenize("ls || head") == [word: "ls", op: "||", word: "head"]
-
-      assert ShellTokens.split_last_stage("ls |& head") == {"ls ", " head"}
-      assert ShellTokens.tokenize("ls |& head") == [word: "ls", op: "|&", word: "head"]
-    end
-
-    test "a pipe inside quotes is not a pipe, including quotes inside quotes" do
-      assert ShellTokens.split_last_stage(~s{echo "a | head"}) == :none
-      assert ShellTokens.split_last_stage("echo 'a | b'") == :none
-      # Single quotes inside a double-quoted string are literal characters, so
-      # the pipe between them is still quoted.
-      assert ShellTokens.split_last_stage(~s{echo "it's 'a | b'"}) == :none
-
-      assert ShellTokens.tokenize("echo 'a | b'") == [word: "echo", word: "a | b"]
-    end
-
-    test "a pipe inside a substitution or a subshell belongs to the stage that holds it" do
-      assert ShellTokens.split_last_stage("echo $(ls | head)") == :none
-      assert ShellTokens.split_last_stage("`ls | head`") == :none
-      assert ShellTokens.split_last_stage("(ls | head)") == :none
-
-      # `ls | (head)` is the other way round: the pipe *is* top-level and the
-      # stage after it is the subshell, so the split is here and the stage is
-      # `(head)`. `ShellPipes` refuses it above the bound like any other pipe,
-      # whatever the stage is.
-      assert ShellTokens.split_last_stage("ls | (head)") == {"ls ", " (head)"}
-
-      # The token stream is unchanged by the offsets: the substitution's pipe is
-      # an operator token exactly as it was before `split_last_stage/1` existed.
-      assert ShellTokens.tokenize("`ls | head`") == [word: "ls", op: "|", word: "head"]
-
-      assert ShellTokens.tokenize("echo $(ls | head)") == [
-               word: "echo",
-               word: "$",
-               op: "(",
-               word: "ls",
-               op: "|",
-               word: "head",
-               op: ")"
-             ]
-    end
-
-    test "a newline separates commands, with or without a pipe on the second line" do
-      assert ShellTokens.split_last_stage("cd /x\nls") == :none
-      assert ShellTokens.split_last_stage("cd /x\nls | head") == {"cd /x\nls ", " head"}
-      # A pipe with nothing after it on its line is a continuation, not a cut
-      # point of its own: the stage is the one on the next line.
-      assert ShellTokens.split_last_stage("ls |\nhead") == {"ls ", "\nhead"}
-    end
-  end
-
-  describe "split_last_stage/1 leaves heredocs, comments and arithmetic alone" do
-    test "a heredoc's body is skipped, and its delimiter's quoting does not change that" do
-      # Every shape here puts the pipe inside the body. The delimiter forms are
-      # the tokenizer's: quoted, escaped, `<<-` (tabs), a variable-shaped word,
-      # and the undecidable `<<E'OF'` sentinel.
+  describe "piped?/1" do
+    test "a top-level pipe is a pipe, whatever stage follows it" do
       for command <- [
+            "ls | head",
+            "ls|head",
+            "ls | grep x | head",
+            "ls |& head",
+            # The pipe is top-level and the stage after it is a subshell.
+            "ls | (head)",
+            "cd /x\nls | head",
+            "ls |\nhead",
+            # A pipe after a heredoc's terminator is the command's own.
+            "cat <<EOF\nls\nEOF\n| head"
+          ] do
+        assert ShellTokens.piped?(command), "expected #{inspect(command)} to be piped"
+      end
+    end
+
+    test "everything that is not the command's own top-level pipe is not one" do
+      for command <- [
+            "head -1 file",
+            "",
+            "ls",
+            # `ls \| head` runs `ls` with two arguments; bash never pipes it.
+            "ls \\| head",
+            "ls || head",
+            ~s{echo "a | head"},
+            "echo 'a | b'",
+            ~s{echo "it's 'a | b'"},
+            "echo $(ls | head)",
+            "`ls | head`",
+            "(ls | head)",
+            "cd /x\nls",
+            "cat << $file",
+            "echo $((1 << 2))",
+            "echo ((1 << 2))",
+            "echo # | head",
+            "echo # | head\nls",
+            "ls # nothing after",
+            "ls \\",
+            ~s{echo "a\\},
+            # A heredoc body is not code, whichever way its delimiter is quoted.
             "cat <<EOF\nls | head\nEOF",
             "cat <<'EOF'\nls | head\nEOF",
             "cat <<-EOF\n\tls | head\n\tEOF",
@@ -103,51 +64,29 @@ defmodule Nest.Tools.ShellTokensTest do
             "cat <<$F\nls | head\n$F",
             "cat <<E'OF'\nls | head\nEOF",
             "cat <<\\-EOF\nls | head\nEOF",
-            # Unterminated: the body runs to the end of the command.
-            "cat <<'EOF"
+            "cat <<'EOF",
+            # bash does not read `EOF | head` as a terminator, so that pipe is in
+            # the body.
+            "cat <<EOF\nls\nEOF | head"
           ] do
-        assert ShellTokens.split_last_stage(command) == :none,
-               "expected #{inspect(command)} to have no top-level pipe"
+        refute ShellTokens.piped?(command), "expected #{inspect(command)} not to be piped"
       end
+    end
+  end
 
-      # The body never becomes tokens — and neither does the delimiter, which
-      # the heredoc scan consumes: `cat` is the command word, `<<` its operator,
-      # and the newline ends the line. (Pre-existing shape, pinned so a change to
-      # it is deliberate.)
+  describe "tokenize/1" do
+    test "words and operators only, with none of the scanner's own state" do
+      # The scanner's operators carry the in-backtick flag; the public token must
+      # not. `command_words/1` and `ShellBackground.check/1` both read this shape.
+      assert ShellTokens.tokenize("ls \\| head") == [word: "ls", word: "|", word: "head"]
+      assert ShellTokens.tokenize("ls || head") == [word: "ls", op: "||", word: "head"]
+      assert ShellTokens.tokenize("`ls | head`") == [word: "ls", op: "|", word: "head"]
+
       assert ShellTokens.tokenize("cat <<EOF\nls | head\nEOF") == [
                word: "cat",
                op: "<<",
                op: "\n"
              ]
-    end
-
-    test "a `<<` that is not a heredoc is an operator, not a delimiter" do
-      # `cat << $file` has no delimiter word after the operator, and a bare `<<`
-      # is a shift in arithmetic. Neither is a heredoc, so neither swallows what
-      # follows.
-      assert ShellTokens.split_last_stage("cat << $file") == :none
-      assert ShellTokens.split_last_stage("echo $((1 << 2))") == :none
-      assert ShellTokens.split_last_stage("echo ((1 << 2))") == :none
-    end
-
-    test "a comment is not code" do
-      assert ShellTokens.split_last_stage("echo # | head") == :none
-      assert ShellTokens.split_last_stage("echo # | head\nls") == :none
-      # A trailing comment with no newline still ends the scan cleanly.
-      assert ShellTokens.split_last_stage("ls # nothing after") == :none
-      assert ShellTokens.tokenize("echo # | head") == [word: "echo"]
-    end
-
-    test "degenerate syntax does not become a wrong cut" do
-      for command <- [
-            "",
-            "ls \\",
-            ~s{echo "a\\},
-            "cat <<'EOF"
-          ] do
-        assert ShellTokens.split_last_stage(command) == :none,
-               "expected #{inspect(command)} to have no top-level pipe"
-      end
     end
   end
 

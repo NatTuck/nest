@@ -348,30 +348,11 @@ defmodule Nest.Tools.ShellCmdTest do
     end
   end
 
-  @tag :bwrap
-  test "a short command's pipe runs as written, and a long one is refused first", %{ws: ws} do
-    # Below the bound the pipeline is the model's own: nothing is removed, so
-    # `head -2` really is two lines (the old rewrite returned all five).
+  test "a long piped command is refused before it runs", %{ws: ws} do
+    # No `:bwrap`: the refusal is in the `with`, before `Sandbox.run/4`, so this
+    # proof must not be skippable on a host without bwrap.
     function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
 
-    for n <- 1..5, do: File.write!(Path.join(ws, "listed-#{n}.txt"), "")
-    File.write!(Path.join(ws, "sample.txt"), "alpha\nbeta\n")
-
-    assert {:ok, output} =
-             function.function.(
-               %{"command" => "ls listed-*.txt | head -2", "timeout" => 30},
-               nil
-             )
-
-    assert length(String.split(output, "\n", trim: true)) == 2
-
-    assert {:ok, "beta\n"} =
-             function.function.(
-               %{"command" => "cat sample.txt | grep beta", "timeout" => 30},
-               nil
-             )
-
-    # Above it, the refusal happens before anything runs.
     assert {:error, message} =
              function.function.(%{"command" => "touch refused.txt | cat", "timeout" => 60}, nil)
 
@@ -393,6 +374,30 @@ defmodule Nest.Tools.ShellCmdTest do
     # omitting it must not be the way around the rule.
     assert {:error, _} = function.function.(%{"command" => "touch omitted.txt | cat"}, nil)
     refute File.exists?(Path.join(ws, "omitted.txt"))
+  end
+
+  @tag :bwrap
+  test "a short command's pipe runs as written", %{ws: ws} do
+    # Below the bound the pipeline is the model's own: nothing is removed, so
+    # `head -2` really is two lines (the old rewrite returned all five).
+    function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
+
+    for n <- 1..5, do: File.write!(Path.join(ws, "listed-#{n}.txt"), "")
+    File.write!(Path.join(ws, "sample.txt"), "alpha\nbeta\n")
+
+    assert {:ok, output} =
+             function.function.(
+               %{"command" => "ls listed-*.txt | head -2", "timeout" => 30},
+               nil
+             )
+
+    assert length(String.split(output, "\n", trim: true)) == 2
+
+    assert {:ok, "beta\n"} =
+             function.function.(
+               %{"command" => "cat sample.txt | grep beta", "timeout" => 30},
+               nil
+             )
   end
 
   test "the tool rejects a detached-background marker, even with `background: true`", %{ws: ws} do

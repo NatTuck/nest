@@ -26,7 +26,11 @@ defmodule Nest.Tools.ShellPipesTest do
     "ls | xargs head",
     "ls | (head)",
     "ls | { head; }",
-    "cat <<EOF | head"
+    "cat <<EOF | head",
+    # A trailing pipe is a syntax error; refusing it is the safe direction.
+    "ls |",
+    # A pipe after a heredoc's terminator is the command's own.
+    "cat <<EOF\nls\nEOF\n| head"
   ]
 
   # No top-level pipe: a quoted pipe, a substitution, a subshell, a heredoc body.
@@ -39,6 +43,8 @@ defmodule Nest.Tools.ShellPipesTest do
     "`ls | head`",
     "(ls | head)",
     "cat <<'EOF'\nls | head\nEOF",
+    # bash does not read `EOF | head` as a terminator, so that pipe is in the body.
+    "cat <<EOF\nls\nEOF | head",
     # The realistic long-command false positive: `||` is not a pipe.
     "make || exit 1"
   ]
