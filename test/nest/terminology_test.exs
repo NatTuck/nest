@@ -24,6 +24,7 @@ defmodule Nest.TerminologyTest do
   # The modules that own a path: the sandbox and its backends, the scratch dir,
   # the tools that name paths, and the offload that files a result into one.
   @scoped [
+    "lib/nest/sandbox.ex",
     "lib/nest/sandbox/**/*.ex",
     "lib/nest/agents/agent/tmp_space.ex",
     "lib/nest/tools/shell_cmd.ex",
@@ -38,12 +39,32 @@ defmodule Nest.TerminologyTest do
     "test/nest/sandbox/**/*.exs",
     "test/nest/tools_scratch_path_test.exs",
     "test/nest/sandbox_path_domain_test.exs",
-    "test/nest/agents/agent/tmp_space_test.exs"
+    "test/nest/agents/agent/tmp_space_test.exs",
+    "test/nest/agents/agent/batch_sizer_overflow_test.exs",
+    "test/nest/agents/agent/batch_sizer_preflight_stat_test.exs",
+    "test/nest/agents/agent/batch_sizer_test.exs",
+    "test/nest/agents/agent/shell_job_notice_test.exs",
+    "test/nest/agents/agent/system_prompt_depth_filter_test.exs",
+    "test/nest/agents/agent/system_prompt_composition_test.exs",
+    "test/nest/agents/none_scratch_name_test.exs",
+    "test/nest/lowercase_names_migration_test.exs",
+    "test/nest/spaces/environment_confirm_test.exs",
+    "test/nest/tools/shell_cmd_test.exs",
+    "test/nest/tools_file_media_test.exs",
+    "test/support/docker_test_helpers.ex"
   ]
 
-  @banned [
-    {"spel" <> "ling", "say which path: the sandbox path, the host path, the scratch path"}
+  # The files the rule was written for. A glob that stops matching one of these
+  # makes the scan look clean, so the scan says so instead.
+  @must_include [
+    "lib/nest/sandbox.ex",
+    "lib/nest/sandbox/paths.ex",
+    "lib/nest/agents/agent/tmp_space.ex",
+    "lib/nest/tools/shell_cmd.ex",
+    "test/nest/tools_scratch_path_test.exs"
   ]
+
+  @banned ["spel" <> "ling"]
 
   test "the path modules do not use a banned word" do
     files =
@@ -52,8 +73,12 @@ defmodule Nest.TerminologyTest do
       |> Enum.uniq()
 
     # A broken glob must not pass vacuously: an empty list makes the assertion
-    # below green.
-    assert length(files) > 20
+    # below green, and a count threshold cannot see a list that lost one file.
+    found = MapSet.new(files, &Path.relative_to(&1, @root))
+
+    assert MapSet.subset?(MapSet.new(@must_include), found),
+           "the scan is not looking where the rule lives: " <>
+             inspect(Enum.reject(@must_include, &MapSet.member?(found, &1)))
 
     offenders =
       SourceScan.flat_map(files, fn file ->
@@ -62,14 +87,14 @@ defmodule Nest.TerminologyTest do
         |> String.split("\n")
         |> Enum.with_index(1)
         |> Enum.flat_map(fn {line, number} ->
-          for {word, _say} <- @banned, String.contains?(line, word) do
+          for word <- @banned, String.contains?(String.downcase(line), word) do
             {Path.relative_to(file, @root), number}
           end
         end)
       end)
 
     assert offenders == [],
-           ~s|these lines use a banned word. A path has no "spel"+"ling" — say which one it is: | <>
+           "these lines use a banned word. A path has no second form — say which one it is: " <>
              inspect(offenders)
   end
 end

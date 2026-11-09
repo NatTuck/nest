@@ -108,7 +108,7 @@ there moves host state. Which of the two it does is still open (see residuals);
 it gates the migration, not the rest of the PR.
 
 Transcripts are not rewritten. A message written before the migration names the
-old path, and that is a record of what was said rather than a live address.
+old name, and that is a record of what was said rather than a live address.
 
 **No namespacing machinery, and no cross-table uniqueness check.**
 `PersistedAgent`'s name format is `[a-z0-9_-]+`, so `@nat` — the address,
