@@ -100,8 +100,9 @@ defmodule Nest.Tools.ShellTokens do
   Only a top-level operator is a stage boundary: a pipe inside a subshell, a
   command substitution, or a backtick substitution belongs to the stage that
   contains it. That is what makes "is there a top-level pipe?" a question about
-  this command's own pipeline and not about a nested one — words come back with
-  their quotes stripped, so a token list cannot answer it.
+  this command's own pipeline and not about a nested one: `tokenize/1` keeps
+  neither the operator offsets nor the in-backtick flag, so a token list cannot
+  answer it.
   """
   @spec split_last_stage(String.t()) :: :none | {String.t(), String.t()}
   def split_last_stage(command) when is_binary(command) do

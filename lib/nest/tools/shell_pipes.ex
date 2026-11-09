@@ -83,9 +83,9 @@ defmodule Nest.Tools.ShellPipes do
       "    exit $status\n\n" <>
       "The log keeps every line; the script decides what comes back. To watch a job " <>
       "instead, use `background: true` (with no pipe — a job's `timeout` is ignored, " <>
-      "so its pipes are refused too) and read its log with `shell-list` / `shell-wait`. " <>
-      "In the foreground, `timeout: #{div(@long_command_ms, 1000)}` or less runs the " <>
-      "pipe as written."
+      "so its pipes are refused too), then `shell-list` for the log path and " <>
+      "`shell-wait` for its output. In the foreground, " <>
+      "`timeout: #{div(@long_command_ms, 1000)}` or less runs the pipe as written."
   end
 
   defp invalid_command_message(other) do
