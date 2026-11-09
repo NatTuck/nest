@@ -313,6 +313,13 @@ defmodule Nest.Tools.ShellCmdTest do
     refute Map.has_key?(timeout, "maximum")
     assert tool.parameters_schema["required"] == ["command"]
 
+    # The pipe rule, in the model-visible description: a necessary condition
+    # (`timeout` ≤ 30s) is not sufficient, and a background job never qualifies.
+    # Both halves are stated because a model that read only the first would try
+    # `background: true` with a short timeout and get the same refusal.
+    assert tool.description =~ "only for a foreground call whose"
+    assert tool.description =~ "any `background: true` call"
+
     # The umask the transcript's preamble sets, stated to the model. 0022 is the
     # policy (a directory an agent creates must never be world-writable) and the
     # literal is deliberate: the description interpolates `Transcript.umask/0`,
@@ -341,18 +348,56 @@ defmodule Nest.Tools.ShellCmdTest do
     end
   end
 
+  test "a long piped command is refused before it runs", %{ws: ws} do
+    # No `:bwrap`: the refusal is in the `with`, before `Sandbox.run/4`, so this
+    # proof must not be skippable on a host without bwrap.
+    function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
+
+    assert {:error, message} =
+             function.function.(%{"command" => "touch refused.txt | cat", "timeout" => 60}, nil)
+
+    assert message =~ "pipes output"
+    refute File.exists?(Path.join(ws, "refused.txt"))
+
+    # A job's `timeout` is ignored, so `background: true` is the long case at any
+    # bound — and the refusal must not offer a `timeout` it cannot honour.
+    assert {:error, background_message} =
+             function.function.(
+               %{"command" => "touch bg.txt | cat", "background" => true, "timeout" => 30},
+               nil
+             )
+
+    assert background_message =~ "a job's `timeout` is ignored"
+    refute File.exists?(Path.join(ws, "bg.txt"))
+
+    # Omitting `timeout` is the 60-second default, so it is the long case too:
+    # omitting it must not be the way around the rule.
+    assert {:error, _} = function.function.(%{"command" => "touch omitted.txt | cat"}, nil)
+    refute File.exists?(Path.join(ws, "omitted.txt"))
+  end
+
   @tag :bwrap
-  test "a trailing truncating stage is removed, never refused", %{ws: ws} do
-    # `Mounts.new(ws, nil)` has no scratch dir, so there is nowhere to file the
-    # complete output — and it must not be thrown away: the command runs without
-    # its stage and the output comes back in full. `Nest.Tools.ShellPipesTest`
-    # covers the filed-and-warned case, which needs a scratch.
+  test "a short command's pipe runs as written", %{ws: ws} do
+    # Below the bound the pipeline is the model's own: nothing is removed, so
+    # `head -2` really is two lines (the old rewrite returned all five).
     function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
 
     for n <- 1..5, do: File.write!(Path.join(ws, "listed-#{n}.txt"), "")
+    File.write!(Path.join(ws, "sample.txt"), "alpha\nbeta\n")
 
-    assert {:ok, output} = function.function.(%{"command" => "ls | head -2"}, nil)
-    assert length(String.split(output, "\n", trim: true)) == 5
+    assert {:ok, output} =
+             function.function.(
+               %{"command" => "ls listed-*.txt | head -2", "timeout" => 30},
+               nil
+             )
+
+    assert length(String.split(output, "\n", trim: true)) == 2
+
+    assert {:ok, "beta\n"} =
+             function.function.(
+               %{"command" => "cat sample.txt | grep beta", "timeout" => 30},
+               nil
+             )
   end
 
   test "the tool rejects a detached-background marker, even with `background: true`", %{ws: ws} do
@@ -370,19 +415,6 @@ defmodule Nest.Tools.ShellCmdTest do
 
     assert message =~ "never runs a command detached"
     assert message =~ "background: true"
-  end
-
-  @tag :bwrap
-  test "the tool runs a command whose pipe into grep the filter allows (issue #106)", %{ws: ws} do
-    function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
-    File.write!(Path.join(ws, "sample.txt"), "alpha\nbeta\n")
-
-    # `ShellPipes`' own suite pins that a pipe into `grep` is allowed (and that
-    # `head`/`grep` used directly are); this is the end-to-end half — the
-    # allowed pipeline really runs under bwrap and its filtered output comes
-    # back.
-    assert {:ok, output} = function.function.(%{"command" => "cat sample.txt | grep beta"}, nil)
-    assert output == "beta\n"
   end
 
   @tag :bwrap
