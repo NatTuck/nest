@@ -78,6 +78,17 @@ defmodule Nest.Tools.ShellTokensTest do
     test "words and operators only, with none of the scanner's own state" do
       # The scanner's operators carry the in-backtick flag; the public token must
       # not. `command_words/1` and `ShellBackground.check/1` both read this shape.
+      # Quotes are removed from a word. This is load-bearing for the *other*
+      # consumer: `ShellBackground.check/1` compares command words to
+      # `setsid`/`nohup`, so a quoted marker is only caught because the quotes
+      # are gone. Without this line no test pins quote removal at all — the
+      # `piped?/1` verdicts do not depend on the word text.
+      assert ShellTokens.tokenize("'setsid' sleep 1") == [
+               word: "setsid",
+               word: "sleep",
+               word: "1"
+             ]
+
       assert ShellTokens.tokenize("ls \\| head") == [word: "ls", word: "|", word: "head"]
       assert ShellTokens.tokenize("ls || head") == [word: "ls", op: "||", word: "head"]
       assert ShellTokens.tokenize("`ls | head`") == [word: "ls", op: "|", word: "head"]
