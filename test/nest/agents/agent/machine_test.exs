@@ -260,27 +260,34 @@ defmodule MachineTest do
     end
   end
 
-  describe "property: random event sequences preserve invariants" do
-    test "no declared event ever quarantines and the machine stays valid" do
-      :rand.seed(:exsss, {1, 2, 3})
-      tags = Machine.events()
+  describe "walk: every declared event, from every start" do
+    test "a declared event never quarantines and the machine stays valid" do
+      # Deterministic on purpose. This was a 500-step random walk that drew
+      # `Enum.at(tags, :rand.uniform(length(tags)) - 1)`, so what it covered was a
+      # function of the *length* of the event vocabulary: adding one event shifted
+      # every draw, and a clause that only the walk reached could lose its only
+      # test without anything failing (#211 — it is how the dead
+      # `{:compaction_error, …}` clause survived, and then how it was found).
+      # Walking every (start, declared event) pair makes coverage a function of
+      # the vocabulary itself: a new event can only add work.
+      for start <- walk_starts(), tag <- Machine.events() do
+        [sample_event(tag) | continuation()]
+        |> Enum.reduce(start, &step!/2)
+      end
+    end
 
-      Enum.reduce(1..500, state_at(:idle), fn _, state ->
-        tag = Enum.at(tags, :rand.uniform(length(tags)) - 1)
-        result = Machine.step(state, sample_event(tag))
+    test "a second spawn of a registered name is ignored, not overwritten" do
+      # The walk sends each declared event once per start, so it cannot reach a
+      # duplicate: that branch needs the same name twice, and the old random walk
+      # only hit it when it drew `:child_spawned` twice in a row. Pinned here so
+      # `ChildEvents.transition/2`'s `{:ignore, …}` side has a test that does not
+      # depend on a draw.
+      {:ok, [], spawned} = Machine.step(state_at(:idle), {:child_spawned, "kid", false, nil})
 
-        assert result != :quarantine
+      assert {:ignore, :duplicate_child, next} =
+               Machine.step(spawned, {:child_spawned, "kid", false, nil})
 
-        next =
-          case result do
-            {:ok, _actions, next} -> next
-            {:ignore, _reason, next} -> next
-          end
-
-        Machine.validate!(next)
-        assert is_atom(Machine.status_for(next))
-        next
-      end)
+      assert next.children == spawned.children
     end
   end
 
@@ -438,4 +445,41 @@ defmodule MachineTest do
                Machine.step(generating, {:worker_crashed, make_ref(), %RuntimeError{}, []})
     end
   end
+
+  # Every start the walk uses: one machine per declared phase, plus the
+  # compaction slice, which `state_at/1` cannot build (it builds chat machines)
+  # and which the old random walk reached only by drifting into it.
+  defp walk_starts do
+    {:ok, _, compacting} = Compaction.stage(state_at(:generating), {:tool_call, %{}, 1, 10})
+
+    for(phase <- Machine.phases(), do: state_at(phase)) ++ [compacting]
+  end
+
+  # A short fixed tail, so each pair exercises a sequence and not only one step.
+  defp continuation, do: Enum.map([:iterate, :inbox_drain, :worker_down], &sample_event/1)
+
+  # The assertions the old walk made per step, kept as one function so a failure
+  # names the event and the phase it was in.
+  defp step!(event, state) do
+    result = Machine.step(state, event)
+
+    assert result != :quarantine,
+           "declared event #{inspect(elem_of(event))} quarantined in #{inspect(state.phase)}"
+
+    next =
+      case result do
+        {:ok, _actions, next} -> next
+        {:ignore, _reason, next} -> next
+      end
+
+    Machine.validate!(next)
+    assert is_atom(Machine.status_for(next))
+    next
+  end
+
+  # The tag of a sample event, for the failure message: a bare atom tag or the
+  # first element of the tuple.
+  defp elem_of(event) when is_atom(event), do: event
+  defp elem_of(event) when is_tuple(event), do: elem(event, 0)
+  defp elem_of(event), do: event
 end
