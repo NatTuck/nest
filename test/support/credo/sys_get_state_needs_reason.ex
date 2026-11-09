@@ -85,8 +85,8 @@ defmodule Nest.Credo.Check.SysGetStateNeedsReason do
     * `registry` — `Nest.Agents.Registry`'s per-name cleanup announces nothing,
       so the partition read is the only ordering primitive (measured: ~27% of
       exits are still in the table right after the caller's `:DOWN`);
-    * `dev-only` — `NestWeb.SurgicalReloader` is dev-only tooling with no
-      introspection API;
+    * `dev-only` — the process is tooling that only runs in development and has
+      no introspection API of its own;
     * `fixture` — the read half of a `:sys.replace_state` fixture against the
       process-global `Nest.Models` singleton.
 

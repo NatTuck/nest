@@ -166,10 +166,10 @@ PKGS_NOBLE=(
   # to exist on the host: `file` is the authoritative media check
   # (lib/nest/tools/media_kind.ex:101) and the type description
   # (lib/nest/tools/inspect_file.ex:128); `inotifywait` is what the
-  # `file_system` dependency needs, started by
-  # lib/nest_web/surgical_reloader.ex:34 whenever code reloading is on, so dev
-  # boot needs it as much as the tests do. Everything else the sandbox runs is
-  # coreutils, bash or bwrap, all of which the base image already has.
+  # `file_system` dependency shells out to, and dev boot needs it as much as
+  # the tests do, because `phoenix_live_reload` starts a `FileSystem` monitor
+  # alongside the endpoint. Everything else the sandbox runs is coreutils,
+  # bash or bwrap, all of which the base image already has.
   file inotify-tools
   # Postgres. `postgresql` is a metapackage: pkg_needed() accepts any
   # installed server instead, so a host with postgresql-16 already is fine.
