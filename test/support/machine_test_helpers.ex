@@ -156,7 +156,6 @@ defmodule Nest.TestSupport.MachineTestHelpers do
   def sample_event(:timer_armed), do: {:timer_armed, :stop_timer, make_ref()}
   def sample_event(:commit_done), do: {:commit_done}
   def sample_event(:commit_error), do: {:commit_error, :boom}
-  def sample_event(:compaction_error), do: {:compaction_error, :boom, nil}
   def sample_event(:retry_compaction), do: :retry_compaction
   def sample_event(:compact_request), do: {:compact_request, nil}
   def sample_event(:loop_ack), do: :loop_ack

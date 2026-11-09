@@ -339,10 +339,6 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
       else: {:ignore, :stale_result, m}
   end
 
-  def transition(%Machine{} = m, {:compaction_error, reason, carried}) do
-    compaction_failed(m, reason, carried)
-  end
-
   def transition(%Machine{} = m, {:http_error, ref, reason}) do
     if Machine.valid_ref?(m, ref),
       do: compaction_failed(m, reason, carried(m)),

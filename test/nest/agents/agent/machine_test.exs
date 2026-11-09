@@ -428,21 +428,6 @@ defmodule MachineTest do
       Machine.validate!(next)
     end
 
-    test "a compaction error event blocks for retry when nothing is carried" do
-      # `{:compaction_error, reason, carried}` is the compactor's own failure
-      # report. Nothing in `lib/` emits it any more — the crash and HTTP paths
-      # above own those — so its clause was covered only by the seeded random
-      # walk in the property test, which the event added to the vocabulary
-      # redrew. Pinned here rather than left to luck.
-      {:ok, _, compacting} = Compaction.stage(state_at(:generating), {:tool_call, %{}, 1, 10})
-
-      {:ok, actions, next} = Machine.step(compacting, {:compaction_error, :boom, nil})
-
-      assert Enum.any?(actions, &match?({:broadcast, {:compaction_error, _}, nil}, &1))
-      assert next.phase == :compaction_failed
-      Machine.validate!(next)
-    end
-
     test "a crash carrying a ref the machine does not know is still ignored" do
       # intentional: the new event must not become a licence to accept any
       # crash. A `{:worker_crashed, …}` whose ref is not the live worker's is a
