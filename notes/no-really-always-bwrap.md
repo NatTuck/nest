@@ -22,7 +22,7 @@ review plus two read-only planning passes; every anchor is checkable.
    reintroduced; the rule gets stated and guarded (§3).
 3. **The path mapping lives in exactly one place.** This change mostly *deletes*
    the problem: with no host-side emulation, the only mapping left is the bind
-   source and the reported sandbox spelling (§1).
+   source and the reported sandbox path (§1).
 4. **Clean up the no-op tests** (§4). **The `AGENTS.md` hunk stays in this
    commit** — no split; new policy text goes in alongside it.
 
@@ -52,7 +52,7 @@ Keep `readable_roots/1` (used for the `--ro-bind`s) and `project_mounts/1`.
   `BatchSizer.Overflow.write/4`).
 - `TmpSpace.space_dir/1` stays as the host *origin*; `Paths`'s moduledoc states
   the relationship once (`TmpSpace` produces `tmp_path`; `Paths` derives the mount
-  and the spelling). Do not make `Paths` depend on `TmpSpace`.
+  and the sandbox path). Do not make `Paths` depend on `TmpSpace`.
 - `ShellJobs.@sandbox_tmp` → `Nest.Sandbox.Paths.sandbox_root()`.
 
 ## 2. `glob` and `stat` inside bwrap
@@ -161,7 +161,7 @@ Write its honest limits in a comment (`apply/3`, an aliased `File`, `System.cmd`
 ## 4. The no-op tests
 
 Flat `/tmp/nest-tmp-…` fixtures make `Sandbox.sandbox_tmp_path(dir) == dir`, so
-the pointer assertions pass for either spelling: `batch_sizer_test.exs`
+the pointer assertions pass for either path: `batch_sizer_test.exs`
 `:496`, `:515`, `:538`, `:562`, `:568`, **and `:254`** (the review missed that
 one), plus `batch_sizer_overflow_test.exs` `:60`, `:76`. Fix: build the real
 shape (`root/space-1/agent-N`), assert `=~ Sandbox.sandbox_tmp_path(dir)` and
@@ -350,7 +350,7 @@ outcomes, and logging them turns a common user mistake into log noise.
 
 **Reporting to the caller.** The caller gets a fixed sentence naming the class of
 problem, *not* bwrap's stderr: bwrap errors can name the host scratch path, and
-the rule at the top of this note says that spelling never reaches the LLM. Full
+the rule at the top of this note says that path never reaches the LLM. Full
 stderr goes to the server log. Arms to add in
 `lib/nest/tools/file_tools.ex` (`read_after_stat/5` `:155`, `read_file_content/5`
 `:182`) and `lib/nest/tools/inspect_file.ex` (`safe_byte_size/4` `:93`,
@@ -414,7 +414,7 @@ basename-prefix skip at `sandbox.ex:384`, which silently hides any real file an
 agent names `.nest-cmd-*`. Both halves get fixed:
 
 * `Nest.Sandbox.Paths` gains `stage_dir/1` (host) and `stage_dir_sandbox/1`
-  (sandbox spelling), so the derivation stays in the one module that owns the
+  (the sandbox path), so the derivation stays in the one module that owns the
   mapping:
   * scratch bind present → `<space_dir>/.cmds/`, visible inside at `/tmp/.cmds`;
   * no scratch bind → `<System.tmp_dir!()>/.nest-cmds/`, visible inside at the

@@ -63,9 +63,9 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
 
   describe "the layout" do
     test "a binding backend's space dir is under this BEAM's root" do
-      # The last two segments of the bwrap spelling, each with its own function.
+      # The last two segments of the bwrap path, each with its own function.
       # The first two are `TmpRootTest`'s (`root_parent/0` and `own_root/0`); the
-      # `"none"` spelling is `Nest.Sandbox.NoneBackendTest`'s and the `"docker"`
+      # `"none"` path is `Nest.Sandbox.NoneBackendTest`'s and the `"docker"`
       # one this file's "a docker space's scratch".
       assert TmpSpace.space_dir(7, "bwrap") == Path.join(TmpSpace.own_root(), "space-7")
 
@@ -354,13 +354,13 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       name = unique("docker-agent")
 
       # The container's own `/tmp` is the scratch root, so the agent's directory
-      # is the bare name under the `/tmp` spelling — the same spelling every
+      # is the bare name under the `/tmp` path — the same path every
       # agent is told it has, on every backend.
       assert TmpSpace.space_dir(7, "docker") == Paths.sandbox_root()
 
       # `create/3` only *names* it (the same path `agent_dir/3` derives): the
       # container makes it, in the command that runs. Making it here would leave
-      # a host directory at a spelling the container would never see.
+      # a host directory at a path the container would never see.
       assert TmpSpace.create(7, name, "docker") == Path.join("/tmp", name)
       refute File.exists?(Path.join("/tmp", name))
     end

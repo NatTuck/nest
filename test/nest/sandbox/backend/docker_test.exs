@@ -478,7 +478,7 @@ defmodule Nest.Sandbox.Backend.DockerTest do
       assert Backend.display_name(mounts) == "docker exec"
     end
 
-    test "falls back to the no-bind spelling for a call with no space" do
+    test "falls back to the no-bind path for a call with no space" do
       # Such a call cannot run at all (`command/3` refuses it), so this only has
       # to be total.
       assert Docker.stage_dir(Mounts.new("/ws", nil, "docker")) == Paths.stage_dir(nil)

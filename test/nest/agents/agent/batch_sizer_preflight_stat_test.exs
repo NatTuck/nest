@@ -153,7 +153,7 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
                Budget.size([]) + ceil(4 * fallback)
     end
 
-    test "different spellings of one file are batched separately (documented limit)" do
+    test "two paths for one file are batched separately (documented limit)" do
       stub_stats(100)
 
       Mimic.expect(Sandbox, :stat_many, 1, fn paths, _c, _m ->

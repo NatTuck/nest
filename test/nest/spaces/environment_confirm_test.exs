@@ -229,7 +229,7 @@ defmodule Nest.Spaces.EnvironmentConfirmTest do
         agent_key: key,
         agent_pid: pid,
         command: "sleep 30",
-        # The staged *file's* two spellings: the sandbox one is what the backend's
+        # The staged *file's* two paths: the sandbox one is what the backend's
         # command line runs, the host one is what gets cleaned up. Handing over the
         # stage *directory* (as this did) launched `bash <dir>`, which exits 126 at
         # once — invisible to a test that only counted the job, fatal to one that

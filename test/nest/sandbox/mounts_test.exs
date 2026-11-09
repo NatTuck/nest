@@ -64,7 +64,7 @@ defmodule Nest.Sandbox.MountsTest do
 
     test "creates nothing on the host for a docker call" do
       # A docker scratch names a path inside the container. Creating it here
-      # would make a *host* directory at a spelling the agent only ever means
+      # would make a *host* directory at a path the agent only ever means
       # inside the container — and the container would never see it, so the
       # agent would still have no scratch.
       name = "nest_mounts_docker_#{System.unique_integer([:positive])}"

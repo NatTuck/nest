@@ -529,7 +529,7 @@ defmodule Nest.Tools.ShellCmdTest do
     # launcher with umask 022 already produces 0755/0644, so the mode
     # assertions below corroborate the effect here rather than pinning it.
     #
-    # The scratch is what makes the two spellings different strings — with no
+    # The scratch is what makes the two paths different strings — with no
     # scratch bind `stage_dir_sandbox/1` *is* `stage_dir/1`, and the assertion
     # below would pass for the bug it names.
     scratch =
@@ -553,7 +553,7 @@ defmodule Nest.Tools.ShellCmdTest do
 
     assert File.read!(host) == "umask 0022\nmkdir d"
 
-    # The spelling bash is handed is the sandbox's, not the host's: with a
+    # The path bash is handed is the sandbox's, not the host's: with a
     # scratch bind the staging directory is `<space>/.cmds` on the host and
     # `/tmp/.cmds` inside. Handing bash the host path would make every command
     # fail to open its own script.

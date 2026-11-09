@@ -162,15 +162,15 @@ defmodule Nest.Sandbox.Backend.Docker.CommandLineTest do
 
     test "renders the same call's binds with the mode's own write permission" do
       real = workspace("nest_docker_cl_mode")
-      spelling = real <> "-alias"
-      File.ln_s!(real, spelling)
-      on_exit(fn -> File.rm(spelling) end)
+      alias_path = real <> "-alias"
+      File.ln_s!(real, alias_path)
+      on_exit(fn -> File.rm(alias_path) end)
 
       act =
         payload(
           CommandLine.exec_line(
             @container,
-            mounts(spelling),
+            mounts(alias_path),
             Modes.caps(Modes.act()),
             @script,
             nil
@@ -181,18 +181,18 @@ defmodule Nest.Sandbox.Backend.Docker.CommandLineTest do
         payload(
           CommandLine.exec_line(
             @container,
-            mounts(spelling),
+            mounts(alias_path),
             Modes.caps(Modes.plan()),
             @script,
             nil
           )
         )
 
-      # Both the canonical bind and the spelling self-bind follow the call's mode.
-      # The spelling bind is the second, writable view of the workspace, so its
+      # Both the canonical bind and the alias self-bind follow the call's mode.
+      # The alias bind is the second, writable view of the workspace, so its
       # mode is exactly what a bind leak gets wrong: assert it and the leak in
       # #129 is caught here rather than by a reviewer.
-      for path <- [FSPath.canonical(real), spelling] do
+      for path <- [FSPath.canonical(real), alias_path] do
         assert act =~ "--bind #{ShellEscape.escape(path)} #{ShellEscape.escape(path)}"
         assert plan =~ "--ro-bind #{ShellEscape.escape(path)} #{ShellEscape.escape(path)}"
         refute plan =~ "--bind #{ShellEscape.escape(path)}"
@@ -204,25 +204,25 @@ defmodule Nest.Sandbox.Backend.Docker.CommandLineTest do
     end
   end
 
-  describe "workspace_spelling/2" do
-    test "is empty for no workspace and for a canonical one, and one bind for a spelling" do
-      assert CommandLine.workspace_spelling(mounts(), :rw) == []
-      assert CommandLine.workspace_spelling(mounts("/ws"), :rw) == []
+  describe "workspace_alias_binds/2" do
+    test "is empty for no workspace and for a canonical one, and one bind for an alias" do
+      assert CommandLine.workspace_alias_binds(mounts(), :rw) == []
+      assert CommandLine.workspace_alias_binds(mounts("/ws"), :rw) == []
 
-      real = workspace("nest_docker_cl_spelling")
-      assert CommandLine.workspace_spelling(mounts(FSPath.canonical(real)), :ro) == []
+      real = workspace("nest_docker_cl_alias")
+      assert CommandLine.workspace_alias_binds(mounts(FSPath.canonical(real)), :ro) == []
 
-      spelling = real <> "-alias"
-      File.ln_s!(real, spelling)
-      on_exit(fn -> File.rm(spelling) end)
+      alias_path = real <> "-alias"
+      File.ln_s!(real, alias_path)
+      on_exit(fn -> File.rm(alias_path) end)
 
       # The container sees only the image and the explicit binds, so nothing
-      # resolves the caller's spelling of a symlinked workspace for it. The
-      # sandbox inside materializes that spelling, with the call's own mode, or
-      # every path the model was given names a path the container does not have.
+      # resolves a symlinked workspace for it. The sandbox inside materializes
+      # the alias the caller named, with the call's own mode, or every path the
+      # model was given names a path the container does not have.
       for mode <- [:rw, :ro] do
-        assert CommandLine.workspace_spelling(mounts(spelling), mode) ==
-                 [{spelling, spelling, mode}]
+        assert CommandLine.workspace_alias_binds(mounts(alias_path), mode) ==
+                 [{alias_path, alias_path, mode}]
       end
     end
   end

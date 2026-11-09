@@ -1,9 +1,9 @@
 defmodule Nest.ToolsScratchPathTest do
   @moduledoc """
   Behavioural check that every file tool addresses the same sandbox-domain
-  scratch spelling (`/tmp/<agent>/...`).
+  scratch path (`/tmp/<agent>/...`).
 
-  The space dir is bound at `/tmp`, so `/tmp/<agent>/` is the only spelling
+  The space dir is bound at `/tmp`, so `/tmp/<agent>/` is the only path
   the agent is ever told about or may hand back. The host backing path
   (`<space_dir>/<agent>/...`) must not resolve for any tool and must not
   appear in any tool description.
@@ -21,19 +21,19 @@ defmodule Nest.ToolsScratchPathTest do
 
     # A workspace outside /tmp: the space dir is bound at /tmp, so a
     # workspace under /tmp would be shadowed inside the sandbox.
-    workspace = Path.join([File.cwd!(), "_build", "tmp", "nest_tools_spelling_#{unique}"])
+    workspace = Path.join([File.cwd!(), "_build", "tmp", "nest_tools_scratch_#{unique}"])
     File.mkdir_p!(workspace)
 
     # The real scratch shape, with the root under /tmp so a scratch file's
     # own directory is shadowed inside the sandbox (which is what makes the
     # "a path outside the agent's domain fails" assertions meaningful).
-    root = Path.join(System.tmp_dir!(), "nest_tools_spelling_#{unique}")
+    root = Path.join(System.tmp_dir!(), "nest_tools_scratch_#{unique}")
     agent = "agent-#{unique}"
     tmp_path = Path.join([root, "space-1", agent])
 
     on_exit(fn ->
-      if String.contains?(workspace, "nest_tools_spelling"), do: File.rm_rf!(workspace)
-      if String.contains?(root, "nest_tools_spelling"), do: File.rm_rf(root)
+      if String.contains?(workspace, "nest_tools_scratch"), do: File.rm_rf!(workspace)
+      if String.contains?(root, "nest_tools_scratch"), do: File.rm_rf(root)
     end)
 
     %{
@@ -77,11 +77,11 @@ defmodule Nest.ToolsScratchPathTest do
 
         assert message =~ "No such file"
 
-        # `file-read` sees the same file through the same spelling.
+        # `file-read` sees the same file through the same path.
         assert {:ok, "hello"} = read.function.(%{"path" => sandbox_file}, ctx)
 
         # `file-edit` reads and writes the same file through the sandbox
-        # spelling (this could not work under the old split-path design).
+        # path (this could not work under the old split-path design).
         assert {:ok, _} =
                  edit.function.(
                    %{"path" => sandbox_file, "old_text" => "hello", "new_text" => "world"},
@@ -90,10 +90,10 @@ defmodule Nest.ToolsScratchPathTest do
 
         assert {:ok, "world"} = read.function.(%{"path" => sandbox_file}, ctx)
 
-        # `file-inspect` operates on the same spelling.
+        # `file-inspect` operates on the same path.
         assert {:ok, _} = inspect.function.(%{"path" => sandbox_file}, ctx)
 
-        # `shell-cmd` sees the same file through the same spelling.
+        # `shell-cmd` sees the same file through the same path.
         assert {:ok, "world"} =
                  shell.function.(%{"command" => "cat #{sandbox_file}"}, ctx)
 
@@ -114,7 +114,7 @@ defmodule Nest.ToolsScratchPathTest do
     # appended to every path-taking description. It now lives once in the
     # agent's system prompt (`Nest.Agents.Agent.SystemPrompt`), so a
     # description must not depend on `tmp_path` at all: it can neither
-    # mention the host scratch path nor the sandbox spelling, because both
+    # mention the host scratch path nor the sandbox path, because both
     # are derived from `tmp_path` and it is unique to this run.
     for name <- [
           "shell-cmd",

@@ -153,7 +153,7 @@ defmodule Nest.Sandbox.BackendTest do
 
   describe "ShellCmd dispatch" do
     test "every executor answers an unknown backend with an error, not a raise", %{dir: dir} do
-      # `glob/4` reaches the staging spelling before `ShellCmd` resolves the
+      # `glob/4` reaches the staging path before `ShellCmd` resolves the
       # backend, and that accessor raises rather than answering. Resolving first
       # is what keeps glob's contract the same as its siblings'.
       mounts = Mounts.new(dir, nil, "podman")

@@ -20,7 +20,7 @@ defmodule Nest.Sandbox.Backend.DockerTestHelpers do
   @doc """
   A `Mounts` value for a `"docker"` call in this space.
 
-  The scratch is the *container's* `/tmp/<agent>` — the one scratch spelling an
+  The scratch is the *container's* `/tmp/<agent>` — the one scratch path an
   agent ever names, and a path nothing on the host holds (see
   `Nest.Sandbox.Mounts.host_scratch?/1`).
   """
