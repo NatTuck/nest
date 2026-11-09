@@ -25,7 +25,7 @@ defmodule Nest.Sandbox.Backend do
       land at a log path inside the environment. Every backend but docker
       answers `command/3`, because the manager writes that file itself.
     * `stage_dir/1` — the host directory the command's transcript is staged
-      into, and `stage_dir_sandbox/1` — the spelling the script is handed at
+      into, and `stage_dir_sandbox/1` — the path the script is handed at
       *inside* that environment. The two differ whenever the staging directory
       is reached through a bind, and coincide when the environment is the host.
     * `display_name/1` — how the backend is named in an operator log line.
@@ -60,7 +60,7 @@ defmodule Nest.Sandbox.Backend do
   workspace's own path — for bwrap because the space scratch dir is bound at
   `/tmp`, for docker because the container's `/tmp` is the space scratch dir,
   and for `none` because the host's `/tmp` *is* `/tmp`. `Nest.Sandbox.Paths`
-  is the one definition of that spelling.
+  is the one definition of that path.
   """
 
   alias Nest.Sandbox.Mounts
@@ -153,7 +153,7 @@ defmodule Nest.Sandbox.Backend do
   def stage_dir(mounts), do: backend!(mounts).stage_dir(mounts)
 
   @doc """
-  The spelling of `stage_dir/1` inside the environment the backend builds.
+  The sandbox path of `stage_dir/1` in the environment the backend builds.
   """
   @spec stage_dir_sandbox(Mounts.t()) :: String.t()
   def stage_dir_sandbox(mounts), do: backend!(mounts).stage_dir_sandbox(mounts)

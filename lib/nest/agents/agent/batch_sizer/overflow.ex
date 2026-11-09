@@ -11,7 +11,7 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   The scratch dir comes from `ctx.mounts` — the agent's own sub-directory of
   the space scratch dir (which the sandbox binds read-write at `/tmp`, so the
   agent sees it at `/tmp/<agent-name>`). What `write/4` returns is the
-  `/tmp/<agent-name>/...` spelling the agent uses; the directory the bytes land
+  `/tmp/<agent-name>/...` path the agent uses; the directory the bytes land
   in never reaches the LLM.
 
   Writing is `Nest.Sandbox.scratch_write/3`'s, not this module's: under a

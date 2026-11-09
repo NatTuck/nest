@@ -273,7 +273,7 @@ defmodule Nest.Sandbox.Mounts do
   has a job, because `Nest.Sandbox.Binds` renders it as a self-bind whose *mode*
   is what makes the scratch writable at all. A `"none"` space binds nothing
   (it has no sandbox), so its answer is unused; it is `/tmp` for the same
-  reason the spelling and the directory coincide there.
+  reason the path and the directory coincide there.
   """
   @spec scratch_bind_source(t()) :: String.t() | nil
   def scratch_bind_source(%__MODULE__{scratch: nil}), do: nil

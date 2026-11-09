@@ -80,7 +80,7 @@ defmodule Nest.Sandbox.ShellJobs.Records do
   Remove the job's staged script, when it has one.
 
   `script_path` is the staging path `Nest.Tools.ShellCmd.Transcript.stage/2`
-  writes to; the spelling the backend's command line uses is a different thing
+  writes to; the path the backend's command line uses is a different thing
   and must never be passed here. A registered foreground call has none: its tool
   worker removes its own script in `ShellCmd.exec_staged/7`'s `after`.
   """

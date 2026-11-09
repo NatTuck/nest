@@ -13,8 +13,8 @@ defmodule Nest.Tools.ShellCmd.Diagnostics do
 
   Printing the directories is deliberate: a flake is diagnosed by asking *which*
   directories the failing invocation was given, and the agent's own
-  `/tmp/<agent-name>/…` spelling is not what the backend was handed. None of it
-  reaches the agent, so it is not the leak the sandbox-spelling rule is about.
+  `/tmp/<agent-name>/…` path is not what the backend was handed. None of it
+  reaches the agent, so it is not the leak the sandbox-path rule is about.
 
   The backend's display name leads the line, so a `"docker"` or `"none"` space's
   failure is not reported as bwrap's. `Nest.Sandbox.Backend.Bwrap` answers

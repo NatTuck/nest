@@ -210,7 +210,7 @@ defmodule Nest.Sandbox.Binds do
   # caller named is not lost: `--chdir` still uses it, and under bwrap the
   # symlink itself is visible through the read-only root bind, so a path the
   # agent was given resolves through it to the writable bind. A backend with no
-  # such root bind has to materialize that spelling instead
+  # such root bind has to materialize that path instead
   # (`Nest.Sandbox.Backend.Docker`).
   defp workspace_bind(workspace, caps) when is_binary(workspace) do
     canonical = FSPath.canonical(workspace)
@@ -258,7 +258,7 @@ defmodule Nest.Sandbox.Binds do
   The `.nest` and `AGENTS.md` binds a call's caps ask for, as `{source, dest, :ro}`.
 
   Public because two places need to recognise them by identity rather than by
-  spelling: `container_specs/1` drops them (see `container_specs/1`) and
+  path: `container_specs/1` drops them (see `container_specs/1`) and
   `Nest.Sandbox.Backend.Docker.CommandLine` masks them itself. A source of
   `"/dev/null"` means the file is absent.
   """

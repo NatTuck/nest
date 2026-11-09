@@ -27,7 +27,7 @@ defmodule Nest.Sandbox.Failure do
     {"Can't ", :sandbox_setup_failed}
   ]
 
-  # The markers any backend's command can produce: the errno spellings, plus
+  # The markers any backend's command can produce: the errno notations, plus
   # the two annotations `Nest.Tools.ShellCmd` itself writes into stderr when it
   # times out or is cancelled.
   @errno_markers [

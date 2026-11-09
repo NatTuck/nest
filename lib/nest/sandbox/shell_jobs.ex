@@ -121,7 +121,7 @@ defmodule Nest.Sandbox.ShellJobs do
     * `:command` — the original command (for display)
     * `:caps` — the mode's caps, which the backend needs to build the job's
       command line (`Nest.Sandbox.Backend.job_spec/4`)
-    * `:script_sandbox` — the staged script's spelling *inside* the
+    * `:script_sandbox` — the staged script's path *inside* the
       environment, which is what the command line hands the shell
     * `:script_path` — the staged script's host path, removed once
       the job ends

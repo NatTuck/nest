@@ -12,7 +12,7 @@ defmodule Nest.Tools.ShellCmd.Background do
   job's output also has to reach its log file inside the environment, and for the
   docker backend that means the command itself writes it — which needs the log
   path, which the manager allocates. So the manager is handed what the backend
-  needs (`caps` and the script's sandbox spelling) and asks for a job spec
+  needs (`caps` and the script's sandbox path) and asks for a job spec
   (`Nest.Sandbox.Backend.job_spec/4`).
 
   A background job is a job from the moment it is registered, so this path adds
@@ -33,7 +33,7 @@ defmodule Nest.Tools.ShellCmd.Background do
 
   `script` is the staged transcript's host path — `ShellJobs` removes it when the
   job ends, and this removes it when the job never starts. `script_sandbox` is
-  the spelling the backend's command line hands bash. `opts` carries
+  the path the backend's command line hands bash. `opts` carries
   `:agent_key` (required — a job with no owner has no cap, no listing and no
   sidebar row), `:agent_pid` and `:grace_ms`.
   """

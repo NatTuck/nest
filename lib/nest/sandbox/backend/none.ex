@@ -54,7 +54,7 @@ defmodule Nest.Sandbox.Backend.None do
   def stage_dir(_mounts), do: Paths.stage_dir(nil)
 
   @doc """
-  The staging directory's spelling inside this environment: the same path,
+  The staging directory's path inside this environment: the same path,
   since the environment is the host.
   """
   @spec stage_dir_sandbox(Mounts.t()) :: String.t()

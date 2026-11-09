@@ -289,8 +289,8 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   # ---- private helpers ----
 
   # The stat result for every distinct path a `file-read` call in this batch
-  # targets. Keyed on the *resolved* path, so two spellings of one file share
-  # a stat; spellings that resolve differently are statted separately (never a
+  # targets. Keyed on the *resolved* path, so two paths for one file share
+  # a stat; paths that resolve differently are statted separately (never a
   # wrong size, at most one extra spawn). `caps` and `mounts` are constant
   # across a `ctx`, so a memo hit is exactly what a live `Sandbox.stat/3`
   # would have returned.

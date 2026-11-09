@@ -44,7 +44,7 @@ defmodule Nest.Tools.ShellCmd do
   command never has to survive as one quoted argv element. Where the script is
   staged, and what path bash is handed for it, is the backend's business
   (`Backend.stage_dir/1` / `stage_dir_sandbox/1`) — the staging directory is a
-  bind source, so its host path and its sandbox spelling are different strings
+  bind source, so its host path and its sandbox path are different strings
   under bwrap and the same string on the bare command. The staging itself is
   `Nest.Tools.ShellCmd.Transcript`'s, which is also where the one line every
   command runs before its own first statement lives (the umask — not something
@@ -219,7 +219,7 @@ defmodule Nest.Tools.ShellCmd do
   # workspace under the scratch bind) the staged script is removed and the
   # reason is returned rather than raised.
   #
-  # Returns the spec, the staged file's host path, and the spelling the backend
+  # Returns the spec, the staged file's host path, and the path the backend
   # hands the shell. The last one is only needed by a background job, whose
   # command line is built later (by `Nest.Sandbox.ShellJobs.Launcher`, which
   # knows the log path) — so it travels rather than being derived a second time.
@@ -588,7 +588,7 @@ defmodule Nest.Tools.ShellCmd do
   erlexec reports the wait status the OS recorded: `:normal` for status 0 and
   `{:exit_status, raw}` otherwise (a signal death included, so a killed command
   is not a clean exit). `:exec.status/1` decodes the raw value; a signal death
-  becomes `128 + signo`, the conventional shell spelling. Shared with
+  becomes `128 + signo`, the conventional shell notation. Shared with
   `Nest.Sandbox.ShellJobs`, which decodes the same reason for background jobs.
   """
   @spec exit_code(term()) :: integer()
@@ -599,7 +599,7 @@ defmodule Nest.Tools.ShellCmd do
 
   defp decode_status({:status, code}), do: code
 
-  # 128 + signo is the conventional shell spelling of a signal death.
+  # 128 + signo is the conventional shell notation of a signal death.
   defp decode_status({:signal, signo, _core}) when is_integer(signo), do: 128 + signo
   defp decode_status({:signal, _name, _core}), do: 1
 

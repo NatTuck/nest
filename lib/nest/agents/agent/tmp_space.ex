@@ -11,7 +11,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
   #     docker:  /tmp/<agent-name>       (a path inside the container)
   #     none:    /tmp/<agent-name>       (the host's real /tmp)
   #
-  # The first three segments of the `bwrap` spelling have a name each:
+  # The first three segments of the `bwrap` scratch path have a name each:
   #
   #     /tmp/nest                root_parent/0    — the parent of every BEAM's root
   #     /tmp/nest/<BEAM ospid>   own_root/0       — *this* BEAM's root, marked
@@ -30,7 +30,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # A `"none"` space runs bare commands on the host, so there is no bind to
   # place and no per-space root to isolate: the agent's `/tmp/<agent-name>` is
   # *literally* the host's `/tmp/<agent-name>`, which is what makes the
-  # agent-visible spelling identical on every backend.
+  # agent-visible path identical on every backend.
   #
   # A `"docker"` space's `/tmp` is the *container's* own, so `/tmp/<agent-name>`
   # names a path in the container: nothing on the host may create or write it
@@ -107,10 +107,10 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # plenty: each attempt loses only to a concurrent `rm_rf` of the same path.
   @create_attempts 3
 
-  # The `/tmp` spelling inside the sandbox. It is also the directory itself for
+  # The `/tmp` path inside the sandbox. It is also the directory itself for
   # the two backends whose `/tmp` *is* their scratch root — the host's own under
   # `"none"`, the container's own under `"docker"` — which is why those two need
-  # no bind to place the agent's directory and why the spelling and the
+  # no bind to place the agent's directory and why the path and the
   # directory coincide for them. `Paths.scratch_root/1` refuses this value as a
   # *bind* source (binding the host's `/tmp` would be a sandbox escape), which
   # is exactly why a `"none"` space has no bind and stages its command
@@ -284,7 +284,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
   @spec create(integer(), String.t(), String.t()) :: String.t()
   def create(space_id, agent_name, "docker") do
     # A docker scratch is a path *inside the container*. Making it here would
-    # create a host directory at the same spelling that the container could never
+    # create a host directory at the same path that the container could never
     # see, so this only names it (and validates the name, as `agent_dir/3` does);
     # the container makes it, in the command that runs.
     agent_dir(space_id, agent_name, "docker")
@@ -351,7 +351,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
     # Nothing to remove: a docker scratch lives in the container and goes when
     # the container does (`Nest.Spaces` → `Nest.Sandbox.Backend.remove_space/3`).
     # Falling through to `remove/4` would `rm_rf` a *host* directory that happens
-    # to have the same spelling — the agent's own name under the host's `/tmp`.
+    # to have the same path — the agent's own name under the host's `/tmp`.
     :ok
   end
 
@@ -634,7 +634,7 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # `"none"`, the container's own under `"docker"`. Neither has a per-space root
   # on the host — one because it binds nothing, the other because its root is
   # inside the container — so the agent's directory is the bare name under the
-  # `/tmp` spelling, which is what every agent is told it has.
+  # `/tmp` path, which is what every agent is told it has.
   def space_dir(_space_id, backend) when backend in ["none", "docker"], do: @sandbox_tmp
 
   # Every other backend gets its own per-space root on the host, under this

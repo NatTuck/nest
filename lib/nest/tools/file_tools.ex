@@ -455,9 +455,9 @@ defmodule Nest.Tools.FileTools do
     end
   end
 
-  # Every file tool addresses the same scratch spelling the agent is given
+  # Every file tool addresses the same scratch path the agent is given
   # (`/tmp/<agent>/...`); `Sandbox.read/3` resolves it inside bwrap. Where that
-  # spelling is stated (the agent's system prompt, not these descriptions)
+  # path is stated (the agent's system prompt, not these descriptions)
   # lives in `Nest.Agents.Agent.SystemPrompt`.
   defp caps_from_context(%{caps: caps}) when is_map(caps), do: caps
   defp caps_from_context(_), do: Nest.Sandbox.default_caps()

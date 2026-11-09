@@ -9,7 +9,7 @@ defmodule Nest.Sandbox.Backend.Bwrap do
   the project mounts are all bwrap's business (see `Nest.Sandbox`).
 
   The staged script is reached through the scratch bind, so its host directory
-  and the spelling bash is handed differ: `<space_dir>/.cmds/` on the host,
+  and the path bash is handed differ: `<space_dir>/.cmds/` on the host,
   `/tmp/.cmds` inside (see `Nest.Sandbox.Paths`). With no scratch bind there is
   no bind to translate through and the two coincide.
   """
@@ -56,7 +56,7 @@ defmodule Nest.Sandbox.Backend.Bwrap do
   def stage_dir(mounts), do: Paths.stage_dir(Mounts.scratch(mounts))
 
   @doc """
-  The staging directory's spelling inside the sandbox.
+  The staging directory's path inside the sandbox.
   """
   @spec stage_dir_sandbox(Mounts.t()) :: String.t()
   def stage_dir_sandbox(mounts), do: Paths.stage_dir_sandbox(Mounts.scratch(mounts))

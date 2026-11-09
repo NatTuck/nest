@@ -13,7 +13,7 @@ defmodule Nest.Sandbox do
   disagree with what a shell inside it sees. Which backend that is — `bwrap`,
   `docker` or the bare command — is a space property, carried on the `Mounts`
   value and dispatched by `Nest.Sandbox.Backend`. The only path mapping that
-  remains is the scratch bind source and the reported sandbox spelling, both
+  remains is the scratch bind source and the reported sandbox path, both
   defined once in `Nest.Sandbox.Paths`.
 
   An agent names exactly one domain of paths, and it is the same domain on
@@ -29,7 +29,7 @@ defmodule Nest.Sandbox do
   backend) and nothing outside it needs a directory in order to name a path an
   agent uses: a caller that wants a real directory (to stage a script into, to
   write an offload into) reads it from the value, but the path it hands back to
-  the agent is always the agent's own spelling.
+  the agent is always the agent's own path.
 
   ## Backends
 
@@ -265,7 +265,7 @@ defmodule Nest.Sandbox do
   The path an agent's own scratch dir (`tmp_path`) appears at inside the
   sandbox: `/tmp/<agent-name>` (the space dir is bound at `/tmp`).
 
-  This is the only spelling an agent is ever told about or hands back; the
+  This is the only path an agent is ever told about or hands back; the
   directory it is derived from is the caller's, and is never given to the
   agent.
   """
@@ -275,19 +275,19 @@ defmodule Nest.Sandbox do
   @doc """
   The directory bound at `/tmp` inside the sandbox: `/tmp`.
 
-  The sandbox spelling of the scratch root. The directory bound *at* it is
+  The sandbox path of the scratch root. The directory bound *at* it is
   per-agent (see `sandbox_tmp_path/1`).
   """
   @spec sandbox_root() :: String.t()
   defdelegate sandbox_root(), to: Paths
 
   @doc """
-  The sandbox spelling of an agent's own scratch directory, derived from the
+  The sandbox path of an agent's own scratch directory, derived from the
   agent's name alone: `/tmp/<agent-name>`.
 
-  It takes a name and returns a spelling, so no directory is involved — the
+  It takes a name and returns a path, so no directory is involved — the
   contrast with `sandbox_tmp_path/1`, which needs the agent's scratch
-  directory. This is the only scratch spelling an agent is ever told about.
+  directory. This is the only scratch path an agent is ever told about.
   """
   @spec scratch_dir(String.t()) :: String.t()
   defdelegate scratch_dir(name), to: Paths
@@ -439,7 +439,7 @@ defmodule Nest.Sandbox do
 
   @doc """
   Write `content` to `name` in the agent's scratch directory and return the
-  agent-visible `/tmp/<agent-name>/<name>` spelling, or `nil` when there is no
+  agent-visible `/tmp/<agent-name>/<name>` path, or `nil` when there is no
   scratch directory or the write fails.
 
   This is the sandbox's own bookkeeping rather than the agent-facing `write/4`:
