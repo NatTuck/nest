@@ -3,17 +3,17 @@ defmodule Nest.Tools.ShellTokensTest do
   The tokenizer's own edges, and the one thing a caller cuts with:
   `split_last_stage/1`.
 
-  `Nest.Tools.ShellPipes` classifies a stage, but it never sees the *split*: a
-  byte offset that is off by one produces a plausible-but-different command, and
-  the classifier cannot notice because it is only ever handed the stage the
-  splitter chose. So every case here is asserted as either "no cut" (`:none`) or
+  `Nest.Tools.ShellPipes` reads only the *verdict* ("is there a top-level
+  pipe?"), never the split: a byte offset that is off by one produces a
+  plausible-but-different command, and a caller that only asks "is there a pipe"
+  cannot notice. So every case here is asserted as either "no cut" (`:none`) or
   "the last top-level stage is exactly this" — both are correct answers; the
   point is that none of them is a wrong one.
 
   `tokenize/1` is pinned alongside, because two other callers depend on its
-  output shape (`command_words/1` for `ShellBackground.check/1`, and
-  `ShellPipes`'s own stage tokenizing): the offsets the splitter uses are
-  internal, and must not leak into the token stream.
+  output shape (`command_words/1` for `ShellBackground.check/1`, and the words
+  `ShellBackground` compares): the offsets the splitter uses are internal, and
+  must not leak into the token stream.
   """
 
   use ExUnit.Case, async: true
@@ -61,8 +61,8 @@ defmodule Nest.Tools.ShellTokensTest do
 
       # `ls | (head)` is the other way round: the pipe *is* top-level and the
       # stage after it is the subshell, so the split is here and the stage is
-      # `(head)`. `ShellPipes` declines it (a stage whose first token is not a
-      # word is not a truncator), which is the safe direction.
+      # `(head)`. `ShellPipes` refuses it above the bound like any other pipe,
+      # whatever the stage is.
       assert ShellTokens.split_last_stage("ls | (head)") == {"ls ", " (head)"}
 
       # The token stream is unchanged by the offsets: the substitution's pipe is

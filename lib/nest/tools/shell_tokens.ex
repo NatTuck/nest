@@ -2,10 +2,9 @@ defmodule Nest.Tools.ShellTokens do
   @moduledoc """
   Quote- and heredoc-aware shell tokenizer and stage walk.
 
-  Shared by the `shell-cmd` command filters — `Nest.Tools.ShellPipes` (a
-  trailing stage that throws output away) and `Nest.Tools.ShellBackground`
-  (`setsid`, `nohup`, and `&`) — so the quote, comment, and heredoc rules are
-  written and tested once.
+  Shared by the `shell-cmd` command checks — `Nest.Tools.ShellPipes` (is there a
+  top-level pipe?) and `Nest.Tools.ShellBackground` (`setsid`, `nohup`, and `&`)
+  — so the quote, comment, and heredoc rules are written and tested once.
 
   ## `tokenize/1`
 
