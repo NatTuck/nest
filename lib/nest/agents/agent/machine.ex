@@ -66,6 +66,7 @@ defmodule Nest.Agents.Agent.Machine do
     :worker_crashed,
     :worker_down,
     :worker_started,
+    :worker_start_failed,
     :llm_error,
     :append_result,
     :preflight_result,

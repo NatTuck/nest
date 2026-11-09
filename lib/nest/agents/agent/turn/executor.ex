@@ -463,8 +463,18 @@ defmodule Nest.Agents.Agent.Turn.Executor do
         send(pid, {:worker_go, ref})
         {state, {:follow, {:worker_started, ref, pid, kind}}}
 
-      _other ->
-        {state, {:follow, {:worker_crashed, ref, %RuntimeError{message: "saturated"}, []}}}
+      # A refused start is its own event, and carries the supervisor's reason
+      # rather than a synthesized crash (issue #108). The `{:worker_crashed, …}`
+      # shape this used to fake took a fresh ref that matched no `worker_ref`, so
+      # every clause gated on `Machine.valid_ref?/2` dropped it — the machine
+      # rested in a phase with no worker, no drain and no turn boundary, and
+      # every arrival queued behind a batch that did not exist.
+      #
+      # `start_child/2` answers `{:ok, pid}` or `{:error, reason}` and nothing
+      # else, so there is no catch-all here: a third shape would be a change in
+      # OTP's contract and should crash rather than be invented into `:unknown`.
+      {:error, reason} ->
+        {state, {:follow, {:worker_start_failed, kind, reason}}}
     end
   end
 

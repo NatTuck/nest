@@ -355,6 +355,15 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
       else: {:ignore, :stale_result, m}
   end
 
+  # The third spawn site (`{:stage_compaction, …}`) refused to start (issue #108).
+  # Same reasoning as its `{:worker_crashed, …}` sibling above: no worker means no
+  # ref to match, so `valid_ref?/2` would gate it out and leave the machine
+  # `:compacting` with no worker, no timer, and no drain or turn boundary to
+  # leave by. `compaction_failed` is the retryable funnel this slice already uses.
+  def transition(%Machine{} = m, {:worker_start_failed, :http, reason}) do
+    compaction_failed(m, reason, carried(m))
+  end
+
   # The request was **not** committed, so nothing may be sent: a refused append
   # is a `{:follow, …}` that halts the action list and the phase has no worker
   # left to answer, so the default clause would wedge the agent forever.

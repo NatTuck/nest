@@ -374,4 +374,83 @@ defmodule MachineTest do
       assert log =~ "send gate"
     end
   end
+
+  describe "a refused worker start (issue #108)" do
+    test "the tool batch's spawn is refused: fail the turn instead of resting with no worker" do
+      # intentional: a failed `Task.Supervisor.start_child/2` never emits
+      # `{:worker_started, …}`, so `work.worker_ref` is still nil and every
+      # `{:worker_crashed, …}` clause is gated out by `valid_ref?/2`. Ignoring
+      # the refusal left the machine in `:executing_tools` with no worker: not
+      # backgroundable, no drain, no turn boundary, every arrival queued forever.
+      executing = state_at(:executing_tools)
+
+      {:ok, actions, next} =
+        Machine.step(executing, {:worker_start_failed, :tools, :max_children})
+
+      assert next.phase == :idle
+      assert {:fail_turn, :max_children, []} in actions
+      assert {:drain_inbox} in actions
+    end
+
+    test "the HTTP spawn's refusal in :generating takes the same funnel" do
+      generating = state_at(:generating)
+
+      {:ok, actions, next} =
+        Machine.step(generating, {:worker_start_failed, :http, :max_children})
+
+      assert next.phase == :idle
+      assert {:fail_turn, :max_children, []} in actions
+      assert {:drain_inbox} in actions
+    end
+
+    test "the same event in :stopping is ignored, so a late spawn result cannot resurrect it" do
+      # intentional: a stop in flight owns the terminal recovery. A refusal that
+      # arrives after it must not fail — or restart — a machine already ending.
+      stopping = state_at(:stopping)
+
+      assert {:ignore, :not_applicable, ^stopping} =
+               Machine.step(stopping, {:worker_start_failed, :tools, :max_children})
+    end
+
+    test "a refused compactor start resumes the turn instead of resting in :compacting" do
+      # intentional: the compactor is the third spawn site (`{:stage_compaction,
+      # …}`). Ignoring its refusal would leave the machine `:compacting` with no
+      # worker and no timer — no drain and no turn boundary can leave that — so it
+      # takes the slice's own retryable funnel, exactly as a compactor crash does.
+      {:ok, _, compacting} = Compaction.stage(state_at(:generating), {:tool_call, %{}, 1, 10})
+
+      {:ok, actions, next} =
+        Machine.step(compacting, {:worker_start_failed, :http, :max_children})
+
+      assert Enum.any?(actions, &match?({:broadcast, {:compaction_error, _}, nil}, &1))
+      assert :iterate in actions
+      assert next.kind == :chat and next.phase == :generating
+      Machine.validate!(next)
+    end
+
+    test "a compaction error event blocks for retry when nothing is carried" do
+      # `{:compaction_error, reason, carried}` is the compactor's own failure
+      # report. Nothing in `lib/` emits it any more — the crash and HTTP paths
+      # above own those — so its clause was covered only by the seeded random
+      # walk in the property test, which the event added to the vocabulary
+      # redrew. Pinned here rather than left to luck.
+      {:ok, _, compacting} = Compaction.stage(state_at(:generating), {:tool_call, %{}, 1, 10})
+
+      {:ok, actions, next} = Machine.step(compacting, {:compaction_error, :boom, nil})
+
+      assert Enum.any?(actions, &match?({:broadcast, {:compaction_error, _}, nil}, &1))
+      assert next.phase == :compaction_failed
+      Machine.validate!(next)
+    end
+
+    test "a crash carrying a ref the machine does not know is still ignored" do
+      # intentional: the new event must not become a licence to accept any
+      # crash. A `{:worker_crashed, …}` whose ref is not the live worker's is a
+      # stale result from a worker this turn no longer owns.
+      generating = state_at(:generating)
+
+      assert {:ignore, :stale_result, ^generating} =
+               Machine.step(generating, {:worker_crashed, make_ref(), %RuntimeError{}, []})
+    end
+  end
 end
