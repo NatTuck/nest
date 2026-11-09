@@ -53,6 +53,33 @@ defmodule Nest.Sandbox.ShellJobsTest do
   # racing an OS kill against a fixed receive timeout.
   defp waiters(id), do: ShellJobs.waiters(id, 1_000)
 
+  describe "Info" do
+    test "a job's wire shape names its agent, and only running jobs count" do
+      job = %{
+        id: "job-1",
+        agent_key: {:test, "agent-a"},
+        command: "sleep 1",
+        status: :running,
+        exit_code: nil,
+        killed: false,
+        log_path: "/tmp/log",
+        started_at: ~U[2026-01-01 00:00:00Z]
+      }
+
+      info = Info.to_info(job)
+
+      # Every registered job carries the `{space_id, agent_name}` it was started
+      # under, so the name is a name and not a maybe-name.
+      assert info.agent == "agent-a"
+
+      # A job from a manager state that predates `sandbox_log_path` still
+      # renders: the field falls back to the manager's own log path.
+      assert info.log_path == "/tmp/log"
+
+      assert Info.running_counts([info, %{info | status: :exited}]) == %{"agent-a" => 1}
+    end
+  end
+
   test "starts a job running, lists it, and kills it", %{key: key, tmp: tmp} do
     id = start_running!("sleep 30", tmp, key)
     assert [%{id: ^id, status: :running, command: "sleep 30"}] = ShellJobs.list(key)
@@ -89,19 +116,6 @@ defmodule Nest.Sandbox.ShellJobsTest do
     # is still in `list/1` for `shell-wait`/`shell-list`.
     assert [%{id: ^id, status: :exited}] = ShellJobs.list(key)
     assert_received {:agent_jobs, %{space_id: ^space_id, name: ^name, count: 0}}
-  end
-
-  # The tools' fallback key (`{:unknown, :unknown}`) names no agent, so a job
-  # under it has no sidebar row to count against and no topic to announce it
-  # on. The job itself still runs and lists — it is the *frames* that need an
-  # agent to speak about.
-  test "a job whose key names no agent has no count", %{tmp: tmp} do
-    key = {:unknown, :unknown}
-    id = start_owned_job!(tmp, key, "sleep 30\n")
-    on_exit(fn -> ShellJobs.stop_all(key) end)
-
-    assert [%{id: ^id, agent: nil, status: :running}] = ShellJobs.list(key)
-    assert Info.running_counts(ShellJobs.list(key)) == %{}
   end
 
   # `kill/2` also arms the manager's five-second fallback for a job whose

@@ -30,8 +30,8 @@ defmodule Nest.Sandbox.ShellJobs.Frames do
   Returns `state` unchanged, so a caller can end a pipeline that mutated the job
   map in a broadcast (`state |> put_job(job) |> broadcast(agent_key)`).
 
-  A key that names no agent — the tools' `{:unknown, :unknown}` fallback — has
-  no topic to speak on and is a no-op.
+  A key whose space is not an integer — the shell-jobs tests' `{:test, name}` —
+  has no PubSub topic to speak on, and is a no-op.
   """
   @spec broadcast(map(), Nest.Sandbox.ShellJobs.agent_key()) :: map()
   def broadcast(%{jobs: jobs} = state, {space_id, name})

@@ -3,23 +3,23 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
   Tests for the LobbyChannel `providers/0` serializer and the
   `save_providers` handler.
 
-  Runs `async: false`: the `"lobby"` PubSub topic is process-global, so any save
-  broadcasts into every other joined test's mailbox.
-
-  That is the one global here, and it is unavoidable — `Providers.save/2` must
-  announce a save on the topic the lobby's clients listen to. `ChannelTest`
-  delivers every broadcast on a joined topic to that test's process, so a
-  concurrent test's save can be the first `providers_updated` frame a test sees
-  (`mix test --seed 805575` was the seed that showed it). Everything else is
-  per-test: the model-cache `rescan/0` is stubbed and made visible with
-  `Mimic.allow/3`, and the writer's target `local.toml` is injected by stubbing
-  `Nest.DotConfig.local_file/0` rather than through the process-global
-  `:local_config_file` app env.
+  Runs `async: true`. The `"lobby"` PubSub topic *is* process-global, so a
+  concurrent test's save lands in this test's mailbox too — which is why the
+  `providers_updated` assertions go through
+  `NestWeb.LobbyChannelTestHelpers.assert_providers_updated/2`: it waits for the
+  frame that names this save's providers and ignores the rest. `assert_push`
+  would take the first frame with that event, which was `mix test --seed
+  805575`'s two failures. Everything else is per-test: the model-cache `rescan/0`
+  is stubbed and made visible with `Mimic.allow/3`, and the writer's target
+  `local.toml` is injected by stubbing `Nest.DotConfig.local_file/0` rather than
+  through the process-global `:local_config_file` app env.
 
   Each test gets its own uniquely-named temp file, removed on exit.
   """
 
-  use NestWeb.ChannelCase, async: false
+  use NestWeb.ChannelCase, async: true
+
+  import NestWeb.LobbyChannelTestHelpers
 
   alias Nest.Accounts
   alias Nest.Accounts.Invite, as: InviteSchema
@@ -151,9 +151,8 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # synchronising on the channel process to read them with a `0` fence.
       assert_reply ref, :ok, %{}, 1_000
 
-      assert_push "providers_updated",
-                  %{providers: providers, deleted_providers: deleted},
-                  1_000
+      %{providers: providers, deleted_providers: deleted} =
+        assert_providers_updated(["acme"])
 
       # The push carries what the handler read back out of `local.toml`, so
       # this is the write as well as the broadcast.
@@ -185,7 +184,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       # The push serializes the config the handler just reloaded from
       # `local.toml`, so this pins the outbound `true`, the persisted `false`
       # and the `false` the default produces.
-      assert_push "providers_updated", %{providers: providers}, 1_000
+      %{providers: providers} = assert_providers_updated(["absent", "opted-in", "opted-out"])
 
       by_name = Map.new(providers, &{&1["name"], &1["probe_multimodal"]})
       assert by_name["opted-in"] == true
@@ -212,7 +211,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
         })
 
       assert_reply ref, :ok, %{}, 1_000
-      assert_push "providers_updated", %{providers: providers}, 1_000
+      %{providers: providers} = assert_providers_updated(["tuned", "untuned"])
 
       # The push is what the handler read back out of `local.toml`, so this is
       # the round-trip: a field the writer dropped would come back as the
@@ -278,19 +277,19 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       assert_reply ref, :error, %{"reason" => "forbidden"}
     end
 
-    test "replies invalid_payload when providers is not a list, and broadcasts nothing", %{
-      socket: socket
+    test "replies invalid_payload when providers is not a list, and writes nothing", %{
+      socket: socket,
+      local_file: local_file
     } do
       ref = push(socket, "save_providers", %{"providers" => %{}})
       assert_reply ref, :error, %{"reason" => "invalid_payload"}
 
-      # The handler has already returned its error reply (`assert_reply`
-      # above), and a channel broadcasts before it replies — so a broadcast
-      # would already be in this mailbox. No wait is needed. The `0` fence is
-      # sound only while `providers_updated` has a single emitter
-      # (`Providers.save/2`): a second one could land between the reply and
-      # this line.
-      refute_push "providers_updated", _, 0
+      # Nothing was written, so there is nothing to broadcast: the handler
+      # writes and only then announces. Asserted on the file rather than with
+      # `refute_push "providers_updated"`, because the topic is process-global —
+      # another test's save would land in this mailbox and decide the refute for
+      # reasons that have nothing to do with this call.
+      refute File.exists?(local_file)
     end
 
     test "replies invalid_payload on a bad thinking-effort or probe_multimodal value", %{

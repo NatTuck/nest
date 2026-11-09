@@ -44,7 +44,9 @@ defmodule Nest.Tools.ShellCmd.Background do
       {:error, "Background jobs require a tmp directory"}
     else
       grace = Keyword.get(opts, :grace_ms, @default_grace_ms)
-      agent_key = Keyword.get(opts, :agent_key, {:unknown, :unknown})
+      # A background call is a tool call, and a tool call always carries the
+      # caller's identity: `Nest.Tools.agent_key/1` refuses one without it.
+      agent_key = Keyword.fetch!(opts, :agent_key)
 
       Logger.info(
         "Starting background shell job in #{Mounts.workspace(mounts) || "/"}: " <>

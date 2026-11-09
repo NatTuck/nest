@@ -15,15 +15,15 @@ defmodule Nest.Sandbox.ShellJobs.Info do
   One job as the wire sees it.
 
   `agent` is the owning agent's name, so a space-wide listing can show whose job
-  it is; it is `nil` for a job whose key names no agent (`{:unknown, :unknown}`,
-  the tools' fallback).
+  it is. Every registered job has one: the key is `{space_id, agent_name}`, and a
+  tool call without that identity is refused rather than given a key.
 
   `log_path` is the path the *sandbox* sees, not the log file the manager
   writes: it is what the agent is told and what the UI renders.
   """
   @type t :: %{
           id: Nest.Sandbox.ShellJobs.job_id(),
-          agent: String.t() | nil,
+          agent: String.t(),
           command: String.t(),
           status: :running | :exited,
           exit_code: integer() | nil,
@@ -56,7 +56,7 @@ defmodule Nest.Sandbox.ShellJobs.Info do
   One job as the wire shape.
 
   `agent` is the owning agent's name, so a space-wide listing can show whose job
-  it is; it is `nil` for a job whose key names no agent.
+  it is.
 
   `log_path` is the path the *sandbox* sees, not the log file the manager writes:
   it is what the agent is told and what the UI renders. `Map.get` rather than
@@ -77,13 +77,12 @@ defmodule Nest.Sandbox.ShellJobs.Info do
     }
   end
 
-  # A key that is not `{space_id, agent_name}` — the tools' `:unknown` fallback,
-  # say — has no agent to name, so the field is `nil` rather than a raise.
+  # Every registered job carries the `{space_id, agent_name}` it was started
+  # under — `Nest.Tools.agent_key/1` refuses a context without one — so this is
+  # the name, not a maybe-name.
   defp agent_name(job) do
-    case Map.get(job, :agent_key) do
-      {_space_id, name} when is_binary(name) -> name
-      _ -> nil
-    end
+    {_space_id, name} = Map.get(job, :agent_key)
+    name
   end
 
   @doc """
@@ -102,13 +101,12 @@ defmodule Nest.Sandbox.ShellJobs.Info do
 
   A space at a time rather than an agent at a time: `init` renders every row of
   every space it lists, and one read per space is one call to the manager
-  instead of one per row. A job whose key names no agent is not any agent's and
-  is left out rather than counted under `nil`.
+  instead of one per row.
   """
   @spec running_counts([t()]) :: %{String.t() => non_neg_integer()}
   def running_counts(jobs) do
     jobs
-    |> Enum.filter(&(&1.status == :running and is_binary(&1.agent)))
+    |> Enum.filter(&(&1.status == :running))
     |> Enum.frequencies_by(& &1.agent)
   end
 

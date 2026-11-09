@@ -10,11 +10,14 @@ defmodule NestWeb.LobbyChannel.ProvidersWriteOnlyTest do
   The base defines a literal key and a provider with none; the overlay defines a
   `file:` reference, so the three shapes are one payload away from each other.
 
-  Runs `async: false`: the `"lobby"` PubSub topic is process-global, so any save
-  broadcasts into every other joined test's mailbox.
+  Runs `async: true`. The `"lobby"` PubSub topic is process-global, so another
+  test's save can land in this mailbox — the `providers_updated` assertions here
+  therefore name the providers they expect
+  (`NestWeb.LobbyChannelTestHelpers.assert_providers_updated/2`) instead of
+  taking the first frame.
   """
 
-  use NestWeb.ChannelCase, async: false
+  use NestWeb.ChannelCase, async: true
 
   import Nest.Test.TmpCleanup
 

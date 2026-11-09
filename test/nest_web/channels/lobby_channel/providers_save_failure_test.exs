@@ -17,11 +17,12 @@ defmodule NestWeb.LobbyChannel.ProvidersSaveFailureTest do
   under CPU burners. Making the directory unwritable needs no stub at all, and is
   what `writer_test.exs` does for the same failure.
 
-  Runs `async: false`: the `"lobby"` PubSub topic is process-global, so any save
-  broadcasts into every other joined test's mailbox.
+  Runs `async: true`. The `"lobby"` PubSub topic is process-global, so another
+  test's save can land in this mailbox; this file asserts on the failed write and
+  its error reply, never on a `providers_updated` frame.
   """
 
-  use NestWeb.ChannelCase, async: false
+  use NestWeb.ChannelCase, async: true
 
   import Nest.Test.TmpCleanup
 
