@@ -94,8 +94,8 @@ defmodule Nest.Sandbox.Paths do
   clone notice) can state the path without one. The name is the scratch
   segment (`Nest.Agents.PersistedAgent` enforces that), so the two agree.
 
-  SANDBOX PATH — the contrast with `scratch_root/1`, which returns the
-  directory the sandbox binds at `#{@sandbox_root}`.
+  The sandbox path, not the host one: `scratch_root/1` returns the directory
+  the sandbox binds at `#{@sandbox_root}`.
   """
   @spec scratch_dir(String.t()) :: String.t()
   def scratch_dir(name), do: Path.join(@sandbox_root, name)
