@@ -35,10 +35,14 @@ defmodule NestWeb.LobbyChannelTestHelpers do
   save's. This waits for the frame that names exactly `names` and consumes the
   rest: they belong to tests running beside this one.
 
-  Raises when no such frame arrives within `timeout`. The frame is normally
-  already in the mailbox: `Providers.save/2` broadcasts before it replies, and
-  every caller fences on that reply first, so the bound is a failure fence
-  rather than a wait.
+  Raises when no such frame arrives within `timeout`. `Providers.save/2`
+  initiates the broadcast before it replies, but the frame reaches this process
+  through the channel's own `handle_info` afterwards, so the wait is short and
+  real; every caller fences on the reply first, which is what makes it short.
+
+  The discriminator is the provider-name *set*, so a concurrent save that wrote
+  the same names would be indistinguishable. That is why the tests here use
+  names no other save writes.
   """
   @spec assert_providers_updated([String.t()], non_neg_integer()) :: map()
   def assert_providers_updated(names, timeout \\ 500) do

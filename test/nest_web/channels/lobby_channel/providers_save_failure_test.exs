@@ -86,7 +86,7 @@ defmodule NestWeb.LobbyChannel.ProvidersSaveFailureTest do
     # so it stops and says which file it could not use. Nothing is written.
     File.write!(local_file, "= not toml\n")
 
-    ref = push(socket, "save_providers", %{"providers" => [%{"name" => "acme"}]})
+    ref = push(socket, "save_providers", %{"providers" => [%{"name" => "acme-unwritable"}]})
 
     assert_reply ref, :error, %{"reason" => "failed_to_save", "message" => message}, 1_000
     # The sentence names the file it could not use, which is what makes it
@@ -100,7 +100,7 @@ defmodule NestWeb.LobbyChannel.ProvidersSaveFailureTest do
     File.write!(local_file, "")
     File.chmod!(dir, 0o500)
 
-    ref = push(socket, "save_providers", %{"providers" => [%{"name" => "acme"}]})
+    ref = push(socket, "save_providers", %{"providers" => [%{"name" => "acme-unwritable"}]})
 
     assert_reply ref, :error, %{"reason" => "failed_to_save", "message" => message}, 1_000
     assert message =~ "could not write #{local_file}"

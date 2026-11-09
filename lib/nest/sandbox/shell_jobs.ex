@@ -95,7 +95,7 @@ defmodule Nest.Sandbox.ShellJobs do
   @kill_finalize_ms 5_000
 
   @type job_id :: String.t()
-  @type agent_key :: {term(), term()}
+  @type agent_key :: {term(), String.t()}
 
   # ---- Client API ----
 
