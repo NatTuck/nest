@@ -20,9 +20,10 @@ defmodule NestWeb.LobbyChannel.AgentSpawn do
   (`Nest.Spaces.resolve_agent_vocation/2`), exactly as it does for a root agent;
   an explicit slug wins over the blueprint, and an unknown one is the
   `vocation_not_found` refusal the space-create path already answers with. The
-  model is the client's map, or the same empty map a space created without one
-  gets — so an absent model resolves the way a root agent's does, because it is
-  the same map through the same `Agents.create_agent/3`.
+  model is the client's, and it is **required**: an agent created without one
+  starts blocked on `:model_missing` until somebody picks a model, which is a
+  state to recover from, not a way to spawn. A payload that names none is
+  refused `model_required`.
 
   The new agent is **top level**: no `parent_id`, `depth` 0. It is a peer of the
   space's root, which is what the issue asks for — the tree gains a second root,
@@ -49,15 +50,19 @@ defmodule NestWeb.LobbyChannel.AgentSpawn do
   @doc """
   Create an agent in `payload["space_id"]` and announce it.
 
-  `payload["name"]` is optional (the server generates one), and so are
-  `payload["vocation"]` (a slug) and `payload["model"]` (a map). A payload whose
-  optional keys are present with the wrong type is `invalid_payload` — it is a
-  client bug, not a refusal the user can act on.
+  `payload["name"]` is optional (the server generates one) and so is
+  `payload["vocation"]` (a slug); `payload["model"]` is required and must name a
+  model. A payload whose keys are present with the wrong type is
+  `invalid_payload` — it is a client bug, not a refusal the user can act on.
   """
   def spawn_agent(%{"space_id" => space_id} = payload, socket) when is_integer(space_id) do
-    if valid_payload?(payload),
-      do: authorized_spawn(space_id, payload, socket),
-      else: invalid(socket)
+    with :ok <- validate_payload(payload),
+         {:ok, model} <- model_map(payload["model"]) do
+      authorized_spawn(space_id, payload, model, socket)
+    else
+      :invalid_payload -> invalid(socket)
+      :model_required -> {:reply, {:error, %{"reason" => "model_required"}}, socket}
+    end
   end
 
   def spawn_agent(_payload, socket), do: invalid(socket)
@@ -67,23 +72,21 @@ defmodule NestWeb.LobbyChannel.AgentSpawn do
   # who is not the owner is `forbidden`, and a space that does not exist is
   # `not_found` — both the codes the neighbouring actions answer with. The check
   # returns the row, which the vocation resolution needs.
-  defp authorized_spawn(space_id, payload, socket) do
+  defp authorized_spawn(space_id, payload, model, socket) do
     case Authz.fetch_owned_space(space_id, socket.assigns.current_user) do
-      {:ok, space} -> spawn_in_space(space, payload, socket)
+      {:ok, space} -> spawn_in_space(space, payload, model, socket)
       {:error, reason} -> {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
     end
   end
 
-  defp spawn_in_space(space, payload, socket) do
+  defp spawn_in_space(space, payload, model, socket) do
     case Spaces.resolve_agent_vocation(space, payload["vocation"]) do
-      {:ok, vocation} -> create(space.id, payload, vocation, socket)
+      {:ok, vocation} -> create(space.id, payload, model, vocation, socket)
       {:error, reason} -> {:reply, AgentErrors.create_payload(reason), socket}
     end
   end
 
-  defp create(space_id, payload, vocation, socket) do
-    model = LobbyChannel.build_model_map(payload["model"] || %{})
-
+  defp create(space_id, payload, model, vocation, socket) do
     case Agents.create_agent(space_id, model,
            name: payload["name"],
            vocation_id: vocation.id,
@@ -95,18 +98,51 @@ defmodule NestWeb.LobbyChannel.AgentSpawn do
         Broadcasts.agent_created(space_id, name: name, model: model, vocation: vocation.slug)
         {:reply, {:ok, %{"name" => name}}, socket}
 
+      # The create path's own arm for this is the generic `failed_to_create`,
+      # whose message is about a space. A spawn knows the name it asked for, so
+      # it says which one is taken.
+      {:error, :duplicate_name} ->
+        {:reply, duplicate_reply(payload["name"]), socket}
+
       {:error, reason} ->
         {:reply, AgentErrors.create_payload(reason), socket}
     end
   end
 
+  defp duplicate_reply(name) when is_binary(name) and name != "" do
+    {:error,
+     %{
+       "reason" => "duplicate_name",
+       "message" => "An agent named #{inspect(name)} already exists in this space."
+     }}
+  end
+
+  defp duplicate_reply(_name) do
+    {:error,
+     %{
+       "reason" => "duplicate_name",
+       "message" => "Could not find a free name for the new agent; try again."
+     }}
+  end
+
+  # The model the agent is created with: the client's map, which must name a
+  # model. A map without a name is the same as no map — `build_model_map/1`
+  # turns it into `name: nil`, and the agent would start blocked.
+  defp model_map(%{"name" => name} = model) when is_binary(name) and name != "",
+    do: {:ok, LobbyChannel.build_model_map(model)}
+
+  defp model_map(_model), do: :model_required
+
   # A payload key that is absent or nil says nothing; one that is present must
   # have the type the create path will hand it on as. `nil` is spelled out
   # because JSON clients send it for "unset" as readily as they omit the key.
-  defp valid_payload?(payload) do
-    optional?(payload, "name", &is_binary/1) and
-      optional?(payload, "vocation", &is_binary/1) and
-      optional?(payload, "model", &is_map/1)
+  defp validate_payload(payload) do
+    valid =
+      optional?(payload, "name", &is_binary/1) and
+        optional?(payload, "vocation", &is_binary/1) and
+        optional?(payload, "model", &is_map/1)
+
+    if valid, do: :ok, else: :invalid_payload
   end
 
   defp optional?(payload, key, type) do

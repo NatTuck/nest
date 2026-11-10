@@ -121,30 +121,20 @@ defmodule NestWeb.LobbyChannel.SpawnAgentTest do
       assert info_for(space_id, name).vocation_slug == root.slug
     end
 
-    test "an absent model resolves the way a root agent's does", %{
+    test "an absent model is refused, rather than spawning a blocked agent", %{
       socket: socket,
       space_id: space_id
     } do
-      # The create path hands `Agents.create_agent/3` the empty map when the
-      # client names no model, and this path does the same — so the outcome is
-      # the root agent's, not a special case: an agent that starts blocked on
-      # `:model_missing` until someone picks one. Pinned because "optional
-      # model" is the contract the client is written against.
-      log =
-        capture_log(fn ->
-          assert_reply push(socket, "spawn_agent", %{"space_id" => space_id}),
-                       :ok,
-                       %{"name" => name},
-                       500
+      # `Agents.create_agent/3` with an empty model map produces an agent that
+      # starts blocked on `:model_missing` — a state to recover from, not a way
+      # to spawn. The client always names a model (the dialog will not submit
+      # without one), so a payload that does not is refused here.
+      assert_reply push(socket, "spawn_agent", %{"space_id" => space_id}),
+                   :error,
+                   %{"reason" => "model_required"},
+                   500
 
-          send(self(), {:name, name})
-        end)
-
-      assert_received {:name, name}
-      AgentTestHelpers.ensure_cleanup(name)
-
-      assert log =~ ":no_model_name"
-      assert info_for(space_id, name).status == :model_missing
+      assert Agents.list_agents_info_for_space(space_id) == []
     end
 
     test "a nil for an optional key means unset, as a JSON client sends it", %{
@@ -199,7 +189,7 @@ defmodule NestWeb.LobbyChannel.SpawnAgentTest do
       assert Agents.list_agents_info_for_space(space_id) == []
     end
 
-    test "a duplicate name is refused with the create path's shape", %{
+    test "a duplicate name is refused, naming the agent that is taken", %{
       socket: socket,
       space_id: space_id
     } do
@@ -209,23 +199,15 @@ defmodule NestWeb.LobbyChannel.SpawnAgentTest do
       assert_reply push(socket, "spawn_agent", payload), :ok, %{"name" => ^name}, 500
       AgentTestHelpers.ensure_cleanup(name)
 
-      log =
-        capture_log(fn ->
-          assert_reply push(socket, "spawn_agent", payload),
-                       :error,
-                       %{"reason" => reason},
-                       500
+      assert_reply push(socket, "spawn_agent", payload),
+                   :error,
+                   %{"reason" => "duplicate_name", "message" => message},
+                   500
 
-          send(self(), {:reason, reason})
-        end)
-
-      # `Persistence.insert_agent/1` names this refusal `:duplicate_name`, and
-      # `AgentErrors.create_payload/1` has no arm for it, so the generic create
-      # code answers and the log carries the detail. Pinned as it is: the reply
-      # shape is the one the other lobby actions use, and changing the code the
-      # client sees is a separate decision.
-      assert_received {:reason, "failed_to_create"}
-      assert log =~ ":duplicate_name"
+      # The create path answers this with its generic `failed_to_create`, whose
+      # message is about a space. A spawn knows the name it asked for, so it
+      # says which one is taken.
+      assert message == "An agent named #{inspect(name)} already exists in this space."
       assert length(Agents.list_agents_info_for_space(space_id)) == 1
     end
 

@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   editSpace: vi.fn(),
   cancelEditSpace: vi.fn(),
   unarchiveSpace: vi.fn(),
+  spawnAgent: vi.fn(),
 }));
 
 vi.mock("../channels", () => ({
@@ -34,6 +35,9 @@ vi.mock("../channels", () => ({
   editSpace: mocks.editSpace,
   cancelEditSpace: mocks.cancelEditSpace,
   unarchiveSpace: mocks.unarchiveSpace,
+  // The feed's `+ Agent` dialog: this page renders the feed, so the binding has
+  // to exist even though no test here opens it.
+  spawnAgent: mocks.spawnAgent,
 }));
 
 // The drafts are the one store slice a test drives by typing, and the composer

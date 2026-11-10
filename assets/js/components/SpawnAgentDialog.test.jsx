@@ -2,9 +2,11 @@
  * SpawnAgentDialog tests (#209): the manual spawn form.
  *
  * The contract with the server is the payload, so that is what most of these
- * assert: `space_id` always, and `name`, `vocation`, `model` only when the
+ * assert: `space_id` and `model` always, `name` and `vocation` only when the
  * operator chose them — an omitted field means "you decide", which is not the
- * same as an empty one. The rest is the dialog's own behaviour: an error reply
+ * same as an empty one. A model is not optional: an agent with none starts
+ * blocked, so the button will not submit without one. The rest is the dialog's
+ * own behaviour: an error reply
  * stays on screen with the dialog open, a success closes it and reports the name
  * the server sent, and a second click while the push is in flight is not a second
  * agent.
@@ -53,6 +55,12 @@ function renderDialog(overrides = {}) {
 const submit = () =>
   fireEvent.click(screen.getByRole("button", { name: /spawn/i }));
 
+// A model is required, so every test that means to submit picks one first.
+const chooseModel = () =>
+  fireEvent.change(screen.getByLabelText(/model/i), {
+    target: { value: "qwen3.5-plus" },
+  });
+
 beforeEach(() => {
   vi.clearAllMocks();
   useStore.getState()._reset();
@@ -76,8 +84,8 @@ describe("SpawnAgentDialog", () => {
       screen.getByRole("option", { name: "Programmer" }),
     ).toBeInTheDocument();
 
-    // The model list is the same one `EditAgentDialog` offers, and empty is a
-    // real choice: it means the server's default.
+    // The model list is the same one `EditAgentDialog` offers, and empty is only
+    // the placeholder: the dialog will not submit without a choice.
     const model = screen.getByLabelText(/model/i);
     expect(model).toHaveValue("");
     expect(
@@ -85,16 +93,40 @@ describe("SpawnAgentDialog", () => {
     ).toBeInTheDocument();
   });
 
-  it("omits a blank name and an unchosen model from the push", () => {
+  it("will not submit without a model, and says why", () => {
     renderDialog();
 
+    // An agent created without a model starts blocked on `:model_missing`, so
+    // this is a refusal rather than a default the server picks.
+    expect(screen.getByRole("button", { name: /spawn/i })).toBeDisabled();
+    expect(
+      screen.getByText("A model is required — an agent with none cannot run."),
+    ).toBeInTheDocument();
+
+    submit();
+    expect(spawnAgent).not.toHaveBeenCalled();
+  });
+
+  it("omits a blank name from the push, and always sends the model", () => {
+    renderDialog();
+
+    fireEvent.change(screen.getByLabelText(/model/i), {
+      target: { value: "qwen3.5-plus" },
+    });
     submit();
 
-    // Omitted, not empty: a blank name means "generate one", and no model means
-    // the server's default. Sending `""` or a half-built model map would be a
-    // different request.
+    // Omitted, not empty: a blank name means "generate one". The model is
+    // always there, because the button cannot be pressed without it.
     expect(spawnAgent).toHaveBeenCalledWith(
-      { space_id: SPACE_ID, vocation: "researcher" },
+      {
+        space_id: SPACE_ID,
+        vocation: "researcher",
+        model: {
+          name: "qwen3.5-plus",
+          provider: "model-studio",
+          thinking_level: "medium",
+        },
+      },
       expect.any(Function),
       expect.any(Function),
     );
@@ -140,6 +172,7 @@ describe("SpawnAgentDialog", () => {
     });
 
     const { props } = renderDialog();
+    chooseModel();
     submit();
 
     expect(screen.getByRole("alert")).toHaveTextContent("No such vocation");
@@ -156,6 +189,7 @@ describe("SpawnAgentDialog", () => {
     });
 
     renderDialog();
+    chooseModel();
     submit();
 
     expect(screen.getByRole("alert")).toHaveTextContent("space_archived");
@@ -167,6 +201,7 @@ describe("SpawnAgentDialog", () => {
     });
 
     const { props } = renderDialog();
+    chooseModel();
     submit();
 
     expect(props.onSpawned).toHaveBeenCalledWith("helper");
@@ -179,6 +214,7 @@ describe("SpawnAgentDialog", () => {
     });
 
     const { props } = renderDialog();
+    chooseModel();
     submit();
 
     // The page renders that as "the reply carried no name", so the missing fact
@@ -192,6 +228,7 @@ describe("SpawnAgentDialog", () => {
     spawnAgent.mockImplementation(() => {});
 
     renderDialog();
+    chooseModel();
     submit();
     submit();
 

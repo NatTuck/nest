@@ -72,27 +72,26 @@ export function SpawnAgentDialog({
   const chosenVocation =
     vocation || blueprint?.root_vocation || vocations[0]?.slug || "";
 
+  // A model is required: an agent created without one starts blocked on
+  // `:model_missing`, which is a state to recover from, not a way to spawn — the
+  // server refuses the push, and the button says so before it is pressed.
+  const chosenModel = models.find((model) => model.name === modelName);
+
   const submit = () => {
     // No double submit: the push is in flight and the reply is what closes the
     // dialog, so a second click would spawn a second agent.
-    if (spawning) return;
+    if (spawning || !chosenModel) return;
 
-    const chosenModel = models.find((model) => model.name === modelName);
     const payload = {
       space_id: spaceId,
       // Omitted, not empty: a blank name means "generate one".
       ...(name.trim() ? { name: name.trim() } : {}),
       ...(chosenVocation ? { vocation: chosenVocation } : {}),
-      // Omitted when nothing is chosen: the server's default model.
-      ...(chosenModel
-        ? {
-            model: {
-              name: chosenModel.name,
-              provider: chosenModel.provider ?? null,
-              thinking_level: DEFAULT_THINKING_LEVEL,
-            },
-          }
-        : {}),
+      model: {
+        name: chosenModel.name,
+        provider: chosenModel.provider ?? null,
+        thinking_level: DEFAULT_THINKING_LEVEL,
+      },
     };
 
     setSpawning(true);
@@ -213,10 +212,10 @@ export function SpawnAgentDialog({
               onChange={(event) => setModelName(event.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm"
             >
-              {/* Empty is a real choice here: it means "the server's default",
-                  which is why the payload omits `model` rather than sending a
-                  half-filled map. */}
-              <option value="">Choose a model… (default)</option>
+              {/* Required, not a default: an agent with no model starts
+                  blocked, and the server refuses the push. The empty option is
+                  only the placeholder. */}
+              <option value="">Choose a model…</option>
               {models.map((model) => (
                 <option key={model.name} value={model.name}>
                   {model.name}
@@ -224,6 +223,11 @@ export function SpawnAgentDialog({
                 </option>
               ))}
             </select>
+            {!chosenModel && (
+              <p className="mt-1 text-xs text-gray-500">
+                A model is required — an agent with none cannot run.
+              </p>
+            )}
           </div>
 
           {error && (
@@ -245,7 +249,7 @@ export function SpawnAgentDialog({
           <button
             type="button"
             onClick={submit}
-            disabled={spawning}
+            disabled={spawning || !chosenModel}
             className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors disabled:opacity-50"
           >
             {spawning ? "Spawning…" : "Spawn"}
