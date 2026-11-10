@@ -25,7 +25,8 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
           {:workspace_missing, "workspace_missing"},
           {:workspace_under_tmp, "workspace_under_tmp"},
           {:blueprint_missing, "blueprint_missing"},
-          {:missing_vocation, "missing_vocation"}
+          {:missing_vocation, "missing_vocation"},
+          {:space_archived, "space_archived"}
         ] do
       assert {:error, %{"reason" => ^code}} = AgentErrors.create_payload(reason)
     end

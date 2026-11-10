@@ -71,6 +71,53 @@ defmodule Nest.Spaces.Creation do
     end
   end
 
+  @doc """
+  The vocation a **new agent** in `space` gets when the caller names none.
+
+  Resolution order:
+
+    1. an explicit slug, which must exist — an unknown one is the same
+       `{:error, {:vocation_not_found, slug}}` the space-create path answers
+       with;
+    2. the space's blueprint `root_vocation`, so a manually spawned agent
+       starts in the role the blueprint chose for the space;
+    3. the catalogue's first vocation (`default_vocation_slug/0`).
+
+  Returns the `Vocation` struct rather than its id: the caller announces the
+  agent with the slug (`Nest.Agents.Agent.Broadcasts.agent_created/2`).
+
+  The *space-create* path does not use this — `create_space_with_root_agent/2`
+  resolves through `resolve_root_vocation/1`, which has no catalogue fallback
+  because a space created without a vocation is a caller mistake, not a
+  default. A manually spawned agent has a space already, so there is always a
+  blueprint or the catalogue to ask.
+  """
+  @spec resolve_agent_vocation(Space.t(), String.t() | nil) ::
+          {:ok, Vocations.Vocation.t()} | {:error, term()}
+  def resolve_agent_vocation(%Space{}, slug) when is_binary(slug), do: fetch_vocation(slug)
+
+  def resolve_agent_vocation(%Space{blueprint_id: blueprint_id}, nil) do
+    case Blueprints.root_vocation_slug_for(blueprint_id) || default_vocation_slug() do
+      nil -> {:error, :missing_vocation}
+      slug -> fetch_vocation(slug)
+    end
+  end
+
+  @doc """
+  The catalogue's first vocation's slug, or `nil` when the catalogue is empty.
+
+  The one fallback for "the caller named no vocation": the New Space form uses
+  it for the space's root agent, and `resolve_agent_vocation/2` uses it for an
+  agent spawned by hand.
+  """
+  @spec default_vocation_slug() :: String.t() | nil
+  def default_vocation_slug do
+    case Vocations.list_vocations() do
+      [] -> nil
+      [first | _] -> first.slug
+    end
+  end
+
   defp create_space_and_root_agent(user_id, attrs) do
     # The root vocation is resolved and validated BEFORE the
     # space row is created. If we created the space first, a bad
@@ -131,8 +178,10 @@ defmodule Nest.Spaces.Creation do
   #   2. The blueprint's `root_vocation` slug (Phase 2 contract).
   #   3. Neither → `{:error, :missing_vocation}`. `create_space_with_root_agent`
   #      requires a vocation; `Agents.create_agent/3` does NOT
-  #      fall back to the first available vocation (that fallback
-  #      lives only in the lobby's `default_vocation_slug/0`).
+  #      fall back to the first available vocation (the lobby applies
+  #      `default_vocation_slug/0` before calling, which is where that fallback
+  #      belongs: a space created without a vocation is a caller mistake, while
+  #      an agent spawned into an existing space always has one to inherit).
   #
   # Returns `{:error, :blueprint_missing}` when `:blueprint_id`
   # is set but no row with that id exists — surfacing the error
@@ -148,9 +197,13 @@ defmodule Nest.Spaces.Creation do
   end
 
   defp resolve_vocation_slug(slug) do
+    with {:ok, %Vocations.Vocation{id: id}} <- fetch_vocation(slug), do: {:ok, id}
+  end
+
+  defp fetch_vocation(slug) do
     case Vocations.get_by_slug(slug) do
       nil -> {:error, {:vocation_not_found, slug}}
-      %Vocations.Vocation{id: id} -> {:ok, id}
+      %Vocations.Vocation{} = vocation -> {:ok, vocation}
     end
   end
 

@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   sendSpaceNote: vi.fn(),
   editSpace: vi.fn(),
   cancelEditSpace: vi.fn(),
+  spawnAgent: vi.fn(),
 }));
 
 vi.mock("../channels", () => ({
@@ -27,6 +28,7 @@ vi.mock("../channels", () => ({
   sendSpaceNote: mocks.sendSpaceNote,
   editSpace: mocks.editSpace,
   cancelEditSpace: mocks.cancelEditSpace,
+  spawnAgent: mocks.spawnAgent,
 }));
 
 // The drafts are the one store slice a test drives by typing, and the composer
@@ -144,6 +146,7 @@ beforeEach(() => {
   mocks.sendSpaceNote.mockReset();
   mocks.editSpace.mockReset();
   mocks.cancelEditSpace.mockReset();
+  mocks.spawnAgent.mockReset();
   scroll.useScrollToBottom.mockReset();
   scroll.useScrollToBottom.mockReturnValue({
     isAtBottom: true,
@@ -637,6 +640,18 @@ describe("SpaceFeed", () => {
     expect(screen.queryByLabelText("Send to")).not.toBeInTheDocument();
     // Nothing can be sent: the composer is disabled, not silently ignored.
     expect(screen.getByLabelText("Message")).toBeDisabled();
+  });
+
+  it("offers the manual spawn from the page's header (#209)", () => {
+    // The space's own page is where a space-level action belongs: the agent it
+    // makes is a peer of the root, not a child of anything in the tree.
+    renderFeed();
+
+    fireEvent.click(screen.getByRole("button", { name: "+ Agent" }));
+
+    expect(
+      screen.getByRole("dialog", { name: "Spawn agent" }),
+    ).toBeInTheDocument();
   });
 
   it("shows the space's environment, and edits it through the dialog", () => {

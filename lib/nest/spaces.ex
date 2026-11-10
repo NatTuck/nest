@@ -360,6 +360,21 @@ defmodule Nest.Spaces do
   end
 
   @doc """
+  Whether `space_id` is archived.
+
+  One `EXISTS`, because its caller has already read everything else it needs:
+  `Nest.Agents.Supervisor.fetch_or_start_agent/2` verifies a start against this
+  flag *after* the agent's process exists, and that ordering is what closes the
+  window between a caller's archived check and its write (see
+  `archive_space/1`). A missing space is `false` — there is nothing to refuse,
+  and the start fails on its own.
+  """
+  @spec archived?(integer()) :: boolean()
+  def archived?(space_id) when is_integer(space_id) do
+    Repo.exists?(from s in Space, where: s.id == ^space_id and s.archived == true)
+  end
+
+  @doc """
   Create a new space for the given user.
 
   ## Parameters
@@ -461,6 +476,17 @@ defmodule Nest.Spaces do
   The archived space remains inspectable via
   `list_archived_for_user/1` and reversible via `unarchive_space/1`.
 
+  ## The flag goes up before the agents are stopped
+
+  That ordering is load-bearing, not incidental. A start verifies the flag
+  *after* its process exists (`Nest.Agents.Supervisor.fetch_or_start_agent/2`),
+  which is the only ordering that closes the race: a start that inserts its row
+  after this sweep has already read the space's rows would otherwise survive
+  unseen, and one that inserts before is either stopped by the sweep or stops
+  itself. Setting the flag last left that window as wide as the sweep —
+  `remove_sandbox/1` sits in it, and shells out to `docker` for a `"docker"`
+  space.
+
   Returns `:ok` on success, `{:error, :not_found}` if the space
   doesn't exist.
   """
@@ -471,6 +497,8 @@ defmodule Nest.Spaces do
         {:error, :not_found}
 
       space ->
+        set_archived(space.id, true)
+
         stop_space_agents(space.id)
 
         # An archived space is out of service, so its backend's environment goes
@@ -478,7 +506,6 @@ defmodule Nest.Spaces do
         # lazily, which is why this is safe here and not only on delete.
         remove_sandbox(space)
 
-        set_archived(space.id, true)
         broadcast_spaces_changed(space.created_by_user_id)
     end
   end
@@ -624,4 +651,31 @@ defmodule Nest.Spaces do
   @spec create_space_with_root_agent(integer(), map()) ::
           {:ok, Space.t(), String.t()} | {:error, term()}
   defdelegate create_space_with_root_agent(user_id, attrs), to: Creation
+
+  @doc """
+  The vocation a **new agent** in `space` gets when the caller names none
+  (issue #209's `spawn_agent`, and the default a manually spawned agent
+  inherits from its space).
+
+  Order: the explicit slug (which must exist — an unknown one is
+  `{:error, {:vocation_not_found, slug}}`), else the space's blueprint
+  `root_vocation`, else `default_vocation_slug/0`. Returns the `Vocation`
+  struct, because the caller announces the agent with its slug.
+
+  See `Nest.Spaces.Creation.resolve_agent_vocation/2` for why the space-create
+  path does not share the catalogue fallback.
+  """
+  @spec resolve_agent_vocation(Space.t(), String.t() | nil) ::
+          {:ok, Nest.Vocations.Vocation.t()} | {:error, term()}
+  defdelegate resolve_agent_vocation(space, slug), to: Creation
+
+  @doc """
+  The catalogue's first vocation's slug, or `nil` when the catalogue is empty.
+
+  The one "the caller named no vocation" fallback: the New Space form uses it
+  for the space's root agent, and `resolve_agent_vocation/2` uses it for an
+  agent spawned by hand.
+  """
+  @spec default_vocation_slug() :: String.t() | nil
+  defdelegate default_vocation_slug(), to: Creation
 end

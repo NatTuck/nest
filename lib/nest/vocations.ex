@@ -19,7 +19,10 @@ defmodule Nest.Vocations do
 
   """
   def list_vocations do
-    Repo.all(Vocation)
+    # Ordered, because two paths now read the *first* vocation as their default
+    # (`Spaces.default_vocation_slug/0`: the New Space form's, and a spawn by
+    # hand). Without an `ORDER BY` that "first" is whatever the planner returns.
+    Repo.all(from(v in Vocation, order_by: [asc: v.id]))
   end
 
   @doc """

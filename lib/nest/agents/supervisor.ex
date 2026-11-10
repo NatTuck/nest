@@ -21,6 +21,7 @@ defmodule Nest.Agents.Supervisor do
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.Turn.GiveUpDelivery
   alias Nest.Agents.PersistedAgent
+  alias Nest.Agents.StartGuard
   alias Nest.Persistence
   alias Nest.Spaces
 
@@ -71,7 +72,10 @@ defmodule Nest.Agents.Supervisor do
       existing_name ->
         case safe_fetch_for_start(space_id, existing_name) do
           {:ok, start_attrs} ->
-            start_under_supervisor(Agent.pre_load_heal(start_attrs), existing_name)
+            start_attrs
+            |> Agent.pre_load_heal()
+            |> start_under_supervisor(existing_name)
+            |> StartGuard.verify(space_id, existing_name)
 
           {:error, :not_found} ->
             {:error, :not_found}
@@ -188,11 +192,17 @@ defmodule Nest.Agents.Supervisor do
   # must be the *row's* — `PreSpawn.put_mode/1` derived it into its own copy, so
   # a spawn that named none fell back to `Nest.Modes.default()`: a `plan`
   # parent's child running `act`, writing a workspace its parent may not touch.
+  #
+  # The verification is here too, because this is the *other* start site: a spawn
+  # does not go through `fetch_or_start_agent/2`, and it still completes when the
+  # archive stops the parent — the tool worker that asked for the child is a task
+  # under `TaskSupervisor`, not the agent.
   defp start_pre_spawned_child(attrs, agent_id, name) do
     attrs = Map.put(attrs, :agent_row_id, agent_id)
     # Inside the closure, so a missing row is rolled back (see `start_pre_spawned/3`).
     start_pre_spawned(attrs, agent_id, fn ->
       start_under_supervisor(Map.put(attrs, :mode, persisted_mode(attrs, agent_id)), name)
+      |> StartGuard.verify(attrs.space_id, name)
     end)
   end
 
@@ -480,10 +490,7 @@ defmodule Nest.Agents.Supervisor do
   """
   @spec restart_agent(integer(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def restart_agent(space_id, name) do
-    case Registry.lookup(space_id, name) do
-      {:ok, pid} -> DynamicSupervisor.terminate_child(@supervisor_name, pid)
-      {:error, :not_found} -> :ok
-    end
+    StartGuard.terminate_child(space_id, name)
 
     fetch_or_start_agent(space_id, %{name: name})
   end

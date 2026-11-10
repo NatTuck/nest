@@ -545,6 +545,36 @@ export function editAgent(name, spaceId, model, onOk, onError) {
 }
 
 /**
+ * Spawn an agent in a space by hand (#209) — a peer of the space's root.
+ *
+ * The payload is built by the caller and passed through: `space_id` always, and
+ * `name`, `vocation`, `model` only when the operator chose them. Omitted is not
+ * the same as empty here — a blank name means "generate one", so it must not
+ * arrive as `""`, and an unchosen model means "the server's default", so it must
+ * not arrive as a half-built map.
+ *
+ * The reply carries the spawned agent's `name` and is handed to `onOk`. Nothing
+ * is added to the store from here: the server broadcasts `agent_created`, and
+ * `channels.js` applies it, so a push that succeeded and a frame that arrived
+ * cannot disagree about what exists.
+ */
+export function spawnAgent(payload, onOk, onError) {
+  if (!lobbyChannel) {
+    if (onError) onError(new Error("Not connected to lobby"));
+    return;
+  }
+
+  lobbyChannel
+    .push("spawn_agent", payload)
+    .receive("ok", (reply) => {
+      if (onOk) onOk(reply);
+    })
+    .receive("error", (err) => {
+      if (onError) onError(err);
+    });
+}
+
+/**
  * Issue a fresh invite via the lobby channel. No callback signature —
  * the InvitesPage reads `invites` / `invitesError` from `useStore`.
  */

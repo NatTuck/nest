@@ -13,6 +13,8 @@ defmodule Nest.SpacesTest do
   """
   use Nest.DataCase, async: true
 
+  import ExUnit.CaptureLog
+
   alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.PersistedAgent
@@ -277,6 +279,95 @@ defmodule Nest.SpacesTest do
       # Agent row still present and NOT marked archived — unarchive restores it.
       assert {:ok, %Nest.Agents.PersistedAgent{archived: false}} =
                Persistence.fetch_agent(space_id, agent_a)
+    end
+
+    test "the flag goes up before the space's agents are stopped", %{user_id: user_id} do
+      # The ordering is the whole fix for the start race in
+      # `Nest.Agents.Supervisor.fetch_or_start_agent/2`: a start verifies the flag
+      # *after* its process exists, so a row inserted after this sweep has read
+      # the space's rows has to find the flag already set. Stopping first left
+      # that window as wide as the sweep — and `remove_sandbox/1` sits inside it.
+      vid = AgentTestHelpers.vocation_id_for_test()
+      model = %{name: "qwen3.5-plus", provider: "model-studio"}
+
+      {:ok, %Space{id: space_id}} =
+        Spaces.create_space(user_id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: "arch-order-#{System.unique_integer([:positive])}"
+        })
+
+      name = "arch-order-agent-#{System.unique_integer([:positive])}"
+      assert {:ok, ^name} = Agents.create_agent(space_id, model, name: name, vocation_id: vid)
+
+      # Stopped for real, so what the sweep sees is a row with no process — the
+      # ordinary case for archiving a space nobody is using right now.
+      assert :ok = Supervisor.stop_agent(space_id, name)
+
+      Mimic.stub(Nest.Agents.Supervisor, :stop_agent, fn id, stopped ->
+        send(self(), {:stopping, stopped, Spaces.archived?(id)})
+        :ok
+      end)
+
+      assert :ok = Spaces.archive_space(space_id)
+
+      assert_received {:stopping, ^name, true}
+    end
+
+    test "an agent created after its space is archived is refused, and leaves no row",
+         %{user_id: user_id} do
+      vid = AgentTestHelpers.vocation_id_for_test()
+      model = %{name: "qwen3.5-plus", provider: "model-studio"}
+
+      {:ok, %Space{id: space_id}} =
+        Spaces.create_space(user_id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: "arch-late-#{System.unique_integer([:positive])}"
+        })
+
+      assert :ok = Spaces.archive_space(space_id)
+
+      name = "arch-late-agent-#{System.unique_integer([:positive])}"
+
+      # `PreSpawn.pre_spawn/1` writes the row before the process exists, so a
+      # start that finds its space archived rolls that row back rather than
+      # leaving an orphan — and says so, which is why this is captured rather
+      # than printed.
+      log =
+        capture_log(fn ->
+          assert {:error, :space_archived} =
+                   Agents.create_agent(space_id, model, name: name, vocation_id: vid)
+        end)
+
+      assert log =~ ":space_archived"
+      assert log =~ "removing the row it pre-spawned"
+      assert Persistence.fetch_agent(space_id, name) == {:error, :not_found}
+      assert Agents.Registry.lookup(space_id, name) == {:error, :not_found}
+    end
+
+    test "an archived space's agent is not started on demand", %{user_id: user_id} do
+      vid = AgentTestHelpers.vocation_id_for_test()
+      model = %{name: "qwen3.5-plus", provider: "model-studio"}
+
+      {:ok, %Space{id: space_id}} =
+        Spaces.create_space(user_id, %{
+          workspace_path: AgentTestHelpers.default_test_workspace(),
+          name: "arch-reload-#{System.unique_integer([:positive])}"
+        })
+
+      name = "arch-reload-agent-#{System.unique_integer([:positive])}"
+      assert {:ok, ^name} = Agents.create_agent(space_id, model, name: name, vocation_id: vid)
+
+      assert :ok = Spaces.archive_space(space_id)
+
+      # The row is the space's, and archiving keeps it — only the process is
+      # refused. Unarchiving rehydrates it as usual.
+      assert {:error, :space_archived} =
+               Supervisor.fetch_or_start_agent(space_id, %{name: name})
+
+      assert Agents.Registry.lookup(space_id, name) == {:error, :not_found}
+
+      assert {:ok, %Nest.Agents.PersistedAgent{archived: false}} =
+               Persistence.fetch_agent(space_id, name)
     end
 
     test "archiving other users' spaces is not possible via list queries (owner-only listing)",
