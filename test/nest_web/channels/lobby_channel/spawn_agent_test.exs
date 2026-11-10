@@ -196,6 +196,27 @@ defmodule NestWeb.LobbyChannel.SpawnAgentTest do
       assert Agents.list_agents_info_for_space(space_id) == []
     end
 
+    test "a spawn that loses the race to an archive answers space_archived", %{
+      socket: socket,
+      space_id: space_id
+    } do
+      # The channel's own archived check reads the row *before* `create_agent/3`
+      # renders and writes the agent's first messages, so an archive can land in
+      # between. The start path then refuses it (`fetch_or_start_agent/2`
+      # verifies after the process exists), and the reply has to carry the code
+      # the dialog already words — not the generic create failure.
+      Mimic.stub(Nest.Agents, :create_agent, fn _space, _model, _opts ->
+        {:error, :space_archived}
+      end)
+
+      Mimic.allow(Nest.Agents, self(), socket.channel_pid)
+
+      assert_reply push(socket, "spawn_agent", %{"space_id" => space_id, "model" => @model}),
+                   :error,
+                   %{"reason" => "space_archived"},
+                   500
+    end
+
     test "an unknown vocation is refused with the create path's code", %{
       socket: socket,
       space_id: space_id

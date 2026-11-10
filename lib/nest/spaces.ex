@@ -360,6 +360,21 @@ defmodule Nest.Spaces do
   end
 
   @doc """
+  Whether `space_id` is archived.
+
+  One `EXISTS`, because its caller has already read everything else it needs:
+  `Nest.Agents.Supervisor.fetch_or_start_agent/2` verifies a start against this
+  flag *after* the agent's process exists, and that ordering is what closes the
+  window between a caller's archived check and its write (see
+  `archive_space/1`). A missing space is `false` — there is nothing to refuse,
+  and the start fails on its own.
+  """
+  @spec archived?(integer()) :: boolean()
+  def archived?(space_id) when is_integer(space_id) do
+    Repo.exists?(from s in Space, where: s.id == ^space_id and s.archived == true)
+  end
+
+  @doc """
   Create a new space for the given user.
 
   ## Parameters
@@ -461,6 +476,17 @@ defmodule Nest.Spaces do
   The archived space remains inspectable via
   `list_archived_for_user/1` and reversible via `unarchive_space/1`.
 
+  ## The flag goes up before the agents are stopped
+
+  That ordering is load-bearing, not incidental. A start verifies the flag
+  *after* its process exists (`Nest.Agents.Supervisor.fetch_or_start_agent/2`),
+  which is the only ordering that closes the race: a start that inserts its row
+  after this sweep has already read the space's rows would otherwise survive
+  unseen, and one that inserts before is either stopped by the sweep or stops
+  itself. Setting the flag last left that window as wide as the sweep —
+  `remove_sandbox/1` sits in it, and shells out to `docker` for a `"docker"`
+  space.
+
   Returns `:ok` on success, `{:error, :not_found}` if the space
   doesn't exist.
   """
@@ -471,6 +497,8 @@ defmodule Nest.Spaces do
         {:error, :not_found}
 
       space ->
+        set_archived(space.id, true)
+
         stop_space_agents(space.id)
 
         # An archived space is out of service, so its backend's environment goes
@@ -478,7 +506,6 @@ defmodule Nest.Spaces do
         # lazily, which is why this is safe here and not only on delete.
         remove_sandbox(space)
 
-        set_archived(space.id, true)
         broadcast_spaces_changed(space.created_by_user_id)
     end
   end

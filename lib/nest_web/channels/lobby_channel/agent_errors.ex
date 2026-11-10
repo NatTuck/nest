@@ -15,8 +15,12 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
   @workspace_reasons [:workspace_required, :workspace_missing, :workspace_under_tmp]
 
   # The refusals whose reply code is simply the reason's own name, so one arm
-  # covers them (see `create_payload/1`).
-  @simple_reasons @workspace_reasons ++ [:blueprint_missing, :missing_vocation]
+  # covers them (see `create_payload/1`). `:space_archived` is here because a
+  # create can *lose a race* with `Spaces.archive_space/1` — the start path
+  # refuses it after the fact — and the client must hear the same code the
+  # caller's own pre-check answers with, not a generic create failure.
+  @simple_reasons @workspace_reasons ++
+                    [:blueprint_missing, :missing_vocation, :space_archived]
 
   # A reason that carries its detail beside the tag: `{:scratch_path_taken, path}`,
   # `{:config_file_not_regular, path, type}`. One guard rather than a `{tag, _}`
@@ -148,8 +152,9 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
   def create_payload(reason, context) do
     case reason do
       # One arm for the refusals whose reply code is the reason's own name: the
-      # workspace ones, plus the two the blueprint resolution adds. Listing them
-      # separately would be five copies of one rule.
+      # workspace ones, the two the blueprint resolution adds, and the archive a
+      # create can lose a race with. Listing them separately would be six copies
+      # of one rule.
       simple when simple in @simple_reasons ->
         {:error, %{"reason" => to_string(simple)}}
 

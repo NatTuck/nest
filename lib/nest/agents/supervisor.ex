@@ -21,6 +21,7 @@ defmodule Nest.Agents.Supervisor do
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.Turn.GiveUpDelivery
   alias Nest.Agents.PersistedAgent
+  alias Nest.Agents.StartGuard
   alias Nest.Persistence
   alias Nest.Spaces
 
@@ -71,7 +72,10 @@ defmodule Nest.Agents.Supervisor do
       existing_name ->
         case safe_fetch_for_start(space_id, existing_name) do
           {:ok, start_attrs} ->
-            start_under_supervisor(Agent.pre_load_heal(start_attrs), existing_name)
+            start_attrs
+            |> Agent.pre_load_heal()
+            |> start_under_supervisor(existing_name)
+            |> StartGuard.verify(space_id, existing_name)
 
           {:error, :not_found} ->
             {:error, :not_found}
@@ -480,10 +484,7 @@ defmodule Nest.Agents.Supervisor do
   """
   @spec restart_agent(integer(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def restart_agent(space_id, name) do
-    case Registry.lookup(space_id, name) do
-      {:ok, pid} -> DynamicSupervisor.terminate_child(@supervisor_name, pid)
-      {:error, :not_found} -> :ok
-    end
+    StartGuard.terminate_child(space_id, name)
 
     fetch_or_start_agent(space_id, %{name: name})
   end
