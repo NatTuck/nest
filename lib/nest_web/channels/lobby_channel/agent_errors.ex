@@ -103,7 +103,7 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
         tagged_payload(tagged, {"Failed to edit space", "failed_to_edit"})
 
       %Ecto.Changeset{} = changeset ->
-        space_changeset_payload(changeset, "Failed to edit space", "failed_to_edit")
+        space_changeset_payload(changeset, {"Failed to edit space", "failed_to_edit"})
 
       other ->
         Logger.error("Failed to edit space: #{inspect(other)}")
@@ -129,10 +129,15 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
     }
   end
 
-  # The `context` is `{log_prefix, fallback_code}`: a spawn by hand passes its
-  # own, so a failed create in a space does not log "Failed to create space".
-  # The default is the space-creation path's.
-  #
+  # The space-creation path's context, for the `{log_prefix, fallback_code}`
+  # pair a create failure is logged and answered with. A spawn by hand passes
+  # its own, so a failed create in a space does not log "Failed to create
+  # space".
+  @space_create_context {"Failed to create space", "failed_to_create"}
+
+  @doc false
+  def create_payload(reason), do: create_payload(reason, @space_create_context)
+
   # `Spaces.create_space_with_root_agent/2` returns a *heterogeneous* reason
   # space: the workspace/vocation refusals a user can act on, a root-agent
   # name the client chose that is not filename-safe, plus changesets and
@@ -140,7 +145,7 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
   # except the first two groups stays generic (and logged), because an
   # `Ecto.Changeset` is neither `to_string/1`-able nor fit to show a user.
   @doc false
-  def create_payload(reason, context \\ {"Failed to create space", "failed_to_create"}) do
+  def create_payload(reason, context) do
     case reason do
       # One arm for the refusals whose reply code is the reason's own name: the
       # workspace ones, plus the two the blueprint resolution adds. Listing them
@@ -169,7 +174,7 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
       # user just made; the rest (a blank name, a taken slug) stays generic,
       # like the other unshowable reasons here.
       %Ecto.Changeset{data: %Space{}} = changeset ->
-        space_changeset_payload(changeset, "Failed to create space", "failed_to_create")
+        space_changeset_payload(changeset, context)
 
       other ->
         context_payload(other, context)
@@ -238,8 +243,13 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
   # validates by *value* (a choice the user just made), and a blank workspace,
   # which `Nest.Sandbox.workspace_error/1` names and `describeWorkspaceError/1`
   # words. The rest (a blank name, a taken slug, an unshowable error) stays
-  # generic and logged, under the prefix of the action that was attempted.
-  defp space_changeset_payload(%Ecto.Changeset{errors: errors}, log_prefix, fallback_code) do
+  # generic and logged, under the `{log_prefix, fallback_code}` context of the
+  # action that was attempted — the same context `create_payload/2` and
+  # `tagged_payload/2` take.
+  defp space_changeset_payload(
+         %Ecto.Changeset{errors: errors},
+         {log_prefix, fallback_code}
+       ) do
     cond do
       Keyword.has_key?(errors, :sandbox_backend) ->
         {:error, %{"reason" => "invalid_sandbox_backend"}}

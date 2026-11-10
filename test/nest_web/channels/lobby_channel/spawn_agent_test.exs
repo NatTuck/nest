@@ -236,6 +236,28 @@ defmodule NestWeb.LobbyChannel.SpawnAgentTest do
                    500
     end
 
+    test "a create failure it cannot word is logged as a spawn, not a space", %{
+      socket: socket,
+      space_id: space_id
+    } do
+      # The shared `create_payload/1` logs "Failed to create space", which is the
+      # wrong sentence for a spawn — the operator reading the log has to know
+      # which action to look at. A reason no arm words is the case that reaches
+      # the fallback.
+      Mimic.stub(Nest.Agents, :create_agent, fn _space, _model, _opts -> {:error, :boom} end)
+      Mimic.allow(Nest.Agents, self(), socket.channel_pid)
+
+      log =
+        capture_log(fn ->
+          assert_reply push(socket, "spawn_agent", %{"space_id" => space_id, "model" => @model}),
+                       :error,
+                       %{"reason" => "failed_to_create"},
+                       500
+        end)
+
+      assert log =~ "Failed to spawn an agent in space #{space_id}"
+    end
+
     test "a duplicate name is refused, naming the agent that is taken", %{
       socket: socket,
       space_id: space_id

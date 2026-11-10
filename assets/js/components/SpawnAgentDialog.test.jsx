@@ -187,7 +187,7 @@ describe("SpawnAgentDialog", () => {
     expect(props.onClose).not.toHaveBeenCalled();
   });
 
-  it("words the refusals the server sends as codes, with the detail it carries", () => {
+  it("words the refusals the server sends as codes, using the detail when there is one", () => {
     // A `"none"`-backend collision is the refusal a manual spawn can really hit,
     // and the payload's `space_name` is what lets the operator act on it: the
     // raw code alone would be useless.
@@ -217,18 +217,29 @@ describe("SpawnAgentDialog", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(
       "That agent vocation no longer exists. Pick another one.",
     );
+
+    // An archived space is the refusal a dialog left open can really receive,
+    // and its reply carries no message — so the wording is this form's.
+    spawnAgent.mockImplementation((_payload, _onOk, onError) => {
+      onError({ reason: "space_archived" });
+    });
+    submit();
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "This space is archived. Unarchive it to add an agent.",
+    );
   });
 
   it("falls back to the reply's reason when it carries no message", () => {
     spawnAgent.mockImplementation((_payload, _onOk, onError) => {
-      onError({ reason: "space_archived" });
+      onError({ reason: "failed_to_create" });
     });
 
     renderDialog();
     chooseModel();
     submit();
 
-    expect(screen.getByRole("alert")).toHaveTextContent("space_archived");
+    expect(screen.getByRole("alert")).toHaveTextContent("failed_to_create");
   });
 
   it("closes on success and reports the name the server sent", () => {

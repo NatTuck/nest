@@ -50,6 +50,10 @@ const SPAWN_REFUSALS = {
     "That agent vocation no longer exists. Pick another one.",
   missing_vocation: () => "No agent vocation is configured on the server.",
   model_required: () => "Choose a model — an agent with none cannot run.",
+  // The case the server's own comment names: a dialog left open while the
+  // space is archived from another tab. The reply carries no message, so
+  // without this the operator sees the raw code.
+  space_archived: () => "This space is archived. Unarchive it to add an agent.",
 };
 
 function spawnErrorMessage(err) {
