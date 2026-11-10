@@ -38,6 +38,7 @@ import { JumpToBottomButton } from "../components/JumpToBottomButton";
 import { SendErrorBanner } from "../components/SendErrorBanner";
 import { SpaceEnvironmentCard } from "../components/SpaceEnvironmentCard";
 import { MessageContent } from "../components/MessageContent";
+import { SpawnAgentDialog } from "../components/SpawnAgentDialog";
 import { SpacePausedBanner } from "../components/SpacePausedBanner";
 import { useAgentMode } from "../hooks/useAgentMode";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
@@ -89,6 +90,11 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
   );
   const [sendError, setSendError] = useState(null);
   const [chosenRecipient, setChosenRecipient] = useState(null);
+  // The manual spawn (#209): the dialog's open state, and the name the server
+  // reported for the last agent it spawned. The agent itself is not stored here —
+  // the lobby's `agent_created` frame is what puts it in the tree.
+  const [spawnOpen, setSpawnOpen] = useState(false);
+  const [spawnedName, setSpawnedName] = useState(null);
 
   // Real DOM nodes, not refs, because the notes area is mounted after the first
   // render — the feed starts in `loading` and only later renders its notes — and
@@ -175,15 +181,36 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
       <div className="min-h-0 overflow-y-auto">
         <SpacePausedBanner spaceId={space.id} spaceName={space.name} />
 
-        <header className="mb-4">
-          <h1 className="text-2xl font-bold text-gray-900 sm:text-3xl">
-            {space.name}
-          </h1>
-          {blueprint && (
-            <p className="text-sm text-gray-500 mt-1">
-              Blueprint: {blueprint.name}
-            </p>
-          )}
+        <header className="mb-4 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold text-gray-900 sm:text-3xl">
+              {space.name}
+            </h1>
+            {blueprint && (
+              <p className="text-sm text-gray-500 mt-1">
+                Blueprint: {blueprint.name}
+              </p>
+            )}
+            {spawnedName && (
+              <p role="status" className="text-sm text-gray-500 mt-1">
+                {spawnedName.name
+                  ? `Spawned ${spawnedName.name}.`
+                  : "An agent was spawned, but the reply carried no name."}
+              </p>
+            )}
+          </div>
+          {/* The spawn control (#209) is in the page's own header, not in the
+              sidebar: it is a space-level action, and the agent it makes is a
+              peer of the root rather than a child of anything. Same row as the
+              name on purpose — a row of its own would cost the chrome 44px of a
+              640px phone screen. */}
+          <button
+            type="button"
+            onClick={() => setSpawnOpen(true)}
+            className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium text-blue-700 border border-blue-300 hover:bg-blue-50 transition-colors"
+          >
+            + Agent
+          </button>
         </header>
 
         <div className="mb-4">
@@ -221,6 +248,14 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
           banner and the picker are plain blocks, so `min-height: auto` already
           holds them at their content height and the chrome region above is what
           gives up height (and scrolls) when the viewport is short. */}
+      <SpawnAgentDialog
+        open={spawnOpen}
+        onClose={() => setSpawnOpen(false)}
+        spaceId={space.id}
+        blueprint={blueprint}
+        onSpawned={(name) => setSpawnedName({ name })}
+      />
+
       <SendErrorBanner message={sendError} />
 
       <RecipientPicker
