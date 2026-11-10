@@ -27,6 +27,10 @@ defmodule Nest.ProjectConfig do
       transcript are database rows.) A `docker` space's scratch is
       the container's own `/tmp`, so there is no host directory to back
       this with and the mount is **refused by name** — use `"rw"` there.
+      A `"none"` space has no per-run root — its scratch is the host's own
+      `/tmp/<agent-name>` — so its backing directory survives a crash: it is
+      removed when the agent stops cleanly, or when an agent of that name is
+      next spawned.
 
   `create = true` makes Nest `mkdir_p` the path before mounting, so a
   project can declare a scratch path whose parents don't exist yet.
