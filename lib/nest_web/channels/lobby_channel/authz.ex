@@ -12,6 +12,9 @@ defmodule NestWeb.LobbyChannel.Authz do
     * `change_model` — owner only. Shared-agent viewers
       can't rewrite the model of a shared agent (the JS
       side surfaces the `:shared_read_only` error).
+    * `spawn_agent` — owner only, and space-level: `fetch_owned_space/2` is the
+      check, and it returns the row because the spawn reads the space's
+      blueprint for the new agent's vocation.
 
   ## Lookup precedence
 
@@ -49,9 +52,22 @@ defmodule NestWeb.LobbyChannel.Authz do
 
   @doc "Owner-only check for space-level operations (archive/unarchive)."
   def authorize_space_owner(space_id, current_user) do
+    with {:ok, _space} <- fetch_owned_space(space_id, current_user), do: {:ok, :owner}
+  end
+
+  @doc """
+  The space, when `current_user` owns it — the same rule as
+  `authorize_space_owner/2`, for a caller that needs the row as well.
+
+  The lobby's `spawn_agent` reads the space's blueprint to pick the new agent's
+  vocation, so it takes the row from the read the check already made rather than
+  fetching it twice.
+  """
+  @spec fetch_owned_space(integer(), map()) :: {:ok, Nest.Spaces.Space.t()} | {:error, atom()}
+  def fetch_owned_space(space_id, current_user) do
     case Spaces.get_space(space_id) do
-      %Nest.Spaces.Space{created_by_user_id: id} when id == current_user.id ->
-        {:ok, :owner}
+      %Nest.Spaces.Space{created_by_user_id: id} = space when id == current_user.id ->
+        {:ok, space}
 
       %Nest.Spaces.Space{} ->
         {:error, :forbidden}

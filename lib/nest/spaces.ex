@@ -624,4 +624,31 @@ defmodule Nest.Spaces do
   @spec create_space_with_root_agent(integer(), map()) ::
           {:ok, Space.t(), String.t()} | {:error, term()}
   defdelegate create_space_with_root_agent(user_id, attrs), to: Creation
+
+  @doc """
+  The vocation a **new agent** in `space` gets when the caller names none
+  (issue #209's `spawn_agent`, and the default a manually spawned agent
+  inherits from its space).
+
+  Order: the explicit slug (which must exist — an unknown one is
+  `{:error, {:vocation_not_found, slug}}`), else the space's blueprint
+  `root_vocation`, else `default_vocation_slug/0`. Returns the `Vocation`
+  struct, because the caller announces the agent with its slug.
+
+  See `Nest.Spaces.Creation.resolve_agent_vocation/2` for why the space-create
+  path does not share the catalogue fallback.
+  """
+  @spec resolve_agent_vocation(Space.t(), String.t() | nil) ::
+          {:ok, Nest.Vocations.Vocation.t()} | {:error, term()}
+  defdelegate resolve_agent_vocation(space, slug), to: Creation
+
+  @doc """
+  The catalogue's first vocation's slug, or `nil` when the catalogue is empty.
+
+  The one "the caller named no vocation" fallback: the New Space form uses it
+  for the space's root agent, and `resolve_agent_vocation/2` uses it for an
+  agent spawned by hand.
+  """
+  @spec default_vocation_slug() :: String.t() | nil
+  defdelegate default_vocation_slug(), to: Creation
 end

@@ -21,7 +21,6 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
   alias Nest.Agents.SpaceGate
   alias Nest.Spaces
   alias Nest.Spaces.ContextWarnings
-  alias Nest.Vocations
   alias NestWeb.ErrorPayload
   alias NestWeb.LobbyChannel
   alias NestWeb.LobbyChannel.AgentErrors
@@ -118,7 +117,7 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
     base_opts =
       build_create_opts(
         payload,
-        payload["vocation"] || default_vocation_slug(),
+        payload["vocation"] || Spaces.default_vocation_slug(),
         payload["workspace_path"]
       )
 
@@ -136,13 +135,6 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
 
   defp maybe_add_opt(opts, _key, nil), do: opts
   defp maybe_add_opt(opts, key, value), do: Keyword.put(opts, key, value)
-
-  defp default_vocation_slug do
-    case Vocations.list_vocations() do
-      [] -> nil
-      [first | _] -> first.slug
-    end
-  end
 
   # The three environment properties, from either key shape. Only these three are
   # taken: the edit is not a general space update, and `name`/`slug` have their

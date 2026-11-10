@@ -7,6 +7,7 @@ defmodule NestWeb.LobbyChannel do
   - Creating a new space (with its root agent)
   - Deleting agents
   - Changing an agent's model
+  - Spawning an agent into a space, as a peer of its root
   - The space feed's read and its composer's send (`SpaceFeed`)
 
   The `:after_join` loads the user's spaces and the agents
@@ -44,6 +45,7 @@ defmodule NestWeb.LobbyChannel do
   alias NestWeb.ErrorPayload
   alias NestWeb.InviteJSON
   alias NestWeb.LobbyChannel.AgentErrors
+  alias NestWeb.LobbyChannel.AgentSpawn
   alias NestWeb.LobbyChannel.Authz
   alias NestWeb.LobbyChannel.Invites
   alias NestWeb.LobbyChannel.ProbeCache
@@ -444,6 +446,14 @@ defmodule NestWeb.LobbyChannel do
   end
 
   def handle_in("unarchive_agent", _payload, socket),
+    do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
+
+  # One more agent at the top of a space, a peer of its root (#209).
+  @impl true
+  def handle_in("spawn_agent", payload, socket) when is_map(payload),
+    do: AgentSpawn.spawn_agent(payload, socket)
+
+  def handle_in("spawn_agent", _payload, socket),
     do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
 
   # The space feed (`/space/:slug`): its initial read, and the composer's send.
