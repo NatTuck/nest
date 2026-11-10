@@ -76,7 +76,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
        %{vocation: vocation} do
     {prompt, _tools, _vocation} = compose(vocation, "clever-raven", 0)
 
-    # The `/tmp/<name>/` spelling is pinned by the two name-migration suites,
+    # The `/tmp/<name>/` path is pinned by the two name-migration suites,
     # which compose the prompt and then assert the rewritten text; what only
     # this test pins is the sentence that tells the agent the root is shared.
     assert prompt =~ "shared with your siblings"

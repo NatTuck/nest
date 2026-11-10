@@ -2,18 +2,18 @@ defmodule Nest.Sandbox.Paths do
   @sandbox_root "/tmp"
 
   @moduledoc """
-  The single definition of the space scratch bind and the sandbox-domain
-  spelling of a scratch path.
+  The single definition of the space scratch bind and of where a scratch path
+  appears in the sandbox.
 
   The space scratch dir is bound at `#{@sandbox_root}` inside the sandbox
   (by the backends that bind anything), so an agent's own scratch dir (the
   space dir plus `<agent-name>`) is `#{@sandbox_root}/<agent-name>` inside.
   `scratch_root/1` is the one bind source (`Nest.Sandbox.Binds` uses it) and
   `sandbox_tmp_path/1` is the one inverse mapping, so the mount
-  and the spelling cannot drift.
+  and the path cannot drift.
 
   A `"none"` space binds nothing: its scratch root *is* the host's
-  `#{@sandbox_root}`, so the spelling and the directory coincide there (see
+  `#{@sandbox_root}`, so the path and the directory coincide there (see
   `Nest.Sandbox.Backend.None`). A `"docker"` space's scratch is the
   *container's* own `#{@sandbox_root}`, which is likewise nothing to bind —
   but its staged command transcripts are the one thing that has to live on the
@@ -23,7 +23,7 @@ defmodule Nest.Sandbox.Paths do
   There is deliberately **no** path translation here: the sandbox's
   filesystem view is the active backend's view, and every `read`/`stat`/`glob`
   executes inside it (see `Nest.Sandbox`). `TmpSpace` produces the agent's
-  scratch directory; `Paths` derives the mount and the spelling from it.
+  scratch directory; `Paths` derives the mount and the path from it.
   `Paths` must not depend on `TmpSpace`.
 
   ## A scratch directory is a bind source, not an address
@@ -35,7 +35,7 @@ defmodule Nest.Sandbox.Paths do
   Every function here that takes one is called from `Nest.Sandbox` or from
   `Nest.Tools.ShellCmd.Transcript` (which stages command transcripts through
   `stage_dir/1`), and its result is either a bind source or the
-  `#{@sandbox_root}/<agent>/...` spelling the agent uses. No value from this
+  `#{@sandbox_root}/<agent>/...` path the agent uses. No value from this
   module belongs in a tool description, a tool result, or anything else the
   agent sees.
   """
@@ -78,7 +78,7 @@ defmodule Nest.Sandbox.Paths do
   sandbox: `#{@sandbox_root}/<agent-name>` (the space dir is bound at
   `#{@sandbox_root}`).
 
-  This is the only scratch spelling an agent is ever told about or hands
+  This is the only scratch path an agent is ever told about or hands
   back; the scratch directory it is derived from is the caller's, and is never
   given to the agent.
   """
@@ -86,16 +86,16 @@ defmodule Nest.Sandbox.Paths do
   def sandbox_tmp_path(tmp_path), do: Path.join(@sandbox_root, Path.basename(tmp_path))
 
   @doc """
-  The SANDBOX spelling of an agent's own scratch directory, derived from the
+  The SANDBOX PATH of an agent's own scratch directory, derived from the
   agent's *name* alone: `#{@sandbox_root}/<agent-name>`.
 
   `sandbox_tmp_path/1` needs the agent's scratch directory; this needs only
   the name, so callers that have just the name (the prompt composer, the
-  clone notice) can state the spelling without one. The name is the scratch
+  clone notice) can state the path without one. The name is the scratch
   segment (`Nest.Agents.PersistedAgent` enforces that), so the two agree.
 
-  SANDBOX PATH — the contrast with `scratch_root/1`, which returns the
-  directory the sandbox binds at `#{@sandbox_root}`.
+  The sandbox path, not the host one: `scratch_root/1` returns the directory
+  the sandbox binds at `#{@sandbox_root}`.
   """
   @spec scratch_dir(String.t()) :: String.t()
   def scratch_dir(name), do: Path.join(@sandbox_root, name)
@@ -117,7 +117,7 @@ defmodule Nest.Sandbox.Paths do
   def stage_dir(tmp_path), do: Path.join(scratch_root(tmp_path), @stage_subdir)
 
   @doc """
-  The spelling of `stage_dir/1` inside the sandbox: `#{@sandbox_root}/#{@stage_subdir}`
+  The sandbox path of `stage_dir/1`: `#{@sandbox_root}/#{@stage_subdir}`
   when a scratch bind exists, otherwise the path unchanged (no scratch bind
   means the system tmp dir is the sandbox's `#{@sandbox_root}`).
   """
@@ -147,7 +147,7 @@ defmodule Nest.Sandbox.Paths do
   end
 
   @doc """
-  The spelling of `docker_stage_dir/1` inside the container.
+  The container path of `docker_stage_dir/1`.
 
   Always `#{Path.join(@sandbox_root, @stage_subdir)}`: the container's own
   `#{@sandbox_root}` is its scratch, so the staging directory is the one thing

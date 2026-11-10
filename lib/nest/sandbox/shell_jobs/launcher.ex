@@ -29,12 +29,12 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
   is a host directory is a real file the manager writes, and under `"docker"` is
   a path in the container that the command itself writes — so the path handed
   back is the path the *sandbox* sees
-  (`/tmp/<agent-name>/shell-jobs/<id>.log`), which is the only spelling that
+  (`/tmp/<agent-name>/shell-jobs/<id>.log`), which is the only path that
   resolves inside a `shell-cmd` either way.
 
   The command line comes from the backend's job spec
   (`Nest.Sandbox.Backend.job_spec/4`), which needs the mode's caps and the
-  script's sandbox spelling: a job whose output has to reach a log file inside
+  script's sandbox path: a job whose output has to reach a log file inside
   the environment is a command line only the backend can build. So a background
   job starts in exactly the environment its backend builds for a foreground one.
 
@@ -87,7 +87,7 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
 
   @doc """
   The job log's two names for `job_id` under `mounts`: the host path the manager
-  writes and reads, and the spelling the sandbox sees.
+  writes and reads, and the path the sandbox sees.
 
   Shared with `Nest.Sandbox.ShellJobs.Owned`, which gives a foreground call the
   same log in the same place — so `shell-list`'s log path means one thing.

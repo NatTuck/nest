@@ -126,7 +126,7 @@ defmodule Nest.Messages.Part do
     `data` is base64 with **no** `data:` prefix — each provider
     encoder adds its own framing. `bytes` is the DECODED byte count,
     so it describes the file rather than the encoding, and it is what
-    the UI shows. `path` is the sandbox spelling of the file the
+    the UI shows. `path` is the sandbox path of the file the
     agent asked for, and it is the one optional key: omitted from the
     wire when `nil`, so the persisted shape of every other row is
     unchanged (the same mechanism `ToolResult.state` uses).

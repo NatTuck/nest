@@ -1,7 +1,7 @@
 defmodule Nest.Sandbox.PathsTest do
   @moduledoc """
   Tests for `Nest.Sandbox.Paths`: the one definition of the scratch bind
-  source and the sandbox-domain spelling of a scratch path.
+  source and the sandbox-side path for a scratch dir.
 
   Pure functions, `async: true`. The load-bearing cases are the refusals in
   `scratch_root/1`: binding the host `/tmp` (or `/`) at `/tmp` inside the
@@ -48,7 +48,7 @@ defmodule Nest.Sandbox.PathsTest do
   end
 
   describe "sandbox_tmp_path/1" do
-    test "is the inverse spelling: /tmp/<agent-name>" do
+    test "maps the host scratch path to /tmp/<agent-name>" do
       path = tmp_path()
 
       assert Paths.sandbox_tmp_path(path) == Path.join("/tmp", "agent-a")
@@ -56,10 +56,10 @@ defmodule Nest.Sandbox.PathsTest do
   end
 
   describe "scratch_dir/1" do
-    test "is the sandbox spelling, derived from the name alone" do
+    test "is the sandbox path, derived from the name alone" do
       assert Paths.scratch_dir("clever-raven") == "/tmp/clever-raven"
 
-      # The same answer as the derived spelling, for the scratch dir that
+      # The same answer as the derived path, for the scratch dir that
       # name produces.
       scratch = "/tmp/nest-1/space-7/clever-raven"
       assert Paths.scratch_dir("clever-raven") == Paths.sandbox_tmp_path(scratch)
@@ -84,7 +84,7 @@ defmodule Nest.Sandbox.PathsTest do
       assert_raise ArgumentError, fn -> Paths.stage_dir("/tmp/agent-a") end
     end
 
-    test "the sandbox spelling is always under /tmp when a scratch bind exists" do
+    test "the sandbox path is always under /tmp when a scratch bind exists" do
       assert Paths.stage_dir_sandbox(tmp_path()) == Path.join(Paths.sandbox_root(), ".cmds")
     end
   end

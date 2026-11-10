@@ -272,7 +272,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
       # The bytes right after the scratch sentence belong to the next section, so
       # anything appended to this one would break the adjacency. (The sentence's
-      # own path spelling is `SystemPromptDepthFilterTest`'s.)
+      # own path is `SystemPromptDepthFilterTest`'s.)
       assert prompt =~ "under your own directory.\n\n\nNetwork access is enabled for this space"
       refute prompt =~ "no sandbox, so `/tmp` is this host's own"
     end

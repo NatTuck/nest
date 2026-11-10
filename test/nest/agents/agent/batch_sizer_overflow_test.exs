@@ -62,7 +62,7 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
                  "exec"
                )
 
-      # The pointer names the sandbox spelling, never the host scratch dir, and
+      # The pointer names the sandbox path, never the host scratch dir, and
       # says how big the full content is.
       assert out =~ Sandbox.sandbox_tmp_path(dir)
       refute out =~ dir

@@ -297,7 +297,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       path
     end
 
-    # The pointer is the sandbox spelling (`/tmp/<agent>/...`); the bytes live
+    # The pointer is the sandbox path (`/tmp/<agent>/...`); the bytes live
     # at the same basename under the host scratch dir.
     defp read_saved(dir, content) do
       File.read!(Path.join(dir, Path.basename(saved_path(content))))

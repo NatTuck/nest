@@ -166,7 +166,7 @@ defmodule Nest.Tools.ShellCmdTool do
       inspect(value) <> "."
   end
 
-  # All tools address the same scratch spelling (`/tmp/<agent>/...`);
+  # All tools address the same scratch path (`/tmp/<agent>/...`);
   # `Sandbox.run/4` resolves it internally.
   defp caps_from_context(%{caps: caps}) when is_map(caps), do: caps
   defp caps_from_context(_), do: Nest.Sandbox.default_caps()

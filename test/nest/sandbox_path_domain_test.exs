@@ -60,7 +60,7 @@ defmodule Nest.SandboxPathDomainTest do
     {:ok, args} = Sandbox.build(ctx.caps, ctx.mounts)
     assert bind_source_for(args, "/tmp") == Nest.FSPath.canonical(Path.dirname(ctx.scratch))
 
-    # glob returns the sandbox spelling only.
+    # glob returns the sandbox path only.
     assert {:ok, [^sandbox_file]} =
              Sandbox.glob("/tmp/#{ctx.agent}/*.txt", ctx.caps, ctx.mounts)
 
@@ -194,7 +194,7 @@ defmodule Nest.SandboxPathDomainTest do
   # guard (it cannot see `apply/3`, an aliased `File`, `System.cmd`, or
   # `Port.open`), so this checks the AST for the specific host-read APIs a
   # host-side fast path would use, rather than a substring a review already
-  # defeated by spelling the call differently.
+  # defeated by writing the call differently.
   @sandbox_sources [
     "lib/nest/sandbox.ex",
     "lib/nest/sandbox/glob.ex",

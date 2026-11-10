@@ -165,12 +165,12 @@ defmodule Nest.Sandbox.Backend.Docker do
   (`Nest.Sandbox.Paths.docker_stage_dir/1`), which the container is given at
   `#{Nest.Sandbox.Paths.docker_stage_dir_sandbox()}` read-only. A call that
   belongs to no space cannot run at all (`command/3` refuses it), so it gets the
-  no-bind spelling rather than a directory named after a space it does not have.
+  no-bind path rather than a directory named after a space it does not have.
   """
   @spec stage_dir(Mounts.t()) :: String.t()
   def stage_dir(%Mounts{space_id: id}) when is_integer(id), do: Paths.docker_stage_dir(id)
   def stage_dir(_mounts), do: Paths.stage_dir(nil)
-  @doc "The staging directory's spelling inside the container."
+  @doc "The staging directory's path inside the container."
   @spec stage_dir_sandbox(Mounts.t()) :: String.t()
   def stage_dir_sandbox(_mounts), do: Paths.docker_stage_dir_sandbox()
 
@@ -534,7 +534,7 @@ defmodule Nest.Sandbox.Backend.Docker do
   """
   @spec container_binds(Mounts.t()) :: [Binds.spec()]
   def container_binds(mounts) do
-    Binds.container_specs(mounts) ++ CommandLine.workspace_spelling(mounts, :rw)
+    Binds.container_specs(mounts) ++ CommandLine.workspace_alias_binds(mounts, :rw)
   end
 
   @doc """

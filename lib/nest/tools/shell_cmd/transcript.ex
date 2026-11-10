@@ -54,9 +54,9 @@ defmodule Nest.Tools.ShellCmd.Transcript do
   Stage `command` for bash to read on `mounts`' backend.
 
   Returns `{host_path, sandbox_path}`: where the file actually is, and the
-  spelling bash is handed. The two differ whenever the staging directory is
+  path bash is handed. The two differ whenever the staging directory is
   reached through a bind, and the caller needs both — the host path to remove
-  it afterwards, the sandbox spelling to hand the backend.
+  it afterwards, the sandbox path to hand the backend.
   """
   @spec stage(String.t(), Mounts.t()) :: {String.t(), String.t()}
   def stage(command, mounts) do

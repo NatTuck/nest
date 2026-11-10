@@ -1,7 +1,7 @@
 defmodule Nest.Sandbox.Glob do
   @moduledoc """
-  Runs a glob inside bwrap and returns readable regular files in the sandbox
-  spelling.
+  Runs a glob inside bwrap and returns readable regular files as sandbox
+  paths.
 
   Kept separate from `Nest.Sandbox` to hold that module under the size cap. The
   matcher is bash (`nullglob globstar dotglob`): bash resolves symlinks and the

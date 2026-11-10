@@ -34,26 +34,26 @@ defmodule Nest.Sandbox.Backend.DockerProtectedTest do
       assert Docker.layout(mounts(ws), caps(), []) == layout
     end
 
-    test "masks both at the workspace's own spelling, not only at the canonical path" do
+    test "masks both at the alias the caller named, not only at the canonical path" do
       # A symlinked workspace is bound at its canonical path *and* at the path the
       # caller named, because the container sees only the image and the explicit
       # binds — nothing resolves a symlink for it. Two binds of one directory are
       # two writable views of it, so a mask at the canonical path alone leaves
-      # `<spelling>/.nest` an ordinary writable file, at the very path `--chdir`,
+      # `<alias>/.nest` an ordinary writable file, at the very path `--chdir`,
       # the prompt and every tool path use. Measured by hand at the kernel level
       # with the same two-bind shape (`notes/sandbox-backends.md` records it):
-      # without the spelling mask the write succeeds and the host's canonical
+      # without the alias mask the write succeeds and the host's canonical
       # `.nest` becomes the written bytes; with it the write is `EACCES` and the
       # host file is untouched. This test asserts the rendered command line.
       #
       # The canonical masks are `CommandLineTest`'s ("masks an absent .nest and
       # AGENTS.md from /dev/null"), and the `/dev/null` mask's shape is
-      # `DockerTest`'s ("the shared bind list"); the spelling-dest'd copy is the
+      # `DockerTest`'s ("the shared bind list"); the alias-dest'd copy is the
       # one nothing else renders, so it is the only thing asserted here.
-      real = workspace("nest_docker_spelling")
-      spelling = real <> "-alias"
-      File.ln_s!(real, spelling)
-      on_exit(fn -> File.rm(spelling) end)
+      real = workspace("nest_docker_alias")
+      alias_path = real <> "-alias"
+      File.ln_s!(real, alias_path)
+      on_exit(fn -> File.rm(alias_path) end)
 
       nest = Path.join(real, ".nest")
       agents_md = Path.join(real, "AGENTS.md")
@@ -67,19 +67,19 @@ defmodule Nest.Sandbox.Backend.DockerProtectedTest do
           ]
         })
 
-      assert {:ok, %{command: command}} = Docker.command(mounts(spelling), caps, "echo hi")
+      assert {:ok, %{command: command}} = Docker.command(mounts(alias_path), caps, "echo hi")
       command = payload(command)
 
-      # … and the spelling ones, after the rw self-bind that would otherwise be
-      # the last word on that path: both files, each re-dest'd at the spelling —
+      # … and the alias ones, after the rw self-bind that would otherwise be
+      # the last word on that path: both files, each re-dest'd at the alias —
       # the absent one from `/dev/null`, the present one from itself.
       assert command =~
                "--ro-bind #{ShellEscape.escape("/dev/null")} " <>
-                 ShellEscape.escape(Path.join(spelling, ".nest"))
+                 ShellEscape.escape(Path.join(alias_path, ".nest"))
 
       assert command =~
                "--ro-bind #{ShellEscape.escape(agents_md)} " <>
-                 ShellEscape.escape(Path.join(spelling, "AGENTS.md"))
+                 ShellEscape.escape(Path.join(alias_path, "AGENTS.md"))
     end
 
     test "a present file is neither bound at the container nor masked from /dev/null" do

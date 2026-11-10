@@ -113,7 +113,7 @@ defmodule Nest.Agents.NoneScratchNameTest do
       on_exit(fn -> TmpCleanup.rm_tmp!(none_scratch, "cross-backend") end)
 
       # Different roots, so the same name is a different directory: no rule. The
-      # two spellings themselves are `TmpSpaceTest`'s and `NoneBackendTest`'s;
+      # two paths themselves are `TmpSpaceTest`'s and `NoneBackendTest`'s;
       # what this pins is the boundary's answer to them.
       assert start_named(bwrap_space, name) == name
     end
@@ -283,7 +283,7 @@ defmodule Nest.Agents.NoneScratchNameTest do
       # read, so no agent of any shape reaches a backend from composition — but
       # what this asserts is unaffected: the mounts the prompt is composed
       # through must name the agent's scratch, so the mounts are the agent's real
-      # ones rather than a second spelling of them.
+      # ones rather than a second path for them.
       name = start_named(space_id, unique("docker-mounts"))
       {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
 
@@ -295,7 +295,7 @@ defmodule Nest.Agents.NoneScratchNameTest do
       # The scratch names a path *inside* the container — the container's own
       # `/tmp/<agent>` — so nothing on the host holds it, and the command that
       # runs is what makes it. What this pins is that the mounts the prompt is
-      # composed through name that spelling rather than a host directory, which
+      # composed through name that path rather than a host directory, which
       # is what the container's bind of `/tmp/.cmds` is independent of.
       assert Mounts.scratch(mounts) == Path.join(Paths.sandbox_root(), name)
 

@@ -278,7 +278,7 @@ defmodule Nest.Tools.InspectFile do
     end
   end
 
-  # All tools address the same scratch spelling (`/tmp/<agent>/...`);
+  # All tools address the same scratch path (`/tmp/<agent>/...`);
   # `Sandbox.stat/3` and `Sandbox.read/3` resolve it internally.
   defp caps_from_context(%{caps: caps}) when is_map(caps), do: caps
   defp caps_from_context(_), do: Nest.Sandbox.default_caps()

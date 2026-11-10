@@ -133,7 +133,7 @@ defmodule Nest.ToolsFileMediaTest do
       assert part.tool_call_id == "call_1"
       assert part.media_type == "image/png"
       assert part.bytes == byte_size(@png)
-      # The sandbox spelling the agent used, not a host path.
+      # The sandbox path the agent used, not a host path.
       assert part.path == "shot.png"
       assert Base.decode64!(part.data) == @png
     end
