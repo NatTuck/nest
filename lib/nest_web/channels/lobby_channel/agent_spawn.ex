@@ -23,7 +23,13 @@ defmodule NestWeb.LobbyChannel.AgentSpawn do
   model is the client's, and it is **required**: an agent created without one
   starts blocked on `:model_missing` until somebody picks a model, which is a
   state to recover from, not a way to spawn. A payload that names none is
-  refused `model_required`.
+  refused `model_required`. The check is on *presence* — a name that resolves to
+  nothing is the create path's behaviour too (`Agents.enrich_model/1` leaves an
+  unknown name alone), and the client only offers names from the catalogue.
+
+  The blueprint's `spawnable_vocations` whitelist is **not** consulted, on
+  purpose: it constrains what an *agent* may spawn (`SpawnVocation.resolve/2`),
+  and a manual spawn is the space's owner acting.
 
   The new agent is **top level**: no `parent_id`, `depth` 0. It is a peer of the
   space's root, which is what the issue asks for — the tree gains a second root,
@@ -79,10 +85,18 @@ defmodule NestWeb.LobbyChannel.AgentSpawn do
     end
   end
 
+  # An archived space is out of service: `archive_space` stopped its agents and
+  # released its sandbox. The UI cannot reach this (an archived slug renders the
+  # restore notice, not the feed), but the channel is the boundary — and the real
+  # case is a dialog left open while the space is archived from another tab.
+  defp spawn_in_space(%{archived: true}, _payload, _model, socket) do
+    {:reply, {:error, ErrorPayload.from_reason(:space_archived)}, socket}
+  end
+
   defp spawn_in_space(space, payload, model, socket) do
     case Spaces.resolve_agent_vocation(space, payload["vocation"]) do
       {:ok, vocation} -> create(space.id, payload, model, vocation, socket)
-      {:error, reason} -> {:reply, AgentErrors.create_payload(reason), socket}
+      {:error, reason} -> {:reply, create_payload(reason, space.id), socket}
     end
   end
 
@@ -105,8 +119,17 @@ defmodule NestWeb.LobbyChannel.AgentSpawn do
         {:reply, duplicate_reply(payload["name"]), socket}
 
       {:error, reason} ->
-        {:reply, AgentErrors.create_payload(reason), socket}
+        {:reply, create_payload(reason, space_id), socket}
     end
+  end
+
+  # A create failure in a space is not a failed *space* creation, and
+  # `AgentErrors` logs the context it is given.
+  defp create_payload(reason, space_id) do
+    AgentErrors.create_payload(
+      reason,
+      {"Failed to spawn an agent in space #{space_id}", "failed_to_create"}
+    )
   end
 
   defp duplicate_reply(name) when is_binary(name) and name != "" do
@@ -117,6 +140,8 @@ defmodule NestWeb.LobbyChannel.AgentSpawn do
      }}
   end
 
+  # Defensive: a generated name is free by construction, so this arm is only
+  # reachable if a generator ever hands back a taken one.
   defp duplicate_reply(_name) do
     {:error,
      %{

@@ -206,7 +206,13 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
               640px phone screen. */}
           <button
             type="button"
-            onClick={() => setSpawnOpen(true)}
+            onClick={() => {
+              // A confirmation belongs to the spawn that produced it, so
+              // reopening the form clears the last one rather than leaving it
+              // under the header for the rest of the session.
+              setSpawnedName(null);
+              setSpawnOpen(true);
+            }}
             className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium text-blue-700 border border-blue-300 hover:bg-blue-50 transition-colors"
           >
             + Agent

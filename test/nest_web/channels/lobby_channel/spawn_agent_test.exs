@@ -24,7 +24,7 @@ defmodule NestWeb.LobbyChannel.SpawnAgentTest do
   alias Nest.BlueprintsFixtures
   alias Nest.Name
   alias Nest.Repo
-  alias Nest.Vocations.Vocation
+  alias Nest.Spaces
   alias Nest.VocationsFixtures
   alias NestWeb.LobbyChannel
 
@@ -139,8 +139,15 @@ defmodule NestWeb.LobbyChannel.SpawnAgentTest do
 
     test "a nil for an optional key means unset, as a JSON client sends it", %{
       socket: socket,
-      space_id: space_id
+      user: user
     } do
+      # A blueprint of this test's own makes the default decidable: the spawned
+      # agent inherits its root vocation, whatever else the shared catalogue
+      # holds. The fixture space has no blueprint, so its default would be the
+      # catalogue's *first* — which under `async` is some other test's vocation.
+      blueprint = BlueprintsFixtures.blueprint_fixture()
+      {:ok, space_id} = AgentTestHelpers.create_test_space(%{blueprint_id: blueprint.id}, user.id)
+
       payload = %{"space_id" => space_id, "name" => nil, "vocation" => nil, "model" => @model}
 
       assert_reply push(socket, "spawn_agent", payload), :ok, %{"name" => name}, 500
@@ -148,7 +155,7 @@ defmodule NestWeb.LobbyChannel.SpawnAgentTest do
 
       # Unset, not a name of `nil` and not a refusal: the server generated one.
       assert Name.valid?(name)
-      assert info_for(space_id, name).vocation_slug == AgentTestHelpers.vocation_slug_for_test()
+      assert info_for(space_id, name).vocation_slug == blueprint.root_vocation
     end
 
     test "a caller who does not own the space is refused", %{space_id: space_id} do
@@ -170,6 +177,25 @@ defmodule NestWeb.LobbyChannel.SpawnAgentTest do
       assert Agents.list_agents_info_for_space(space_id) == []
     end
 
+    test "an archived space is refused rather than grown", %{
+      socket: socket,
+      space_id: space_id
+    } do
+      # The UI cannot reach this — an archived slug renders the restore notice,
+      # not the feed — but the channel is the boundary, and the case that really
+      # happens is a dialog left open while the space is archived from another
+      # tab. `archive_space/1` stopped the space's agents and released its
+      # sandbox, so an agent created now would be one nothing supervises.
+      :ok = Spaces.archive_space(space_id)
+
+      assert_reply push(socket, "spawn_agent", %{"space_id" => space_id, "model" => @model}),
+                   :error,
+                   %{"reason" => "space_archived"},
+                   500
+
+      assert Agents.list_agents_info_for_space(space_id) == []
+    end
+
     test "an unknown vocation is refused with the create path's code", %{
       socket: socket,
       space_id: space_id
@@ -187,6 +213,27 @@ defmodule NestWeb.LobbyChannel.SpawnAgentTest do
       # The slug is logged, because the code the client gets does not carry it.
       assert log =~ "no-such-role"
       assert Agents.list_agents_info_for_space(space_id) == []
+    end
+
+    test "a create refusal is passed through with the detail it carries", %{
+      socket: socket,
+      space_id: space_id
+    } do
+      # The refusal a manual spawn can really hit is the `"none"`-backend
+      # collision, because the name is the operator's: another such space's live
+      # agent holds it. `Agents.create_agent/3` is stubbed so the mapping is
+      # tested without building two `"none"` spaces (and without the global
+      # vocation catalogue those fixtures touch).
+      Mimic.stub(Nest.Agents, :create_agent, fn _space, _model, _opts ->
+        {:error, {:scratch_name_in_use, "other-space"}}
+      end)
+
+      Mimic.allow(Nest.Agents, self(), socket.channel_pid)
+
+      assert_reply push(socket, "spawn_agent", %{"space_id" => space_id, "model" => @model}),
+                   :error,
+                   %{"reason" => "scratch_name_in_use", "space_name" => "other-space"},
+                   500
     end
 
     test "a duplicate name is refused, naming the agent that is taken", %{
@@ -211,14 +258,41 @@ defmodule NestWeb.LobbyChannel.SpawnAgentTest do
       assert length(Agents.list_agents_info_for_space(space_id)) == 1
     end
 
+    test "a duplicate the client did not choose is answered without naming nil", %{
+      socket: socket,
+      space_id: space_id
+    } do
+      # A generated name is free by construction, so this arm is defensive: the
+      # create path can still say `duplicate_name`, and the payload named
+      # nothing — which is not a name the operator chose, so it must not be
+      # reported as "An agent named nil already exists".
+      Mimic.stub(Nest.Agents, :create_agent, fn _space, _model, _opts ->
+        {:error, :duplicate_name}
+      end)
+
+      Mimic.allow(Nest.Agents, self(), socket.channel_pid)
+
+      assert_reply push(socket, "spawn_agent", %{"space_id" => space_id, "model" => @model}),
+                   :error,
+                   %{
+                     "reason" => "duplicate_name",
+                     "message" => "Could not find a free name for the new agent; try again."
+                   },
+                   500
+    end
+
     test "with no vocation to give, the spawn is refused rather than created bare", %{
       socket: socket,
       space_id: space_id
     } do
       # This space has no blueprint and the catalogue is empty: there is no
       # vocation to inherit, and `agents.vocation_id` is NOT NULL — so the
-      # answer is the named `missing_vocation`, not a failed create.
-      Repo.delete_all(Vocation)
+      # answer is the named `missing_vocation`, not a failed create. The
+      # catalogue is stubbed empty rather than emptied: the table is shared with
+      # every other async test, and deleting it takes their rows (and trips the
+      # `agents.vocation_id` FK against any agent they hold).
+      Mimic.stub(Nest.Vocations, :list_vocations, fn -> [] end)
+      Mimic.allow(Nest.Vocations, self(), socket.channel_pid)
 
       payload = %{"space_id" => space_id, "model" => @model}
 

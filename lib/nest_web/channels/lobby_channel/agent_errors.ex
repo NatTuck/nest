@@ -129,6 +129,10 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
     }
   end
 
+  # The `context` is `{log_prefix, fallback_code}`: a spawn by hand passes its
+  # own, so a failed create in a space does not log "Failed to create space".
+  # The default is the space-creation path's.
+  #
   # `Spaces.create_space_with_root_agent/2` returns a *heterogeneous* reason
   # space: the workspace/vocation refusals a user can act on, a root-agent
   # name the client chose that is not filename-safe, plus changesets and
@@ -136,7 +140,7 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
   # except the first two groups stays generic (and logged), because an
   # `Ecto.Changeset` is neither `to_string/1`-able nor fit to show a user.
   @doc false
-  def create_payload(reason) do
+  def create_payload(reason, context \\ {"Failed to create space", "failed_to_create"}) do
     case reason do
       # One arm for the refusals whose reply code is the reason's own name: the
       # workspace ones, plus the two the blueprint resolution adds. Listing them
@@ -146,7 +150,7 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
 
       # The tagged refusals, which all carry a detail term beside the code.
       tagged when is_tagged(tagged) ->
-        tagged_payload(tagged, {"Failed to create space", "failed_to_create"})
+        tagged_payload(tagged, context)
 
       # The root agent's name (`create_space`'s `agent_name`) is not a
       # filename-safe component. Matching `data:` on the *agent* schema is what
@@ -157,7 +161,7 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
       # field (the root agent is named `<slug>-root`), so this is for custom
       # clients.
       %Ecto.Changeset{data: %PersistedAgent{}, errors: errors} ->
-        agent_changeset_payload(errors)
+        agent_changeset_payload(errors, context)
 
       # A space changeset refused the row. The one field a client sends that
       # `Space.create_changeset/2` validates by *value* is the sandbox backend,
@@ -168,20 +172,18 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
         space_changeset_payload(changeset, "Failed to create space", "failed_to_create")
 
       other ->
-        Logger.error("Failed to create space: #{inspect(other)}")
-        {:error, %{"reason" => "failed_to_create"}}
+        context_payload(other, context)
     end
   end
 
   # A root-agent name the client chose that is not filename-safe gets a code
   # the client can show; any other agent-changeset error stays generic (and
   # logged), like the rest of this module's unshowable reasons.
-  defp agent_changeset_payload(errors) do
+  defp agent_changeset_payload(errors, context) do
     if Keyword.has_key?(errors, :name) do
       {:error, %{"reason" => "invalid_agent_name"}}
     else
-      Logger.error("Failed to create space: #{inspect(errors)}")
-      {:error, %{"reason" => "failed_to_create"}}
+      context_payload(errors, context)
     end
   end
 
@@ -208,18 +210,25 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
     {:error, %{"reason" => "scratch_path_taken", "path" => path}}
   end
 
-  # A blueprint whose root vocation no longer exists: stale blueprint data rather
-  # than a user mistake, so name the code and log the detail.
+  # A slug that resolves to nothing: stale blueprint data for the create path, a
+  # client's own choice for a spawn (`spawn_agent` takes a slug), so the shared
+  # line names neither cause — it says what is missing.
   defp tagged_payload({:vocation_not_found, slug}, _context) do
-    Logger.warning("Blueprint root vocation #{inspect(slug)} no longer exists")
+    Logger.warning("No vocation with slug #{inspect(slug)}")
     {:error, %{"reason" => "vocation_not_found"}}
   end
 
   # A tagged reason no arm above knows: log the detail and answer with the
   # caller's own code. "failed to create" and "failed to edit" are not
   # interchangeable — the client shows the user what it was trying to do.
-  defp tagged_payload(other, {log, code}) do
-    Logger.error("#{log}: #{inspect(other)}")
+  defp tagged_payload(other, context), do: context_payload(other, context)
+
+  # The caller's own fallback, for every reason this module cannot word: log it
+  # under the prefix of the action that was attempted, and answer with the code
+  # that action owns. Three arms reach it — an unknown tagged reason, an agent
+  # changeset with nothing a client can act on, and any other term.
+  defp context_payload(reason, {log, code}) do
+    Logger.error("#{log}: #{inspect(reason)}")
     {:error, %{"reason" => code}}
   end
 

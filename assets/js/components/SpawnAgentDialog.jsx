@@ -21,14 +21,42 @@
 import { useEffect, useState } from "react";
 
 import { spawnAgent } from "../channels";
+import { describeCreateError } from "../utils/chatErrors";
 import { useStore } from "../store";
 
 /**
  * The thinking level sent with a chosen model. The form has no thinking control
  * (#209 asks for three fields), so this is the application's default rather than
- * a choice — the same `"medium"` the new-space form starts at.
+ * a choice — the same `"medium"` the new-space form starts at. It is named under
+ * the model select because it is sent to the model on every spawn, and the UI
+ * does not hide what it sends.
  */
 const DEFAULT_THINKING_LEVEL = "medium";
+
+/**
+ * The reply's own words, for the refusals a spawn can actually receive.
+ *
+ * `describeCreateError` is the New Space form's, and two of its arms are wrong
+ * here — its `vocation_not_found` names a blueprint, and its default says
+ * "Failed to create space" — so this delegates the arms whose wording holds
+ * (the `"none"`-backend collisions, where the payload carries the other space's
+ * name or the path) and words the vocation ones for an agent. Anything else
+ * falls back to what the server said.
+ */
+const SPAWN_REFUSALS = {
+  scratch_name_in_use: (err) => describeCreateError(err),
+  scratch_path_taken: (err) => describeCreateError(err),
+  vocation_not_found: () =>
+    "That agent vocation no longer exists. Pick another one.",
+  missing_vocation: () => "No agent vocation is configured on the server.",
+  model_required: () => "Choose a model — an agent with none cannot run.",
+};
+
+function spawnErrorMessage(err) {
+  const describe = SPAWN_REFUSALS[err?.reason];
+  if (describe) return describe(err);
+  return err?.message || err?.reason || "Failed to spawn the agent.";
+}
 
 export function SpawnAgentDialog({
   open,
@@ -106,9 +134,7 @@ export function SpawnAgentDialog({
       },
       (err) => {
         setSpawning(false);
-        // The reply's own words first (`message`, then `reason`), and the
-        // "not connected" guard's `Error` has a `message` too.
-        setError(err?.message || err?.reason || "Failed to spawn the agent");
+        setError(spawnErrorMessage(err));
       },
     );
   };
@@ -228,6 +254,12 @@ export function SpawnAgentDialog({
                 A model is required — an agent with none cannot run.
               </p>
             )}
+            {/* Shown, not just sent: the level goes to the model on every
+                spawn, and this form has no control for it. */}
+            <p className="mt-1 text-xs text-gray-500">
+              Thinking level: {DEFAULT_THINKING_LEVEL} — this form has no
+              control for it.
+            </p>
           </div>
 
           {error && (

@@ -91,6 +91,10 @@ describe("SpawnAgentDialog", () => {
     expect(
       screen.getByRole("option", { name: "qwen3.5-plus (model-studio)" }),
     ).toBeInTheDocument();
+
+    // The thinking level is sent to the model on every spawn, and the form has
+    // no control for it — so it is named on screen rather than implied.
+    expect(screen.getByText(/Thinking level: medium/)).toBeInTheDocument();
   });
 
   it("will not submit without a model, and says why", () => {
@@ -181,6 +185,38 @@ describe("SpawnAgentDialog", () => {
       screen.getByRole("dialog", { name: "Spawn agent" }),
     ).toBeInTheDocument();
     expect(props.onClose).not.toHaveBeenCalled();
+  });
+
+  it("words the refusals the server sends as codes, with the detail it carries", () => {
+    // A `"none"`-backend collision is the refusal a manual spawn can really hit,
+    // and the payload's `space_name` is what lets the operator act on it: the
+    // raw code alone would be useless.
+    spawnAgent.mockImplementation((_payload, _onOk, onError) => {
+      onError({ reason: "scratch_name_in_use", space_name: "other-space" });
+    });
+
+    renderDialog();
+    chooseModel();
+    submit();
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      'Space "other-space" already uses that agent name.',
+    );
+
+    // And a vocation that does not resolve is worded for an agent, not for a
+    // blueprint (which is what the New Space form's describer says).
+    spawnAgent.mockImplementation((_payload, _onOk, onError) => {
+      onError({ reason: "vocation_not_found" });
+    });
+
+    fireEvent.change(screen.getByLabelText(/vocation/i), {
+      target: { value: "programmer" },
+    });
+    submit();
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "That agent vocation no longer exists. Pick another one.",
+    );
   });
 
   it("falls back to the reply's reason when it carries no message", () => {
