@@ -88,6 +88,32 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       safe_stop(space_id, child_name)
     end
 
+    test "a spawn into a space archived meanwhile is refused, and leaves no row", %{vid: vid} do
+      {:ok, parent_name, parent_pid, _parent_id} = start_root_parent(vid)
+      parent_state = read_parent_state(parent_name, parent_pid)
+      space_id = AgentTestHelpers.current_space_id()
+
+      assert :ok = Spaces.archive_space(space_id)
+
+      # The archive stopped the parent, but a spawn is asked for by the tool
+      # worker that ran the call — a task under `TaskSupervisor`, not the agent —
+      # so this path runs to completion. It is also the start route that does
+      # *not* go through `fetch_or_start_agent/2`, which is why the guard is
+      # applied at both sites.
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:error, :space_archived} =
+                   Supervisor.start_agent_with_parent(parent_state, "do a thing")
+        end)
+
+      assert log =~ "removing the row it pre-spawned"
+
+      # Only the parent's row is left: the child's pre-spawned row (and its
+      # system message) is gone, so nothing blocks a name and nothing is left
+      # running in the archived space.
+      assert agent_count(space_id) == 1
+    end
+
     test "spawns a child whose row carries the parent's id and depth+1", %{vid: vid} do
       {:ok, parent_name, parent_pid, parent_id} = start_root_parent(vid)
       space_id = AgentTestHelpers.current_space_id()

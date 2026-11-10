@@ -3,6 +3,12 @@ defmodule Nest.Agents.StartGuard do
   The check that a start is still wanted, and the termination that makes a
   refusal true.
 
+  Both production start routes run it as their last step:
+  `Nest.Agents.Supervisor.fetch_or_start_agent/2` (a caller-created agent, a
+  rehydrate, a restart) and `Nest.Agents.Supervisor.start_pre_spawned_child/3`
+  (a clone or a fresh sub-agent). `start_under_test/2` is the test-only route
+  and does not.
+
   ## Why the check is *after* the start
 
   A space can be archived while a start is in flight, and a caller's own check
@@ -46,24 +52,37 @@ defmodule Nest.Agents.StartGuard do
     with :ok <- space_active(space_id, name), do: {:ok, name}
   end
 
+  # A start that already failed keeps its own reason, and a `{:ok, other_name}`
+  # cannot come out of `start_under_supervisor/2` — it returns the name it was
+  # given — so neither has a space to verify against.
   def verify(other, _space_id, _name), do: other
 
   @doc """
   Terminate `name`'s process through the supervisor, if it has one.
 
-  Synchronous: the Registry name is free when this returns.
+  Synchronous, and `:ok` even when there was nothing to terminate: a name with
+  no process, or a child that died between the lookup and the call, is already
+  the outcome asked for. The name is free when this returns — the agent releases
+  its Registry key in `terminate/2`, before the process exits.
   """
-  @spec terminate_child(integer(), String.t()) :: :ok | {:error, :not_found}
+  @spec terminate_child(integer(), String.t()) :: :ok
   def terminate_child(space_id, name) do
     case Registry.lookup(space_id, name) do
-      {:ok, pid} -> DynamicSupervisor.terminate_child(@supervisor, pid)
-      {:error, :not_found} -> :ok
+      {:ok, pid} ->
+        # A child that died between the lookup and this call is already gone.
+        _ = DynamicSupervisor.terminate_child(@supervisor, pid)
+        :ok
+
+      {:error, :not_found} ->
+        :ok
     end
   end
 
   defp space_active(space_id, name) do
     if Spaces.archived?(space_id) do
-      terminate_child(space_id, name)
+      # The refusal is only true if the process is really gone, so this is not a
+      # fire-and-forget: `terminate_child/2` is synchronous and total.
+      :ok = terminate_child(space_id, name)
       {:error, :space_archived}
     else
       :ok

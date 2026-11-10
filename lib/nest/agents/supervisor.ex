@@ -192,11 +192,17 @@ defmodule Nest.Agents.Supervisor do
   # must be the *row's* — `PreSpawn.put_mode/1` derived it into its own copy, so
   # a spawn that named none fell back to `Nest.Modes.default()`: a `plan`
   # parent's child running `act`, writing a workspace its parent may not touch.
+  #
+  # The verification is here too, because this is the *other* start site: a spawn
+  # does not go through `fetch_or_start_agent/2`, and it still completes when the
+  # archive stops the parent — the tool worker that asked for the child is a task
+  # under `TaskSupervisor`, not the agent.
   defp start_pre_spawned_child(attrs, agent_id, name) do
     attrs = Map.put(attrs, :agent_row_id, agent_id)
     # Inside the closure, so a missing row is rolled back (see `start_pre_spawned/3`).
     start_pre_spawned(attrs, agent_id, fn ->
       start_under_supervisor(Map.put(attrs, :mode, persisted_mode(attrs, agent_id)), name)
+      |> StartGuard.verify(attrs.space_id, name)
     end)
   end
 
