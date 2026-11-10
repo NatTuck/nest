@@ -20,9 +20,11 @@ defmodule Nest.ProjectConfig do
     * `"tmp"` — bind a directory under the agent's scratch dir (the
       agent's own sub-directory of the space scratch dir) at `path`.
       On a `bwrap` space the backing directory is a host directory, so
-      writes never touch the project; the directory persists for the
-      agent's lifetime (and is visible inside the sandbox under
-      `/tmp/<agent-name>/project/<slug>`). A `docker` space's scratch is
+      writes never touch the project; it is visible inside the sandbox under
+      `/tmp/<agent-name>/project/<slug>` and lives as long as the agent's
+      *process* — a server restart starts a new, empty one, because the
+      scratch root is per run. (The agent outlives it: its identity and its
+      transcript are database rows.) A `docker` space's scratch is
       the container's own `/tmp`, so there is no host directory to back
       this with and the mount is **refused by name** — use `"rw"` there.
 
