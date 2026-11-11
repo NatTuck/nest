@@ -29,10 +29,10 @@ set -euo pipefail
 
 n="${1:-}"
 case "$n" in
-  ''|*[!0-9]*)
-    echo "usage: $0 <n>   (runs nest<n> on port 4000+n)" >&2
-    exit 2
-    ;;
+'' | *[!0-9]*)
+  echo "usage: $0 <n>   (runs nest<n> on port 4040+n)" >&2
+  exit 2
+  ;;
 esac
 
 cd "$(dirname "$0")/.."
