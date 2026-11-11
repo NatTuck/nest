@@ -29,8 +29,11 @@ function resolveHost(host) {
 }
 
 /**
- * The host this instance runs on, as set by the server in
- * `window.NEST_CONFIG.host` (next to `sourceUrl`).
+ * The name this instance is known by — its host, plus its instance number when
+ * it has one (`vampire2`) — as set by the server in `window.NEST_CONFIG.host`
+ * (next to `sourceUrl`). `Nest.Hostname` is the one place that decides it; the
+ * field is still called `host` because it was, and renaming it would touch this
+ * hook, its tests and every fixture for no behaviour change.
  */
 function configuredHost() {
   return window.NEST_CONFIG?.host;

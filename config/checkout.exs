@@ -108,7 +108,7 @@ defmodule Nest.Config.Checkout do
   transport detail, and nothing but convention keeps `4040 + n` and `nest<n>` in
   step.
   """
-  @spec instance() :: pos_integer() | nil
+  @spec instance() :: non_neg_integer() | nil
   def instance, do: instance(dev().database)
 
   @doc """
@@ -117,7 +117,7 @@ defmodule Nest.Config.Checkout do
   Taking the name as an argument is what lets a test pin the rule without
   setting `NEST_DEV_DB` — the same reason `dev/1` takes one.
   """
-  @spec instance(String.t()) :: pos_integer() | nil
+  @spec instance(String.t()) :: non_neg_integer() | nil
   def instance(database) when is_binary(database) do
     case Regex.run(~r/(\d+)$/, database) do
       [_match, digits] -> String.to_integer(digits)

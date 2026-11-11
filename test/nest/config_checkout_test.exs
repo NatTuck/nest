@@ -55,6 +55,13 @@ defmodule Nest.Config.CheckoutTest do
       assert Checkout.instance("nest_dev_scratch") == nil
       assert Checkout.instance("nest_dev2") == 2
       assert Checkout.instance("nest7") == 7
+
+      # Zero is a number the rule reads, not a spelling of "none": the spec says
+      # `non_neg_integer` for that reason. `scripts/start-instance.sh 0` is a
+      # separate problem (it collides with the primary on 4040), and tightening
+      # the regex would make a real `nest0` title itself `vampire` — the bug this
+      # rule exists to fix.
+      assert Checkout.instance("nest0") == 0
     end
 
     test "follows NEST_DEV_DB, so a checkout pointed at nest7 is instance 7" do
