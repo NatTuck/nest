@@ -58,18 +58,24 @@ export function isIncoming(note, me) {
 }
 
 /**
- * The notes still waiting for this human's answer: incoming `:query` rows whose
- * `answered_at` is null.
+ * The notes still waiting for this human's answer: incoming `:query` rows with
+ * neither `answered_at` nor `dismissed_at` set.
  *
  * Advisory only — a human has no turn to wedge, so there is nothing to time out
- * and no reminder to send (`notes/space-chat.md`). The clear is the human's own
- * note back to that agent, which the server marks (`Nest.Notes.mark_answered/3`)
- * and which the feed applies to its own copy as it sends.
+ * and no reminder to send (`notes/space-chat.md`). Two clears, and they are
+ * different facts: answering is the human's own note back to that agent, which
+ * the server marks (`Nest.Notes.mark_answered/3`), and **ignoring** is
+ * `dismissed_at` (`Nest.Notes.dismiss_queries/3`), which the banner's Ignore
+ * button sets. The feed applies both to its own copy, because neither is
+ * broadcast.
  */
 export function owedQueries(notes, me) {
   return (notes || []).filter(
     (note) =>
-      note.kind === "query" && !note.answered_at && isIncoming(note, me),
+      note.kind === "query" &&
+      !note.answered_at &&
+      !note.dismissed_at &&
+      isIncoming(note, me),
   );
 }
 
@@ -83,7 +89,9 @@ export function owedQueries(notes, me) {
  * from this page.
  *
  * `count` is how many queries that agent is still waiting on, because one agent
- * can ask twice.
+ * can ask twice, and `ids` are those rows — what the banner's Ignore dismisses.
+ * The ids are the ones this projection selected, so a query that arrives after
+ * the banner was drawn is not among them and cannot be dismissed unseen.
  *
  * `archived` is the set of agent names that are archived, and an **archived agent
  * owes nothing**: its process is stopped, so there is no turn for this page to
@@ -103,6 +111,7 @@ export function owedAgents(notes, me, archived) {
     agents.set(note.from_name, {
       name: note.from_name,
       count: (held?.count ?? 0) + 1,
+      ids: [...(held?.ids ?? []), note.id],
     });
   }
 
@@ -110,12 +119,16 @@ export function owedAgents(notes, me, archived) {
 }
 
 /**
- * Which of a `query` row's four states it is in, as a fact rather than a
+ * Which of a `query` row's five states it is in, as a fact rather than a
  * sentence — so the card and the banner cannot disagree about what is owed.
  *
  *   * `answered` — the human answered it (`answered_at` is set).
- *   * `owed` — incoming and unanswered: this human's to answer, and `owedAgents`
- *     names it in the banner.
+ *   * `dismissed` — the human ignored it (`dismissed_at` is set): not owed any
+ *     more, and not answered either. It outranks `archived` below because it is
+ *     the human's own decision about the note, and it is only reachable while
+ *     `answered_at` is null — the server clears one when it sets the other.
+ *   * `owed` — incoming, unanswered and not ignored: this human's to answer, and
+ *     `owedAgents` names it in the banner.
  *   * `archived` — incoming and unanswered, but the agent that asked is
  *     archived. The row's own truth is unchanged (nobody has answered it), which
  *     is what the card says; what it must not do is *invite* a reply, because an
@@ -130,6 +143,7 @@ export function owedAgents(notes, me, archived) {
 export function queryReplyState(note, me, archived) {
   if (!isIncoming(note, me)) return "awaiting";
   if (note.answered_at) return "answered";
+  if (note.dismissed_at) return "dismissed";
   if (note.from_kind === "agent" && archived?.has(note.from_name)) {
     return "archived";
   }

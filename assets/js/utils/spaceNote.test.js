@@ -27,6 +27,7 @@ const note = (overrides) => ({
   content: "hi",
   kind: "agent",
   answered_at: null,
+  dismissed_at: null,
   ...overrides,
 });
 
@@ -99,10 +100,13 @@ describe("isIncoming", () => {
 });
 
 describe("owedQueries", () => {
-  it("is incoming queries that are still unanswered", () => {
+  it("is incoming queries that are still unanswered and not ignored", () => {
     const notes = [
       note({ id: 1, kind: "query" }),
       note({ id: 2, kind: "query", answered_at: "2026-10-18T12:00:00Z" }),
+      // Ignored: the human decided not to answer, which is not the same as
+      // still owing one — and not the same as having answered.
+      note({ id: 6, kind: "query", dismissed_at: "2026-10-18T12:02:00Z" }),
       note({ id: 3, kind: "agent" }),
       note({ id: 4, kind: "query", to_kind: "agent", to_name: "boss" }),
       note({
@@ -130,8 +134,8 @@ describe("owedAgents", () => {
     ];
 
     expect(owedAgents(notes, "alice")).toEqual([
-      { name: "minion", count: 2 },
-      { name: "boss", count: 1 },
+      { name: "minion", count: 2, ids: [1, 3] },
+      { name: "boss", count: 1, ids: [2] },
     ]);
   });
 
@@ -145,12 +149,12 @@ describe("owedAgents", () => {
     ];
 
     expect(owedAgents(notes, "alice", new Set(["retired"]))).toEqual([
-      { name: "boss", count: 1 },
+      { name: "boss", count: 1, ids: [2] },
     ]);
     // With nothing archived, nothing changes.
     expect(owedAgents(notes, "alice")).toEqual([
-      { name: "retired", count: 1 },
-      { name: "boss", count: 1 },
+      { name: "retired", count: 1, ids: [1] },
+      { name: "boss", count: 1, ids: [2] },
     ]);
   });
 
@@ -174,10 +178,29 @@ describe("owedAgents", () => {
 
 describe("queryReplyState", () => {
   it("tells an answered query from one that is still owed, and from an archived agent's", () => {
-    // The four states the card renders. The archived one is the case the banner
+    // The five states the card renders. The archived one is the case the banner
     // and the card used to disagree about: the row is unanswered, so the card
     // keeps saying so, but the agent is stopped, so nothing is owed.
     expect(queryReplyState(note({ kind: "query" }), "alice")).toBe("owed");
+    // Ignored: the human's own decision, so it outranks the agent's status —
+    // there is nothing to reply to and nothing to keep asking about.
+    expect(
+      queryReplyState(
+        note({ kind: "query", dismissed_at: "2026-10-18T12:02:00Z" }),
+        "alice",
+      ),
+    ).toBe("dismissed");
+    expect(
+      queryReplyState(
+        note({
+          kind: "query",
+          dismissed_at: "2026-10-18T12:02:00Z",
+          from_name: "retired",
+        }),
+        "alice",
+        new Set(["retired"]),
+      ),
+    ).toBe("dismissed");
     expect(
       queryReplyState(
         note({ kind: "query", answered_at: "2026-10-18T12:01:00Z" }),

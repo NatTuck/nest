@@ -6,7 +6,8 @@
  *   - `./channels/agent`  — agent-channel join + chat actions
  *   - `./channels/shellJobs` — background shell-job kill / list / log
  *   - `./channels/lobby`  — lobby join + space/model/invite pushes
- *   - `./channels/spaceNotes` — the space feed's read and its composer's send
+ *   - `./channels/spaceNotes` — the space feed's read, its composer's send, and
+ *     the advisory banner's Ignore
  *
  * `initChannels` lives here (it owns the socket lifecycle hookup).
  */

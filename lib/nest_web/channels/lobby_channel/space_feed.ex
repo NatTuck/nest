@@ -117,6 +117,36 @@ defmodule NestWeb.LobbyChannel.SpaceFeed do
     do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
 
   @doc """
+  The advisory banner's Ignore (`dismiss_queries`): the human ignores the queries
+  it was showing, without answering them.
+
+  The ids are the banner's own — what it had drawn — so a query that arrived
+  after it was rendered is not dismissed unseen. `Nest.Notes`' predicate is the
+  authorization as well as the filter: an id from another space, another human's
+  note, an answered one and an already-ignored one all change nothing.
+
+  **Nothing is told to the agent that asked.** A query to a human creates no debt
+  and no waiter, so there is nothing to discharge, and a dismissal is not a
+  refusal the agent has any use for.
+  """
+  @spec dismiss_queries(map(), Phoenix.Socket.t()) :: {:reply, term(), Phoenix.Socket.t()}
+  def dismiss_queries(%{"space_id" => space_id, "note_ids" => note_ids}, socket)
+      when is_integer(space_id) and is_list(note_ids) and note_ids != [] do
+    with :ok <- all_ids?(note_ids),
+         {:ok, :owner} <- Authz.authorize_space_owner(space_id, socket.assigns.current_user),
+         {:ok, count} <-
+           Notes.dismiss_queries(space_id, socket.assigns.current_user.username, note_ids) do
+      {:reply, {:ok, %{"dismissed" => count}}, socket}
+    else
+      :invalid_payload -> {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
+      {:error, reason} -> {:reply, {:error, ErrorPayload.from_reason(reason)}, socket}
+    end
+  end
+
+  def dismiss_queries(_payload, socket),
+    do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
+
+  @doc """
   One `user_note:created` frame for a note the caller is an end of.
 
   The space is already scoped by the subscription the frame arrived on (see the
@@ -161,6 +191,11 @@ defmodule NestWeb.LobbyChannel.SpaceFeed do
       _ -> Modes.default()
     end
   end
+
+  # A list of ids and nothing else. The predicate bounds *which* rows may change,
+  # but a payload carrying strings is a client bug rather than a refusal to
+  # explain, so it is refused with the other malformed payloads.
+  defp all_ids?(ids), do: if(Enum.all?(ids, &is_integer/1), do: :ok, else: :invalid_payload)
 
   # A blank note is not a note, and a mode this build does not know must not
   # reach the agent: `Nest.Modes` refuses it in the sandbox, but the message

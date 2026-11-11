@@ -186,6 +186,12 @@ with it null. The second candidate trigger — "any note from that agent to the
 human" — is cheaper and wrong: it clears the banner on a note that answered
 something else.
 
+`dismissed_at` is the second clear, and it is a different fact: the human
+**ignored** the query rather than answering it. It is not read tracking — the
+banner's Ignore button is the UI behind it, which `read_at` never had. A query
+is never both answered and ignored (`mark_answered/3` clears it), so the card
+has one state per row instead of a precedence to guess.
+
 `send_note/6` gains exactly one clause: a target that resolves to a human
 address persists a row in `user_notes` and broadcasts, instead of calling
 `Supervisor.get_agent/2`. There is no process to call, no inbox to drain and no
@@ -208,7 +214,9 @@ where the agent-shaped assumption would otherwise leak:
   merged), and the feed is the human's read path.
 * **The owed-reply banner is advisory only**: no reminders and no give-up,
   unlike `Machine.owed_replies` — a human has no turn to wedge, so there is
-  nothing to protect and nothing to time out.
+  nothing to protect and nothing to time out. It can also be **ignored**
+  (`dismissed_at`), and that is silent: a query to a human creates no debt, so
+  there is nothing to discharge and nothing to tell the agent that asked.
 * **A give-up note's `from_name` is the agent that did not answer**, with
   `from_kind: :runtime` so the header still reads `[From nest runtime]`. The
   name is what the feed groups by and what the body says.
@@ -371,7 +379,8 @@ costs.
 * the **composer** — a query to the selected agent;
 * the **recipient picker** — the space's agents, root by default;
 * the **mode draft** — the same draft-not-push selector the agent page has;
-* the **owed-reply banner** — incoming queries not yet answered (advisory);
+* the **owed-reply banner** — incoming queries neither answered nor ignored
+  (advisory), with an Ignore for everything it is showing;
 * the space's **environment and its edit entry** — the workspace, the network,
   the sandbox backend, and `EditSpaceDialog`;
 * the **pause banner** (`SpacePausedBanner`) — a held space is held for every
@@ -410,6 +419,8 @@ space the user can see, and every `user_notes` insert broadcasts there:
 | server → client (reply) | — | `%{"notes" => [row], "modes" => [name], "default_mode" => name}` |
 | client → server | `send_note` | `%{"space_id" => id, "to" => agent, "content" => text, "mode" => name \| nil}` |
 | server → client (reply) | — | `%{"disposition" => "delivered" \| "queued"}` |
+| client → server | `dismiss_queries` | `%{"space_id" => id, "note_ids" => [id]}` |
+| server → client (reply) | — | `%{"dismissed" => count}` |
 | server → client (push) | `user_note:created` | `%{"note" => row}` |
 
 A `row` is `Nest.Notes.UserNote`'s own JSON, so a column added to the schema's
@@ -429,6 +440,13 @@ The composer's send is a **query**, and it is also the owed-reply banner's clear
 `send_note/6` marks that agent's outstanding queries answered, and the feed
 applies the same action to its own copy, because `answered_at` is deliberately
 not broadcast.
+
+`dismiss_queries` is the other clear, for a human who does not want to answer at
+all. It names the rows the banner was showing rather than "everything
+outstanding" — a query that arrived since it was painted was not on screen and
+is not a decision the human made — and `Nest.Notes`' predicate is the
+authorization as well as the filter, so a foreign id changes nothing. Like
+`answered_at` it is not broadcast, and the client applies the ids it sent.
 
 ### Two routes, two meanings
 
@@ -534,7 +552,8 @@ mistake for it:
 * **`/space/:slug/overview` is retired**, and `/space/:slug` is the feed. Two
   routes remain: the feed and the agent page.
 * **No `read_at`.** Per-item read tracking has no UI behind it; `answered_at`
-  stays and is what the advisory banner reads.
+  stays and is what the advisory banner reads. `dismissed_at` is not that: it is
+  a decision the human made, and the Ignore button is its UI.
 * **`user_notes` is addressed, not mailbox-owned**: `from_kind`/`from_name`/
   `to_kind`/`to_name`, no `user_id`. One row per note, so a human-to-human note
   is one row rather than two mirrors.
@@ -603,7 +622,8 @@ mistake for it:
 * **No automatic delivery of a turn's response to the human.** The reply is the
   agent's `agents-send`, by design (above).
 * **No reminders and no give-up on the human.** The banner is advisory; a human
-  has no turn to wedge.
+  has no turn to wedge. Ignoring is silent: the agent that asked is never told
+  its query was dropped.
 * **No cross-space addressing.** An address is resolved inside one space.
 * **No prompt change for discovering the human.** `agents-list` carries the
   addresses; the system prompt is fixed and would go stale.

@@ -22,6 +22,7 @@ const note = (overrides) => ({
   kind: "agent",
   inserted_at: "2026-10-18T12:00:00.000000Z",
   answered_at: null,
+  dismissed_at: null,
   ...overrides,
 });
 
@@ -172,6 +173,37 @@ describe("space feed slice", () => {
 
   it("markSpaceQueriesAnswered is a no-op for a space with no feed", () => {
     useStore.getState().markSpaceQueriesAnswered(42, "boss");
+
+    expect(useStore.getState().spaceFeeds[42]).toBeUndefined();
+  });
+
+  it("markSpaceQueriesDismissed ignores the ids it is given, and no others", () => {
+    useStore.getState().setSpaceFeed(1, {
+      notes: [
+        note({ id: 1, kind: "query", from_name: "boss" }),
+        note({ id: 2, kind: "query", from_name: "boss" }),
+        note({ id: 3, kind: "query", from_name: "minion" }),
+        note({
+          id: 4,
+          kind: "query",
+          answered_at: "2026-10-18T12:05:00.000000Z",
+        }),
+      ],
+      modes: [],
+    });
+
+    // The ids the banner drew. The answered row is in the list on purpose: the
+    // server's predicate skips it, so the client must not claim it either.
+    useStore.getState().markSpaceQueriesDismissed(1, [1, 3, 4]);
+
+    const dismissed = feed().notes.map((held) => Boolean(held.dismissed_at));
+    expect(dismissed).toEqual([true, false, true, false]);
+    // Ignoring is not answering: the answered row keeps its own timestamp.
+    expect(feed().notes[3].answered_at).toEqual("2026-10-18T12:05:00.000000Z");
+  });
+
+  it("markSpaceQueriesDismissed is a no-op for a space with no feed", () => {
+    useStore.getState().markSpaceQueriesDismissed(42, [1]);
 
     expect(useStore.getState().spaceFeeds[42]).toBeUndefined();
   });

@@ -31,7 +31,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useStore } from "../store";
-import { requestSpaceFeed, sendSpaceNote } from "../channels";
+import {
+  dismissSpaceQueries,
+  requestSpaceFeed,
+  sendSpaceNote,
+} from "../channels";
 import { ChatInput } from "../components/ChatInput";
 import { spaceDraftKey } from "../store/slices/composer";
 import { JumpToBottomButton } from "../components/JumpToBottomButton";
@@ -223,7 +227,11 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
           <SpaceEnvironmentCard space={space} />
         </div>
 
-        <OwedRepliesBanner agents={owed} onPick={setChosenRecipient} />
+        <OwedRepliesBanner
+          spaceId={space.id}
+          agents={owed}
+          onPick={setChosenRecipient}
+        />
       </div>
 
       {/* One scroll container for every state — notes, loading, failed, empty —
@@ -368,6 +376,7 @@ function FeedNotes({ feed, me, archived, onRetry }) {
  */
 const QUERY_REPLY_TEXT = {
   answered: "you answered",
+  dismissed: "you ignored this",
   owed: "waiting for your reply",
   awaiting: "waiting for an answer",
   archived: "waiting for an answer (agent archived)",
@@ -421,24 +430,65 @@ function NoteCard({ note, me, archived }) {
 }
 
 /**
- * The owed-reply banner: incoming queries that are still unanswered, per agent.
+ * The owed-reply banner: incoming queries that are still waiting for an answer,
+ * per agent.
  *
  * Advisory only. It is not a reminder and there is no give-up — a human has no
  * turn to wedge, so there is nothing to protect and nothing to time out. Each
  * agent's name is a button that makes that agent the composer's recipient, which
  * is the one useful thing to do about it.
+ *
+ * The other useful thing is **not** to: a human may simply ignore a note, so
+ * the banner carries one Ignore for everything it is showing. It dismisses the
+ * ids this render selected and nothing else — a query that arrives afterwards
+ * was not on screen and is not a decision the human made — and it tells the agent
+ * that asked nothing at all (`Nest.Notes.dismiss_queries/3`: a query to a human
+ * creates no debt, so there is nothing to discharge). The notes stay in the feed;
+ * only the nudge goes, and each card then reads "you ignored this".
  */
-function OwedRepliesBanner({ agents, onPick }) {
+function OwedRepliesBanner({ spaceId, agents, onPick }) {
+  const [dismissing, setDismissing] = useState(false);
+  const [error, setError] = useState(null);
+
   if (agents.length === 0) return null;
+
+  const ignore = () => {
+    const noteIds = agents.flatMap((agent) => agent.ids);
+    setDismissing(true);
+    setError(null);
+
+    dismissSpaceQueries(
+      spaceId,
+      noteIds,
+      () => setDismissing(false),
+      (err) => {
+        setDismissing(false);
+        setError(errorText(err, "Could not ignore those notes."));
+      },
+    );
+  };
 
   return (
     <div
       role="status"
       className="bg-indigo-50 border-l-4 border-indigo-400 p-4 mb-4"
     >
-      <p className="text-sm font-medium text-indigo-900">
-        Waiting for your reply
-      </p>
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-sm font-medium text-indigo-900">
+          Waiting for your reply
+        </p>
+        <button
+          type="button"
+          onClick={ignore}
+          disabled={dismissing}
+          // The visible word is the honest one: this writes a decision, not a
+          // hide. Answering later still works and clears it.
+          aria-label="Ignore these notes"
+          className="shrink-0 px-2 py-1 rounded-lg text-xs font-medium text-indigo-700 hover:bg-indigo-100 transition-colors disabled:opacity-50"
+        >
+          {dismissing ? "Ignoring…" : "Ignore"}
+        </button>
+      </div>
       <ul className="mt-2 flex flex-wrap items-center gap-2">
         {agents.map((agent) => (
           <li key={agent.name}>
@@ -453,6 +503,11 @@ function OwedRepliesBanner({ agents, onPick }) {
           </li>
         ))}
       </ul>
+      {error && (
+        <p role="alert" className="mt-2 text-xs text-red-700">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
