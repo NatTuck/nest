@@ -187,7 +187,7 @@ defmodule Nest.NotesTest do
       # "declined" receipt, say), no inbox entry, no frame at all.
       assert [%UserNote{id: id}] = Notes.list_for(space.id, {:user, "alice"})
       assert id == query.id
-      refute_receive {:user_note, _note}, 50
+      refute_receive {:user_note, _note}, 0
     end
   end
 
