@@ -32,22 +32,32 @@ config :nest, NestWeb.Endpoint,
   code_reloader: true,
   debug_errors: true,
   secret_key_base: "KkIpLULqI6uMbiLBWT3v9gkaue6IBrpIcKTGdYPI8Jwad9LbgWD2olp9YWyX4OmT",
-  watchers: [
-    # Phoenix.Copy watcher for static files
-    copy: {Phoenix.Copy, :watch, [:default]},
-    # Vite build with watch mode - writes files to disk for Phoenix live reload
-    vite:
-      {System, :cmd,
-       [
-         "pnpm",
-         ["exec", "vite", "build", "--watch", "--mode", "development"],
-         [
-           cd: Path.expand("../assets", __DIR__),
-           stderr_to_stdout: true,
-           into: IO.stream(:stdio, :line)
-         ]
-       ]}
-  ]
+  # The watchers build into this checkout's priv/static, so two servers
+  # running from one checkout — the numbered instances
+  # (`scripts/start-instance.sh`) — would run two vite builds racing on the
+  # same output. NEST_NO_WATCHERS=1 skips them; that script sets it by
+  # default, and an instance that is the only server in its checkout runs
+  # with NEST_NO_WATCHERS=0.
+  watchers:
+    if(System.get_env("NEST_NO_WATCHERS") == "1",
+      do: [],
+      else: [
+        # Phoenix.Copy watcher for static files
+        copy: {Phoenix.Copy, :watch, [:default]},
+        # Vite build with watch mode - writes files to disk for Phoenix live reload
+        vite:
+          {System, :cmd,
+           [
+             "pnpm",
+             ["exec", "vite", "build", "--watch", "--mode", "development"],
+             [
+               cd: Path.expand("../assets", __DIR__),
+               stderr_to_stdout: true,
+               into: IO.stream(:stdio, :line)
+             ]
+           ]}
+      ]
+    )
 
 # ## SSL Support
 #
