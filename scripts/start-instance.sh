@@ -38,7 +38,7 @@ esac
 cd "$(dirname "$0")/.."
 
 export NEST_DEV_DB="nest${n}"
-export NEST_PORT=$((4000 + n))
+export NEST_PORT=$((4040 + n))
 export NEST_NO_WATCHERS="${NEST_NO_WATCHERS:-1}"
 
 mix ecto.setup
