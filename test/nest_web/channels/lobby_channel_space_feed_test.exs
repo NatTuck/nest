@@ -19,6 +19,7 @@ defmodule NestWeb.LobbyChannelSpaceFeedTest do
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Blueprints
   alias Nest.Notes
+  alias Nest.Repo
   alias Nest.Spaces
 
   setup :verify_on_exit!
@@ -146,6 +147,29 @@ defmodule NestWeb.LobbyChannelSpaceFeedTest do
       assert_push "user_note:created", %{"note" => %Notes.UserNote{id: id}}
       assert id == second.id
     end
+
+    test "pushes a note the caller sent, which is how their own send reaches the feed", %{
+      space: space,
+      token: token
+    } do
+      socket = join(token)
+
+      # The composer's send writes no optimistic row — `sendSpaceNote` appends
+      # nothing — so the broadcast is what puts the note in the sender's own
+      # feed. That makes this frame load-bearing for the person who sent it, and
+      # it is `for_user?/2`'s "I am the *from* end" clause.
+      {:ok, mine} = Notes.deliver(space.id, {:user, "alice"}, {:agent, "worker"}, "hi", :query)
+
+      assert_push "user_note:created", %{"note" => note}
+      assert %Notes.UserNote{id: id, from_kind: :user, from_name: "alice"} = note
+      assert id == mine.id
+
+      # ...and it is still "one end", not "in the space": a note between two
+      # other people is not pushed here.
+      {:ok, _bobs} = Notes.deliver(space.id, {:user, "bob"}, {:agent, "worker"}, "no", :query)
+      settle(socket)
+      refute_push "user_note:created", _, 0
+    end
   end
 
   describe "send_note" do
@@ -239,6 +263,87 @@ defmodule NestWeb.LobbyChannelSpaceFeedTest do
       # never did.
       assert_received {:sent, "ghost"}
       refute_received {:sent, "worker"}
+    end
+  end
+
+  describe "dismiss_queries" do
+    test "ignores the queries it is given, and the read says so", %{
+      space: space,
+      token: token
+    } do
+      other_space = AddressTestHelpers.space_with_human("carol")
+
+      {:ok, mine} = Notes.deliver(space.id, {:agent, "worker"}, {:user, "alice"}, "q", :query)
+      {:ok, bobs} = Notes.deliver(space.id, {:agent, "worker"}, {:user, "bob"}, "no", :query)
+
+      {:ok, elsewhere} =
+        Notes.deliver(other_space.id, {:agent, "worker"}, {:user, "alice"}, "q", :query)
+
+      socket = join(token)
+
+      # The banner names the rows it drew. The two ids that are not alice's to
+      # ignore ride along on purpose: the predicate is the authorization, so they
+      # change nothing and the count says so.
+      ref =
+        push(socket, "dismiss_queries", %{
+          "space_id" => space.id,
+          "note_ids" => [mine.id, bobs.id, elsewhere.id]
+        })
+
+      assert_reply ref, :ok, %{"dismissed" => 1}, 500
+
+      # The feed's read is the authority, and the row reaches the browser as the
+      # schema's own JSON — `dismissed_at` included, or the card could not say
+      # the note was ignored.
+      ref = push(socket, "space_feed", %{"space_id" => space.id})
+      assert_reply ref, :ok, %{"notes" => notes}, 500
+
+      assert %Notes.UserNote{id: id, dismissed_at: %DateTime{}} =
+               Enum.find(notes, &(&1.id == mine.id))
+
+      assert id == mine.id
+
+      # Neither of the two rows that are not alice's was touched.
+      assert %Notes.UserNote{dismissed_at: nil} = Repo.get!(Notes.UserNote, bobs.id)
+
+      assert [%Notes.UserNote{dismissed_at: nil}] =
+               Notes.list_for(other_space.id, {:user, "alice"})
+    end
+
+    test "refuses a space the caller is not in, and a payload that is not ids", %{
+      space: space,
+      token: token
+    } do
+      {:ok, mine} = Notes.deliver(space.id, {:agent, "worker"}, {:user, "alice"}, "q", :query)
+
+      bob = Accounts.get_user_by_username("bob")
+      bob_socket = join(AuthToken.sign(bob.id))
+
+      ref =
+        push(bob_socket, "dismiss_queries", %{"space_id" => space.id, "note_ids" => [mine.id]})
+
+      assert_reply ref, :error, %{"reason" => "forbidden"}, 500
+
+      # Not dismissed: the check is the space's owner, the same one `send_note`
+      # and `archive_space` make, and it runs before anything is written.
+      assert %Notes.UserNote{dismissed_at: nil} = Repo.get!(Notes.UserNote, mine.id)
+
+      socket = join(token)
+
+      # A list of ids and nothing else. Strings are a client bug, an empty list
+      # names nothing to ignore, and a payload missing either key cannot be
+      # routed at all.
+      for payload <- [
+            %{"space_id" => space.id, "note_ids" => ["1"]},
+            %{"space_id" => space.id, "note_ids" => []},
+            %{"space_id" => space.id},
+            %{"note_ids" => [mine.id]}
+          ] do
+        assert_reply push(socket, "dismiss_queries", payload),
+                     :error,
+                     %{"reason" => "invalid_payload"},
+                     500
+      end
     end
   end
 

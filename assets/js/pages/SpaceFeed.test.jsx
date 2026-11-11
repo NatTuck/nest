@@ -18,6 +18,7 @@ let mockState = {};
 const mocks = vi.hoisted(() => ({
   requestSpaceFeed: vi.fn(),
   sendSpaceNote: vi.fn(),
+  dismissSpaceQueries: vi.fn(),
   editSpace: vi.fn(),
   cancelEditSpace: vi.fn(),
   spawnAgent: vi.fn(),
@@ -26,6 +27,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../channels", () => ({
   requestSpaceFeed: mocks.requestSpaceFeed,
   sendSpaceNote: mocks.sendSpaceNote,
+  dismissSpaceQueries: mocks.dismissSpaceQueries,
   editSpace: mocks.editSpace,
   cancelEditSpace: mocks.cancelEditSpace,
   spawnAgent: mocks.spawnAgent,
@@ -98,6 +100,7 @@ function note(overrides) {
     kind: "agent",
     inserted_at: "2026-10-18T12:00:00.000000Z",
     answered_at: null,
+    dismissed_at: null,
     ...overrides,
   };
 }
@@ -144,6 +147,7 @@ function renderFeed(props = {}) {
 beforeEach(() => {
   mocks.requestSpaceFeed.mockReset();
   mocks.sendSpaceNote.mockReset();
+  mocks.dismissSpaceQueries.mockReset();
   mocks.editSpace.mockReset();
   mocks.cancelEditSpace.mockReset();
   mocks.spawnAgent.mockReset();
@@ -579,6 +583,84 @@ describe("SpaceFeed", () => {
 
     expect(
       screen.queryByText(/waiting for your reply/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("ignores the queries the banner is showing, and only those", () => {
+    withFeed(
+      readyFeed([
+        note({ id: 1, from_name: "minion", kind: "query" }),
+        note({ id: 2, from_name: "boss", kind: "query" }),
+        note({ id: 3, from_name: "minion", kind: "query" }),
+        // Not a query, so it was never waiting for an answer.
+        note({ id: 4, from_name: "boss", kind: "agent" }),
+      ]),
+    );
+
+    renderFeed();
+    fireEvent.click(screen.getByRole("button", { name: "Ignore these notes" }));
+
+    // The ids this render drew, in banner order — not "everything outstanding",
+    // so a query that arrives after the banner was painted is not dismissed
+    // unseen. Nothing is told to the agents that asked.
+    expect(mocks.dismissSpaceQueries).toHaveBeenCalledWith(
+      SPACE.id,
+      [1, 3, 2],
+      expect.any(Function),
+      expect.any(Function),
+    );
+  });
+
+  it("keeps the banner and says why when the ignore could not be sent", () => {
+    mocks.dismissSpaceQueries.mockImplementation(
+      (_spaceId, _ids, _onOk, onError) => {
+        onError(new Error("Not connected"));
+      },
+    );
+
+    withFeed(readyFeed([note({ id: 1, from_name: "minion", kind: "query" })]));
+    renderFeed();
+
+    fireEvent.click(screen.getByRole("button", { name: "Ignore these notes" }));
+
+    // Nothing was dismissed, so the banner must not pretend otherwise: it stays,
+    // with the reason beside the control that failed.
+    expect(screen.getByRole("alert")).toHaveTextContent("Not connected");
+    expect(
+      screen.getByRole("button", { name: "Reply to minion" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Ignore these notes" }),
+    ).toBeEnabled();
+  });
+
+  it("says a note was ignored, and stops inviting a reply for it", () => {
+    withFeed(
+      readyFeed([
+        note({
+          id: 1,
+          from_name: "minion",
+          kind: "query",
+          dismissed_at: "2026-10-18T12:06:00.000000Z",
+        }),
+      ]),
+    );
+
+    renderFeed();
+
+    const items = within(
+      screen.getByRole("list", { name: "Notes" }),
+    ).getAllByRole("listitem");
+
+    // The row is still in the feed — ignoring a note is not deleting it — and it
+    // says what the human decided rather than still asking.
+    expect(items[0]).toHaveTextContent("from agent minion → you");
+    expect(items[0]).toHaveTextContent("you ignored this");
+    expect(items[0]).not.toHaveTextContent("your reply");
+
+    // Nothing is owed, so there is no banner and nothing to ignore.
+    expect(
+      screen.queryByRole("button", { name: "Ignore these notes" }),
     ).not.toBeInTheDocument();
   });
 

@@ -165,5 +165,35 @@ export function spaceFeedSetters(set) {
         };
       });
     },
+
+    /**
+     * The human ignored the queries `noteIds`: they stop being owed, and they
+     * are not answered either.
+     *
+     * The server's `Nest.Notes.dismiss_queries/3` and the banner's Ignore are one
+     * action, and like `answered_at` it is not broadcast — the human's own
+     * decision about their own query — so the client applies the ids it sent to
+     * its own copy and the next read confirms it. Only those ids: a query that
+     * arrived since the banner was drawn was not on screen and is not the
+     * human's to have ignored.
+     */
+    markSpaceQueriesDismissed: (spaceId, noteIds) => {
+      set((state) => {
+        const feed = state.spaceFeeds[spaceId];
+        if (!feed) return state;
+
+        const ignored = new Set(noteIds);
+        const now = new Date().toISOString();
+        const notes = feed.notes.map((note) =>
+          ignored.has(note.id) && !note.answered_at && !note.dismissed_at
+            ? { ...note, dismissed_at: now }
+            : note,
+        );
+
+        return {
+          spaceFeeds: { ...state.spaceFeeds, [spaceId]: { ...feed, notes } },
+        };
+      });
+    },
   };
 }

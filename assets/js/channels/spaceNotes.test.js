@@ -1,10 +1,10 @@
 /**
  * Tests for the space feed's transport (`channels/spaceNotes.js`).
  *
- * Two pushes and their replies: the read that fills the feed, and the send that
- * is one query. Both are thin, and both have the same rule — a failure is
- * reported on the feed rather than swallowed, so a page that could not load or
- * send never looks like a page with nothing to say.
+ * Three pushes and their replies: the read that fills the feed, the send that is
+ * one query, and the Ignore that drops one. All are thin, and all have the same
+ * rule — a failure is reported rather than swallowed, so a page that could not
+ * load, send or ignore never looks like a page that did.
  */
 
 import { describe, it, beforeEach, expect, vi } from "vitest";
@@ -18,6 +18,7 @@ import {
 import { useStore } from "../store";
 import {
   clearAgentChannels,
+  dismissSpaceQueries,
   joinLobby,
   leaveLobby,
   requestSpaceFeed,
@@ -35,6 +36,7 @@ const note = (overrides) => ({
   kind: "query",
   inserted_at: "2026-10-18T12:00:00.000000Z",
   answered_at: null,
+  dismissed_at: null,
   ...overrides,
 });
 
@@ -198,6 +200,62 @@ describe("the space feed's transport", () => {
     const onError = vi.fn();
 
     sendSpaceNote(1, "boss", "hi", "plan", undefined, onError);
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][0].message).toMatch(/not connected/i);
+  });
+
+  it("ignores the queries it is given, and applies that to the feed", async () => {
+    setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+    joinLobby();
+    useStore.getState().setSpaceFeed(1, {
+      notes: [note({ id: 1 }), note({ id: 2 }), note({ id: 3 })],
+      modes: [],
+    });
+
+    const captured = captureNextPush("lobby", "dismiss_queries");
+    const reply = vi.fn();
+    dismissSpaceQueries(1, [1, 3], reply);
+
+    // The ids the banner drew, and nothing else: a query that arrived after it
+    // was painted is not a decision the human made.
+    assert.deepStrictEqual(await captured, {
+      space_id: 1,
+      note_ids: [1, 3],
+    });
+    await vi.waitFor(() => {
+      assert.strictEqual(reply.mock.calls.length, 1);
+    });
+
+    // Like `answered_at`, the server does not broadcast this, so the feed
+    // applies the ids it sent to its own copy.
+    const dismissed = feed().notes.map((held) => Boolean(held.dismissed_at));
+    expect(dismissed).toEqual([true, false, true]);
+  });
+
+  it("reports a refused ignore, and leaves the banner alone", async () => {
+    setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+    joinLobby();
+    useStore.getState().setSpaceFeed(1, { notes: [note({})], modes: [] });
+    setNextPushResult("lobby", "dismiss_queries", {
+      error: { reason: "forbidden" },
+    });
+
+    const onError = vi.fn();
+    dismissSpaceQueries(1, [1], undefined, onError);
+
+    await vi.waitFor(() => {
+      assert.strictEqual(onError.mock.calls.length, 1);
+    });
+    expect(onError.mock.calls[0][0]).toEqual({ reason: "forbidden" });
+    // Nothing was dismissed, because nothing was written.
+    expect(feed().notes[0].dismissed_at).toBeNull();
+  });
+
+  it("reports an ignore that could not be attempted", () => {
+    const onError = vi.fn();
+
+    dismissSpaceQueries(1, [1], undefined, onError);
 
     expect(onError).toHaveBeenCalledTimes(1);
     expect(onError.mock.calls[0][0].message).toMatch(/not connected/i);

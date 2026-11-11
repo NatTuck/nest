@@ -27,10 +27,15 @@ defmodule Nest.Notes.UserNote do
 
   ## Timestamps
 
-  `inserted_at` only — a note's body never changes, and the one write after
-  insert is `answered_at`, which is set when the human sends a note back to the
-  agent that queried them. There is deliberately no `read_at`: per-item read
-  tracking has no UI behind it.
+  `inserted_at` only — a note's body never changes, and the two writes after
+  insert are `answered_at`, set when the human sends a note back to the agent
+  that queried them, and `dismissed_at`, set when they ignore the query instead.
+  The two are exclusive: answering clears a dismissal, so a query is never both
+  answered and ignored.
+
+  There is deliberately no `read_at`: per-item read tracking has no UI behind it.
+  A dismissal is not read tracking — it is a decision, and the banner's Ignore
+  button is the UI behind it.
   """
 
   use Ecto.Schema
@@ -52,7 +57,8 @@ defmodule Nest.Notes.UserNote do
              :content,
              :kind,
              :inserted_at,
-             :answered_at
+             :answered_at,
+             :dismissed_at
            ]}
 
   @type t :: %__MODULE__{
@@ -65,7 +71,8 @@ defmodule Nest.Notes.UserNote do
           content: String.t() | nil,
           kind: kind() | nil,
           inserted_at: DateTime.t() | nil,
-          answered_at: DateTime.t() | nil
+          answered_at: DateTime.t() | nil,
+          dismissed_at: DateTime.t() | nil
         }
 
   @typedoc "Who a note is from: an agent, a human, or the runtime about an agent."
@@ -86,6 +93,7 @@ defmodule Nest.Notes.UserNote do
     field :content, :string
     field :kind, Ecto.Enum, values: @kinds
     field :answered_at, :utc_datetime_usec
+    field :dismissed_at, :utc_datetime_usec
 
     timestamps(type: :utc_datetime_usec, updated_at: false)
   end
@@ -110,7 +118,8 @@ defmodule Nest.Notes.UserNote do
       :to_name,
       :content,
       :kind,
-      :answered_at
+      :answered_at,
+      :dismissed_at
     ])
     |> validate_required([:space_id, :from_kind, :to_kind, :to_name, :content, :kind])
     |> foreign_key_constraint(:space_id)

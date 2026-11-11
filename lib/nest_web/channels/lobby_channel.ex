@@ -456,12 +456,17 @@ defmodule NestWeb.LobbyChannel do
   def handle_in("spawn_agent", _payload, socket),
     do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
 
-  # The space feed (`/space/:slug`): its initial read, and the composer's send.
+  # The space feed (`/space/:slug`): its initial read, the composer's send, and
+  # the advisory banner's Ignore.
   @impl true
   def handle_in("space_feed", payload, socket), do: SpaceFeed.read(payload, socket)
 
   @impl true
   def handle_in("send_note", payload, socket), do: SpaceFeed.send_note(payload, socket)
+
+  @impl true
+  def handle_in("dismiss_queries", payload, socket),
+    do: SpaceFeed.dismiss_queries(payload, socket)
 
   @impl true
   def handle_in("create_invite", payload, socket), do: Invites.create_invite(payload, socket)

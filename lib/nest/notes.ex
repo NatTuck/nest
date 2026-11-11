@@ -56,6 +56,22 @@ defmodule Nest.Notes do
   that answered something else. Only a `:query` row is answered by it, and only
   one still outstanding.
 
+  ## `dismissed_at`
+
+  Set when the human **ignores** a query instead of answering it
+  (`dismiss_queries/3`): the advisory banner stops counting it and the note's
+  card says so, while the row stays in the feed — the feed is the log, and
+  dropping a nudge is not deleting what was said.
+
+  Nothing else happens. A query to a human creates no debt and no waiter
+  (`Nest.Agents.Agent.ToolLoop`'s confirmation says so), so there is nothing to
+  discharge and nothing to tell the agent: the one that asked is not notified,
+  and no note, inbox entry or runtime notice is written. That is deliberate, and
+  it is the one thing this column must never grow into.
+
+  Answering clears it (`mark_answered/3`), so a query is never both answered and
+  ignored.
+
   ## The feed
 
   `list_for/2` is "rows in this space where I am one end", ordered by `id` —
@@ -65,8 +81,9 @@ defmodule Nest.Notes do
 
   Every row this module writes broadcasts `{:user_note, %UserNote{}}` on the
   space's topic (`Nest.Agents.Agent.Broadcasts.space_topic/1`). `answered_at`
-  does **not** broadcast: it is the human's own action on their own query, and
-  the banner is advisory — the feed's read is the authority.
+  and `dismissed_at` do **not** broadcast: both are the human's own action on
+  their own query, and the banner is advisory — the feed's read is the
+  authority.
   """
 
   import Ecto.Query
@@ -196,6 +213,10 @@ defmodule Nest.Notes do
   to that human in this space gets the same timestamp. A plain `:agent` note
   answers nothing — only a `:query` was waiting for an answer — and a note back
   to a *different* agent answers only that agent's queries.
+
+  It also clears `dismissed_at`, because a query is never both answered and
+  ignored: a human who ignored a note and then replied has answered it, and that
+  is the stronger statement of the two.
   """
   @spec mark_answered(integer(), String.t(), String.t()) :: :ok
   def mark_answered(space_id, username, agent_name) do
@@ -206,9 +227,44 @@ defmodule Nest.Notes do
       where: n.from_kind == :agent and n.from_name == ^agent_name,
       where: is_nil(n.answered_at)
     )
-    |> Repo.update_all(set: [answered_at: Persistence.now()])
+    |> Repo.update_all(set: [answered_at: Persistence.now(), dismissed_at: nil])
 
     :ok
+  end
+
+  @doc """
+  Mark the queries `note_ids` in `space_id` addressed to `username` as ignored.
+
+  The advisory banner's Ignore, which names the rows it was showing rather than
+  "everything outstanding": a query that arrived since the banner was drawn is
+  not something the human has seen, and dismissing it would be a decision they
+  did not make.
+
+  The predicate is the authorization as well as the filter — the space, the
+  human, `:query`, and neither answered nor already dismissed — so an id that is
+  somebody else's, in another space, answered or already ignored changes
+  nothing, and calling this twice is a no-op. One statement, so there is no
+  read-then-write window.
+
+  **Nothing is told to the agent.** A query to a human creates no debt and no
+  waiter, so there is nothing to discharge; a dismissal is the human's own
+  business and the agent that asked hears nothing about it.
+
+  Returns the number of rows it changed.
+  """
+  @spec dismiss_queries(integer(), String.t(), [integer()]) :: {:ok, non_neg_integer()}
+  def dismiss_queries(space_id, username, note_ids) do
+    {count, _rows} =
+      from(n in UserNote,
+        where: n.id in ^note_ids,
+        where: n.space_id == ^space_id,
+        where: n.kind == :query,
+        where: n.to_kind == :user and n.to_name == ^username,
+        where: is_nil(n.answered_at) and is_nil(n.dismissed_at)
+      )
+      |> Repo.update_all(set: [dismissed_at: Persistence.now()])
+
+    {:ok, count}
   end
 
   # ---- private ----

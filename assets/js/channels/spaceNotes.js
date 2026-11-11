@@ -1,5 +1,6 @@
 /**
- * The space feed's pushes: its initial read and the composer's send.
+ * The space feed's pushes: its initial read, the composer's send, and the
+ * advisory banner's Ignore.
  *
  * The feed (`/space/:slug`) is the space's note log. Its frames arrive on the
  * **lobby** channel, which is already subscribed to every space topic the user
@@ -9,7 +10,7 @@
  * in `./lobby`, and the two pushes below are the only additions.
  *
  * Split from `./lobby` so that file stays under the source-line cap, and because
- * these two are the feed's whole transport rather than part of the space
+ * these three are the feed's whole transport rather than part of the space
  * management surface.
  */
 
@@ -88,5 +89,38 @@ export function sendSpaceNote(spaceId, to, content, mode, onOk, onError) {
     })
     .receive("timeout", () => {
       if (onError) onError(new Error("The server did not answer the send."));
+    });
+}
+
+/**
+ * Ignore the queries the banner is showing: `dismiss_queries` with their ids.
+ *
+ * The ids are the banner's own, so a query that arrived after it was drawn is
+ * not dismissed unseen — the server's predicate would skip it anyway, and the
+ * client must not claim a decision the human did not make.
+ *
+ * Nothing is told to the agent that asked: a query to a human creates no debt
+ * and no waiter, so a dismissal is the human's own business. The reply carries
+ * the count the server changed; the client applies the ids it sent to its own
+ * copy (`markSpaceQueriesDismissed`), because like `answered_at` this is not
+ * broadcast.
+ */
+export function dismissSpaceQueries(spaceId, noteIds, onOk, onError) {
+  if (!lobbyChannel) {
+    if (onError) onError(new Error(NOT_CONNECTED));
+    return;
+  }
+
+  lobbyChannel
+    .push("dismiss_queries", { space_id: spaceId, note_ids: noteIds })
+    .receive("ok", (resp) => {
+      getStore().markSpaceQueriesDismissed(spaceId, noteIds);
+      if (onOk) onOk(resp);
+    })
+    .receive("error", (err) => {
+      if (onError) onError(err);
+    })
+    .receive("timeout", () => {
+      if (onError) onError(new Error("The server did not answer the dismiss."));
     });
 }
