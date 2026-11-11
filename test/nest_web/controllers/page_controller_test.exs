@@ -19,9 +19,10 @@ defmodule NestWeb.PageControllerTest do
   """
 
   # Async: the shell reads `Nest.Hostname.get/0`, which is pinned to
-  # `"testhost"` by `config/test.exs`. Nothing in the suite mutates that config
-  # any more — `Nest.HostnameTest` exercises the fallback through `get/1`,
-  # which takes the override as an argument — so reading it concurrently is safe.
+  # `"testhost"` (and instance 2) by `config/test.exs`. Nothing in the suite
+  # mutates that config any more — `Nest.HostnameTest` exercises the fallback and
+  # the composition through `get/2`, which takes both values as arguments — so
+  # reading it concurrently is safe.
   use NestWeb.ConnCase, async: true
 
   alias Nest.Accounts
@@ -81,8 +82,10 @@ defmodule NestWeb.PageControllerTest do
 
       # Exact equality, not just "contains the host": no "Nest" and no
       # "Phoenix Framework" may survive in the tab.
-      assert LazyHTML.text(LazyHTML.query(document, "title")) == "testhost"
-      assert body =~ ~s(host: "testhost")
+      # The instance number is part of it: the pinned pair is `testhost` and
+      # instance 2, so this asserts the *composition* and not just the host.
+      assert LazyHTML.text(LazyHTML.query(document, "title")) == "testhost2"
+      assert body =~ ~s(host: "testhost2")
 
       icon = LazyHTML.query(document, ~s(link[rel="icon"]))
       assert LazyHTML.attribute(icon, "type") == ["image/svg+xml"]

@@ -15,7 +15,8 @@ runs more than one Nest instance against different projects — `vampire` and
 
 1. **Title format is `{host} · {space} · {agent}`**: parts joined by
    `" · "`, missing parts dropped, host always first. There is deliberately no
-   "Nest" in the title — the tab icon carries the app identity instead.
+   "Nest" in the title — the tab icon carries the app identity instead. (The
+   first segment later grew the instance number — `vampire2`; see decision 7.)
    - Host **first** rather than last because browsers truncate a tab title from
      the right. With two instances on the same space name,
      `my-space@vampire` and `my-space@typhon` both render as `my-space…`, which
@@ -38,12 +39,33 @@ runs more than one Nest instance against different projects — `vampire` and
 6. **Space name falls back to the route slug** when the store has not loaded
    the space yet (a hard load of a deep URL). The slug is real information, so
    it beats a blank or a placeholder.
+7. **The first segment is the *instance's* name, not just the machine's.** One
+   machine can run several instances — the `nest2` checkout, and the numbered
+   ones `scripts/start-instance.sh` starts — and their tabs are otherwise
+   identical, which is the same problem this record solved across machines. So
+   the checkout's instance number is appended when it has one: `vampire2`,
+   `vampire7`. The primary checkout keeps a bare `vampire`, and production has
+   no number at all (one instance per host).
+   - The number is the **trailing integer of the dev database name**
+     (`Nest.Config.Checkout.instance/0`): `nest_dev2` → 2, `nest7` → 7. That
+     string is already the one thing that distinguishes two installations on a
+     machine — `Nest.Sandbox.Installation` derives its docker names from it — and
+     it is what both the checkout table and the launcher set through
+     `NEST_DEV_DB`. The port would not do: `4040 + n` and `nest<n>` agree only by
+     convention, and a port is a transport detail.
+   - `Nest.Hostname.get/2` composes the two, so the server-rendered `<title>`
+     and `window.NEST_CONFIG.host` agree by construction and the client needed no
+     change. The `[missing host]` marker still carries the number: `[missing
+     host]2` says which instance even when it cannot say which machine.
+   - The one case with no number is the scratch slot (`nest_dev_scratch`, port
+     4044), which two unnamed worktrees share by design; they stay
+     indistinguishable in a tab, as they already were in every other way.
 
 ## What changed
 
 | area | change |
 |---|---|
-| `lib/nest/hostname.ex` | new: `Nest.Hostname.get/0` with the override → `:inet.gethostname/0` → `[missing host]` chain |
+| `lib/nest/hostname.ex` | new: `Nest.Hostname.get/0` with the override → `:inet.gethostname/0` → `[missing host]` chain, and (decision 7) the instance number appended by `get/2` |
 | `config/test.exs` | pins `config :nest, :hostname, "testhost"` so tests never assert the machine they run on |
 | `root.html.heex` | `live_title` → plain `<title>{Nest.Hostname.get()}</title>`; added the icon `<link>`; added `host` to `NEST_CONFIG` |
 | `assets/static/favicon.svg` | new: the mark (source of truth — see below) |

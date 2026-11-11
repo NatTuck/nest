@@ -46,6 +46,29 @@ defmodule Nest.Config.CheckoutTest do
     end
   end
 
+  describe "the instance number the page title carries" do
+    test "is the trailing integer of the dev database name, and nothing else" do
+      # The number, not the whole name: `nest_dev2` is instance 2 and `nest7` is
+      # instance 7, which are the two spellings the checkout table and
+      # `scripts/start-instance.sh` actually produce.
+      assert Checkout.instance("nest_dev") == nil
+      assert Checkout.instance("nest_dev_scratch") == nil
+      assert Checkout.instance("nest_dev2") == 2
+      assert Checkout.instance("nest7") == 7
+    end
+
+    test "follows NEST_DEV_DB, so a checkout pointed at nest7 is instance 7" do
+      # The launcher sets `NEST_DEV_DB` rather than naming a checkout, so the
+      # override is the only way `./scripts/start-instance.sh 7` gets a number
+      # from a checkout called `nest`.
+      System.put_env("NEST_DEV_DB", "nest7")
+      assert Checkout.instance() == 7
+
+      System.put_env("NEST_DEV_DB", "nest_dev")
+      assert Checkout.instance() == nil
+    end
+  end
+
   describe "the overrides win" do
     test "NEST_DEV_DB and NEST_PORT beat the table" do
       System.put_env("NEST_DEV_DB", "nest_dev_scratch2")
