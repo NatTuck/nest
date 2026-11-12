@@ -64,6 +64,12 @@ config :nest, docker_runner: fn _argv -> {"", 0} end
 # fixed name instead of whatever machine they happen to run on.
 config :nest, :hostname, "testhost"
 
+# ...and pin the instance number too, so the layout test proves the *composition*
+# (`testhost2`) and not only `Nest.Hostname.get/2`. Deriving it from the checkout
+# would make the title depend on which checkout runs the suite — `testhost2` in
+# `nest2`, `testhost` here — which is the same trap pinning the hostname avoids.
+config :nest, :instance, 2
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :nest, NestWeb.Endpoint,

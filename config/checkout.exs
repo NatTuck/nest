@@ -89,6 +89,42 @@ defmodule Nest.Config.Checkout do
     }
   end
 
+  @doc """
+  The number this checkout is an instance *of*, or `nil` when it has none.
+
+  The page title is `{instance} · {space} · {agent}` (see `Nest.Hostname`), and a
+  machine can run several instances whose tabs are otherwise identical: the
+  `nest2` checkout should read `vampire2` and `scripts/start-instance.sh 7`
+  should read `vampire7`. The primary checkout has no number, so its tabs stay
+  `vampire`.
+
+  The number is the **trailing integer of the dev database name** — `nest_dev2`
+  is 2 and `nest7` is 7 — because that string is already the one thing that
+  distinguishes two installations on a machine (`Nest.Sandbox.Installation`
+  derives its docker names from it), and it is what both the table above and the
+  launcher set through `NEST_DEV_DB`.
+
+  The *port* would not do, even though the two happen to agree today: a port is a
+  transport detail, and nothing but convention keeps `4040 + n` and `nest<n>` in
+  step.
+  """
+  @spec instance() :: non_neg_integer() | nil
+  def instance, do: instance(dev().database)
+
+  @doc """
+  The instance number in a dev database name, or `nil` when it has none.
+
+  Taking the name as an argument is what lets a test pin the rule without
+  setting `NEST_DEV_DB` — the same reason `dev/1` takes one.
+  """
+  @spec instance(String.t()) :: non_neg_integer() | nil
+  def instance(database) when is_binary(database) do
+    case Regex.run(~r/(\d+)$/, database) do
+      [_match, digits] -> String.to_integer(digits)
+      nil -> nil
+    end
+  end
+
   @doc "The test database name, for this checkout."
   @spec test_database() :: String.t()
   def test_database, do: test_database(name())

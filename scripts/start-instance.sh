@@ -8,7 +8,7 @@
 # - database: nest7, created, migrated and seeded on first run. Every step
 #   is idempotent (`ecto.create` exits 0 on an existing database, migrations
 #   are versioned, the seeds upsert), so re-running the setup is harmless.
-# - port: 4047 (= 4000 + n).
+# - port: 4047 (= 4040 + n).
 # - watchers: off (`NEST_NO_WATCHERS=1`). The watchers build into this
 #   checkout's priv/static, and this instance usually runs alongside the
 #   checkout's own server, whose watchers are already building there — two

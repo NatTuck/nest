@@ -9,6 +9,14 @@ Code.require_file("checkout.exs", __DIR__)
 # running `nest2` and renamed rows in it).
 dev_inst = Nest.Config.Checkout.dev()
 
+# The instance number the page title carries (`Nest.Hostname`): the `nest2`
+# checkout titles itself `vampire2`, and `scripts/start-instance.sh 7` titles
+# itself `vampire7`. Derived from the dev database name, which is already what
+# distinguishes one installation from another — see
+# `Nest.Config.Checkout.instance/0`. Unset in production, where there is one
+# instance per host and this file is not loaded.
+config :nest, :instance, Nest.Config.Checkout.instance()
+
 # Configure your database
 config :nest, Nest.Repo,
   username: System.fetch_env!("USER"),
