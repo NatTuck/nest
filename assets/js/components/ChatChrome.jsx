@@ -14,7 +14,7 @@
  */
 
 import { ChatHeader } from "./ChatHeader";
-import { ChatTabs } from "./ChatTabs";
+import { CHAT_TAB, ChatTabs, tabName } from "./ChatTabs";
 import { ModelMissingBanner } from "./ModelMissingBanner";
 import { NeedsRepairBanner } from "./NeedsRepairBanner";
 import { NotificationBanner } from "./NotificationBanner";
@@ -89,6 +89,12 @@ export function ChatChrome({
           contextLimit={contextLimit}
           status={status}
           streaming={streaming}
+          waitingCount={waitingCount}
+          tab={tab}
+          viewName={tab === CHAT_TAB ? null : tabName(tab)}
+          jobCount={jobCount}
+          hasPane={hasPane}
+          onSelectTab={onSelectTab}
           onModelPickerOpen={onModelPickerOpen}
           getStatusLabel={() => statusLabel}
         />
@@ -163,15 +169,15 @@ export function ChatChrome({
         message list, where a handful of jobs pushed the conversation
         off screen. `shrink-0`: the tab bar is chrome the conversation
         must not squeeze, and it is what the chrome region above shrinks
-        against. */}
+        against. Below `lg` the bar is `max-lg:hidden` and the views open
+        from the header's chevron instead — the phone keeps one row above
+        the conversation, not two. */}
       <div className="shrink-0">
         <ChatTabs
           active={tab}
           onSelect={onSelectTab}
           jobCount={jobCount}
           trailing={paneToggle}
-          hasPane={hasPane}
-          waitingCount={waitingCount}
         />
       </div>
     </>

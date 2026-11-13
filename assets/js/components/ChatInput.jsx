@@ -1,15 +1,20 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { ModeSelector } from "./ModeSelector";
 import { commandSuggestions } from "../utils/slashCommands.js";
-
-const MAX_HEIGHT_PX = 240;
 
 /**
  * Auto-resizing chat text input with optional mode selector.
  *
  * Behavior:
- * - Renders a multi-line textarea (default 2 rows) that grows with content
- *   up to MAX_HEIGHT_PX, then scrolls internally.
+ * - Renders a multi-line textarea (one row below `lg`, `lg:min-h-[68px]` from
+ *   `lg` up) that grows with content up to the stylesheet's cap — four lines
+ *   below `lg`, `max-h-[240px]` from `lg` up — then scrolls internally.
  * - Enter inserts a newline.
  * - Ctrl+Enter or Meta+Enter (Cmd on macOS) sends.
  * - Ctrl+Up / Ctrl+Down (and Cmd+Up / Cmd+Down on macOS) walks the
@@ -97,14 +102,48 @@ export function ChatInput({
   const [cursor, setCursor] = useState(-1);
   const [draft, setDraft] = useState("");
 
+  // The **cap is the stylesheet's** (`max-h-[240px]`, and four lines below
+  // `lg`), not a number here: a phone and a desktop need different caps, and
+  // this project decides a width in a `lg:` class rather than in JS. So the
+  // height is the content's own and `max-height` clamps it — and the only
+  // question left is whether it is overflowing, which `clientHeight` answers at
+  // either cap.
+  //
+  // Written explicitly rather than left to the class's `overflow-y-auto`: a
+  // field that *fits* must have no scrollbar at all, because a scrollbar
+  // narrows the field and reflows the text it is measuring.
+  const syncOverflow = useCallback((el) => {
+    const next = el.scrollHeight > el.clientHeight ? "auto" : "hidden";
+    if (el.style.overflowY !== next) el.style.overflowY = next;
+  }, []);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: only `value` should retrigger resize
   useLayoutEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT_PX)}px`;
-    el.style.overflowY = el.scrollHeight > MAX_HEIGHT_PX ? "auto" : "hidden";
+    el.style.height = `${el.scrollHeight}px`;
+    syncOverflow(el);
   }, [value]);
+
+  // A breakpoint crossing changes the cap — four lines below `lg`, `max-h-[240px]`
+  // from `lg` up — **without changing the value**, so the effect above does not
+  // re-run: a five-line draft that fitted a wide window would keep the wide
+  // cap's `overflow-y: hidden` after the window narrowed, and the extra lines
+  // would be clipped with no scrollbar until the next keystroke.
+  //
+  // The element's own resize is the signal, and it is not a viewport read: the
+  // stylesheet still decides the cap, and this only re-asks whether the box
+  // overflows it. Guarded, because jsdom has no `ResizeObserver` — there the
+  // tests drive `syncOverflow` through a stub instead.
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(() => syncOverflow(el));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [syncOverflow]);
 
   // Reset history navigation whenever the parent hands us a new
   // history array (agent change, or the underlying messages list
@@ -217,7 +256,12 @@ export function ChatInput({
       <button
         type="submit"
         disabled={sendDisabled}
-        className={`px-4 py-3 rounded-lg font-semibold text-white transition-all duration-200 leading-tight sm:px-6 max-lg:ml-auto ${
+        // `max-lg:py-0.5` halves the button below `lg` (44px -> 24px): the
+        // controls row is the composer's second line on a phone, and the
+        // conversation needs the height more than the button needs the padding.
+        // This is a deliberate exception to the 44px phone targets elsewhere in
+        // this file — do not "fix" it back.
+        className={`px-4 py-3 rounded-lg font-semibold text-white transition-all duration-200 leading-tight sm:px-6 max-lg:ml-auto max-lg:py-0.5 ${
           sendDisabled
             ? "bg-gray-400 cursor-not-allowed"
             : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
@@ -244,7 +288,7 @@ export function ChatInput({
           type="button"
           disabled
           aria-label="Stopping"
-          className="px-4 py-3 rounded-lg font-semibold text-white bg-red-400 cursor-not-allowed leading-tight flex items-center justify-center gap-2 sm:px-6"
+          className="px-4 py-3 rounded-lg font-semibold text-white bg-red-400 cursor-not-allowed leading-tight flex items-center justify-center gap-2 sm:px-6 max-lg:py-0.5"
         >
           <svg
             className="animate-spin h-4 w-4"
@@ -276,7 +320,7 @@ export function ChatInput({
         type="button"
         onClick={onStop}
         aria-label="Stop"
-        className="px-4 py-3 rounded-lg font-semibold text-white bg-red-600 hover:bg-red-700 active:bg-red-800 transition-all duration-200 leading-tight sm:px-6"
+        className="px-4 py-3 rounded-lg font-semibold text-white bg-red-600 hover:bg-red-700 active:bg-red-800 transition-all duration-200 leading-tight sm:px-6 max-lg:py-0.5"
       >
         Stop
         <span className="block text-xs font-normal opacity-75 max-sm:hidden">
@@ -373,8 +417,14 @@ export function ChatInput({
             aria-label="Message"
             aria-keyshortcuts="Control+ArrowUp Control+ArrowDown Meta+ArrowUp Meta+ArrowDown Control+Enter Meta+Enter Control+m Meta+m"
             title="Enter to newline • Ctrl/Cmd+Enter to send • Ctrl/Cmd+Up/Down to walk previous prompts • Ctrl/Cmd+M to cycle modes"
-            className="flex-1 min-w-0 px-4 py-3 border border-gray-300 rounded-lg resize-none overflow-y-auto leading-snug focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed max-lg:basis-full lg:min-h-[68px]"
-            style={{ maxHeight: `${MAX_HEIGHT_PX}px` }}
+            // `max-lg:max-h-[7.125rem]` is four lines **at the textarea's
+            // inherited 16px**: `leading-snug` is 1.375, so 4 x 22px, plus
+            // `py-3` twice and the two borders, in a border-box. A `text-sm` on
+            // this element would silently make the same cap ~4.5 lines. Past
+            // it the field scrolls instead of eating the conversation — the
+            // whole point of the cap on a phone, where ten lines of draft was
+            // most of the screen.
+            className="flex-1 min-w-0 px-4 py-3 border border-gray-300 rounded-lg resize-none overflow-y-auto leading-snug focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed max-lg:max-h-[7.125rem] max-lg:basis-full max-h-[240px] lg:min-h-[68px]"
           />
           {modes && modes.length > 1 && onModeChange && (
             <ModeSelector

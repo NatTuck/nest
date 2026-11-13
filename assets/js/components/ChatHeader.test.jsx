@@ -101,6 +101,10 @@ describe("ChatHeader", () => {
     // hover tooltip the desktop never had and a phone cannot use.
     const heading = screen.getByRole("heading", { name: /alpha/ });
     expect(heading.className).toContain("max-lg:line-clamp-2");
+    // ...and it is smaller on a phone: the header is the one row the phone
+    // spends above the conversation, and a 24px name in it is the tallest thing
+    // on the line.
+    expect(heading.className).toContain("max-lg:text-lg");
     expect(heading).not.toHaveAttribute("title");
 
     // From `lg` up the vocation rides on the heading, now with the space it was
@@ -181,5 +185,79 @@ describe("ChatHeader", () => {
       screen.getByRole("button", { name: "Change model" }).className,
     ).toMatch(/bg-amber-100/);
     expect(screen.getByText("could not switch model")).toBeInTheDocument();
+  });
+});
+
+describe("ChatHeader phone signals", () => {
+  beforeEach(cleanup);
+
+  it("puts the waiting questions on the chevron, not behind it", () => {
+    render(header({ waitingCount: 2 }));
+
+    // The pane's view is behind this disclosure now, so a count on it would be a
+    // signal the reader has to open the panel to see. It rides the chevron, and
+    // the count is part of the accessible name — not colour-and-digit only.
+    const toggle = screen.getByRole("button", {
+      name: "Agent details, 2 questions waiting",
+    });
+    const badge = screen.getByTestId("phone-waiting-badge");
+    expect(toggle).toContainElement(badge);
+    expect(badge).toHaveTextContent("2");
+    expect(badge.querySelector(".bg-amber-500")).not.toBeNull();
+  });
+
+  it("says nothing about waiting when nothing is", () => {
+    render(header());
+
+    // The plain name, and no badge: a "0" would be a signal that never goes away.
+    expect(
+      screen.getByRole("button", { name: "Agent details" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("phone-waiting-badge")).toBeNull();
+  });
+
+  it("renders the phone's view group only while the disclosure is open", () => {
+    render(header({ tab: "chat", hasPane: true }));
+
+    // Closed: the header is one row, and nothing hidden is in the tree — the
+    // reason the group is rendered rather than hidden with a class.
+    expect(screen.queryByTestId("phone-tabs")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Agent details" }));
+
+    // The same views the desktop's bar offers, with the pane's third one.
+    expect(screen.getByTestId("phone-tabs")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Pane" })).toBeInTheDocument();
+  });
+
+  it("closes the disclosure when a view is picked, and reports it", () => {
+    const onSelectTab = vi.fn();
+    render(header({ tab: "chat", hasPane: true, onSelectTab }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Agent details" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Pane" }));
+
+    expect(onSelectTab).toHaveBeenCalledWith("pane");
+
+    // A menu left open over the view it opened is in the way of that view.
+    expect(screen.queryByTestId("phone-tabs")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Agent details" }),
+    ).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("names the view when it is not the conversation", () => {
+    const { rerender } = render(header({ viewName: null, tab: "chat" }));
+
+    // The conversation is the default and needs no label; the other views do,
+    // because the phone has no bar and the composer disappears on them.
+    expect(screen.queryByTestId("active-view-chip")).toBeNull();
+
+    rerender(header({ viewName: "Shell jobs", tab: "jobs" }));
+
+    const chip = screen.getByTestId("active-view-chip");
+    expect(chip).toHaveTextContent("Shell jobs");
+    // Phone only: from `lg` up the tab bar says which view is showing.
+    expect(chip.className).toContain("lg:hidden");
   });
 });

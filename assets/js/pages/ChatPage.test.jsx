@@ -2804,13 +2804,14 @@ describe("ChatPage right-hand pane (#119 / #120)", () => {
 });
 
 describe("ChatPage pane as a phone tab (#169)", () => {
-  // Below `lg` the pane is the chat page's third tab and its content takes the
-  // main column; the `PaneToggle` in the tab bar's trailing slot is the
-  // desktop's control and is hidden there. jsdom evaluates no media query, so
-  // the two halves are pinned as they are built: the tab's `lg:hidden`, the
-  // slot's `hidden`, and the fact that selecting the tab really does put the
-  // pane's content in the column. The breakpoint crossing itself — the one case
-  // that is not a style — is driven through the media-query stub.
+  // Below `lg` the pane is one of the chat page's views, opened from the
+  // header's chevron (`PhoneTabs`), and its content takes the main column; the
+  // `PaneToggle` in the tab bar's trailing slot is the desktop's control and is
+  // hidden there. jsdom evaluates no media query, so the two halves are pinned
+  // as they are built: the view group's `lg:hidden`, the slot's `hidden`, and
+  // the fact that picking the view really does put the pane's content in the
+  // column. The breakpoint crossing itself — the one case that is not a style —
+  // is driven through the media-query stub.
   const decision = {
     id: "d1",
     title: "Ship or wait?",
@@ -2836,9 +2837,9 @@ describe("ChatPage pane as a phone tab (#169)", () => {
     error: null,
   };
 
-  // The tab's accessible name carries the waiting count, so the signal is not
-  // colour-and-digit only. The frame above leaves one question outstanding.
-  const paneTabName = "Pane, 1 question waiting";
+  // The chevron's accessible name carries the waiting count, so the signal is
+  // not colour-and-digit only. The frame above leaves one question outstanding.
+  const detailsName = "Agent details, 1 question waiting";
 
   // jsdom has no `matchMedia`; the tests that cross the breakpoint install this
   // and fire the query's own `change` event.
@@ -2861,11 +2862,14 @@ describe("ChatPage pane as a phone tab (#169)", () => {
     media = undefined;
   });
 
-  it("offers no pane tab until a frame for the space has arrived", () => {
+  it("offers no pane view until a frame for the space has arrived", () => {
     renderChat();
 
-    // There is nothing to show yet, so there is no tab that opens an empty
-    // view — the same rule that keeps `PaneToggle` absent until then.
+    // There is nothing to show yet, so there is no control that opens an empty
+    // view — the same rule that keeps `PaneToggle` absent until then. The
+    // disclosure is opened first, or the assertion would pass for the wrong
+    // reason: the phone's whole view group is behind it.
+    fireEvent.click(screen.getByRole("button", { name: "Agent details" }));
     expect(screen.queryByRole("tab", { name: "Pane" })).toBeNull();
   });
 
@@ -2882,22 +2886,29 @@ describe("ChatPage pane as a phone tab (#169)", () => {
     expect(toggleSlot.className).toContain("hidden");
     expect(toggleSlot.className).toContain("lg:block");
 
-    const paneTab = screen.getByRole("tab", { name: paneTabName });
+    // The views open from the chevron, and the waiting count rides the chevron
+    // itself: it used to ride the pane's tab, and that tab is behind this
+    // disclosure — a signal you have to open a disclosure to see is not one.
+    const details = screen.getByRole("button", { name: detailsName });
+    expect(screen.getByTestId("phone-waiting-badge")).toHaveTextContent("1");
+
+    fireEvent.click(details);
+
+    const paneTab = screen.getByRole("tab", { name: "Pane" });
     expect(paneTab).toHaveAttribute("aria-selected", "false");
-    // The question waiting in this frame is announced on the tab itself: on a
-    // phone the desktop's `PaneToggle` (and its amber pill) is not on screen.
-    expect(screen.getByTestId("pane-tab-waiting")).toHaveTextContent("1");
     // The conversation is what the column shows until the tab is picked.
     expect(screen.getByLabelText("Message")).toBeInTheDocument();
     expect(screen.queryByText("write the tests")).toBeNull();
 
     fireEvent.click(paneTab);
 
-    expect(paneTab).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("tab", { name: "Chat" })).toHaveAttribute(
-      "aria-selected",
-      "false",
-    );
+    // Picking a view closes the disclosure it was picked from: the panel is a
+    // menu, and a menu left open over the view it opened is in the way.
+    expect(screen.queryByRole("tab", { name: "Pane" })).toBeNull();
+
+    // With no bar to say it, the header names the view. The alternative is a
+    // page that changed underneath the reader — the composer is gone too.
+    expect(screen.getByTestId("active-view-chip")).toHaveTextContent("Pane");
 
     // The pane's own content, in the page's main column: the TODO list and the
     // question, not the closed desktop column (`PanePanel` renders nothing).
@@ -2922,11 +2933,9 @@ describe("ChatPage pane as a phone tab (#169)", () => {
     mockPanes = { 1: { ...frame, collapsed: true } };
     renderChat();
 
-    fireEvent.click(screen.getByRole("tab", { name: paneTabName }));
-    expect(screen.getByRole("tab", { name: paneTabName })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
+    fireEvent.click(screen.getByRole("button", { name: detailsName }));
+    fireEvent.click(screen.getByRole("tab", { name: "Pane" }));
+    expect(screen.queryByLabelText("Message")).toBeNull();
 
     // The window widens past `lg`, where the pane tab is `lg:hidden`. Without
     // this the bar would show no selected tab at all, with the pane's content in
@@ -2945,7 +2954,8 @@ describe("ChatPage pane as a phone tab (#169)", () => {
     mockPanes = { 1: { ...frame } };
 
     const { rerender } = renderChat();
-    fireEvent.click(screen.getByRole("tab", { name: paneTabName }));
+    fireEvent.click(screen.getByRole("button", { name: /Agent details/ }));
+    fireEvent.click(screen.getByRole("tab", { name: "Pane" }));
     expect(screen.queryByLabelText("Message")).toBeNull();
 
     // A frame for another space replaces this one's, so the tab has nothing left
@@ -2959,6 +2969,9 @@ describe("ChatPage pane as a phone tab (#169)", () => {
       </MemoryRouter>,
     );
 
+    // Open the panel before asserting: with it closed there is no view control
+    // at all, and the assertion would pass for the wrong reason.
+    fireEvent.click(screen.getByRole("button", { name: /Agent details/ }));
     expect(screen.queryByRole("tab", { name: "Pane" })).toBeNull();
     expect(screen.getByLabelText("Message")).toBeInTheDocument();
   });
