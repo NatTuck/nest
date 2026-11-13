@@ -21,6 +21,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronDown } from "./ChevronDown";
+import { PhoneTabs } from "./ChatTabs";
 import { TokenUsageChip } from "./TokenUsageChip";
 
 export function ChatHeader({
@@ -38,12 +39,37 @@ export function ChatHeader({
   contextLimit,
   status,
   streaming,
+  // The pane's waiting questions. The badge on the chevron is the phone's only
+  // signal that something wants an answer: it used to ride the pane's tab, and
+  // the tab is behind this chevron now, so a signal there would be one the
+  // reader has to open a disclosure to see.
+  waitingCount = 0,
+  // The view this page is showing, when it is not the conversation — the chip
+  // below. A phone has no tab bar to say "you are in Shell jobs", and the
+  // composer disappears on those views, so without this the page silently
+  // becomes a different page.
+  viewName = null,
+  // The view showing, and the views there are to show. The header renders the
+  // phone's group itself rather than taking it as a node, because picking a view
+  // has to close the disclosure it was picked from: the panel is a menu, and a
+  // menu left open over the view it opened is in the way of that view.
+  tab = null,
+  jobCount = 0,
+  hasPane = false,
+  onSelectTab = null,
   onModelPickerOpen,
   getStatusLabel,
 }) {
   // Closed on every mount, and per agent: the disclosure is a phone convenience,
   // not a preference, so it does not belong in the store.
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const toggleDetails = () => setDetailsOpen((open) => !open);
+
+  // Picking a view closes the panel it was picked from.
+  const pickView = (id) => {
+    setDetailsOpen(false);
+    if (onSelectTab) onSelectTab(id);
+  };
   // Appended to every element the disclosure hides. Inert from `lg` up, which is
   // what keeps the desktop expanded without a second branch.
   const detailClass = detailsOpen ? "" : "max-lg:hidden";
@@ -63,7 +89,7 @@ export function ChatHeader({
               to two lines: one ellipsised line is not readable either, and a
               phone has no hover to reveal the rest. */}
           <div className="flex items-start gap-2 lg:block">
-            <h1 className="min-w-0 text-2xl font-bold text-gray-900 max-lg:line-clamp-2">
+            <h1 className="min-w-0 text-2xl font-bold text-gray-900 max-lg:text-lg max-lg:line-clamp-2">
               {name}
               {vocation?.name && (
                 <span className="hidden text-gray-500 font-normal lg:inline">
@@ -72,6 +98,18 @@ export function ChatHeader({
                 </span>
               )}
             </h1>
+            {/* Phone only: the view this page is showing, when it is not the
+                conversation. Nothing else on a phone says so — the tab bar is a
+                desktop band now — and the composer is absent on the other views,
+                so the alternative is a page that changed underneath the reader. */}
+            {viewName && (
+              <span
+                data-testid="active-view-chip"
+                className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 lg:hidden"
+              >
+                {viewName}
+              </span>
+            )}
             {/* Phone only: the dot is the one piece of the status row that stays
                 on the line, so it carries the label for a screen reader (a
                 colour alone is not a status). */}
@@ -83,12 +121,31 @@ export function ChatHeader({
               />
               <button
                 type="button"
-                onClick={() => setDetailsOpen((open) => !open)}
+                onClick={toggleDetails}
                 aria-expanded={detailsOpen}
-                aria-label="Agent details"
-                className="inline-flex h-11 w-11 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-gray-100 active:bg-gray-200"
+                // The badge is a number and a colour; the name has to carry both,
+                // which is the rule the pane's tab followed before the signal
+                // moved here.
+                aria-label={
+                  waitingCount > 0
+                    ? `Agent details, ${waitingCount} question${waitingCount === 1 ? "" : "s"} waiting`
+                    : "Agent details"
+                }
+                className="relative inline-flex h-11 w-11 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-gray-100 active:bg-gray-200"
               >
                 <ChevronDown rotated={detailsOpen} />
+                {waitingCount > 0 && (
+                  <span
+                    data-testid="phone-waiting-badge"
+                    className="absolute -top-0.5 -right-0.5 flex items-center gap-0.5 rounded-full bg-amber-100 px-1 text-[10px] leading-4 font-semibold text-amber-900"
+                  >
+                    <span
+                      className="h-1.5 w-1.5 rounded-full bg-amber-500"
+                      aria-hidden="true"
+                    />
+                    {waitingCount}
+                  </span>
+                )}
               </button>
             </div>
           </div>
@@ -176,6 +233,22 @@ export function ChatHeader({
             <span className="text-sm text-gray-400">{getStatusLabel()}</span>
           </div>
         </div>
+        {/* The phone's views. Rendered only while the disclosure is open: the
+            closed header is one row, and a hidden tablist would still be in the
+            accessibility tree of anything that does not apply the stylesheet.
+            `lg:hidden` covers the one way it can be open at `lg` — a window
+            widened with the panel open — because there the bar above is the
+            control. */}
+        {detailsOpen && (
+          <div className="border-t border-gray-200 pt-2 lg:hidden">
+            <PhoneTabs
+              active={tab}
+              onSelect={pickView}
+              jobCount={jobCount}
+              hasPane={hasPane}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
