@@ -341,6 +341,39 @@ describe("ChatInput", () => {
       expect(textarea.style.overflowY).toBe("hidden");
     });
 
+    it("re-asks whether the field overflows when the box is re-clamped", () => {
+      // A breakpoint crossing changes the cap *without* changing the value, so
+      // the resize effect does not re-run: without this, a draft that fitted a
+      // wide window keeps the wide cap's `overflow-y: hidden` after the window
+      // narrows, and the extra lines are clipped with no scrollbar. jsdom has no
+      // `ResizeObserver`, so this installs one and fires it the way the browser
+      // would — the element's own box changed.
+      let fire;
+      const original = global.ResizeObserver;
+      global.ResizeObserver = class {
+        constructor(callback) {
+          fire = callback;
+        }
+        observe() {}
+        disconnect() {}
+      };
+
+      try {
+        const { textarea, rerender, onChange } = setup();
+        mockHeights(textarea, { content: 300, box: 300 });
+        resizeTo(rerender, onChange, "a\nb\nc\nd\ne");
+        expect(textarea.style.overflowY).toBe("hidden");
+
+        // The window narrows: the same content now overflows the four-line cap.
+        mockHeights(textarea, { content: 300, box: 114 });
+        fire();
+
+        expect(textarea.style.overflowY).toBe("auto");
+      } finally {
+        global.ResizeObserver = original;
+      }
+    });
+
     it("carries both caps as classes, so the phone's four lines are the stylesheet's", () => {
       // The phone's cap is four lines: 4 x 22px at `leading-snug`, plus `py-3`
       // and the borders, in a border-box. A composer that grew to ten lines on

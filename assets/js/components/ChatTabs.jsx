@@ -56,6 +56,11 @@ function tabClass(active) {
   ].join(" ");
 }
 
+// `py-1` is ~24px tall — the same halving the composer's row gets (`ChatInput`'s
+// Send/Stop and `ModeSelector`'s toggle), and the same deliberate exception to
+// this codebase's 44px phone targets. It is defensible here because these sit in
+// a disclosure the reader opened on purpose, and they are wider than they are
+// tall.
 function phoneTabClass(active) {
   return [
     "inline-flex items-center justify-center rounded-md border px-2 py-1 text-xs font-medium transition-colors",
