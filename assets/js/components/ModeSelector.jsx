@@ -78,11 +78,13 @@ function ModeToggle({ modes, value, onChange, disabled }) {
           onClick={() => onChange(mode)}
           disabled={disabled}
           aria-pressed={mode === value}
-          // `max-lg:py-0.5` matches the Send and Stop buttons beside it: the
-          // controls row is halved on a phone (see `ChatInput`), and this toggle
-          // sits in that row. A deliberate exception to the 44px phone targets
-          // elsewhere — do not "fix" it back.
-          className={`px-3 py-3 transition-colors disabled:cursor-not-allowed max-lg:px-2 max-lg:py-0.5 ${
+          // `max-lg:py-1` puts this toggle's buttons at 28px, so the `fieldset`
+          // around them — which adds its own 1px borders — is 30px: the same
+          // height as the Send and Stop buttons, which stretch to the tallest
+          // item in the row. Measured in a real browser, not guessed. A
+          // deliberate exception to the 44px phone targets elsewhere — do not
+          // "fix" it back.
+          className={`px-3 py-3 transition-colors disabled:cursor-not-allowed max-lg:px-2 max-lg:py-1 ${
             mode === value
               ? "bg-blue-600 text-white"
               : "hover:bg-gray-50 disabled:bg-gray-100"

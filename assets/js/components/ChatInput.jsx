@@ -256,11 +256,12 @@ export function ChatInput({
       <button
         type="submit"
         disabled={sendDisabled}
-        // `max-lg:py-0.5` halves the button below `lg` (44px -> 24px): the
+        // `max-lg:py-0.5` takes the button below `lg` from 44px to 30px: the
         // controls row is the composer's second line on a phone, and the
         // conversation needs the height more than the button needs the padding.
-        // This is a deliberate exception to the 44px phone targets elsewhere in
-        // this file — do not "fix" it back.
+        // 2 + 2 around the 26px line box is 30 — measured in a real browser, not
+        // guessed. This is a deliberate exception to the 44px phone targets
+        // elsewhere in this file; do not "fix" it back.
         className={`px-4 py-3 rounded-lg font-semibold text-white transition-all duration-200 leading-tight sm:px-6 max-lg:ml-auto max-lg:py-0.5 ${
           sendDisabled
             ? "bg-gray-400 cursor-not-allowed"
@@ -269,8 +270,10 @@ export function ChatInput({
       >
         Send
         {/* A phone has no Ctrl key, and the sublabel costs the textarea width
-            that a 375px row cannot spare. */}
-        <span className="block text-xs font-normal opacity-75 max-sm:hidden">
+            that a 375px row cannot spare. Below `lg`, not below `sm`: a
+            landscape phone is wider than `sm`, and there the second line made
+            the whole controls row taller than the 30px it is meant to be. */}
+        <span className="block text-xs font-normal opacity-75 max-lg:hidden">
           Ctrl+Enter
         </span>
       </button>

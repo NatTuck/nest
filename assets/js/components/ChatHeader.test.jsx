@@ -1,23 +1,29 @@
 /**
  * Tests for `js/components/ChatHeader.jsx`.
  *
- * Covers the agent name/vocation heading, the clickable model chip
- * (provider prefix, `[missing]` fallback, and the `model_missing`
- * highlight), the parent lineage link, and the change-model error.
+ * Two shapes, and the tests keep them apart by the two `data-testid`s the
+ * component puts on them: `phone-header` (the bar's row and its disclosure) and
+ * `desktop-header` (the header in the column). Both are in the DOM — which one a
+ * reader sees is `lg:hidden` / `hidden lg:block`, decided in the stylesheet — so
+ * a test that queried the page globally would be asking about two elements.
+ *
  * `TokenUsageChip` is mocked; its behaviour has its own tests.
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  cleanup,
+  within,
+} from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { ChatHeader } from "./ChatHeader";
+import { PhoneBarSlotContext } from "./PhoneBarSlot";
 
 vi.mock("./TokenUsageChip", () => ({
-  // `className` is forwarded: the header folds the chip into its phone
-  // disclosure by passing one, and that is what these tests assert on.
-  TokenUsageChip: ({ className }) => (
-    <div data-testid="usage-chip" className={className} />
-  ),
+  TokenUsageChip: () => <div data-testid="usage-chip" />,
 }));
 
 function header(overrides = {}) {
@@ -47,15 +53,16 @@ function header(overrides = {}) {
   );
 }
 
+const phone = () => within(screen.getByTestId("phone-header"));
+const panel = () => within(screen.getByTestId("phone-panel"));
+const desktop = () => within(screen.getByTestId("desktop-header"));
+const openDetails = () =>
+  fireEvent.click(screen.getByRole("button", { name: /^Agent details/ }));
+
 describe("ChatHeader", () => {
   beforeEach(cleanup);
 
-  it("folds the phone header into one line and opens the rest from the chevron", () => {
-    // A phone with a browser toolbar and the OS nav bar has well under 844px; the
-    // four-line header left the transcript about two lines of text. Below `lg` the
-    // header is the name, the status dot and a chevron, and everything else is a
-    // disclosure that starts closed. `max-lg:hidden` is the switch, so from `lg` up
-    // the desktop header is always expanded and nothing here changes it.
+  it("is one row on a phone: the name, the dot and the disclosure", () => {
     render(
       header({
         vocation: { name: "Builder" },
@@ -63,138 +70,80 @@ describe("ChatHeader", () => {
       }),
     );
 
-    const toggle = screen.getByRole("button", { name: "Agent details" });
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    // The chevron and the dot live in a phone-only row beside the name.
-    expect(toggle.parentElement.className).toContain("lg:hidden");
+    // The row is a fixed 44px — the height of the control that ends it — and the
+    // name truncates rather than wrapping, because a bar that wraps is two rows
+    // again.
+    const row = screen.getByTestId("phone-header");
+    expect(row.className).toContain("h-11");
+    expect(row.className).toContain("items-center");
 
-    const modelChip = screen.getByRole("button", { name: "Change model" });
-    expect(modelChip.closest("p").className).toContain("max-lg:hidden");
-    expect(screen.getByTestId("usage-chip").className).toContain(
-      "max-lg:hidden",
-    );
-    // The one status signal left on the line is not colour-only: the dot carries
-    // the label for a screen reader, and the label text is in the disclosure.
-    expect(screen.getByRole("img", { name: "Idle" })).toBeInTheDocument();
+    const heading = phone().getByRole("heading", { name: /alpha/ });
+    expect(heading.className).toContain("truncate");
+    expect(heading.className).toContain("text-lg");
 
-    fireEvent.click(toggle);
+    // The dot is the one piece of the status row on the line, so it carries the
+    // label for a screen reader — a colour alone is not a status.
+    expect(phone().getByRole("img", { name: "Idle" })).toBeInTheDocument();
 
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(modelChip.closest("p").className).not.toContain("max-lg:hidden");
-    expect(screen.getByTestId("usage-chip").className).not.toContain(
-      "max-lg:hidden",
-    );
+    // Everything else is behind the chevron, and *not rendered* until it opens:
+    // a closed bar is one row and nothing hidden is in the tree.
+    expect(phone().queryByRole("button", { name: "Change model" })).toBeNull();
+    // The panel is not rendered at all, so nothing it holds is in the tree —
+    // which is what `max-lg:hidden` used to have to fake. (The desktop header is
+    // in the DOM too; that is why the chip assertions are scoped.)
+    expect(screen.queryByTestId("phone-panel")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Agent details" }),
+    ).toHaveAttribute("aria-expanded", "false");
   });
 
-  it("clamps the name to two lines and puts the vocation on its own line below lg", () => {
-    // At 390px the heading took three lines for a name like
-    // `charming-rhinoceros-root`, and the inline `(Programmer)` was glued to it
-    // with no space. Below `lg` the name is clamped to two lines — one ellipsised
-    // line is not readable either, since a phone has no tooltip to reveal a
-    // 30-character agent name — the vocation is a subtitle, and the token column
-    // is the header's full width so its readout wraps instead of pushing the
-    // strip sideways. The full name stays in the DOM: clamping is visual.
-    render(header({ vocation: { name: "Builder" } }));
-
-    // The clamp is visual: the heading's text — and so its accessible name —
-    // still holds the whole name, and there is no `title`, which would be a
-    // hover tooltip the desktop never had and a phone cannot use.
-    const heading = screen.getByRole("heading", { name: /alpha/ });
-    expect(heading.className).toContain("max-lg:line-clamp-2");
-    // ...and it is smaller on a phone: the header is the one row the phone
-    // spends above the conversation, and a 24px name in it is the tallest thing
-    // on the line.
-    expect(heading.className).toContain("max-lg:text-lg");
-    expect(heading).not.toHaveAttribute("title");
-
-    // From `lg` up the vocation rides on the heading, now with the space it was
-    // missing; below `lg` it is hidden in favour of the subtitle.
-    const inlineVocation = heading.querySelector("span");
-    expect(inlineVocation.className).toContain("hidden");
-    expect(inlineVocation.className).toContain("lg:inline");
-    expect(inlineVocation.textContent.startsWith(" (")).toBe(true);
-
-    const subtitle = screen.getByText("Builder");
-    expect(subtitle.className).toContain("lg:hidden");
-    expect(screen.getByTestId("usage-chip").parentElement.className).toContain(
-      "max-lg:w-full",
-    );
-  });
-
-  it("renders the name, vocation, model, lineage, and status and opens the model picker", () => {
+  it("opens the whole name, the vocation, the model and the status from the chevron", () => {
     const onModelPickerOpen = vi.fn();
     render(
       header({
+        name: "charming-rhinoceros-root-the-third",
         vocation: { name: "Builder" },
         model: { name: "gpt", provider: "openai" },
         parentName: "root",
         depth: 2,
+        changeModelError: "no such provider",
         onModelPickerOpen,
-        getStatusLabel: () => "Generating response",
       }),
     );
 
-    expect(screen.getByRole("heading", { name: /alpha/ })).toHaveTextContent(
-      "(Builder)",
-    );
-    expect(screen.getByText("openai: gpt")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /back to root/i })).toHaveAttribute(
+    openDetails();
+
+    expect(
+      screen.getByRole("button", { name: /^Agent details/ }),
+    ).toHaveAttribute("aria-expanded", "true");
+
+    // The row truncates the name; the panel is where it stays readable, with no
+    // hover and no `title` — a phone has neither.
+    expect(
+      panel().getByText("charming-rhinoceros-root-the-third"),
+    ).toBeInTheDocument();
+    expect(panel().getByText("Builder")).toBeInTheDocument();
+    expect(panel().getByTestId("usage-chip")).toBeInTheDocument();
+    expect(panel().getByText("Idle")).toBeInTheDocument();
+
+    // The lineage and the change-model error are panel-only below `lg`: the row
+    // has no space for either, and the desktop's copy of them is not on screen.
+    expect(panel().getByRole("link", { name: /back to root/ })).toHaveAttribute(
       "href",
       "/space/my-space/agent/root",
     );
-    expect(screen.getByText("(depth 2)")).toBeInTheDocument();
-    expect(screen.getByText("Generating response")).toBeInTheDocument();
+    expect(panel().getByText("(depth 2)")).toBeInTheDocument();
+    expect(panel().getByText("no such provider")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Change model" }));
+    // ...and the model chip still opens the picker from in there.
+    fireEvent.click(panel().getByRole("button", { name: "Change model" }));
     expect(onModelPickerOpen).toHaveBeenCalledTimes(1);
   });
-
-  it("omits the vocation, lineage, and zero depth and falls back to the bare model name / [missing]", () => {
-    const { rerender } = render(header({ model: { name: "solo" } }));
-
-    expect(screen.getByText("solo")).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /back to/i })).toBeNull();
-    expect(screen.queryByText(/\(depth/)).toBeNull();
-
-    // Parent present but depth is zero → link shown, depth badge omitted.
-    rerender(header({ model: { name: "solo" }, parentName: "root", depth: 0 }));
-    expect(
-      screen.getByRole("link", { name: /back to root/i }),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/\(depth/)).toBeNull();
-
-    rerender(header({ model: null }));
-    expect(screen.getByText("[missing]")).toBeInTheDocument();
-  });
-
-  it("highlights a model_missing agent and renders the change-model error", () => {
-    const { rerender } = render(header({ model: { name: "gpt" } }));
-    expect(
-      screen.getByRole("button", { name: "Change model" }).className,
-    ).not.toMatch(/bg-amber-100/);
-
-    rerender(
-      header({
-        model: { name: "gpt" },
-        agentState: "model_missing",
-        changeModelError: "could not switch model",
-      }),
-    );
-
-    expect(
-      screen.getByRole("button", { name: "Change model" }).className,
-    ).toMatch(/bg-amber-100/);
-    expect(screen.getByText("could not switch model")).toBeInTheDocument();
-  });
-});
-
-describe("ChatHeader phone signals", () => {
-  beforeEach(cleanup);
 
   it("puts the waiting questions on the chevron, not behind it", () => {
     render(header({ waitingCount: 2 }));
 
-    // The pane's view is behind this disclosure now, so a count on it would be a
+    // The view switcher is behind this chevron now, so a count on it would be a
     // signal the reader has to open the panel to see. It rides the chevron, and
     // the count is part of the accessible name — not colour-and-digit only.
     const toggle = screen.getByRole("button", {
@@ -209,41 +158,10 @@ describe("ChatHeader phone signals", () => {
   it("says nothing about waiting when nothing is", () => {
     render(header());
 
-    // The plain name, and no badge: a "0" would be a signal that never goes away.
     expect(
       screen.getByRole("button", { name: "Agent details" }),
     ).toBeInTheDocument();
     expect(screen.queryByTestId("phone-waiting-badge")).toBeNull();
-  });
-
-  it("renders the phone's view group only while the disclosure is open", () => {
-    render(header({ tab: "chat", hasPane: true }));
-
-    // Closed: the header is one row, and nothing hidden is in the tree — the
-    // reason the group is rendered rather than hidden with a class.
-    expect(screen.queryByTestId("phone-tabs")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Agent details" }));
-
-    // The same views the desktop's bar offers, with the pane's third one.
-    expect(screen.getByTestId("phone-tabs")).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Pane" })).toBeInTheDocument();
-  });
-
-  it("closes the disclosure when a view is picked, and reports it", () => {
-    const onSelectTab = vi.fn();
-    render(header({ tab: "chat", hasPane: true, onSelectTab }));
-
-    fireEvent.click(screen.getByRole("button", { name: "Agent details" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Pane" }));
-
-    expect(onSelectTab).toHaveBeenCalledWith("pane");
-
-    // A menu left open over the view it opened is in the way of that view.
-    expect(screen.queryByTestId("phone-tabs")).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Agent details" }),
-    ).toHaveAttribute("aria-expanded", "false");
   });
 
   it("names the view when it is not the conversation", () => {
@@ -257,7 +175,108 @@ describe("ChatHeader phone signals", () => {
 
     const chip = screen.getByTestId("active-view-chip");
     expect(chip).toHaveTextContent("Shell jobs");
-    // Phone only: from `lg` up the tab bar says which view is showing.
-    expect(chip.className).toContain("lg:hidden");
+    // Inside the bar's row, which is the phone's.
+    expect(screen.getByTestId("phone-header")).toContainElement(chip);
+  });
+
+  it("renders the phone's view group only while the disclosure is open", () => {
+    render(header({ tab: "chat", hasPane: true }));
+
+    expect(screen.queryByTestId("phone-tabs")).toBeNull();
+
+    openDetails();
+
+    expect(screen.getByTestId("phone-tabs")).toBeInTheDocument();
+    expect(panel().getByRole("tab", { name: "Pane" })).toBeInTheDocument();
+  });
+
+  it("closes the disclosure when a view is picked, and reports it", () => {
+    const onSelectTab = vi.fn();
+    render(header({ tab: "chat", hasPane: true, onSelectTab }));
+
+    openDetails();
+    fireEvent.click(panel().getByRole("tab", { name: "Pane" }));
+
+    expect(onSelectTab).toHaveBeenCalledWith("pane");
+
+    // A menu left open over the view it opened is in the way of that view.
+    expect(screen.queryByTestId("phone-tabs")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Agent details" }),
+    ).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("portals the phone row into the top bar's slot when there is one", () => {
+    const slot = document.createElement("div");
+    document.body.appendChild(slot);
+
+    render(
+      <MemoryRouter>
+        <PhoneBarSlotContext.Provider value={slot}>
+          <ChatHeader
+            name="alpha"
+            status="connected"
+            getStatusLabel={() => "Idle"}
+          />
+        </PhoneBarSlotContext.Provider>
+      </MemoryRouter>,
+    );
+
+    // In the slot, not in the page's own tree: the bar is above `main`, which is
+    // what makes the page spend one row on chrome instead of two.
+    expect(slot.querySelector('[data-testid="phone-header"]')).not.toBeNull();
+    slot.remove();
+  });
+
+  it("renders the desktop header, always expanded", () => {
+    render(
+      header({
+        vocation: { name: "Builder" },
+        model: { name: "gpt", provider: "openai" },
+        parentName: "root",
+        depth: 1,
+      }),
+    );
+
+    // Nothing is behind a disclosure from `lg` up: the heading carries the
+    // vocation inline, and the chip, the usage and the status are all there.
+    const heading = desktop().getByRole("heading", { name: /alpha/ });
+    expect(heading.className).toContain("text-2xl");
+    expect(heading.textContent).toContain("(Builder)");
+
+    expect(
+      desktop().getByRole("button", { name: "Change model" }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("usage-chip")).toBeInTheDocument();
+    expect(desktop().getByText("Idle")).toBeInTheDocument();
+    expect(
+      desktop().getByRole("link", { name: /back to root/ }),
+    ).toBeInTheDocument();
+    expect(desktop().getByText("(depth 1)")).toBeInTheDocument();
+    // No disclosure control in the desktop header: everything is already
+    // showing there. (The phone's row is in the DOM too, which is why this is
+    // scoped.)
+    expect(
+      desktop().queryByRole("button", { name: /Agent details/ }),
+    ).toBeNull();
+  });
+
+  it("falls back to '[missing]' and highlights a model_missing agent", () => {
+    render(header({ model: undefined, agentState: "model_missing" }));
+
+    const chip = desktop().getByRole("button", { name: "Change model" });
+    expect(chip).toHaveTextContent("[missing]");
+    expect(chip.className).toContain("bg-amber-100");
+  });
+
+  it("renders only the model name when the provider is absent, and the change-model error", () => {
+    render(
+      header({ model: { name: "gpt" }, changeModelError: "no such provider" }),
+    );
+
+    expect(
+      desktop().getByRole("button", { name: "Change model" }),
+    ).toHaveTextContent("gpt");
+    expect(desktop().getByText("no such provider")).toBeInTheDocument();
   });
 });

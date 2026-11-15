@@ -943,9 +943,13 @@ describe("ChatPage message rendering", () => {
     // The assistant message body is rendered.
     expect(screen.getByText("Hello there")).toBeInTheDocument();
     // The header shows the agent ID; the message label also shows
-    // the agent ID. Verify the header is present.
+    // the agent ID. Verify the header is present. Scoped to the phone's row:
+    // the header renders once for each shape, and jsdom applies no stylesheet,
+    // so an unscoped query finds both.
     expect(
-      screen.getByRole("heading", { name: /test-agent/ }),
+      within(screen.getByTestId("phone-header")).getByRole("heading", {
+        name: /test-agent/,
+      }),
     ).toBeInTheDocument();
   });
 
@@ -2654,9 +2658,7 @@ describe("ChatPage scroll containers (issue #86)", () => {
     // composer — so an element added above the header fails here loudly instead
     // of quietly making every assertion below about the wrong node.
     const chrome = column.firstElementChild;
-    expect(
-      within(chrome).getByRole("heading", { name: /test-agent/ }),
-    ).toBeInTheDocument();
+    expect(within(chrome).getByTestId("phone-header")).toBeInTheDocument();
     expect(chrome.className).toContain("overflow-y-auto");
     expect(chrome.className).toContain("min-h-0");
     // It scrolls; it never truncates what it holds.
@@ -2725,7 +2727,9 @@ describe("ChatPage page title", () => {
 
     expect(document.title).toBe("vampire · ghost-space · test-agent");
     expect(
-      screen.getByRole("heading", { name: /test-agent/ }),
+      within(screen.getByTestId("phone-header")).getByRole("heading", {
+        name: /test-agent/,
+      }),
     ).toBeInTheDocument();
   });
 });
