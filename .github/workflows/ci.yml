@@ -35,7 +35,12 @@ concurrency:
 jobs:
   elixir:
     name: Elixir lint, format, credo and tests
-    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        # One image today. It is a matrix so `runs-on` and the cache keys read
+        # the same value — see the cache comment below for why that matters.
+        os: [ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     # 15, not 10: a cold `_build` compiles the whole dependency tree plus 299
     # files, and this job now runs `--cover` on top of that.
     timeout-minutes: 15
@@ -53,11 +58,20 @@ jobs:
           version-file: .tool-versions
           version-type: strict
 
-      # `deps/` and `_build/` are keyed on `mix.lock` plus the OTP and Elixir
-      # versions, so a lock bump (or a toolchain bump) is the only thing that
-      # discards the build. `restore-keys` still restores the previous entry after
-      # a lock bump, so `mix deps.get` fetches only the dep that moved and the
-      # compiler recompiles only what it must.
+      # `deps/` and `_build/` are keyed on `mix.lock`, the OTP and Elixir
+      # versions, **and the runner image**, so a lock bump, a toolchain bump or an
+      # image bump is the only thing that discards the build. `restore-keys`
+      # still restores the previous entry after a lock bump, so `mix deps.get`
+      # fetches only the dep that moved and the compiler recompiles only what it
+      # must.
+      #
+      # The image in the key is not decoration. `_build` holds compiled C helpers,
+      # and `erlexec`'s `exec-port` links against the glibc of the image that
+      # built it: a cache written on one Ubuntu release and restored on an older
+      # one fails at boot with `version 'GLIBC_2.42' not found`, which is a red
+      # run whose error message points nowhere near the cache. That is why the key
+      # is `matrix.os` rather than `runner.os` — `runner.os` is "Linux" for every
+      # Ubuntu release, which is exactly the distinction that is needed here.
       #
       # `~/.cache/rustler_precompiled` holds the precompiled NIFs `tokenizers`
       # downloads (the sandbox grants a developer the same directory — see
@@ -71,9 +85,9 @@ jobs:
             deps
             _build
             ~/.cache/rustler_precompiled
-          key: ${{ runner.os }}-mix-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
+          key: ${{ matrix.os }}-mix-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+            ${{ matrix.os }}-mix-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
 
       - name: Fetch Elixir dependencies
         run: mix deps.get
@@ -132,7 +146,12 @@ jobs:
 
   js:
     name: JS lint and unit tests
-    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        # One image today. It is a matrix so `runs-on` and the cache keys read
+        # the same value — see the cache comment below for why that matters.
+        os: [ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     # Every JS command belongs in `assets/` (there is no package.json at the
     # repository root, and one there would be a bug), so the default is stated
@@ -198,7 +217,12 @@ jobs:
 
   e2e:
     name: End-to-end tests
-    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        # One image today. It is a matrix so `runs-on` and the cache keys read
+        # the same value — see the cache comment below for why that matters.
+        os: [ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -244,9 +268,9 @@ jobs:
             deps
             _build
             ~/.cache/rustler_precompiled
-          key: ${{ runner.os }}-mix-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
+          key: ${{ matrix.os }}-mix-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+            ${{ matrix.os }}-mix-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
 
       # Same reason as in the `elixir` job, and the same connection: with no
       # `E2E_DB_HOST` set, `config/e2e.exs` takes its socket branch — socket at
@@ -296,18 +320,17 @@ jobs:
           ')"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
-      # Keyed on the Playwright version, not the lockfile: the browser builds are
-      # what this saves, and they change when Playwright's bundled revision
-      # changes. The `restore-keys` fallback is deliberate — a restored cache from
-      # another patch release is still usable, and `playwright install` fetches
-      # only the browser it cannot find.
+      # Keyed on the Playwright version **and the runner image**, for the same
+      # reason the mix cache is: a browser build from a newer Ubuntu release does
+      # not run on an older one, and `playwright install` sees the cached
+      # directory and downloads nothing. `restore-keys` is deliberately absent —
+      # a restored cache that cannot launch is worse than a fresh download, and
+      # the download is a few seconds.
       - name: Cache Playwright browsers
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ steps.playwright.outputs.version }}
-          restore-keys: |
-            ${{ runner.os }}-playwright-
+          key: ${{ matrix.os }}-playwright-${{ steps.playwright.outputs.version }}
 
       # `--with-deps` also installs the shared libraries Chromium needs, which the
       # runner image does not guarantee. Only Chromium: that is the one project the
