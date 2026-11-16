@@ -316,12 +316,16 @@ jobs:
       # `Nest.Application.check_system_dependencies!/0` shells out to `bwrap
       # --version` at boot and every test boots the app, so the suite cannot
       # start without bubblewrap. The runner image does not ship it, and the
-      # app raises at boot when it is missing — so it is installed here.
+      # app raises at boot when it is missing — so it is installed here. The
+      # sysctl matches the elixir job: today's e2e agents run no tools, but a
+      # space here is still a bwrap space, and the first spec that runs one
+      # needs the unprivileged-namespace switch.
       - name: Install bubblewrap
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Install JS dependencies
         working-directory: assets
