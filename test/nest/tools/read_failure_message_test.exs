@@ -14,8 +14,8 @@ defmodule Nest.Tools.ReadFailureMessageTest do
   `tools_inspect_file_test.exs` already pin it. Two arms are absent because
   nothing can reach them:
 
-    * `:read_timeout` needs a real `ShellCmd` timeout (60s for a read/stat),
-      and no test may wait for one.
+    * `:read_timeout` needs a real `ShellCmd` timeout (the 10s default for a
+      read/stat), and no test may wait for one.
     * `file-inspect`'s `:eisdir` would need `stat` to refuse a directory, which
       it never does — `file-inspect` classifies a directory with `file` and
       never reads it, which the first test below asserts.
