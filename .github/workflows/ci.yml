@@ -96,11 +96,20 @@ jobs:
       # --version` at boot and every test boots the app, so the suite cannot
       # start without bubblewrap. The runner image does not ship it, and the
       # app raises at boot when it is missing — so it is installed here.
+      #
+      # The package alone is not enough on this image: Ubuntu 24.04 restricts
+      # unprivileged user namespaces with AppArmor (`apparmor_restrict_
+      # unprivileged_userns` defaults to 1), and Debian's bubblewrap is not
+      # setuid, so the sandbox tests die with `bwrap: setting up uid map:
+      # Permission denied`. The sysctl is the same switch a developer's
+      # working machine already has at 0 — see `sysctl
+      # kernel.apparmor_restrict_unprivileged_userns` locally.
       - name: Install bubblewrap
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       # The database is the runner's own PostgreSQL, not a `services:` container.
       # `config/test.exs` connects over the unix socket at `/var/run/postgresql`
