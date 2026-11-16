@@ -92,6 +92,17 @@ jobs:
       - name: Fetch Elixir dependencies
         run: mix deps.get
 
+      # `Nest.Application.check_system_dependencies!/0` shells out to `bwrap
+      # --version` at boot and every test boots the app, so the suite cannot
+      # start without bubblewrap. The `ubuntu-latest` image happens to ship it;
+      # `ubuntu-24.04` does not — which is the only reason the pin above turns
+      # this from an assumption into a step.
+      - name: Install bubblewrap
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+
       # The database is the runner's own PostgreSQL, not a `services:` container.
       # `config/test.exs` connects over the unix socket at `/var/run/postgresql`
       # as `System.fetch_env!("USER")` with no password, and a service container
@@ -293,6 +304,17 @@ jobs:
       # `deps/phoenix/priv/static` through a vite alias. So: fetch them.
       - name: Fetch Elixir dependencies
         run: mix deps.get
+
+      # `Nest.Application.check_system_dependencies!/0` shells out to `bwrap
+      # --version` at boot and every test boots the app, so the suite cannot
+      # start without bubblewrap. The `ubuntu-latest` image happens to ship it;
+      # `ubuntu-24.04` does not — which is the only reason the pin above turns
+      # this from an assumption into a step.
+      - name: Install bubblewrap
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
 
       - name: Install JS dependencies
         working-directory: assets
