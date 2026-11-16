@@ -58,6 +58,16 @@ jobs:
           version-file: .tool-versions
           version-type: strict
 
+      # `test/nest/messages/header_test.exs` pins the client's header parser by
+      # running it with `node` from inside the Elixir suite, so this job needs
+      # the repository's Node on PATH — run 6 exceeded the suite's 3000 ms
+      # failure bound inside that spawn, using whichever Node the image ships.
+      # Same source as the other jobs: `.tool-versions`.
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .tool-versions
+
       # `deps/` and `_build/` are keyed on `mix.lock`, the OTP and Elixir
       # versions, **and the runner image**, so a lock bump, a toolchain bump or an
       # image bump is the only thing that discards the build. `restore-keys`
