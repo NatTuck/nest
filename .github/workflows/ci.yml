@@ -94,9 +94,8 @@ jobs:
 
       # `Nest.Application.check_system_dependencies!/0` shells out to `bwrap
       # --version` at boot and every test boots the app, so the suite cannot
-      # start without bubblewrap. The `ubuntu-latest` image happens to ship it;
-      # `ubuntu-24.04` does not — which is the only reason the pin above turns
-      # this from an assumption into a step.
+      # start without bubblewrap. The runner image does not ship it, and the
+      # app raises at boot when it is missing — so it is installed here.
       - name: Install bubblewrap
         run: |
           set -euo pipefail
@@ -107,8 +106,8 @@ jobs:
       # `config/test.exs` connects over the unix socket at `/var/run/postgresql`
       # as `System.fetch_env!("USER")` with no password, and a service container
       # is reachable only over TCP — it cannot satisfy that without editing the
-      # config, which is not this workflow's call. `ubuntu-latest` ships
-      # PostgreSQL installed but stopped, so this starts it and creates a
+      # config, which is not this workflow's call. The image ships PostgreSQL
+      # installed but stopped, so this starts it and creates a
       # superuser role named after `$USER` (`runner` on a hosted runner), which is
       # exactly what `socket_dir:` and `username:` in that config already ask
       # for. No other change is needed.
@@ -307,9 +306,8 @@ jobs:
 
       # `Nest.Application.check_system_dependencies!/0` shells out to `bwrap
       # --version` at boot and every test boots the app, so the suite cannot
-      # start without bubblewrap. The `ubuntu-latest` image happens to ship it;
-      # `ubuntu-24.04` does not — which is the only reason the pin above turns
-      # this from an assumption into a step.
+      # start without bubblewrap. The runner image does not ship it, and the
+      # app raises at boot when it is missing — so it is installed here.
       - name: Install bubblewrap
         run: |
           set -euo pipefail
