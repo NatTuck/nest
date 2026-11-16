@@ -38,7 +38,13 @@
  * unreachable. The login page says why it is being shown.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   BrowserRouter,
   Routes,
@@ -54,6 +60,7 @@ import { useDocumentTitle } from "./hooks/useDocumentTitle";
 import { useOnDesktop } from "./hooks/useOnDesktop";
 import { Sidebar } from "./components/Sidebar";
 import { PhoneTopBar } from "./components/PhoneTopBar";
+import { PhoneBarSlotContext } from "./components/PhoneBarSlot";
 import { PhoneDrawer } from "./components/PhoneDrawer";
 import { ChatPage } from "./pages/ChatPage";
 import { SpaceView } from "./pages/SpaceView";
@@ -135,14 +142,31 @@ function RootGate() {
 }
 
 /**
+ * Whether `pathname` is an agent's chat page — the one route whose content is a
+ * full-height column of its own scrollers (`ChatPage`).
+ *
+ * The route is the only thing that can say so before the first paint: a page
+ * cannot tell `Layout` "do not scroll me" without a context and an extra render,
+ * and a scrollbar that appears for one frame is exactly the defect this is for.
+ * One regex over the path the layout already reads is order-independent.
+ *
+ * It is a second copy of the router's `space/:slug/agent/:name` pattern, which
+ * is the cost of asking before the page exists. `App.test.jsx` drives the real
+ * router through it, so a rename fails the test instead of drifting.
+ */
+function isChatRoute(pathname) {
+  return /^\/space\/[^/]+\/agent\/[^/]+/.test(pathname);
+}
+
+/**
  * Layout component with sidebar and main content.
  *
  * Mounts only for authenticated routes (`/spaces`, `/space/:slug`,
  * `/space/:slug/agent/:name`, `/about`, `/invites`).
  *
- * Below `lg` the same two regions are a column: `PhoneTopBar` (a hamburger and
- * the app's name) above `main`, with the sidebar off-canvas in `PhoneDrawer`
- * behind it. At `lg`+ the top bar is `hidden`, the drawer is `static`, and this
+ * Below `lg` the same two regions are a column: `PhoneTopBar` (a hamburger, and
+ * the app's name unless the page has filled the bar's slot) above `main`, with
+ * the sidebar off-canvas in `PhoneDrawer` behind it. At `lg`+ the top bar is `hidden`, the drawer is `static`, and this
  * is the row it has always been — every phone rule is behind a breakpoint, so
  * the desktop layout is the same two boxes it was.
  *
@@ -167,6 +191,23 @@ function Layout() {
   // opened it (see `PhoneDrawer`).
   const navTriggerRef = useRef(null);
   const closeNav = useCallback(() => setNavOpen(false), []);
+
+  // The top bar's slot, as an element the page can portal into. A ref alone is
+  // not enough: a portal needs the node, and on the first render — the same
+  // commit that mounts the page — it is not attached yet. One extra render
+  // after mount, once, is the whole cost.
+  //
+  // `useLayoutEffect`, not `useEffect`: the extra render has to land *before*
+  // the first paint. With `useEffect` it lands after one, so a deep link to a
+  // chat page on a phone paints the page's own header row and the bar's brand
+  // together and then snaps them into the single row — the exact state this
+  // exists to remove, on the one path (a cold load, not a client-side
+  // navigation) where the layout mounts with the page.
+  const barSlotRef = useRef(null);
+  const [barSlot, setBarSlot] = useState(null);
+  useLayoutEffect(() => {
+    setBarSlot(barSlotRef.current);
+  }, []);
 
   // The drawer is phone-only state, and at `lg`+ nothing on screen can close it
   // (the hamburger and the backdrop are both `lg:hidden`), so a window widened
@@ -207,11 +248,12 @@ function Layout() {
   }, [pathname]);
 
   return (
-    <div className="flex h-dvh flex-col bg-gray-50 lg:flex-row">
+    <div className="flex h-dvh flex-col overflow-hidden bg-gray-50 lg:flex-row">
       <PhoneTopBar
         expanded={navOpen}
         onOpen={() => setNavOpen(true)}
         triggerRef={navTriggerRef}
+        slotRef={barSlotRef}
       />
       <PhoneDrawer open={navOpen} onClose={closeNav} triggerRef={navTriggerRef}>
         <Sidebar />
@@ -233,9 +275,20 @@ function Layout() {
           the desktop's 24px on every side. */}
       <main
         inert={navOpen}
-        className="flex-1 overflow-auto pt-3 px-3 sm:pt-6 sm:px-6 lg:p-6"
+        className={[
+          // `min-h-0`: a flex item is floored by its content unless it may
+          // shrink, and this one must be exactly the height the bar left.
+          "flex-1 min-h-0 pt-3 px-3 sm:pt-6 sm:px-6 lg:p-6",
+          // The chat page owns both scrollers it needs — the chrome region and
+          // the transcript — so a third one here can only be an accident, and a
+          // page-level scrollbar is the one thing this shell must never have.
+          // Every other page scrolls here, as it always has.
+          isChatRoute(pathname) ? "overflow-hidden" : "overflow-auto",
+        ].join(" ")}
       >
-        <Outlet />
+        <PhoneBarSlotContext.Provider value={barSlot}>
+          <Outlet />
+        </PhoneBarSlotContext.Provider>
       </main>
     </div>
   );

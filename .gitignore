@@ -52,6 +52,22 @@ nest-*.tar
 npm-debug.log
 /assets/node_modules/
 
+# pnpm's store. Normally it lives under `~/.local/share`, but when it cannot
+# hard-link out of that store it keeps one beside the project instead — which is
+# what it does in this repo's sandboxes. It is a cache, not source, and
+# `pnpm install` rebuilds it.
+/.pnpm-store/
+
+# The end-to-end suite's provider overlay. The Providers screen writes
+# `local.toml` next to `config.toml`, and in `MIX_ENV=e2e` that path is
+# `scripts/e2e/local.toml` so a run cannot write the developer's own.
+/scripts/e2e/local.toml
+
+# Playwright's artifacts, from `pnpm e2e`.
+/assets/test-results/
+/assets/playwright-report/
+/assets/e2e/.auth/
+
 # Database files
 *.db
 *.db-*

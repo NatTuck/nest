@@ -1,0 +1,405 @@
+# The repository's CI.
+#
+# Three jobs, because there are three ways to break this repository: the Elixir
+# suite, the browser-side lint and unit tests, and the end-to-end run against a
+# real server. Nothing here is path-filtered (`on:` has no `paths-ignore`): a
+# workflow that skips itself cannot be trusted to notice when it breaks itself,
+# and a change under `scripts/` or `config/` breaks exactly one of the three.
+#
+# No version is written in this file. `.tool-versions` is the single source, and
+# both toolchain actions read it directly, so a bump there moves CI with it.
+#
+# `ubuntu-24.04`, not `ubuntu-latest`: `erlef/setup-beam` with `version-type:
+# strict` installs prebuilt OTP artifacts, and they are built per Ubuntu release.
+# `OTP-27.3.4.6` has an `ubuntu-24.04` build and no `ubuntu-26.04` one, so on a
+# rolling `ubuntu-latest` the day that image moves, setup-beam silently compiles
+# OTP from source and the jobs' timeouts become the next thing to fail. Naming
+# the image makes the dependency explicit and the bump deliberate.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only everywhere: nothing in this workflow publishes or writes back.
+permissions:
+  contents: read
+
+# One run per ref, newest wins. Safe because no run holds anything a cancelled
+# one would leak — every job is a fresh runner and the caches are content-addressed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  elixir:
+    name: Elixir lint, format, credo and tests
+    strategy:
+      matrix:
+        # One image today. It is a matrix so `runs-on` and the cache keys read
+        # the same value — see the cache comment below for why that matters.
+        os: [ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    # 15, not 10: a cold `_build` compiles the whole dependency tree plus 299
+    # files, and this job now runs `--cover` on top of that.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # `.tool-versions` is asdf format, which is what setup-beam parses: it reads
+      # the `erlang` and `elixir` keys (and ignores `nodejs`/`pnpm`). `strict` is
+      # not a choice — the action refuses `version-file` with any other
+      # `version-type`, so it is stated rather than left to default.
+      - name: Set up Erlang and Elixir
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      # `test/nest/messages/header_test.exs` pins the client's header parser by
+      # running it with `node` from inside the Elixir suite, so this job needs
+      # the repository's Node on PATH — run 6 exceeded the suite's 3000 ms
+      # failure bound inside that spawn, using whichever Node the image ships.
+      # Same source as the other jobs: `.tool-versions`.
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .tool-versions
+
+      # `deps/` and `_build/` are keyed on `mix.lock`, the OTP and Elixir
+      # versions, **and the runner image**, so a lock bump, a toolchain bump or an
+      # image bump is the only thing that discards the build. `restore-keys`
+      # still restores the previous entry after a lock bump, so `mix deps.get`
+      # fetches only the dep that moved and the compiler recompiles only what it
+      # must.
+      #
+      # The image in the key is not decoration. `_build` holds compiled C helpers,
+      # and `erlexec`'s `exec-port` links against the glibc of the image that
+      # built it: a cache written on one Ubuntu release and restored on an older
+      # one fails at boot with `version 'GLIBC_2.42' not found`, which is a red
+      # run whose error message points nowhere near the cache. That is why the key
+      # is `matrix.os` rather than `runner.os` — `runner.os` is "Linux" for every
+      # Ubuntu release, which is exactly the distinction that is needed here.
+      #
+      # `~/.cache/rustler_precompiled` holds the precompiled NIFs `tokenizers`
+      # downloads (the sandbox grants a developer the same directory — see
+      # `.nest`); caching it removes a GitHub-release fetch from every run.
+      # `priv/static` is deliberately absent: it is generated, and `mix test`
+      # regenerates the part it needs (see `test/test_helper.exs`).
+      - name: Cache deps and build
+        uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build
+            ~/.cache/rustler_precompiled
+          key: ${{ matrix.os }}-mix-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ matrix.os }}-mix-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+
+      - name: Fetch Elixir dependencies
+        run: mix deps.get
+
+      # `Nest.Application.check_system_dependencies!/0` shells out to `bwrap
+      # --version` at boot and every test boots the app, so the suite cannot
+      # start without bubblewrap. The runner image does not ship it, and the
+      # app raises at boot when it is missing — so it is installed here.
+      #
+      # The package alone is not enough on this image: Ubuntu 24.04 restricts
+      # unprivileged user namespaces with AppArmor (`apparmor_restrict_
+      # unprivileged_userns` defaults to 1), and Debian's bubblewrap is not
+      # setuid, so the sandbox tests die with `bwrap: setting up uid map:
+      # Permission denied`. The sysctl is the same switch a developer's
+      # working machine already has at 0 — see `sysctl
+      # kernel.apparmor_restrict_unprivileged_userns` locally.
+      - name: Install bubblewrap
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      # The database is the runner's own PostgreSQL, not a `services:` container.
+      # `config/test.exs` connects over the unix socket at `/var/run/postgresql`
+      # as `System.fetch_env!("USER")` with no password, and a service container
+      # is reachable only over TCP — it cannot satisfy that without editing the
+      # config, which is not this workflow's call. The image ships PostgreSQL
+      # installed but stopped, so this starts it and creates a
+      # superuser role named after `$USER` (`runner` on a hosted runner), which is
+      # exactly what `socket_dir:` and `username:` in that config already ask
+      # for. No other change is needed.
+      #
+      # The `psql -c 'select 1'` is the point of the step: it proves the socket
+      # directory *and* the role over the same connection the app will use, so a
+      # wrong assumption fails here, in ten seconds, instead of as a connection
+      # error from somewhere inside `mix test`.
+      - name: Start PostgreSQL and create the runner's role
+        run: |
+          set -euo pipefail
+          sudo systemctl start postgresql
+          # A fresh runner has no such role, so this normally just creates it;
+          # the guard is here so a second run on one machine is not a mystery
+          # failure. `createuser` has no "if not exists".
+          if [ "$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname = '${USER}'")" != "1" ]; then
+            sudo -u postgres createuser --superuser "$USER"
+          fi
+          psql -X -h /var/run/postgresql -U "$USER" -d postgres -c 'select 1'
+
+      # The three checks `mix precommit` runs that no other job does, before the
+      # suite, so a formatting slip fails in twenty seconds instead of after the
+      # tests. `--check-unused` rather than `--unused`: precommit's form rewrites
+      # `mix.lock`, and CI's job is to report drift, not to produce it.
+      - name: Compile with warnings as errors
+        run: mix compile --warnings-as-errors
+
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Run Credo
+        run: mix credo
+
+      - name: Check for unused dependencies
+        run: mix deps.unlock --check-unused
+
+      # No `ecto.create`/`ecto.migrate` here on purpose: `mix test`'s alias in
+      # `mix.exs` already runs `ecto.create --quiet` and `ecto.migrate --quiet`
+      # first, and doing it twice would only double the round-trips.
+      #
+      # `--cover` is what `mix precommit` ends with: `coveralls.json` sets
+      # `minimum_coverage: 85` and excoveralls fails the run below it, so the
+      # number is enforced by the suite rather than restated here.
+      - name: Run the Elixir suite
+        run: mix test --cover
+
+  js:
+    name: JS lint and unit tests
+    strategy:
+      matrix:
+        # One image today. It is a matrix so `runs-on` and the cache keys read
+        # the same value — see the cache comment below for why that matters.
+        os: [ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    # Every JS command belongs in `assets/` (there is no package.json at the
+    # repository root, and one there would be a bug), so the default is stated
+    # once instead of repeated on each step.
+    defaults:
+      run:
+        working-directory: assets
+    steps:
+      - uses: actions/checkout@v7
+
+      # `pnpm/action-setup` wants a version and the repository keeps it in
+      # `.tool-versions`, so it is read from there rather than transcribed. The
+      # step runs at the root because that is where the file is; every other step
+      # in this job runs in `assets/`.
+      - name: Read the pnpm version from .tool-versions
+        id: tool_versions
+        working-directory: .
+        run: |
+          set -euo pipefail
+          pnpm_version="$(awk '$1 == "pnpm" { print $2 }' .tool-versions)"
+          if [ -z "$pnpm_version" ]; then
+            echo "::error::.tool-versions has no pnpm entry"
+            exit 1
+          fi
+          echo "pnpm=${pnpm_version}" >> "$GITHUB_OUTPUT"
+
+      # Before `setup-node`, because setup-node's `cache: pnpm` runs
+      # `pnpm store path` and needs pnpm on PATH already.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: ${{ steps.tool_versions.outputs.pnpm }}
+
+      # `node-version-file` accepts `.tool-versions` (asdf format) and picks the
+      # `nodejs` entry. `cache: pnpm` caches the pnpm store; the lockfile is in
+      # `assets/`, not at the root, so the path has to be named.
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .tool-versions
+          cache: pnpm
+          cache-dependency-path: assets/pnpm-lock.yaml
+
+      # `--frozen-lockfile`: CI must install exactly what the lockfile says, and
+      # must fail rather than quietly rewrite it when `package.json` has drifted.
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The same two commands `mix precommit` runs (`biome ci` is the
+      # non-writing form of `biome check`), kept in the same order so a local
+      # precommit and this job cannot disagree about what "clean" means.
+      - name: Lint with Biome
+        run: pnpm biome ci
+
+      - name: Check file sizes
+        run: node lint-file-size.mjs
+
+      # The 90% lines/functions/branches/statements thresholds are in
+      # `assets/vite.config.ts` and are enforced by vitest itself, so a drop
+      # below them fails this step without a threshold being restated here.
+      - name: Run the JS tests
+        run: pnpm vitest run --coverage
+
+  e2e:
+    name: End-to-end tests
+    strategy:
+      matrix:
+        # One image today. It is a matrix so `runs-on` and the cache keys read
+        # the same value — see the cache comment below for why that matters.
+        os: [ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the pnpm version from .tool-versions
+        id: tool_versions
+        run: |
+          set -euo pipefail
+          pnpm_version="$(awk '$1 == "pnpm" { print $2 }' .tool-versions)"
+          if [ -z "$pnpm_version" ]; then
+            echo "::error::.tool-versions has no pnpm entry"
+            exit 1
+          fi
+          echo "pnpm=${pnpm_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: ${{ steps.tool_versions.outputs.pnpm }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .tool-versions
+          cache: pnpm
+          cache-dependency-path: assets/pnpm-lock.yaml
+
+      - name: Set up Erlang and Elixir
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      # Same key as the `elixir` job. Both jobs racing to save one key is
+      # harmless (the second save is a no-op notice) and sharing it is the point:
+      # `deps/` is environment-independent, while `_build/test` and `_build/e2e`
+      # are separate directories either way.
+      - name: Cache deps and build
+        uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build
+            ~/.cache/rustler_precompiled
+          key: ${{ matrix.os }}-mix-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ matrix.os }}-mix-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+
+      # Same reason as in the `elixir` job, and the same connection: with no
+      # `E2E_DB_HOST` set, `config/e2e.exs` takes its socket branch — socket at
+      # `/var/run/postgresql`, user `$USER`, database `nest_e2e` — so the role
+      # created here is the one the end-to-end run connects as.
+      - name: Start PostgreSQL and create the runner's role
+        run: |
+          set -euo pipefail
+          sudo systemctl start postgresql
+          if [ "$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname = '${USER}'")" != "1" ]; then
+            sudo -u postgres createuser --superuser "$USER"
+          fi
+          psql -X -h /var/run/postgresql -U "$USER" -d postgres -c 'select 1'
+
+      # `scripts/e2e/start.sh` — which Playwright's `webServer` block runs —
+      # creates and migrates the database, seeds it, builds the browser bundle and
+      # starts the server, so none of that is done here. It does *not* fetch Elixir
+      # dependencies, and it needs them twice: `mix ecto.create` will not run
+      # without them, and `mix assets.build` resolves `phoenix` out of
+      # `deps/phoenix/priv/static` through a vite alias. So: fetch them.
+      - name: Fetch Elixir dependencies
+        run: mix deps.get
+
+      # `Nest.Application.check_system_dependencies!/0` shells out to `bwrap
+      # --version` at boot and every test boots the app, so the suite cannot
+      # start without bubblewrap. The runner image does not ship it, and the
+      # app raises at boot when it is missing — so it is installed here. The
+      # sysctl matches the elixir job: today's e2e agents run no tools, but a
+      # space here is still a bwrap space, and the first spec that runs one
+      # needs the unprivileged-namespace switch.
+      - name: Install bubblewrap
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install JS dependencies
+        working-directory: assets
+        run: pnpm install --frozen-lockfile
+
+      # The Playwright *version*, read out of `assets/package.json` so the cache
+      # key follows the dependency instead of a number copied into this file.
+      # Both spellings are accepted: the runner package is `@playwright/test`,
+      # and a bare `playwright` (which still provides `playwright install`) is a
+      # legitimate way to depend on it. Failing loudly beats caching under a key
+      # that silently never matches.
+      - name: Read the Playwright version
+        id: playwright
+        run: |
+          set -euo pipefail
+          version="$(node -e '
+            const pkg = require("./assets/package.json");
+            const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+            const version = deps["@playwright/test"] || deps["playwright"];
+            if (!version) {
+              console.error("assets/package.json names neither @playwright/test nor playwright");
+              process.exit(1);
+            }
+            process.stdout.write(version);
+          ')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      # Keyed on the Playwright version **and the runner image**, for the same
+      # reason the mix cache is: a browser build from a newer Ubuntu release does
+      # not run on an older one, and `playwright install` sees the cached
+      # directory and downloads nothing. `restore-keys` is deliberately absent —
+      # a restored cache that cannot launch is worse than a fresh download, and
+      # the download is a few seconds.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ matrix.os }}-playwright-${{ steps.playwright.outputs.version }}
+
+      # `--with-deps` also installs the shared libraries Chromium needs, which the
+      # runner image does not guarantee. Only Chromium: that is the one project the
+      # suite runs.
+      - name: Install Chromium
+        working-directory: assets
+        run: pnpm exec playwright install --with-deps chromium
+
+      # The server is Playwright's business (`webServer` in
+      # `assets/playwright.config.ts` boots it and waits for it), so this step is
+      # only the suite itself.
+      - name: Run the end-to-end suite
+        working-directory: assets
+        run: pnpm e2e
+
+      # Only on failure, and as one artifact so the report and the traces stay
+      # together. `warn` rather than `error` for a missing directory: an upload
+      # that hard-fails would replace the test failure with an artifact failure and
+      # hide the thing that actually broke.
+      - name: Upload the Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: |
+            assets/playwright-report/
+            assets/test-results/
+          retention-days: 7
+          if-no-files-found: warn

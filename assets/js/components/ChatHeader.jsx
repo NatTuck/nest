@@ -1,28 +1,35 @@
 /**
- * Chat agent header: name, model chip (opens the edit dialog), the
- * "back to parent" link, and the token-usage chip + status. Extracted
- * from `ChatPage` to keep that file under the source-line cap.
+ * Chat agent header: name, model chip (opens the edit dialog), the "back to
+ * parent" link, and the token-usage chip + status.
  *
- * Below `lg` it is **one line** — the name, the status dot and a chevron — and
- * everything else (the vocation, the model chip, the token readout, the
- * readiness label, the parent link) is behind that chevron as a disclosure that
- * starts closed. A phone with a browser toolbar and the OS nav bar has well under
- * 844px to work with, and four stacked lines of header left the transcript about
- * two lines of text; the header is the one part of the chrome that can be folded
- * without losing anything, because every piece of it is reference information
- * rather than something the reader acts on.
+ * ## Two shapes, one component
  *
- * `max-lg:hidden` is the whole switch: from `lg` up it never applies, so the
- * desktop header is the same markup it has always been, always expanded, with no
- * JS deciding anything about it. Nothing becomes unreachable: a tap opens the
- * same text the desktop shows, and no information is hover-only.
+ * Below `lg` the header is **the phone's top bar**: its name, the view it is
+ * showing, the status dot, and a chevron that opens everything else — the
+ * vocation, the model chip, the token readout, the status label, the parent
+ * link and the view switcher. It renders *into* `PhoneTopBar`'s slot through
+ * `PhoneBarSlotContext` (a portal), so the app spends one 44px row on chrome
+ * instead of the two it used to: the bar's own, and this one under it.
+ *
+ * From `lg` up it is the header it has always been, always expanded, in the
+ * column above the conversation.
+ *
+ * The dot is centred on the name rather than top-aligned with it, which is what
+ * makes a one-line bar read as one line; the name is truncated rather than
+ * wrapped, because a bar that wraps is two rows again — and the disclosure
+ * carries the whole name, so nothing is only reachable by hovering.
+ *
+ * No JS reads a width for any of this: the split is which tree the node is
+ * rendered into, and the breakpoints are `lg:hidden` / `hidden lg:block`.
  */
 
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { ChevronDown } from "./ChevronDown";
-import { PhoneTabs } from "./ChatTabs";
 import { TokenUsageChip } from "./TokenUsageChip";
+import { usePhoneBarSlot } from "./PhoneBarSlot";
+import { PhoneTabs } from "./ChatTabs";
 
 export function ChatHeader({
   name,
@@ -45,8 +52,8 @@ export function ChatHeader({
   // reader has to open a disclosure to see.
   waitingCount = 0,
   // The view this page is showing, when it is not the conversation — the chip
-  // below. A phone has no tab bar to say "you are in Shell jobs", and the
-  // composer disappears on those views, so without this the page silently
+  // beside the name. A phone has no tab bar to say "you are in Shell jobs", and
+  // the composer disappears on those views, so without this the page silently
   // becomes a different page.
   viewName = null,
   // The view showing, and the views there are to show. The header renders the
@@ -64,15 +71,12 @@ export function ChatHeader({
   // not a preference, so it does not belong in the store.
   const [detailsOpen, setDetailsOpen] = useState(false);
   const toggleDetails = () => setDetailsOpen((open) => !open);
-
-  // Picking a view closes the panel it was picked from.
   const pickView = (id) => {
     setDetailsOpen(false);
     if (onSelectTab) onSelectTab(id);
   };
-  // Appended to every element the disclosure hides. Inert from `lg` up, which is
-  // what keeps the desktop expanded without a second branch.
-  const detailClass = detailsOpen ? "" : "max-lg:hidden";
+
+  const slot = usePhoneBarSlot();
 
   const dotClass = [
     "w-3 h-3 rounded-full",
@@ -80,123 +84,182 @@ export function ChatHeader({
     streaming ? "animate-pulse" : "",
   ].join(" ");
 
-  return (
-    <div className="border-b border-gray-200 pb-4 mb-4 max-lg:pb-2 max-lg:mb-2">
+  const modelLabel = (() => {
+    const modelName = model?.name;
+    const provider = model?.provider;
+    if (!modelName) return "[missing]";
+    return provider ? `${provider}: ${modelName}` : modelName;
+  })();
+
+  const modelChip = (
+    <button
+      type="button"
+      onClick={onModelPickerOpen}
+      aria-label="Change model"
+      className={`
+        inline-flex items-center gap-1
+        px-2 py-0.5 rounded-md
+        transition-colors duration-150
+        hover:bg-gray-100
+        ${
+          agentState === "model_missing"
+            ? "bg-amber-100 text-amber-900 hover:bg-amber-200"
+            : "text-gray-500"
+        }
+      `}
+    >
+      <span className="font-mono text-xs truncate">{modelLabel}</span>
+      <svg
+        className="w-3 h-3 opacity-60"
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={2}
+          d="M19 9l-7 7-7-7"
+        />
+      </svg>
+    </button>
+  );
+
+  // The phone's bar row: name, the view it is showing, the dot, the disclosure.
+  const phoneRow = (
+    <div
+      data-testid="phone-header"
+      className="flex h-11 min-w-0 items-center gap-2"
+    >
+      <h1 className="min-w-0 truncate text-lg font-bold text-gray-900">
+        {name}
+      </h1>
+      {viewName && (
+        <span
+          data-testid="active-view-chip"
+          className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600"
+        >
+          {viewName}
+        </span>
+      )}
+      <div className="ml-auto flex shrink-0 items-center">
+        {/* The dot is the one piece of the status row that stays on the line, so
+            it carries the label for a screen reader — a colour alone is not a
+            status. */}
+        <span role="img" aria-label={getStatusLabel()} className={dotClass} />
+        <button
+          type="button"
+          onClick={toggleDetails}
+          aria-expanded={detailsOpen}
+          // The badge is a number and a colour; the name has to carry both,
+          // which is the rule the pane's tab followed before the signal moved
+          // here.
+          aria-label={
+            waitingCount > 0
+              ? `Agent details, ${waitingCount} question${waitingCount === 1 ? "" : "s"} waiting`
+              : "Agent details"
+          }
+          className="relative inline-flex h-11 w-11 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-gray-100 active:bg-gray-200"
+        >
+          <ChevronDown rotated={detailsOpen} />
+          {waitingCount > 0 && (
+            <span
+              data-testid="phone-waiting-badge"
+              className="absolute top-0.5 right-0.5 flex items-center gap-0.5 rounded-full bg-amber-100 px-1 text-[10px] leading-4 font-semibold text-amber-900"
+            >
+              <span
+                className="h-1.5 w-1.5 rounded-full bg-amber-500"
+                aria-hidden="true"
+              />
+              {waitingCount}
+            </span>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+
+  // Everything the chevron opens. Bounded in `dvh` and scrollable: a short phone
+  // must not lose the conversation to its own details panel.
+  const phonePanel = detailsOpen && (
+    <div
+      data-testid="phone-panel"
+      className="max-h-[60dvh] space-y-1 overflow-y-auto border-t border-gray-200 pb-2 pt-1"
+    >
+      {/* The whole name: the row truncates it, so this is where it stays
+          readable — no hover, no title. */}
+      <p className="text-sm font-medium break-all text-gray-900">{name}</p>
+      {vocation?.name && (
+        <p className="text-sm text-gray-500">{vocation.name}</p>
+      )}
+      <p className="text-sm text-gray-500 break-all">
+        {modelChip}
+        {changeModelError && (
+          <span className="ml-2 text-xs text-red-600">{changeModelError}</span>
+        )}
+      </p>
+      {parentName && (
+        <p className="text-xs text-gray-500">
+          ↑{" "}
+          <Link
+            to={`/space/${encodeURIComponent(spaceSlug)}/agent/${encodeURIComponent(parentName)}`}
+            className="text-blue-600 hover:underline"
+          >
+            back to {parentName}
+          </Link>
+          {depth > 0 && (
+            <span className="text-gray-400 ml-2">(depth {depth})</span>
+          )}
+        </p>
+      )}
+      <TokenUsageChip
+        usage={usage}
+        descendantUsage={descendantUsage}
+        totalUsage={totalUsage}
+        contextLimit={contextLimit}
+      />
+      <div className="flex items-center gap-2">
+        <div className={dotClass} />
+        <span className="text-sm text-gray-400">{getStatusLabel()}</span>
+      </div>
+      <div className="pt-1">
+        <PhoneTabs
+          active={tab}
+          onSelect={pickView}
+          jobCount={jobCount}
+          hasPane={hasPane}
+        />
+      </div>
+    </div>
+  );
+
+  const phone = (
+    <>
+      {phoneRow}
+      {phonePanel}
+    </>
+  );
+
+  // From `lg` up: the header the desktop has always had, always expanded.
+  const desktop = (
+    <div
+      data-testid="desktop-header"
+      className="border-b border-gray-200 pb-4 mb-4"
+    >
       <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between lg:gap-4">
         <div className="min-w-0">
-          {/* One line below `lg`; from `lg` up this is a plain block again, so
-              the heading is the same box it has always been. The name is clamped
-              to two lines: one ellipsised line is not readable either, and a
-              phone has no hover to reveal the rest. */}
-          <div className="flex items-start gap-2 lg:block">
-            <h1 className="min-w-0 text-2xl font-bold text-gray-900 max-lg:text-lg max-lg:line-clamp-2">
-              {name}
-              {vocation?.name && (
-                <span className="hidden text-gray-500 font-normal lg:inline">
-                  {" "}
-                  ({vocation.name})
-                </span>
-              )}
-            </h1>
-            {/* Phone only: the view this page is showing, when it is not the
-                conversation. Nothing else on a phone says so — the tab bar is a
-                desktop band now — and the composer is absent on the other views,
-                so the alternative is a page that changed underneath the reader. */}
-            {viewName && (
-              <span
-                data-testid="active-view-chip"
-                className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 lg:hidden"
-              >
-                {viewName}
+          <h1 className="text-2xl font-bold text-gray-900">
+            {name}
+            {vocation?.name && (
+              <span className="text-gray-500 font-normal">
+                {" "}
+                ({vocation.name})
               </span>
             )}
-            {/* Phone only: the dot is the one piece of the status row that stays
-                on the line, so it carries the label for a screen reader (a
-                colour alone is not a status). */}
-            <div className="flex shrink-0 items-center lg:hidden">
-              <span
-                role="img"
-                aria-label={getStatusLabel()}
-                className={`mr-1 ${dotClass}`}
-              />
-              <button
-                type="button"
-                onClick={toggleDetails}
-                aria-expanded={detailsOpen}
-                // The badge is a number and a colour; the name has to carry both,
-                // which is the rule the pane's tab followed before the signal
-                // moved here.
-                aria-label={
-                  waitingCount > 0
-                    ? `Agent details, ${waitingCount} question${waitingCount === 1 ? "" : "s"} waiting`
-                    : "Agent details"
-                }
-                className="relative inline-flex h-11 w-11 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-gray-100 active:bg-gray-200"
-              >
-                <ChevronDown rotated={detailsOpen} />
-                {waitingCount > 0 && (
-                  <span
-                    data-testid="phone-waiting-badge"
-                    className="absolute -top-0.5 -right-0.5 flex items-center gap-0.5 rounded-full bg-amber-100 px-1 text-[10px] leading-4 font-semibold text-amber-900"
-                  >
-                    <span
-                      className="h-1.5 w-1.5 rounded-full bg-amber-500"
-                      aria-hidden="true"
-                    />
-                    {waitingCount}
-                  </span>
-                )}
-              </button>
-            </div>
-          </div>
-          {vocation?.name && (
-            <p
-              className={`truncate text-sm text-gray-500 lg:hidden ${detailClass}`}
-            >
-              {vocation.name}
-            </p>
-          )}
-          <p className={`text-sm text-gray-500 break-all ${detailClass}`}>
-            <button
-              type="button"
-              onClick={onModelPickerOpen}
-              aria-label="Change model"
-              className={`
-                inline-flex items-center gap-1
-                px-2 py-0.5 rounded-md
-                max-lg:min-h-11 max-lg:min-w-40 max-lg:max-w-full
-                transition-colors duration-150
-                hover:bg-gray-100
-                ${
-                  agentState === "model_missing"
-                    ? "bg-amber-100 text-amber-900 hover:bg-amber-200"
-                    : "text-gray-500"
-                }
-              `}
-            >
-              <span className="font-mono text-xs max-lg:min-w-0 max-lg:truncate">
-                {(() => {
-                  const modelName = model?.name;
-                  const provider = model?.provider;
-                  if (!modelName) return "[missing]";
-                  return provider ? `${provider}: ${modelName}` : modelName;
-                })()}
-              </span>
-              <svg
-                className="w-3 h-3 opacity-60"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M19 9l-7 7-7-7"
-                />
-              </svg>
-            </button>
+          </h1>
+          <p className="text-sm text-gray-500 break-all">
+            {modelChip}
             {changeModelError && (
               <span className="ml-2 text-xs text-red-600">
                 {changeModelError}
@@ -204,7 +267,7 @@ export function ChatHeader({
             )}
           </p>
           {parentName && (
-            <p className={`text-xs text-gray-500 mt-1 ${detailClass}`}>
+            <p className="text-xs text-gray-500 mt-1">
               ↑{" "}
               <Link
                 to={`/space/${encodeURIComponent(spaceSlug)}/agent/${encodeURIComponent(parentName)}`}
@@ -218,38 +281,34 @@ export function ChatHeader({
             </p>
           )}
         </div>
-        <div className="flex min-w-0 flex-col items-end gap-2 max-lg:w-full">
+        <div className="flex min-w-0 flex-col items-end gap-2">
           <TokenUsageChip
             usage={usage}
             descendantUsage={descendantUsage}
             totalUsage={totalUsage}
             contextLimit={contextLimit}
-            className={detailClass}
           />
-          <div className={`flex items-center gap-2 ${detailClass}`}>
-            {/* The dot is already on the phone's line; the label is what the
-                disclosure adds. */}
-            <div className={`${dotClass} max-lg:hidden`} />
+          <div className="flex items-center gap-2">
+            <div className={dotClass} />
             <span className="text-sm text-gray-400">{getStatusLabel()}</span>
           </div>
         </div>
-        {/* The phone's views. Rendered only while the disclosure is open: the
-            closed header is one row, and a hidden tablist would still be in the
-            accessibility tree of anything that does not apply the stylesheet.
-            `lg:hidden` covers the one way it can be open at `lg` — a window
-            widened with the panel open — because there the bar above is the
-            control. */}
-        {detailsOpen && (
-          <div className="border-t border-gray-200 pt-2 lg:hidden">
-            <PhoneTabs
-              active={tab}
-              onSelect={pickView}
-              jobCount={jobCount}
-              hasPane={hasPane}
-            />
-          </div>
-        )}
       </div>
     </div>
+  );
+
+  return (
+    <>
+      {/* Into the top bar when there is one (the app's `Layout`), inline when
+          there is not (a component test, or any page without the bar). */}
+      {slot ? (
+        createPortal(phone, slot)
+      ) : (
+        <div className="border-b border-gray-200 pb-2 mb-2 lg:hidden">
+          {phone}
+        </div>
+      )}
+      <div className="hidden lg:block">{desktop}</div>
+    </>
   );
 }

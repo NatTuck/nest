@@ -69,8 +69,12 @@ export function Sidebar() {
         <p className="text-sm text-gray-500">AI Agent Platform</p>
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto p-4">
+      {/* Navigation. `min-h-0`: the shell is exactly the viewport and clips
+          (`overflow-hidden` in `Layout`), so this `flex-1` item has to be
+          allowed to shrink below its content — otherwise a space with enough
+          agents overflows the aside and the last rows are unreachable instead
+          of scrolling here. */}
+      <nav className="flex-1 min-h-0 overflow-y-auto p-4">
         {/* New Agent Button */}
         <Link
           to="/spaces/new"

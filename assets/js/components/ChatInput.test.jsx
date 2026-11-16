@@ -415,9 +415,9 @@ describe("ChatInput", () => {
         />,
       );
       expect(screen.getByLabelText("Mode")).toBeInTheDocument();
-      // The phone's toggle sits in the same halved row as Send and Stop.
+      // The phone's toggle sits in the same 30px row as Send and Stop.
       expect(screen.getByRole("button", { name: "plan" }).className).toContain(
-        "max-lg:py-0.5",
+        "max-lg:py-1",
       );
     });
 
@@ -460,10 +460,10 @@ describe("ChatInput", () => {
       const { sendButton, stopButton } = setup({ value: "hello" });
       expect(sendButton).toBeInTheDocument();
       expect(stopButton).toBeNull();
-      // Halved on a phone: the controls row is the composer's second line there,
-      // and the conversation needs the height more than the button needs the
-      // padding. A deliberate exception to the 44px phone targets elsewhere in
-      // this file.
+      // 30px on a phone, not 44: the controls row is the composer's second line
+      // there, and the conversation needs the height more than the button needs
+      // the padding. A deliberate exception to the 44px phone targets elsewhere
+      // in this file.
       expect(sendButton.className).toContain("max-lg:py-0.5");
     });
 

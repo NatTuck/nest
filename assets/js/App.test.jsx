@@ -32,6 +32,8 @@ import {
 
 import { RootGate, Layout } from "./App";
 import { MemoryRouter, Routes, Route, useNavigate } from "react-router-dom";
+import { createPortal } from "react-dom";
+import { usePhoneBarSlot } from "./components/PhoneBarSlot";
 import { useStore } from "./store";
 import { renderWithRouter } from "./test/render_with_router";
 import { stubDesktopQuery } from "./test/match_media";
@@ -358,6 +360,12 @@ describe("Layout phone navigation", () => {
       navigate = useNavigate();
       return null;
     }
+    // What a page does with the bar's slot: render into it, or nothing when the
+    // layout has not handed one over.
+    function SlotProbe() {
+      const slot = usePhoneBarSlot();
+      return slot ? createPortal(<span data-testid="portaled" />, slot) : null;
+    }
     const utils = render(
       <MemoryRouter initialEntries={["/spaces"]}>
         <Nav />
@@ -365,12 +373,56 @@ describe("Layout phone navigation", () => {
           <Route path="/" element={<Layout />}>
             <Route path="spaces" element={<div data-testid="spaces" />} />
             <Route path="about" element={<div data-testid="about" />} />
+            <Route path="space/:slug/agent/:name" element={<SlotProbe />} />
           </Route>
         </Routes>
       </MemoryRouter>,
     );
     return { ...utils, go: (to) => act(() => navigate(to)) };
   }
+
+  it("never lets the shell scroll the chat page, and hands that page the bar's slot", () => {
+    const { container, go } = renderLayout();
+    const main = container.querySelector("main");
+
+    // Every other page scrolls in `main`, as it always has.
+    expect(main.className).toContain("overflow-auto");
+    expect(main.className).not.toContain("overflow-hidden");
+    expect(screen.queryByTestId("portaled")).toBeNull();
+
+    go("/space/ghost-space/agent/test-agent");
+
+    // The chat page is a full-height column of its own scrollers, so a third one
+    // here can only be an accident — and a page-level scrollbar is the one thing
+    // this shell must never have. `min-h-0` is the other half: a flex item is
+    // floored by its content unless it may shrink, and this one has to be
+    // exactly the height the bar left.
+    expect(main.className).toContain("overflow-hidden");
+    expect(main.className).not.toContain("overflow-auto");
+    expect(main.className).toContain("min-h-0");
+
+    // The slot is a real node by the time the page renders, and it is the bar's
+    // — not a detached one the portal would put the chrome into invisibly.
+    const slot = document.getElementById("phone-bar-slot");
+    expect(slot).not.toBeNull();
+    expect(slot.contains(screen.getByTestId("portaled"))).toBe(true);
+
+    // The brand hides itself by a stylesheet rule on the slot being non-empty,
+    // and jsdom evaluates no stylesheet — so what can be pinned is the
+    // relationship the rule depends on: the brand is the slot's next sibling,
+    // both of them in the bar.
+    const bar = slot.closest("header");
+    expect(slot.className).toContain("phone-bar-slot");
+    expect(slot.nextElementSibling).toBe(bar.querySelector(".phone-bar-brand"));
+
+    // The shell itself is exactly the viewport and clips, which is what makes
+    // "no page-level scrollbar" a property rather than a hope: every region
+    // inside it has to scroll itself, and the sidebar's nav is one of them.
+    expect(container.firstElementChild.className).toContain("overflow-hidden");
+    const nav = container.querySelector("aside nav");
+    expect(nav.className).toContain("overflow-y-auto");
+    expect(nav.className).toContain("min-h-0");
+  });
 
   it("opens the drawer from the hamburger and closes it on Escape, taking the page behind out of play", () => {
     const { container } = renderLayout();
@@ -405,12 +457,20 @@ describe("Layout phone navigation", () => {
     expect(hamburger).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByLabelText("Close navigation")).toBeInTheDocument();
     expect(main).toHaveAttribute("inert");
+    // The bar's slot is the layout's, not the page's, so it sits outside `main`
+    // and `main`'s `inert` does not reach it — the chat page portals its own
+    // chrome in there, and without this a Tab walks out of the drawer onto the
+    // chevron behind the backdrop.
+    const slot = document.getElementById("phone-bar-slot");
+    expect(slot).toHaveAttribute("inert");
+    expect(slot).not.toContainElement(hamburger);
 
     fireEvent.keyDown(document, { key: "Escape" });
 
     expect(hamburger).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByLabelText("Close navigation")).toBeNull();
     expect(main).not.toHaveAttribute("inert");
+    expect(slot).not.toHaveAttribute("inert");
     // Focus comes back to the control that opened it, not to a link that is now
     // off the screen.
     expect(hamburger).toHaveFocus();

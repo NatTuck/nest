@@ -62,6 +62,14 @@
   }
 }
 
+/* The phone top bar's brand, hidden when the page has put its own chrome in the
+   bar's slot (the chat page's agent name and controls). `:empty` is the whole
+   mechanism — the bar owns no state, so nothing has to tell it that a page
+   claimed the row, and there is no frame where both are on screen. */
+.phone-bar-slot:not(:empty) ~ .phone-bar-brand {
+  display: none;
+}
+
 /* Add variants based on LiveView classes */
 @custom-variant phx-click-loading (.phx-click-loading&, .phx-click-loading &);
 @custom-variant phx-submit-loading (.phx-submit-loading&, .phx-submit-loading &);

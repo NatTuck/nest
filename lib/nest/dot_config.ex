@@ -87,13 +87,20 @@ defmodule Nest.DotConfig do
   """
   def config_file, do: default_config_file()
 
-  defp default_config_file do
-    if Mix.env() == :test do
-      Path.join([File.cwd!(), "test", "data", "config.toml"])
-    else
-      @config_file
+  # `:test` and `:e2e` are the two environments that must not read the
+  # developer's real providers: a suite points an agent at a stub, and a runner
+  # has no keys at all. Both read a file from the repo instead, and both read the
+  # overlay there too — the Providers screen writes `local.toml`, and a run must
+  # not write `~/.config/nest/local.toml` behind the developer's back.
+  defp repo_config_file(name) do
+    case Mix.env() do
+      :test -> Path.join([File.cwd!(), "test", "data", name])
+      :e2e -> Path.join([File.cwd!(), "scripts", "e2e", name])
+      _ -> nil
     end
   end
+
+  defp default_config_file, do: repo_config_file("config.toml") || @config_file
 
   @doc """
   Returns the full path to local.toml — the user's overlay config edited
@@ -103,13 +110,8 @@ defmodule Nest.DotConfig do
   """
   def local_file, do: default_local_file()
 
-  defp default_local_file do
-    if Mix.env() == :test do
-      Path.join([File.cwd!(), "test", "data", "local.toml"])
-    else
-      Path.join(@config_dir, "local.toml")
-    end
-  end
+  defp default_local_file,
+    do: repo_config_file("local.toml") || Path.join(@config_dir, "local.toml")
 
   @doc """
   Loads and parses the config file, returning a map with providers and models.
