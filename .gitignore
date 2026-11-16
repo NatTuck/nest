@@ -52,9 +52,10 @@ nest-*.tar
 npm-debug.log
 /assets/node_modules/
 
-# pnpm's content-addressable store. pnpm 12 keeps it beside the project rather
-# than under `~/.local/share`, so an install writes a few hundred megabytes here;
-# it is a cache, not source, and `pnpm install` rebuilds it.
+# pnpm's store. Normally it lives under `~/.local/share`, but when it cannot
+# hard-link out of that store it keeps one beside the project instead — which is
+# what it does in this repo's sandboxes. It is a cache, not source, and
+# `pnpm install` rebuilds it.
 /.pnpm-store/
 
 # Database files

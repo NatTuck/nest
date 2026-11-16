@@ -38,7 +38,13 @@
  * unreachable. The login page says why it is being shown.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   BrowserRouter,
   Routes,
@@ -143,6 +149,10 @@ function RootGate() {
  * cannot tell `Layout` "do not scroll me" without a context and an extra render,
  * and a scrollbar that appears for one frame is exactly the defect this is for.
  * One regex over the path the layout already reads is order-independent.
+ *
+ * It is a second copy of the router's `space/:slug/agent/:name` pattern, which
+ * is the cost of asking before the page exists. `App.test.jsx` drives the real
+ * router through it, so a rename fails the test instead of drifting.
  */
 function isChatRoute(pathname) {
   return /^\/space\/[^/]+\/agent\/[^/]+/.test(pathname);
@@ -186,9 +196,16 @@ function Layout() {
   // not enough: a portal needs the node, and on the first render — the same
   // commit that mounts the page — it is not attached yet. One extra render
   // after mount, once, is the whole cost.
+  //
+  // `useLayoutEffect`, not `useEffect`: the extra render has to land *before*
+  // the first paint. With `useEffect` it lands after one, so a deep link to a
+  // chat page on a phone paints the page's own header row and the bar's brand
+  // together and then snaps them into the single row — the exact state this
+  // exists to remove, on the one path (a cold load, not a client-side
+  // navigation) where the layout mounts with the page.
   const barSlotRef = useRef(null);
   const [barSlot, setBarSlot] = useState(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     setBarSlot(barSlotRef.current);
   }, []);
 

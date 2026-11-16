@@ -58,10 +58,18 @@ export function PhoneTopBar({ expanded, onOpen, triggerRef, slotRef }) {
         </svg>
       </button>
       {/* Empty on every page but the chat page, which portals its own chrome in
-          here. `:empty` is what tells the stylesheet to drop the brand. */}
+          here. `:empty` is what tells the stylesheet to drop the brand.
+
+          `inert` with the drawer: this element is the layout's, not the
+          page's, so it sits outside `main` and would otherwise escape the
+          `inert` that takes the page behind the drawer out of play — a Tab
+          would walk out of the drawer onto the chat page's own chevron. The
+          hamburger is a sibling and stays usable; it is the control that
+          opened the drawer, and closing it is the drawer's own job. */}
       <div
         ref={slotRef}
         id="phone-bar-slot"
+        inert={expanded}
         className="phone-bar-slot flex min-w-0 flex-1 flex-col"
       />
       <span className="phone-bar-brand flex h-11 items-center text-lg font-bold text-gray-800">
