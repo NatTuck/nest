@@ -29,7 +29,7 @@ constants at **2000** (see §11), and the two park valves are gone entirely (§4
 | `test/support/models_test_helpers.ex` (`await_models_refresh/1`) | `5_000` | `2_000` | see §6 |
 
 Not changed, because they are **not** timeouts: `ShellCmd.default_timeout_ms() ==
-60_000` and the `receive_timeout:` values assert *production* config, and
+10_000` and the `receive_timeout:` values assert *production* config, and
 `exit({:normal, {GenServer, :call, [..., 5000]}})` / `{:timeout, {GenServer,
 :call, [Nest.Models, :list, 5000]}}` simulate production error tuples.
 

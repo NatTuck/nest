@@ -57,7 +57,7 @@ defmodule Nest.Tools.ShellCmdTest do
     # Pre-seed the mailbox so the receive clause matches on
     # the first iteration. Without this, `collect_output/5`
     # would block on `:stdout` / `:stderr` / `:DOWN` until
-    # the command's natural exit (or the 60s default timeout).
+    # the command's natural exit (or the 10s default timeout).
     send(self(), {:stop_chat, self()})
 
     # Use `true` (a no-op builtin) so we don't depend on a
@@ -356,8 +356,10 @@ defmodule Nest.Tools.ShellCmdTest do
   end
 
   test "a long piped command is refused before it runs", %{ws: ws} do
-    # No `:bwrap`: the refusal is in the `with`, before `Sandbox.run/4`, so this
-    # proof must not be skippable on a host without bwrap.
+    # The refusal arms carry no `:bwrap` tag: the refusal is in the `with`,
+    # before `Sandbox.run/4`, so those proofs must not be skippable on a host
+    # without bwrap. The omission arm below is the run-side counterpart — it
+    # goes through `Sandbox.run/4` like every other run test in this file.
     function = Tools.get_function("shell-cmd", Mounts.new(ws, nil))
 
     assert {:error, message} =
