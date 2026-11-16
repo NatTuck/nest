@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "e2e": "playwright test",
+    "e2e:install": "playwright install chromium"
   },
   "keywords": [],
   "author": "",
@@ -32,6 +34,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "@vitest/coverage-v8": "^4.1.6",
     "jsdom": "^29.1.1",
+    "playwright": "^1.65.1",
     "tailwindcss": "^4.1.12",
     "vite": "^6.3.5",
     "vitest": "^4.1.6"

@@ -87,21 +87,20 @@ defmodule Nest.DotConfig do
   """
   def config_file, do: default_config_file()
 
-  defp default_config_file do
-    cond do
-      Mix.env() == :test ->
-        Path.join([File.cwd!(), "test", "data", "config.toml"])
-
-      # The end-to-end suite is the other environment that must not read the
-      # developer's real providers: it points an agent at a stub, and it runs on
-      # a machine that has no keys at all. Same rule as `:test`, same reason.
-      Mix.env() == :e2e ->
-        Path.join([File.cwd!(), "scripts", "e2e", "config.toml"])
-
-      true ->
-        @config_file
+  # `:test` and `:e2e` are the two environments that must not read the
+  # developer's real providers: a suite points an agent at a stub, and a runner
+  # has no keys at all. Both read a file from the repo instead, and both read the
+  # overlay there too — the Providers screen writes `local.toml`, and a run must
+  # not write `~/.config/nest/local.toml` behind the developer's back.
+  defp repo_config_file(name) do
+    case Mix.env() do
+      :test -> Path.join([File.cwd!(), "test", "data", name])
+      :e2e -> Path.join([File.cwd!(), "scripts", "e2e", name])
+      _ -> nil
     end
   end
+
+  defp default_config_file, do: repo_config_file("config.toml") || @config_file
 
   @doc """
   Returns the full path to local.toml — the user's overlay config edited
@@ -111,20 +110,8 @@ defmodule Nest.DotConfig do
   """
   def local_file, do: default_local_file()
 
-  defp default_local_file do
-    cond do
-      Mix.env() == :test ->
-        Path.join([File.cwd!(), "test", "data", "local.toml"])
-
-      # ...and the overlay the Providers screen writes, so a run cannot write
-      # `~/.config/nest/local.toml` behind the developer's back.
-      Mix.env() == :e2e ->
-        Path.join([File.cwd!(), "scripts", "e2e", "local.toml"])
-
-      true ->
-        Path.join(@config_dir, "local.toml")
-    end
-  end
+  defp default_local_file,
+    do: repo_config_file("local.toml") || Path.join(@config_dir, "local.toml")
 
   @doc """
   Loads and parses the config file, returning a map with providers and models.

@@ -127,7 +127,10 @@ function Message({ message, agentName }) {
         : agentName;
 
   return (
-    <div className={`flex gap-2 p-3 rounded-xl sm:gap-4 sm:p-4 ${bubbleClass}`}>
+    <div
+      data-testid="message"
+      className={`flex gap-2 p-3 rounded-xl sm:gap-4 sm:p-4 ${bubbleClass}`}
+    >
       {/* Avatar */}
       <div
         className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${avatarClass}`}
