@@ -300,11 +300,15 @@ defmodule Nest.Tools.ShellCmdTest do
 
     # `default_timeout_ms/0` is the single source of truth for the default;
     # both model-visible strings interpolate it, so the prose cannot drift
-    # from the constant. 60s is the documented default.
-    assert ShellCmd.default_timeout_ms() == 60_000
+    # from the constant. 10s is the documented default: short enough that a
+    # piped quick command qualifies for the pipe allowance without an explicit
+    # `timeout`, long enough for exploration — and a genuinely long command
+    # (a test run, an install) has to declare itself with `timeout`, which is
+    # also what the pipe rule refuses pipes on.
+    assert ShellCmd.default_timeout_ms() == 10_000
     default_seconds = div(ShellCmd.default_timeout_ms(), 1000)
 
-    # The model-visible contract: seconds, default 60, no cap, and optional
+    # The model-visible contract: seconds, the default, no cap, and optional
     # (omitting it is what applies the default). The unit is spelled out
     # because `agents-wait` and `agents-batch` take milliseconds.
     assert timeout["type"] == "integer"
@@ -373,10 +377,11 @@ defmodule Nest.Tools.ShellCmdTest do
     assert background_message =~ "a job's `timeout` is ignored"
     refute File.exists?(Path.join(ws, "bg.txt"))
 
-    # Omitting `timeout` is the 60-second default, so it is the long case too:
-    # omitting it must not be the way around the rule.
-    assert {:error, _} = function.function.(%{"command" => "touch omitted.txt | cat"}, @ctx)
-    refute File.exists?(Path.join(ws, "omitted.txt"))
+    # Omitting `timeout` is the 10-second default, which is *under* the pipe
+    # bound by design: a piped quick command runs as written, and the refusal's
+    # floor is an explicit long bound, not omission.
+    assert {:ok, _} = function.function.(%{"command" => "touch omitted.txt | cat"}, @ctx)
+    assert File.exists?(Path.join(ws, "omitted.txt"))
   end
 
   @tag :bwrap

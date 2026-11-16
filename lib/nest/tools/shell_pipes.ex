@@ -19,9 +19,11 @@ defmodule Nest.Tools.ShellPipes do
   manages its own log, and run the script.
 
   `background: true` is the long case — a job's `timeout` is ignored, so its
-  bound is unbounded. An omitted `timeout` is the tool's default
-  (`ShellCmd.default_timeout_ms/0`, 60 seconds), so it is the long case too:
-  omitting it must not be the way around the rule.
+  bound is unbounded. The default bound (`ShellCmd.default_timeout_ms/0`,
+  10 seconds) sits *under* the pipe bound on purpose: a quick command pipes
+  with no ceremony, and a command that may run long must say so with an
+  explicit `timeout` — which is exactly the declaration this rule refuses a
+  pipe on. A long command never inherits its bound by omission.
 
   ## Why a refusal and not a rewrite
 

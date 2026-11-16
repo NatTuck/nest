@@ -57,7 +57,7 @@ defmodule Nest.Tools.ShellCmd do
   alias Nest.Sandbox.ShellJobs.Owned
   alias Nest.Tools.ShellCmd.{Background, Diagnostics, Result, Transcript}
 
-  @default_timeout_ms 60_000
+  @default_timeout_ms 10_000
 
   # The largest value `receive ... after` accepts; anything above it raises
   # `ErlangError: :timeout_value` at the `receive`. `:timeout` itself has no
