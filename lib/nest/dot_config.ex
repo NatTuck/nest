@@ -88,10 +88,18 @@ defmodule Nest.DotConfig do
   def config_file, do: default_config_file()
 
   defp default_config_file do
-    if Mix.env() == :test do
-      Path.join([File.cwd!(), "test", "data", "config.toml"])
-    else
-      @config_file
+    cond do
+      Mix.env() == :test ->
+        Path.join([File.cwd!(), "test", "data", "config.toml"])
+
+      # The end-to-end suite is the other environment that must not read the
+      # developer's real providers: it points an agent at a stub, and it runs on
+      # a machine that has no keys at all. Same rule as `:test`, same reason.
+      Mix.env() == :e2e ->
+        Path.join([File.cwd!(), "scripts", "e2e", "config.toml"])
+
+      true ->
+        @config_file
     end
   end
 
@@ -104,10 +112,17 @@ defmodule Nest.DotConfig do
   def local_file, do: default_local_file()
 
   defp default_local_file do
-    if Mix.env() == :test do
-      Path.join([File.cwd!(), "test", "data", "local.toml"])
-    else
-      Path.join(@config_dir, "local.toml")
+    cond do
+      Mix.env() == :test ->
+        Path.join([File.cwd!(), "test", "data", "local.toml"])
+
+      # ...and the overlay the Providers screen writes, so a run cannot write
+      # `~/.config/nest/local.toml` behind the developer's back.
+      Mix.env() == :e2e ->
+        Path.join([File.cwd!(), "scripts", "e2e", "local.toml"])
+
+      true ->
+        Path.join(@config_dir, "local.toml")
     end
   end
 

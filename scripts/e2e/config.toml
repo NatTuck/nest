@@ -1,0 +1,17 @@
+# The end-to-end suite's provider: the stub in `scripts/e2e/stub-llm.mjs`, read
+# from a throwaway `XDG_CONFIG_HOME` so a run never touches the real
+# `~/.config/nest/config.toml`.
+#
+# `auto-models = false` with one explicit model is the point: discovery would
+# make the catalog depend on a probe of the stub, and the spec has to pick a
+# model by name.
+
+[providers.stub]
+base-url = "http://127.0.0.1:4011/v1"
+api-key = "stub-key"
+auto-models = false
+tags = ["stub"]
+
+[[providers.stub.models]]
+name = "stub-model"
+context-limit = 128000
