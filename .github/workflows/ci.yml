@@ -8,6 +8,13 @@
 #
 # No version is written in this file. `.tool-versions` is the single source, and
 # both toolchain actions read it directly, so a bump there moves CI with it.
+#
+# `ubuntu-24.04`, not `ubuntu-latest`: `erlef/setup-beam` with `version-type:
+# strict` installs prebuilt OTP artifacts, and they are built per Ubuntu release.
+# `OTP-27.3.4.6` has an `ubuntu-24.04` build and no `ubuntu-26.04` one, so on a
+# rolling `ubuntu-latest` the day that image moves, setup-beam silently compiles
+# OTP from source and the jobs' timeouts become the next thing to fail. Naming
+# the image makes the dependency explicit and the bump deliberate.
 name: CI
 
 on:
@@ -28,7 +35,7 @@ concurrency:
 jobs:
   elixir:
     name: Elixir lint, format, credo and tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # 15, not 10: a cold `_build` compiles the whole dependency tree plus 299
     # files, and this job now runs `--cover` on top of that.
     timeout-minutes: 15
@@ -125,7 +132,7 @@ jobs:
 
   js:
     name: JS lint and unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # Every JS command belongs in `assets/` (there is no package.json at the
     # repository root, and one there would be a bug), so the default is stated
@@ -191,7 +198,7 @@ jobs:
 
   e2e:
     name: End-to-end tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7

@@ -31,7 +31,12 @@ export default defineConfig({
   // Artifacts land next to the suite (`/assets/test-results`, gitignored).
   outputDir: "./test-results",
   forbidOnly: Boolean(process.env.CI),
-  retries: process.env.CI ? 1 : 0,
+  // No retries, in CI or out. A flake that passes on the second try is worse
+  // than a red run: it is the failure nobody fixes, and with `workers: 1`
+  // against one shared database a retry would also be re-running on the data
+  // the failed attempt left behind. The suite is twelve seconds; a red run is
+  // cheap and honest.
+  retries: 0,
   // One worker: the specs share one server and one database. They create their
   // own space and agent, so they could run in parallel, but the suite is a few
   // seconds either way and a single worker makes the log one story in order.
@@ -39,7 +44,10 @@ export default defineConfig({
   reporter: [["html", { open: "never" }], ["list"]],
   use: {
     baseURL,
-    trace: "on-first-retry",
+    // Kept only for a failed run (`retain-on-failure`), never for a retry —
+    // there are none. The trace is what makes a red CI run diagnosable without
+    // a rerun.
+    trace: "retain-on-failure",
   },
   projects: [
     {
