@@ -49,37 +49,15 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
     with :ok <- JobLog.prepare(mounts, log_path),
          {:ok, spec} <- job_spec(attrs, mounts, sandbox_log_path),
          {:ok, erl_pid, os_pid} <- run_process(spec) do
-      job = %{
-        id: job_id,
-        agent_key: agent_key,
-        command: Map.fetch!(attrs, :command),
-        script_path: Map.get(attrs, :script_path),
-        mounts: mounts,
+      started = %{
         log_path: log_path,
         sandbox_log_path: sandbox_log_path,
+        spec: spec,
         erl_pid: erl_pid,
-        os_pid: os_pid,
-        status: :running,
-        exit_code: nil,
-        killed: false,
-        # Who asked for the kill, once one has (`ShellJobs.kill/2` is the
-        # owner's own `shell-kill`, `kill_space/2` a sibling's). `nil` while the
-        # job is running, and it is what decides whether the exit is reported
-        # back as a notice (`Nest.Sandbox.ShellJobs.ExitNotice`).
-        killed_by: nil,
-        # The manager owns this job's process and its exit, so there is no
-        # separate owner to tell or monitor. A foreground call's record carries
-        # both (`Nest.Sandbox.ShellJobs.Owned`).
-        owner: nil,
-        owner_ref: nil,
-        # The holder generation this job joined (#224), so a holder death can
-        # reconcile exactly the jobs that died with it. `nil` for a fresh-ns
-        # fallback (no holder) and for backends that keep no namespace.
-        generation: Map.get(spec, :generation),
-        started_at: DateTime.utc_now()
+        os_pid: os_pid
       }
 
-      {:ok, job, sandbox_log_path}
+      {:ok, job_record(attrs, agent_key, job_id, mounts, started), sandbox_log_path}
     else
       {:error, reason} ->
         # Don't leave the empty log file (or partial dir) behind when the
@@ -87,6 +65,40 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
         JobLog.remove(mounts, log_path)
         {:error, start_error(reason)}
     end
+  end
+
+  # The record of a job whose process is running: everything the manager tracks
+  # for it, from the launch's facts (`started`).
+  defp job_record(attrs, agent_key, job_id, mounts, started) do
+    %{
+      id: job_id,
+      agent_key: agent_key,
+      command: Map.fetch!(attrs, :command),
+      script_path: Map.get(attrs, :script_path),
+      mounts: mounts,
+      log_path: started.log_path,
+      sandbox_log_path: started.sandbox_log_path,
+      erl_pid: started.erl_pid,
+      os_pid: started.os_pid,
+      status: :running,
+      exit_code: nil,
+      killed: false,
+      # Who asked for the kill, once one has (`ShellJobs.kill/2` is the
+      # owner's own `shell-kill`, `kill_space/2` a sibling's). `nil` while the
+      # job is running, and it is what decides whether the exit is reported
+      # back as a notice (`Nest.Sandbox.ShellJobs.ExitNotice`).
+      killed_by: nil,
+      # The manager owns this job's process and its exit, so there is no
+      # separate owner to tell or monitor. A foreground call's record carries
+      # both (`Nest.Sandbox.ShellJobs.Owned`).
+      owner: nil,
+      owner_ref: nil,
+      # The holder generation this job joined (#224), so a holder death can
+      # reconcile exactly the jobs that died with it. `nil` for a fresh-ns
+      # fallback (no holder) and for backends that keep no namespace.
+      generation: Map.get(started.spec, :generation),
+      started_at: DateTime.utc_now()
+    }
   end
 
   @doc """
