@@ -205,6 +205,14 @@ defmodule Nest.Sandbox.ShellJobs do
   def status(agent_key, job_id), do: GenServer.call(@name, {:status, agent_key, job_id})
 
   @doc """
+  Who killed `job_id` (`:owner`, `:space`, `:namespace`), or `nil` for a job that
+  exited on its own or is not tracked. A waiter's renderer reads this to word a
+  namespace-lost death (#224) as the cause rather than as an ordinary exit.
+  """
+  @spec killed_by(agent_key(), job_id()) :: atom() | nil
+  def killed_by(agent_key, job_id), do: GenServer.call(@name, {:killed_by, agent_key, job_id})
+
+  @doc """
   The job's captured output (the full log file), or `{:ok, ""}` when the
   log is missing.
   """
@@ -428,6 +436,13 @@ defmodule Nest.Sandbox.ShellJobs do
     case Index.fetch(state, agent_key, job_id) do
       {:ok, job} -> {:reply, {:ok, Info.status(job)}, state}
       :error -> {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:killed_by, agent_key, job_id}, _from, state) do
+    case Index.fetch(state, agent_key, job_id) do
+      {:ok, job} -> {:reply, Map.get(job, :killed_by), state}
+      :error -> {:reply, nil, state}
     end
   end
 

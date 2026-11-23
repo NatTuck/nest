@@ -370,10 +370,17 @@ defmodule Nest.Agents.Agent.Watch do
 
   # `output/2` returns `{:error, :not_found}` once the job is gone (it can be
   # dropped as the agent stops), so this must not hard-match: a crash here would
-  # leave the watch uncleared and deliver no wake.
+  # leave the watch uncleared and deliver no wake. A job that died with its
+  # namespace (#224) is worded as that cause, not as an ordinary exit — the
+  # waiting agent reads the same sentence the owner's notice does.
   defp shell_result(key, id, code) do
+    render =
+      if ShellJobs.killed_by(key, id) == :namespace,
+        do: &ShellJobs.namespace_lost_text/3,
+        else: &ShellJobs.result_text/3
+
     case ShellJobs.output(key, id) do
-      {:ok, output} -> ShellJobs.result_text(id, code, output)
+      {:ok, output} -> render.(id, code, output)
       {:error, _} -> "Background job #{id} exited with code #{code} (output no longer available)."
     end
   end

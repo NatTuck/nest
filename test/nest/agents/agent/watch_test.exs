@@ -22,6 +22,7 @@ defmodule Nest.Agents.Agent.WatchTest do
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
   alias Nest.Sandbox.Mounts
+  alias Nest.Sandbox.NamespaceHolder
   alias Nest.Sandbox.ShellJobs
   alias Nest.Tools.ShellCmd
 
@@ -359,6 +360,38 @@ defmodule Nest.Agents.Agent.WatchTest do
     # the event that says the notice landed.
     assert_receive {:chat_message, {:user, _}}, 1_000
     assert Enum.any?(notices(pid), &(&1 =~ "exited with code 0"))
+
+    await_idle(pid)
+  end
+
+  test "a shell-wait on a job that died with its namespace names the cause", %{
+    pid: pid,
+    name: name,
+    space_id: space_id
+  } do
+    # allowlist: snapshot — workspace_path + tmp_path
+    state = :sys.get_state(pid, 1_000)
+    key = {space_id, name}
+
+    {:ok, _} =
+      ShellCmd.execute("sleep 30", Mounts.from_agent(state), nil,
+        background: true,
+        agent_key: key,
+        grace_ms: 0
+      )
+
+    [%{id: id}] = ShellJobs.list(key)
+    {:ok, %{generation: g}} = NamespaceHolder.ensure(space_id)
+    MockClient.set_response("acknowledged")
+
+    assert {:waiting, _} = Watch.register_shell_call(ctx(pid, name, space_id), id, 500)
+
+    # The holder's generation is reconciled: the waiting agent is told the job
+    # died with the namespace, not that it merely "exited with code 137".
+    ShellJobs.namespace_lost(space_id, g)
+
+    assert_receive {:chat_message, {:user, _}}, 1_000
+    assert Enum.any?(notices(pid), &(&1 =~ "namespace was lost"))
 
     await_idle(pid)
   end

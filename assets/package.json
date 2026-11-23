@@ -32,12 +32,12 @@
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@vitejs/plugin-react": "^4.3.4",
-    "@vitest/coverage-v8": "^4.1.6",
+    "@vitest/coverage-v8": "^4.1.12",
     "jsdom": "^29.1.1",
     "playwright": "^1.65.1",
     "tailwindcss": "^4.1.12",
     "vite": "^6.3.5",
-    "vitest": "^4.1.6"
+    "vitest": "^4.1.12"
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.184",

@@ -170,24 +170,9 @@ defmodule Nest.Sandbox.NamespaceHolder do
   # ---- holder process ----
 
   defp start_holder(space_id, generation) do
-    case :exec.run(String.to_charlist(holder_command()), [:monitor, {:stdin, :null}]) do
+    case :exec.run(holder_command(), [:monitor, {:stdin, :null}]) do
       {:ok, erl_pid, os_pid} ->
-        case read_holder_child(os_pid) do
-          nil ->
-            :exec.kill(os_pid, 9)
-            Logger.warning("namespace holder for space #{space_id}: no child appeared")
-            :error
-
-          child_pid ->
-            {:ok,
-             %{
-               space_id: space_id,
-               os_pid: os_pid,
-               erl_pid: erl_pid,
-               holder_pid: child_pid,
-               generation: generation
-             }}
-        end
+        holder_from_child(space_id, generation, erl_pid, os_pid)
 
       {:error, reason} ->
         Logger.warning(
@@ -198,12 +183,61 @@ defmodule Nest.Sandbox.NamespaceHolder do
     end
   end
 
-  # The holder command. bash is PID 1 in the new pid namespace and reaps
+  defp holder_from_child(space_id, generation, erl_pid, os_pid) do
+    case read_holder_child(os_pid) do
+      nil ->
+        :exec.kill(os_pid, 9)
+        Logger.warning("namespace holder for space #{space_id}: no child appeared")
+        :error
+
+      child_pid ->
+        case File.read_link("/proc/#{child_pid}/ns/pid") do
+          {:ok, pid_ns} ->
+            {:ok,
+             %{
+               space_id: space_id,
+               os_pid: os_pid,
+               erl_pid: erl_pid,
+               holder_pid: child_pid,
+               pid_ns: pid_ns,
+               generation: generation
+             }}
+
+          _ ->
+            :exec.kill(os_pid, 9)
+
+            Logger.warning(
+              "namespace holder for space #{space_id}: cannot read its pid namespace"
+            )
+
+            :error
+        end
+    end
+  end
+
+  # The holder command, as an argv LIST so erlexec execs `unshare` directly
+  # with no shell: a string command goes through `$SHELL -c`, and `os_pid` is
+  # only unshare itself because common shells exec-optimise a lone simple
+  # command — a shell that forks would leave `os_pid` pointing at the shell
+  # (still in the host namespaces) and the child read would join the wrong ns.
+  # The list form execve's argv[0] directly (no PATH search), so the executable
+  # must be an absolute path. bash is PID 1 in the new pid namespace and reaps
   # orphans; the sleep loop keeps it alive. `--kill-child` ties the namespace's
   # life to the unshare parent, which erlexec owns.
   defp holder_command do
-    "unshare --user --map-current-user --pid --fork --kill-child " <>
-      "/bin/bash -c 'while :; do sleep 1; done'"
+    unshare = System.find_executable("unshare") || "/usr/bin/unshare"
+
+    [
+      unshare,
+      "--user",
+      "--map-current-user",
+      "--pid",
+      "--fork",
+      "--kill-child",
+      "/bin/bash",
+      "-c",
+      "while :; do sleep 1; done"
+    ]
   end
 
   # `unshare --fork` forks the holder child into the new namespaces; the parent
@@ -255,8 +289,17 @@ defmodule Nest.Sandbox.NamespaceHolder do
     end
   end
 
-  # The holder child (the namespace's PID 1) is alive iff its /proc entry is.
-  defp holder_alive?(holder), do: File.exists?("/proc/#{holder.holder_pid}")
+  # The holder child is alive iff its /proc entry exists AND its pid namespace
+  # is still the one it was started in. A bare existence check would pass for a
+  # zombie (entry lingering) or a recycled pid (a different process now owns it);
+  # the namespace inode pins the identity. A zombie has released its namespaces,
+  # so the read_link fails and the holder is treated as dead.
+  defp holder_alive?(holder) do
+    case File.read_link("/proc/#{holder.holder_pid}/ns/pid") do
+      {:ok, pid_ns} -> pid_ns == holder.pid_ns
+      _ -> false
+    end
+  end
 
   defp public(holder), do: %{holder_pid: holder.holder_pid, generation: holder.generation}
 
