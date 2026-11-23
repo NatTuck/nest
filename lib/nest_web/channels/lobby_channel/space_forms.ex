@@ -149,7 +149,7 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
 
   # The agent cap, edited on its own like the context warnings (it reaches no
   # command). A positive integer; the gate that refuses a non-integer or a
-  # non-positive value is `max_agents_param?/2` below.
+  # non-positive value is `max_agents_param?/1` below.
   @max_agents_key "max_agents"
 
   defp environment_params(payload) do

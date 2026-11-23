@@ -11,8 +11,9 @@ defmodule Nest.Agents.AgentLimitTest do
 
     * the default cap is enforced, and it counts *rows* — an agent with no live
       process (idle/offline) is still on the team;
-    * a blueprint override moves the cap in both directions (below and above the
-      default), and the refusal names the cap that was actually read;
+    * a blueprint's cap, snapshotted onto the space at creation, moves the limit
+      in both directions (below and above the default), and the refusal names the
+      cap that was actually read;
     * archived agents do not count, so archiving one frees a slot;
     * a refused spawn leaves no orphan row and no process;
     * the guard's own contract at the cap — the race-safe last step: a start
@@ -118,7 +119,7 @@ defmodule Nest.Agents.AgentLimitTest do
     end
   end
 
-  describe "a blueprint override" do
+  describe "a blueprint's cap, snapshotted at creation" do
     test "lowers the cap below the default and refuses at it", %{vocation_id: vocation_id} do
       space_id = space_with_cap(2)
 
@@ -272,6 +273,39 @@ defmodule Nest.Agents.AgentLimitTest do
 
       assert log =~ "removing the row it pre-spawned"
       assert Persistence.count_active_agents(space_id) == 3
+    end
+
+    test "a fresh spawn into a space at its cap is refused and rolled back", %{
+      vocation_id: vocation_id
+    } do
+      # The create route is not the only spawn path: `spawn_agent_in_space/5`
+      # (the `agents-spawn` tool) composes `verify` inside the start closure with
+      # the cap in the `start_pre_spawned` wrapper. Drive it at the cap so that
+      # composition is pinned, not just `create_agent/3`.
+      space_id = space_with_cap(2)
+      a = create_agent!(space_id, vocation_id, fresh_name("a"))
+      _b = create_agent!(space_id, vocation_id, fresh_name("b"))
+      assert Persistence.count_active_agents(space_id) == 2
+
+      {:ok, pid} = Supervisor.get_agent(space_id, a)
+      # allowlist: harness — the spawn path's parent-state argument
+      parent_state = :sys.get_state(pid, 1_000)
+      name = fresh_name("child")
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:agent_limit, 2}} =
+                   Supervisor.spawn_agent_in_space(
+                     parent_state,
+                     name,
+                     AgentTestHelpers.vocation_slug_for_test()
+                   )
+        end)
+
+      assert log =~ "removing the row it pre-spawned"
+      assert Persistence.fetch_agent(space_id, name) == {:error, :not_found}
+      assert Registry.lookup(space_id, name) == {:error, :not_found}
+      assert Persistence.count_active_agents(space_id) == 2
     end
   end
 end

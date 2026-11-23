@@ -1,7 +1,9 @@
 /**
  * EditSpaceDialog — modal form for a space's **environment**: the workspace it
  * binds, whether its agents may reach the network, and which sandbox backend
- * runs them — plus whether the runtime's context-usage notices are on.
+ * runs them — plus two settings that are not the environment: whether the
+ * runtime's context-usage notices are on, and the cap on how many non-archived
+ * agents the space may hold (`max_agents`).
  *
  * One dialog for the three environment properties because they are one
  * decision: every agent in the space inherits them, and a save tells the live
@@ -26,8 +28,8 @@
  *   - `open`    — show/hide the modal.
  *   - `onClose` — close the modal (Escape / backdrop / X, and after a save).
  *   - `space`   — the space being edited; its `workspace_path`,
- *                 `network_access`, `sandbox_backend` and `context_warnings`
- *                 initialize the form.
+ *                 `network_access`, `sandbox_backend`, `context_warnings` and
+ *                 `max_agents` initialize the form.
  */
 
 import { useEffect, useRef, useState } from "react";

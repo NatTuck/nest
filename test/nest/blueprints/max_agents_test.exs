@@ -91,6 +91,20 @@ defmodule Nest.Blueprints.MaxAgentsTest do
       assert Spaces.max_agents_for_space(unset_space.id) == 5
       assert Spaces.max_agents_for_space(bare_space.id) == 5
 
+      # An explicit caller value wins over the blueprint seed; a blank ("")
+      # counts as unnamed and falls back to the seed (`CreationParams`).
+      {:ok, explicit_space} =
+        Spaces.create_space(nil, space_attrs(%{blueprint_id: grading.id, max_agents: 7}))
+
+      {:ok, blank_space} =
+        Spaces.create_space(nil, space_attrs(%{blueprint_id: grading.id, max_agents: ""}))
+
+      assert Spaces.max_agents_for_space(explicit_space.id) == 7
+      assert Spaces.max_agents_for_space(blank_space.id) == 20
+
+      # A missing space resolves to nil — the gate reads its own default.
+      assert Spaces.max_agents_for_space(-1) == nil
+
       # Model B: the space owns its cap independently of the blueprint. Changing
       # the blueprint after creation does not move an existing space's limit.
       assert {:ok, _} = Blueprints.update_blueprint(grading, %{max_agents: 3})

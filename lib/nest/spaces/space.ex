@@ -80,6 +80,7 @@ defmodule Nest.Spaces.Space do
   import Ecto.Changeset
 
   alias Nest.Agents.PersistedAgent
+  alias Nest.Agents.StartGuard
   alias Nest.Slug
 
   # `Nest.Spaces` names a space's root agent `<slug>-root` (see
@@ -116,7 +117,7 @@ defmodule Nest.Spaces.Space do
     field :sandbox_backend, :string, default: @default_sandbox_backend
     field :network_access, :boolean, default: true
     field :context_warnings, :boolean, default: false
-    field :max_agents, :integer, default: 5
+    field :max_agents, :integer, default: StartGuard.default_max_agents()
     field :created_by_user_id, :integer
 
     # Lifecycle. `archived` soft-hides the space from the main
@@ -142,7 +143,10 @@ defmodule Nest.Spaces.Space do
   environment. The two booleans *are* cast here, because `create_changeset/2`
   builds on this one: `:network_access`'s edit path is that same environment
   changeset, and `:context_warnings` is written on its own
-  (`Nest.Spaces.ContextWarnings`). This is the rename path, and its cast of them
+  (`Nest.Spaces.ContextWarnings`). `:max_agents` is cast and validated positive
+  here for the same reason — the creation snapshot is seeded through
+  `create_changeset/2` — while its edit path is its own writer
+  (`Nest.Spaces.MaxAgents`). This is the rename path, and its cast of them
   only keeps a rename from tripping over a value it did not name.
 
   `:slug` must be usable as the root agent's name (`<slug>-root`), so it

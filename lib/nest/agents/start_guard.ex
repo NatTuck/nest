@@ -63,10 +63,10 @@ defmodule Nest.Agents.StartGuard do
 
   @supervisor Nest.Agents.Supervisor
 
-  # The cap a space gets when its blueprint names none. A named constant here
-  # rather than a value copied into every blueprint row: `nil` in the column
-  # means "no opinion", and the default is the gate's to state — one place to
-  # change it, and nothing to backfill.
+  # The cap a space gets when its blueprint names none. The single source for
+  # the default: `Nest.Spaces.Space`'s `max_agents` column default reads this
+  # function, so the schema and the gate cannot drift. `nil` in a blueprint's
+  # column means "no opinion"; the snapshot seeded at creation falls back here.
   @default_max_agents 5
 
   @doc """
