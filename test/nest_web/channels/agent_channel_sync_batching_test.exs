@@ -81,7 +81,7 @@ defmodule NestWeb.AgentChannelSyncBatchingTest do
   } do
     # 5 x ~14 kB is ~70 kB: comfortably over the old `@sync_size_limit` of
     # 65_536, and well under the current one. This is the regression test for
-    # the batch count — with the old cap this took three round trips.
+    # the batch count — with the old cap this took two round trips.
     seed_active(space_id, agent_id, 5, 14_000)
 
     messages = sync(socket, -1)
