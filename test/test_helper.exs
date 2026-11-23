@@ -44,11 +44,11 @@ mimic_modules = [
 # with `eager: true` (the fork's addition, #220) marks the module and copies it in
 # the caller, so N callers copy in parallel instead of serialising through the
 # Coordinator's `handle_call` during the suite. Under `--cover` the Coordinator
-# copies eagerly itself and `eager: true` is a no-op (the module is already
-# copied). This replaces the old drive through the internal
-# `Mimic.Module.replace!/2`, whose per-call restore of the VM-wide
-# `ignore_module_conflict` option raced concurrent copies - the fresh-build
-# "redefining module" warning (#220).
+# already copied the cover-compiled modules, so the `copied?` guard skips those;
+# dependency modules, which cover does not compile, are still copied here.
+# This replaces the old drive through the internal `Mimic.Module.replace!/2`,
+# whose per-call restore of the VM-wide `ignore_module_conflict` option raced
+# concurrent copies - the fresh-build "redefining module" warning (#220).
 mimic_modules
 |> Task.async_stream(
   fn {module, opts} -> Mimic.copy(module, Keyword.put(opts, :eager, true)) end,

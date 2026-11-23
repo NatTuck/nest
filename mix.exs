@@ -79,7 +79,8 @@ defmodule Nest.MixProject do
       # `replace!/2` (set-once `ignore_module_conflict`) and a public
       # `Mimic.copy/2 eager: true`. Pinned to the fork commit until the upstream
       # PR lands, then this goes back to a hex version.
-      {:mimic, github: "NatTuck/mimic", ref: "8d1744b2bbe13bf1ba89da8fd2b268ca582225ff", only: :test},
+      {:mimic,
+       github: "NatTuck/mimic", ref: "8d1744b2bbe13bf1ba89da8fd2b268ca582225ff", only: :test},
       # `runtime: false`: the task has to be resolvable under `MIX_ENV=prod`
       # (`assets.deploy` runs `phx.copy default`) and `Phoenix.Copy.run/1` has to
       # be callable from `test_helper.exs`, but neither needs the application
