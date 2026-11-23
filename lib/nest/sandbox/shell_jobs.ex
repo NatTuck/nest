@@ -46,19 +46,22 @@ defmodule Nest.Sandbox.ShellJobs do
   the jobs are stopped. Finished jobs are kept (bounded) so `shell-wait` can
   still answer for one — `shell-list` lists only what is running (#181).
 
-  Listing and killing are the two space-scoped operations: `list_space/1` and
-  `kill_space/2` reach every job belonging to any agent in one space, so a
-  parent agent can find and stop a job a sibling left holding locks. Nothing
-  else crosses agents — `status/2`, `output/2`, `subscribe/3` and `kill/2` are
-  owner-scoped, and no operation reaches a job in another space.
+  Listing, killing and log reads are the space-scoped operations: `list_space/1`,
+  `kill_space/2` and `output_space/2` reach every job belonging to any agent in
+  one space, so a parent agent can find and stop a job a sibling left holding
+  locks, and the space-wide job view (#225) can show any agent's job output.
+  Nothing else crosses agents — `status/2`, `output/2`, `subscribe/3` and `kill/2`
+  are owner-scoped, and no operation reaches a job in another space.
 
   ## Events
 
   When an agent topic is known, every change to an agent's jobs — a start, an
   exit, a kill, a trim, or the whole set being dropped with its agent —
   broadcasts `{:shell_jobs, %{jobs: [...]}}` on `"agent:<space_id>:<name>"` for
-  the job panel, and `{:agent_jobs, %{space_id, name, count}}` on the space's
-  topic for the sidebar's agent row (#175). `Frames` builds both.
+  the job panel, `{:agent_jobs, %{space_id, name, count}}` on the space's
+  topic for the sidebar's agent row (#175), and `{:space_jobs, %{space_id,
+  jobs: [...]}}` on the same topic for the space-wide job view (#225).
+  `Frames` builds all three.
 
   ## Blocking
 
@@ -70,8 +73,11 @@ defmodule Nest.Sandbox.ShellJobs do
   agent's scratch directory. Under `"docker"` those three are one `docker exec`
   (the read, bounded like the `File.read` it replaces), a no-op (the command
   writes its own log), and a no-op (the scratch is the container's). It never
-  waits on an agent, an LLM, or another process, so a `GenServer.call/3` to it
-  is ordinary synchronous communication, not a blocking hand-off.
+  waits on an agent or an LLM. The one cross-process wait is the bwrap
+  backend's `NamespaceHolder.ensure/1` inside a start — a bounded holder
+  startup wait (see that module's "Blocking" section) — so a
+  `GenServer.call/3` to it is ordinary synchronous communication, not an
+  unbounded hand-off.
 
   The `rm_rf` is the one cost this process carries that scales with the
   agent's own data (the uncapped logs under its scratch). It stays here
@@ -199,11 +205,29 @@ defmodule Nest.Sandbox.ShellJobs do
   def status(agent_key, job_id), do: GenServer.call(@name, {:status, agent_key, job_id})
 
   @doc """
+  Who killed `job_id` (`:owner`, `:space`, `:namespace`), or `nil` for a job that
+  exited on its own or is not tracked. A waiter's renderer reads this to word a
+  namespace-lost death (#224) as the cause rather than as an ordinary exit.
+  """
+  @spec killed_by(agent_key(), job_id()) :: atom() | nil
+  def killed_by(agent_key, job_id), do: GenServer.call(@name, {:killed_by, agent_key, job_id})
+
+  @doc """
   The job's captured output (the full log file), or `{:ok, ""}` when the
   log is missing.
   """
   @spec output(agent_key(), job_id()) :: {:ok, binary()} | {:error, :not_found}
   def output(agent_key, job_id), do: GenServer.call(@name, {:output, agent_key, job_id})
+
+  @doc """
+  The captured output of a job owned by *any* agent in `space_id` — the log
+  read the space-wide job view (#225) renders, so a job's output is reachable
+  from the space page without joining its owner's agent channel.
+
+  `{:error, :not_found}` is a job that belongs to another space, or to nothing.
+  """
+  @spec output_space(term(), job_id()) :: {:ok, binary()} | {:error, :not_found}
+  def output_space(space_id, job_id), do: GenServer.call(@name, {:output_space, space_id, job_id})
 
   @doc """
   Register `pid` to receive `{:shell_job_exit, job_id, exit_code}`. When
@@ -278,6 +302,27 @@ defmodule Nest.Sandbox.ShellJobs do
     do: GenServer.call(@name, {:kill_space, space_id, job_id})
 
   @doc """
+  Reconcile the jobs that died with a space's namespace holder (#224).
+
+  When `NamespaceHolder` loses a holder of `generation`, every *running* job
+  that joined that generation died with it. This marks each one dead with a
+  distinct namespace-lost status and signals its owner through the exit-notice
+  path, deterministically — before the holder is restarted, and without racing
+  the jobs' own exec-port monitors (a job already finished is left as-is, and a
+  late monitor `:DOWN` finds no running job to finish again). Finished jobs of
+  the generation, and jobs of any other generation, are untouched.
+
+  A **cast**, not a call: the sender is `NamespaceHolder`, whose `ensure/1` the
+  manager itself calls (through the backend) when it starts a job — a call back
+  into the manager here would circular-wait. The cast is still deterministic:
+  it is handled in the manager's mailbox order, and the running-only monitor
+  lookup makes reconciliation idempotent against the jobs' own `:DOWN`s.
+  """
+  @spec namespace_lost(term(), non_neg_integer()) :: :ok
+  def namespace_lost(space_id, generation),
+    do: GenServer.cast(@name, {:namespace_lost, space_id, generation})
+
+  @doc """
   Stop every job for `agent_key` synchronously, then remove the agent's scratch
   directory (see `drop_agent/3`).
 
@@ -334,6 +379,7 @@ defmodule Nest.Sandbox.ShellJobs do
   # exit is reported — `shell-wait`'s inline answer, the watcher's message, and
   # the owner's notice — cannot drift.
   defdelegate result_text(id, code, output), to: Text
+  defdelegate namespace_lost_text(id, code, output), to: Text
   defdelegate gone_text(id), to: Text
   defdelegate trimmed_text(id), to: Text
 
@@ -393,8 +439,22 @@ defmodule Nest.Sandbox.ShellJobs do
     end
   end
 
+  def handle_call({:killed_by, agent_key, job_id}, _from, state) do
+    case Index.fetch(state, agent_key, job_id) do
+      {:ok, job} -> {:reply, Map.get(job, :killed_by), state}
+      :error -> {:reply, nil, state}
+    end
+  end
+
   def handle_call({:output, agent_key, job_id}, _from, state) do
     case Index.fetch(state, agent_key, job_id) do
+      {:ok, job} -> {:reply, {:ok, JobLog.read(job.mounts, job.log_path)}, state}
+      :error -> {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:output_space, space_id, job_id}, _from, state) do
+    case Index.fetch_in_space(state, space_id, job_id) do
       {:ok, job} -> {:reply, {:ok, JobLog.read(job.mounts, job.log_path)}, state}
       :error -> {:reply, {:error, :not_found}, state}
     end
@@ -457,6 +517,10 @@ defmodule Nest.Sandbox.ShellJobs do
   @impl true
   def handle_cast({:stop_all, agent_key, owner}, state) do
     {:noreply, Agents.drop(agent_key, state, owner)}
+  end
+
+  def handle_cast({:namespace_lost, space_id, generation}, state) do
+    {:noreply, reconcile_lost(state, space_id, generation)}
   end
 
   @impl true
@@ -539,6 +603,14 @@ defmodule Nest.Sandbox.ShellJobs do
 
   # ---- Output / completion ----
 
+  # A job that died with its namespace (#224) is marked killed by the
+  # namespace itself: the distinct `killed_by` routes its owner notice and
+  # tells it apart from a normal exit or an explicit shell-kill. 137 is
+  # 128 + SIGKILL — the namespace teardown kills the process.
+  defp finish_job(job, {:namespace_lost, code}, state) do
+    finish_job(%{job | killed: true, killed_by: :namespace}, {:killed, code}, state)
+  end
+
   defp finish_job(job, reason, state) do
     code = exit_code(reason)
 
@@ -557,6 +629,23 @@ defmodule Nest.Sandbox.ShellJobs do
 
     Records.remove_script(job)
     Frames.broadcast(state, job.agent_key)
+  end
+
+  # ---- Namespace loss (#224) ----
+
+  # Mark every running job of `space_id` + `generation` dead, exactly once.
+  # `Index.by_erl_pid/2` matches only running jobs, so a job finished here is
+  # not finished again by its exec port's late `:DOWN` — one notice per job.
+  defp reconcile_lost(state, space_id, generation) do
+    state.jobs
+    |> Map.values()
+    |> Enum.filter(&lost_job?(&1, space_id, generation))
+    |> Enum.reduce(state, fn job, acc -> finish_job(job, {:namespace_lost, 137}, acc) end)
+  end
+
+  defp lost_job?(job, space_id, generation) do
+    job.status == :running and match?({^space_id, _}, job.agent_key) and
+      Map.get(job, :generation) == generation
   end
 
   defp exit_code(:normal), do: 0

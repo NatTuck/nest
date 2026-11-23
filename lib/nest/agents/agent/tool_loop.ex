@@ -41,6 +41,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
   alias Nest.Models
+  alias Nest.Sandbox.ShellJobs
 
   # How long the spawn *request* itself may take: it creates the child process
   # and its rows, and delivers the query — it is not a wait for the child's
@@ -229,14 +230,20 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   # `agents-list`: read the space's non-archived agents —
   # running or persisted-only — and serialize their name,
-  # vocation, status, depth, and mode. Pure read — no GenServer
-  # round-trip needed.
+  # vocation, status, depth, mode and running shell-job count.
+  # The listing itself needs no agent round-trip; the counts are
+  # one call to the job manager for the whole space.
   #
   # The space's **humans** are named too, on their own line and marked as
   # human: an agent discovers `@nat` here rather than from the system prompt,
   # which is fixed and would go stale the moment someone joins the space. See
   # `humans_section/1` for why one line is the whole shape today.
   defp run_list_agents(ctx, %ToolCall{} = tc) do
+    # One read for the whole space (#225): the same counts the sidebar's rows
+    # show, so a listing and the lobby cannot disagree about who is running
+    # what. A foreground `shell-cmd` call counts while it runs too (#174).
+    counts = ShellJobs.running_counts(ctx.space_id)
+
     listing =
       Nest.Agents.list_agents_info_for_space(ctx.space_id)
       |> Enum.map(fn info ->
@@ -251,7 +258,8 @@ defmodule Nest.Agents.Agent.ToolLoop do
           depth: info.depth,
           # The agent's mode *now*: the live one for a running agent, the row's
           # for a persisted-only one (`Visibility` resolves both into `:mode`).
-          mode: Map.get(info, :mode)
+          mode: Map.get(info, :mode),
+          running_jobs: Map.get(counts, info.name, 0)
         }
       end)
 
@@ -287,7 +295,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   # `agents-list-archived`: read the space's archived agents and
   # serialize their name, parent, and depth. Pure read — no
-  # GenServer round-trip needed, like `agents-list`.
+  # GenServer round-trip needed.
   defp run_list_archived_agents(ctx, %ToolCall{} = tc) do
     listing =
       Nest.Agents.list_archived_agents_for_space(ctx.space_id)
@@ -312,7 +320,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # `models-list`: list models from providers configured with
   # `expose_models: true`. The optional `provider` argument
   # narrows the listing to a single provider. Read-only and
-  # inline (no GenServer round-trip), like `agents-list`.
+  # inline (no GenServer round-trip).
   defp run_models_list(%ToolCall{} = tc) do
     provider = extract_string_arg(tc, "provider")
     content = models_listing(provider)

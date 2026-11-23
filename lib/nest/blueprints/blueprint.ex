@@ -40,6 +40,11 @@ defmodule Nest.Blueprints.Blueprint do
     falling back to the caller's own vocation. When set, it must
     be a slug the space may spawn — see
     `validate_default_spawnable_vocation/1`.
+  * `max_agents` — the cap on the space's **non-archived** agents
+    (running or idle — the whole team). `nil` means "this
+    blueprint does not say", and the start gate reads it as the
+    default (`Nest.Agents.StartGuard`). When set, it must be a
+    positive integer.
   * `workspace_template` — map of initial workspace files.
     Seeding is deferred; the column exists for future use.
   * `main_view_config` — map consumed by the Phase 4 Main
@@ -62,6 +67,7 @@ defmodule Nest.Blueprints.Blueprint do
              :default_mode,
              :default_net,
              :default_spawnable_vocation,
+             :max_agents,
              :workspace_template,
              :main_view_config,
              :inserted_at,
@@ -92,6 +98,13 @@ defmodule Nest.Blueprints.Blueprint do
     # (see `Nest.Agents.Supervisor.resolve_spawn_vocation/2`).
     field :default_spawnable_vocation, :string
 
+    # The cap on the space's non-archived agents (running or idle). `nil` means
+    # "this blueprint does not say", which the start gate reads as its default
+    # (`Nest.Agents.StartGuard`). Nullable on purpose: a blueprint that names no
+    # cap keeps the default, and the default is the gate's to state, not a value
+    # copied into every row.
+    field :max_agents, :integer
+
     field :workspace_template, :map, default: %{}
     field :main_view_config, :map, default: %{}
 
@@ -108,6 +121,7 @@ defmodule Nest.Blueprints.Blueprint do
           default_mode: String.t() | nil,
           default_net: boolean() | nil,
           default_spawnable_vocation: String.t() | nil,
+          max_agents: pos_integer() | nil,
           workspace_template: map(),
           main_view_config: map(),
           inserted_at: DateTime.t() | nil,
@@ -126,10 +140,12 @@ defmodule Nest.Blueprints.Blueprint do
       :default_mode,
       :default_net,
       :default_spawnable_vocation,
+      :max_agents,
       :workspace_template,
       :main_view_config
     ])
     |> validate_required([:name, :root_vocation])
+    |> validate_number(:max_agents, greater_than: 0)
     |> validate_change(:default_mode, &validate_default_mode/2)
     |> maybe_generate_slug()
     |> validate_required([:slug])

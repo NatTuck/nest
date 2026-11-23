@@ -239,6 +239,73 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
     end
   end
 
+  describe "the shared process namespace (#224)" do
+    # A bwrap space keeps one pid namespace for every command in it, so the
+    # prompt tells a tool-capable agent what that means for `ps` and for
+    # background work. The note is bwrap-only: a `none` space has no namespace
+    # Nest keeps and a `docker` space shares a container, not this holder —
+    # and a tool-less agent has no command to run, so it gets no dangling
+    # reference either.
+    test "a bwrap tool-capable agent is told the namespace, the registry and the orphan rule" do
+      vocation = tool_vocation("NsNote")
+      mounts = Mounts.new(nil, nil, "bwrap", 7, true)
+
+      prompt = compose_with(vocation, mounts)
+
+      assert prompt =~ "shares one process namespace across all its agents"
+      assert prompt =~ "`ps` shows the space's jobs"
+      assert prompt =~ "`shell-list`, `shell-wait` and `shell-kill` are the job registry"
+      assert prompt =~ "`background: true` is the tracked way to run something persistent"
+      assert prompt =~ "untracked orphan"
+
+      # Its place in the tool sections: after the network sentence, before the
+      # tool-call budget — the ordering the prompt's bytes are pinned to.
+      assert prompt =~
+               "Network access is enabled for this space: your commands can reach the network." <>
+                 "\n\n\nThis space shares one process namespace"
+
+      assert prompt =~ "orphan — the registry cannot see it or stop it.\n\n\nTool call budget:"
+    end
+
+    test "a tool-less vocation gets no note, and neither does a none or docker space" do
+      {:ok, tool_less} =
+        Vocations.create_vocation(%{
+          name: "NsNoTools-#{System.unique_integer([:positive])}",
+          description: "Test",
+          system_prompt: "Tool-less.",
+          tools: []
+        })
+
+      vocation = tool_vocation("NsOther")
+
+      for mounts <- [
+            Mounts.new(nil, nil, "bwrap", 7, true),
+            Mounts.new(nil, nil, "none", 7, true),
+            Mounts.new(nil, nil, "docker", 7, true)
+          ] do
+        # The tool-less agent on the same backend: no tools, no note.
+        refute compose_with(tool_less, mounts) =~ "process namespace"
+      end
+
+      # A tool-capable agent on a backend that does not keep this namespace.
+      refute compose_with(vocation, Mounts.new(nil, nil, "none", 7, true)) =~ "process namespace"
+
+      refute compose_with(vocation, Mounts.new(nil, nil, "docker", 7, true)) =~
+               "process namespace"
+    end
+
+    test "the note is byte-stable across compositions" do
+      # The section reads only the backend — a space property fixed at start —
+      # so two compositions of the same agent are the same bytes. Anything
+      # volatile in it (a holder pid, a generation, a timestamp) would break
+      # this equality and cost the prefix cache on every compaction.
+      vocation = tool_vocation("NsStable")
+      mounts = Mounts.new(nil, nil, "bwrap", 7, true)
+
+      assert compose_with(vocation, mounts) == compose_with(vocation, mounts)
+    end
+  end
+
   describe "a `\"none\"` space's scratch" do
     # A `"none"` space has no sandbox, so the agent's `/tmp` is the host's own and
     # nothing Nest does isolates or sweeps it. Its prompt says so and suggests a

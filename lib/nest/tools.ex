@@ -316,17 +316,18 @@ defmodule Nest.Tools do
 
   # The `agents-list` tool: enumerate the non-archived agents in
   # this space, whether or not they currently have a live
-  # process. Returns each agent's name, vocation, status, and
-  # depth. Like `agents-spawn`, the `function` here is a stub —
-  # `ToolLoop` handles it inline by reading the space's
-  # non-archived agents.
+  # process. Returns each agent's name, vocation, status, depth,
+  # mode and running shell-job count. Like `agents-spawn`, the
+  # `function` here is a stub — `ToolLoop` handles it inline by
+  # reading the space's non-archived agents.
   defp list_agents_function do
     %Tool{
       name: "agents-list",
       description:
         "List the non-archived agents in this space (running or not), with their " <>
-          "name, vocation, status, and depth. Use this to discover agents you can " <>
-          "delegate to.",
+          "name, vocation, status, depth, mode, and `running_jobs` — how many shell " <>
+          "jobs the agent has running right now. Use this to discover agents you " <>
+          "can delegate to.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{"max_result_tokens" => max_result_tokens_schema()},

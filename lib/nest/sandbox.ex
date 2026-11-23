@@ -206,6 +206,29 @@ defmodule Nest.Sandbox do
   @spec build(map(), Mounts.t(), String.t() | nil, [String.t()]) ::
           {:ok, [String.t()]} | {:error, String.t()}
   def build(caps, mounts, chdir_path, hpu_device_paths) do
+    do_build(caps, mounts, chdir_path, hpu_device_paths, :fresh)
+  end
+
+  @doc """
+  Build the bwrap args for a command that JOINS a space's persistent namespace
+  (#224) rather than unsharing a fresh one. The result omits `--unshare-all`
+  and the `--userns`/`--pidns`/`--uid`/`--gid` flags: the caller
+  (`Nest.Sandbox.Backend.Bwrap`) wraps the command so a host shell opens the
+  holder's namespace FDs and supplies those, joining the holder's user + pid
+  namespace while this call still binds its own mounts and network.
+
+  Everything else — the readable roots, the mode's binds, the HPU device
+  passthrough, the chdir — is exactly `build/2`'s, so a joined command sees the
+  same filesystem a fresh one would.
+  """
+  @spec build_join(map(), Mounts.t()) :: {:ok, [String.t()]} | {:error, String.t()}
+  def build_join(caps, mounts) do
+    hpu_device_paths = Hardware.hpu_device_paths()
+    Hardware.ensure_habana_log_dir(hpu_device_paths, Hardware.habana_log_dir())
+    do_build(caps, mounts, Mounts.workspace(mounts), hpu_device_paths, :join)
+  end
+
+  defp do_build(caps, mounts, chdir_path, hpu_device_paths, mode) do
     workspace = Mounts.workspace(mounts)
 
     with :ok <- validate_caps(caps),
@@ -213,8 +236,8 @@ defmodule Nest.Sandbox do
       Nest.ProjectConfig.ensure_dirs(caps)
 
       args =
-        base_args(caps, hpu_device_paths)
-        |> append_net_flag(caps)
+        base_args(caps, hpu_device_paths, mode)
+        |> append_net_flag(caps, mode)
         |> append_binds(caps, mounts)
         |> append_chdir(chdir_path, mounts)
 
@@ -582,7 +605,7 @@ defmodule Nest.Sandbox do
     end
   end
 
-  defp base_args(caps, hpu_device_paths) do
+  defp base_args(caps, hpu_device_paths, mode) do
     read_args =
       caps
       |> readable_roots()
@@ -598,16 +621,18 @@ defmodule Nest.Sandbox do
     # host's /dev is bound instead so accelerator nodes are present.
     # Mount the host's procfs after the read-only root bind so that
     # /proc/self/<pid>/... files stay writable inside the sandbox.
-    [
-      # Unshare everything by default; re-share net below if requested.
-      "--unshare-all",
-      "--die-with-parent",
-      "--new-session"
-    ] ++
+    namespace_args(mode) ++
       read_args ++
       hpu_args ++
       ["--proc", "/proc"]
   end
+
+  # A fresh command unshares everything (re-sharing net below if requested).
+  # A joined command (#224) shares the holder's user + pid namespace — the
+  # wrapper supplies --userns/--pidns/--uid/--gid — and only keeps the
+  # per-command session and death-with-parent flags here.
+  defp namespace_args(:fresh), do: ["--unshare-all", "--die-with-parent", "--new-session"]
+  defp namespace_args(:join), do: ["--die-with-parent", "--new-session"]
 
   # HPU hosts get the host's device nodes and a writable Habana log dir.
   # The log dir must be bound after the `--ro-bind / /` (which mounts it
@@ -621,8 +646,14 @@ defmodule Nest.Sandbox do
     ["--bind", log_dir, log_dir, "--dev-bind", "/dev", "/dev"]
   end
 
-  defp append_net_flag(args, %{"net" => true}), do: args ++ ["--share-net"]
-  defp append_net_flag(args, %{"net" => false}), do: args ++ ["--unshare-net"]
+  # A fresh command re-shares net with --share-net (which requires
+  # --unshare-all) or unshares it. A joined command has no --unshare-all, so
+  # net=true simply inherits the holder's network namespace (the host's — the
+  # holder unshares only user + pid); net=false unshares a fresh one.
+  defp append_net_flag(args, %{"net" => true}, :fresh), do: args ++ ["--share-net"]
+  defp append_net_flag(args, %{"net" => false}, :fresh), do: args ++ ["--unshare-net"]
+  defp append_net_flag(args, %{"net" => true}, :join), do: args
+  defp append_net_flag(args, %{"net" => false}, :join), do: args ++ ["--unshare-net"]
 
   # Every bind this call makes, rendered as bwrap's own flags. The set itself is
   # `Nest.Sandbox.Binds`'s — the docker backend renders the same triples over the

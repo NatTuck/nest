@@ -5350,6 +5350,33 @@ describe("store", () => {
     });
   });
 
+  describe("setSpaceJobs (#225)", () => {
+    // The space-wide job cache: one list per space, replaced whole by the
+    // lobby's init entries, `space:jobs` frames and refresh replies alike.
+    it("replaces one space's list, keeping the others and a known empty distinct", () => {
+      // No read has landed for any space yet: the map is empty, which the
+      // panel renders as an explicit indicator, never as "no jobs".
+      expect(useStore.getState().spaceJobs).toEqual({});
+
+      const job = { id: "job-1", agent: "a", status: "running" };
+      useStore.getState().setSpaceJobs(1, [job]);
+      useStore.getState().setSpaceJobs(2, []);
+
+      expect(useStore.getState().spaceJobs[1]).toEqual([job]);
+      // A known empty space is an entry, not an absence.
+      expect(useStore.getState().spaceJobs[2]).toEqual([]);
+
+      // A frame replaces the list — a finished job leaving is the whole point.
+      useStore.getState().setSpaceJobs(1, []);
+      expect(useStore.getState().spaceJobs[1]).toEqual([]);
+      expect(useStore.getState().spaceJobs[2]).toEqual([]);
+
+      // A null list is the empty list, never a hole back into "no read".
+      useStore.getState().setSpaceJobs(3, null);
+      expect(useStore.getState().spaceJobs[3]).toEqual([]);
+    });
+  });
+
   describe("applyAgentStatuses (#53)", () => {
     // The lobby's `broken_agents` payload names the reason an agent cannot
     // start. Stamping it onto the flat list is what turns a persisted

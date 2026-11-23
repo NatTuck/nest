@@ -247,6 +247,10 @@ lead_groups = standard_groups ++ ["pane"]
 #     silent "the caller's own vocation" fallback with something the
 #     space states, and a space whose blueprint has none refuses the
 #     spawn instead of guessing.
+#   * `max_agents` — the cap on the space's non-archived agents (the
+#     whole team, running or idle). Unset means the gate's default of 5
+#     (`Nest.Agents.StartGuard`); Grading and Coding Team name larger
+#     teams (#225).
 #
 # The old "Agent" blueprint (rooted in `Default`) is obsolete —
 # the default set is now the role blueprints below. Delete it
@@ -302,6 +306,9 @@ end
     default_mode: "act",
     default_net: true,
     default_spawnable_vocation: "grader",
+    # A grading run fans out over many submissions: the Head TA plus a grader
+    # per investigation needs a team far larger than the default (#225).
+    max_agents: 20,
     workspace_template: %{
       "README.md" =>
         "# Assignment Grading Workspace\n\nPlace submissions in `submissions/` and feedback will be written to `feedback/`.",
@@ -322,7 +329,10 @@ end
     spawnable_vocations: ["programmer", "code-reviewer"],
     default_mode: "act",
     default_net: true,
-    default_spawnable_vocation: "programmer"
+    default_spawnable_vocation: "programmer",
+    # A team lead coordinates programmer and reviewer minions: a handful of
+    # concurrent workers plus reviewers, larger than the default (#225).
+    max_agents: 10
   })
 
 # ---- Default dev user ----

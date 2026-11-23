@@ -3,7 +3,8 @@
  *
  * Covers: rendering nothing with no jobs, rendering the running job rows, the
  * finished jobs collapsed behind one row (#181), the kill action, and the log
- * viewer (loading, content, and error states).
+ * viewer (loading, content, and error states) — plus the space-wide view's
+ * agent column, title and known-empty card (#225).
  */
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
@@ -223,6 +224,56 @@ describe("ShellJobsPanel", () => {
 
     await waitFor(() => expect(screen.getByText("nope")).toBeInTheDocument());
     expect(onRefresh).toHaveBeenCalled();
+  });
+
+  it("names each row's agent when showAgent is set, and marks a missing one", () => {
+    const named = { ...runningJob, agent: "alice" };
+    const { rerender } = render(
+      <ShellJobsPanel
+        jobs={[named]}
+        showAgent
+        onKill={() => {}}
+        onOpenLog={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("alice")).toBeInTheDocument();
+
+    // The wire contract always carries the name, so its absence is a defect
+    // the row surfaces rather than hides.
+    rerender(
+      <ShellJobsPanel
+        jobs={[runningJob]}
+        showAgent
+        onKill={() => {}}
+        onOpenLog={() => {}}
+      />,
+    );
+    expect(screen.getByText("unknown agent")).toBeInTheDocument();
+
+    // The per-agent panel does not name the agent: every row is its own.
+    rerender(
+      <ShellJobsPanel jobs={[named]} onKill={() => {}} onOpenLog={() => {}} />,
+    );
+    expect(screen.queryByText("alice")).toBeNull();
+  });
+
+  it("emptyText keeps the card for a known empty list, and title names it", () => {
+    render(
+      <ShellJobsPanel
+        jobs={[]}
+        title="Space jobs"
+        emptyText="No shell jobs in this space."
+        onKill={() => {}}
+        onOpenLog={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("Space jobs (0)")).toBeInTheDocument();
+    expect(
+      screen.getByText("No shell jobs in this space."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
   });
 
   it("clears the open log when its job disappears", async () => {

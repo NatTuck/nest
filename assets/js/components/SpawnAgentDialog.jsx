@@ -54,6 +54,13 @@ const SPAWN_REFUSALS = {
   // space is archived from another tab. The reply carries no message, so
   // without this the operator sees the raw code.
   space_archived: () => "This space is archived. Unarchive it to add an agent.",
+  // The space is at its agent cap (#225). The reply carries the limit; the
+  // fallback words the same refusal without it rather than rendering
+  // "undefined" should a reply ever arrive without the detail.
+  agent_limit: (err) =>
+    Number.isInteger(err?.limit)
+      ? `This space has reached its limit of ${err.limit} agents. Archive an agent you no longer need, then try again.`
+      : "This space has reached its agent limit. Archive an agent you no longer need, then try again.",
 };
 
 function spawnErrorMessage(err) {

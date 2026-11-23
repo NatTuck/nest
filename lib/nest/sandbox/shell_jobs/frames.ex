@@ -1,12 +1,13 @@
 defmodule Nest.Sandbox.ShellJobs.Frames do
   @moduledoc """
-  The frames the job manager broadcasts about one agent's jobs.
+  The frames the job manager broadcasts about one agent's jobs — and, on the
+  space's topic, about every agent's jobs in that space.
 
   Split out of `Nest.Sandbox.ShellJobs` for the source-file cap, like `Waiters`
   and `ExitNotice`: the manager owns the state, this module owns what it says
   about it, and it reads that state the way `Index` does.
 
-  One change to an agent's job set is two frames for two audiences:
+  One change to an agent's job set is three frames for two audiences:
 
     * `{:shell_jobs, %{jobs: [...]}}` on the agent's own topic
       (`Nest.Agents.Agent.Broadcasts.topic/2`), which the job panel renders.
@@ -15,9 +16,16 @@ defmodule Nest.Sandbox.ShellJobs.Frames do
       its own rather than a field on the agent's status because starting or
       finishing a job does not change the agent's status, so no status frame
       would carry the news.
+    * `{:space_jobs, %{space_id, jobs: [...]}}` on the space's topic (#225),
+      the space-wide list every agent's jobs appear in — the lobby's space job
+      panel renders it. It rides the same broadcast, so a job dying with its
+      namespace holder (#224) reaches the space view exactly as it reaches the
+      owner's panel: the reconciliation finishes the job, and the finish
+      broadcasts.
 
-  Both are built from one `Info.t()` list, so the count the sidebar shows and
-  the job list the panel shows are one read of the manager's state.
+  All three are built from one read of the manager's state, so the count the
+  sidebar shows, the job list the panel shows and the space-wide list cannot
+  disagree about what is running.
   """
 
   alias Nest.Agents.Agent.Broadcasts
@@ -54,8 +62,22 @@ defmodule Nest.Sandbox.ShellJobs.Frames do
       {:agent_jobs, %{space_id: space_id, name: name, count: Info.running_count(info)}}
     )
 
+    broadcast_space_jobs(jobs, space_id)
+
     state
   end
 
   def broadcast(state, _agent_key), do: state
+
+  # The space-wide list (#225), ordered like `ShellJobs.list_space/1` so a
+  # broadcast and a refresh read render the same rows in the same order.
+  defp broadcast_space_jobs(jobs, space_id) do
+    space_info = Info.list(jobs, &match?({^space_id, _}, &1.agent_key))
+
+    Phoenix.PubSub.broadcast(
+      PubSub,
+      Broadcasts.space_topic(space_id),
+      {:space_jobs, %{space_id: space_id, jobs: space_info}}
+    )
+  end
 end

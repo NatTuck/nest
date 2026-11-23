@@ -2,8 +2,8 @@ defmodule Nest.Sandbox.ShellJobs.Info do
   @moduledoc """
   The wire shape of a shell job — a background one, or a foreground `shell-cmd`
   call while it runs (#174): what `shell-list` shows an agent, what the
-  `shell:jobs` broadcast sends the UI, and the running count the sidebar shows
-  after an agent's name (#175).
+  `shell:jobs` and `space:jobs` broadcasts send the UI (#225), and the running
+  count the sidebar shows after an agent's name (#175).
 
   Split out of `Nest.Sandbox.ShellJobs` (which owns the manager's state, and is
   at the source-file line cap) because this is pure shaping: no state, no

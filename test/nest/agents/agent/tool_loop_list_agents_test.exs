@@ -1,6 +1,7 @@
 defmodule Nest.Agents.Agent.ToolLoopListAgentsTest do
   @moduledoc """
-  `agents-list` reports every listed agent's **current** mode.
+  `agents-list` reports every listed agent's **current** mode and its running
+  shell-job count (#225).
 
   A mode is per-agent runtime state, not a property of the space: a running
   agent's `state.live.mode` can be ahead of its row (a turn moves it, and
@@ -20,6 +21,8 @@ defmodule Nest.Agents.Agent.ToolLoopListAgentsTest do
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
   alias Nest.Persistence
+  alias Nest.Sandbox.Mounts
+  alias Nest.Sandbox.ShellJobs
 
   setup do
     {:ok, space_id} = AgentTestHelpers.create_test_space()
@@ -86,6 +89,48 @@ defmodule Nest.Agents.Agent.ToolLoopListAgentsTest do
     content = list(space_id)
     assert String.length(content) == 4_000
     assert entry_for(content, first) =~ ~s(mode: "#{longest}")
+  end
+
+  # The running-job count is the space's, read once for the whole listing
+  # (#225): the same number the sidebar's agent rows show. A foreground
+  # `shell-cmd` call is a job while it runs (#174), so `register_owned` is the
+  # real registration path — no OS process needed to have a running job.
+  test "reports each agent's running shell-job count, and zero when none run", %{
+    space_id: space_id
+  } do
+    busy = "busy-#{System.unique_integer([:positive])}"
+    idle = "idle-#{System.unique_integer([:positive])}"
+    {:ok, _row} = insert_row(space_id, busy, "act")
+    {:ok, _row} = insert_row(space_id, idle, "act")
+
+    key = {space_id, busy}
+    root = Path.join(System.tmp_dir!(), "nest_list_jobs_#{System.unique_integer([:positive])}")
+    scratch = Path.join(root, "scratch")
+    File.mkdir_p!(scratch)
+
+    on_exit(fn ->
+      ShellJobs.stop_all(key)
+      if String.contains?(root, "nest_list_jobs_"), do: File.rm_rf(root)
+    end)
+
+    {:ok, job} =
+      ShellJobs.register_owned(%{
+        agent_key: key,
+        command: "sleep 30",
+        mounts: Mounts.new(nil, scratch, "none", space_id),
+        os_pid: 1
+      })
+
+    content = list(space_id)
+    assert entry_for(content, busy) =~ "running_jobs: 1"
+    # An agent with no jobs is 0, not absent: the key is always there, so a
+    # reader never has to guess what a missing count means.
+    assert entry_for(content, idle) =~ "running_jobs: 0"
+
+    # A finished job is not live: the count drops when the call ends, while
+    # the job itself stays listed for `shell-wait`.
+    :ok = ShellJobs.finish_owned(job.id, 0)
+    assert entry_for(list(space_id), busy) =~ "running_jobs: 0"
   end
 
   # ---- helpers ----

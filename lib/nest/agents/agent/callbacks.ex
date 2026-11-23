@@ -88,6 +88,15 @@ defmodule Nest.Agents.Agent.Callbacks do
     {:noreply, state}
   end
 
+  def handle_cast({:shell_job_namespace_lost, job_id, code, output}, state) do
+    state =
+      state
+      |> Inbox.enqueue_notice(ShellJobNotice.namespace_lost_parts(job_id, code, output))
+      |> Turn.drain_if_idle()
+
+    {:noreply, state}
+  end
+
   # Sub-agent: child finished its turn. Merge usage, drop the
   # pending-child entry, forward the result, broadcast status.
   def handle_cast({:child_completed, child_name, response, child_total_usage}, state) do

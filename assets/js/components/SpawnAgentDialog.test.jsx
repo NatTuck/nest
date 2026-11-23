@@ -228,6 +228,28 @@ describe("SpawnAgentDialog", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(
       "This space is archived. Unarchive it to add an agent.",
     );
+
+    // The agent cap (#225): the reply's `limit` is what lets the operator know
+    // the size of the team they already have.
+    spawnAgent.mockImplementation((_payload, _onOk, onError) => {
+      onError({ reason: "agent_limit", limit: 5 });
+    });
+    submit();
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "This space has reached its limit of 5 agents. Archive an agent you no longer need, then try again.",
+    );
+
+    // A reply that somehow arrives without the limit still words the refusal
+    // rather than rendering "undefined".
+    spawnAgent.mockImplementation((_payload, _onOk, onError) => {
+      onError({ reason: "agent_limit" });
+    });
+    submit();
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "This space has reached its agent limit. Archive an agent you no longer need, then try again.",
+    );
   });
 
   it("falls back to the reply's reason when it carries no message", () => {

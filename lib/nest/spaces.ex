@@ -616,6 +616,21 @@ defmodule Nest.Spaces do
   end
 
   @doc """
+  Resolve the blueprint's `max_agents` cap for a space.
+
+  Returns `nil` when the space has no blueprint, the blueprint is gone, or it
+  sets no cap — "this space does not say", which the start gate reads as its
+  default (`Nest.Agents.StartGuard`).
+  """
+  @spec max_agents_for_space(integer()) :: pos_integer() | nil
+  def max_agents_for_space(space_id) when is_integer(space_id) do
+    case get_space(space_id) do
+      %Space{blueprint_id: bid} -> Blueprints.max_agents(bid)
+      _ -> nil
+    end
+  end
+
+  @doc """
   Create a space and its root agent in a single transaction.
 
   ## Parameters

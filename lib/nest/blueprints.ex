@@ -68,8 +68,8 @@ defmodule Nest.Blueprints do
     (optional; derived from `:name`), `:root_vocation`
     (required vocation slug), `:description`,
     `:spawnable_vocations`, `:default_mode`, `:default_net`,
-    `:default_spawnable_vocation`, `:workspace_template`,
-    `:main_view_config` (all optional).
+    `:default_spawnable_vocation`, `:max_agents`,
+    `:workspace_template`, `:main_view_config` (all optional).
 
   ## Returns
 
@@ -207,6 +207,25 @@ defmodule Nest.Blueprints do
     case get_blueprint(blueprint_id) do
       nil -> nil
       %Blueprint{default_spawnable_vocation: slug} -> slug
+    end
+  end
+
+  @doc """
+  Resolve a blueprint's `max_agents` by `blueprint_id`.
+
+  Returns `nil` when the blueprint id is `nil`, names no row, **or** names a row
+  that sets no cap — the three cases are the same answer on purpose: "this
+  blueprint does not say", which the start gate reads as its default
+  (`Nest.Agents.StartGuard`). The default lives there, not here: a resolver
+  that invented one would hide which spaces chose a cap and which took it.
+  """
+  @spec max_agents(integer() | nil) :: pos_integer() | nil
+  def max_agents(nil), do: nil
+
+  def max_agents(blueprint_id) when is_integer(blueprint_id) do
+    case get_blueprint(blueprint_id) do
+      nil -> nil
+      %Blueprint{max_agents: cap} -> cap
     end
   end
 end

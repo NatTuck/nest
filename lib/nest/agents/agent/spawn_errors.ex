@@ -83,6 +83,12 @@ defmodule Nest.Agents.Agent.SpawnErrors do
   def message({:mode_refused, reason}),
     do: "Could not spawn agent: #{reason}"
 
+  # The space is at its agent cap (`Nest.Agents.StartGuard`). The limit is
+  # named so the spawner knows the size of the team it already has, and the
+  # next move is to archive a minion it no longer needs — not to retry.
+  def message({:agent_limit, limit}),
+    do: "Could not spawn agent: " <> agent_limit_message(limit)
+
   # A workspace the config-file gate refuses: `Nest.ConfigFile.error_message/1`
   # already words it for a human, and `inspect` would hand the model a tuple.
   def message({:config_file_not_regular, _path, _type} = reason),
@@ -115,5 +121,20 @@ defmodule Nest.Agents.Agent.SpawnErrors do
   def workspace_message(:workspace_under_tmp) do
     "this space's workspace is under /tmp, where the sandbox scratch directory " <>
       "would shadow it. Report this to the user; a retry will fail the same way."
+  end
+
+  @doc """
+  The sentence for an `{:agent_limit, limit}` refusal, without the renderer's
+  prefix.
+
+  Shared with `Nest.Agents.Agent.BatchPlan.spawn_error_message/1` so the two
+  model-facing renderers cannot drift, the same way the workspace refusals
+  share `workspace_message/1`.
+  """
+  @spec agent_limit_message(pos_integer()) :: String.t()
+  def agent_limit_message(limit) do
+    "this space has reached its limit of #{limit} agents (archived agents do " <>
+      "not count). Archive an agent you no longer need with `agents-archive`, " <>
+      "then retry."
   end
 end

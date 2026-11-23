@@ -5,8 +5,11 @@ defmodule NestWeb.AgentChannelSyncBatchingTest do
   A cold-cache drain costs the client a frame parse, a merge, a sort and a
   full re-render **per batch**, so the batch count — not the server's shaping
   work — is what makes switching to an agent with a long conversation slow.
-  These tests pin the reply budget and the drain's completeness, which is what
-  the budget has to preserve.
+  These tests pin the channel's batch count and the drain recursion through
+  real JSON. The budget-cut completeness (a cut drops or repeats nothing) is
+  pinned where the cutting lives — the pure shaper, with a small limit — in
+  `NestWeb.AgentChannelSyncTest`, so these end-to-end tests use small fixtures
+  rather than round-tripping a megabyte (#94).
 
   The shaper's own branches are pinned in `NestWeb.AgentChannelSyncTest`,
   including the one message larger than the whole limit: it must still be sent,
@@ -20,13 +23,11 @@ defmodule NestWeb.AgentChannelSyncBatchingTest do
   alias Nest.Messages.Part
   alias Nest.Messages.User
 
-  # The suite's fence, deliberately above the 500 ms default because this file's
-  # fixtures are large. Measured with `--cover --trace`, which is the
-  # instrumentation a full precommit runs under: the single-reply case took
-  # 23.7 ms, the drain's two round trips 114.7 + 215.7 ms, and a 500 ms fence
-  # was observed to fail under load. The cost is the fixture's own JSON encode
-  # plus `Supervisor.get_agent/2` startup (`seed_active/4` below), not the
-  # reply, which carries at most one budget's worth (~1 MiB).
+  # The suite's fence, deliberately above the 500 ms default. The fixtures are
+  # small now (the budget-cut completeness moved to the shaper unit test, #94),
+  # so the cost is `Supervisor.get_agent/2` startup (`seed_active/4` below) plus
+  # a small JSON encode — not a megabyte of reply. The fence stays at 1 s for
+  # headroom under load; it is a failure bound, not a wait.
   @reply_timeout 1_000
 
   # A message of roughly `bytes` wire bytes.
@@ -78,10 +79,10 @@ defmodule NestWeb.AgentChannelSyncBatchingTest do
     space_id: space_id,
     agent_id: agent_id
   } do
-    # 5 x ~30 kB is ~150 kB: comfortably over the old `@sync_size_limit` of
+    # 5 x ~14 kB is ~70 kB: comfortably over the old `@sync_size_limit` of
     # 65_536, and well under the current one. This is the regression test for
-    # the batch count — with the old cap this took three round trips.
-    seed_active(space_id, agent_id, 5, 30_000)
+    # the batch count — with the old cap this took two round trips.
+    seed_active(space_id, agent_id, 5, 14_000)
 
     messages = sync(socket, -1)
 
@@ -89,20 +90,22 @@ defmodule NestWeb.AgentChannelSyncBatchingTest do
     assert wire_bytes(messages) > 65_536
   end
 
-  test "a cold drain returns every active message, in order, exactly once, within budget", %{
+  test "a cold drain returns every active message, in order, exactly once", %{
     socket: socket,
     space_id: space_id,
     agent_id: agent_id
   } do
-    # 40 x ~30 kB is ~1.2 MB: more than one budget's worth, so every reply must
-    # be cut at the budget — and the cut must not drop or repeat a message.
-    seed_active(space_id, agent_id, 40, 30_000)
+    # The budget-cut completeness — a cut drops or repeats nothing across
+    # batches — is pinned where the cutting lives, the pure shaper, with a small
+    # limit (`AgentChannelSyncTest`). This test pins the channel wiring and the
+    # client's drain recursion through real JSON, with a small fixture instead
+    # of a megabyte: the property is budget-relative, not size-dependent (#94).
+    seed_active(space_id, agent_id, 5, 200)
 
     {sizes, messages} = drain(socket, -1)
 
-    # The batch count is the regression (#52), so it is pinned, not bounded.
-    assert length(sizes) == 2
+    assert length(sizes) == 1
     assert Enum.all?(sizes, &(&1 <= 1_048_576))
-    assert Enum.map(messages, & &1["index"]) == Enum.to_list(0..39)
+    assert Enum.map(messages, & &1["index"]) == Enum.to_list(0..4)
   end
 end

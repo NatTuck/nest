@@ -124,6 +124,7 @@ defmodule Nest.Sandbox.ShellJobs.Owned do
       exit_code: nil,
       killed: false,
       killed_by: nil,
+      generation: Map.get(attrs, :generation),
       started_at: DateTime.utc_now()
     }
   end

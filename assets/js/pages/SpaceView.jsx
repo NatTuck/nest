@@ -12,7 +12,9 @@
  * (`RpgPlayInterface`) instead. A campaign's main screen is not a note log, so
  * that selection stays — the feed is the *default* Main View, not the only one.
  * The environment card rides below it there, because the retired overview route
- * was the only way to a campaign space's environment from its main screen.
+ * was the only way to a campaign space's environment from its main screen. The
+ * space's job panel (`SpaceJobsPanel`, #225) rides below it too: running jobs
+ * are the space's state, on either main screen.
  *
  * Two routes remain, and they mean different things:
  *
@@ -34,6 +36,7 @@ import { unarchiveSpace } from "../channels";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { RpgPlayInterface } from "../components/RpgPlayInterface";
 import { SpaceEnvironmentCard } from "../components/SpaceEnvironmentCard";
+import { SpaceJobsPanel } from "../components/SpaceJobsPanel";
 import { SpacePausedBanner } from "../components/SpacePausedBanner";
 import { SpaceFeed } from "./SpaceFeed";
 
@@ -97,8 +100,14 @@ export function SpaceView() {
           <SpacePausedBanner spaceId={space.id} spaceName={space.name} />
         </div>
         <RpgPlayInterface space={space} />
-        <div className="max-w-4xl mx-auto pb-10">
+        <div className="max-w-4xl mx-auto">
           <SpaceEnvironmentCard space={space} />
+        </div>
+        {/* The space's running jobs ride below the environment here too: a
+            campaign's agents run jobs like any other space's, and this is the
+            one screen where they would otherwise be invisible (#225). */}
+        <div className="max-w-4xl mx-auto pb-10">
+          <SpaceJobsPanel spaceId={space.id} />
         </div>
       </>
     );

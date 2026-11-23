@@ -78,7 +78,11 @@ defmodule Nest.Sandbox.Backend do
   A built invocation: the command line to run, and the directory to run it in
   (`nil` when the command line already sets one — bwrap `--chdir`s itself).
   """
-  @type spec :: %{command: String.t(), cd: String.t() | nil}
+  @type spec :: %{
+          :command => String.t(),
+          :cd => String.t() | nil,
+          optional(:generation) => non_neg_integer() | nil
+        }
 
   @doc """
   Every backend this build implements: `#{inspect(@backends)}`.
@@ -176,15 +180,16 @@ defmodule Nest.Sandbox.Backend do
 
   `backend` is passed in rather than looked up because the caller is
   `Nest.Spaces`, which already holds the space row: this layer must not read the
-  spaces schema (see `Mounts`). Only the docker backend keeps anything alive —
-  the containers are the environment its agents ran in — so every other backend
-  is a no-op, and a docker failure is logged and swallowed rather than breaking
+  spaces schema (see `Mounts`). The docker backend keeps its containers alive
+  and the bwrap backend its persistent namespace holder (#224); every other
+  backend is a no-op, and a failure is logged and swallowed rather than breaking
   the caller's archive or delete.
   """
   @spec remove_space(integer(), String.t(), keyword()) :: :ok
   def remove_space(space_id, backend, opts \\ []) do
     case backend do
       "docker" -> __MODULE__.Docker.remove_space(space_id, opts)
+      "bwrap" -> __MODULE__.Bwrap.remove_space(space_id)
       _other -> :ok
     end
   end

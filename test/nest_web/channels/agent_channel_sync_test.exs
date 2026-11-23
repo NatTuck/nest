@@ -84,4 +84,40 @@ defmodule NestWeb.AgentChannelSyncTest do
 
     assert bytes == kept |> Enum.map(&(Jason.encode!(&1) |> byte_size())) |> Enum.sum()
   end
+
+  # The drain's completeness across a budget cut, pinned where the cutting
+  # actually lives (the pure shaper) with a small limit and tiny messages. The
+  # end-to-end channel test pins the wiring and the client recursion through
+  # real JSON; it does not need to round-trip a megabyte to prove that a cut
+  # drops or repeats nothing — that is this property, and it is budget-relative,
+  # not absolute-size-dependent (#52, #94).
+  test "a drain across the budget cut delivers every message exactly once, in order" do
+    limit = one_message_bytes() * 3
+
+    {indices, batches, sizes} = drain_take(messages(10), limit, [], 0, [])
+
+    assert indices == Enum.to_list(0..9)
+    # 10 messages at 3 per batch: 3 + 3 + 3 + 1.
+    assert batches == 4
+    assert Enum.all?(sizes, &(&1 <= limit))
+  end
+
+  # The client's recursion: take a prefix that fits, continue from just past the
+  # highest index kept, repeat until nothing remains. Accumulates the delivered
+  # indices (in order), the batch count, and each batch's wire size.
+  defp drain_take([], _limit, acc, batches, sizes),
+    do: {acc |> Enum.reverse() |> List.flatten(), batches, Enum.reverse(sizes)}
+
+  defp drain_take(remaining, limit, acc, batches, sizes) do
+    {kept, bytes} = Sync.take(remaining, limit, recording_formatter())
+    kept_indices = Enum.map(kept, & &1["index"])
+
+    drain_take(
+      Enum.drop(remaining, length(kept)),
+      limit,
+      [kept_indices | acc],
+      batches + 1,
+      [bytes | sizes]
+    )
+  end
 end

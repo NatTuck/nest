@@ -220,6 +220,13 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
     {:error, %{"reason" => "scratch_path_taken", "path" => path}}
   end
 
+  # The space is at its agent cap (`Nest.Agents.StartGuard`). The limit rides
+  # the reply so the dialog can name it — a generic "failed to create" would
+  # hide the one fact the operator needs to act on.
+  defp tagged_payload({:agent_limit, limit}, _context) do
+    {:error, %{"reason" => "agent_limit", "limit" => limit}}
+  end
+
   # A slug that resolves to nothing: stale blueprint data for the create path, a
   # client's own choice for a spawn (`spawn_agent` takes a slug), so the shared
   # line names neither cause — it says what is missing.

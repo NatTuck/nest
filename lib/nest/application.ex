@@ -7,6 +7,7 @@ defmodule Nest.Application do
 
   alias Nest.Agents.Agent.{Pane, TmpSpace}
   alias Nest.Agents.{ChildRegistry, TmpSweeper}
+  alias Nest.Sandbox.NamespaceHolder
   alias Nest.Sandbox.ShellJobs
   alias Nest.Tokens.Tokenizer
 
@@ -78,6 +79,9 @@ defmodule Nest.Application do
       {Task.Supervisor, name: Nest.Models.TaskSupervisor},
       # Background shell-job manager (per-agent `shell-cmd background`)
       ShellJobs.child_spec(),
+      # Per-space persistent process namespace (#224): owns each bwrap space's
+      # holder, whose user+pid namespace the space's commands join.
+      NamespaceHolder.child_spec(),
       # The right-hand pane's in-memory state: each space's decision queue and
       # every agent's TODO list (issues #119/#120). In memory by design, so a
       # restart empties the pane.
