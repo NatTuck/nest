@@ -63,12 +63,24 @@ defmodule Nest.Spaces.Space do
     so it is not on `Nest.Sandbox.Mounts` and an edit to it is written on its own
     (`Nest.Spaces.ContextWarnings`) rather than through
     `Nest.Spaces.update_environment/2`.
+
+  ## Agent limit
+
+  * `max_agents` — the cap on **non-archived** agents this space may hold
+    (`Nest.Agents.StartGuard.within_agent_limit/2`), gating spawning only. It is
+    a **space** property, **copied from the blueprint at creation**
+    (`Nest.Spaces.CreationParams`) and owned independently thereafter: a later
+    blueprint change does not move an existing space's cap. Like
+    `context_warnings` it is not part of the sandbox environment — nothing about
+    it reaches a command — so an edit is written on its own
+    (`Nest.Spaces.MaxAgents`) and stops nothing. Default 5.
   """
 
   use Ecto.Schema
   import Ecto.Changeset
 
   alias Nest.Agents.PersistedAgent
+  alias Nest.Agents.StartGuard
   alias Nest.Slug
 
   # `Nest.Spaces` names a space's root agent `<slug>-root` (see
@@ -89,6 +101,7 @@ defmodule Nest.Spaces.Space do
              :sandbox_backend,
              :network_access,
              :context_warnings,
+             :max_agents,
              :created_by_user_id,
              :archived,
              :inserted_at,
@@ -104,6 +117,7 @@ defmodule Nest.Spaces.Space do
     field :sandbox_backend, :string, default: @default_sandbox_backend
     field :network_access, :boolean, default: true
     field :context_warnings, :boolean, default: false
+    field :max_agents, :integer, default: StartGuard.default_max_agents()
     field :created_by_user_id, :integer
 
     # Lifecycle. `archived` soft-hides the space from the main
@@ -129,7 +143,10 @@ defmodule Nest.Spaces.Space do
   environment. The two booleans *are* cast here, because `create_changeset/2`
   builds on this one: `:network_access`'s edit path is that same environment
   changeset, and `:context_warnings` is written on its own
-  (`Nest.Spaces.ContextWarnings`). This is the rename path, and its cast of them
+  (`Nest.Spaces.ContextWarnings`). `:max_agents` is cast and validated positive
+  here for the same reason — the creation snapshot is seeded through
+  `create_changeset/2` — while its edit path is its own writer
+  (`Nest.Spaces.MaxAgents`). This is the rename path, and its cast of them
   only keeps a rename from tripping over a value it did not name.
 
   `:slug` must be usable as the root agent's name (`<slug>-root`), so it
@@ -147,12 +164,14 @@ defmodule Nest.Spaces.Space do
       :workspace_path,
       :network_access,
       :context_warnings,
+      :max_agents,
       :created_by_user_id
     ])
     |> validate_required([:name])
     |> maybe_generate_slug()
     |> validate_required([:slug])
     |> validate_slug()
+    |> validate_number(:max_agents, greater_than: 0)
     |> unique_constraint(:name)
     |> unique_constraint(:slug)
     |> foreign_key_constraint(:blueprint_id)

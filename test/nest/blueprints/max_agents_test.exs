@@ -4,10 +4,11 @@ defmodule Nest.Blueprints.MaxAgentsTest do
   (#225). Three things are pinned here, none of which needs a running agent:
 
     * the changeset keeps the column a positive integer or `nil` ("no opinion");
-    * the resolvers the start gate reads (`Blueprints.max_agents/1` and
-      `Spaces.max_agents_for_space/1`) return the blueprint's value — including
-      the seeded tiers, Grading 20 and Coding Team 10 — and `nil` when there is
-      no opinion to offer;
+    * the resolvers: `Spaces.max_agents_for_space/1` returns the space's own
+      snapshot — seeded from the blueprint at creation (Grading 20, Coding Team
+      10), default 5 when the blueprint names none, and independent of later
+      blueprint changes — while `Blueprints.max_agents/1` returns the blueprint's
+      value or `nil` ("no opinion");
     * the encoded blueprint carries the field, so a client can see the cap.
 
   Enforcement (the gate refusing a start over the cap) lives in
@@ -70,7 +71,7 @@ defmodule Nest.Blueprints.MaxAgentsTest do
   end
 
   describe "the cap the gate reads" do
-    test "resolves the blueprint's value for a space, and nil when there is no opinion" do
+    test "resolves the space's snapshot, seeded from the blueprint at creation" do
       grading = BlueprintsFixtures.blueprint_fixture(%{max_agents: 20})
       coding_team = BlueprintsFixtures.blueprint_fixture(%{max_agents: 10})
       unset = BlueprintsFixtures.blueprint_fixture()
@@ -80,17 +81,37 @@ defmodule Nest.Blueprints.MaxAgentsTest do
       {:ok, unset_space} = Spaces.create_space(nil, space_attrs(%{blueprint_id: unset.id}))
       {:ok, bare_space} = Spaces.create_space(nil, space_attrs(%{}))
 
-      # The tiers the seed script sets, read back through the space-level
-      # resolver the gate calls.
+      # The tiers the seed script sets, copied onto the space at creation and
+      # read back through the space-level resolver the gate calls.
       assert Spaces.max_agents_for_space(grading_space.id) == 20
       assert Spaces.max_agents_for_space(team_space.id) == 10
 
-      # No opinion: a blueprint that sets no cap, and a space with no blueprint.
-      assert Spaces.max_agents_for_space(unset_space.id) == nil
-      assert Spaces.max_agents_for_space(bare_space.id) == nil
+      # No blueprint opinion (unset column, or no blueprint) seeds the default 5
+      # onto the space — the space always owns a concrete cap.
+      assert Spaces.max_agents_for_space(unset_space.id) == 5
+      assert Spaces.max_agents_for_space(bare_space.id) == 5
+
+      # An explicit caller value wins over the blueprint seed; a blank ("")
+      # counts as unnamed and falls back to the seed (`CreationParams`).
+      {:ok, explicit_space} =
+        Spaces.create_space(nil, space_attrs(%{blueprint_id: grading.id, max_agents: 7}))
+
+      {:ok, blank_space} =
+        Spaces.create_space(nil, space_attrs(%{blueprint_id: grading.id, max_agents: ""}))
+
+      assert Spaces.max_agents_for_space(explicit_space.id) == 7
+      assert Spaces.max_agents_for_space(blank_space.id) == 20
+
+      # A missing space resolves to nil — the gate reads its own default.
+      assert Spaces.max_agents_for_space(-1) == nil
+
+      # Model B: the space owns its cap independently of the blueprint. Changing
+      # the blueprint after creation does not move an existing space's limit.
+      assert {:ok, _} = Blueprints.update_blueprint(grading, %{max_agents: 3})
+      assert Spaces.max_agents_for_space(grading_space.id) == 20
 
       # The blueprint-level resolver is total: nil id, missing row, unset column.
-      assert Blueprints.max_agents(grading.id) == 20
+      assert Blueprints.max_agents(grading.id) == 3
       assert Blueprints.max_agents(nil) == nil
       assert Blueprints.max_agents(-1) == nil
       assert Blueprints.max_agents(unset.id) == nil

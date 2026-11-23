@@ -127,6 +127,41 @@ defmodule NestWeb.LobbyChannelEditSpaceTest do
       assert row.sandbox_backend == space.sandbox_backend
     end
 
+    test "writes the agent limit on its own, leaving the environment alone", %{
+      socket: socket,
+      user: user
+    } do
+      # Like the context warnings, the cap reaches no sandbox, so a push that
+      # names only it writes only it: no latch, no quiesce, no environment notice.
+      {:ok, space} =
+        Spaces.create_space(user.id, %{
+          name: "edit-cap-#{System.unique_integer([:positive])}",
+          workspace_path: AgentTestHelpers.default_test_workspace()
+        })
+
+      assert space.max_agents == 5
+
+      assert_reply push(socket, "edit_space", %{
+                     "space_id" => space.id,
+                     "max_agents" => 9
+                   }),
+                   :ok,
+                   reply,
+                   500
+
+      assert reply["max_agents"] == 9
+      assert reply["workspace_path"] == space.workspace_path
+      assert reply["sandbox_backend"] == space.sandbox_backend
+
+      assert_push "space:updated",
+                  %{"space" => %Spaces.Space{id: _, max_agents: 9}},
+                  500
+
+      row = Spaces.get_space(space.id)
+      assert row.max_agents == 9
+      assert row.workspace_path == space.workspace_path
+    end
+
     test "refuses a payload that is not a boolean, or names no space", %{socket: socket} do
       # Four arms: a `network_access` or a `context_warnings` that is not a
       # boolean, no editable field at all, and a payload the validator would
@@ -134,6 +169,8 @@ defmodule NestWeb.LobbyChannelEditSpaceTest do
       for payload <- [
             %{"space_id" => 1, "network_access" => "yes"},
             %{"space_id" => 1, "context_warnings" => "yes"},
+            %{"space_id" => 1, "max_agents" => "yes"},
+            %{"space_id" => 1, "max_agents" => 0},
             %{"space_id" => 1},
             %{"network_access" => true}
           ] do

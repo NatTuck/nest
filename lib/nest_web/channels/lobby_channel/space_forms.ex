@@ -21,6 +21,7 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
   alias Nest.Agents.SpaceGate
   alias Nest.Spaces
   alias Nest.Spaces.ContextWarnings
+  alias Nest.Spaces.MaxAgents
   alias NestWeb.ErrorPayload
   alias NestWeb.LobbyChannel
   alias NestWeb.LobbyChannel.AgentErrors
@@ -146,6 +147,11 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
   # nothing about it reaches the sandbox (`Nest.Spaces.ContextWarnings`).
   @context_warnings_key "context_warnings"
 
+  # The agent cap, edited on its own like the context warnings (it reaches no
+  # command). A positive integer; the gate that refuses a non-integer or a
+  # non-positive value is `max_agents_param?/1` below.
+  @max_agents_key "max_agents"
+
   defp environment_params(payload) do
     payload
     |> Map.take(@environment_keys)
@@ -159,12 +165,23 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
   # edits is not an edit at all.
   defp valid_edit_payload?(payload) do
     Enum.all?(["network_access", @context_warnings_key], &boolean_param?(payload, &1)) and
-      Enum.any?([@context_warnings_key | @environment_keys], &Map.has_key?(payload, &1))
+      max_agents_param?(payload) and
+      Enum.any?(
+        [@context_warnings_key, @max_agents_key | @environment_keys],
+        &Map.has_key?(payload, &1)
+      )
   end
 
   defp boolean_param?(payload, key) do
     case Map.fetch(payload, key) do
       {:ok, value} -> is_boolean(value)
+      :error -> true
+    end
+  end
+
+  defp max_agents_param?(payload) do
+    case Map.fetch(payload, @max_agents_key) do
+      {:ok, value} -> is_integer(value) and value > 0
       :error -> true
     end
   end
@@ -188,7 +205,7 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
            confirm: payload["confirm"] == true
          ) do
       {:ok, space} ->
-        edit_context_warnings(space, payload, socket)
+        edit_settings(space, payload, socket)
 
       {:error, :not_found} ->
         {:reply, {:error, %{"reason" => "not_found"}}, socket}
@@ -198,10 +215,10 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
     end
   end
 
-  # The setting second, and only after the environment landed: the first push of
-  # a two-phase edit writes nothing, so neither does this.
-  defp edit_context_warnings(space, payload, socket) do
-    case put_context_warnings(space, payload) do
+  # The non-environment settings second, and only after the environment landed:
+  # the first push of a two-phase edit writes nothing, so neither do these.
+  defp edit_settings(space, payload, socket) do
+    case put_settings(space, payload) do
       {:ok, space} ->
         # Announced on the per-user topic like every other space-set change, so
         # the owner's other sessions show the same values — and so the dialog is
@@ -210,7 +227,7 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
         {:reply, {:ok, edit_reply(space)}, socket}
 
       {:error, reason} ->
-        # The environment landed; only the setting did not. Announce the space
+        # The environment landed; only a setting did not. Announce the space
         # that *did* land before answering the error, or the change exists in the
         # row and in this session's dialog and nowhere else — the owner's other
         # sessions would never hear it, and the reply is the only thing this
@@ -243,6 +260,14 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
   def cancel_edit_space(_payload, socket),
     do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
 
+  # The non-environment settings the same dialog saves, each written on its own
+  # (no latch, no quiesce). A push that names neither leaves both columns alone.
+  defp put_settings(space, payload) do
+    with {:ok, space} <- put_context_warnings(space, payload) do
+      put_max_agents(space, payload)
+    end
+  end
+
   # A push that names no setting leaves the column alone: that is a session on an
   # older bundle, and it is not asking for a change.
   defp put_context_warnings(space, payload) do
@@ -252,12 +277,20 @@ defmodule NestWeb.LobbyChannel.SpaceForms do
     end
   end
 
+  defp put_max_agents(space, payload) do
+    case Map.fetch(payload, @max_agents_key) do
+      {:ok, value} -> MaxAgents.set(space, value)
+      :error -> {:ok, space}
+    end
+  end
+
   # The reply is the whole space this dialog edits, string-keyed: the environment
-  # values an agent's mounts carry, plus the setting the same save wrote.
+  # values an agent's mounts carry, plus the settings the same save wrote.
   defp edit_reply(space) do
     space
     |> Spaces.environment_values()
     |> Map.put(:context_warnings, space.context_warnings)
+    |> Map.put(:max_agents, space.max_agents)
     |> wire_values()
   end
 

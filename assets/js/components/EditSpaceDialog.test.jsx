@@ -35,6 +35,7 @@ const space = {
   network_access: true,
   sandbox_backend: "bwrap",
   context_warnings: false,
+  max_agents: 5,
 };
 
 function setup(overrides = {}) {
@@ -66,6 +67,7 @@ describe("EditSpaceDialog", () => {
     expect(screen.getByLabelText("Network access").checked).toBe(true);
     expect(screen.getByLabelText("Sandbox").value).toBe("bwrap");
     expect(screen.getByLabelText("Context warnings").checked).toBe(false);
+    expect(screen.getByLabelText("Agent limit").value).toBe("5");
   });
 
   it("starts the context-warnings toggle off when the space has never set it", () => {
@@ -88,6 +90,9 @@ describe("EditSpaceDialog", () => {
       target: { value: "docker" },
     });
     fireEvent.click(screen.getByLabelText("Context warnings"));
+    fireEvent.change(screen.getByLabelText("Agent limit"), {
+      target: { value: "12" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect(mocks.editSpace).toHaveBeenCalledWith(
@@ -97,6 +102,7 @@ describe("EditSpaceDialog", () => {
         network_access: false,
         sandbox_backend: "docker",
         context_warnings: true,
+        max_agents: 12,
       },
       expect.any(Function),
       expect.any(Function),
@@ -153,6 +159,30 @@ describe("EditSpaceDialog", () => {
     expect(mocks.editSpace).not.toHaveBeenCalled();
     expect(screen.getByRole("alert").textContent).toMatch(
       /Please enter a workspace path/,
+    );
+  });
+
+  it("blocks a save with a non-positive agent limit", () => {
+    setup();
+
+    fireEvent.change(screen.getByLabelText("Agent limit"), {
+      target: { value: "0" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(mocks.editSpace).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toMatch(
+      /agent limit must be a whole number of at least 1/,
+    );
+  });
+
+  it("flags a missing agent limit rather than silently editing a default", () => {
+    // The column is NOT NULL and the payload always carries it; a row without
+    // it is a bug, and the form says so instead of pretending the row had 5.
+    setup({ space: { ...space, max_agents: undefined } });
+
+    expect(screen.getByRole("alert").textContent).toMatch(
+      /agent limit is missing from its record/,
     );
   });
 

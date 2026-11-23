@@ -47,16 +47,17 @@ import {
 } from "./channels";
 
 describe("editSpace", () => {
-  // The three environment properties plus the one setting the same dialog
-  // carries that is not the environment (`context_warnings`).
+  // The three environment properties plus the two settings the same dialog
+  // carries that are not the environment (`context_warnings`, `max_agents`).
   const environment = {
     workspace_path: "/home/nat/ws",
     network_access: false,
     sandbox_backend: "docker",
     context_warnings: true,
+    max_agents: 5,
   };
 
-  it("pushes the environment and the context-warnings setting, and forwards the reply", async () => {
+  it("pushes the environment and the non-environment settings, and forwards the reply", async () => {
     setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
     joinLobby();
     setNextPushResult("lobby", "edit_space", {

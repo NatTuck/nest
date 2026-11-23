@@ -321,6 +321,7 @@ export function editSpace(spaceId, values, onOk, onError) {
     network_access: values.network_access,
     sandbox_backend: values.sandbox_backend,
     context_warnings: values.context_warnings,
+    max_agents: values.max_agents,
   };
 
   // The second push of a two-phase edit: the user has seen what the first one

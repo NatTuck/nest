@@ -1,7 +1,9 @@
 /**
  * EditSpaceDialog — modal form for a space's **environment**: the workspace it
  * binds, whether its agents may reach the network, and which sandbox backend
- * runs them — plus whether the runtime's context-usage notices are on.
+ * runs them — plus two settings that are not the environment: whether the
+ * runtime's context-usage notices are on, and the cap on how many non-archived
+ * agents the space may hold (`max_agents`).
  *
  * One dialog for the three environment properties because they are one
  * decision: every agent in the space inherits them, and a save tells the live
@@ -26,8 +28,8 @@
  *   - `open`    — show/hide the modal.
  *   - `onClose` — close the modal (Escape / backdrop / X, and after a save).
  *   - `space`   — the space being edited; its `workspace_path`,
- *                 `network_access`, `sandbox_backend` and `context_warnings`
- *                 initialize the form.
+ *                 `network_access`, `sandbox_backend`, `context_warnings` and
+ *                 `max_agents` initialize the form.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -59,6 +61,10 @@ export function EditSpaceDialog({ open, onClose, space }) {
   const [networkAccess, setNetworkAccess] = useState(true);
   const [contextWarnings, setContextWarnings] = useState(false);
   const [sandboxBackend, setSandboxBackend] = useState(DEFAULT_SANDBOX_BACKEND);
+  const [maxAgents, setMaxAgents] = useState(5);
+  // The cap is a NOT NULL column the payload always carries; a missing one is a
+  // bug, so say so rather than silently editing a default the row never had.
+  const [maxAgentsMissing, setMaxAgentsMissing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
   // The plan the server returned instead of saving: `{agents, jobs}`. Non-null
@@ -87,6 +93,14 @@ export function EditSpaceDialog({ open, onClose, space }) {
     setNetworkAccess(row?.network_access === true);
     setContextWarnings(row?.context_warnings === true);
     setSandboxBackend(row?.sandbox_backend ?? DEFAULT_SANDBOX_BACKEND);
+    const cap = row?.max_agents;
+    if (Number.isInteger(cap) && cap > 0) {
+      setMaxAgents(cap);
+      setMaxAgentsMissing(false);
+    } else {
+      setMaxAgents(5);
+      setMaxAgentsMissing(true);
+    }
     setSaving(false);
     setSaveError(null);
     setConfirmPlan(null);
@@ -147,6 +161,11 @@ export function EditSpaceDialog({ open, onClose, space }) {
       return;
     }
 
+    if (!Number.isInteger(maxAgents) || maxAgents < 1) {
+      setSaveError("The agent limit must be a whole number of at least 1.");
+      return;
+    }
+
     setSaving(true);
     setSaveError(null);
 
@@ -155,6 +174,7 @@ export function EditSpaceDialog({ open, onClose, space }) {
       network_access: networkAccess,
       sandbox_backend: sandboxBackend,
       context_warnings: contextWarnings,
+      max_agents: maxAgents,
     };
 
     // Only the confirmation carries the flag; the first push is the one the
@@ -325,6 +345,37 @@ export function EditSpaceDialog({ open, onClose, space }) {
                 <p className="mt-1 text-sm text-gray-500">
                   {sandboxBackendHelp(sandboxBackend)}
                 </p>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="edit-space-max-agents"
+                  className="block text-sm font-medium text-gray-700 mb-1"
+                >
+                  Agent limit
+                </label>
+                <input
+                  id="edit-space-max-agents"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={maxAgents}
+                  onChange={(e) => setMaxAgents(Number(e.target.value))}
+                  disabled={saving}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm disabled:opacity-50"
+                />
+                {maxAgentsMissing ? (
+                  <p className="mt-1 text-sm text-red-600" role="alert">
+                    This space's agent limit is missing from its record. Saving
+                    will set it to the value above.
+                  </p>
+                ) : (
+                  <p className="mt-1 text-sm text-gray-500">
+                    The most non-archived agents this space may hold. New spawns
+                    are refused at the limit; existing agents keep running, and
+                    lowering it stops nothing.
+                  </p>
+                )}
               </div>
 
               <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
