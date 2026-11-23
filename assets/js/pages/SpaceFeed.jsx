@@ -15,6 +15,8 @@
  *   * the pause banner — a held space is held for every page of it;
  *   * the space's name and blueprint;
  *   * its environment and the dialog that edits it (`SpaceEnvironmentCard`);
+ *   * the space's running shell jobs (`SpaceJobsPanel`, #225) — every agent's,
+ *     live from the lobby's frames;
  *   * the owed-reply banner — incoming queries not yet answered, advisory only;
  *   * the notes themselves;
  *   * the composer: a recipient picker over the space's agents (root by
@@ -41,6 +43,7 @@ import { spaceDraftKey } from "../store/slices/composer";
 import { JumpToBottomButton } from "../components/JumpToBottomButton";
 import { SendErrorBanner } from "../components/SendErrorBanner";
 import { SpaceEnvironmentCard } from "../components/SpaceEnvironmentCard";
+import { SpaceJobsPanel } from "../components/SpaceJobsPanel";
 import { MessageContent } from "../components/MessageContent";
 import { SpawnAgentDialog } from "../components/SpawnAgentDialog";
 import { SpacePausedBanner } from "../components/SpacePausedBanner";
@@ -226,6 +229,12 @@ export function SpaceFeed({ space, blueprint, spaceAgents }) {
         <div className="mb-4">
           <SpaceEnvironmentCard space={space} />
         </div>
+
+        {/* The space's running jobs, every agent's in one list (#225). It is
+            space-level state, so it rides the chrome with the environment
+            card rather than the notes: a job a sibling left running is the
+            space's business, not one conversation's. */}
+        <SpaceJobsPanel spaceId={space.id} />
 
         <OwedRepliesBanner
           spaceId={space.id}

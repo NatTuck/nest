@@ -33,6 +33,13 @@ vi.mock("../channels", () => ({
   spawnAgent: mocks.spawnAgent,
 }));
 
+// The space-wide job panel has its own tests (`SpaceJobsPanel.test.jsx`); here
+// it is a marker, so the feed tests assert its placement without the panel's
+// store reads and lobby pushes.
+vi.mock("../components/SpaceJobsPanel", () => ({
+  SpaceJobsPanel: ({ spaceId }) => <p>space jobs: {spaceId}</p>,
+}));
+
 // The drafts are the one store slice a test drives by typing, and the composer
 // is controlled through them — so this stub has to re-render, or every
 // keystroke would vanish and a send would look like it was ignored.
@@ -738,6 +745,10 @@ describe("SpaceFeed", () => {
 
   it("shows the space's environment, and edits it through the dialog", () => {
     renderFeed();
+
+    // The space's running jobs ride the chrome with the environment (#225):
+    // space-level state, on the space's page rather than one agent's.
+    expect(screen.getByText("space jobs: 1")).toBeInTheDocument();
 
     // Collapsed, the summary row still states the workspace: that is the fact
     // that makes a space unusable when it is missing, so it is not behind the

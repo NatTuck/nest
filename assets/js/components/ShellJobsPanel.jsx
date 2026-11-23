@@ -15,6 +15,17 @@
  * `showTitle` is turned off when the panel is embedded in the chat
  * page's jobs tab, where the tab label already carries the title and
  * the job count; the refresh action stays.
+ *
+ * `showAgent` names each row's owning agent — the space-wide view
+ * (`SpaceJobsPanel`, #225) renders one list for every agent in the space, so
+ * a row without a name would not say whose job it is. A row whose `agent` is
+ * missing shows an explicit marker rather than nothing: the wire contract
+ * always carries the name, so its absence is a defect to surface, not hide.
+ * `title` names the list ("Shell jobs" by default, "Space jobs" for the
+ * space-wide view). `emptyText` is what an empty list says: unset, the panel
+ * renders nothing (the chat tab has its own empty line); set, the card stays
+ * with that sentence — the space view's "no shell jobs" is a known empty
+ * read, not a missing one.
  */
 
 import { useEffect, useState } from "react";
@@ -32,11 +43,21 @@ function statusColor(job) {
   return job.exit_code === 0 ? "text-green-700" : "text-red-700";
 }
 
-function JobRow({ job, open, log, logError, onToggleLog, onKill }) {
+function JobRow({ job, open, log, logError, onToggleLog, onKill, showAgent }) {
   return (
     <li className="px-3 py-2 text-sm">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
+          {showAgent &&
+            (job.agent ? (
+              <span className="mr-2 rounded bg-gray-200 px-1.5 py-0.5 font-mono text-xs text-gray-700">
+                {job.agent}
+              </span>
+            ) : (
+              <span className="mr-2 rounded bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-700">
+                unknown agent
+              </span>
+            ))}
           <span className={`font-medium ${statusColor(job)}`}>
             {statusLabel(job)}
           </span>
@@ -87,6 +108,9 @@ export function ShellJobsPanel({
   onOpenLog,
   onRefresh = () => {},
   showTitle = true,
+  showAgent = false,
+  title = "Shell jobs",
+  emptyText = null,
 }) {
   const [openId, setOpenId] = useState(null);
   const [log, setLog] = useState(null);
@@ -104,7 +128,7 @@ export function ShellJobsPanel({
     }
   }, [jobs, openId]);
 
-  if (jobs.length === 0) return null;
+  if (jobs.length === 0 && !emptyText) return null;
 
   const running = runningJobs(jobs);
   const finished = finishedJobs(jobs);
@@ -149,6 +173,7 @@ export function ShellJobsPanel({
       logError={logError}
       onToggleLog={toggleLog}
       onKill={handleKill}
+      showAgent={showAgent}
     />
   );
 
@@ -161,7 +186,7 @@ export function ShellJobsPanel({
       >
         {showTitle && (
           <span className="text-sm font-medium text-gray-700">
-            Shell jobs ({running.length})
+            {title} ({running.length})
           </span>
         )}
         <button
@@ -175,22 +200,26 @@ export function ShellJobsPanel({
       {actionError && (
         <p className="px-3 pb-2 text-xs text-red-600">{actionError}</p>
       )}
-      <ul className="divide-y divide-gray-200">
-        {running.map(row)}
-        {finished.length > 0 && (
-          <li className="px-3 py-1.5">
-            <button
-              type="button"
-              onClick={() => setShowFinished((shown) => !shown)}
-              aria-expanded={showFinished}
-              className="w-full rounded text-left text-xs font-medium text-gray-600 hover:text-gray-900"
-            >
-              {showFinished ? "▾" : "▸"} {finished.length} finished
-            </button>
-          </li>
-        )}
-        {showFinished && finished.map(row)}
-      </ul>
+      {jobs.length === 0 ? (
+        <p className="px-3 pb-2 text-sm text-gray-400">{emptyText}</p>
+      ) : (
+        <ul className="divide-y divide-gray-200">
+          {running.map(row)}
+          {finished.length > 0 && (
+            <li className="px-3 py-1.5">
+              <button
+                type="button"
+                onClick={() => setShowFinished((shown) => !shown)}
+                aria-expanded={showFinished}
+                className="w-full rounded text-left text-xs font-medium text-gray-600 hover:text-gray-900"
+              >
+                {showFinished ? "▾" : "▸"} {finished.length} finished
+              </button>
+            </li>
+          )}
+          {showFinished && finished.map(row)}
+        </ul>
+      )}
     </div>
   );
 }

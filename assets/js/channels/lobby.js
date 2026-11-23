@@ -37,6 +37,14 @@ export function joinLobby(onOk, onError) {
     store.setSpaces(payload.spaces || []);
     store.setArchivedSpaces(payload.archived_spaces || []);
     store.setPausedSpaces(payload.paused_space_ids || []);
+    // The space-wide job lists (#225): one entry per visible space, empty ones
+    // included, so a page load renders what is already running without waiting
+    // for the next change.
+    for (const entry of payload.space_jobs || []) {
+      if (entry?.space_id != null) {
+        store.setSpaceJobs(entry.space_id, entry.jobs ?? []);
+      }
+    }
     store.setBlueprints(payload.blueprints || []);
     store.setSuggestedName(payload.suggested_name);
     if (payload.current_user !== undefined) {
@@ -163,6 +171,16 @@ export function joinLobby(onOk, onError) {
   lobbyChannel.on("agent:jobs", (payload) => {
     if (payload?.name != null && payload?.space_id != null) {
       getStore().applyAgentJobs(payload);
+    }
+  });
+
+  // The space-wide job list (#225): every agent's jobs in one space, pushed
+  // whenever any of them changes — the namespace-lost marking included, so a
+  // job that dies with the space's holder (#224) leaves the list without the
+  // viewer joining its owner's channel. A space-scoped frame like agent:jobs.
+  lobbyChannel.on("space:jobs", (payload) => {
+    if (payload?.space_id != null && Array.isArray(payload.jobs)) {
+      getStore().setSpaceJobs(payload.space_id, payload.jobs);
     }
   });
 

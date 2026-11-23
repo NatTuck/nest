@@ -40,6 +40,13 @@ vi.mock("../channels", () => ({
   spawnAgent: mocks.spawnAgent,
 }));
 
+// The space-wide job panel has its own tests (`SpaceJobsPanel.test.jsx`); here
+// it is a marker, so this file asserts its placement on either Main View
+// without the panel's store reads and lobby pushes.
+vi.mock("../components/SpaceJobsPanel", () => ({
+  SpaceJobsPanel: ({ spaceId }) => <p>space jobs: {spaceId}</p>,
+}));
+
 // The drafts are the one store slice a test drives by typing, and the composer
 // is controlled through them — so this stub has to re-render, or every
 // keystroke would vanish and a send would look like it was ignored.
@@ -202,6 +209,9 @@ describe("SpaceView", () => {
       screen.getByRole("button", { name: /Environment/ }),
     ).toBeInTheDocument();
     expect(screen.getByText("/home/nat/ws")).toBeInTheDocument();
+    // The space's running jobs ride below the environment here too (#225):
+    // a campaign's agents run jobs like any other space's.
+    expect(screen.getByText("space jobs: 1")).toBeInTheDocument();
   });
 
   it("shows the pause banner on a campaign's Main View", () => {

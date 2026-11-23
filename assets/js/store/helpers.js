@@ -43,6 +43,13 @@ export const initialState = {
   // explicit "state unknown", never as an empty cache.
   probeCacheStats: null,
   suggestedName: null,
+  // The space-wide shell-job list, by space id (#225): every agent's jobs in
+  // one space, as the lobby's `init` payload and `space:jobs` frames report
+  // them. An entry exists once a read has landed for that space (the init
+  // payload carries one per visible space, empty ones included), so an absent
+  // entry means "no read yet" — which the space job panel renders as an
+  // explicit indicator, never as "no jobs".
+  spaceJobs: {},
   // The space feed's cache, by space id: the notes at `/space/:slug`, the modes
   // the server says exist, and the mode a message from there asks for by
   // default. An entry exists only once the feed has been opened (see

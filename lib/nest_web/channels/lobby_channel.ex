@@ -52,6 +52,7 @@ defmodule NestWeb.LobbyChannel do
   alias NestWeb.LobbyChannel.Providers
   alias NestWeb.LobbyChannel.SpaceFeed
   alias NestWeb.LobbyChannel.SpaceForms
+  alias NestWeb.LobbyChannel.SpaceJobs
 
   @impl true
   def join("lobby", _payload, socket) do
@@ -117,6 +118,10 @@ defmodule NestWeb.LobbyChannel do
     push(socket, "agent:jobs", payload)
     {:noreply, socket}
   end
+
+  # The space-wide job list (#225) — every agent's jobs, holder-death marking included (#224).
+  @impl true
+  def handle_info({:space_jobs, payload}, socket), do: SpaceJobs.frame(payload, socket)
 
   # Agent lifecycle (#41). Same shape as `{:agent_status, _}`: the frame
   # arrives on the space topic the channel subscribed to, and `push/3`
@@ -280,6 +285,7 @@ defmodule NestWeb.LobbyChannel do
       paused_space_ids: for(space <- spaces, SpaceGate.held?(space.id), do: space.id),
       agents: visible_agents_across_spaces(spaces, user.id),
       archived_agents: archived_agents_across_spaces(spaces, user.id),
+      space_jobs: SpaceJobs.across_spaces(spaces),
       broken_agents: [],
       blueprints: Blueprints.list_blueprints(),
       models: safe_models_list(),
@@ -467,6 +473,16 @@ defmodule NestWeb.LobbyChannel do
   @impl true
   def handle_in("dismiss_queries", payload, socket),
     do: SpaceFeed.dismiss_queries(payload, socket)
+
+  # The space-wide job view (#225): its refresh, a kill, and a log read.
+  @impl true
+  def handle_in("space_jobs", payload, socket), do: SpaceJobs.read(payload, socket)
+
+  @impl true
+  def handle_in("kill_space_job", payload, socket), do: SpaceJobs.kill(payload, socket)
+
+  @impl true
+  def handle_in("space_job_log", payload, socket), do: SpaceJobs.log(payload, socket)
 
   @impl true
   def handle_in("create_invite", payload, socket), do: Invites.create_invite(payload, socket)

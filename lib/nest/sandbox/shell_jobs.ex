@@ -46,19 +46,22 @@ defmodule Nest.Sandbox.ShellJobs do
   the jobs are stopped. Finished jobs are kept (bounded) so `shell-wait` can
   still answer for one — `shell-list` lists only what is running (#181).
 
-  Listing and killing are the two space-scoped operations: `list_space/1` and
-  `kill_space/2` reach every job belonging to any agent in one space, so a
-  parent agent can find and stop a job a sibling left holding locks. Nothing
-  else crosses agents — `status/2`, `output/2`, `subscribe/3` and `kill/2` are
-  owner-scoped, and no operation reaches a job in another space.
+  Listing, killing and log reads are the space-scoped operations: `list_space/1`,
+  `kill_space/2` and `output_space/2` reach every job belonging to any agent in
+  one space, so a parent agent can find and stop a job a sibling left holding
+  locks, and the space-wide job view (#225) can show any agent's job output.
+  Nothing else crosses agents — `status/2`, `output/2`, `subscribe/3` and `kill/2`
+  are owner-scoped, and no operation reaches a job in another space.
 
   ## Events
 
   When an agent topic is known, every change to an agent's jobs — a start, an
   exit, a kill, a trim, or the whole set being dropped with its agent —
   broadcasts `{:shell_jobs, %{jobs: [...]}}` on `"agent:<space_id>:<name>"` for
-  the job panel, and `{:agent_jobs, %{space_id, name, count}}` on the space's
-  topic for the sidebar's agent row (#175). `Frames` builds both.
+  the job panel, `{:agent_jobs, %{space_id, name, count}}` on the space's
+  topic for the sidebar's agent row (#175), and `{:space_jobs, %{space_id,
+  jobs: [...]}}` on the same topic for the space-wide job view (#225).
+  `Frames` builds all three.
 
   ## Blocking
 
@@ -204,6 +207,16 @@ defmodule Nest.Sandbox.ShellJobs do
   """
   @spec output(agent_key(), job_id()) :: {:ok, binary()} | {:error, :not_found}
   def output(agent_key, job_id), do: GenServer.call(@name, {:output, agent_key, job_id})
+
+  @doc """
+  The captured output of a job owned by *any* agent in `space_id` — the log
+  read the space-wide job view (#225) renders, so a job's output is reachable
+  from the space page without joining its owner's agent channel.
+
+  `{:error, :not_found}` is a job that belongs to another space, or to nothing.
+  """
+  @spec output_space(term(), job_id()) :: {:ok, binary()} | {:error, :not_found}
+  def output_space(space_id, job_id), do: GenServer.call(@name, {:output_space, space_id, job_id})
 
   @doc """
   Register `pid` to receive `{:shell_job_exit, job_id, exit_code}`. When
@@ -417,6 +430,13 @@ defmodule Nest.Sandbox.ShellJobs do
 
   def handle_call({:output, agent_key, job_id}, _from, state) do
     case Index.fetch(state, agent_key, job_id) do
+      {:ok, job} -> {:reply, {:ok, JobLog.read(job.mounts, job.log_path)}, state}
+      :error -> {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:output_space, space_id, job_id}, _from, state) do
+    case Index.fetch_in_space(state, space_id, job_id) do
       {:ok, job} -> {:reply, {:ok, JobLog.read(job.mounts, job.log_path)}, state}
       :error -> {:reply, {:error, :not_found}, state}
     end

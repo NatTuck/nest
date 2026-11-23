@@ -137,6 +137,26 @@ defmodule Nest.Sandbox.ShellJobsNamespaceLostTest do
       refute_received {:"$gen_cast", {:shell_job_namespace_lost, ^id_new, _, _}}
     end
 
+    test "the space-wide frame marks the dead job, so the space view updates (#225)", ctx do
+      Phoenix.PubSub.subscribe(Nest.PubSub, "space:#{ctx.space_id}")
+      g = generation(ctx.space_id)
+      {_key, id} = start_job!(ctx, "spaceview", "sleep 30\n", waiter: nil)
+
+      # The start is a space frame: the job is live in the space's list. The
+      # broadcast happens inside the start call, so it is already in the mailbox.
+      assert_receive {:space_jobs, %{space_id: sid, jobs: [%{id: ^id, status: :running}]}}, 500
+      assert sid == ctx.space_id
+
+      ShellJobs.namespace_lost(ctx.space_id, g)
+
+      # The reconciliation's finish broadcasts like any other exit: the space
+      # list shows the job dead — killed by the namespace, at 137 — without
+      # the viewer joining the owner's agent channel.
+      assert_receive {:space_jobs,
+                      %{jobs: [%{id: ^id, status: :exited, killed: true, exit_code: 137}]}},
+                     500
+    end
+
     test "a late monitor DOWN does not finish or signal the job a second time", ctx do
       g = generation(ctx.space_id)
       {key, id} = start_job!(ctx, "late", "sleep 30\n", waiter: nil)

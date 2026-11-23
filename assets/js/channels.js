@@ -5,6 +5,7 @@
  *   - `./channels/state`  — shared channel refs + helpers
  *   - `./channels/agent`  — agent-channel join + chat actions
  *   - `./channels/shellJobs` — background shell-job kill / list / log
+ *   - `./channels/spaceJobs` — the space-wide job view's refresh / kill / log
  *   - `./channels/lobby`  — lobby join + space/model/invite pushes
  *   - `./channels/spaceNotes` — the space feed's read, its composer's send, and
  *     the advisory banner's Ignore
@@ -19,6 +20,7 @@ export * from "./channels/state";
 export * from "./channels/agent";
 export * from "./channels/pane";
 export * from "./channels/shellJobs";
+export * from "./channels/spaceJobs";
 export * from "./channels/lobby";
 export * from "./channels/spaceNotes";
 
