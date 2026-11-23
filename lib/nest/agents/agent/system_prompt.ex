@@ -272,7 +272,8 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   # would be a dangling reference too.
   #
   # Ordering is load-bearing for the prompt's bytes: the scratch sentence
-  # follows the identity line, then the working directory, then the network.
+  # follows the identity line, then the working directory, then the network,
+  # then the shared-namespace note (bwrap only), then the tool-call budget.
   defp tool_sections([], _mounts, _name), do: ""
 
   defp tool_sections(_tools, mounts, name),
@@ -280,6 +281,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
       scratch_section(name, mounts) <>
         workspace_section(Mounts.workspace(mounts)) <>
         network_section(mounts) <>
+        namespace_section(mounts) <>
         tool_call_limit_section()
 
   # Tell the agent its name and spawn depth. Non-clones and
@@ -388,6 +390,30 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
   defp network_word(true), do: "enabled"
   defp network_word(false), do: "disabled"
+
+  # The space's shared process namespace (#224). A `bwrap` space keeps one pid
+  # namespace alive for every command in it (`Nest.Sandbox.NamespaceHolder`),
+  # so `ps` sees the whole space's jobs and a process that outlives its call
+  # keeps running — facts an agent needs to manage background work honestly.
+  #
+  # Gated on the backend *and* (by living in `tool_sections/3`) on having
+  # tools: a `none` space has no namespace Nest keeps, a `docker` space's
+  # commands share a container rather than this holder, and a tool-less agent
+  # has no command to run — any of them would get a dangling reference.
+  #
+  # The bytes depend only on the backend, a space property fixed at start and
+  # carried on the mounts, so the section is identical on every composition —
+  # what keeps the system message prefix-cache-safe.
+  defp namespace_section(%Mounts{backend: "bwrap"}) do
+    "\n\nThis space shares one process namespace across all its agents, so `ps` shows " <>
+      "the space's jobs, not just yours. `shell-list`, `shell-wait` and `shell-kill` are " <>
+      "the job registry; `background: true` is the tracked way to run something " <>
+      "persistent. Hand-rolled `&`/`nohup` are refused when written directly; a form " <>
+      "that slips through (a nested shell, say) persists in the namespace but is an " <>
+      "untracked orphan — the registry cannot see it or stop it.\n"
+  end
+
+  defp namespace_section(%Mounts{}), do: ""
 
   defp tool_call_limit_section do
     max = Config.configured_max_tool_iterations()
