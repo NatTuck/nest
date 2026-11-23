@@ -35,24 +35,26 @@ defmodule Nest.Agents.StartGuard do
 
   ## The agent limit
 
-  The same last step enforces the space's cap on **non-archived** agents — its
-  blueprint's `max_agents`, or `default_max_agents/0` when the blueprint names
-  none (or the space has no blueprint). The count is of *rows*, not processes:
-  an idle agent is still on the team, and counting live pids would let a space
-  of stopped agents grow without bound.
+  The cap on **non-archived** agents gates **spawning only** — a create or a
+  clone, the paths that wrap their start in
+  `Nest.Agents.Supervisor.start_pre_spawned/3`. A rehydrate or a restart
+  (`fetch_or_start_agent/2` called directly) is **exempt**: it adds no row, and
+  refusing it would jam a space that is already over its cap (one created before
+  the cap existed, or whose cap was lowered afterwards) — it could not load its
+  own agents. The cap is the space's `max_agents` snapshot
+  (`Nest.Spaces.max_agents_for_space/1`), or `default_max_agents/0` for a missing
+  space. The count is of *rows*, not processes: an idle agent is still on the
+  team, and counting live pids would let a space of stopped agents grow without
+  bound.
 
-  It runs after the start for the same reason the archive check does, and the
-  row ordering is what makes it race-safe: a create's row is inserted before
-  its process starts, so it is visible to every concurrent start's count. Two
-  spawns racing into the last free slot each count their own row; if the total
-  is over the cap, every start that sees that refuses and its caller rolls the
-  row back (`Nest.Agents.Supervisor.start_pre_spawned/3`). Two concurrent
-  spawns may therefore *both* refuse where one could have been admitted — the
-  safe direction, and the same conservatism as the archive sweep.
-
-  A rehydrate or restart adds no row, so a space at its cap still starts its
-  own agents. A space *over* a cap that was lowered afterwards cannot start
-  any until some are archived — the gate reads the cap as it is now.
+  `within_agent_limit/2` runs after the start, in `start_pre_spawned/3`'s success
+  branch, and the row ordering is what makes it race-safe: a create's row is
+  inserted before its process starts, so it is visible to every concurrent
+  start's count. Two spawns racing into the last free slot each count their own
+  row; if the total is over the cap, every start that sees that refuses and its
+  caller rolls the row back. Two concurrent spawns may therefore *both* refuse
+  where one could have been admitted — the safe direction, and the same
+  conservatism as the archive sweep.
   """
 
   alias Nest.Agents.Registry
@@ -78,16 +80,16 @@ defmodule Nest.Agents.StartGuard do
   A start's result, once the space has had its say.
 
   `{:ok, name}` becomes `{:error, :space_archived}` — with `name`'s process
-  stopped — when its space is archived, or `{:error, {:agent_limit, limit}}`
-  when the start would put the space over its agent cap; every other result
-  passes through untouched, so the caller's own refusals keep their reasons.
+  stopped — when its space is archived; every other result passes through
+  untouched, so the caller's own refusals keep their reasons.
+
+  This is the **archive** check, run by every start route. The agent limit is
+  separate (`within_agent_limit/2`) and gates spawning only — see the moduledoc.
   """
   @spec verify({:ok, String.t()} | {:error, term()}, integer(), String.t()) ::
           {:ok, String.t()} | {:error, term()}
   def verify({:ok, name}, space_id, name) do
-    with :ok <- space_active(space_id, name),
-         :ok <- within_agent_limit(space_id, name),
-         do: {:ok, name}
+    with :ok <- space_active(space_id, name), do: {:ok, name}
   end
 
   # A start that already failed keeps its own reason, and a `{:ok, other_name}`
@@ -127,10 +129,20 @@ defmodule Nest.Agents.StartGuard do
     end
   end
 
-  # The just-started agent's row is already in the count (a create inserts it
-  # before the process exists), so "over the cap" is `>`, not `>=`: a space at
-  # its cap rehydrating one of its own agents adds no row and passes.
-  defp within_agent_limit(space_id, name) do
+  @doc """
+  The spawning-only agent cap, run by `Nest.Agents.Supervisor.start_pre_spawned/3`
+  after a create's process exists.
+
+  `:ok` when the space is at or under its cap; `{:error, {:agent_limit, limit}}`
+  — with `name`'s process stopped synchronously — when the just-started agent's
+  row puts the space over it. The caller rolls the row back. A rehydrate or
+  restart never reaches this: it adds no row and is exempt (see the moduledoc).
+
+  The just-started agent's row is already in the count (a create inserts it
+  before the process exists), so "over the cap" is `>`, not `>=`.
+  """
+  @spec within_agent_limit(integer(), String.t()) :: :ok | {:error, {:agent_limit, pos_integer()}}
+  def within_agent_limit(space_id, name) do
     limit = Spaces.max_agents_for_space(space_id) || @default_max_agents
 
     if Persistence.count_active_agents(space_id) > limit do

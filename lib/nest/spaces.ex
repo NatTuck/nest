@@ -616,18 +616,17 @@ defmodule Nest.Spaces do
   end
 
   @doc """
-  Resolve the blueprint's `max_agents` cap for a space.
+  The space's `max_agents` cap — the snapshot copied from its blueprint at
+  creation (`Nest.Spaces.CreationParams`), owned by the space thereafter.
 
-  Returns `nil` when the space has no blueprint, the blueprint is gone, or it
-  sets no cap — "this space does not say", which the start gate reads as its
-  default (`Nest.Agents.StartGuard`).
+  Returns the space's own value, not its blueprint's: a later blueprint change
+  does not move an existing space's cap. A missing space is `nil`, which the
+  start gate reads as its default (`Nest.Agents.StartGuard`).
   """
   @spec max_agents_for_space(integer()) :: pos_integer() | nil
   def max_agents_for_space(space_id) when is_integer(space_id) do
-    case get_space(space_id) do
-      %Space{blueprint_id: bid} -> Blueprints.max_agents(bid)
-      _ -> nil
-    end
+    from(s in Space, where: s.id == ^space_id, select: s.max_agents)
+    |> Repo.one()
   end
 
   @doc """

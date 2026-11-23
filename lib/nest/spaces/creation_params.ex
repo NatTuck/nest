@@ -14,6 +14,7 @@ defmodule Nest.Spaces.CreationParams do
   value that is only needed at the one call site that knows a `blueprint_id`.
   """
 
+  alias Nest.Agents.StartGuard
   alias Nest.Blueprints
 
   @doc """
@@ -28,6 +29,7 @@ defmodule Nest.Spaces.CreationParams do
     attrs
     |> Map.put(:created_by_user_id, user_id)
     |> put_network_access_default()
+    |> put_max_agents_snapshot()
   end
 
   # A space created from a blueprint starts with the blueprint's `default_net`,
@@ -69,6 +71,36 @@ defmodule Nest.Spaces.CreationParams do
       value
     else
       _no_default -> true
+    end
+  end
+
+  # Model B (#225): the space **copies** its blueprint's `max_agents` at creation
+  # and owns the value independently thereafter — a later blueprint change does
+  # not move an existing space's cap, and the edit-space screen edits the space's
+  # column. An explicit caller value wins (as for the network); absent, the
+  # blueprint's cap is the seed, and a blueprint that names none (or is gone, or
+  # there is no blueprint) falls back to the gate's default.
+  defp put_max_agents_snapshot(attrs) do
+    if named_max_agents?(attrs) do
+      attrs
+    else
+      Map.put(attrs, :max_agents, blueprint_max_agents(Map.get(attrs, :blueprint_id)))
+    end
+  end
+
+  defp named_max_agents?(attrs) do
+    case Map.get(attrs, :max_agents) do
+      blank when blank in [nil, ""] -> false
+      _value -> true
+    end
+  end
+
+  defp blueprint_max_agents(blueprint_id) do
+    with {:ok, id} <- Ecto.Type.cast(:id, blueprint_id),
+         value when is_integer(value) <- Blueprints.max_agents(id) do
+      value
+    else
+      _no_cap -> StartGuard.default_max_agents()
     end
   end
 end

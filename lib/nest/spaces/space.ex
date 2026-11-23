@@ -63,6 +63,17 @@ defmodule Nest.Spaces.Space do
     so it is not on `Nest.Sandbox.Mounts` and an edit to it is written on its own
     (`Nest.Spaces.ContextWarnings`) rather than through
     `Nest.Spaces.update_environment/2`.
+
+  ## Agent limit
+
+  * `max_agents` — the cap on **non-archived** agents this space may hold
+    (`Nest.Agents.StartGuard.within_agent_limit/2`), gating spawning only. It is
+    a **space** property, **copied from the blueprint at creation**
+    (`Nest.Spaces.CreationParams`) and owned independently thereafter: a later
+    blueprint change does not move an existing space's cap. Like
+    `context_warnings` it is not part of the sandbox environment — nothing about
+    it reaches a command — so an edit is written on its own
+    (`Nest.Spaces.MaxAgents`) and stops nothing. Default 5.
   """
 
   use Ecto.Schema
@@ -89,6 +100,7 @@ defmodule Nest.Spaces.Space do
              :sandbox_backend,
              :network_access,
              :context_warnings,
+             :max_agents,
              :created_by_user_id,
              :archived,
              :inserted_at,
@@ -104,6 +116,7 @@ defmodule Nest.Spaces.Space do
     field :sandbox_backend, :string, default: @default_sandbox_backend
     field :network_access, :boolean, default: true
     field :context_warnings, :boolean, default: false
+    field :max_agents, :integer, default: 5
     field :created_by_user_id, :integer
 
     # Lifecycle. `archived` soft-hides the space from the main
@@ -147,12 +160,14 @@ defmodule Nest.Spaces.Space do
       :workspace_path,
       :network_access,
       :context_warnings,
+      :max_agents,
       :created_by_user_id
     ])
     |> validate_required([:name])
     |> maybe_generate_slug()
     |> validate_required([:slug])
     |> validate_slug()
+    |> validate_number(:max_agents, greater_than: 0)
     |> unique_constraint(:name)
     |> unique_constraint(:slug)
     |> foreign_key_constraint(:blueprint_id)

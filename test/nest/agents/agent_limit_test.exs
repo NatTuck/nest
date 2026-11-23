@@ -1,10 +1,11 @@
 defmodule Nest.Agents.AgentLimitTest do
   @moduledoc """
-  The per-space cap on **non-archived** agents (#225): a blueprint's
-  `max_agents`, or `Nest.Agents.StartGuard.default_max_agents/0` when the
-  blueprint names none. The gate is the last step of every production start
-  (`Nest.Agents.StartGuard.verify/3`), so these tests drive the real create and
-  spawn routes rather than the guard in isolation.
+  The per-space cap on **non-archived** agents (#225): a space's `max_agents`
+  snapshot, or `Nest.Agents.StartGuard.default_max_agents/0` for a missing space.
+  The cap gates **spawning only** (`Nest.Agents.StartGuard.within_agent_limit/2`,
+  run by `Supervisor.start_pre_spawned/3`); a rehydrate or restart is exempt, so
+  these tests drive the real create, spawn, rehydrate and restart routes rather
+  than the guard in isolation.
 
   What is pinned here:
 
@@ -189,8 +190,8 @@ defmodule Nest.Agents.AgentLimitTest do
       limit = StartGuard.default_max_agents()
       names = for _ <- 1..limit, do: create_agent!(space_id, vocation_id, fresh_name("m"))
 
-      # At the cap a rehydrate of an existing agent adds no row and passes, and
-      # a result that is not a start keeps its own reason.
+      # At the cap a rehydrate of an existing agent adds no row and passes the
+      # archive check, and a result that is not a start keeps its own reason.
       assert StartGuard.verify({:ok, hd(names)}, space_id, hd(names)) == {:ok, hd(names)}
       assert StartGuard.verify({:error, :not_found}, space_id, "anyone") == {:error, :not_found}
 
@@ -215,13 +216,62 @@ defmodule Nest.Agents.AgentLimitTest do
       ref = Process.monitor(pid)
       assert Persistence.count_active_agents(space_id) == limit + 1
 
-      # The guard refuses and stops the process through the supervisor, so the
+      # The cap refuses and stops the process through the supervisor, so the
       # name is free when it returns — the refusal is true, not a promise. The
       # termination is synchronous, so the `:DOWN` is already in the mailbox:
-      # `assert_received` (no timeout) is the assertion that proves it.
-      assert StartGuard.verify({:ok, extra}, space_id, extra) == {:error, {:agent_limit, limit}}
+      # `assert_received` (no timeout) is the assertion that proves it. The cap
+      # is `within_agent_limit/2` (spawning only), not the archive `verify/3`.
+      assert StartGuard.within_agent_limit(space_id, extra) == {:error, {:agent_limit, limit}}
       assert_received {:DOWN, ^ref, :process, ^pid, _reason}
       assert Registry.lookup(space_id, extra) == {:error, :not_found}
+    end
+  end
+
+  describe "rehydrate and restart are exempt from the cap" do
+    test "an over-cap space still loads and restarts its own agents, but cannot spawn", %{
+      vocation_id: vocation_id
+    } do
+      space_id = space_with_cap(2)
+      a = create_agent!(space_id, vocation_id, fresh_name("a"))
+      b = create_agent!(space_id, vocation_id, fresh_name("b"))
+
+      # Hold the space over its cap with a row + process started through the
+      # test-only route that skips the gate — exactly the state a space created
+      # before the cap existed (or whose cap was lowered) is in.
+      extra = fresh_name("extra")
+
+      attrs =
+        %{
+          name: extra,
+          space_id: space_id,
+          model: @model,
+          vocation_id: vocation_id,
+          vocation: Vocations.get_vocation(vocation_id),
+          depth: 0
+        }
+        |> Persistence.build_agent_attrs()
+
+      {:ok, _row} = Persistence.insert_agent(attrs)
+      {:ok, _pid} = Supervisor.start_under_test(attrs)
+      assert Persistence.count_active_agents(space_id) == 3
+
+      # A stopped agent rehydrates despite the space being over cap: the load
+      # path adds no row and must not be refused, or the space jams.
+      :ok = Supervisor.stop_agent(space_id, a)
+      assert {:ok, ^a} = Supervisor.fetch_or_start_agent(space_id, %{name: a})
+
+      # A restart is exempt for the same reason.
+      assert {:ok, ^b} = Supervisor.restart_agent(space_id, b)
+
+      # A NEW spawn is still refused and rolled back — the cap gates spawning.
+      log =
+        capture_log(fn ->
+          assert {:error, {:agent_limit, 2}} =
+                   create_agent(space_id, vocation_id, fresh_name("new"))
+        end)
+
+      assert log =~ "removing the row it pre-spawned"
+      assert Persistence.count_active_agents(space_id) == 3
     end
   end
 end
