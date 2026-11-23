@@ -32,24 +32,62 @@ defmodule Nest.Agents.StartGuard do
   while one is still registered. `terminate_child/2` terminates through the
   `DynamicSupervisor`, which frees the Registry name before it returns — the same
   reason `Supervisor.restart_agent/2` uses it.
+
+  ## The agent limit
+
+  The same last step enforces the space's cap on **non-archived** agents — its
+  blueprint's `max_agents`, or `default_max_agents/0` when the blueprint names
+  none (or the space has no blueprint). The count is of *rows*, not processes:
+  an idle agent is still on the team, and counting live pids would let a space
+  of stopped agents grow without bound.
+
+  It runs after the start for the same reason the archive check does, and the
+  row ordering is what makes it race-safe: a create's row is inserted before
+  its process starts, so it is visible to every concurrent start's count. Two
+  spawns racing into the last free slot each count their own row; if the total
+  is over the cap, every start that sees that refuses and its caller rolls the
+  row back (`Nest.Agents.Supervisor.start_pre_spawned/3`). Two concurrent
+  spawns may therefore *both* refuse where one could have been admitted — the
+  safe direction, and the same conservatism as the archive sweep.
+
+  A rehydrate or restart adds no row, so a space at its cap still starts its
+  own agents. A space *over* a cap that was lowered afterwards cannot start
+  any until some are archived — the gate reads the cap as it is now.
   """
 
   alias Nest.Agents.Registry
+  alias Nest.Persistence
   alias Nest.Spaces
 
   @supervisor Nest.Agents.Supervisor
+
+  # The cap a space gets when its blueprint names none. A named constant here
+  # rather than a value copied into every blueprint row: `nil` in the column
+  # means "no opinion", and the default is the gate's to state — one place to
+  # change it, and nothing to backfill.
+  @default_max_agents 5
+
+  @doc """
+  The agent cap a space gets when its blueprint names none (or it has no
+  blueprint): the whole team, running or idle, archived rows excluded.
+  """
+  @spec default_max_agents() :: pos_integer()
+  def default_max_agents, do: @default_max_agents
 
   @doc """
   A start's result, once the space has had its say.
 
   `{:ok, name}` becomes `{:error, :space_archived}` — with `name`'s process
-  stopped — when its space is archived; every other result passes through
-  untouched, so the caller's own refusals keep their reasons.
+  stopped — when its space is archived, or `{:error, {:agent_limit, limit}}`
+  when the start would put the space over its agent cap; every other result
+  passes through untouched, so the caller's own refusals keep their reasons.
   """
   @spec verify({:ok, String.t()} | {:error, term()}, integer(), String.t()) ::
           {:ok, String.t()} | {:error, term()}
   def verify({:ok, name}, space_id, name) do
-    with :ok <- space_active(space_id, name), do: {:ok, name}
+    with :ok <- space_active(space_id, name),
+         :ok <- within_agent_limit(space_id, name),
+         do: {:ok, name}
   end
 
   # A start that already failed keeps its own reason, and a `{:ok, other_name}`
@@ -84,6 +122,20 @@ defmodule Nest.Agents.StartGuard do
       # fire-and-forget: `terminate_child/2` is synchronous and total.
       :ok = terminate_child(space_id, name)
       {:error, :space_archived}
+    else
+      :ok
+    end
+  end
+
+  # The just-started agent's row is already in the count (a create inserts it
+  # before the process exists), so "over the cap" is `>`, not `>=`: a space at
+  # its cap rehydrating one of its own agents adds no row and passes.
+  defp within_agent_limit(space_id, name) do
+    limit = Spaces.max_agents_for_space(space_id) || @default_max_agents
+
+    if Persistence.count_active_agents(space_id) > limit do
+      :ok = terminate_child(space_id, name)
+      {:error, {:agent_limit, limit}}
     else
       :ok
     end

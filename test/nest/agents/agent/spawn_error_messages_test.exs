@@ -41,4 +41,20 @@ defmodule Nest.Agents.Agent.SpawnErrorMessagesTest do
                "Could not spawn batch children: " <> sentence
     end
   end
+
+  # The agent-cap refusal (#225). The model has to hear the size of the team it
+  # already has and the one move that frees a slot — archive a minion it no
+  # longer needs — rather than an `inspect` of the tuple or a bare "retry".
+  test "renders an agent-limit refusal naming the cap and the archive remedy, in both renderers" do
+    reason = {:agent_limit, 5}
+    sentence = SpawnErrors.agent_limit_message(5)
+
+    assert sentence =~ "limit of 5 agents"
+    assert sentence =~ "agents-archive"
+
+    assert SpawnErrors.message(reason) == "Could not spawn agent: " <> sentence
+
+    assert BatchPlan.spawn_error_message(reason) ==
+             "Could not spawn batch children: " <> sentence
+  end
 end
