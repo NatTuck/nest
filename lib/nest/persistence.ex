@@ -653,6 +653,12 @@ defmodule Nest.Persistence do
     as: :fetch_all_agents_for_space
 
   @doc """
+  Count the space's non-archived agent rows — the whole team, running or idle.
+  """
+  @spec count_active_agents(integer()) :: non_neg_integer()
+  defdelegate count_active_agents(space_id), to: Nest.Persistence.AgentAttrs
+
+  @doc """
   List every persisted agent row, across all spaces, ordered by id.
   """
   defdelegate list_all_agents(),

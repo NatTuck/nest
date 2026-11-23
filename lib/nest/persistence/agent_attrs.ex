@@ -59,6 +59,21 @@ defmodule Nest.Persistence.AgentAttrs do
   end
 
   @doc """
+  Count the space's **non-archived** agent rows — the whole team, running or
+  idle. The start gate's agent-limit read (`Nest.Agents.StartGuard`): a row is
+  an agent whether or not a process is behind it, so counting live pids would
+  let a space of stopped agents grow without bound.
+  """
+  @spec count_active_agents(integer()) :: non_neg_integer()
+  def count_active_agents(space_id) when is_integer(space_id) do
+    from(a in PersistedAgent,
+      where: a.space_id == ^space_id and a.archived == false,
+      select: count(a.id)
+    )
+    |> Repo.one()
+  end
+
+  @doc """
   Every agent row in the database, ordered by `id`.
 
   Offline tooling (`mix nest.repair_messages --all`) uses this

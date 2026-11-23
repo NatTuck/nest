@@ -257,6 +257,26 @@ defmodule NestWeb.LobbyChannel.SpawnAgentTest do
                    500
     end
 
+    test "an agent-limit refusal carries the cap, so the dialog can name it", %{
+      socket: socket,
+      space_id: space_id
+    } do
+      # The cap refusal (#225) is a tagged reason whose detail is the limit. The
+      # reply has to carry it — a generic `failed_to_create` would hide the one
+      # fact the operator needs. Stubbed so the mapping is tested without filling
+      # a space to its cap.
+      Mimic.stub(Nest.Agents, :create_agent, fn _space, _model, _opts ->
+        {:error, {:agent_limit, 5}}
+      end)
+
+      Mimic.allow(Nest.Agents, self(), socket.channel_pid)
+
+      assert_reply push(socket, "spawn_agent", %{"space_id" => space_id, "model" => @model}),
+                   :error,
+                   %{"reason" => "agent_limit", "limit" => 5},
+                   500
+    end
+
     test "a create failure it cannot word is logged as a spawn, not a space", %{
       socket: socket,
       space_id: space_id

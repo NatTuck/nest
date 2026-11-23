@@ -525,6 +525,12 @@ defmodule Nest.Agents.Agent.BatchPlan do
   def spawn_error_message({:mode_refused, reason}),
     do: "Could not spawn batch children: #{reason}"
 
+  # The space is at its agent cap. One wording, in `SpawnErrors`, under this
+  # renderer's prefix — a batch that cannot spawn its children fails as a whole
+  # call, and the limit is the reason.
+  def spawn_error_message({:agent_limit, limit}),
+    do: "Could not spawn batch children: " <> SpawnErrors.agent_limit_message(limit)
+
   def spawn_error_message({:config_file_not_regular, _path, _type} = reason),
     do: "Could not spawn batch children: #{Nest.ConfigFile.error_message(reason)}"
 
