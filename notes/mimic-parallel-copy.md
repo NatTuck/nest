@@ -4,6 +4,13 @@ Branch: `issue-21-parallel-copy` (off `issue-21` @ `824d376`). Reviewed, with th
 review's fix-ups applied; handed back to be merged into `issue-21` — not merged
 here.
 
+> **Update (#220 Tier 1):** the "0 warnings" claim below did not hold on a fresh
+> build — one caller's restore of `ignore_module_conflict` could land inside
+> another's `Module.create`, giving the intermittent "redefining module" warning.
+> The fix is in the mimic fork (set-once option, public `Mimic.copy/2 eager: true`);
+> `NEST_MIMIC_EAGER_COPY` and `NEST_MIMIC_COPY_TIMING` were removed with the old
+> block. The measurements below are historical.
+
 ## The problem
 
 Under plain `mix test` (no `--cover`), `Mimic.copy/1` only *marks* a module. The copy
