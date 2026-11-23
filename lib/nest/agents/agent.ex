@@ -246,6 +246,20 @@ defmodule Nest.Agents.Agent do
     GenServer.cast(pid, {:shell_job_exited, job_id, code, output})
   end
 
+  @doc """
+  Tell this agent that one of its background shell jobs died because the
+  space's namespace holder was lost (#224).
+
+  The same cast-and-drain mechanism as `shell_job_exited/4`, with wording that
+  names the cause: the job did not exit on its own, the namespace it ran in
+  went away. A separate cast keeps the ordinary exit notice's shape (and its
+  tests) untouched.
+  """
+  @spec shell_job_namespace_lost(pid(), String.t(), integer(), binary()) :: :ok
+  def shell_job_namespace_lost(pid, job_id, code, output) do
+    GenServer.cast(pid, {:shell_job_namespace_lost, job_id, code, output})
+  end
+
   defdelegate register_watch(pid, ref, spec), to: ClientAPI
   defdelegate watch_attached(pid, ref, task_pid), to: ClientAPI
   defdelegate unregister_watch(pid, ref), to: ClientAPI

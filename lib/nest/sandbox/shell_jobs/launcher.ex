@@ -72,6 +72,10 @@ defmodule Nest.Sandbox.ShellJobs.Launcher do
         # both (`Nest.Sandbox.ShellJobs.Owned`).
         owner: nil,
         owner_ref: nil,
+        # The holder generation this job joined (#224), so a holder death can
+        # reconcile exactly the jobs that died with it. `nil` for a fresh-ns
+        # fallback (no holder) and for backends that keep no namespace.
+        generation: Map.get(spec, :generation),
         started_at: DateTime.utc_now()
       }
 

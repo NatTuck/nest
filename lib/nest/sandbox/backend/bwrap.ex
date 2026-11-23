@@ -40,12 +40,17 @@ defmodule Nest.Sandbox.Backend.Bwrap do
     case NamespaceHolder.ensure(Mounts.space_id(mounts)) do
       {:ok, holder} ->
         with {:ok, args} <- build_join_args(mounts, caps) do
-          {:ok, %{command: join_command_line(args, script, holder), cd: nil}}
+          {:ok,
+           %{
+             command: join_command_line(args, script, holder),
+             cd: nil,
+             generation: holder.generation
+           }}
         end
 
       :error ->
         with {:ok, args} <- build_args(mounts, caps) do
-          {:ok, %{command: command_line(args, script), cd: nil}}
+          {:ok, %{command: command_line(args, script), cd: nil, generation: nil}}
         end
     end
   end

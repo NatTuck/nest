@@ -41,6 +41,8 @@ defmodule Nest.Sandbox.NamespaceHolder do
 
   require Logger
 
+  alias Nest.Sandbox.ShellJobs
+
   @name __MODULE__
 
   # How long to wait for `unshare --fork` to produce the holder child whose
@@ -97,9 +99,10 @@ defmodule Nest.Sandbox.NamespaceHolder do
         if holder_alive?(holder) do
           {:reply, {:ok, public(holder)}, state}
         else
-          # The holder died but its :DOWN has not been processed yet; do not
-          # hand back a dead namespace. Drop it and bring a fresh one up.
-          state = %{state | holders: Map.delete(state.holders, space_id)}
+          # The holder died but its :DOWN has not been processed yet. Reconcile
+          # its jobs and restart exactly as the :DOWN path does — whichever
+          # notices the death first, the dead generation is settled once.
+          state = reconcile_death(state, holder)
           ensure_started(state, space_id)
         end
     end
@@ -117,22 +120,16 @@ defmodule Nest.Sandbox.NamespaceHolder do
   end
 
   @impl true
-  def handle_info({:DOWN, _ref, :process, erl_pid, reason}, state) do
+  def handle_info({:DOWN, _ref, :process, erl_pid, _reason}, state) do
     case pop_by_erl_pid(state.holders, erl_pid) do
       {nil, _holders} ->
         {:noreply, state}
 
       {holder, holders} ->
-        # The namespace died with its holder; every job in it died too. The
-        # jobs' own erlexec monitors mark them dead individually; chunk (a)
-        # adds deterministic reconciliation + owner signaling here, keyed by
-        # `holder.generation` (e.g. ShellJobs.namespace_lost(space_id, gen)).
-        Logger.warning(
-          "namespace holder for space #{holder.space_id} died (#{inspect(reason)}); " <>
-            "restarting (generation #{holder.generation} lost)"
-        )
-
-        state = %{state | holders: holders}
+        # The namespace died with its holder; every job that joined this
+        # generation died too. Reconcile them deterministically — mark dead and
+        # signal owners — BEFORE bringing a fresh namespace up.
+        state = reconcile_death(%{state | holders: holders}, holder)
 
         case start_holder(holder.space_id, state.generation + 1) do
           {:ok, fresh} -> {:noreply, put_holder(state, holder.space_id, fresh)}
@@ -142,6 +139,21 @@ defmodule Nest.Sandbox.NamespaceHolder do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # A holder's death takes its namespace's jobs with it. Log, reconcile the
+  # dead generation's jobs (mark dead + signal owners), and forget the holder.
+  # Both the :DOWN monitor and ensure/1's liveness check reach here, so the
+  # generation is reconciled whichever notices first; namespace_lost/2 is
+  # idempotent, so a second reach is a no-op.
+  defp reconcile_death(state, holder) do
+    Logger.warning(
+      "namespace holder for space #{holder.space_id} died; " <>
+        "restarting (generation #{holder.generation} lost)"
+    )
+
+    ShellJobs.namespace_lost(holder.space_id, holder.generation)
+    %{state | holders: Map.delete(state.holders, holder.space_id)}
+  end
 
   # ---- holder process ----
 

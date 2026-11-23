@@ -278,6 +278,27 @@ defmodule Nest.Sandbox.ShellJobs do
     do: GenServer.call(@name, {:kill_space, space_id, job_id})
 
   @doc """
+  Reconcile the jobs that died with a space's namespace holder (#224).
+
+  When `NamespaceHolder` loses a holder of `generation`, every *running* job
+  that joined that generation died with it. This marks each one dead with a
+  distinct namespace-lost status and signals its owner through the exit-notice
+  path, deterministically — before the holder is restarted, and without racing
+  the jobs' own exec-port monitors (a job already finished is left as-is, and a
+  late monitor `:DOWN` finds no running job to finish again). Finished jobs of
+  the generation, and jobs of any other generation, are untouched.
+
+  A **cast**, not a call: the sender is `NamespaceHolder`, whose `ensure/1` the
+  manager itself calls (through the backend) when it starts a job — a call back
+  into the manager here would circular-wait. The cast is still deterministic:
+  it is handled in the manager's mailbox order, and the running-only monitor
+  lookup makes reconciliation idempotent against the jobs' own `:DOWN`s.
+  """
+  @spec namespace_lost(term(), non_neg_integer()) :: :ok
+  def namespace_lost(space_id, generation),
+    do: GenServer.cast(@name, {:namespace_lost, space_id, generation})
+
+  @doc """
   Stop every job for `agent_key` synchronously, then remove the agent's scratch
   directory (see `drop_agent/3`).
 
@@ -334,6 +355,7 @@ defmodule Nest.Sandbox.ShellJobs do
   # exit is reported — `shell-wait`'s inline answer, the watcher's message, and
   # the owner's notice — cannot drift.
   defdelegate result_text(id, code, output), to: Text
+  defdelegate namespace_lost_text(id, code, output), to: Text
   defdelegate gone_text(id), to: Text
   defdelegate trimmed_text(id), to: Text
 
@@ -459,6 +481,10 @@ defmodule Nest.Sandbox.ShellJobs do
     {:noreply, Agents.drop(agent_key, state, owner)}
   end
 
+  def handle_cast({:namespace_lost, space_id, generation}, state) do
+    {:noreply, reconcile_lost(state, space_id, generation)}
+  end
+
   @impl true
   def handle_info({stream, os_pid, data}, state) when stream in [:stdout, :stderr],
     do: {:noreply, Records.append_output(state, os_pid, data)}
@@ -539,6 +565,14 @@ defmodule Nest.Sandbox.ShellJobs do
 
   # ---- Output / completion ----
 
+  # A job that died with its namespace (#224) is marked killed by the
+  # namespace itself: the distinct `killed_by` routes its owner notice and
+  # tells it apart from a normal exit or an explicit shell-kill. 137 is
+  # 128 + SIGKILL — the namespace teardown kills the process.
+  defp finish_job(job, {:namespace_lost, code}, state) do
+    finish_job(%{job | killed: true, killed_by: :namespace}, {:killed, code}, state)
+  end
+
   defp finish_job(job, reason, state) do
     code = exit_code(reason)
 
@@ -557,6 +591,23 @@ defmodule Nest.Sandbox.ShellJobs do
 
     Records.remove_script(job)
     Frames.broadcast(state, job.agent_key)
+  end
+
+  # ---- Namespace loss (#224) ----
+
+  # Mark every running job of `space_id` + `generation` dead, exactly once.
+  # `Index.by_erl_pid/2` matches only running jobs, so a job finished here is
+  # not finished again by its exec port's late `:DOWN` — one notice per job.
+  defp reconcile_lost(state, space_id, generation) do
+    state.jobs
+    |> Map.values()
+    |> Enum.filter(&lost_job?(&1, space_id, generation))
+    |> Enum.reduce(state, fn job, acc -> finish_job(job, {:namespace_lost, 137}, acc) end)
+  end
+
+  defp lost_job?(job, space_id, generation) do
+    job.status == :running and match?({^space_id, _}, job.agent_key) and
+      Map.get(job, :generation) == generation
   end
 
   defp exit_code(:normal), do: 0

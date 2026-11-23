@@ -151,7 +151,15 @@ defmodule Nest.Tools.ShellCmd do
         Diagnostics.truncate(command)
     )
 
-    exec_staged(script, spec, timeout, stdin, command, mounts, job_attrs(command, mounts, opts))
+    exec_staged(
+      script,
+      spec,
+      timeout,
+      stdin,
+      command,
+      mounts,
+      job_attrs(command, mounts, opts, Map.get(spec, :generation))
+    )
   end
 
   # The registration attrs for a call that opted in (`:register_job`), or `nil`.
@@ -162,7 +170,7 @@ defmodule Nest.Tools.ShellCmd do
   # reader, because every listing, the panel and the sidebar are keyed by
   # `{space_id, name}`. Either way the command still runs, with the result it
   # would have had.
-  defp job_attrs(command, mounts, opts) do
+  defp job_attrs(command, mounts, opts, generation) do
     if Keyword.get(opts, :register_job, false) && Mounts.scratch(mounts) do
       %{
         command: command,
@@ -170,7 +178,8 @@ defmodule Nest.Tools.ShellCmd do
         # A call that registers is a tool call, and a tool call always carries
         # the caller's identity: `Nest.Tools.agent_key/1` refuses one without it.
         agent_key: Keyword.fetch!(opts, :agent_key),
-        agent_pid: Keyword.get(opts, :agent_pid)
+        agent_pid: Keyword.get(opts, :agent_pid),
+        generation: generation
       }
     end
   end

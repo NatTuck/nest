@@ -22,6 +22,22 @@ defmodule Nest.Sandbox.ShellJobs.Text do
     do: "Background job #{id} exited with code #{code}:\n#{output}"
 
   @doc """
+  The result text for a job that died because its space's namespace holder was
+  lost (#224). Deliberately not `result_text/3`: the job did not exit on its
+  own — the namespace it ran in went away — so the wording names that cause.
+  Like `result_text/3`, the log rides the tail so `ShellJobNotice` can split it
+  onto its own output segment.
+  """
+  @spec namespace_lost_text(ShellJobs.job_id(), integer(), binary()) :: String.t()
+  def namespace_lost_text(id, code, ""),
+    do: "Background job #{id} died because the space's process namespace was lost (code #{code})."
+
+  def namespace_lost_text(id, code, output),
+    do:
+      "Background job #{id} died because the space's process namespace was lost (code #{code}):\n" <>
+        output
+
+  @doc """
   The result text for a job whose agent stopped, delivered by the watcher's
   `{:shell_job_gone, …}` arm and by the `:gone` answer to `unsubscribe/3`.
 

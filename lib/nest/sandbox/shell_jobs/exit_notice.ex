@@ -49,7 +49,13 @@ defmodule Nest.Sandbox.ShellJobs.ExitNotice do
     owner = owner_pid(job, state)
 
     if is_pid(owner) and not asked?(job, state) do
-      Agent.shell_job_exited(owner, job.id, code, JobLog.read(job.mounts, job.log_path))
+      output = JobLog.read(job.mounts, job.log_path)
+
+      if Map.get(job, :killed_by) == :namespace do
+        Agent.shell_job_namespace_lost(owner, job.id, code, output)
+      else
+        Agent.shell_job_exited(owner, job.id, code, output)
+      end
     end
 
     :ok

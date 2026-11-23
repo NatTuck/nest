@@ -48,11 +48,26 @@ defmodule Nest.Agents.Agent.ShellJobNotice do
   """
   @spec parts(String.t(), integer(), binary()) :: [Segment.t()]
   def parts(job_id, code, output) do
-    text = ShellJobs.result_text(job_id, code, output)
-    # Bytes, not graphemes: `String.split_at/2` counts graphemes, so a byte
-    # offset happens to work only while the prose is ASCII. `binary_part/3` is
-    # the same answer whatever either half is encoded as, and `result_text/3`
-    # is `prose <> output` by construction.
+    split_notice(ShellJobs.result_text(job_id, code, output), output)
+  end
+
+  @doc """
+  Render a namespace-lost job's death (#224) as ordered segments: the prose
+  naming the cause, then the log. Same split as `parts/3`, different sentence
+  (`ShellJobs.namespace_lost_text/3`).
+  """
+  @spec namespace_lost_parts(String.t(), integer(), binary()) :: [Segment.t()]
+  def namespace_lost_parts(job_id, code, output) do
+    split_notice(ShellJobs.namespace_lost_text(job_id, code, output), output)
+  end
+
+  # The prose is the result text with the log taken off its tail, so the
+  # sentence has one source and the log rides its own `:output` segment. A job
+  # with no output is a single `:text` segment. Bytes, not graphemes:
+  # `String.split_at/2` counts graphemes, so a byte offset happens to work only
+  # while the prose is ASCII; `binary_part/3` is the same answer whatever either
+  # half is encoded as, and the text is `prose <> output` by construction.
+  defp split_notice(text, output) do
     prose = binary_part(text, 0, byte_size(text) - byte_size(output))
 
     case binary_part(text, byte_size(prose), byte_size(output)) do
