@@ -35,6 +35,18 @@ defmodule Nest.Sandbox.NamespaceHolder do
   a space whose holder cannot start (no user namespaces on the host) falls back
   to the fresh per-command namespace, so a command never hard-fails on the
   holder's absence.
+
+  ## Blocking
+
+  This GenServer blocks for a *bounded* time when it starts a holder:
+  `start_holder/2` polls `/proc` for up to 2 s waiting for `unshare --fork` to
+  produce the child, inside the callback (`ensure/1` and the restart on a
+  holder's `:DOWN`). Every other callback does local work only. It never waits
+  on `Nest.Sandbox.ShellJobs` synchronously — `namespace_lost/2` is a cast,
+  because the manager itself calls `ensure/1` (through the bwrap backend) when
+  it starts a job, and a call back would circular-wait. So a `GenServer.call/3`
+  to this module is synchronous communication with a bounded startup wait,
+  never an unbounded hand-off.
   """
 
   use GenServer

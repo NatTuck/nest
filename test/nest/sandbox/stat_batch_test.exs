@@ -9,6 +9,7 @@ defmodule Nest.Sandbox.StatBatchTest do
 
   import ExUnit.CaptureLog
   import Mimic
+  import Nest.Test.TmpCleanup
 
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
@@ -26,7 +27,7 @@ defmodule Nest.Sandbox.StatBatchTest do
     workspace = Path.join([File.cwd!(), "_build", "tmp", "nest_stat_batch_ws_#{unique}"])
     File.mkdir_p!(workspace)
 
-    on_exit(fn -> File.rm_rf!(workspace) end)
+    on_exit(fn -> rm_tmp!(workspace, "nest_stat_batch_ws_") end)
 
     %{workspace: workspace, caps: Sandbox.default_caps()}
   end

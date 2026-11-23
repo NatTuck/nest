@@ -12,6 +12,7 @@ defmodule Nest.Sandbox.ShellJobsNamespaceLostTest do
 
   import Eventually
   import ExUnit.CaptureLog
+  import Nest.Test.TmpCleanup
 
   alias Nest.Sandbox.{Mounts, NamespaceHolder, Paths, ShellJobs}
 
@@ -25,8 +26,8 @@ defmodule Nest.Sandbox.ShellJobsNamespaceLostTest do
 
     on_exit(fn ->
       NamespaceHolder.stop_space(space_id)
-      File.rm_rf(ws)
-      File.rm_rf(root)
+      rm_tmp!(ws, "nest_nl_ws_")
+      rm_tmp!(root, "nest_nl_")
     end)
 
     %{space_id: space_id, ws: ws, scratch: scratch}

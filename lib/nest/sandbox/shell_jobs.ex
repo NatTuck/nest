@@ -73,8 +73,11 @@ defmodule Nest.Sandbox.ShellJobs do
   agent's scratch directory. Under `"docker"` those three are one `docker exec`
   (the read, bounded like the `File.read` it replaces), a no-op (the command
   writes its own log), and a no-op (the scratch is the container's). It never
-  waits on an agent, an LLM, or another process, so a `GenServer.call/3` to it
-  is ordinary synchronous communication, not a blocking hand-off.
+  waits on an agent or an LLM. The one cross-process wait is the bwrap
+  backend's `NamespaceHolder.ensure/1` inside a start — a bounded holder
+  startup wait (see that module's "Blocking" section) — so a
+  `GenServer.call/3` to it is ordinary synchronous communication, not an
+  unbounded hand-off.
 
   The `rm_rf` is the one cost this process carries that scales with the
   agent's own data (the uncapped logs under its scratch). It stays here

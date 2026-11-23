@@ -10,6 +10,7 @@ defmodule Nest.Sandbox.NamespaceHolderTest do
 
   import Eventually
   import ExUnit.CaptureLog
+  import Nest.Test.TmpCleanup
 
   alias Nest.Sandbox
   alias Nest.Sandbox.{Backend, Mounts, NamespaceHolder}
@@ -25,8 +26,8 @@ defmodule Nest.Sandbox.NamespaceHolderTest do
 
     on_exit(fn ->
       NamespaceHolder.stop_space(space_id)
-      File.rm_rf(ws)
-      File.rm_rf(root)
+      rm_tmp!(ws, "nest_ns_ws_")
+      rm_tmp!(root, "nest_ns_")
     end)
 
     %{space_id: space_id, ws: ws, scratch: scratch}

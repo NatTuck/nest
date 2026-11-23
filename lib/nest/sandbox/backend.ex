@@ -78,7 +78,11 @@ defmodule Nest.Sandbox.Backend do
   A built invocation: the command line to run, and the directory to run it in
   (`nil` when the command line already sets one — bwrap `--chdir`s itself).
   """
-  @type spec :: %{command: String.t(), cd: String.t() | nil}
+  @type spec :: %{
+          :command => String.t(),
+          :cd => String.t() | nil,
+          optional(:generation) => non_neg_integer() | nil
+        }
 
   @doc """
   Every backend this build implements: `#{inspect(@backends)}`.
