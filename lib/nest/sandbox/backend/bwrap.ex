@@ -15,7 +15,7 @@ defmodule Nest.Sandbox.Backend.Bwrap do
   """
 
   alias Nest.Sandbox
-  alias Nest.Sandbox.{Failure, Mounts, Paths}
+  alias Nest.Sandbox.{Failure, Mounts, NamespaceHolder, Paths}
   alias Nest.Tools.ShellEscape
 
   @doc """
@@ -25,14 +25,28 @@ defmodule Nest.Sandbox.Backend.Bwrap do
   what removes the escaping layer: the command text never has to survive as one
   quoted argv element.
 
+  When the space has a live namespace holder (#224), the command JOINS the
+  holder's user + pid namespace instead of unsharing a fresh one, so `ps` sees
+  the space's other commands. The join is wrapped so a host shell opens the
+  holder's namespace FDs itself (see `join_command_line/3`). A space with no
+  holder that can run falls back to the fresh per-command namespace.
+
   `cd` is `nil`: `Nest.Sandbox.build/2` already appends `--chdir`, so bwrap
   starts the command in the right directory itself.
   """
   @spec command(Mounts.t(), map() | nil, String.t()) ::
           {:ok, Nest.Sandbox.Backend.spec()} | {:error, String.t()}
   def command(mounts, caps, script) do
-    with {:ok, args} <- build_args(mounts, caps) do
-      {:ok, %{command: command_line(args, script), cd: nil}}
+    case NamespaceHolder.ensure(Mounts.space_id(mounts)) do
+      {:ok, holder} ->
+        with {:ok, args} <- build_join_args(mounts, caps) do
+          {:ok, %{command: join_command_line(args, script, holder), cd: nil}}
+        end
+
+      :error ->
+        with {:ok, args} <- build_args(mounts, caps) do
+          {:ok, %{command: command_line(args, script), cd: nil}}
+        end
     end
   end
 
@@ -66,6 +80,14 @@ defmodule Nest.Sandbox.Backend.Bwrap do
   def display_name(_mounts), do: "bwrap"
 
   @doc """
+  Release the space's persistent namespace holder (#224). Stopping the holder
+  tears its user + pid namespace down (`--kill-child`); a space with no holder
+  is a no-op.
+  """
+  @spec remove_space(integer()) :: :ok
+  def remove_space(space_id), do: NamespaceHolder.stop_space(space_id)
+
+  @doc """
   Classify stderr with bwrap's own table, which matches bwrap's setup-failure
   markers before the errno strings it reuses (see `Nest.Sandbox.Failure`).
   """
@@ -80,5 +102,30 @@ defmodule Nest.Sandbox.Backend.Bwrap do
 
   defp command_line(args, script) do
     Enum.join(["bwrap" | args], " ") <> " /bin/bash " <> ShellEscape.escape(script)
+  end
+
+  defp build_join_args(mounts, caps) do
+    Sandbox.build_join(caps || Sandbox.default_caps(), mounts)
+  end
+
+  # A joined command (#224) runs under a host bash that opens the holder's
+  # user + pid namespace FDs and hands them to bwrap. Dynamic FD allocation
+  # (`{u}`/`{p}`, >= 10) avoids colliding with the pipes erlexec wires to
+  # stdout/stderr. `$0` is the holder's host pid; `"$@"` forwards the bwrap args
+  # and the staged script verbatim, so nothing here re-escapes them. The uid/gid
+  # are the runtime user's (`id -u`/`id -g`), which is exactly what the holder's
+  # identity user namespace maps — so a command runs as that user, never root.
+  #
+  # erlexec passes this whole string as one argv to `$SHELL -c`, so the single
+  # quotes are parsed once by that shell and the body reaches bash intact.
+  defp join_command_line(args, script, holder) do
+    inner = Enum.join(args, " ") <> " /bin/bash " <> ShellEscape.escape(script)
+
+    # ~S: every byte literal — the body's single and double quotes, `$0`/`$u`/
+    # `$@` and `$(id …)` are bash's, not Elixir interpolation.
+    wrapper =
+      ~S|/bin/bash -c 'exec {u}<"/proc/$0/ns/user"; exec {p}<"/proc/$0/ns/pid"; exec bwrap --userns "$u" --pidns "$p" --uid "$(id -u)" --gid "$(id -g)" "$@"' |
+
+    wrapper <> holder.holder_pid <> " " <> inner
   end
 end
