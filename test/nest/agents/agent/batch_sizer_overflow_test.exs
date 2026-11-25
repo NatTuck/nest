@@ -16,6 +16,7 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
   use ExUnit.Case, async: true
 
   alias Nest.Agents.Agent.BatchSizer.Overflow
+  alias Nest.Name
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
   alias Nest.TextFixtures
@@ -53,34 +54,14 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
     end)
   end
 
-  test "head_text/3 never returns an empty string" do
-    marker = "[content elided: see /tmp/x.txt]"
-
-    # No budget at all, a budget too small for even the first line, and empty
-    # content: each returns the caller's marker instead of "".
-    assert Overflow.head_text("content", 0, marker) == marker
-    assert Overflow.head_text("a line far too long for a 1-token budget", 1, marker) == marker
-    assert Overflow.head_text("", 100, marker) == marker
-
-    # Leading whole lines, joined and trailing-trimmed. The marker goes unused
-    # because every line fits, so nothing was dropped.
-    assert Overflow.head_text("first\nsecond\nthird\n", 100, "unused") ==
-             "first\nsecond\nthird"
-  end
-
-  test "tail_text/3 takes trailing whole lines and mirrors head_text/3's no_room contract" do
-    marker = "[content elided: see /tmp/x.txt]"
-
-    assert Overflow.tail_text("content", 0, marker) == marker
-    assert Overflow.tail_text("a line far too long for a 1-token budget", 1, marker) == marker
-    assert Overflow.tail_text("", 100, marker) == marker
-
-    # Every line fits, so the whole content comes back trailing-trimmed.
-    assert Overflow.tail_text("first\nsecond\nthird\n", 100, "unused") ==
-             "first\nsecond\nthird"
-
-    # A budget that fits only the last line takes just that line, never mid-line.
-    assert Overflow.tail_text("first\nsecond\nthird", 15, "unused") == "third"
+  # Independent oracle for the worst-case header the projection must price:
+  # longest label/prefix, widest size digits, and a max-length agent name at its
+  # densest legal tokenization (alternating letter/digit, raw == bytes).
+  defp worst_header do
+    max = Name.max_bytes()
+    name = String.duplicate("a1", div(max, 2) + 1) |> binary_part(0, max)
+    path = "/tmp/#{name}/agents-list-archived-0000000000000000.txt"
+    "Output of agents-list-archived (9999999999 tokens) saved to #{path}."
   end
 
   describe "substitute/5" do
@@ -154,8 +135,6 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
       # Eight lines the head budget cannot cover alone, but head + tail together
       # do: the whole content is shown once, with no marker and no repeated line.
       content = Enum.map_join(1..8, "\n", fn _ -> "word word word word word word" end)
-
-      assert Overflow.head_text(content, 120, "") != content
 
       assert {:ok, out} =
                Overflow.substitute(content, ctx(dir), "Output of shell-cmd", "exec", "t")
@@ -244,7 +223,14 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
         String.duplicate("a ", 3000),
         "alpha\nbeta\ngamma",
         "",
-        "hello\n\n  \n"
+        "hello\n\n  \n",
+        # char-path whole coverage: a single prose line over the head budget
+        # that the char head + tail still cover entirely.
+        String.slice(TextFixtures.big_text(40_000), 0, 520),
+        # empty-tail assembly: a final line too big for the tail budget.
+        numbered_lines(20) <> "\n" <> String.duplicate("x", 5000),
+        # multi-line content entering the char path: a huge first line + more.
+        String.duplicate("abcdefghij", 500) <> "\nshort tail line"
       ]
 
       bound = Overflow.substitute_size()
@@ -257,11 +243,106 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
       end
 
       # The projection reserves the widest marker (a bounded 10-digit count) on
-      # top of the header and both preview halves (head 120 + tail 60 tokens),
-      # so it cannot under-price the marker or either half.
+      # top of the worst-case header (longest label/prefix, widest size digits, a
+      # max-length maximally dense agent name) and both preview halves (head 120
+      # + tail 60 tokens), so it cannot under-price the marker, the header, or
+      # either half.
       widest = "… [9999999999 chars elided — read the file] …"
-      hdr = "Output of shell-cmd (1000000 tokens) saved to /tmp/a/exec-0000000000000000.txt."
-      assert bound >= Estimator.estimate(hdr) + 120 + 60 + Estimator.estimate(widest)
+      assert bound >= Estimator.estimate(worst_header()) + 120 + 60 + Estimator.estimate(widest)
+    end
+
+    test "substitute_size/0 universally bounds a max-length, maximally dense agent name", %{
+      dir: dir
+    } do
+      # A name is `[a-z0-9_-]` up to `Nest.Name.max_bytes/0`. An alternating
+      # letter/digit name resists BPE merges, so its raw token count reaches its
+      # byte count — the most any legal name can cost. Bounding this name bounds
+      # every name, since raw tokens can never exceed bytes.
+      max = Name.max_bytes()
+      name = String.duplicate("a1", div(max, 2) + 1) |> binary_part(0, max)
+      assert byte_size(name) == max
+      assert Estimator.raw_count(name) == max
+
+      long_dir = Path.join(Path.dirname(dir), name)
+      File.mkdir_p!(long_dir)
+      long_ctx = %{mounts: Mounts.new(nil, long_dir)}
+
+      # The longest label and prefix a caller passes, with the shapes that
+      # produce the largest previews.
+      contents = [
+        TextFixtures.big_text(40_000),
+        Base.encode64(:binary.copy(<<1, 2, 3>>, 1500)),
+        numbered_lines(1000),
+        ""
+      ]
+
+      bound = Overflow.substitute_size()
+
+      for content <- contents do
+        assert {:ok, out} =
+                 Overflow.substitute(
+                   content,
+                   long_ctx,
+                   "Output of agents-list-archived",
+                   "agents-list-archived"
+                 )
+
+        assert Estimator.estimate(out) <= bound
+      end
+    end
+
+    test "the char path shows a single over-budget line whole when head + tail cover it", %{
+      dir: dir
+    } do
+      # One prose line whose estimate exceeds the head budget (so the line path
+      # cannot take it), yet the char head + tail cover it: shown whole, no marker.
+      content = String.slice(TextFixtures.big_text(40_000), 0, 520)
+      assert Estimator.estimate(content) > 120
+
+      assert {:ok, out} =
+               Overflow.substitute(content, ctx(dir), "Output of shell-cmd", "exec", "t")
+
+      assert out == header(content, dir) <> "\n\n" <> content
+      refute out =~ "elided"
+    end
+
+    test "a final line too big for the tail budget yields head + marker, no tail", %{dir: dir} do
+      content = numbered_lines(20) <> "\n" <> String.duplicate("x", 5000)
+
+      assert {:ok, out} =
+               Overflow.substitute(content, ctx(dir), "Output of shell-cmd", "exec", "t")
+
+      # Head is the first 8 lines; the huge final line fits no tail budget, so the
+      # tail is empty and the preview ends at the marker. The 13 elided lines are
+      # lines 009-020 plus the huge line (20 - 8 + 1).
+      assert preview(out, content, dir) ==
+               "line 001\nline 002\nline 003\nline 004\nline 005\nline 006\nline 007\nline 008\n" <>
+                 "… [13 lines elided — read the file] …"
+
+      refute out =~ "line 009"
+      refute out =~ "xxxx"
+    end
+
+    test "multi-line content enters the char path with a newline-bearing tail", %{dir: dir} do
+      # A huge first line forces the char path even though more lines follow; the
+      # char slice spans the whole content, so the tail carries a newline.
+      content = String.duplicate("abcdefghij", 500) <> "\nshort tail line"
+      assert length(String.split(content, "\n")) > 1
+
+      assert {:ok, out} =
+               Overflow.substitute(content, ctx(dir), "Output of shell-cmd", "exec", "t")
+
+      pv = preview(out, content, dir)
+      [head, rest] = String.split(pv, "… [", parts: 2)
+      [count, tail] = String.split(rest, " chars elided — read the file] …", parts: 2)
+      j = String.to_integer(count)
+
+      assert tail =~ "\n"
+      assert j == String.length(content) - String.length(head) - String.length(tail)
+      assert j > 0
+      assert String.starts_with?(content, head)
+      assert String.ends_with?(content, tail)
+      assert pv =~ "… [#{j} chars elided — read the file] …"
     end
   end
 end

@@ -94,9 +94,10 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
 
     test "an override below the default files a result that would have fit",
          %{tmp_dir: dir} do
-      # Output of ~1_000 chars ≈ 250 tokens → fits default_cap easily,
-      # but the override forces a tight cap that the output exceeds.
-      output = TextFixtures.big_text(1_000)
+      # Output of ~2_500 chars ≈ 760 tokens → fits the default cap easily and is
+      # larger than a substitute (so filing shrinks it), but the override forces
+      # a tight cap that the output exceeds.
+      output = TextFixtures.big_text(2_500)
 
       tools = [
         make_tool("shell-cmd", fn _, _ -> {:ok, output} end)

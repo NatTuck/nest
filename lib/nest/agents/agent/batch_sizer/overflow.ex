@@ -21,6 +21,7 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   container can write, so they go through the gatekeeper instead.
   """
 
+  alias Nest.Name
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Estimator
@@ -72,8 +73,8 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   # The head shows what the content is, the tail shows how it ends (a command's
   # failure is usually in its last lines), and the marker says how much lies
   # between them in the file. Both halves are charged in `Estimator.estimate/1`
-  # tokens — whole lines for the line path, an estimate-bounded char slice for a
-  # single long line — so each half really does cost at most its budget.
+  # tokens — whole lines for the line path, an estimate-bounded char slice when
+  # the first line does not fit — so each half really does cost at most its budget.
   @head_tokens 120
   @tail_tokens 60
 
@@ -86,6 +87,19 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   # across those seams. A fixed allowance, so the projection stays
   # budget-independent.
   @join_allowance 10
+
+  # The worst-case header the projection prices. The label and filename prefix
+  # are the longest a caller passes (the longest tool name, `ResultPolicy.label/1`
+  # and `BatchSizer.write_prefix/1`); the size carries the widest digit count we
+  # will ever print (10 digits, like the marker count). The path's agent-name
+  # segment is the longest a name can be (`Nest.Name.max_bytes/0`), and a name is
+  # `[a-z0-9_-]`: an alternating letter/digit name resists BPE merges, so its raw
+  # token count reaches its byte count — the most any legal name can cost. Pricing
+  # that name, not a short synthetic path, is what makes the bound universal.
+  @worst_label "Output of agents-list-archived"
+  @worst_prefix "agents-list-archived"
+  @widest_size 9_999_999_999
+  @worst_id "0000000000000000"
 
   # Memo key for `substitute_size/0`.
   @substitute_size_key {__MODULE__, :substitute_size}
@@ -101,9 +115,10 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
 
   The pointer names the file and its size; the preview shows the head and tail
   of the content and states how many lines lie between them in the file. When
-  the content fits the head + tail budgets it is shown whole with no marker,
-  and a single line too long for the head budget falls back to a char head +
-  char tail with a chars-elided marker. Neither repeats anything the caller
+  the content fits the head + tail budgets it is shown whole with no marker.
+  When the first line does not fit the head budget, the preview falls back to a
+  char head + char tail spanning the whole trimmed content (which may itself be
+  multi-line) with a chars-elided marker. Neither repeats anything the caller
   already has: the tool's arguments are in the `tool_use` part immediately
   before this, so the label names the tool and nothing else.
 
@@ -133,11 +148,14 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   The preflight has to reserve room for the substitute a call might produce, so
   this and `substitute/5` must describe the same block — they share the header
   format, the head/tail budgets and the marker template, so they cannot drift.
-  It prices the worst case: header + head budget + tail budget + the widest
-  marker + the join allowance, all constants of this module's format and none
+  It prices the worst case: the longest header (longest label and prefix, widest
+  size digits, and a max-length agent name priced at its densest legal
+  tokenization) + head budget + tail budget + the widest marker + the join
+  allowance. All are constants of this module's format and the name rule, none
   of them the caller's budget. Every preview half is estimate-charged against
   its budget (whole lines, or an estimate-bounded char slice), so this is a
-  true upper bound on any substitute, whatever the content.
+  universal upper bound on any substitute — whatever the content, and whatever
+  legal agent name files it.
 
   Memoized in `:persistent_term`: it is a constant of this module's own format,
   and `ResultPolicy.admit/3` reads it on every result to decide whether filing
@@ -151,9 +169,7 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
         widest = marker(String.duplicate("9", @max_count_digits), "chars")
 
         size =
-          Estimator.estimate(
-            pointer("Output of shell-cmd", 1_000_000, "/tmp/a/exec-0000000000000000.txt", "")
-          ) +
+          Estimator.estimate(worst_header()) +
             @head_tokens + @tail_tokens + Estimator.estimate(widest) + @join_allowance
 
         :persistent_term.put(@substitute_size_key, size)
@@ -162,6 +178,17 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
       size ->
         size
     end
+  end
+
+  # The longest header `substitute/5` can produce: longest label and prefix,
+  # widest size digits, and a max-length agent name whose tokenization is as
+  # dense as a legal name gets (raw token count == byte count). Any real header
+  # estimates no higher, so pricing this one bounds them all.
+  defp worst_header do
+    max = Name.max_bytes()
+    name = String.duplicate("a1", div(max, 2) + 1) |> binary_part(0, max)
+    path = "/tmp/#{name}/#{@worst_prefix}-#{@worst_id}.txt"
+    "#{@worst_label} (#{@widest_size} tokens) saved to #{path}."
   end
 
   defp pointer(label, size, path, content) do
@@ -206,10 +233,12 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
     end
   end
 
-  # A single line longer than the head budget (a minified blob, base64): cut by
+  # The first line does not fit the head budget (a minified blob, base64, or a
+  # huge first line followed by more): cut the whole trimmed content by
   # characters, head and tail each bounded by their token budget, with a marker
-  # stating how many characters lie between them. When the two halves cover the
-  # line, show it whole.
+  # stating how many characters lie between them. The slice spans the whole
+  # content, so it may itself contain newlines. When the two halves cover it,
+  # show it whole.
   defp char_preview(text) do
     len = String.length(text)
     head = char_slice(text, len, @head_tokens, :head)
@@ -235,7 +264,7 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   # Leading whole lines within `budget`, charged per line by
   # `Estimator.estimate/1` (which carries a per-line overhead). Returns the
   # taken lines and the rest, so the caller knows exactly what was elided
-  # without re-parsing a trimmed string. Shared by `head_text/3` and `preview/1`.
+  # without re-parsing a trimmed string. `take_tail/2` is this walk reversed.
   defp take_head(lines, budget), do: take_head(lines, budget, [])
 
   defp take_head([], _budget, acc), do: {Enum.reverse(acc), []}
@@ -257,11 +286,13 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
     {Enum.reverse(tail), Enum.reverse(middle)}
   end
 
-  # The largest leading/trailing char slice whose `Estimator.estimate/1` fits
-  # `budget`. Start from a `budget * 4` char guess (~4 chars/token) and shrink
-  # proportionally until it fits — dense text (base64, minified code) costs more
-  # tokens per char, so a fixed char count would not be a bound. Deterministic
-  # and cheap: each step tokenizes only the bounded slice, never the whole line.
+  # An estimate-bounded leading/trailing char slice. Start from a `budget * 4`
+  # char guess (~4 chars/token) and shrink proportionally until the estimate fits
+  # `budget` — dense text (base64, minified code) costs more tokens per char, so a
+  # fixed char count would not be a bound. `fit_chars/4` stops at the first slice
+  # that fits; BPE is not monotone in length, so this is a bound, not a maximum.
+  # Deterministic and cheap: each step tokenizes only the bounded slice, never the
+  # whole content.
   defp char_slice(text, len, budget, side) do
     fit_chars(text, min(len, budget * 4), budget, side)
   end
@@ -282,58 +313,6 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
 
   defp take_chars(text, n, :head), do: String.slice(text, 0, n)
   defp take_chars(text, n, :tail), do: String.slice(text, -n, n)
-
-  @doc """
-  Take as many leading whole lines of `content` as fit `budget` tokens.
-
-  Whole lines only (never mid-line). `Estimator.estimate/1` includes a
-  per-line overhead, matching the rest of the sizing path.
-
-  Never returns an empty string: when the budget can't fit even the
-  first line, or `content` is empty, `no_room` is returned instead. It
-  must be a non-empty self-describing marker so a caller can always tell
-  that content was dropped (and where it went).
-
-  There is deliberately no default `no_room`: every caller has to say
-  where the dropped content went, so no result can claim content was
-  elided without naming the file that holds it.
-  """
-  @spec head_text(String.t(), integer(), String.t()) :: String.t()
-  def head_text(content, budget, no_room)
-
-  def head_text("", _budget, no_room), do: no_room
-  def head_text(_content, budget, no_room) when budget <= 0, do: no_room
-
-  def head_text(content, budget, no_room) do
-    {head_lines, _rest} = content |> String.split("\n") |> take_head(budget)
-    join_lines(head_lines, no_room)
-  end
-
-  @doc """
-  Take as many trailing whole lines of `content` as fit `budget` tokens — the
-  tail counterpart of `head_text/3`, with the same whole-line and `no_room`
-  contract. Used for the preview's tail so a command's final lines (where a
-  failure usually is) stay visible.
-  """
-  @spec tail_text(String.t(), integer(), String.t()) :: String.t()
-  def tail_text(content, budget, no_room)
-
-  def tail_text("", _budget, no_room), do: no_room
-  def tail_text(_content, budget, no_room) when budget <= 0, do: no_room
-
-  def tail_text(content, budget, no_room) do
-    {tail_lines, _middle} = content |> String.split("\n") |> take_tail(budget)
-    join_lines(tail_lines, no_room)
-  end
-
-  defp join_lines([], no_room), do: no_room
-
-  defp join_lines(lines, no_room) do
-    case lines |> Enum.join("\n") |> String.trim_trailing() do
-      "" -> no_room
-      text -> text
-    end
-  end
 
   @doc """
   Lossy UTF-8 coercion: replace every invalid byte sequence, and every
