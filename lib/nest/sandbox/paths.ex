@@ -34,16 +34,16 @@ defmodule Nest.Sandbox.Paths do
   directory is only ever an *input* to that view — what `Nest.Sandbox` binds.
   Every function here that takes one is called from `Nest.Sandbox` or from
   `Nest.Tools.ShellCmd.Transcript` (which stages command transcripts through
-  `stage_dir/1`), and its result is either a bind source or the
-  `#{@sandbox_root}/<agent>/...` path the agent uses. No value from this
-  module belongs in a tool description, a tool result, or anything else the
-  agent sees.
+  `stage_dir/1`), and its result is a bind source, a staging directory inside
+  the agent's own scratch, or the `#{@sandbox_root}/<agent>/...` path the
+  sandbox uses. No value from this module belongs in a tool description, a
+  tool result, or anything else the agent sees.
   """
 
   alias Nest.FSPath
   alias Nest.Sandbox.Installation
 
-  # The staging directory name, relative to the space scratch root (when a
+  # The staging directory name, relative to the agent's own scratch dir (when a
   # scratch bind exists) or to `System.tmp_dir!()`/`@sandbox_root` (when it
   # does not). See `stage_dir/1`.
   @stage_subdir ".cmds"
@@ -101,29 +101,44 @@ defmodule Nest.Sandbox.Paths do
   def scratch_dir(name), do: Path.join(@sandbox_root, name)
 
   @doc """
+  The staging directory's name: the last component of `stage_dir/1` and
+  `docker_stage_dir/1`. Public so `Nest.Sandbox.Glob` can skip every agent's
+  staging dir by name without a second copy of it.
+  """
+  @spec stage_subdir() :: String.t()
+  def stage_subdir, do: @stage_subdir
+
+  @doc """
   The directory `Nest.Tools.ShellCmd.Transcript` stages command transcripts in.
 
-  With a scratch bind, it lives *inside* the bound space dir
-  (`<space_dir>/#{@stage_subdir}`) but in its own subdirectory, so a glob over
-  the scratch tree can skip the staging dir rather than hide real files by
-  name. Without a scratch bind, it lives under `System.tmp_dir!()`
-  (`#{@no_scratch_stage_subdir}`), visible inside the sandbox at the same path
-  through the root read-only bind.
+  With a scratch bind, it lives *inside the agent's own scratch dir*
+  (`<agent_scratch>/#{@stage_subdir}`), so a transcript is reclaimed with the
+  agent that staged it: the staging call removes it after exec, and the agent's
+  own teardown (or the sweeper finding its directory unowned) is the only other
+  thing that can — never a sibling's. Without a scratch bind, it lives under
+  `System.tmp_dir!()` (`#{@no_scratch_stage_subdir}`), visible inside the
+  sandbox at the same path through the root read-only bind.
 
-  A bind source — internal staging only; never advertised to the agent.
+  Internal staging only; never advertised to the agent. The directory is
+  reached through the scratch bind that already exists — it is not a bind
+  source of its own.
   """
   @spec stage_dir(String.t() | nil) :: String.t()
   def stage_dir(nil), do: Path.join(System.tmp_dir!(), @no_scratch_stage_subdir)
-  def stage_dir(tmp_path), do: Path.join(scratch_root(tmp_path), @stage_subdir)
+  def stage_dir(tmp_path), do: Path.join(tmp_path, @stage_subdir)
 
   @doc """
-  The sandbox path of `stage_dir/1`: `#{@sandbox_root}/#{@stage_subdir}`
-  when a scratch bind exists, otherwise the path unchanged (no scratch bind
-  means the system tmp dir is the sandbox's `#{@sandbox_root}`).
+  The sandbox path of `stage_dir/1`:
+  `#{@sandbox_root}/<agent-name>/#{@stage_subdir}` when a scratch bind exists
+  (the agent's own scratch dir is `#{@sandbox_root}/<agent-name>` inside),
+  otherwise the path unchanged (no scratch bind means the system tmp dir is
+  the sandbox's `#{@sandbox_root}`).
   """
   @spec stage_dir_sandbox(String.t() | nil) :: String.t()
   def stage_dir_sandbox(nil), do: stage_dir(nil)
-  def stage_dir_sandbox(_tmp_path), do: Path.join(@sandbox_root, @stage_subdir)
+
+  def stage_dir_sandbox(tmp_path),
+    do: Path.join(sandbox_tmp_path(tmp_path), @stage_subdir)
 
   @doc """
   The host directory a `"docker"` space stages its command transcripts in.

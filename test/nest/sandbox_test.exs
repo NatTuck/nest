@@ -6,6 +6,7 @@ defmodule Nest.SandboxTest do
   alias Nest.Hardware
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
+  alias Nest.Tools.ShellCmd.Transcript
 
   setup do
     # A workspace outside /tmp: the scratch dir is bound at /tmp, so a
@@ -501,6 +502,39 @@ defmodule Nest.SandboxTest do
 
       assert {:error, :glob_too_broad} =
                Sandbox.glob(Path.join(broad, "*.txt"), caps, Mounts.new(nil, nil), limit: 5)
+    end
+
+    test "a glob over the scratch tree hides every agent's staged scripts", %{tmp: ws} do
+      # Staging is per-agent, so a glob over the shared scratch tree sees the
+      # caller's *and* siblings' `.cmds`. Both must be skipped; a real file the
+      # agent owns must still come back.
+      base =
+        Path.join(System.tmp_dir!(), "nest_glob_stage_#{System.unique_integer([:positive])}")
+
+      scratch = Path.join([base, "space-1", "agent-a"])
+      sibling = Path.join([base, "space-1", "agent-b"])
+      File.mkdir_p!(scratch)
+      File.mkdir_p!(sibling)
+
+      on_exit(fn ->
+        if String.contains?(base, "nest_glob_stage"), do: File.rm_rf(base)
+      end)
+
+      File.write!(Path.join(scratch, "real.txt"), "x")
+      {script_a, _} = Transcript.stage("echo a", Mounts.new(ws, scratch))
+      {script_b, _} = Transcript.stage("echo b", Mounts.new(ws, sibling))
+      assert File.exists?(script_a)
+      assert File.exists?(script_b)
+
+      caps = build_caps(read: ["/"])
+
+      # The sibling arm is what makes this empty: agent-b is not the caller, so
+      # only the `/tmp/*/.cmds` skip (not the caller's own staging path) hides it.
+      assert {:ok, []} = Sandbox.glob("/tmp/*/.cmds/*", caps, Mounts.new(ws, scratch))
+
+      # The real file survives; the `.cmds` dir itself is dropped as a non-file.
+      assert {:ok, ["/tmp/agent-a/real.txt"]} =
+               Sandbox.glob("/tmp/agent-a/*", caps, Mounts.new(ws, scratch))
     end
   end
 

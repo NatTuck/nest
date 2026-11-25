@@ -68,19 +68,19 @@ defmodule Nest.Sandbox.BackendTest do
     test "produces the bwrap command line and leaves the directory to bwrap", %{dir: dir} do
       mounts = Mounts.new(dir, nil)
 
-      assert {:ok, spec} = Bwrap.command(mounts, caps(), "/tmp/.cmds/nest-cmd-1.sh")
+      assert {:ok, spec} = Bwrap.command(mounts, caps(), "/tmp/agent-1/.cmds/nest-cmd-1.sh")
 
       assert spec.cd == nil
       assert String.starts_with?(spec.command, "bwrap ")
       assert spec.command =~ "--unshare-all"
-      assert String.ends_with?(spec.command, " /bin/bash '/tmp/.cmds/nest-cmd-1.sh'")
+      assert String.ends_with?(spec.command, " /bin/bash '/tmp/agent-1/.cmds/nest-cmd-1.sh'")
     end
 
-    test "stages inside the bound space scratch dir", %{dir: dir} do
+    test "stages inside the agent's own scratch dir", %{dir: dir} do
       mounts = Mounts.new(dir, "/tmp/nest-1/space-7/agent-1")
 
-      assert Bwrap.stage_dir(mounts) == "/tmp/nest-1/space-7/.cmds"
-      assert Bwrap.stage_dir_sandbox(mounts) == "/tmp/.cmds"
+      assert Bwrap.stage_dir(mounts) == "/tmp/nest-1/space-7/agent-1/.cmds"
+      assert Bwrap.stage_dir_sandbox(mounts) == "/tmp/agent-1/.cmds"
     end
 
     test "names itself in an operator log" do

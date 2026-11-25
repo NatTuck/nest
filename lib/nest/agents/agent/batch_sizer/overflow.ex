@@ -21,6 +21,7 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   container can write, so they go through the gatekeeper instead.
   """
 
+  alias Nest.Name
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Estimator
@@ -65,12 +66,41 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
     end
   end
 
-  # The preview's size. Fixed rather than derived from the budget: a substitute
-  # whose size depends on the window cannot be priced by the preflight, and
-  # `substitute_size/0` is what the projection reserves per call. 200 tokens is
-  # enough to tell a command's failure from its output and small enough that a
-  # model that then reads the file has wasted very little.
-  @preview_tokens 200
+  # The preview is a fixed-size head + tail of the content with an explicit
+  # elision marker between them. Fixed rather than derived from the budget: a
+  # substitute whose size depends on the window cannot be priced by the
+  # preflight, and `substitute_size/0` is what the projection reserves per call.
+  # The head shows what the content is, the tail shows how it ends (a command's
+  # failure is usually in its last lines), and the marker says how much lies
+  # between them in the file. Both halves are charged in `Estimator.estimate/1`
+  # tokens — whole lines for the line path, an estimate-bounded char slice when
+  # the first line does not fit — so each half really does cost at most its budget.
+  @head_tokens 120
+  @tail_tokens 60
+
+  # The elision marker is a fixed template; only the count varies. Price the
+  # widest count we will ever print (10 digits covers any result that fits in
+  # memory) so the marker's estimate is a constant the projection can reserve.
+  @max_count_digits 10
+
+  # Tokens for the newlines joining header/head/marker/tail and any BPE merge
+  # across those seams. A fixed allowance, so the projection stays
+  # budget-independent.
+  @join_allowance 10
+
+  # The worst-case header the projection prices. The label and filename prefix
+  # are the longest a caller passes (the longest tool name, `ResultPolicy.label/1`
+  # and `BatchSizer.write_prefix/1`); the size carries the widest digit count we
+  # will ever print (10 digits, like the marker count). The path's agent-name
+  # segment is the longest a name can be (`Nest.Name.max_bytes/0`) and the id the
+  # densest `token/0` can emit (16 hex chars). Name and id are ASCII, so each
+  # tokenizes at raw <= bytes; an alternating letter/digit string reaches raw ==
+  # bytes (no BPE merges). `worst_header/0` assembles them with no seam merges,
+  # hitting the subadditive ceiling — the most any legal header can cost.
+  @worst_label "Output of agents-list-archived"
+  @worst_prefix "agents-list-archived"
+  @widest_size 9_999_999_999
+  @worst_id "1a1a1a1a1a1a1a1a"
 
   # Memo key for `substitute_size/0`.
   @substitute_size_key {__MODULE__, :substitute_size}
@@ -80,12 +110,18 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
 
       <label> (<N> tokens) saved to <path>.
 
-      <leading whole lines of the content, ~#{@preview_tokens} tokens>
+      <head lines>
+      … [K lines elided — read the file] …
+      <tail lines>
 
-  The pointer names the file and its size; the preview says what the content
-  is. Neither repeats anything the caller already has: the tool's arguments are
-  in the `tool_use` part immediately before this, so the label names the tool
-  and nothing else.
+  The pointer names the file and its size; the preview shows the head and tail
+  of the content and states how many lines lie between them in the file. When
+  the content fits the head + tail budgets it is shown whole with no marker.
+  When the first line does not fit the head budget, the preview falls back to a
+  char head + char tail spanning the whole trimmed content (which may itself be
+  multi-line) with a chars-elided marker. Neither repeats anything the caller
+  already has: the tool's arguments are in the `tool_use` part immediately
+  before this, so the label names the tool and nothing else.
 
   `{:ok, text}` when the file was written, `:error` when it could not be — the
   caller turns that into a clear error, because a result that is too large to
@@ -111,8 +147,16 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   The size of one substitute, for the preflight's per-call projection.
 
   The preflight has to reserve room for the substitute a call might produce, so
-  this and `substitute/5` must describe the same block — one function, so they
-  cannot drift.
+  this and `substitute/5` must describe the same block — they share the header
+  format, the head/tail budgets and the marker template, so they cannot drift.
+  It prices the worst case: the longest header (longest label and prefix, widest
+  size digits, and a max-length agent name priced at its densest legal
+  tokenization) + head budget + tail budget + the widest marker + the join
+  allowance. All are constants of this module's format and the name rule, none
+  of them the caller's budget. Every preview half is estimate-charged against
+  its budget (whole lines, or an estimate-bounded char slice), so this is a
+  universal upper bound on any substitute — whatever the content, and whatever
+  legal agent name files it.
 
   Memoized in `:persistent_term`: it is a constant of this module's own format,
   and `ResultPolicy.admit/3` reads it on every result to decide whether filing
@@ -123,10 +167,11 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   def substitute_size do
     case :persistent_term.get(@substitute_size_key, nil) do
       nil ->
+        widest = marker(String.duplicate("9", @max_count_digits), "chars")
+
         size =
-          Estimator.estimate(
-            pointer("Output of shell-cmd", 1_000_000, "/tmp/a/exec-0000000000000000.txt", "")
-          ) + @preview_tokens
+          Estimator.estimate(worst_header()) +
+            @head_tokens + @tail_tokens + Estimator.estimate(widest) + @join_allowance
 
         :persistent_term.put(@substitute_size_key, size)
         size
@@ -136,65 +181,142 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
     end
   end
 
+  # The longest header `substitute/5` can produce, at the subadditive ceiling:
+  # longest label and prefix, widest size digits, a max-length name and a 16-char
+  # id each alternating letter/digit so raw == bytes (the most ASCII can cost),
+  # and no merges across the path seams. raw(header) <= raw(label) + raw("/tmp/")
+  # + max_bytes + raw(frame) + 16, and this header reaches that bound, so no legal
+  # header estimates higher. The id is dense hex, not zeros: `token/0` emits
+  # random hex, and an all-zeros id would merge and under-price it.
+  defp worst_header do
+    max = Name.max_bytes()
+    name = String.duplicate("1a", div(max, 2) + 1) |> binary_part(0, max)
+    path = "/tmp/#{name}/#{@worst_prefix}-#{@worst_id}.txt"
+    "#{@worst_label} (#{@widest_size} tokens) saved to #{path}."
+  end
+
   defp pointer(label, size, path, content) do
     header = "#{label} (#{size} tokens) saved to #{path}."
 
     case preview(content) do
       "" -> header
-      head -> header <> "\n\n" <> head
+      preview -> header <> "\n\n" <> preview
     end
   end
 
-  # Whole lines, so the preview never ends mid-line. A single line longer than
-  # the whole budget (a minified blob) is cut by characters instead of being
-  # dropped: `head_text/3` returns its marker for it, and a preview is worth
-  # more than nothing.
+  # The preview is the head and tail of the content with an elision marker
+  # between them, or the whole content when head + tail cover it. Trailing
+  # whitespace is trimmed first so losing only whitespace is never labelled as
+  # elision. The line path keeps whole lines (never mid-line); a first line too
+  # long for the head budget falls back to the char path.
   defp preview(content) do
-    case head_text(content, @preview_tokens, "") do
-      "" -> content |> String.slice(0, @preview_tokens * 4) |> String.trim_trailing()
-      head -> head
+    trimmed = String.trim_trailing(content)
+    lines = String.split(trimmed, "\n")
+    {head_lines, rest} = take_head(lines, @head_tokens)
+
+    case head_lines do
+      [] -> char_preview(trimmed)
+      _ -> line_preview(trimmed, head_lines, rest)
     end
   end
 
-  @doc """
-  Take as many leading whole lines of `content` as fit `budget` tokens.
+  defp line_preview(trimmed, head_lines, rest) do
+    {tail_lines, middle} = take_tail(rest, @tail_tokens)
 
-  Whole lines only (never mid-line). `Estimator.estimate/1` includes a
-  per-line overhead, matching the rest of the sizing path.
+    case middle do
+      # Head and tail cover every line: show the whole content, no marker.
+      [] ->
+        trimmed
 
-  Never returns an empty string: when the budget can't fit even the
-  first line, or `content` is empty, `no_room` is returned instead. It
-  must be a non-empty self-describing marker so a caller can always tell
-  that content was dropped (and where it went).
-
-  There is deliberately no default `no_room`: every caller has to say
-  where the dropped content went, so no result can claim content was
-  elided without naming the file that holds it.
-  """
-  @spec head_text(String.t(), integer(), String.t()) :: String.t()
-  def head_text(content, budget, no_room)
-
-  def head_text("", _budget, no_room), do: no_room
-  def head_text(_content, budget, no_room) when budget <= 0, do: no_room
-
-  def head_text(content, budget, no_room) do
-    head =
-      content
-      |> String.split("\n")
-      |> Enum.reduce_while({"", 0}, fn line, {acc, used} ->
-        line_tokens = Estimator.estimate(line)
-
-        if used + line_tokens <= budget do
-          {:cont, {acc <> line <> "\n", used + line_tokens}}
-        else
-          {:halt, {acc, used}}
-        end
-      end)
-      |> elem(0)
-      |> String.trim_trailing()
-
-    if head == "", do: no_room, else: head
+      _ ->
+        assemble(
+          Enum.join(head_lines, "\n"),
+          marker(length(middle), "lines"),
+          Enum.join(tail_lines, "\n")
+        )
+    end
   end
+
+  # The first line does not fit the head budget (a minified blob, base64, or a
+  # huge first line followed by more): cut the whole trimmed content by
+  # characters, head and tail each bounded by their token budget, with a marker
+  # stating how many characters lie between them. The slice spans the whole
+  # content, so it may itself contain newlines. When the two halves cover it,
+  # show it whole.
+  defp char_preview(text) do
+    len = String.length(text)
+    head = char_slice(text, len, @head_tokens, :head)
+    tail = char_slice(text, len, @tail_tokens, :tail)
+    head_len = String.length(head)
+    tail_len = String.length(tail)
+
+    if head_len + tail_len >= len do
+      text
+    else
+      head <> marker(len - head_len - tail_len, "chars") <> tail
+    end
+  end
+
+  defp assemble(head, marker, tail) do
+    [head, marker, tail] |> Enum.reject(&(&1 == "")) |> Enum.join("\n")
+  end
+
+  # The elision marker. One template for both units ("lines" and "chars" are
+  # the same width), so `substitute_size/0` prices a single widest marker.
+  defp marker(count, unit), do: "… [#{count} #{unit} elided — read the file] …"
+
+  # Leading whole lines within `budget`, charged per line by
+  # `Estimator.estimate/1` (which carries a per-line overhead). Returns the
+  # taken lines and the rest, so the caller knows exactly what was elided
+  # without re-parsing a trimmed string. `take_tail/2` is this walk reversed.
+  defp take_head(lines, budget), do: take_head(lines, budget, [])
+
+  defp take_head([], _budget, acc), do: {Enum.reverse(acc), []}
+
+  defp take_head([line | rest], budget, acc) do
+    cost = Estimator.estimate(line)
+
+    if cost <= budget do
+      take_head(rest, budget - cost, [line | acc])
+    else
+      {Enum.reverse(acc), [line | rest]}
+    end
+  end
+
+  # Trailing whole lines within `budget`: the head walk on the reversed list.
+  # Returns the taken lines (in order) and the middle lines before them.
+  defp take_tail(lines, budget) do
+    {tail, middle} = lines |> Enum.reverse() |> take_head(budget)
+    {Enum.reverse(tail), Enum.reverse(middle)}
+  end
+
+  # An estimate-bounded leading/trailing char slice. Start from a `budget * 4`
+  # char guess (~4 chars/token) and shrink proportionally until the estimate fits
+  # `budget` — dense text (base64, minified code) costs more tokens per char, so a
+  # fixed char count would not be a bound. `fit_chars/4` stops at the first slice
+  # that fits; BPE is not monotone in length, so this is a bound, not a maximum.
+  # Deterministic and cheap: each step tokenizes only the bounded slice, never the
+  # whole content.
+  defp char_slice(text, len, budget, side) do
+    fit_chars(text, min(len, budget * 4), budget, side)
+  end
+
+  defp fit_chars(_text, 0, _budget, _side), do: ""
+
+  defp fit_chars(text, n, budget, side) do
+    slice = take_chars(text, n, side)
+    est = Estimator.estimate(slice)
+
+    if est <= budget do
+      slice
+    else
+      next = max(1, div(n * budget, est))
+      fit_chars(text, min(next, n - 1), budget, side)
+    end
+  end
+
+  defp take_chars(text, n, :head), do: String.slice(text, 0, n)
+  defp take_chars(text, n, :tail), do: String.slice(text, -n, n)
 
   @doc """
   Lossy UTF-8 coercion: replace every invalid byte sequence, and every

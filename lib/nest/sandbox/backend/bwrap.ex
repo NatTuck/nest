@@ -9,9 +9,9 @@ defmodule Nest.Sandbox.Backend.Bwrap do
   the project mounts are all bwrap's business (see `Nest.Sandbox`).
 
   The staged script is reached through the scratch bind, so its host directory
-  and the path bash is handed differ: `<space_dir>/.cmds/` on the host,
-  `/tmp/.cmds` inside (see `Nest.Sandbox.Paths`). With no scratch bind there is
-  no bind to translate through and the two coincide.
+  and the path bash is handed differ: `<agent_scratch>/.cmds/` on the host,
+  `/tmp/<agent-name>/.cmds` inside (see `Nest.Sandbox.Paths`). With no scratch
+  bind there is no bind to translate through and the two coincide.
   """
 
   alias Nest.Sandbox
@@ -68,7 +68,7 @@ defmodule Nest.Sandbox.Backend.Bwrap do
   def job_spec(mounts, caps, script, _log_path), do: command(mounts, caps, script)
 
   @doc """
-  The host staging directory: inside the bound space scratch dir when there is
+  The host staging directory: inside the agent's own scratch dir when there is
   one, else under the system tmp dir (see `Nest.Sandbox.Paths.stage_dir/1`).
   """
   @spec stage_dir(Mounts.t()) :: String.t()

@@ -99,15 +99,15 @@ defmodule Nest.Agents.TmpSweeper do
   # dead, short enough that a killed BEAM's tree does not outlive the day.
   @ttl_ms 60 * 60 * 1000
 
-  # The non-agent children a space directory can hold. `.cmds` is
-  # `Nest.Sandbox.Paths.stage_dir/1` — staged command transcripts, a sibling of
-  # the agent directories on purpose. `project` holds the `tmp`-mode `.nest`
-  # mount bind sources (`Nest.ProjectConfig`), which are made under an agent's
-  # own scratch directory and so normally go with it; it is skipped here so that
-  # a space-level one can never be mistaken for an agent. Only `project` needs
-  # saying: `.cmds` is already rejected by `Nest.Name.valid?/1`, and it stays in
-  # the list as belt and braces rather than as the load-bearing entry.
-  @non_agent_children [".cmds", "project"]
+  # The non-agent children a space directory can hold. `project` holds the
+  # `tmp`-mode `.nest` mount bind sources (`Nest.ProjectConfig`), which are made
+  # under an agent's own scratch directory and so normally go with it; it is
+  # skipped here so that a space-level one can never be mistaken for an agent.
+  # Staged command transcripts (`.cmds`) are not space-level children: they
+  # live inside each agent's own scratch (`Nest.Sandbox.Paths.stage_dir/1`) and
+  # are reclaimed with it, so a dead agent's scripts go with its directory and
+  # a live agent's are kept by the same ownership guard as the directory.
+  @non_agent_children ["project"]
 
   # ---- Client API ----
 
@@ -263,9 +263,9 @@ defmodule Nest.Agents.TmpSweeper do
   end
 
   # Every child of a space directory that could be an agent's own scratch
-  # directory: a valid agent name, and not one of the two things a space
-  # directory holds that is not an agent. Removal goes through `TmpSpace`, which
-  # owns the ownership guard.
+  # directory: a valid agent name, and not the non-agent child a space
+  # directory can hold. Removal goes through `TmpSpace`, which owns the
+  # ownership guard.
   defp sweep_agents(own_root, {space_id, path}) do
     path
     |> list_dir()
