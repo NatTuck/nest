@@ -92,14 +92,15 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   # are the longest a caller passes (the longest tool name, `ResultPolicy.label/1`
   # and `BatchSizer.write_prefix/1`); the size carries the widest digit count we
   # will ever print (10 digits, like the marker count). The path's agent-name
-  # segment is the longest a name can be (`Nest.Name.max_bytes/0`), and a name is
-  # `[a-z0-9_-]`: an alternating letter/digit name resists BPE merges, so its raw
-  # token count reaches its byte count — the most any legal name can cost. Pricing
-  # that name, not a short synthetic path, is what makes the bound universal.
+  # segment is the longest a name can be (`Nest.Name.max_bytes/0`) and the id the
+  # densest `token/0` can emit (16 hex chars). Name and id are ASCII, so each
+  # tokenizes at raw <= bytes; an alternating letter/digit string reaches raw ==
+  # bytes (no BPE merges). `worst_header/0` assembles them with no seam merges,
+  # hitting the subadditive ceiling — the most any legal header can cost.
   @worst_label "Output of agents-list-archived"
   @worst_prefix "agents-list-archived"
   @widest_size 9_999_999_999
-  @worst_id "0000000000000000"
+  @worst_id "1a1a1a1a1a1a1a1a"
 
   # Memo key for `substitute_size/0`.
   @substitute_size_key {__MODULE__, :substitute_size}
@@ -180,13 +181,16 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
     end
   end
 
-  # The longest header `substitute/5` can produce: longest label and prefix,
-  # widest size digits, and a max-length agent name whose tokenization is as
-  # dense as a legal name gets (raw token count == byte count). Any real header
-  # estimates no higher, so pricing this one bounds them all.
+  # The longest header `substitute/5` can produce, at the subadditive ceiling:
+  # longest label and prefix, widest size digits, a max-length name and a 16-char
+  # id each alternating letter/digit so raw == bytes (the most ASCII can cost),
+  # and no merges across the path seams. raw(header) <= raw(label) + raw("/tmp/")
+  # + max_bytes + raw(frame) + 16, and this header reaches that bound, so no legal
+  # header estimates higher. The id is dense hex, not zeros: `token/0` emits
+  # random hex, and an all-zeros id would merge and under-price it.
   defp worst_header do
     max = Name.max_bytes()
-    name = String.duplicate("a1", div(max, 2) + 1) |> binary_part(0, max)
+    name = String.duplicate("1a", div(max, 2) + 1) |> binary_part(0, max)
     path = "/tmp/#{name}/#{@worst_prefix}-#{@worst_id}.txt"
     "#{@worst_label} (#{@widest_size} tokens) saved to #{path}."
   end

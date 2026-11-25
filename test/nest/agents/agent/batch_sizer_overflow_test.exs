@@ -55,12 +55,13 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
   end
 
   # Independent oracle for the worst-case header the projection must price:
-  # longest label/prefix, widest size digits, and a max-length agent name at its
-  # densest legal tokenization (alternating letter/digit, raw == bytes).
+  # longest label/prefix, widest size digits, and a max-length agent name plus a
+  # 16-char id, each at its densest legal tokenization (alternating letter/digit,
+  # raw == bytes) with no seam merges — the subadditive ceiling.
   defp worst_header do
     max = Name.max_bytes()
-    name = String.duplicate("a1", div(max, 2) + 1) |> binary_part(0, max)
-    path = "/tmp/#{name}/agents-list-archived-0000000000000000.txt"
+    name = String.duplicate("1a", div(max, 2) + 1) |> binary_part(0, max)
+    path = "/tmp/#{name}/agents-list-archived-1a1a1a1a1a1a1a1a.txt"
     "Output of agents-list-archived (9999999999 tokens) saved to #{path}."
   end
 
