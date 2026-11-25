@@ -499,7 +499,7 @@ defmodule Nest.Tools.ShellCmdTest do
     assert stderr =~ "[Command timed out after 50ms]"
   end
 
-  test "the transcript is staged in the scratch staging dir (visible as /tmp/.cmds) and removed after",
+  test "the transcript is staged in the agent's staging dir (visible as /tmp/<agent>/.cmds) and removed after",
        %{ws: ws} do
     tmp =
       Path.join([
@@ -515,7 +515,7 @@ defmodule Nest.Tools.ShellCmdTest do
       if String.contains?(tmp, "nest_stage"), do: File.rm_rf(Path.dirname(Path.dirname(tmp)))
     end)
 
-    stage = Path.join(Path.dirname(tmp), ".cmds")
+    stage = Path.join(tmp, ".cmds")
 
     # $0 is the staged script, as seen from inside the sandbox.
     assert {:ok, output} = ShellCmd.execute(~s{basename "$0"}, Mounts.new(ws, tmp), nil, [])
@@ -561,10 +561,11 @@ defmodule Nest.Tools.ShellCmdTest do
     assert File.read!(host) == "umask 0022\nmkdir d"
 
     # The path bash is handed is the sandbox's, not the host's: with a
-    # scratch bind the staging directory is `<space>/.cmds` on the host and
-    # `/tmp/.cmds` inside. Handing bash the host path would make every command
-    # fail to open its own script.
-    assert sandbox == Path.join("/tmp/.cmds", Path.basename(host))
+    # scratch bind the staging directory is `<agent_scratch>/.cmds` on the host
+    # and `/tmp/<agent>/.cmds` inside. Handing bash the host path would make
+    # every command fail to open its own script.
+    assert sandbox ==
+             Path.join(["/tmp", Path.basename(scratch), ".cmds", Path.basename(host)])
 
     # End to end through a real command: the preamble applies to the whole
     # script, and the command's own `umask` still wins over it.

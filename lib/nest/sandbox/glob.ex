@@ -14,7 +14,7 @@ defmodule Nest.Sandbox.Glob do
   terminal `**` is refused: bash would eagerly expand the whole subtree.
   """
 
-  alias Nest.Sandbox.{Backend, Failure, Mounts}
+  alias Nest.Sandbox.{Backend, Failure, Mounts, Paths}
   alias Nest.Tools.{ShellCmd, ShellEscape}
 
   @glob_limit 1_000
@@ -46,7 +46,8 @@ defmodule Nest.Sandbox.Glob do
   end
 
   defp execute(full, caps, mounts, limit) do
-    script = script(shell_glob(full), shell_glob(stage_dir_sandbox(mounts)), limit)
+    skips = Enum.map(skip_dirs(mounts), &shell_glob/1)
+    script = script(shell_glob(full), skips, limit)
 
     case ShellCmd.execute_raw(script, mounts, caps, timeout: @glob_timeout_ms) do
       {:ok, 0, stdout, _stderr} ->
@@ -67,22 +68,34 @@ defmodule Nest.Sandbox.Glob do
 
   defp stage_dir_sandbox(mounts), do: Backend.stage_dir_sandbox(mounts)
 
+  # The staging directories whose files a glob must never surface. The
+  # backend's own staging path covers the bare-command backend's
+  # `/tmp/.nest-cmds`; the `/tmp/*/.cmds` pattern covers *every* agent's
+  # staging dir under the scratch bind — staging is per-agent, so a glob over
+  # the shared scratch tree sees siblings' staging too, not just the caller's.
+  # The pattern is scoped to the scratch root so a real directory an agent
+  # names `.cmds` elsewhere is not hidden.
+  defp skip_dirs(mounts) do
+    [
+      stage_dir_sandbox(mounts),
+      Path.join([Paths.sandbox_root(), "*", Paths.stage_subdir()])
+    ]
+  end
+
   # `full` is a resolved absolute pattern in the sandbox domain. Bash resolves
   # symlinks and the `/tmp` bind exactly as a shell inside the sandbox would.
-  #
-  # Nest stages command transcripts in the backend's staging directory
-  # (visible inside at `/tmp/.cmds`, or at the same path through the read-only
-  # root bind when there is no scratch bind, or as the host's own
-  # `/tmp/.nest-cmds` on the bare-command backend). The loop skips that whole directory so
-  # Nest's own scripts never appear in results, while a real file an agent
-  # names `.nest-cmd-notes.sh` is no longer hidden by a basename-prefix check.
-  defp script(escaped_pattern, escaped_stage_dir, limit) do
+  # The loop skips the staging directories (`skip_dirs/1`) so Nest's own
+  # scripts never appear in results, while a real file an agent names
+  # `.nest-cmd-notes.sh` is not hidden by a basename-prefix check.
+  defp script(escaped_pattern, escaped_skips, limit) do
+    arms = Enum.map_join(escaped_skips, " ", fn dir -> "#{dir}/*) continue;;" end)
+
     """
     export LC_ALL=C
     shopt -s nullglob globstar dotglob
     n=0
     for p in #{escaped_pattern}; do
-      case "$p" in #{escaped_stage_dir}/*) continue;; esac
+      case "$p" in #{arms} esac
       n=$((n + 1))
       if [ "$n" -gt #{limit} ]; then
         printf 'nest-glob-too-broad\\n' >&2

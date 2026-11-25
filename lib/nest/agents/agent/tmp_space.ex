@@ -23,7 +23,10 @@ defmodule Nest.Agents.Agent.TmpSpace do
   # `/tmp` under bwrap, so every agent in a space sees the same `/tmp` and can
   # read any sibling's scratch files. The per-agent subdirectory keeps that
   # shared root tidy and avoids filename collisions between agents.
-  # `terminate/2` removes only the agent's own subdirectory.
+  # `terminate/2` removes only the agent's own subdirectory. The agent's staged
+  # command transcripts live in `.cmds` inside that subdirectory
+  # (`Nest.Sandbox.Paths.stage_dir/1`), so they are reclaimed with it — never by
+  # a sibling's teardown.
   #
   # ## Two backends whose scratch is not a directory on the host
   #

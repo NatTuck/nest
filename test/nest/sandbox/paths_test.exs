@@ -67,12 +67,19 @@ defmodule Nest.Sandbox.PathsTest do
   end
 
   describe "stage_dir/1" do
-    test "lives in its own subdirectory of the bound space dir" do
+    test "lives inside the agent's own scratch dir, one per agent" do
       path = tmp_path()
       stage = Paths.stage_dir(path)
 
-      assert Path.dirname(stage) == Paths.scratch_root(path)
+      # Per-agent staging: the transcript is reclaimed with the agent that
+      # staged it, so the staging dir is a child of the agent's own scratch,
+      # not a sibling shared by the whole space.
+      assert Path.dirname(stage) == path
       assert Path.basename(stage) == ".cmds"
+      assert Paths.stage_subdir() == Path.basename(stage)
+
+      sibling = Path.join(Path.dirname(path), "agent-b")
+      refute Paths.stage_dir(sibling) == stage
     end
 
     test "falls back to System.tmp_dir!/0 when there is no scratch bind" do
@@ -80,12 +87,18 @@ defmodule Nest.Sandbox.PathsTest do
       assert Paths.stage_dir_sandbox(nil) == Paths.stage_dir(nil)
     end
 
-    test "inherits the refusal of scratch_root/1" do
-      assert_raise ArgumentError, fn -> Paths.stage_dir("/tmp/agent-a") end
+    test "a scratch directly under /tmp stages inside itself" do
+      # Staging is a join into the agent's own dir, not a bind derivation, so
+      # the `scratch_root/1` refusal does not apply: a `"none"`-shaped scratch
+      # stages in its own `.cmds` like any other.
+      assert Paths.stage_dir("/tmp/agent-a") == "/tmp/agent-a/.cmds"
     end
 
-    test "the sandbox path is always under /tmp when a scratch bind exists" do
-      assert Paths.stage_dir_sandbox(tmp_path()) == Path.join(Paths.sandbox_root(), ".cmds")
+    test "the sandbox path is the agent's own scratch path plus the staging dir" do
+      assert Paths.stage_dir_sandbox(tmp_path()) == "/tmp/agent-a/.cmds"
+
+      assert Paths.stage_dir_sandbox(tmp_path()) ==
+               Path.join(Paths.sandbox_tmp_path(tmp_path()), ".cmds")
     end
   end
 

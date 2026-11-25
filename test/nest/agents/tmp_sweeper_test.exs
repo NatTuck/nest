@@ -16,6 +16,7 @@ defmodule Nest.Agents.TmpSweeperTest do
   alias Nest.Agents.TmpSweeper
   alias Nest.Sandbox.{Mounts, ShellJobs}
   alias Nest.Tools.ShellCmd
+  alias Nest.Tools.ShellCmd.Transcript
 
   @ttl 60 * 60 * 1000
 
@@ -171,12 +172,12 @@ defmodule Nest.Agents.TmpSweeperTest do
   end
 
   describe "pass 2: our own agent directories" do
-    test "removes an unowned agent directory and keeps .cmds, project and a registered agent" do
+    test "removes an unowned agent directory and keeps project and a registered agent" do
       own = root_fixture()
       space_id = unique_negative_space()
       space = Path.join(own, "space-#{space_id}")
 
-      for child <- [".cmds", "project", "orphan", "live"] do
+      for child <- ["project", "orphan", "live"] do
         File.mkdir_p!(Path.join(space, child))
       end
 
@@ -190,12 +191,42 @@ defmodule Nest.Agents.TmpSweeperTest do
       # keeps the space (and so its children) for pass 3. Each child is also
       # the space surviving — no separate assertion on the parent.
       #
-      # `.cmds` and `project` are the two halves of the reject: `".cmds"` fails
-      # `Nest.Name.valid?/1`, `"project"` is valid and so needs
-      # `@non_agent_children`. Drop either half and that child is rm_rf'd.
+      # `project` is the load-bearing reject: it is a valid agent name, so
+      # without `@non_agent_children` it would be rm_rf'd as an unowned agent.
       assert File.dir?(Path.join(space, "live"))
-      assert File.dir?(Path.join(space, ".cmds"))
       assert File.dir?(Path.join(space, "project"))
+    end
+
+    test "reclaims a dead agent's staged scripts with its scratch, keeps a live agent's" do
+      own = root_fixture()
+      space_id = unique_negative_space()
+      space = Path.join(own, "space-#{space_id}")
+
+      dead_scratch = Path.join(space, "dead")
+      live_scratch = Path.join(space, "live")
+      register_agent(space_id, "live")
+
+      # Stage through the real staging path so each transcript lands where the
+      # code puts it — inside the agent's own scratch. This is the regression:
+      # when staging was a *space-level* sibling (`<space>/.cmds`), the sweep
+      # removed the dead agent's directory but left its transcript behind in
+      # the shared dir, and a sibling's reclaim could reach a live agent's
+      # script. Per-agent staging makes the transcript go with its owner.
+      {dead_script, _} = Transcript.stage("echo dead", Mounts.new(File.cwd!(), dead_scratch))
+      {live_script, _} = Transcript.stage("echo live", Mounts.new(File.cwd!(), live_scratch))
+
+      assert File.exists?(dead_script)
+      assert File.exists?(live_script)
+
+      assert :ok = TmpSweeper.sweep(own, now(), @ttl)
+
+      # The dead agent's whole scratch — its staging dir included — is gone.
+      refute File.exists?(dead_scratch)
+      refute File.exists?(dead_script)
+
+      # The live agent's scratch and its staged script survive the same sweep.
+      assert File.dir?(live_scratch)
+      assert File.exists?(live_script)
     end
   end
 

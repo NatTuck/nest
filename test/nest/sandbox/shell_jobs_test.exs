@@ -215,13 +215,12 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert [%{id: ^id, status: :exited}] = ShellJobs.list(key)
     assert_received {:shell_jobs, %{jobs: [%{id: ^id, status: :exited}]}}
 
-    # The staged script lives in the backend's staging directory — a *sibling*
-    # of the agent's scratch dir (`<space>/.cmds`), never inside it — so the
-    # wildcard this replaces searched `tmp`, matched nothing the code produces,
-    # and could not fail. This one is pointed at the directory the script is
-    # actually staged in, which is unique per test because the scratch root is;
-    # the `File.dir?/1` is what keeps it from being vacuous if that ever changes.
-    # Bound once: each call forks `realpath` (see `Nest.FSPath.canonical/1`).
+    # The staged script lives in the backend's staging directory — a *child*
+    # of the agent's scratch dir (`<scratch>/.cmds`), so a wildcard over `tmp`
+    # itself matches nothing the code produces and could not fail. This one is
+    # pointed at the directory the script is actually staged in, which is
+    # unique per test because the scratch root is; the `File.dir?/1` is what
+    # keeps it from being vacuous if that ever changes.
     stage = Paths.stage_dir(tmp)
     assert File.dir?(stage)
     assert Path.wildcard(Path.join(stage, "nest-cmd-*.sh")) == []
